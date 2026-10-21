@@ -73,15 +73,4 @@ Tests boot a relocated bundle to check asset resolution and run a bundled
 CommonJS dependency using a Node builtin. The web dev server includes React Fast Refresh.
 `pnpm licenses list` reports dependency licenses.
 
-## Integration notes
-
-- `packages/db` and `packages/shared` still have placeholder source entry points.
-  The database package pins drizzle-orm 0.45.4, drizzle-kit 0.31.11, and postgres 3.4.9;
-  the server also declares drizzle-orm for service query operators.
-- TODO(CCR): replace the smoke test's test-only connection with the
-  database package's isolated test helper when available.
-- TODO(CCR): the licensing owner must add the root `THIRD_PARTY_LICENSES`
-  inventory and automated license/SPDX policy checks. The font notice is already
-  shipped beside its asset.
-
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).

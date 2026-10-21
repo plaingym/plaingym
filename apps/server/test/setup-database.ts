@@ -16,7 +16,7 @@ declare module 'vitest' {
 
 const run = promisify(execFile);
 
-// TODO(CCR): integrate the database owner's isolated test helper when available.
+// Provides one database URL to every test file; files share that database.
 export default async function setupDatabase(project: TestProject) {
   if (process.env.DATABASE_URL) {
     project.provide('databaseUrl', process.env.DATABASE_URL);

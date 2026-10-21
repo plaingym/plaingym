@@ -12,6 +12,3 @@ license notice is in [OFL.txt](OFL.txt); it travels with the font in every serve
 This single font exercises asset packaging. No script-coverage or PDF-rendering
 claim is made. Resolve it with `regularFontUrl`, relative to the server module,
 rather than the current working directory.
-
-TODO(CCR): include this notice in the root THIRD_PARTY_LICENSES inventory when
-the licensing owner adds that file.

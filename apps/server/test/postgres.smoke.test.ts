@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// TODO(CCR): replace this test-only connection with packages/db's isolated test helper.
+// Connects directly as app: there is no schema yet, so this checks only the role bootstrap.
 import postgres from 'postgres';
 import { expect, inject, it } from 'vitest';
 
