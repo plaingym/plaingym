@@ -1,0 +1,24 @@
+{
+  "name": "@plaingym/server",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "build": "node build.mjs",
+    "start": "node --env-file-if-exists=../../.env dist/server.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.5",
+    "@plaingym/db": "workspace:*",
+    "@plaingym/shared": "workspace:*",
+    "hono": "4.13.13",
+    "drizzle-orm": "0.45.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "postgres": "3.4.9",
+    "tsx": "4.23.15"
+  }
+}

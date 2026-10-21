@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.sha }}
+    services:
+      postgres:
+        image: postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32
+        env:
+          POSTGRES_DB: plaingym
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d plaingym"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+          cache: pnpm
+      - name: Bootstrap database roles and password authentication
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_password="$(openssl rand -hex 24)"
+          maintenance_password="$(openssl rand -hex 24)"
+          bootstrap_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$app_password"
+          echo "::add-mask::$maintenance_password"
+          echo "::add-mask::$bootstrap_password"
+          export APP_PASSWORD="$app_password" MAINTENANCE_PASSWORD="$maintenance_password"
+          export POSTGRES_PASSWORD="$bootstrap_password"
+          docker cp dev/postgres/01-roles.sh "$POSTGRES_CONTAINER:/tmp/01-roles.sh"
+          docker exec "$POSTGRES_CONTAINER" chmod 0644 /tmp/01-roles.sh
+          docker exec -e APP_PASSWORD -e MAINTENANCE_PASSWORD "$POSTGRES_CONTAINER" bash /tmp/01-roles.sh
+          docker exec -i -e POSTGRES_PASSWORD "$POSTGRES_CONTAINER" psql -U postgres -d plaingym -v ON_ERROR_STOP=1 <<'SQL'
+          \getenv bootstrap_password POSTGRES_PASSWORD
+          ALTER ROLE postgres PASSWORD :'bootstrap_password';
+          SQL
+          docker exec "$POSTGRES_CONTAINER" sh -c 'printf "%s\n" "local all all trust" "host all all all scram-sha-256" > "$PGDATA/pg_hba.conf"'
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres -d plaingym -c 'SELECT pg_reload_conf()'
+          echo "DATABASE_URL=postgres://app:$app_password@127.0.0.1:5432/plaingym" >> "$GITHUB_ENV"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check-types
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm licenses list

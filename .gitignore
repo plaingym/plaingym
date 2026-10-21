@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # ==========================================
 # PlainGym .gitignore
 # ==========================================
@@ -52,3 +53,5 @@ Thumbs.db
 # Coverage & Testing
 coverage/
 .nyc_output/
+*.tsbuildinfo
+routeTree.gen.ts

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 # Normalize line endings to LF in the repository for all contributors
 * text=auto eol=lf
 
@@ -18,3 +19,5 @@
 *.woff2 binary
 *.db binary
 *.sqlite binary
+*.ttf binary
+*.otf binary

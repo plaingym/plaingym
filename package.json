@@ -1,0 +1,36 @@
+{
+  "name": "plaingym",
+  "version": "0.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": "24.22.1",
+    "pnpm": "10.34.7"
+  },
+  "packageManager": "pnpm@10.34.7",
+  "scripts": {
+    "check-types": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/server/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "build": "pnpm --filter @plaingym/web build && pnpm --filter @plaingym/server build",
+    "dev": "pnpm --parallel --filter './apps/*' dev",
+    "dev:up": "docker compose -f compose.dev.yaml up -d --wait",
+    "dev:down": "docker compose -f compose.dev.yaml down --volumes --remove-orphans",
+    "hooks:install": "simple-git-hooks",
+    "prepare": "node apps/server/install-hooks.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.13.0",
+    "simple-git-hooks": "2.14.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0",
+    "vitest": "5.0.5",
+    "globals": "17.13.0"
+  },
+  "simple-git-hooks": {
+    "pre-push": "pnpm check-types && pnpm lint && pnpm test"
+  }
+}

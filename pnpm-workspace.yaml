@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+packages:
+  - apps/server
+  - apps/web
+  - packages/db
+  - packages/shared
+onlyBuiltDependencies:
+  - esbuild
+  # Reviewed hook installer; prepare also refreshes hooks on subsequent installs.
+  - simple-git-hooks
