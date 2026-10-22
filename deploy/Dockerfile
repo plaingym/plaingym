@@ -6,7 +6,7 @@ ENV CI=true
 RUN npm install --global pnpm@10.34.7
 COPY . .
 RUN pnpm install --frozen-lockfile
-ARG SOURCE_URL
+ARG SOURCE_URL=https://github.com/plaingym/plaingym
 RUN test -n "$SOURCE_URL" && SOURCE_URL="$SOURCE_URL" pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
@@ -35,7 +35,8 @@ RUN chmod 0555 /app/deploy/*.sh \
  && { cat /app/licenses/LICENSE; cat /usr/local/LICENSE; \
       find /usr/share/doc -name copyright -type f -exec cat {} \;; \
       cat /app/licenses/THIRD_PARTY_LICENSES; } > /app/THIRD_PARTY_LICENSES
-ARG SOURCE_URL
+ARG SOURCE_URL=https://github.com/plaingym/plaingym
+ENV SOURCE_URL=${SOURCE_URL}
 ARG REVISION
 LABEL org.opencontainers.image.source="https://github.com/plaingym/plaingym" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \

@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { Hono } from 'hono';
+import { AppError } from '@plaingym/shared';
+import { createApp } from './core/app.js';
+import { areaContributions } from './core/registry-areas.js';
 
-export const app = new Hono();
-// Explicitly public liveness probe; it exposes no gym or household data.
-app.get('/healthz', (context) => context.json({ status: 'ok' }));
+export { createApp, type AppOptions } from './core/app.js';
+
+// Production tenancy and session wiring must be supplied before gym routes open.
+export const app = createApp({
+  contributions: areaContributions,
+  resolveGym: () => { throw new AppError('not_found', 'Gym not found.'); },
+  session: async (_context, next) => { await next(); },
+  authorize: () => () => { throw new AppError('forbidden', 'Access denied.'); },
+});

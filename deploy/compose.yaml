@@ -64,6 +64,7 @@ services:
       PORT: "3000"
       NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=256}
       TENANCY: single
+      SOURCE_URL: ${SOURCE_URL:-https://github.com/plaingym/plaingym}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       AUTH_SECRET: ${AUTH_SECRET:?required}
       DATABASE_URL: postgres://app:${APP_PASSWORD:?required}@postgres:5432/${POSTGRES_DB:-plaingym}
