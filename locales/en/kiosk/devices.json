@@ -1,3 +1,24 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Kiosk devices",
+  "help": "Register a device for gym check-in. Revoke its access if the device is lost or replaced.",
+  "name": "Device name",
+  "register": "Register device",
+  "tokenOnce": "Save this device token now. It is shown only once. Keep it private and enter it on the check-in device.",
+  "dismiss": "I saved the token",
+  "refresh": "Refresh devices",
+  "loading": "Loading devices…",
+  "created": "Registered",
+  "lastSeen": "Last used",
+  "status": "Status",
+  "actions": "Actions",
+  "never": "Never",
+  "active": "Active",
+  "revoked": "Revoked",
+  "revoke": "Revoke access",
+  "revokeNamed": "Revoke access for {name}",
+  "empty": "No kiosk devices registered.",
+  "error": "The request failed. Refresh the list and try again.",
+  "previous": "Previous page",
+  "next": "Next page"
 }
