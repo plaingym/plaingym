@@ -270,3 +270,8 @@ export class FakeBackupObjectStore implements BackupObjectStore {
     this.#objects.delete(key);
   }
 }
+
+export { LocalUploads } from './local.js';
+export type { LocalUploadsOptions } from './local.js';
+export { S3BackupObjectStore, S3Uploads, createS3Client } from './s3.js';
+export type { S3StoreOptions } from './s3.js';
