@@ -55,7 +55,7 @@ describe('bundled discipline content packs', () => {
 
   it.each([
     { id: 'judo', kyuCount: 6 },
-    { id: 'karate', kyuCount: 10 },
+    { id: 'karate', kyuCount: 9 },
   ] as const)('$id orders kyu downward and dan upward', async ({ id, kyuCount }) => {
     const pack = await loadPack(id);
     expect(pack.rankSystems).toHaveLength(1);

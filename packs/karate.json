@@ -6,31 +6,25 @@
   "name": "Karate",
   "rankSystems": [
     {
-      "id": "karate-jka-england",
-      "name": "Shotokan Karate (JKA England kyu/dan)",
+      "id": "karate-north-american",
+      "name": "Karate (common North American kyu/dan)",
       "ranks": [
         {
-          "id": "kyu-10",
-          "name": "10 kyu (white belt)",
+          "id": "kyu-9",
+          "name": "9 kyu (white belt)",
           "color": "#ffffff",
           "subRanks": []
         },
         {
-          "id": "kyu-9",
-          "name": "9 kyu (orange belt)",
-          "color": "#ff8000",
-          "subRanks": []
-        },
-        {
           "id": "kyu-8",
-          "name": "8 kyu (red belt)",
-          "color": "#ff0000",
+          "name": "8 kyu (yellow belt)",
+          "color": "#ffff00",
           "subRanks": []
         },
         {
           "id": "kyu-7",
-          "name": "7 kyu (yellow belt)",
-          "color": "#ffff00",
+          "name": "7 kyu (orange belt)",
+          "color": "#ff8000",
           "subRanks": []
         },
         {
@@ -41,13 +35,13 @@
         },
         {
           "id": "kyu-5",
-          "name": "5 kyu (purple belt)",
-          "color": "#800080",
+          "name": "5 kyu (blue belt)",
+          "color": "#0000ff",
           "subRanks": []
         },
         {
           "id": "kyu-4",
-          "name": "4 kyu (purple and one white stripe belt)",
+          "name": "4 kyu (purple belt)",
           "color": "#800080",
           "subRanks": []
         },
@@ -59,13 +53,13 @@
         },
         {
           "id": "kyu-2",
-          "name": "2 kyu (brown and one white stripe belt)",
+          "name": "2 kyu (brown belt)",
           "color": "#804000",
           "subRanks": []
         },
         {
           "id": "kyu-1",
-          "name": "1 kyu (brown and two white stripes belt)",
+          "name": "1 kyu (brown belt)",
           "color": "#804000",
           "subRanks": []
         },
@@ -136,12 +130,12 @@
     {
       "id": "karate-fundamentals",
       "name": "Karate Fundamentals",
-      "rankSystemId": "karate-jka-england"
+      "rankSystemId": "karate-north-american"
     },
     {
       "id": "karate-all-levels",
       "name": "Karate All Levels",
-      "rankSystemId": "karate-jka-england"
+      "rankSystemId": "karate-north-american"
     }
   ],
   "classTags": [

@@ -27,12 +27,11 @@ v1 format stores one color per rank.
   [IJF's belt history](https://www.ijf.org/news/show/the-belt-myth-and-reality-of-an-essential-symbol).
   Other federations use different kyu colors, so gyms can rename ranks and
   change their colors after applying the pack.
-- **Karate:** the Shotokan starting point uses JKA England colors, as listed by
-  [Westminster Shotokan Karate](https://wskc-jka.co.uk/westminster-karate/granding-and-belt-system/).
-  The ten kyu and ten dan grades follow the
-  [JKA grading structure](https://www.jka.or.jp/en/about-jka/dan-ranking/).
-  Striped kyu belts are separate grades, rather than extra sub-ranks.
-  Other karate associations use different color sequences.
+- **Karate:** a generic starting point using a color order common in North
+  American schools: white (9th kyu), yellow, orange, green, blue, purple, then
+  brown for 3rd through 1st kyu, followed by ten black-belt dan grades. No single
+  federation defines this sequence; karate associations and styles each set their
+  own, so gyms can rename ranks and change their colors after applying the pack.
 - **Muay Thai:** this starting point has no rank system.
   [Rajadamnern Stadium describes traditional and modern grading approaches](https://rajadamnern.com/blog/ranking-system-in-muay-thai/).
   Gyms using an association's Khan or armband scheme can configure their own grades.
