@@ -1,0 +1,47 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "version": 1,
+  "id": "functional-fitness",
+  "name": "Functional Fitness",
+  "rankSystems": [],
+  "programs": [
+    {
+      "id": "fitness-foundations",
+      "name": "Fitness Foundations"
+    },
+    {
+      "id": "functional-fitness",
+      "name": "Functional Fitness"
+    },
+    {
+      "id": "strength-conditioning",
+      "name": "Strength and Conditioning"
+    }
+  ],
+  "classTags": [
+    {
+      "id": "strength",
+      "name": "Strength"
+    },
+    {
+      "id": "conditioning",
+      "name": "Conditioning"
+    },
+    {
+      "id": "weightlifting",
+      "name": "Weightlifting"
+    },
+    {
+      "id": "gymnastics",
+      "name": "Gymnastics"
+    },
+    {
+      "id": "mobility",
+      "name": "Mobility"
+    },
+    {
+      "id": "open-gym",
+      "name": "Open Gym"
+    }
+  ]
+}

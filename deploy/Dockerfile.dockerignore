@@ -10,6 +10,8 @@
 !scripts/
 !scripts/generate.mjs
 !scripts/generate-api.mjs
+!packs/
+!packs/**
 !locales/
 !locales/**
 !apps/

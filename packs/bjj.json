@@ -1,0 +1,274 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "version": 1,
+  "id": "bjj",
+  "name": "Brazilian Jiu-Jitsu",
+  "rankSystems": [
+    {
+      "id": "bjj-adult",
+      "name": "BJJ (IBJJF ages 16+)",
+      "ranks": [
+        {
+          "id": "white",
+          "name": "White belt",
+          "color": "#ffffff",
+          "subRanks": [
+            {
+              "id": "stripe-1",
+              "name": "1 stripe"
+            },
+            {
+              "id": "stripe-2",
+              "name": "2 stripes"
+            },
+            {
+              "id": "stripe-3",
+              "name": "3 stripes"
+            },
+            {
+              "id": "stripe-4",
+              "name": "4 stripes"
+            }
+          ]
+        },
+        {
+          "id": "blue",
+          "name": "Blue belt",
+          "color": "#0000ff",
+          "subRanks": [
+            {
+              "id": "stripe-1",
+              "name": "1 stripe"
+            },
+            {
+              "id": "stripe-2",
+              "name": "2 stripes"
+            },
+            {
+              "id": "stripe-3",
+              "name": "3 stripes"
+            },
+            {
+              "id": "stripe-4",
+              "name": "4 stripes"
+            }
+          ]
+        },
+        {
+          "id": "purple",
+          "name": "Purple belt",
+          "color": "#800080",
+          "subRanks": [
+            {
+              "id": "stripe-1",
+              "name": "1 stripe"
+            },
+            {
+              "id": "stripe-2",
+              "name": "2 stripes"
+            },
+            {
+              "id": "stripe-3",
+              "name": "3 stripes"
+            },
+            {
+              "id": "stripe-4",
+              "name": "4 stripes"
+            }
+          ]
+        },
+        {
+          "id": "brown",
+          "name": "Brown belt",
+          "color": "#804000",
+          "subRanks": [
+            {
+              "id": "stripe-1",
+              "name": "1 stripe"
+            },
+            {
+              "id": "stripe-2",
+              "name": "2 stripes"
+            },
+            {
+              "id": "stripe-3",
+              "name": "3 stripes"
+            },
+            {
+              "id": "stripe-4",
+              "name": "4 stripes"
+            }
+          ]
+        },
+        {
+          "id": "black",
+          "name": "Black belt",
+          "color": "#000000",
+          "subRanks": [
+            {
+              "id": "degree-1",
+              "name": "Degree 1"
+            },
+            {
+              "id": "degree-2",
+              "name": "Degree 2"
+            },
+            {
+              "id": "degree-3",
+              "name": "Degree 3"
+            },
+            {
+              "id": "degree-4",
+              "name": "Degree 4"
+            },
+            {
+              "id": "degree-5",
+              "name": "Degree 5"
+            },
+            {
+              "id": "degree-6",
+              "name": "Degree 6"
+            }
+          ]
+        },
+        {
+          "id": "red-black",
+          "name": "Red and black belt (7th degree)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "red-white",
+          "name": "Red and white belt (8th degree)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "red",
+          "name": "Red belt (9th degree)",
+          "color": "#ff0000",
+          "subRanks": []
+        }
+      ]
+    },
+    {
+      "id": "bjj-youth",
+      "name": "BJJ (IBJJF ages 4–15)",
+      "ranks": [
+        {
+          "id": "white",
+          "name": "White belt",
+          "color": "#ffffff",
+          "subRanks": []
+        },
+        {
+          "id": "grey-white",
+          "name": "Grey and white belt",
+          "color": "#808080",
+          "subRanks": []
+        },
+        {
+          "id": "grey",
+          "name": "Grey belt",
+          "color": "#808080",
+          "subRanks": []
+        },
+        {
+          "id": "grey-black",
+          "name": "Grey and black belt",
+          "color": "#808080",
+          "subRanks": []
+        },
+        {
+          "id": "yellow-white",
+          "name": "Yellow and white belt",
+          "color": "#ffff00",
+          "subRanks": []
+        },
+        {
+          "id": "yellow",
+          "name": "Yellow belt",
+          "color": "#ffff00",
+          "subRanks": []
+        },
+        {
+          "id": "yellow-black",
+          "name": "Yellow and black belt",
+          "color": "#ffff00",
+          "subRanks": []
+        },
+        {
+          "id": "orange-white",
+          "name": "Orange and white belt",
+          "color": "#ff8000",
+          "subRanks": []
+        },
+        {
+          "id": "orange",
+          "name": "Orange belt",
+          "color": "#ff8000",
+          "subRanks": []
+        },
+        {
+          "id": "orange-black",
+          "name": "Orange and black belt",
+          "color": "#ff8000",
+          "subRanks": []
+        },
+        {
+          "id": "green-white",
+          "name": "Green and white belt",
+          "color": "#008000",
+          "subRanks": []
+        },
+        {
+          "id": "green",
+          "name": "Green belt",
+          "color": "#008000",
+          "subRanks": []
+        },
+        {
+          "id": "green-black",
+          "name": "Green and black belt",
+          "color": "#008000",
+          "subRanks": []
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "bjj-fundamentals",
+      "name": "BJJ Fundamentals",
+      "rankSystemId": "bjj-adult"
+    },
+    {
+      "id": "bjj-all-levels",
+      "name": "BJJ All Levels",
+      "rankSystemId": "bjj-adult"
+    },
+    {
+      "id": "bjj-kids",
+      "name": "Kids BJJ",
+      "rankSystemId": "bjj-youth"
+    }
+  ],
+  "classTags": [
+    {
+      "id": "gi",
+      "name": "Gi"
+    },
+    {
+      "id": "no-gi",
+      "name": "No-Gi"
+    },
+    {
+      "id": "open-mat",
+      "name": "Open Mat"
+    },
+    {
+      "id": "competition",
+      "name": "Competition Training"
+    }
+  ]
+}

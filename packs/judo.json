@@ -1,0 +1,140 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "version": 1,
+  "id": "judo",
+  "name": "Judo",
+  "rankSystems": [
+    {
+      "id": "judo-bja-senior",
+      "name": "Judo (British Judo senior kyu/dan)",
+      "ranks": [
+        {
+          "id": "kyu-6",
+          "name": "6 kyu (red belt)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "kyu-5",
+          "name": "5 kyu (yellow belt)",
+          "color": "#ffff00",
+          "subRanks": []
+        },
+        {
+          "id": "kyu-4",
+          "name": "4 kyu (orange belt)",
+          "color": "#ff8000",
+          "subRanks": []
+        },
+        {
+          "id": "kyu-3",
+          "name": "3 kyu (green belt)",
+          "color": "#008000",
+          "subRanks": []
+        },
+        {
+          "id": "kyu-2",
+          "name": "2 kyu (blue belt)",
+          "color": "#0000ff",
+          "subRanks": []
+        },
+        {
+          "id": "kyu-1",
+          "name": "1 kyu (brown belt)",
+          "color": "#804000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-1",
+          "name": "1 dan (black belt)",
+          "color": "#000000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-2",
+          "name": "2 dan (black belt)",
+          "color": "#000000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-3",
+          "name": "3 dan (black belt)",
+          "color": "#000000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-4",
+          "name": "4 dan (black belt)",
+          "color": "#000000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-5",
+          "name": "5 dan (black belt)",
+          "color": "#000000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-6",
+          "name": "6 dan (red and white belt)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-7",
+          "name": "7 dan (red and white belt)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-8",
+          "name": "8 dan (red and white belt)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-9",
+          "name": "9 dan (red belt)",
+          "color": "#ff0000",
+          "subRanks": []
+        },
+        {
+          "id": "dan-10",
+          "name": "10 dan (red belt)",
+          "color": "#ff0000",
+          "subRanks": []
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "judo-fundamentals",
+      "name": "Judo Fundamentals",
+      "rankSystemId": "judo-bja-senior"
+    },
+    {
+      "id": "judo-all-levels",
+      "name": "Judo All Levels",
+      "rankSystemId": "judo-bja-senior"
+    }
+  ],
+  "classTags": [
+    {
+      "id": "randori",
+      "name": "Randori"
+    },
+    {
+      "id": "kata",
+      "name": "Kata"
+    },
+    {
+      "id": "ne-waza",
+      "name": "Ne-waza"
+    },
+    {
+      "id": "tachi-waza",
+      "name": "Tachi-waza"
+    }
+  ]
+}

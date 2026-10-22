@@ -1,0 +1,35 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "version": 1,
+  "id": "muay-thai",
+  "name": "Muay Thai",
+  "rankSystems": [],
+  "programs": [
+    {
+      "id": "muay-thai-fundamentals",
+      "name": "Muay Thai Fundamentals"
+    },
+    {
+      "id": "muay-thai-all-levels",
+      "name": "Muay Thai All Levels"
+    }
+  ],
+  "classTags": [
+    {
+      "id": "pads",
+      "name": "Pad Work"
+    },
+    {
+      "id": "bag-work",
+      "name": "Bag Work"
+    },
+    {
+      "id": "clinch",
+      "name": "Clinch"
+    },
+    {
+      "id": "sparring",
+      "name": "Sparring"
+    }
+  ]
+}
