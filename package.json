@@ -10,6 +10,7 @@
   },
   "packageManager": "pnpm@10.34.7",
   "scripts": {
+    "compliance": "pnpm generate && node --test scripts/compliance/compliance.test.mjs && node scripts/compliance/cli.mjs",
     "check-types": "pnpm generate && tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/server/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
     "lint": "eslint . --max-warnings 0",
     "test": "pnpm generate && vitest run",

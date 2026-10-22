@@ -1,0 +1,72 @@
+[
+  {
+    "path": "fixture.ts",
+    "content": "export const absent = true;\n",
+    "allowed": false
+  },
+  {
+    "path": "fixture.ts",
+    "content": "// SPDX-License-Identifier: AGPL-3.0-only\nexport const present = true;\n",
+    "allowed": true
+  },
+  {
+    "path": "fixture.ts",
+    "content": "const identifier = '// SPDX-License-Identifier: AGPL-3.0-only';\n",
+    "allowed": false
+  },
+  {
+    "path": "fixture.sh",
+    "content": "#!/bin/sh\n# SPDX-License-Identifier: AGPL-3.0-only\nexit 0\n",
+    "allowed": true
+  },
+  {
+    "path": "fixture.css",
+    "content": "/* SPDX-License-Identifier: AGPL-3.0-only */\n",
+    "allowed": true
+  },
+  {
+    "path": "fixture.html",
+    "content": "<!-- SPDX-License-Identifier: AGPL-3.0-only -->\n",
+    "allowed": true
+  },
+  {
+    "path": "fixture.yml",
+    "content": "// SPDX-License-Identifier: AGPL-3.0-only\nname: broken\n",
+    "allowed": false
+  },
+  {
+    "path": "fixture.sql",
+    "content": "-- SPDX-License-Identifier: AGPL-3.0-only\nSELECT 1;\n",
+    "allowed": true
+  },
+  {
+    "path": "Dockerfile",
+    "content": "# SPDX-License-Identifier: AGPL-3.0-only\nFROM node\n",
+    "allowed": true
+  },
+  {
+    "path": "tsconfig.json",
+    "content": "// SPDX-License-Identifier: AGPL-3.0-only\n{}\n",
+    "allowed": true
+  },
+  {
+    "path": "cloud-init.yaml",
+    "content": "#cloud-config\n# SPDX-License-Identifier: AGPL-3.0-only\nruncmd: []\n",
+    "allowed": true
+  },
+  {
+    "path": "cloud-init.yaml",
+    "content": "#cloud-config\nruncmd: []\n",
+    "allowed": false
+  },
+  {
+    "path": "fixture.ts",
+    "content": "#cloud-config\n// SPDX-License-Identifier: AGPL-3.0-only\n",
+    "allowed": false
+  },
+  {
+    "path": "signing-key.asc",
+    "content": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n",
+    "allowed": true
+  }
+]

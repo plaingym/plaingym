@@ -1,0 +1,162 @@
+[
+  {
+    "name": "MIT dependency",
+    "pkg": {
+      "name": "permitted",
+      "version": "1.0.0",
+      "license": "MIT"
+    },
+    "allowed": true
+  },
+  {
+    "name": "nested AND/OR",
+    "pkg": {
+      "name": "compound",
+      "version": "1.0.0",
+      "license": "(MIT OR GPL-2.0-only) AND (Apache-2.0 OR BSD-3-Clause)"
+    },
+    "allowed": true
+  },
+  {
+    "name": "pako compound blocker",
+    "pkg": {
+      "name": "pako",
+      "version": "1.0.11",
+      "license": "(MIT AND Zlib)"
+    },
+    "allowed": false
+  },
+  {
+    "name": "denied license",
+    "pkg": {
+      "name": "forbidden",
+      "version": "1.0.0",
+      "license": "SSPL-1.0"
+    },
+    "allowed": false
+  },
+  {
+    "name": "AND precedence",
+    "pkg": {
+      "name": "compound",
+      "version": "1.0.0",
+      "license": "MIT OR GPL-2.0-only AND Zlib"
+    },
+    "allowed": true
+  },
+  {
+    "name": "WITH does not discard an exception",
+    "pkg": {
+      "name": "exception",
+      "version": "1.0.0",
+      "license": "MIT WITH Unapproved-exception"
+    },
+    "allowed": false
+  },
+  {
+    "name": "malformed expression",
+    "pkg": {
+      "name": "invalid",
+      "version": "1.0.0",
+      "license": "MIT OR (Apache-2.0"
+    },
+    "allowed": false
+  },
+  {
+    "name": "missing metadata",
+    "pkg": {
+      "name": "unknown",
+      "version": "1.0.0"
+    },
+    "allowed": false
+  },
+  {
+    "name": "CC BY build-time evidence",
+    "pkg": {
+      "name": "build-tool",
+      "version": "1.0.0",
+      "license": "CC-BY-4.0",
+      "buildTimeOnly": true,
+      "runtime": false,
+      "bundled": false
+    },
+    "allowed": true
+  },
+  {
+    "name": "CC BY missing evidence",
+    "pkg": {
+      "name": "build-tool",
+      "version": "1.0.0",
+      "license": "CC-BY-4.0",
+      "buildTimeOnly": true,
+      "runtime": false
+    },
+    "allowed": false
+  },
+  {
+    "name": "CC BY runtime dependency",
+    "pkg": {
+      "name": "build-tool",
+      "version": "1.0.0",
+      "license": "CC-BY-4.0",
+      "buildTimeOnly": true,
+      "runtime": true,
+      "bundled": false
+    },
+    "allowed": false
+  },
+  {
+    "name": "CC BY bundled dev dependency",
+    "pkg": {
+      "name": "build-tool",
+      "version": "1.0.0",
+      "license": "CC-BY-4.0",
+      "buildTimeOnly": true,
+      "runtime": false,
+      "bundled": true
+    },
+    "allowed": false
+  },
+  {
+    "name": "CC BY unreviewed scope",
+    "pkg": {
+      "name": "build-tool",
+      "version": "1.0.0",
+      "license": "CC-BY-4.0",
+      "runtime": false,
+      "bundled": false
+    },
+    "allowed": false
+  },
+  {
+    "name": "OFL font",
+    "pkg": {
+      "name": "font",
+      "version": "1.0.0",
+      "license": "OFL-1.1",
+      "kind": "font",
+      "path": "NotoSans-Regular.ttf"
+    },
+    "allowed": true
+  },
+  {
+    "name": "OFL code is blocked",
+    "pkg": {
+      "name": "code",
+      "version": "1.0.0",
+      "license": "OFL-1.1"
+    },
+    "allowed": false
+  },
+  {
+    "name": "OFL extension required",
+    "pkg": {
+      "name": "code",
+      "version": "1.0.0",
+      "license": "OFL-1.1",
+      "kind": "font",
+      "path": "font.js"
+    },
+    "allowed": false
+  }
+]

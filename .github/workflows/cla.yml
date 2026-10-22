@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Contributor License Agreement
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created, edited]
+permissions: {}
+# One writer for the shared ledger. Do not cancel an in-flight signature write.
+concurrency:
+  group: cla-signatures-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  cla:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+      issues: write
+      statuses: write
+    steps:
+      # This privileged job never checks out a ref, installs packages, or runs repository code.
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0; verified commit object
+        env:
+          # Optional comma-separated numeric GitHub IDs; admin/maintain collaborators are also exempt.
+          CLA_MAINTAINER_IDS: ${{ vars.CLA_MAINTAINER_IDS }}
+        with:
+          script: |
+            const { createHash } = require('node:crypto');
+            const { owner, repo } = context.repo;
+            const api = github.rest;
+            const phrase = 'I have read the CLA Document and I hereby sign the CLA';
+            const signatureBranch = 'cla-signatures';
+            const signaturePath = 'signatures/cla.json';
+            const statusContext = 'CLA';
+            const issueNumber = context.payload.pull_request?.number ?? context.payload.issue?.number;
+            if (!issueNumber) return;
+            if (context.eventName === 'issue_comment' && !context.payload.issue?.pull_request) return;
+            const { data: pr } = await api.pulls.get({ owner, repo, pull_number: issueNumber });
+            if (pr.state !== 'open' || pr.base.repo.full_name !== `${owner}/${repo}`) return;
+            const status = (state, description) => api.repos.createCommitStatus({
+              owner, repo, sha: pr.head.sha, state, context: statusContext, description,
+              target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
+            });
+            await status('pending', 'Checking contributor agreement');
+            try {
+              // Exemptions use authenticated GitHub identities, never a PR's branch or title.
+              const maintainerIds = (process.env.CLA_MAINTAINER_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+              if (maintainerIds.some((id) => !/^\d+$/.test(id))) throw new Error('CLA_MAINTAINER_IDS must contain numeric GitHub user IDs');
+              const dependencyBots = new Set(['dependabot[bot]', 'renovate[bot]']);
+              const permission = pr.user.type === 'User'
+                ? (await api.repos.getCollaboratorPermissionLevel({ owner, repo, username: pr.user.login })).data.permission
+                : 'none';
+              if (maintainerIds.includes(String(pr.user.id)) || ['admin', 'maintain'].includes(permission)
+                  || (pr.user.type === 'Bot' && dependencyBots.has(pr.user.login))) {
+                await status('success', 'Maintainer or approved dependency bot');
+                return;
+              }
+
+              const { data: repository } = await api.repos.get({ owner, repo });
+              const { data: defaultRef } = await api.git.getRef({ owner, repo, ref: `heads/${repository.default_branch}` });
+              const defaultSha = defaultRef.object.sha;
+              // Read the agreement from the trusted default branch, pinned to one commit.
+              const { data: agreement } = await api.repos.getContent({ owner, repo, path: 'CLA.md', ref: defaultSha });
+              if (Array.isArray(agreement) || agreement.type !== 'file' || agreement.encoding !== 'base64') throw new Error('Cannot read CLA.md');
+              const text = Buffer.from(agreement.content, 'base64').toString('utf8');
+              if (/\[TODO[^\]]*\]/i.test(text)) throw new Error('CLA.md has unresolved publication placeholders; a maintainer must complete it');
+              const version = /^Version\s+(\S+)/m.exec(text)?.[1];
+              if (!version) throw new Error('CLA.md must declare a version');
+              const hash = createHash('sha256').update(text).digest('hex');
+              const marker = `<!-- plaingym-cla:${hash} -->`;
+              const comments = await github.paginate(api.issues.listComments, { owner, repo, issue_number: issueNumber, per_page: 100 });
+              const isOurPrompt = (comment) => comment.user?.login === 'github-actions[bot]'
+                && comment.user?.type === 'Bot' && comment.body?.startsWith('<!-- plaingym-cla:');
+              let prompt = comments.find(isOurPrompt);
+
+              let stored;
+              try {
+                stored = (await api.repos.getContent({ owner, repo, path: signaturePath, ref: signatureBranch })).data;
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+              if (stored && (Array.isArray(stored) || stored.type !== 'file' || stored.encoding !== 'base64')) throw new Error('Invalid CLA signature store');
+              const ledger = stored ? JSON.parse(Buffer.from(stored.content, 'base64').toString('utf8')) : { schemaVersion: 1, signatures: [] };
+              if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.signatures)) throw new Error('Unsupported CLA signature store');
+              let signed = ledger.signatures.some((entry) => entry.userId === pr.user.id && entry.claSha256 === hash);
+              if (!signed && context.eventName === 'issue_comment') {
+                // Refetch the comment: payload strings are data and are never evaluated as code.
+                const { data: comment } = await api.issues.getComment({ owner, repo, comment_id: context.payload.comment.id });
+                if (comment.user.id === pr.user.id && comment.user.type === 'User' && comment.body.trim() === phrase
+                    && comment.issue_url === `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`
+                    && prompt?.body.startsWith(marker)
+                    && Date.parse(comment.updated_at) >= Date.parse(prompt.updated_at)) {
+                  ledger.signatures.push({
+                    userId: pr.user.id, login: pr.user.login, commentId: comment.id,
+                    signedAt: comment.updated_at, claVersion: version, claSha256: hash, claBlobSha: agreement.sha,
+                  });
+                  if (!stored) {
+                    // Bootstrap only our fixed signature branch; never use a PR-controlled ref.
+                    try {
+                      await api.git.getRef({ owner, repo, ref: `heads/${signatureBranch}` });
+                    } catch (error) {
+                      if (error.status !== 404) throw error;
+                      await api.git.createRef({ owner, repo, ref: `refs/heads/${signatureBranch}`, sha: defaultSha });
+                    }
+                  }
+                  await api.repos.createOrUpdateFileContents({
+                    owner, repo, path: signaturePath, branch: signatureBranch,
+                    message: `docs: record CLA signature for user ${pr.user.id}`,
+                    content: Buffer.from(JSON.stringify(ledger, null, 2) + '\n').toString('base64'),
+                    ...(stored ? { sha: stored.sha } : {}),
+                  });
+                  signed = true;
+                }
+              }
+              if (!signed) {
+                const body = `${marker}\n@${pr.user.login}, please read [Contributor License Agreement v${version}](${context.serverUrl}/${owner}/${repo}/blob/${defaultSha}/CLA.md).\n\nReply with this exact comment to sign:\n\n> ${phrase}\n\nYou keep your copyright. Your signature records this agreement's SHA-256: \`${hash}\`.`;
+                if (!prompt) prompt = (await api.issues.createComment({ owner, repo, issue_number: issueNumber, body })).data;
+                else if (prompt.body !== body) await api.issues.updateComment({ owner, repo, comment_id: prompt.id, body });
+                await status('failure', 'CLA signature required; see the signing comment');
+                core.setFailed('The pull request author must sign CLA.md');
+              } else {
+                await status('success', 'Contributor agreement signed');
+              }
+            } catch (error) {
+              await status('failure', 'CLA check needs maintainer attention');
+              core.setFailed(error.message);
+            }

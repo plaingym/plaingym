@@ -1,0 +1,34 @@
+[
+  {
+    "version": "0.45.4",
+    "upstream": "https://raw.githubusercontent.com/drizzle-team/drizzle-orm/4f11155bd6e72462225af12771befb0b81a56e77/LICENSE",
+    "name": "drizzle-orm",
+    "sha256": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a",
+    "path": "scripts/compliance/notices/drizzle-orm-0.45.4.txt",
+    "license": "Apache-2.0"
+  },
+  {
+    "version": "3.4.9",
+    "upstream": "https://raw.githubusercontent.com/porsager/postgres/a9bfd19fc1a620f26d8ad447d40092895052f73c/UNLICENSE",
+    "name": "postgres",
+    "sha256": "b5065838cbac452dfc855ba6e6e031481ad2c68406f70d21ead9321374653e6c",
+    "path": "scripts/compliance/notices/postgres-3.4.9.txt",
+    "license": "Unlicense"
+  },
+  {
+    "name": "@hono/zod-openapi",
+    "version": "1.6.3",
+    "license": "MIT",
+    "upstream": "https://raw.githubusercontent.com/honojs/middleware/bc7d9e67119f870b5275569b371676663c74c976/packages/zod-openapi/package.json",
+    "sha256": "18a7206e3a65be898e6d9c896c480aa16db019f71733c71b2a31d67599a880c0",
+    "path": "scripts/compliance/notices/hono-zod-openapi-1.6.3.txt"
+  },
+  {
+    "name": "@hono/zod-validator",
+    "version": "0.9.1",
+    "license": "MIT",
+    "upstream": "https://raw.githubusercontent.com/honojs/middleware/8de0f1ea32b76d40df0ec4a06ed5af2e100ccbfd/packages/zod-validator/package.json",
+    "sha256": "b6238aea7fa47274869a6824456bddafa9597e344f37fa18710b38660fc83150",
+    "path": "scripts/compliance/notices/hono-zod-validator-0.9.1.txt"
+  }
+]

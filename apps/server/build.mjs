@@ -12,7 +12,7 @@ export async function buildServer(
   entryPoint = new URL('./src/index.ts', import.meta.url),
 ) {
   await mkdir(outputDirectory, { recursive: true });
-  await build({
+  const result = await build({
     entryPoints: [fileURLToPath(entryPoint)],
     outfile: fileURLToPath(new URL('./server.mjs', outputDirectory)),
     bundle: true,
@@ -21,6 +21,7 @@ export async function buildServer(
     target: 'node24',
     sourcemap: true,
     legalComments: 'eof',
+    metafile: true,
     banner: {
       js: [
         '// SPDX-License-Identifier: AGPL-3.0-only',
@@ -32,6 +33,7 @@ export async function buildServer(
   await cp(new URL('./src/assets/', import.meta.url), new URL('./assets/', outputDirectory), {
     recursive: true,
   });
+  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
