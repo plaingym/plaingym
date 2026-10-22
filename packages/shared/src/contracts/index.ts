@@ -10,7 +10,7 @@ export * from './schedule.js';
 export * from './bookings.js';
 export * from './attendance.js';
 export * from './kiosk.js';
-// billing: export * from './billing.js';
+export * from './billing.js';
 // waivers: export * from './waivers.js';
 // portal: export * from './portal.js';
 // public: export * from './public.js';
