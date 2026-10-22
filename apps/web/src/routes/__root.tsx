@@ -2,7 +2,8 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { t } from '../lib/i18n.js';
-export function SourceFooter({ sourceUrl = __SOURCE_URL__ }: { sourceUrl?: string }) {
+// `/source` redirects to the running install's SOURCE_URL, so a modified install can change it at runtime.
+export function SourceFooter({ sourceUrl = '/source' }: { sourceUrl?: string }) {
   return <footer className="border-t border-border px-6 py-4 text-center text-sm text-muted-foreground">
     <a className="underline underline-offset-4" href={sourceUrl}>{t('shell/shell:source')}</a>
   </footer>;

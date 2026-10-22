@@ -214,6 +214,19 @@ describe('worker leases, caps, and lifecycle', () => {
     expect((await rows()).map((r) => r.status).sort()).toEqual(['pending', 'succeeded']);
     const again = q.start(); await again.stop();
   });
+  it('claims nothing while paused and wraps each execution (restore gate)', async () => {
+    const q = queue(); let paused = true; const wrapped: string[] = [];
+    q.handle('work', async () => { wrapped.push('run'); });
+    const { jobId: id } = await q.enqueue('work', {}, options);
+    const worker = q.start({ pollMs: 5, paused: async () => paused,
+      around: async (execute) => { wrapped.push('enter'); try { await execute(); } finally { wrapped.push('leave'); } } });
+    await delay(40);
+    expect((await row(id)).status).toBe('pending');
+    paused = false;
+    await until(async () => (await row(id)).status === 'succeeded');
+    await worker.stop();
+    expect(wrapped).toEqual(['enter', 'run', 'leave']);
+  });
 });
 
 describe('timezone scheduling and health statistics', () => {

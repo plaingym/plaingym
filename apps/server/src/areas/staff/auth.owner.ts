@@ -8,6 +8,7 @@ import { createAccountService, type AccountService, type ProvisionAccount } from
 import { authConfig } from '../../infra/auth/config.js';
 import { createAuthService } from '../../infra/auth/service.js';
 import { createAuthEmailSender } from '../../infra/auth/delivery.js';
+import { smtpFromEnvironment, type SmtpResolver } from '../settings/smtp.js';
 
 export interface OwnerBootstrap {
   gymId: string;
@@ -48,11 +49,14 @@ export function createOwnerService(options: {
   };
 }
 
-export function createDefaultOwnerService(): ProvisionOwner {
+/** Without a resolver, only the install's `SMTP_*` settings are used (a new gym has none of its own). */
+export function createDefaultOwnerService(smtp?: SmtpResolver): ProvisionOwner {
   const config = authConfig();
-  const auth = createAuthService({ config, ...(config.smtpConfigured ? { sendMagicLink: createAuthEmailSender() } : {}) });
+  const fallback = smtpFromEnvironment();
+  const smtpFor = smtp ? (gymId: string) => smtp.config(gymId) : async () => fallback;
+  const auth = createAuthService({ config, sendMagicLink: createAuthEmailSender(smtpFor) });
   return createOwnerService({ accounts: createAccountService(config), async sendMagicLink(input) {
-    if (!config.smtpConfigured) throw new AppError('unavailable', 'Owner email delivery requires SMTP');
-    await auth.bind({ gymId: input.gymId, origin: input.origin, clientIp: '127.0.0.1' }).sendLoginLink(input.email);
+    if (!await smtpFor(input.gymId)) throw new AppError('unavailable', 'Owner email delivery requires SMTP');
+    await auth.bind({ gymId: input.gymId, origin: input.origin, clientIp: '127.0.0.1', smtpConfigured: true }).sendLoginLink(input.email);
   } });
 }

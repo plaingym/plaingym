@@ -8,7 +8,7 @@ import { systemDatabase, validateUuid, type Database } from '@plaingym/db/client
 import { authUser, authSession, authAccount, authVerification, authRateLimit } from '@plaingym/db';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { Auth, Session } from './index.js';
-import type { AuthConfig } from './config.js';
+import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
 
 export interface ResolvedAuthGym {
@@ -17,6 +17,8 @@ export interface ResolvedAuthGym {
   readonly origin: string;
   /** Socket address or an address validated by the trusted-proxy integration. */
   readonly clientIp: string;
+  /** Whether this gym can send email (its own SMTP or the install's). Omitted: the install's setting. */
+  readonly smtpConfigured?: boolean;
 }
 export interface GoogleAuthExtension {
   readonly plugins?: BetterAuthPlugin[];
@@ -47,12 +49,15 @@ export function createAuthService(options: AuthServiceOptions) {
       const origin = new URL(gym.origin);
       if (origin.origin !== gym.origin || !['https:', 'http:'].includes(origin.protocol) || (config.production && origin.protocol !== 'https:')) throw new Error('Expected a canonical auth origin');
       if (!isIP(gym.clientIp)) throw new Error('Expected a trusted client IP');
+      const smtpConfigured = gym.smtpConfigured ?? config.smtpConfigured;
+      const passwordEnabled = gym.smtpConfigured === undefined ? config.passwordEnabled : passwordLogin(config, smtpConfigured);
+      const magicLinkEnabled = Boolean(options.sendMagicLink) && (gym.smtpConfigured ?? true);
       const auth = betterAuth({
         secret: config.secret, baseURL: origin.origin, basePath: '/api/auth', trustedOrigins: [origin.origin],
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
         }, transaction: true }),
-        emailAndPassword: { enabled: config.passwordEnabled, disableSignUp: true, minPasswordLength: 12, maxPasswordLength: 128, password: passwordAdapter },
+        emailAndPassword: { enabled: passwordEnabled, disableSignUp: true, minPasswordLength: 12, maxPasswordLength: 128, password: passwordAdapter },
         session: { additionalFields: { gymId: { type: 'string', required: true, input: false } }, cookieCache: { enabled: false } },
         account: { accountLinking: { enabled: true, trustedProviders: ['google'] } },
         ...(options.google ? { socialProviders: options.google.socialProviders } : {}),
@@ -120,8 +125,8 @@ export function createAuthService(options: AuthServiceOptions) {
           const key = `${request.method} ${path}`;
           const googleEndpoint = Boolean(options.google && (key === 'POST /sign-in/social' || key === 'GET /callback/google'));
           if (!authEndpoints.some((endpoint) => endpoint === key) && !googleEndpoint) return new Response(null, { status: 404 });
-          if (path === '/sign-in/email' && !config.passwordEnabled) return new Response(null, { status: 404 });
-          if ((path === '/sign-in/magic-link' || path === '/magic-link/verify') && !options.sendMagicLink) return new Response(null, { status: 404 });
+          if (path === '/sign-in/email' && !passwordEnabled) return new Response(null, { status: 404 });
+          if ((path === '/sign-in/magic-link' || path === '/magic-link/verify') && !magicLinkEnabled) return new Response(null, { status: 404 });
           const session = await readSession(request);
           if (session && session.session.gymId !== gym.gymId) return Response.json({ error: 'session_gym_mismatch' }, { status: 403 });
           if (request.method === 'POST') {

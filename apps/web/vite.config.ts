@@ -29,7 +29,7 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       host: '127.0.0.1',
-      proxy: { '/healthz': `http://127.0.0.1:${env.PORT || '3000'}`, '/api': `http://127.0.0.1:${env.PORT || '3000'}` },
+      proxy: Object.fromEntries(['/healthz', '/api', '/source'].map((path) => [path, `http://127.0.0.1:${env.PORT || '3000'}`])),
     },
     define: {
       __SOURCE_URL__: JSON.stringify(sourceUrl),

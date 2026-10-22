@@ -8,7 +8,7 @@ import type { BackupService } from './backups.js';
 
 /** Install-wide schedules use explicit system jobs, never a gym registry entry. */
 export const jobs: readonly JobRegistration[] = [];
-export function registerBackupJobs(queue: PostgresJobs, backup: BackupService,
+export function registerBackupJobs(queue: PostgresJobs, backup: Pick<BackupService, 'snapshot'>,
   clock: Clock, isRestoring: () => Promise<boolean> = async () => false) {
   const name = 'health.backup';
   queue.handleSystem(name, async (payload) => {

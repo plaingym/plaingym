@@ -32,6 +32,10 @@ export interface WorkerOptions {
   readonly concurrency?: number;
   readonly pollMs?: number;
   readonly onError?: (error: unknown) => void;
+  /** Checked before each poll, e.g. while a restore holds the install. */
+  readonly paused?: () => Promise<boolean>;
+  /** Wraps each job execution, e.g. in a restore-gate activity lease. */
+  readonly around?: (execute: () => Promise<void>) => Promise<void>;
 }
 export interface JobWorker { stop(): Promise<void> }
 function positive(value: number, name: string): number {
@@ -227,11 +231,14 @@ export class PostgresJobs implements Jobs {
     const loop = (async () => {
       while (!abort.signal.aborted) {
         try {
-          await this.scheduleDue();
-          while (!abort.signal.aborted && running.size < concurrency) {
+          // A paused worker claims and schedules nothing; running jobs finish normally.
+          const paused = options.paused ? await options.paused() : false;
+          if (!paused) await this.scheduleDue();
+          while (!paused && !abort.signal.aborted && running.size < concurrency) {
             const row = await this.#claim();
             if (!row) break;
-            const task = this.#execute(row).catch(report).finally(() => { running.delete(task); });
+            const execute = () => this.#execute(row);
+            const task = (options.around ? options.around(execute) : execute()).catch(report).finally(() => { running.delete(task); });
             running.add(task);
           }
         } catch (error) { report(error); }

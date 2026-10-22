@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { domainToASCII } from 'node:url';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { forSystem, gymDomains, gyms } from '@plaingym/db';
 import type { MiddlewareHandler } from 'hono';
 import { enabledModules } from './modules.js';
@@ -41,3 +41,21 @@ export function createTenantResolver(options: { mode?: TenancyMode; system?: typ
   };
 }
 export const resolveGym = createTenantResolver();
+
+/** Active gyms for per-gym scheduled jobs. */
+export async function listGyms(system: typeof forSystem = forSystem): Promise<readonly { gymId: string; timezone: string }[]> {
+  const rows = await system((tx) => tx.select({ id: gyms.id, timezone: gyms.timezone }).from(gyms).where(eq(gyms.status, 'active')));
+  return rows.map((row) => ({ gymId: row.id, timezone: row.timezone }));
+}
+/** The install's one gym in `single` mode, for the CLI. */
+export async function singleGymId(system: typeof forSystem = forSystem): Promise<string> {
+  const rows = await system((tx) => tx.select({ id: gyms.id }).from(gyms).limit(2));
+  if (rows.length !== 1) throw new Error('Expected exactly one gym in this install');
+  return rows[0]!.id;
+}
+/** A gym's default hostname from `gym_domains`, for links sent outside a request (multi mode). */
+export async function defaultHostname(gymId: string, system: typeof forSystem = forSystem): Promise<string | null> {
+  const [row] = await system((tx) => tx.select({ hostname: gymDomains.hostname }).from(gymDomains)
+    .where(and(eq(gymDomains.gymId, gymId), eq(gymDomains.kind, 'default'))).limit(1));
+  return row?.hostname ?? null;
+}

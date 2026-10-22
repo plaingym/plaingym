@@ -7,10 +7,19 @@ import { route } from '../../core/registry.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createSettingsService } from '../settings/settings.js';
 
+type LoginMethods = (gymId: string) => ShellBootstrap['login'] | Promise<ShellBootstrap['login']>;
+let configuredLogin: LoginMethods | undefined;
+/** Runtime wiring supplies each gym's login methods; without it, the install's settings apply. */
+export function configureLoginMethods(login: LoginMethods): void { configuredLogin = login; }
+function installLogin(): ShellBootstrap['login'] {
+  const config = authConfig();
+  return { password: config.passwordEnabled, magicLink: config.smtpConfigured };
+}
+
 export function createAuthBootstrapRoutes(options: {
   scope?: typeof forGym;
   settings?: Pick<ReturnType<typeof createSettingsService>, 'get'>;
-  login?: () => ShellBootstrap['login'];
+  login?: LoginMethods;
 } = {}) {
   const scope = options.scope ?? forGym;
   const settings = options.settings ?? createSettingsService();
@@ -31,8 +40,7 @@ export function createAuthBootstrapRoutes(options: {
         return { userId: principal.userId, roles: roles.flatMap(({ role }) => validRoles.filter((value) => value === role)), member: links.length > 0 };
       });
     }
-    const config = options.login ? undefined : authConfig();
-    const login = options.login?.() ?? { password: config!.passwordEnabled, magicLink: config!.smtpConfigured };
+    const login = await (options.login ?? configuredLogin ?? installLogin)(gym.gymId);
     context.header('Cache-Control', 'no-store');
     context.header('Vary', 'Cookie');
     return context.json({ data: { gym: { id: gym.gymId, name: details.name, enabledModules: [...gym.enabledModules].sort() }, session, login } }, 200);

@@ -52,3 +52,19 @@ The install endpoint schemas are local `TODO(CCR)` declarations because the
 shared contracts are frozen and currently omit these endpoints. All four
 endpoints explicitly declare public access with the same `route` helper used
 by area routes, and appear in the generated OpenAPI document.
+
+## Production composition
+
+`core/runtime.ts` builds the running server: `startRuntime()` checks
+`APP_ENCRYPTION_KEY`, `AUTH_SECRET`, and the public origin, initializes the
+database, and passes the real tenant resolver, session middleware, `authorize`,
+and restore gate to `createApp`. It also starts the jobs worker (paused while a
+restore holds the install, with each job inside a restore-gate lease), schedules
+backups once they are configured, and configures signed-link email and the
+login methods each gym offers. `index.ts` serves that app, or runs a `gym-app`
+command when started with arguments (`deploy/container/gym-app.sh`).
+
+The public origin is `PUBLIC_ORIGIN`, or `https://` plus `GYM_HOSTNAME`, in
+single mode; in multi mode it is the hostname the tenant resolver matched.
+`TRUST_PROXY=true` (set in Compose, where only Caddy reaches the app) makes the
+last `X-Forwarded-For` entry the client address for rate limits and login.

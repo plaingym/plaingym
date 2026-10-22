@@ -6,10 +6,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { randomBytes } from 'node:crypto';
 import { expect, it } from 'vitest';
+import { useTestDatabase } from '@plaingym/db/testing/database';
 import { buildServer } from '../build.mjs';
 import { app } from '../src/app.js';
 import { regularFontUrl } from '../src/assets.js';
+
+const database = useTestDatabase();
+const runtimeEnv = () => ({ ...process.env, TENANCY: 'single', DATABASE_URL: database.appUrl,
+  AUTH_SECRET: randomBytes(32).toString('hex'), APP_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+  PUBLIC_ORIGIN: 'http://127.0.0.1', SOURCE_URL: 'https://example.org/source/v1', SMTP_HOST: '', NODE_ENV: 'test' });
 
 it('serves the explicitly public health probe', async () => {
   const response = await app.request('/healthz');
@@ -28,7 +35,7 @@ it('boots a relocated bundle with its font and notice, independently of the work
       .toContain('SIL OPEN FONT LICENSE');
     const child = spawn(process.execPath, [join(directory, 'server.mjs')], {
       cwd: tmpdir(),
-      env: { ...process.env, PORT: '0', HOST: '127.0.0.1' },
+      env: { ...runtimeEnv(), PORT: '0', HOST: '127.0.0.1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
@@ -51,6 +58,16 @@ it('boots a relocated bundle with its font and notice, independently of the work
       const response = await fetch(address + '/healthz');
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ status: 'ok' });
+      const source = await fetch(address + '/source', { redirect: 'manual' });
+      expect(source.status).toBe(302);
+      expect(source.headers.get('location')).toBe('https://example.org/source/v1');
+      // A fresh install has no gym yet: gym routes stay closed until setup creates one.
+      expect((await fetch(address + '/api/auth/bootstrap')).status).toBe(404);
+      // With arguments the same bundle runs `gym-app` commands instead of serving.
+      const cli = await promisify(execFile)(process.execPath, [join(directory, 'server.mjs'), 'unknown-command'], {
+        cwd: tmpdir(), env: runtimeEnv(), timeout: 10_000, windowsHide: true,
+      }).then(() => ({ code: 0, stderr: '' }), (error: { code?: number; stderr?: string }) => ({ code: error.code, stderr: error.stderr ?? '' }));
+      expect(cli).toEqual({ code: 2, stderr: expect.stringContaining('Unknown command') });
     } finally {
       if (child.exitCode === null && child.signalCode === null) {
         const exited = once(child, 'exit');

@@ -12,16 +12,21 @@ export function sessionMiddleware(options: {
   resolve(context: Context<RequestEnvironment>): ResolvedAuthGym;
   /** A member surface may supply its household-scoped principal loader. */
   principal?: (userId: string, context: Context<RequestEnvironment>) => Promise<Principal>;
+  /** Per-gym email availability, consulted only for login endpoints (password `auto` and magic links). */
+  smtpConfigured?: (gymId: string) => Promise<boolean>;
 }): MiddlewareHandler<RequestEnvironment> {
   return async (context, next) => {
     const current = context.get('context');
     if (!current?.gym) throw new AppError('not_found', 'Gym not found');
     const resolved = options.resolve(context);
     if (resolved.gymId !== current.gym.gymId) throw new AppError('forbidden', 'Authentication gym mismatch');
-    const auth = options.auth.bind(resolved);
     const authPath = context.req.path !== shellContracts.bootstrap.path
       && (context.req.path === '/api/auth' || context.req.path.startsWith('/api/auth/'));
-    if (authPath) return auth.handler(context.req.raw);
+    if (authPath) {
+      const smtpConfigured = options.smtpConfigured ? await options.smtpConfigured(resolved.gymId) : resolved.smtpConfigured;
+      return options.auth.bind({ ...resolved, ...(smtpConfigured === undefined ? {} : { smtpConfigured }) }).handler(context.req.raw);
+    }
+    const auth = options.auth.bind(resolved);
     let session;
     try { session = await auth.checkedSession(context.req.raw); }
     catch (error) {

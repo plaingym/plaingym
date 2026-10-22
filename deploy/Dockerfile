@@ -31,6 +31,7 @@ COPY --from=build /build/LICENSE /build/THIRD_PARTY_LICENSES ./licenses/
 COPY deploy/container/ ./deploy/
 # Add the Node.js runtime and Debian package notices to the application notices.
 RUN chmod 0555 /app/deploy/*.sh \
+ && ln -s /app/deploy/gym-app.sh /usr/local/bin/gym-app \
  && mkdir -p /var/lib/plaingym/uploads /var/lib/plaingym/staging \
  && chown -R node:node /var/lib/plaingym \
  && { cat /app/licenses/LICENSE; cat /usr/local/LICENSE; \

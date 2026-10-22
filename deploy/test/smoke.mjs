@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import https from 'node:https';
@@ -65,6 +65,7 @@ try {
     'test -s /app/packs/muay-thai.json',
     'test -s /app/packs/functional-fitness.json',
     'test -s /app/THIRD_PARTY_LICENSES',
+    'test "$(command -v gym-app)" = /usr/local/bin/gym-app',
     'test -z "$(command -v docker)"',
     'touch /var/lib/plaingym/staging/test && rm /var/lib/plaingym/staging/test',
     'pg_dump --version | grep "18.6"',
@@ -108,11 +109,18 @@ try {
   assert.equal(setup.status, 200);
   assert.match(setup.headers['content-type'], /text\/html/);
   assert.ok(setup.body.includes('/assets/'));
+  const source = await get(https, httpsPort, ca, '/source');
+  assert.equal(source.status, 302);
+  assert.equal(source.headers.location, 'https://github.com/plaingym/plaingym');
+  // gym-app dispatches CLI commands through the same bundle inside the container.
+  const cli = spawnSync('docker', [...prefix, 'exec', '-T', 'app', 'gym-app', 'unknown-command'], { encoding: 'utf8', env });
+  assert.equal(cli.status, 2);
+  assert.match(cli.stderr, /Unknown command/);
   // Reuse initialized volumes: the role bootstrap must not run a second time.
   compose(['restart', 'postgres', 'app']);
   compose(['up', '-d', '--wait', '--wait-timeout', '90']);
   compose(['exec', '-T', 'app', 'node', '/app/deploy/healthcheck.mjs']);
-  console.log('PASS: HTTPS, redirect, roles, boot migrations, forced RLS, image assets, first-boot shell and pack catalog, hardening, memory caps, restart.');
+  console.log('PASS: HTTPS, redirect, roles, boot migrations, forced RLS, image assets, first-boot shell and pack catalog, source link, gym-app CLI, hardening, memory caps, restart.');
 } catch (error) {
   try { console.error(compose(['logs', '--no-color', '--tail', '30', 'app'])); }
   catch { /* Preserve the original failure if diagnostics are unavailable. */ }

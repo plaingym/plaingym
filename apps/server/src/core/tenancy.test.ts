@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { gyms, gymDomains, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { createTenantResolver, normalizeHostname, tenancyMode } from './tenancy.js';
+import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, singleGymId, tenancyMode } from './tenancy.js';
 import type { RequestEnvironment } from './context.js';
 const database = useTestDatabase(), factory = createFactories(database);
 const gymA = uuidv7(), gymB = uuidv7();
@@ -53,5 +53,23 @@ describe('tenant resolution', () => {
   it('normalizes IDN hosts and validates modes', () => {
     expect(normalizeHostname('BÜCHER.example:443')).toBe('xn--bcher-kva.example');
     expect(tenancyMode('single')).toBe('single'); expect(() => tenancyMode('typo')).toThrow('TENANCY');
+  });
+});
+describe('runtime tenancy helpers', () => {
+  it('lists active gyms with their timezones for scheduled jobs', async () => {
+    // Earlier tests remove the shared fixtures, so this one creates its own gyms.
+    const active = uuidv7(), suspended = uuidv7();
+    await factory('gyms', active, { timezone: 'Europe/Paris' }); await factory('gyms', suspended, { status: 'suspended' });
+    const listed = await listGyms(database.forSystem);
+    expect(listed).toContainEqual({ gymId: active, timezone: 'Europe/Paris' });
+    expect(listed.some((gym) => gym.gymId === suspended)).toBe(false);
+  });
+  it('finds a gym\'s default hostname and refuses an ambiguous single gym', async () => {
+    const gymC = uuidv7(); await factory('gyms', gymC);
+    await factory('gymDomains', gymC, { hostname: 'custom.example.test', kind: 'custom' });
+    await factory('gymDomains', gymC, { hostname: 'c.example.test', kind: 'default' });
+    expect(await defaultHostname(gymC, database.forSystem)).toBe('c.example.test');
+    expect(await defaultHostname(uuidv7(), database.forSystem)).toBeNull();
+    await expect(singleGymId(database.forSystem)).rejects.toThrow('exactly one gym');
   });
 });

@@ -5,7 +5,8 @@ import { areaContributions } from './core/registry-areas.js';
 
 export { createApp, type AppOptions } from './core/app.js';
 
-// Production tenancy and session wiring must be supplied before gym routes open.
+// A closed app for in-process tests: no gym resolves and every route is denied. The
+// production server is composed in core/runtime.ts.
 export const app = createApp({
   contributions: areaContributions,
   resolveGym: () => { throw new AppError('not_found', 'Gym not found.'); },

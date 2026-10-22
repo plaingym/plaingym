@@ -150,6 +150,21 @@ describe('Better Auth HTTP containment', () => {
     expect((await noPassword.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(404);
     expect(() => f.service.bind({ gymId: f.gymId, origin: 'https://evil.test/path', clientIp: f.clientIp })).toThrow('canonical');
   });
+  it('decides password and magic-link login per gym under AUTH_PASSWORD_LOGIN=auto', async () => {
+    const f = await fixture();
+    const auto = authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', AUTH_PASSWORD_LOGIN: 'auto' }, false);
+    const service = createAuthService({ config: auto, database: () => database.system.db, sendMagicLink: async (data) => { f.delivered.push(data); } });
+    const withEmail = service.bind({ gymId: f.gymId, origin: f.origin, clientIp: f.clientIp, smtpConfigured: true });
+    expect((await withEmail.handler(f.request('/sign-in/email', { email: f.user.email, password }))).status).toBe(404);
+    expect((await withEmail.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(200);
+    expect(f.delivered.at(-1)).toMatchObject({ email: f.user.email.toLowerCase(), gymId: f.gymId });
+    const withoutEmail = service.bind({ gymId: f.gymId, origin: f.origin, clientIp: `198.51.100.${ip++}`, smtpConfigured: false });
+    expect((await withoutEmail.handler(f.request('/sign-in/magic-link', { email: f.user.email }))).status).toBe(404);
+    expect((await withoutEmail.handler(f.request('/sign-in/email', { email: f.user.email, password }))).status).toBe(200);
+    const off = createAuthService({ config: authConfig({ AUTH_SECRET: secret, NODE_ENV: 'production', AUTH_PASSWORD_LOGIN: 'off' }, false),
+      database: () => database.system.db }).bind({ gymId: f.gymId, origin: f.origin, clientIp: f.clientIp, smtpConfigured: false });
+    expect((await off.handler(f.request('/sign-in/email', { email: f.user.email, password }))).status).toBe(404);
+  });
   it('persists IP+path limits across instances and cannot bypass them with spoofed headers', async () => {
     const f = await fixture();
     const make = () => createAuthService({ config, database: () => database.system.db, rateLimit: { window: 60, max: 2 } }).bind({ gymId: f.gymId, origin: f.origin, clientIp: f.clientIp });

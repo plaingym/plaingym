@@ -64,6 +64,17 @@ services:
       PORT: "3000"
       NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=256}
       TENANCY: single
+      # Canonical origin for login links and CSRF checks; Caddy serves this hostname.
+      GYM_HOSTNAME: ${GYM_HOSTNAME:?required}
+      # Only Caddy can reach the app, so its X-Forwarded-For entry is the client address.
+      TRUST_PROXY: "true"
+      # Optional install-wide email; a gym's own SMTP settings from setup take precedence.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
       SOURCE_URL: ${SOURCE_URL:-https://github.com/plaingym/plaingym}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       AUTH_SECRET: ${AUTH_SECRET:?required}

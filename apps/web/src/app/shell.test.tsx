@@ -33,7 +33,7 @@ describe('login', () => {
     start(services());
     expect(await screen.findByRole('heading', { name: 'Sign in to your gym' })).toBeDefined();
     expect(screen.getByText('Training Academy')).toBeDefined();
-    expect(screen.getByRole('link', { name: 'Source code' }).getAttribute('href')).toBe('https://example.org/source/v1');
+    expect(screen.getByRole('link', { name: 'Source code' }).getAttribute('href')).toBe('/source');
   });
   it('signs in with a password, reloads the principal and sends staff to admin', async () => {
     const service = services();
@@ -166,7 +166,7 @@ describe('admin shell', () => {
 describe('root fallbacks', () => {
   it('keeps the source link in the error boundary', () => {
     const reset = vi.fn(); render(<RootError reset={reset} />);
-    expect(screen.getByRole('link', { name: 'Source code' }).getAttribute('href')).toBe('https://example.org/source/v1');
+    expect(screen.getByRole('link', { name: 'Source code' }).getAttribute('href')).toBe('/source');
     fireEvent.click(screen.getByRole('button', { name: 'Try again' })); expect(reset).toHaveBeenCalledOnce();
   });
   it('supports a source override', () => {

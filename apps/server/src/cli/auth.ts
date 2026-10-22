@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { authConfig } from '../infra/auth/config.js';
+import { authConfig, passwordLogin } from '../infra/auth/config.js';
 import { createAccountService, type AccountService } from '../infra/auth/accounts.js';
 import { assertOwnerRecovery } from '../areas/staff/auth.reset.js';
 import { clock } from '../core/clock.js';
@@ -12,6 +12,8 @@ export interface AuthCliOptions {
   resolveGymId(): Promise<string>;
   readPassword?: (io: CommandIO) => Promise<string>;
   accounts?: AccountService;
+  /** Per-gym email availability; password login under `auto` is off when the gym can send email. */
+  smtpConfigured?(gymId: string): Promise<boolean>;
 }
 async function readPassword(io: CommandIO) {
   // Suppress readline's echo. No password appears in argv, environment, logs or shell history.
@@ -38,6 +40,8 @@ export function createAuthCommands(options: () => AuthCliOptions) : readonly Com
       const user = await accounts.findUserByEmail(args[1]);
       if (!user) throw new Error('Owner account not found');
       const gymId = await dependencies.resolveGymId();
+      if (dependencies.smtpConfigured && !passwordLogin(config, await dependencies.smtpConfigured(gymId)))
+        throw new Error('Password login is off for this gym; sign in with an email link instead');
       const newPassword = await (dependencies.readPassword ?? readPassword)(io);
       await accounts.resetPassword({ gymId, userId: user.id, newPassword, clock, authorize: (tx) => assertOwnerRecovery(tx, gymId, user.id) });
       io.stdout('Password reset. All sessions ended.');
