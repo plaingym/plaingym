@@ -2,6 +2,7 @@
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "version": 1,
   "id": "muay-thai",
+  "summary": "Muay Thai programs and class tags without a prescribed ranking system.",
   "name": "Muay Thai",
   "rankSystems": [],
   "programs": [

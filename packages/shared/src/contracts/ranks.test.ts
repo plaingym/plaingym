@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { programs, ranks, rankSystems, memberRanks, installedPacks } from '../../../db/src/schema/index.js';
 import {
   ranksContracts, programSchema, rankSchema, rankSystemSchema, promotionSchema,
-  updateProgramRequestSchema, updateRankRequestSchema, updateRankSystemRequestSchema,
+  createRankRequestSchema, updateProgramRequestSchema, updateRankRequestSchema, updateRankSystemRequestSchema,
   bulkPromoteRequestSchema, promotionEligibilitySchema, applyContentPackRequestSchema,
   programListQuerySchema, type Program, type Rank, type RankSystem, type Promotion, type InstalledPack,
 } from './index.js';
@@ -14,7 +14,7 @@ const otherId = '019a08bf-1234-7000-8000-000000000002';
 const now = '2026-10-21T20:00:00Z';
 const base = { id, gymId: id, createdAt: now, revision: 1 };
 const program = { ...base, name: 'Adults', rankSystemId: id, active: true };
-const rank = { ...base, rankSystemId: id, name: 'Level one', position: 0, subRanks: [], criteria: [] };
+const rank = { ...base, rankSystemId: id, name: 'Level one', position: 0, color: null, subRanks: [], criteria: [] };
 const appendOnlyPromotion = { id, gymId: id, createdAt: now, memberId: id, programId: id, rankId: id, rankSystemId: id,
   subRank: 0, promotedAt: now, promotedBy: null, notes: null };
 const promotion = { ...appendOnlyPromotion, revision: 1 };
@@ -23,6 +23,18 @@ const promotion = { ...appendOnlyPromotion, revision: 1 };
 type WireRow<T extends { createdAt: Date }> = Omit<T, 'createdAt'> & { createdAt: string };
 
 describe('rank and promotion contracts', () => {
+  it('supports nullable six-digit rank colors in reads, creation and revision-guarded updates', () => {
+    for (const color of [null, '#000000', '#aBcDeF']) {
+      expect(rankSchema.parse({ ...rank, color }).color).toBe(color);
+      expect(createRankRequestSchema.parse({ rankSystemId: id, name: 'Rank', position: 0, subRanks: [], criteria: [], color }).color).toBe(color);
+      expect(updateRankRequestSchema.parse({ color, revision: 1 })).toEqual({ color, revision: 1 });
+    }
+    expect(createRankRequestSchema.safeParse({ rankSystemId: id, name: 'Rank', position: 0, subRanks: [], criteria: [] }).success).toBe(true);
+    for (const color of ['red', '#abc', '#12345678', '#gg0000', '123456']) {
+      expect(rankSchema.safeParse({ ...rank, color }).success).toBe(false);
+      expect(updateRankRequestSchema.safeParse({ color, revision: 1 }).success).toBe(false);
+    }
+  });
   it('matches the locked schema while keeping append-only history revision-free', () => {
     expect(programSchema.parse(program)).toEqual(program);
     expect(rankSchema.parse(rank)).toEqual(rank);
@@ -80,6 +92,10 @@ describe('rank and promotion contracts', () => {
     expect(programListQuerySchema.safeParse({ unscoped: true }).success).toBe(false);
   });
   it.each(Object.entries(ranksContracts))('%s declares its allowed and denied roles', (operation, contract) => {
+    if (contract.permission.kind === 'public') {
+      expect(operation).toBe('catalog');
+      return;
+    }
     const expected = ['promote', 'bulkPromote', 'eligibility'].includes(operation)
       ? ['owner', 'admin', 'coach']
       : ['listPrograms', 'listRankSystems', 'listRanks', 'listPromotions'].includes(operation)

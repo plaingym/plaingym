@@ -21,11 +21,13 @@ export const programs = pgTable('programs', {
   revisionCheck('programs_revision_check', t.revision)]).enableRLS();
 export const ranks = pgTable('ranks', {
   ...base(), rankSystemId: uuid('rank_system_id').notNull(), name: text('name').notNull(), position: integer('position').notNull(),
+  color: text('color'),
   subRanks: jsonb('sub_ranks').notNull().default([]), criteria: jsonb('criteria').notNull().default([]), ...revision(),
 }, (t) => [...scoped('ranks', t), ref('ranks_system_fk', t.gymId, t.rankSystemId, rankSystems),
   unique('ranks_gym_system_position_key').on(t.gymId, t.rankSystemId, t.position),
   unique('ranks_gym_id_rank_system_key').on(t.gymId, t.id, t.rankSystemId),
   check('ranks_position_check', sql`${t.position} >= 0`),
+  check('ranks_color_check', sql`${t.color} ~ '^#[0-9a-fA-F]{6}$'`),
   revisionCheck('ranks_revision_check', t.revision)]).enableRLS();
 /** Promotion history. The rank and the program must share the rank system recorded here. */
 export const memberRanks = pgTable('member_ranks', {

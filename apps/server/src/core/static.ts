@@ -44,7 +44,7 @@ export function staticAssets(directory = './public'): MiddlewareHandler<RequestE
     const asset = await serve(path, path.startsWith('/assets/'));
     if (asset) return asset;
     const acceptsHtml = context.req.header('accept')?.split(',').some((type) => type.trim().split(';')[0] === 'text/html');
-    if (/^\/(?:admin|portal|kiosk|login)(?:\/|$)/.test(path) && !extname(path) && acceptsHtml) {
+    if (/^\/(?:admin|portal|kiosk|login|setup)(?:\/|$)/.test(path) && !extname(path) && acceptsHtml) {
       const index = await serve('/index.html');
       if (index) return index;
     }

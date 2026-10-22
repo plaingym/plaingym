@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
+import { ranksContracts, setupContracts } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import { clock as systemClock, type Clock } from './clock.js';
 import type { RequestContext, RequestEnvironment } from './context.js';
@@ -24,6 +25,10 @@ export interface AppOptions {
   readonly rateLimit?: RateLimitOptions;
   readonly sourceUrl?: string;
   readonly publicDirectory?: string;
+  /** Install-local gate, before any tenant database access. */
+  readonly restoreGate?: MiddlewareHandler<RequestEnvironment>;
+  /** First-boot requests have no resolved gym from which to derive an origin. */
+  readonly installOrigin?: string;
 }
 
 export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> {
@@ -49,13 +54,42 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   };
   mountHealthz(app, installAuthorize);
   mountSourceLink(app, sourceUrl(options.sourceUrl), installAuthorize);
+  const contributions = options.contributions ?? {};
+  const firstBootIds = new Set(Object.values(setupContracts)
+    .filter((contract) => contract.gate === 'uninitialized_install')
+    .map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
+  const catalogId = `${ranksContracts.catalog.method.toUpperCase()} ${ranksContracts.catalog.path}`;
+  const installRoutes = (contributions.routes ?? []).filter((entry) => firstBootIds.has(entry.id) || entry.id === catalogId);
+  const installCsrf = csrf(options.installOrigin ?? (typeof options.origin === 'string' ? options.origin : undefined));
+  const installLimiter = rateLimit(options.rateLimit);
+  const authorizeInstall: PermissionMiddleware = (permission) => async (context, next) => {
+    await installCsrf(context, async () => {
+      await installLimiter(context, async () => { await installAuthorize(permission)(context, next); });
+    });
+  };
+  // Setup handlers enforce their own first-boot guard. Only the restore coordinator
+  // and its status reader run outside the activity lease that restore must drain.
+  const restoreIds = new Set([setupContracts.restore, setupContracts.restoreStatus]
+    .map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
+  for (const entry of installRoutes.filter((entry) => firstBootIds.has(entry.id))) {
+    entry.mount(app, (permission) => async (context, next) => {
+      if (options.restoreGate && !restoreIds.has(entry.id)) {
+        return options.restoreGate(context, async () => { await authorizeInstall(permission)(context, next); });
+      }
+      return authorizeInstall(permission)(context, next);
+    });
+  }
+  if (options.restoreGate) app.use('*', options.restoreGate);
+  for (const entry of installRoutes.filter((entry) => entry.id === catalogId)) entry.mount(app, authorizeInstall);
+  app.use('*', staticAssets(options.publicDirectory));
   app.use('*', options.resolveGym);
   app.use('*', options.session);
   app.use('*', csrf(options.origin));
   app.use('*', rateLimit(options.rateLimit));
-  const registry = createServerRegistry(options.contributions ?? {});
+  const registry = createServerRegistry({ ...contributions,
+    routes: (contributions.routes ?? []).filter((entry) => !installRoutes.includes(entry)),
+  });
   registry.mount(app, options.authorize, (context) => context.get('context').gym.enabledModules);
   mountOpenApi(app, options.authorize);
-  app.use('*', staticAssets(options.publicDirectory));
   return app;
 }

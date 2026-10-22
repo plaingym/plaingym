@@ -64,8 +64,8 @@ describe('content pack application with Postgres RLS', () => {
     expect(first.programs[0]!.rankSystemId).toBe(first.rankSystems[0]!.id);
     expect(first.programs[1]!.rankSystemId).toBeNull();
     expect(first.installedPack.createdAt).toBe(clock.now().toISOString());
-    expect(before.ranks.find((rank) => rank.name === 'Beginner')).toMatchObject({ position: 0, subRanks: [{ id: 'one', name: 'One' }] });
-    expect(before.ranks.find((rank) => rank.name === 'Advanced')).toMatchObject({ position: 1 });
+    expect(before.ranks.find((rank) => rank.name === 'Beginner')).toMatchObject({ position: 0, color: '#ffffff', subRanks: [{ id: 'one', name: 'One' }] });
+    expect(before.ranks.find((rank) => rank.name === 'Advanced')).toMatchObject({ position: 1, color: '#000000' });
     expect(await service.apply(mutation(), definition)).toEqual(first);
     const after = await snapshot();
     expect({ ...after, audits: [] }).toEqual({ ...before, audits: [] });
@@ -74,6 +74,21 @@ describe('content pack application with Postgres RLS', () => {
     for (const row of [...after.installed, ...after.systems, ...after.ranks, ...after.programs, ...after.tags]) {
       expect(row.gymId).toBe(gymA); expect(row.id).toMatch(/^[0-9a-f-]{14}7[0-9a-f]{3}-[89ab]/);
     }
+  });
+  it('updates colors without changing identities, preserves criteria, and clears omitted colors', async () => {
+    const definition = pack('colors');
+    const installed = await service.apply(mutation(), definition);
+    const rows = await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, installed.rankSystems[0]!.id)));
+    const beginner = rows.find((row) => row.name === 'Beginner')!;
+    await database.forGym(gymA, (tx) => tx.update(ranks).set({ criteria: [{ providerId: 'classes', config: { count: 5 } }] }).where(eq(ranks.id, beginner.id)));
+    definition.rankSystems[0]!.ranks[0]!.color = '#123456';
+    delete definition.rankSystems[0]!.ranks[1]!.color;
+    await service.apply(mutation(), definition);
+    const updated = await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, installed.rankSystems[0]!.id)));
+    expect(updated.find((row) => row.id === beginner.id)).toMatchObject({ color: '#123456', revision: 2, criteria: [{ providerId: 'classes', config: { count: 5 } }] });
+    expect(updated.find((row) => row.name === 'Advanced')).toMatchObject({ color: null, revision: 2 });
+    await service.apply(mutation(), definition);
+    expect(await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, installed.rankSystems[0]!.id)))).toEqual(updated);
   });
   it('serializes concurrent first installation and does not duplicate any entities', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);

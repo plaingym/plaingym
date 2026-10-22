@@ -23,6 +23,7 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 NODE_OPTIONS=--max-old-space-size
 WORKDIR /app
 COPY --from=build /build/apps/server/dist/ ./
 COPY --from=build /build/apps/web/dist/ ./public/
+COPY --from=build /build/packs/ ./packs/
 # migrateDatabase resolves ./migrations/ beside server.mjs.
 COPY --from=build /build/packages/db/src/migrations/ ./migrations/
 # Dependency and font notices are generated and verified by pnpm compliance.

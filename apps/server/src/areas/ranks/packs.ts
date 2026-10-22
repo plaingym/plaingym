@@ -88,10 +88,11 @@ export function createContentPackService(options: { scope?: typeof forGym; clock
             for (const [position, rank] of system.ranks.entries()) {
               const id = entityId(installation.id, 'rank', system.id, rank.id);
               const row = previous.find((item) => item.id === id);
-              if (!row) await tx.insert(ranks).values({ ...base, id, rankSystemId: systemId, name: rank.name, position, subRanks: rank.subRanks });
-              else if (row.name !== rank.name || row.position !== position || JSON.stringify(row.subRanks) !== JSON.stringify(rank.subRanks)) {
+              const color = rank.color ?? null;
+              if (!row) await tx.insert(ranks).values({ ...base, id, rankSystemId: systemId, name: rank.name, position, color, subRanks: rank.subRanks });
+              else if (row.name !== rank.name || row.position !== position || row.color !== color || JSON.stringify(row.subRanks) !== JSON.stringify(rank.subRanks)) {
                 const guard = revisionGuard(ranks.revision, row.revision);
-                assertRevised(await tx.update(ranks).set({ name: rank.name, position, subRanks: rank.subRanks, revision: guard.next })
+                assertRevised(await tx.update(ranks).set({ name: rank.name, position, color, subRanks: rank.subRanks, revision: guard.next })
                   .where(and(eq(ranks.id, id), guard.matches)).returning());
               }
             }
@@ -122,7 +123,6 @@ export function createContentPackService(options: { scope?: typeof forGym; clock
                 .onConflictDoNothing({ target: [classTags.gymId, classTags.name] });
             }
           }
-          // TODO(CCR): ranks and their HTTP contract need a color field. Retain colors losslessly here.
           await writeAudit(tx, { ...base, actorKind: context.actor.kind,
             ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
             action: 'content_pack.applied', targetType: 'installed_pack', targetId: installation.id,

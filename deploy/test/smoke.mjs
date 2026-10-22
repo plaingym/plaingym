@@ -31,10 +31,10 @@ const docker = (args, options = {}) => execFileSync('docker', args, {
 const prefix = ['compose', '--project-directory', root, '--env-file', envFile, '-p', project, '-f', join(root, 'compose.yaml')];
 const compose = (args, options) => docker([...prefix, ...args], options);
 const sql = (query) => compose(['exec', '-T', 'postgres', 'psql', '-X', '-U', 'postgres', '-d', 'plaingym', '-v', 'ON_ERROR_STOP=1', '-qtAc', query]);
-const get = (protocol, port, ca) => new Promise((resolveRequest, reject) => {
+const get = (protocol, port, ca, path = '/healthz', accept = 'application/json') => new Promise((resolveRequest, reject) => {
   const request = protocol.get({
-    hostname: '127.0.0.1', port, path: '/healthz', servername: 'gym.localhost',
-    headers: { host: 'gym.localhost' }, ca, timeout: 5000,
+    hostname: '127.0.0.1', port, path, servername: 'gym.localhost',
+    headers: { host: 'gym.localhost', accept }, ca, timeout: 5000,
   }, (response) => {
     let body = '';
     response.setEncoding('utf8');
@@ -59,6 +59,11 @@ try {
     'test "$(id -u)" -ne 0',
     'test -s /app/assets/fonts/NotoSans-Regular.ttf',
     'test -s /app/public/index.html',
+    'test -s /app/packs/bjj.json',
+    'test -s /app/packs/judo.json',
+    'test -s /app/packs/karate.json',
+    'test -s /app/packs/muay-thai.json',
+    'test -s /app/packs/functional-fitness.json',
     'test -s /app/THIRD_PARTY_LICENSES',
     'test -z "$(command -v docker)"',
     'touch /var/lib/plaingym/staging/test && rm /var/lib/plaingym/staging/test',
@@ -87,11 +92,28 @@ try {
   const response = await get(https, httpsPort, ca);
   assert.equal(response.status, 200);
   assert.deepEqual(JSON.parse(response.body), { status: 'ok' });
+  const catalog = await get(https, httpsPort, ca, '/api/content-packs/catalog');
+  assert.equal(catalog.status, 200);
+  const packs = JSON.parse(catalog.body).data;
+  assert.deepEqual(packs.map((pack) => pack.id), ['bjj', 'functional-fitness', 'judo', 'karate', 'muay-thai']);
+  for (const pack of packs) {
+    assert.deepEqual(Object.keys(pack).sort(), ['id', 'name', 'summary', 'version']);
+    assert.equal(pack.version, 1);
+    assert.ok(pack.summary.length > 0);
+  }
+  const setup = await get(https, httpsPort, ca, '/setup', 'text/html');
+  assert.equal(setup.status, 200);
+  assert.match(setup.headers['content-type'], /text\/html/);
+  assert.ok(setup.body.includes('/assets/'));
   // Reuse initialized volumes: the role bootstrap must not run a second time.
   compose(['restart', 'postgres', 'app']);
   compose(['up', '-d', '--wait', '--wait-timeout', '90']);
   compose(['exec', '-T', 'app', 'node', '/app/deploy/healthcheck.mjs']);
-  console.log('PASS: HTTPS, redirect, roles, schema guard, image assets, hardening, memory caps, restart.');
+  console.log('PASS: HTTPS, redirect, roles, schema guard, image assets, first-boot shell and pack catalog, hardening, memory caps, restart.');
+} catch (error) {
+  try { console.error(compose(['logs', '--no-color', '--tail', '30', 'app'])); }
+  catch { /* Preserve the original failure if diagnostics are unavailable. */ }
+  throw error;
 } finally {
   compose(['down', '--volumes', '--remove-orphans']);
   rmSync(temporary, { recursive: true, force: true });

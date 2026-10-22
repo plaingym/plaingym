@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { expect, it } from 'vitest';
+import { openConnection } from './client.js';
+import { migrateDatabase } from './migrate.js';
+import { ranks } from './schema/index.js';
+import { uuidv7 } from './id.js';
+import { createFactories } from './testing/factories.js';
+import { useTestDatabase } from './testing/database.js';
+
+const database = useTestDatabase();
+const factory = createFactories(database);
+
+it('upgrades a schema-v1 rank in place with a null color and preserves its data', async () => {
+  const gymId = uuidv7();
+  await factory('gyms', gymId);
+  const legacy = await factory('ranks', gymId, { name: 'Existing belt', criteria: [{ providerId: 'classes', config: { count: 12 } }] });
+  const maintenance = openConnection(database.maintenanceUrl, 1);
+  try {
+    // Recreate v1 only inside this disposable test database, retaining its rank.
+    await maintenance.sql`alter table ranks drop constraint ranks_color_check`;
+    await maintenance.sql`alter table ranks drop column color`;
+    await maintenance.sql`delete from drizzle.__drizzle_migrations where created_at = (select max(created_at) from drizzle.__drizzle_migrations)`;
+  } finally { await maintenance.close(); }
+
+  await migrateDatabase(database.maintenanceUrl);
+  expect(await database.forGym(gymId, (tx) => tx.select().from(ranks))).toEqual([{ ...legacy, color: null }]);
+});

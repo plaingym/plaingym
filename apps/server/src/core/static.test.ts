@@ -43,7 +43,7 @@ it('serves assets with MIME, cache, content-length, and nosniff headers', async 
   expect((await app.request('/manifest.webmanifest')).headers.get('content-type')).toBe('application/manifest+json');
 });
 
-it.each(['/admin', '/admin/members/123', '/portal', '/portal/household', '/kiosk', '/login'])('serves the SPA entry for browser navigation to %s', async (path) => {
+it.each(['/admin', '/admin/members/123', '/portal', '/portal/household', '/kiosk', '/login', '/setup', '/setup/restore'])('serves the SPA entry for browser navigation to %s', async (path) => {
   const response = await app.request(path, { headers: { accept: 'text/html,application/xhtml+xml' } });
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/html');

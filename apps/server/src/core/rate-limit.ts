@@ -42,7 +42,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
   const buckets = new Map<string, { count: number; resetAt: number }>();
   return async (context, next) => {
     const { clock, gym } = context.get('context');
-    const now = clock.now().getTime(), key = `${gym.gymId}:${clientIp(context, options)}`;
+    const now = clock.now().getTime(), key = `${gym?.gymId ?? 'install'}:${clientIp(context, options)}`;
     let bucket = buckets.get(key);
     if (bucket && bucket.resetAt <= now) { buckets.delete(key); bucket = undefined; }
     if (!bucket) {

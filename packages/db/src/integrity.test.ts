@@ -18,6 +18,16 @@ beforeAll(async () => {
   await factory('gyms', otherGym);
 });
 
+describe('rank colors', () => {
+  it('defaults existing-style inserts to null and accepts only six-digit hex colors', async () => {
+    expect((await factory('ranks', gym)).color).toBeNull();
+    for (const color of [null, '#ffffff', '#aBcDeF']) expect((await factory('ranks', gym, { color })).color).toBe(color);
+    for (const color of ['white', '#fff', '#ffffff00', '#gg0000', 'ffffff']) {
+      await expect(factory('ranks', gym, { color })).rejects.toMatchObject(rejected('23514'));
+    }
+  });
+});
+
 describe('tax rates', () => {
   it('stores rates in millionths and lets a plan carry several separately stated taxes', async () => {
     const gst = await factory('taxRates', gym, { name: 'GST', rateMillionths: 50_000 });

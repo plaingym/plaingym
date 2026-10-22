@@ -14,6 +14,7 @@ export const contentPackSchema = z
     $comment: z.literal('SPDX-License-Identifier: AGPL-3.0-only').optional(),
     version: z.literal(1),
     ...named,
+    summary: z.string().trim().min(1).optional(),
     rankSystems: z.array(z.strictObject({ ...named, ranks: z.array(rank).min(1) })),
     programs: z.array(z.strictObject({ ...named, rankSystemId: id.optional() })),
     classTags: z.array(z.strictObject(named)),

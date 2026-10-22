@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { AppError } from '@plaingym/shared';
-import { ranksContracts } from '@plaingym/shared/contracts';
+import { AppError, type ContentPack } from '@plaingym/shared';
+import { ranksContracts, contentPackCatalogEntrySchema } from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
 import { createContentPackService } from './packs.js';
+import { loadContentPacks } from './packs.loader.js';
 
-export function createContentPackRoutes(service = createContentPackService()) {
-  const list = ranksContracts.listPacks, apply = ranksContracts.applyPack;
+export function createContentPackRoutes(service = createContentPackService(), load: () => Promise<readonly ContentPack[]> = loadContentPacks) {
+  const list = ranksContracts.listPacks, apply = ranksContracts.applyPack, catalog = ranksContracts.catalog;
   return [
+    route({ ...catalog,
+      responses: { 200: { description: 'Shipped content pack catalog', content: { 'application/json': { schema: catalog.response } } } },
+    }, async (c) => {
+      const packs = await load();
+      return c.json({ data: packs.map((pack) => contentPackCatalogEntrySchema.parse({
+        id: pack.id, name: pack.name, version: pack.version, summary: pack.summary ?? pack.name,
+      })) }, 200);
+    }),
     route({ ...list, request: { query: list.query },
       responses: { 200: { description: 'Installed content packs', content: { 'application/json': { schema: list.response } } } },
     }, async (c) => {

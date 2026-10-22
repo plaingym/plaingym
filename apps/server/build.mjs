@@ -33,6 +33,7 @@ export async function buildServer(
   await cp(new URL('./src/assets/', import.meta.url), new URL('./assets/', outputDirectory), {
     recursive: true,
   });
+  await cp(new URL('../../packs/', import.meta.url), new URL('./packs/', outputDirectory), { recursive: true });
   return result;
 }
 

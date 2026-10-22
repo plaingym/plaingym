@@ -3,6 +3,7 @@
   "version": 1,
   "id": "bjj",
   "name": "Brazilian Jiu-Jitsu",
+  "summary": "Adult and youth belt progressions, gi and no-gi programs, and class tags.",
   "rankSystems": [
     {
       "id": "bjj-adult",

@@ -30,6 +30,7 @@ export const programSchema = z.strictObject({
 });
 export const rankSchema = z.strictObject({
   ...recordFields, rankSystemId: idSchema, name: nameSchema, position: nonnegativeInt,
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable(),
   subRanks: z.array(rankSubRankSchema).refine(
     (items) => new Set(items.map((item) => item.id)).size === items.length,
     'Sub-rank IDs must be unique',
@@ -46,8 +47,8 @@ export const updateProgramRequestSchema = createProgramRequestSchema.partial().e
 export const createRankSystemRequestSchema = rankSystemSchema.pick({ name: true });
 export const updateRankSystemRequestSchema = createRankSystemRequestSchema.extend({ revision: revisionSchema });
 export const createRankRequestSchema = rankSchema.pick({
-  rankSystemId: true, name: true, position: true, subRanks: true, criteria: true,
-});
+  rankSystemId: true, name: true, position: true, color: true, subRanks: true, criteria: true,
+}).partial({ color: true });
 /** A rank stays in its system; its editable fields use compare-and-set revisions. */
 export const updateRankRequestSchema = createRankRequestSchema.omit({ rankSystemId: true }).partial()
   .extend({ revision: revisionSchema })
@@ -79,6 +80,11 @@ export const promotionEligibilitySchema = z.strictObject({
 export const installedPackSchema = z.strictObject({
   ...recordFields, packId: z.string().regex(/^[a-z][a-z0-9-]*$/), version: z.int32().positive(),
 });
+/** Shipped definitions contain no gym data and can be listed before setup. */
+export const contentPackCatalogEntrySchema = z.strictObject({
+  id: z.string().regex(/^[a-z][a-z0-9-]*$/), name: nameSchema,
+  version: z.int32().positive(), summary: nameSchema,
+});
 /** Reuse the versioned pack format, including its duplicate/reference checks. */
 export const applyContentPackRequestSchema = z.strictObject({ pack: contentPackSchema });
 export const applyContentPackResponseSchema = z.strictObject({ data: z.strictObject({
@@ -96,6 +102,8 @@ export const eligibilityListQuerySchema = paginationSchema.extend({
 
 // Stale revisions and cross-system references use the shared conflict error (409).
 export const ranksContracts = {
+  catalog: { method: 'get', path: '/api/content-packs/catalog', permission: { kind: 'public' },
+    response: z.strictObject({ data: z.array(contentPackCatalogEntrySchema) }) },
   listPrograms: { method: 'get', path: '/api/programs', permission: read,
     query: programListQuerySchema, response: listResponseSchema(programSchema) },
   createProgram: { method: 'post', path: '/api/programs', permission: configure,
@@ -136,6 +144,7 @@ export type PromotionCriterion = z.infer<typeof promotionCriterionSchema>;
 export type CriterionProgress = z.infer<typeof criterionProgressSchema>;
 export type PromotionEligibility = z.infer<typeof promotionEligibilitySchema>;
 export type InstalledPack = z.infer<typeof installedPackSchema>;
+export type ContentPackCatalogEntry = z.infer<typeof contentPackCatalogEntrySchema>;
 export type CreateProgramRequest = z.infer<typeof createProgramRequestSchema>;
 export type UpdateProgramRequest = z.infer<typeof updateProgramRequestSchema>;
 export type CreateRankSystemRequest = z.infer<typeof createRankSystemRequestSchema>;

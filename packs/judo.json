@@ -2,6 +2,7 @@
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "version": 1,
   "id": "judo",
+  "summary": "Kyu and dan ranks, suggested Judo programs, and class tags.",
   "name": "Judo",
   "rankSystems": [
     {
