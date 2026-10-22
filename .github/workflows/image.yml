@@ -2,6 +2,7 @@
 name: Image checks
 on:
   push:
+    branches: [main]
     paths:
       - 'deploy/**'
       - 'apps/**'

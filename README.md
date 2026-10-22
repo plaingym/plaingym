@@ -71,6 +71,7 @@ simple-git-hooks installer only. Source archives and CI skip the root hook setup
 The server build copies the Noto Sans font and its [OFL notice](apps/server/src/assets/fonts/OFL.txt).
 Tests boot a relocated bundle to check asset resolution and run a bundled
 CommonJS dependency using a Node builtin. The web dev server includes React Fast Refresh.
-`pnpm licenses list` reports dependency licenses.
+`pnpm compliance` checks dependency licenses, SPDX headers and `THIRD_PARTY_LICENSES`
+(see [scripts/compliance/README.md](scripts/compliance/README.md)).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
