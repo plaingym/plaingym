@@ -28,6 +28,11 @@ const clock = new TestClock('2026-10-22T12:00:00Z'), key = Buffer.alloc(32, 7), 
 const tools: ToolRunner = (tool, env) => ({ command: 'docker', args: ['run', '--rm', '-i', ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGDATABASE', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT',
   'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32', tool], env: { ...env, PGHOST: process.platform === 'linux' ? '127.0.0.1' : 'host.docker.internal' } });
 let root: string;
+// Surface the coordinator's failure message instead of only the status.
+const outcome = async (pending: Promise<{ status: string } & { message?: string }>) => {
+  const result = await pending;
+  return result.status === 'failed' ? 'failed: ' + (result.message ?? 'no message') : result.status;
+};
 let server: Awaited<ReturnType<typeof s3Server>>;
 beforeAll(async () => { root = await mkdtemp(join(tmpdir(), 'setup-restore-')); server = await s3Server(); });
 afterAll(async () => { await server.close(); await rm(root, { recursive: true, force: true }); });
@@ -80,7 +85,7 @@ describe('setup restore coordinator', () => {
       const result = await app.request('http://gym.localhost/api/setup/restore', { method: 'POST', headers: { origin: 'http://gym.localhost', 'content-type': 'application/json', 'x-setup-token': setupToken }, body: JSON.stringify(input) });
       expect(result.status).toBe(200);
       const jobId = (await result.json() as { data: { jobId: string } }).data.jobId;
-      await expect.poll(async () => (await restore.status(jobId)).status, { timeout: 25_000 }).toBe('restored');
+      await expect.poll(() => outcome(restore.status(jobId)), { timeout: 25_000 }).toBe('restored');
       expect((await blockedProbe)!.status).toBe(503); expect(tenancy).not.toHaveBeenCalled();
       const status = await app.request('http://gym.localhost/api/setup/restore/' + jobId, { headers: { 'x-setup-token': setupToken } });
       expect(await status.json()).toMatchObject({ data: { status: 'restored', billingEnabled: false, next: 'login' } });
@@ -127,6 +132,6 @@ describe('setup restore coordinator', () => {
     expect(await peer.status(job.jobId)).toMatchObject({ status: 'running' });
     expect(onInterrupted).not.toHaveBeenCalled();
     finish();
-    await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('restored');
+    await expect.poll(() => outcome(coordinator.status(job.jobId))).toBe('restored');
   });
 });

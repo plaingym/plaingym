@@ -61,7 +61,9 @@ export function createSetupRestore(options: {
             await release?.(); release = undefined;
             active = false;
             await publish({ status: 'restored', jobId: pollingId, billingEnabled: false, next: 'login' });
-          } catch {
+          } catch (error) {
+            // Operators need the cause; the owner-facing status stays generic. Never log the input or its key.
+            console.error('Setup restore failed:', error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error');
             await publish({ status: 'failed', jobId: pollingId, message: 'Restore failed. Check the source and private key, or resume a verified restore.' });
           } finally {
             // A verified but interrupted restore retains its reservation until maintenance resumes it.
