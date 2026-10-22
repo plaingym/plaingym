@@ -22,7 +22,7 @@ const env = {
   HTTP_PORT: '127.0.0.1:0', HTTPS_PORT: '127.0.0.1:0',
   POSTGRES_DB: 'plaingym', POSTGRES_PASSWORD: randomBytes(24).toString('hex'),
   APP_PASSWORD: randomBytes(24).toString('hex'), MAINTENANCE_PASSWORD: randomBytes(24).toString('hex'),
-  APP_ENCRYPTION_KEY: randomBytes(32).toString('hex'), AUTH_SECRET: randomBytes(32).toString('hex'),
+  APP_ENCRYPTION_KEY: randomBytes(32).toString('hex'), AUTH_SECRET: randomBytes(32).toString('hex'), SETUP_TOKEN: randomBytes(32).toString('hex'),
 };
 writeFileSync(envFile, '', { mode: 0o600 });
 const docker = (args, options = {}) => execFileSync('docker', args, {
@@ -31,10 +31,11 @@ const docker = (args, options = {}) => execFileSync('docker', args, {
 const prefix = ['compose', '--project-directory', root, '--env-file', envFile, '-p', project, '-f', join(root, 'compose.yaml')];
 const compose = (args, options) => docker([...prefix, ...args], options);
 const sql = (query) => compose(['exec', '-T', 'postgres', 'psql', '-X', '-U', 'postgres', '-d', 'plaingym', '-v', 'ON_ERROR_STOP=1', '-qtAc', query]);
-const get = (protocol, port, ca, path = '/healthz', accept = 'application/json') => new Promise((resolveRequest, reject) => {
-  const request = protocol.get({
+const get = (protocol, port, ca, path = '/healthz', accept = 'application/json', payload) => new Promise((resolveRequest, reject) => {
+  const request = protocol.request({
     hostname: '127.0.0.1', port, path, servername: 'gym.localhost',
-    headers: { host: 'gym.localhost', accept }, ca, timeout: 5000,
+    method: payload ? 'POST' : 'GET',
+    headers: { host: 'gym.localhost', accept, ...(payload ? { 'content-type': 'application/json', origin: 'https://gym.localhost' } : {}) }, ca, timeout: 5000,
   }, (response) => {
     let body = '';
     response.setEncoding('utf8');
@@ -43,6 +44,7 @@ const get = (protocol, port, ca, path = '/healthz', accept = 'application/json')
   });
   request.on('timeout', () => request.destroy(new Error('HTTPS timeout')));
   request.on('error', reject);
+  request.end(payload ? JSON.stringify(payload) : undefined);
 });
 try {
   compose(['up', '-d', '--wait', '--wait-timeout', '120']);
@@ -109,9 +111,14 @@ try {
   assert.equal(setup.status, 200);
   assert.match(setup.headers['content-type'], /text\/html/);
   assert.ok(setup.body.includes('/assets/'));
+  assert.equal((await get(https, httpsPort, ca, '/api/setup')).status, 200);
+  for (const path of ['/api/setup/start', '/api/setup/owner', '/api/setup/restore'])
+    assert.equal((await get(https, httpsPort, ca, path, 'application/json', {})).status, 403);
+  assert.equal(compose(['exec', '-T', 'app', 'gym-app', 'setup-link']).trim(), 'https://gym.localhost/setup#token=' + env.SETUP_TOKEN);
   const source = await get(https, httpsPort, ca, '/source');
   assert.equal(source.status, 302);
-  assert.equal(source.headers.location, 'https://github.com/plaingym/plaingym');
+  assert.equal(source.headers.location, process.env.SOURCE_URL ?? 'https://github.com/plaingym/plaingym');
+  assert.ok(configuration.Config.Env.includes('APP_VERSION=' + (process.env.VERSION ?? '0.0.0-dev')));
   // gym-app dispatches CLI commands through the same bundle inside the container.
   const cli = spawnSync('docker', [...prefix, 'exec', '-T', 'app', 'gym-app', 'unknown-command'], { encoding: 'utf8', env });
   assert.equal(cli.status, 2);

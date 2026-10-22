@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { forGym, gyms } from '@plaingym/db';
 import type { Command } from '../cli/index.js';
 import { runSeeds } from './seed/index.js';
-/** TODO(CCR): register this command and expose it as `pnpm seed <gym-uuid>`. */
+/** Apply the same sample content used by demo sandbox creation. */
 export function createSeedCommand(scope: typeof forGym = forGym, seed = runSeeds): Command {
   return { id: 'seed', description: 'Apply sample content to a gym', async run(args, io) {
     if (args.length !== 1) { io.stderr('Usage: seed <gym-uuid>'); return 2; }

@@ -49,7 +49,11 @@ export const goLiveChecklistResponseSchema = z.strictObject({ data: z.strictObje
   revision: revisionSchema, ...goLiveSwitchesSchema.shape, items: z.array(goLiveChecklistItemSchema),
 }) });
 export const gymSettingsResponseSchema = z.strictObject({ data: gymSettingsSchema });
+export const deleteGymRequestSchema = z.strictObject({ revision: revisionSchema, confirmation: z.literal('DELETE') });
+export const deleteGymResponseSchema = z.strictObject({ data: z.strictObject({ deleted: z.literal(true) }) });
 export const settingsContracts = {
+  deleteGym: { method: 'delete', path: '/api/settings/gym', permission: { kind: 'staff', capability: 'ownership.transfer' },
+    body: deleteGymRequestSchema, response: deleteGymResponseSchema },
   get: { method: 'get', path: '/api/settings', permission: manage, response: gymSettingsResponseSchema },
   updateGeneral: { method: 'patch', path: '/api/settings', permission: manage,
     body: updateGymSettingsRequestSchema, response: gymSettingsResponseSchema },

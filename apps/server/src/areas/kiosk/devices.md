@@ -10,3 +10,7 @@ Only the exact POST contracts `lookup`, `checkinNamePin`, and `checkinQr` accept
 PIN lookup and name/PIN submission share independent per-device and per-client-address fixed-window limits (10 attempts per minute each). QR requests do not consume PIN attempts. Client addresses use the core trusted-proxy resolver; arbitrary forwarding headers are ignored. Buckets are bounded and fail closed at capacity. These limits are process-local, like the core flood limiter; multiple processes each enforce their own budget. Reuse one middleware instance, and pass the same trusted proxy configuration as the session and app limiters.
 
 The check-in handlers themselves are supplied by their own kiosk parts. Middleware tests use contract-shaped handlers until those implementations are available.
+
+The production runtime mounts this wrapper ahead of session loading. Activity
+updates `last_seen_at` at most once per minute using a conditional write; routine
+authenticated requests do not add audit rows. Registration and revocation remain audited.

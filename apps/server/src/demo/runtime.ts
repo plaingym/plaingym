@@ -12,7 +12,7 @@ import { configureGymDeletion } from '../areas/settings/gym-delete.routes.js';
 import { demoBootCheck } from './config.js';
 import { createDemoService } from './service.js';
 import { createDemoIdentities } from './identities.js';
-import { configureDemoRoutes } from './demo.routes.js';
+import { configureDemoRoutes, disableDemoRoutes } from './demo.routes.js';
 import { registerDemoCleanup } from './demo.jobs.js';
 import { runSeeds } from './seed/index.js';
 import { renderDemoLogin } from '../emails/demo/demo.js';
@@ -29,7 +29,7 @@ export async function createDemoRuntime(options: {
   env?: NodeJS.ProcessEnv; installOrigin: string; clientIp?: ClientIpOptions; removeUploads(gymId: string): Promise<void>;
 }) {
   const env = options.env ?? process.env, config = demoBootCheck(env);
-  if (!config.enabled) return undefined;
+  if (!config.enabled) { disableDemoRoutes(); return undefined; }
   const key = parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '');
   await verifyDemoStoredKeys(key);
   // Delivery is configured by the outbox, so this mode requires no SMTP host.

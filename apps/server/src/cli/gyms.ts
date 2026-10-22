@@ -29,6 +29,7 @@ export function createGymsCommand(provision?: (input: CreateGymInput) => Promise
   return { id: 'gyms', description: 'Create a gym and email its owner a login link', async run(args, io) {
     if (args[0] !== 'create' || args.length !== 7) { io.stderr('Usage: gyms create <slug> <hostname> <owner-email> <name> <timezone> <currency>'); return 2; }
     try {
+      if (process.env.DEMO_MODE === 'true') throw new AppError('forbidden', 'Create demo gyms through the sandbox entry page');
       const create = provision ?? createGymService({ key: parseEncryptionKey(process.env.APP_ENCRYPTION_KEY ?? ''), provisionOwner: createDefaultOwnerService() });
       const result = await create({ slug: args[1]!, hostname: args[2]!, ownerEmail: args[3]!, name: args[4]!, timezone: args[5]!, currency: args[6]! });
       io.stdout(JSON.stringify(result)); return 0;

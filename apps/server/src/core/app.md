@@ -13,9 +13,11 @@ gym. Public setup contracts with the `uninitialized_install` gate and the shippe
 pack catalog (`/api/content-packs/catalog`) also mount before tenancy. Setup
 handlers must enforce their install-local first-boot guard and become unavailable
 after initialization; setup-owner routes still require tenancy and a session.
+The install requires `X-Setup-Token` on public setup actions and restore polling;
+`GET /api/setup` remains open. The token comes from the installer's private link.
 Assets and the SPA load before tenancy so an empty install can open `/setup`.
 OpenAPI (`/api/openapi.json`) runs after tenancy and session loading.
-Browser navigation to `/admin`, `/portal`, `/kiosk`, `/login`, and `/setup`
+Browser navigation to `/admin`, `/portal`, `/kiosk`, `/login`, `/setup`, and `/demo`
 receives the SPA index; missing API routes and asset files return the
 standard JSON error envelope.
 
@@ -63,6 +65,9 @@ restore holds the install, with each job inside a restore-gate lease), schedules
 backups once they are configured, and configures signed-link email and the
 login methods each gym offers. `index.ts` serves that app, or runs a `gym-app`
 command when started with arguments (`deploy/container/gym-app.sh`).
+Kiosk authentication wraps session loading. Demo startup verifies environment and
+stored Stripe keys, routes every email to the outbox, disables setup and uploads,
+mounts entry/creation before tenancy, and schedules cleanup behind the restore gate.
 
 The public origin is `PUBLIC_ORIGIN`, or `https://` plus `GYM_HOSTNAME`, in
 single mode; in multi mode it is the hostname the tenant resolver matched.

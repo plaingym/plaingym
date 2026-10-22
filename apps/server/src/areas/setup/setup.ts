@@ -66,13 +66,13 @@ export function createSetupService(options: {
     });
   }
   async function save(context: MutationContext, revision: number, step: number,
-    changes: Partial<Gym> = {}, extra: Partial<Progress> = {}, effect?: (tx: Transaction) => Promise<void>) {
+    changes: Partial<Gym> = {}, extra: Partial<Progress> = {}, effect?: (tx: Transaction) => Promise<void>, previousStep = step - 1) {
     return scope(context.gymId, async (tx) => {
       const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
       if (!before) throw missing();
       const state = progress(before);
       if (context.actor.kind !== 'user' || state.ownerId !== context.actor.userId) throw missing();
-      if (!state.completedSteps.includes(step - 1)) throw new AppError('conflict', 'Complete the preceding setup step');
+      if (!state.completedSteps.includes(previousStep)) throw new AppError('conflict', 'Complete the preceding setup step');
       const guard = revisionGuard(gyms.revision, revision);
       if (changes.currency && changes.currency !== before.currency) {
         for (const table of [plans, chargeTypes, memberships, invoices]) {
@@ -141,7 +141,6 @@ export function createSetupService(options: {
     },
     async owner(input: SetupOwnerRequest) {
       const existing = await install();
-      // TODO(CCR): setup's frozen schema allows 1024; the password adapter accepts 128.
       if (input.password.length > 128) throw new AppError('invalid_request', 'Password must contain 12 to 128 characters');
       if (existing && progress(existing).ownerId) throw missing();
       const gymId = await reserveGym({ name: 'My gym', slug: 'setup', hostname: new URL(options.origin).hostname,
@@ -241,7 +240,9 @@ export function createSetupService(options: {
     },
     async finish(context: MutationContext, input: SetupFinishRequest) {
       if (input.choice !== 'fresh') throw new AppError('invalid_request', 'Choose a fresh start');
-      const gym = await save(context, input.revision, 8, { billingEnabled: false, memberEmailsEnabled: false }, { completed: true });
+      const changes = input.skipBackups ? { backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: null } : {};
+      const gym = await save(context, input.revision, 8, { ...changes, billingEnabled: false, memberEmailsEnabled: false },
+        { completed: true }, undefined, input.skipBackups ? 6 : 7);
       return { completed: true as const, billingEnabled: false as const, memberEmailsEnabled: false as const, revision: gym.revision };
     },
   };

@@ -4,8 +4,6 @@ import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { loadLocale } from '../locales/loader.ts';
-import { areaContributions } from '../apps/server/src/core/registry-areas.ts';
-import { createServerRegistry } from '../apps/server/src/core/registry.ts';
 import { generateApiSource } from './generate-api.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -50,6 +48,21 @@ await new Generator({
   ),
 }).run();
 
+/** @type {Record<string, unknown>} */
+const localeFiles = {};
+const localeRoot = join(root, 'locales');
+for (const path of (await readdir(localeRoot, { recursive: true })).sort()) {
+  if (!path.endsWith('.json')) continue;
+  localeFiles[path.replaceAll('\\', '/')] = JSON.parse(await readFile(join(localeRoot, path), 'utf8'));
+}
+const languages = [...new Set(Object.keys(localeFiles).map((path) => path.split('/')[0]))];
+const catalogs = Object.fromEntries(languages.map((language) => [language, loadLocale(localeFiles, language)]));
+await writeChanged(join(root, 'packages/shared/dist/locales.gen.ts'), header +
+  "\nimport type { LocaleCatalog } from '../src/i18n.js';\n\nexport const locales: Readonly<Record<string, LocaleCatalog>> = " +
+  JSON.stringify(catalogs, null, 2) + ';\n');
+// Routes import email templates, which need the generated locales even on a clean checkout.
+const { areaContributions } = await import('../apps/server/src/core/registry-areas.ts');
+const { createServerRegistry } = await import('../apps/server/src/core/registry.ts');
 // Load module descriptors at composition time; core never imports module code.
 const modulesDirectory = join(root, 'apps/server/src/modules');
 const modules = [];
@@ -78,22 +91,4 @@ const document = app.getOpenAPI31Document({
 });
 await writeChanged(join(root, 'packages/shared/dist/api-client.gen.ts'), await generateApiSource(document));
 
-/** @type {Record<string, unknown>} */
-const localeFiles = {};
-const localeRoot = join(root, 'locales');
-for (const path of (await readdir(localeRoot, { recursive: true })).sort()) {
-  if (!path.endsWith('.json')) continue;
-  localeFiles[path.replaceAll('\\', '/')] = JSON.parse(await readFile(join(localeRoot, path), 'utf8'));
-}
-const languages = [...new Set(Object.keys(localeFiles).map((path) => path.split('/')[0]))];
-const catalogs = Object.fromEntries(
-  languages.map((language) => [language, loadLocale(localeFiles, language)]),
-);
-await writeChanged(
-  join(root, 'packages/shared/dist/locales.gen.ts'),
-  header +
-    "\nimport type { LocaleCatalog } from '../src/i18n.js';\n\nexport const locales: Readonly<Record<string, LocaleCatalog>> = " +
-    JSON.stringify(catalogs, null, 2) +
-    ';\n',
-);
 console.log('Generated route tree, OpenAPI client, and locales.');

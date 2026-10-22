@@ -81,6 +81,7 @@ install -m 0700 "$SOURCE/update.sh" "$ROOT/update.sh"
   printf 'MAINTENANCE_PASSWORD=%s\n' "$(openssl rand -hex 32)"
   printf 'APP_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)"
   printf 'AUTH_SECRET=%s\n' "$(openssl rand -hex 32)"
+  printf 'SETUP_TOKEN=%s\n' "$(openssl rand -hex 32)"
   printf 'BACKUP_RECIPIENT=\n'
 } > "$ROOT/.env"
 chmod 0600 "$ROOT/.env"
@@ -102,3 +103,5 @@ until curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "https
   sleep 5
 done
 printf 'PlainGym is running: https://%s/healthz\nInstallation: %s\n' "$hostname" "$ROOT"
+printf 'Private setup link (keep it secret):\n'
+compose exec -T app gym-app setup-link

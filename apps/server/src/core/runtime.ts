@@ -30,6 +30,14 @@ import { configuredBackup, loadBackupConfig } from '../areas/health/restore.conf
 import { RestoreGate } from '../areas/health/restore.gate.js';
 import { configureAuthCli } from '../cli/auth.js';
 import { runCli, type CommandIO } from '../cli/index.js';
+import { demoBootCheck } from '../demo/config.js';
+import { createDemoRuntime } from '../demo/runtime.js';
+import { createRuntimeUploads } from '../infra/storage/runtime.js';
+import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
+import { configureHealthStatus } from '../areas/health/status.routes.js';
+import { configureGymDeletion } from '../areas/settings/gym-delete.routes.js';
+import { createGymDeleteService } from '../areas/settings/gym-delete.js';
+import { createSetupLinkCommand } from '../cli/setup-link.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -47,23 +55,25 @@ export function publicOrigin(env: NodeJS.ProcessEnv): string | undefined {
 
 /** Shared setup for the server and the database-backed CLI commands. */
 async function prepare(env: NodeJS.ProcessEnv) {
+  const demo = demoBootCheck(env);
   const key = parseEncryptionKey(required(env, 'APP_ENCRYPTION_KEY'));
   const mode = tenancyMode(env.TENANCY ?? 'single');
-  const config = authConfig(env);
-  const install = publicOrigin(env);
+  const config = demo.enabled ? authConfig({ ...env, AUTH_PASSWORD_LOGIN: 'off' }, true) : authConfig(env);
+  const install = publicOrigin(env) ?? (demo.enabled ? `https://${demo.domain}` : undefined);
   if (mode === 'single' && !install) throw new Error('Set GYM_HOSTNAME or PUBLIC_ORIGIN');
   await initializeDatabase(required(env, 'DATABASE_URL'));
-  const smtp = createSmtpResolver({ key, env });
-  configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp.configured(gymId) });
+  const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
+  configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp ? smtp.configured(gymId) : Promise.resolve(true) });
   return { key, mode, config, install, smtp };
 }
 
 export interface Runtime {
   readonly app: ReturnType<typeof createApp>;
+  readonly uploadsFor: ReturnType<typeof createRuntimeUploads>['forGym'];
   stop(): Promise<void>;
 }
 export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promise<Runtime> {
-  const { key, mode, config, install, smtp } = await prepare(env);
+  const { key, mode, config: initialConfig, install, smtp } = await prepare(env);
   // Caddy is the only peer that can reach the app in the Compose deployment.
   const trustedProxy = env.TRUST_PROXY === 'true' ? () => true : undefined;
   const originFor = (context: Context<RequestEnvironment>): string => {
@@ -80,34 +90,53 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     return `https://${hostname}`;
   }
 
-  const auth = createAuthService({ config, sendMagicLink: createAuthEmailSender((gymId) => smtp.config(gymId)) });
+  const uploads = createRuntimeUploads(env, key, gymOrigin);
+  const demo = await createDemoRuntime({ env, installOrigin: install ?? '', removeUploads: uploads.removeGym,
+    ...(trustedProxy ? { clientIp: { trustedProxy } } : {}) });
+  if (!demo) configureGymDeletion(createGymDeleteService({ clock, removeUploads: uploads.removeGym }));
+  const config = demo?.authConfig ?? initialConfig;
+  const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
+  const auth = createAuthService({ config, sendMagicLink: demo?.sendMagicLink ?? createAuthEmailSender((gymId) => smtp!.config(gymId)) });
   configureLoginMethods(async (gymId) => {
-    const configured = await smtp.configured(gymId);
+    const configured = await smtpConfigured(gymId);
     return { password: passwordLogin(config, configured), magicLink: configured };
   });
   const settings = createSettingsService(), t = createTranslator(locales.en ?? {});
   configureSignedLinkDelivery({ async prepare(gymId) {
-    const [details, origin, mail] = await Promise.all([settings.get(gymId), gymOrigin(gymId), smtp.config(gymId)]);
-    if (!mail) throw new AppError('unavailable', 'Email is not configured for this gym');
-    return { gymId, gymName: details.name, origin, email: new SmtpEmail(mail), memberEmailsEnabled: details.memberEmailsEnabled, t };
+    const [details, origin, mail] = await Promise.all([settings.get(gymId), gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId)]);
+    if (!demo && !mail) throw new AppError('unavailable', 'Email is not configured for this gym');
+    return { gymId, gymName: details.name, origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), memberEmailsEnabled: details.memberEmailsEnabled, t };
   } });
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
+  configureHealthStatus({ env });
   const app = createApp({
     contributions: areaContributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
-    session: sessionMiddleware({ auth, smtpConfigured: (gymId) => smtp.configured(gymId), resolve: (context) => {
+    session: createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session: sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {
       const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
       return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
-    } }),
+    } }) }),
     origin: originFor, ...(install ? { installOrigin: install } : {}),
     ...(trustedProxy ? { rateLimit: { trustedProxy } } : {}), ...(gate ? { restoreGate: gate.middleware() } : {}),
     ...(env.SOURCE_URL ? { sourceUrl: env.SOURCE_URL } : {}),
+    ...(env.SETUP_TOKEN ? { setupToken: env.SETUP_TOKEN } : {}), ...(demo ? { skipSetup: demo.skipSetup } : {}),
   });
 
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
   registerModuleJobs(createServerRegistry(areaContributions), queue, createGymSettingsAccessor());
   const report = (error: unknown) => console.error('Background job error', error);
+  const cleanup = demo?.registerCleanup(queue);
+  let demoTimer: NodeJS.Timeout | undefined;
+  if (cleanup) {
+    const schedule = async () => {
+      if (gate) { if (!await gate.isClosed()) await gate.activity(() => cleanup.scheduleDue()); }
+      else await cleanup.scheduleDue();
+    };
+    demoTimer = setInterval(() => { schedule().catch(report); }, 60_000);
+    demoTimer.unref();
+    await schedule();
+  }
   let backupTimer: NodeJS.Timeout | undefined;
   if (gate && env.MAINTENANCE_DATABASE_URL && env.UPLOADS_DIR) {
     const database = new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL);
@@ -129,15 +158,17 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const worker = startJobsWorker(queue, { onError: report,
     ...(gate ? { paused: () => gate.isClosed(), around: (execute: () => Promise<void>) => gate.activity(execute) } : {}) });
 
-  return { app, async stop() {
+  return { app, uploadsFor: uploads.forGym, async stop() {
     if (backupTimer) clearInterval(backupTimer);
-    try { await worker.stop(); } finally { await closeDatabase(); }
+    if (demoTimer) clearInterval(demoTimer);
+    try { await worker.stop(); } finally { uploads.close(); await closeDatabase(); }
   } };
 }
 
 /** `gym-app <command>`: the restore command manages its own connections; the others use the app database. */
 export async function runCommandLine(args: readonly string[], io: CommandIO, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   if (args[0] === 'restore') return runCli(args, io);
+  if (args[0] === 'setup-link') return createSetupLinkCommand(env).run(args.slice(1), io);
   try { await prepare(env); }
   catch (error) { io.stderr(error instanceof Error ? error.message : 'Startup failed'); return 1; }
   try { return await runCli(args, io); } finally { await closeDatabase(); }

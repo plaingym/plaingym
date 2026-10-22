@@ -65,6 +65,6 @@ describe('gym settings contracts', () => {
     expect(gymSettingsSchema.parse({ ...settings, existingSiteUrl: 'https://example.com' }).existingSiteUrl).toBe('https://example.com');
   });
   it.each(Object.entries(settingsContracts))('%s allows managers and denies coaches/front desk', (_operation, contract) => {
-    for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(['owner', 'admin'].includes(role));
+    for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe((contract.permission.capability === 'ownership.transfer' ? ['owner'] : ['owner', 'admin']).includes(role));
   });
 });

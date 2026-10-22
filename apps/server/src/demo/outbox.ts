@@ -2,7 +2,7 @@
 import { and, desc, eq, lt } from 'drizzle-orm';
 import { emailOutbox, forGym } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
-import { outboxQuery } from './contracts.js';
+import { outboxQuery } from '@plaingym/shared/contracts';
 
 export function createOutboxQuery(scope: typeof forGym = forGym) {
   const present = (row: typeof emailOutbox.$inferSelect) => ({ id: row.id, recipient: row.recipient, subject: row.subject,

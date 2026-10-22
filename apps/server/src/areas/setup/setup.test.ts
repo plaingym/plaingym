@@ -29,6 +29,7 @@ import { createSetupRoutes } from './setup.routes.js';
 
 const database = useTestDatabase(), clock = new TestClock('2026-10-22T12:00:00Z');
 const key = parseEncryptionKey('ab'.repeat(32)), origin = 'http://gym.localhost';
+const setupToken = 'private-setup-token-at-least-32-characters';
 const env = { AUTH_SECRET: 'setup-test-secret-with-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'auto' };
 const config = authConfig(env), sendTest = vi.fn(async () => { assertNoTransaction('setup test email'); });
 const ownerService = createOwnerService({ accounts: createAccountService(config), clock, async sendMagicLink() { throw new Error('Password bootstrap must not send a link'); } });
@@ -44,7 +45,7 @@ beforeAll(async () => {
   await writeFile(join(directory, 'assets', 'app.js'), 'export {};');
 });
 afterAll(async () => { await closeDatabase(); await rm(directory, { recursive: true, force: true }); });
-const app = () => createApp({ clock, installOrigin: origin, origin, publicDirectory: directory,
+const app = () => createApp({ clock, installOrigin: origin, origin, publicDirectory: directory, setupToken,
   contributions: { routes: [...createSetupRoutes(() => service), ...createContentPackRoutes()] },
   resolveGym: createTenantResolver(), authorize,
   session: sessionMiddleware({ auth, smtpConfigured: (gymId) => smtp.configured(gymId), resolve: (c) => ({
@@ -52,15 +53,25 @@ const app = () => createApp({ clock, installOrigin: origin, origin, publicDirect
   }) }),
 });
 describe('first-boot setup', () => {
-  it('limits owner passwords locally until the shared contract is aligned', async () => {
+  it('rejects missing and incorrect tokens before public setup actions can reserve an install', async () => {
+    const server = app();
+    for (const contract of [setupContracts.start, setupContracts.owner, setupContracts.restore]) {
+      for (const token of [undefined, 'wrong-token']) expect((await server.request(origin + contract.path, {
+        method: 'POST', headers: { origin, 'content-type': 'application/json', ...(token ? { 'x-setup-token': token } : {}) }, body: '{}',
+      })).status).toBe(403);
+    }
+    expect((await server.request(origin + '/api/setup')).status).toBe(200);
+    expect(await database.forSystem((tx) => tx.select().from(gyms))).toHaveLength(0);
+  });
+  it('uses the same password limit as the adapter', async () => {
     const body = { name: 'Owner', email: 'owner@example.org', password: 'x'.repeat(129) };
-    expect((await app().request(origin + '/api/setup/owner', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) })).status).toBe(400);
+    expect((await app().request(origin + '/api/setup/owner', { method: 'POST', headers: { origin, 'content-type': 'application/json', 'x-setup-token': setupToken }, body: JSON.stringify(body) })).status).toBe(400);
     expect(await service.status()).toMatchObject({ currentStep: 0 });
   });
   it('completes a fresh wizard with real owner authentication, packs, SMTP and compatible backups', async () => {
     const server = app();
     const call = (path: string, method = 'GET', body?: unknown, cookie?: string) => server.request(origin + path, {
-      method, headers: { host: 'gym.localhost', origin, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+      method, headers: { host: 'gym.localhost', origin, 'content-type': 'application/json', 'x-setup-token': setupToken, ...(cookie ? { cookie } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     expect((await server.request(origin + '/setup', { headers: { accept: 'text/html' } })).status).toBe(200);

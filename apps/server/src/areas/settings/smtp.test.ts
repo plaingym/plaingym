@@ -19,6 +19,8 @@ beforeAll(async () => {
 describe('per-gym SMTP with an install-wide fallback', () => {
   it('uses the gym\'s own settings first', async () => {
     const smtp = createSmtpResolver({ key, env, scope: database.forGym });
+    expect(await smtp.source(gymA)).toBe('gym');
+    expect(await smtp.source(gymB)).toBe('install');
     expect(await smtp.config(gymA)).toEqual({ host: own.host, port: 587, security: 'starttls', from: own.from,
       auth: { user: 'gym-a', pass: 'gym-a-secret' } });
   });
@@ -30,6 +32,7 @@ describe('per-gym SMTP with an install-wide fallback', () => {
   });
   it('reports no email when neither the gym nor the install has SMTP', async () => {
     const smtp = createSmtpResolver({ key, env: {}, scope: database.forGym });
+    expect(await smtp.source(gymB)).toBeNull();
     expect(await smtp.config(gymB)).toBeNull();
     expect(await smtp.configured(gymB)).toBe(false);
     expect(await smtp.configured(gymA)).toBe(true);

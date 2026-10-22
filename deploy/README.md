@@ -2,9 +2,8 @@
 
 # Deploying PlainGym
 
-This stack runs the current server scaffold, which responds at `/healthz`.
-The web build is packaged in `/app/public`; the server does not serve it yet.
-A successful install means a working HTTPS health endpoint.
+This stack serves the application and setup wizard over HTTPS. The installer
+prints a private first-boot setup link after the health check succeeds.
 
 Use an amd64 or arm64 Ubuntu 24.04/26.04 LTS server with a public DNS name.
 Point its A record (and AAAA record, if present) at the server and allow inbound
@@ -25,8 +24,10 @@ Run from the repository root with Docker running:
 docker build -f deploy/Dockerfile \
   --build-arg SOURCE_URL=https://github.com/plaingym/plaingym/tree/REVIEWED_COMMIT \
   --build-arg REVISION=REVIEWED_COMMIT \
+  --build-arg VERSION=0.0.0-local \
   -t plaingym:v0.0.0-local .
-node deploy/test/smoke.mjs plaingym:v0.0.0-local
+SOURCE_URL=https://github.com/plaingym/plaingym/tree/REVIEWED_COMMIT \
+  VERSION=0.0.0-local node deploy/test/smoke.mjs plaingym:v0.0.0-local
 ```
 
 Use the release tag's source URL for a release build, or your fork's exact
@@ -59,7 +60,7 @@ archive privately, run `sudo docker load -i image.tar`, and pass
 server. Use the matching CPU architecture.
 
 The installer configures Docker, firewall rules, unattended OS security
-updates, and swap. It generates five independent secrets, then starts the
+updates, and swap. It generates six independent secrets, then starts the
 stack in `/opt/plaingym`. Its `.env` is mode 0600 in a mode-0700 directory;
 public bootstrap/configuration files are readable by their containers.
 Re-running against an existing `.env` stops without replacing secrets.
@@ -72,6 +73,22 @@ The installer exits successfully only after a public certificate validates
 and `https://gym.example.org/healthz` responds. If this fails, inspect DNS,
 firewall rules, and `sudo docker compose logs caddy` in the install directory.
 Do not delete database volumes to retry an installation.
+
+Open the private `/setup#token=…` link printed by the installer. `SETUP_TOKEN`
+in `.env` proves that the person creating the first owner or restoring a backup
+controls the server. Public certificate issuance alone never grants setup access.
+The browser removes the token from the address bar and keeps it for this tab;
+setup actions close after initialization. To reprint the link on the server:
+
+```sh
+cd /opt/plaingym
+sudo docker compose exec -T app gym-app setup-link
+```
+
+For manual Compose installs, generate `SETUP_TOKEN` independently with
+`openssl rand -hex 32` before starting. Existing installs must add it to `.env`
+when updating their Compose file. Backups can be configured in the wizard or
+deferred with **Set up later**; the health page reports them as not configured.
 
 `cloud-init.yaml` automates the same installer from a reviewed public commit.
 Replace its commit, hostname, email, and image placeholders before supplying

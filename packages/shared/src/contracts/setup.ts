@@ -14,7 +14,7 @@ export const setupStatusResponseSchema = z.strictObject({ data: z.strictObject({
 }) });
 export const setupStartRequestSchema = z.strictObject({ choice: z.literal('fresh') });
 export const setupOwnerRequestSchema = z.strictObject({
-  name: z.string().trim().min(1), email: z.email().toLowerCase(), password: z.string().min(12).max(1024),
+  name: z.string().trim().min(1), email: z.email().toLowerCase(), password: z.string().min(12).max(128),
 });
 export const setupOwnerResponseSchema = z.strictObject({ data: z.strictObject({ userId: idSchema }) });
 export const setupGymDetailsSchema = z.strictObject({
@@ -84,7 +84,7 @@ export const setupRestoreResponseSchema = z.strictObject({ data: z.discriminated
   z.strictObject({ status: z.literal('failed'), jobId: idSchema, message: z.string().min(1) }),
 ]) });
 export const setupFinishRequestSchema = z.discriminatedUnion('choice', [
-  z.strictObject({ choice: z.literal('fresh'), revision: revisionSchema }),
+  z.strictObject({ choice: z.literal('fresh'), revision: revisionSchema, skipBackups: z.literal(true).optional() }),
   z.strictObject({ choice: z.literal('import'), revision: revisionSchema, importId: idSchema }),
 ]);
 export const setupFinishResponseSchema = z.strictObject({ data: z.strictObject({

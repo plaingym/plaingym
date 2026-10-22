@@ -4,6 +4,8 @@ import { commands as auth } from './auth.js';
 import { commands as gyms } from './gyms.js';
 import { commands as restore } from './restore.js';
 import { commands as replay } from './replay.js';
+import { commands as setupLink } from './setup-link.js';
+import { createSeedCommand } from '../demo/seed-cli.js';
 
 export interface CommandIO {
   stdout(message: string): void;
@@ -14,7 +16,7 @@ export interface Command extends RegistryEntry {
   run(args: readonly string[], io: CommandIO): Promise<number>;
 }
 export const commands = new Registry<Command>();
-for (const group of [auth, gyms, restore, replay]) commands.registerAll(group);
+for (const group of [auth, gyms, restore, replay, setupLink, [createSeedCommand()]]) commands.registerAll(group);
 
 export async function runCli(args: readonly string[], io: CommandIO): Promise<number> {
   const command = commands.all().find((entry) => entry.id === args[0]);

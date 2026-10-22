@@ -20,7 +20,8 @@
     "dev:down": "docker compose -f compose.dev.yaml down --volumes --remove-orphans",
     "hooks:install": "simple-git-hooks",
     "prepare": "node apps/server/install-hooks.mjs",
-    "generate": "pnpm --filter @plaingym/server exec tsx ../../scripts/generate.mjs"
+    "generate": "pnpm --filter @plaingym/server exec tsx ../../scripts/generate.mjs",
+    "seed": "pnpm --filter @plaingym/server exec tsx --env-file-if-exists=../../.env src/index.ts seed"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

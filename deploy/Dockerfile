@@ -39,10 +39,13 @@ RUN chmod 0555 /app/deploy/*.sh \
       cat /app/licenses/THIRD_PARTY_LICENSES; } > /app/THIRD_PARTY_LICENSES
 ARG SOURCE_URL=https://github.com/plaingym/plaingym
 ENV SOURCE_URL=${SOURCE_URL}
+ARG VERSION=0.0.0-dev
+ENV APP_VERSION=${VERSION}
 ARG REVISION
 LABEL org.opencontainers.image.source="https://github.com/plaingym/plaingym" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.url="${SOURCE_URL}"
 USER node
 EXPOSE 3000

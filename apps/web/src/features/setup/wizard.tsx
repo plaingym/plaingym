@@ -58,7 +58,7 @@ export function SetupWizard({ client = setupClient }: { client?: Client }) {
     setBusy(true); setError(null);
     try { await action(); }
     catch (failure) {
-      setError(failure instanceof ApiError && failure.status === 409 ? 'changed' : 'failed');
+      setError(failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed' : 'failed');
       if (failure instanceof ApiError && failure.status === 409) await refresh();
     } finally { setBusy(false); }
   };
@@ -157,7 +157,10 @@ export function SetupWizard({ client = setupClient }: { client?: Client }) {
             }}>{t('setup/setup:downloadKey')}</Button><Form submit="confirmKey" action={async (data) => {
               await client.call('confirmBackupKey', { revision, privateKey: text(data, 'privateKey').trim() }); setBackupKey(null); setBackupReady(true); await refresh();
             }}><Field name="privateKey" type="password" /><Label className="flex gap-2"><input type="checkbox" required />{t('setup/setup:savedKey')}</Label></Form></>
-          : <Form submit="generateKey" action={async (data) => { setBackupKey(await client.call('backups', { revision, destination: destination(data) })); await refresh(); }}><Destination /></Form>}</>}
+          : <Form submit="generateKey" action={async (data) => { setBackupKey(await client.call('backups', { revision, destination: destination(data) })); await refresh(); }}><Destination /></Form>}
+          <Button disabled={busy} variant="outline" onClick={() => void run(async () => {
+            await client.call('finish', { choice: 'fresh', revision, skipBackups: true }); setBackupKey(null); setDone(true);
+          })}>{t('setup/setup:skipBackups')}</Button></>}
       </>}
     </>}
   </Card></main></FormContext.Provider>;

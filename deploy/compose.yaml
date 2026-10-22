@@ -78,6 +78,7 @@ services:
       SOURCE_URL: ${SOURCE_URL:-https://github.com/plaingym/plaingym}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       AUTH_SECRET: ${AUTH_SECRET:?required}
+      SETUP_TOKEN: ${SETUP_TOKEN:?required}
       DATABASE_URL: postgres://app:${APP_PASSWORD:?required}@postgres:5432/${POSTGRES_DB:-plaingym}
       POSTGRES_DB: ${POSTGRES_DB:-plaingym}
       APP_PASSWORD: ${APP_PASSWORD:?required}

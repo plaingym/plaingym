@@ -64,6 +64,8 @@
   "restoreFailed": "Restore failed. Check the source and key. If a verified restore was interrupted, resume it with the maintenance command.",
   "pollFailed": "Could not read restore progress. Reload this page to retry.",
   "restored": "Backup restored. Sign in to your restored gym. Billing remains paused until reconciliation.",
+  "skipBackups": "Set up later",
+  "setupLink": "Open the private setup link printed by the installer. You can reprint it with gym-app setup-link on the server.",
   "backupHint": "Snapshots are encrypted before uploading. Only your backup private key can open them.",
   "retention": "Backups use an 8 GB budget, keeping 24 hourly, 7 nightly, 4 weekly, and up to 2 pre-upgrade snapshots when capacity permits.",
   "generateKey": "Generate backup key",

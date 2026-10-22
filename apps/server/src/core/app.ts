@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
-import { ranksContracts, setupContracts } from '@plaingym/shared/contracts';
+import { demoContracts, ranksContracts, setupContracts } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import { clock as systemClock, type Clock } from './clock.js';
 import type { RequestContext, RequestEnvironment } from './context.js';
@@ -14,6 +14,7 @@ import { mountHealthz } from './healthz.js';
 import { mountSourceLink, sourceUrl } from './source-link.js';
 import { mountOpenApi } from './openapi.js';
 import { staticAssets } from './static.js';
+import { requireSetupToken } from '../areas/setup/setup.token.js';
 
 export interface AppOptions {
   readonly resolveGym: MiddlewareHandler<RequestEnvironment>;
@@ -29,6 +30,8 @@ export interface AppOptions {
   readonly restoreGate?: MiddlewareHandler<RequestEnvironment>;
   /** First-boot requests have no resolved gym from which to derive an origin. */
   readonly installOrigin?: string;
+  readonly setupToken?: string;
+  readonly skipSetup?: boolean;
 }
 
 export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> {
@@ -54,7 +57,8 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   };
   mountHealthz(app, installAuthorize);
   mountSourceLink(app, sourceUrl(options.sourceUrl), installAuthorize);
-  const contributions = options.contributions ?? {};
+  const contributions = { ...options.contributions, routes: (options.contributions?.routes ?? []).filter((entry) =>
+    !options.skipSetup || !Object.values(setupContracts).some((contract) => entry.id === `${contract.method.toUpperCase()} ${contract.path}`)) };
   const firstBootIds = new Set(Object.values(setupContracts)
     .filter((contract) => contract.gate === 'uninitialized_install')
     .map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
@@ -62,6 +66,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   const installRoutes = (contributions.routes ?? []).filter((entry) => firstBootIds.has(entry.id) || entry.id === catalogId);
   const installCsrf = csrf(options.installOrigin ?? (typeof options.origin === 'string' ? options.origin : undefined));
   const installLimiter = rateLimit(options.rateLimit);
+  const setupToken = requireSetupToken(options.setupToken ?? process.env.SETUP_TOKEN);
   const authorizeInstall: PermissionMiddleware = (permission) => async (context, next) => {
     await installCsrf(context, async () => {
       await installLimiter(context, async () => { await installAuthorize(permission)(context, next); });
@@ -73,13 +78,19 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     .map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
   for (const entry of installRoutes.filter((entry) => firstBootIds.has(entry.id))) {
     entry.mount(app, (permission) => async (context, next) => {
+      const guarded = () => entry.id === 'GET /api/setup'
+        ? authorizeInstall(permission)(context, next)
+        : setupToken(context, async () => { await authorizeInstall(permission)(context, next); });
       if (options.restoreGate && !restoreIds.has(entry.id)) {
-        return options.restoreGate(context, async () => { await authorizeInstall(permission)(context, next); });
+        return options.restoreGate(context, async () => { await guarded(); });
       }
-      return authorizeInstall(permission)(context, next);
+      return guarded();
     });
   }
   if (options.restoreGate) app.use('*', options.restoreGate);
+  const demoInstallIds = new Set([demoContracts.create, demoContracts.entry].map((contract) => `${contract.method.toUpperCase()} ${contract.path}`));
+  const demoInstallRoutes = (contributions.routes ?? []).filter((entry) => demoInstallIds.has(entry.id));
+  for (const entry of demoInstallRoutes) entry.mount(app, authorizeInstall);
   for (const entry of installRoutes.filter((entry) => entry.id === catalogId)) entry.mount(app, authorizeInstall);
   app.use('*', staticAssets(options.publicDirectory));
   app.use('*', options.resolveGym);
@@ -87,7 +98,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   app.use('*', csrf(options.origin));
   app.use('*', rateLimit(options.rateLimit));
   const registry = createServerRegistry({ ...contributions,
-    routes: (contributions.routes ?? []).filter((entry) => !installRoutes.includes(entry)),
+    routes: (contributions.routes ?? []).filter((entry) => !installRoutes.includes(entry) && !demoInstallRoutes.includes(entry)),
   });
   registry.mount(app, options.authorize, (context) => context.get('context').gym.enabledModules);
   mountOpenApi(app, options.authorize);

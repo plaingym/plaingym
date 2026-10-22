@@ -5,7 +5,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { createAccountService } from '../infra/auth/accounts.js';
 import type { AuthConfig } from '../infra/auth/config.js';
 import { createAuthService } from '../infra/auth/service.js';
-import type { DemoRole } from './contracts.js';
+import type { DemoRole } from '@plaingym/shared/contracts';
 import { requireDemo, type DemoConfig } from './config.js';
 
 export const demoEmail = (gymId: string, role: DemoRole) => `${role}.${gymId}@example.invalid`;

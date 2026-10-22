@@ -8,7 +8,7 @@ import { reserveGym } from '../core/tenancy-bootstrap.js';
 import type { GymContext } from '../core/context.js';
 import type { GymDeleteService } from '../areas/settings/gym-delete.js';
 import { requireDemo, sandboxSettings, type DemoConfig } from './config.js';
-import type { DemoRole } from './contracts.js';
+import type { DemoRole } from '@plaingym/shared/contracts';
 
 export function createDemoService(options: {
   config: DemoConfig; key: Buffer; clock: Clock; deletion: GymDeleteService;

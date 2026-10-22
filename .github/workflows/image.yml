@@ -35,6 +35,7 @@ jobs:
       IMAGE: plaingym:v0.0.0-ci-${{ matrix.arch }}
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
       REVISION: ${{ github.sha }}
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0-ci-{0}', github.sha) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -49,7 +50,7 @@ jobs:
         run: sudo sh deploy/test/update.sh
       - name: Build on the native CPU
         run: |
-          docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=$SOURCE_URL" --build-arg "REVISION=$REVISION" -t "$IMAGE" .
+          docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=$SOURCE_URL" --build-arg "REVISION=$REVISION" --build-arg "VERSION=$VERSION" -t "$IMAGE" .
           test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
       - name: Test the production stack
         run: node deploy/test/smoke.mjs "$IMAGE"

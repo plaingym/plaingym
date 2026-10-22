@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { gyms, auditEvents, uuidv7 } from '@plaingym/db';
+import { gyms, auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -45,6 +45,18 @@ const request = (server: ReturnType<typeof app>, contract: { path: string; metho
   method: contract.method.toUpperCase(), headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 });
 describe('setup owner authorization and tenant isolation', () => {
+  it('finishes without S3 only after an explicit skip, and keeps stale attempts atomic', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId, { settings: { setup: { ownerId: userA, completed: false, completedSteps: [0, 1, 2, 3, 4, 5, 6] } } });
+    const context = { gymId, actor: { kind: 'user', userId: userA } } as const;
+    await expect(service.finish(context, { choice: 'fresh', revision: 1 })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(service.finish(context, { choice: 'fresh', revision: 2, skipBackups: true })).rejects.toBeInstanceOf(RevisionConflictError);
+    expect((await database.forGym(gymId, (tx) => tx.select().from(gyms)))[0]!.revision).toBe(1);
+    expect(await service.finish(context, { choice: 'fresh', revision: 1, skipBackups: true })).toMatchObject({ completed: true, revision: 2 });
+    const [gym] = await database.forGym(gymId, (tx) => tx.select().from(gyms));
+    expect(gym).toMatchObject({ backupDestination: null, backupPublicKey: null, s3Config: null, backupBlobKey: null,
+      billingEnabled: false, memberEmailsEnabled: false, settings: { setup: { completed: true } } });
+  });
   it.each(staffRoles)('checks every setup-owner endpoint for %s before validation', async (role: StaffRole) => {
     const server = app({ kind: 'staff', gymId: gymA, userId: userA, roles: [role] });
     for (const contract of protectedContracts) expect((await request(server, contract)).status, contract.path).toBe(role === 'owner' ? 400 : 403);

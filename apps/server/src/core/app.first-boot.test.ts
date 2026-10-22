@@ -13,6 +13,7 @@ import { areaContributions } from './registry-areas.js';
 import { createTenantResolver } from './tenancy.js';
 
 const database = useTestDatabase();
+const setupToken = 'private-first-boot-token-at-least-32-characters';
 let directory: string;
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'plaingym-first-boot-'));
@@ -37,7 +38,7 @@ const authorize = () => () => { throw new Error('First boot must not need staff 
 
 describe('first-boot application routing with no gym', () => {
   it('serves the shell, assets and shipped catalog without resolving a gym or loading a session', async () => {
-    const app = createApp({ resolveGym: createTenantResolver({ mode: 'single', system: database.forSystem }),
+    const app = createApp({ setupToken, resolveGym: createTenantResolver({ mode: 'single', system: database.forSystem }),
       session, authorize, publicDirectory: directory, contributions: areaContributions });
     for (const path of ['/setup', '/setup/restore', '/admin', '/login']) {
       const response = await app.request(path, { headers: { accept: 'text/html' } });
@@ -60,40 +61,40 @@ describe('first-boot application routing with no gym', () => {
 
   it('mounts only the public first-boot contracts early and preserves each handler guard', async () => {
     let initialized = false;
-    const app = createApp({ resolveGym, session, authorize, contributions: {
+    const app = createApp({ setupToken, resolveGym, session, authorize, contributions: {
       routes: Object.values(setupContracts).map((contract) => fixture(contract, () => !initialized)),
     } });
     for (const contract of Object.values(setupContracts)) {
       const path = contract.path.replace('{jobId}', '019a08bf-1234-7000-8000-000000000001');
-      const request = () => app.request(path, { method: contract.method.toUpperCase() });
+      const request = () => app.request(path, { method: contract.method.toUpperCase(), headers: { 'x-setup-token': setupToken } });
       expect((await request()).status).toBe(contract.gate === 'uninitialized_install' ? 200 : 404);
     }
     initialized = true;
     expect((await app.request('/api/setup')).status).toBe(404);
-    expect((await app.request('/api/setup/restore', { method: 'POST' })).status).toBe(404);
+    expect((await app.request('/api/setup/restore', { method: 'POST', headers: { 'x-setup-token': setupToken } })).status).toBe(404);
   });
 
   it('runs the restore gate before tenant access while the coordinator and status reader remain reachable', async () => {
     const calls: string[] = [];
-    const app = createApp({ resolveGym: () => { calls.push('tenant'); return resolveGym(); }, session, authorize,
+    const app = createApp({ setupToken, resolveGym: () => { calls.push('tenant'); return resolveGym(); }, session, authorize,
       restoreGate: () => { calls.push('gate'); throw new AppError('unavailable', 'Restore in progress'); },
       contributions: { routes: Object.values(setupContracts).map((contract) => fixture(contract)) }, publicDirectory: directory,
     });
     for (const path of ['/setup', '/api/setup', '/api/settings']) expect((await app.request(path)).status).toBe(503);
-    expect((await app.request('/api/setup/owner', { method: 'POST' })).status).toBe(503);
+    expect((await app.request('/api/setup/owner', { method: 'POST', headers: { 'x-setup-token': setupToken } })).status).toBe(503);
     expect(calls).toEqual(['gate', 'gate', 'gate', 'gate']);
-    expect((await app.request('/api/setup/restore', { method: 'POST' })).status).toBe(200);
-    expect((await app.request('/api/setup/restore/019a08bf-1234-7000-8000-000000000001')).status).toBe(200);
+    expect((await app.request('/api/setup/restore', { method: 'POST', headers: { 'x-setup-token': setupToken } })).status).toBe(200);
+    expect((await app.request('/api/setup/restore/019a08bf-1234-7000-8000-000000000001', { headers: { 'x-setup-token': setupToken } })).status).toBe(200);
     expect((await app.request('/healthz')).status).toBe(200);
     expect(calls).not.toContain('tenant');
   });
 
   it('protects first-boot writes with install-origin CSRF and an install-scoped rate limit', async () => {
-    const app = createApp({ resolveGym, session, authorize, installOrigin: 'https://gym.example',
+    const app = createApp({ setupToken, resolveGym, session, authorize, installOrigin: 'https://gym.example',
       origin: () => { throw new Error('No gym exists from which to derive an origin'); },
       rateLimit: { limit: 1 }, contributions: { routes: [fixture(setupContracts.start)] },
     });
-    const request = (origin: string) => app.request('/api/setup/start', { method: 'POST', headers: { cookie: 'session=old', origin } });
+    const request = (origin: string) => app.request('/api/setup/start', { method: 'POST', headers: { cookie: 'session=old', origin, 'x-setup-token': setupToken } });
     expect((await request('https://evil.example')).status).toBe(403);
     expect((await request('https://gym.example')).status).toBe(200);
     expect((await request('https://gym.example')).status).toBe(429);

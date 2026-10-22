@@ -25,8 +25,8 @@ import { createSetupRestore, snapshotId } from './setup.restore.js';
 
 const source = useTestDatabase(), target = useTestDatabase(), reservations = useTestDatabase(), factory = createFactories(source);
 const clock = new TestClock('2026-10-22T12:00:00Z'), key = Buffer.alloc(32, 7), newKey = Buffer.alloc(32, 8), gymId = uuidv7();
-const tools: ToolRunner = (tool, env) => ({ command: 'docker', args: ['run', '--rm', '-i', '-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGDATABASE', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT',
-  'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32', tool], env: { ...env, PGHOST: 'host.docker.internal' } });
+const tools: ToolRunner = (tool, env) => ({ command: 'docker', args: ['run', '--rm', '-i', ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGDATABASE', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT',
+  'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32', tool], env: { ...env, PGHOST: process.platform === 'linux' ? '127.0.0.1' : 'host.docker.internal' } });
 let root: string;
 let server: Awaited<ReturnType<typeof s3Server>>;
 beforeAll(async () => { root = await mkdtemp(join(tmpdir(), 'setup-restore-')); server = await s3Server(); });
@@ -72,16 +72,17 @@ describe('setup restore coordinator', () => {
         }).restore(snapshotId(input.snapshotPrefix), input.privateKey),
       });
       const tenancy = vi.fn(async () => { throw new Error('Tenant lookup must be gated'); });
-      const app = createApp({ clock, installOrigin: 'http://gym.localhost', contributions: { routes: createSetupRoutes(() => service, () => restore) },
+      const setupToken = 'private-restore-token-at-least-32-characters';
+      const app = createApp({ clock, setupToken, installOrigin: 'http://gym.localhost', contributions: { routes: createSetupRoutes(() => service, () => restore) },
         resolveGym: tenancy, session: async (_c, next) => { await next(); }, authorize: () => async (_c, next) => { await next(); }, restoreGate: gate.middleware() });
       const input: SetupRestoreRequest = { choice: 'restore', source: { endpoint: server.endpoint, region: 'auto', bucket: 'backups', accessKeyId: 'fixture', secretAccessKey: 'private-fixture' },
         snapshotPrefix: 'snapshots/' + snapshot.id + '/', privateKey: identity };
-      const result = await app.request('http://gym.localhost/api/setup/restore', { method: 'POST', headers: { origin: 'http://gym.localhost', 'content-type': 'application/json' }, body: JSON.stringify(input) });
+      const result = await app.request('http://gym.localhost/api/setup/restore', { method: 'POST', headers: { origin: 'http://gym.localhost', 'content-type': 'application/json', 'x-setup-token': setupToken }, body: JSON.stringify(input) });
       expect(result.status).toBe(200);
       const jobId = (await result.json() as { data: { jobId: string } }).data.jobId;
       await expect.poll(async () => (await restore.status(jobId)).status, { timeout: 25_000 }).toBe('restored');
       expect((await blockedProbe)!.status).toBe(503); expect(tenancy).not.toHaveBeenCalled();
-      const status = await app.request('http://gym.localhost/api/setup/restore/' + jobId);
+      const status = await app.request('http://gym.localhost/api/setup/restore/' + jobId, { headers: { 'x-setup-token': setupToken } });
       expect(await status.json()).toMatchObject({ data: { status: 'restored', billingEnabled: false, next: 'login' } });
       expect((await target.forSystem((tx) => tx.select().from(gyms)))[0]).toMatchObject({ name: 'Restored academy', billingEnabled: false });
       const journal = await readFile(join(root, 'target', 'setup-restore.json'), 'utf8');

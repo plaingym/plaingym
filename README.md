@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # PlainGym
 
-An AGPL-3.0-only gym application. This checkout contains a development scaffold:
-a public `GET /healthz` Hono server and a minimal React page built by Vite.
+An AGPL-3.0-only gym application with first-boot setup, administration and kiosk
+shells, and encrypted backups. See [the install guide](deploy/README.md).
 
 ## Local development
 
@@ -12,6 +12,8 @@ Use Node **24.22.1**, pnpm **10.34.7**, and Docker with Linux containers.
 2. Replace all three password placeholders with different random, URL-safe values.
    Update `DATABASE_URL` to match the app password, database name and port.
    Set `SOURCE_URL` to the public source URL for your checkout.
+   Generate independent `AUTH_SECRET` and `SETUP_TOKEN` values, and a 32-byte
+   `APP_ENCRYPTION_KEY` encoded as 64 hex characters (`openssl rand -hex 32`).
 3. Choose a unique `COMPOSE_PROJECT_NAME` and unused ports if another worktree is running.
 4. Run:
 
@@ -29,10 +31,19 @@ On Windows use `pnpm.cmd` if PowerShell blocks `pnpm.ps1`. The server is at
 `http://127.0.0.1:8025` with the example ports. Vite proxies `/healthz` to the
 server's `PORT`. SMTP capture is on port 1025. All published ports bind to loopback.
 
+On first boot, print the private setup link in another terminal and open it:
+
+```sh
+pnpm --filter @plaingym/server exec tsx --env-file=../../.env src/index.ts setup-link
+```
+
+The token is required to create the first owner or restore a backup. Backups
+can be deferred with **Set up later**. Use `pnpm seed <gym-uuid>` to apply sample content.
+
 `pnpm build` creates `apps/server/dist/server.mjs` with its adjacent `assets/`
 and `apps/web/dist/`. Run the server with `pnpm --filter @plaingym/server start`
 and preview the web build with `pnpm --filter @plaingym/web preview`.
-The development scaffold runs the two apps separately.
+Development runs the two apps separately.
 
 `pnpm dev:down` removes this compose project's containers **and database volume**.
 Initialization runs only on an empty volume; changing passwords in `.env` does

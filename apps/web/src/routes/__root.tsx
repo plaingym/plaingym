@@ -2,6 +2,7 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { t } from '../lib/i18n.js';
+import { DemoShell } from '../features/demo/notice.js';
 // `/source` redirects to the running install's SOURCE_URL, so a modified install can change it at runtime.
 export function SourceFooter({ sourceUrl = '/source' }: { sourceUrl?: string }) {
   return <footer className="border-t border-border px-6 py-4 text-center text-sm text-muted-foreground">
@@ -11,7 +12,7 @@ export function SourceFooter({ sourceUrl = '/source' }: { sourceUrl?: string }) 
 export function RootLayout() {
   return <div className="flex min-h-dvh flex-col bg-background font-sans text-foreground">
     <a href="#main-content" className="sr-only focus:not-sr-only focus:p-3">{t('shell/shell:skip')}</a>
-    <div className="flex flex-1 flex-col"><Outlet /></div><SourceFooter />
+    <DemoShell><div className="flex flex-1 flex-col"><Outlet /></div></DemoShell><SourceFooter />
   </div>;
 }
 export function RootError({ reset }: { reset: () => void }) {

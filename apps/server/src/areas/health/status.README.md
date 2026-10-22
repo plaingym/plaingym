@@ -20,13 +20,13 @@ with a warning after two hours. Capacity includes current storage, one more data
 manifest, and the backup runner's 128 MiB reserve. A failed inventory stops pruning.
 No bucket names, filesystem paths, job errors, or SMTP credentials enter responses.
 
-The SMTP check validates configuration rather than attempting a send. It observes only
-the presence of the encrypted setting returned by the resolver's scope callback to report
-gym versus install configuration. TODO(CCR): replace this adapter with an explicit source
-accessor. Last test time remains unknown because the resolver does not provide it.
+The SMTP check validates configuration rather than attempting a send. It uses
+`SmtpResolver.source(gymId)` to report gym versus install configuration.
+Last test time remains unknown because the resolver does not provide it.
 
 TODO(CCR): `JobStatsQuery` has no oldest failure timestamp; return null rather than the
 pending-job timestamp. Disk details hold the volume with least free space; the message
 reports both uploads and staging. TODO(CCR): allow separate volume details. Disk warning
 means less than 10% or 1 GiB available; error means less than the backup reserve (128 MiB).
 Running version uses `APP_VERSION`, falling back to the current package version.
+The image sets `APP_VERSION` from its `VERSION` build argument.

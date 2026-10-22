@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, randomBytes } from 'node:crypto';
-import { and, asc, count, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, lte, or } from 'drizzle-orm';
 import { forGym, kioskDevices, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { kioskDeviceSchema, paginationSchema, registerKioskDeviceRequestSchema, type PaginationInput } from '@plaingym/shared/contracts';
@@ -64,14 +64,16 @@ export function createKioskDeviceService(options: { scope?: typeof forGym; clock
       if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new AppError('not_found', 'Device not found');
       return scope(gymId, async (tx) => {
         const now = clock.now();
-        // Check revocation on every request; the conditional write serializes with revocation.
-        const [device] = await tx.update(kioskDevices).set({ lastSeenAt: now }).where(and(
+        const predicate = and(
           eq(kioskDevices.gymId, gymId), eq(kioskDevices.tokenHash, hash(token)), isNull(kioskDevices.revokedAt),
-        )).returning({ id: kioskDevices.id });
+        );
+        // Read revocation every time; only stale activity timestamps need a write.
+        const [device] = await tx.select({ id: kioskDevices.id, lastSeenAt: kioskDevices.lastSeenAt }).from(kioskDevices).where(predicate);
         if (!device) throw new AppError('not_found', 'Device not found');
-        await writeAudit(tx, { gymId, actorKind: 'device', actorDeviceId: device.id,
-          action: 'kiosk.device.seen', targetType: 'kiosk_device', targetId: device.id,
-          after: { lastSeenAt: now.toISOString() }, occurredAt: now });
+        const cutoff = new Date(now.getTime() - 60_000);
+        if (!device.lastSeenAt || device.lastSeenAt <= cutoff) await tx.update(kioskDevices).set({ lastSeenAt: now }).where(and(
+          predicate, or(isNull(kioskDevices.lastSeenAt), lte(kioskDevices.lastSeenAt, cutoff)),
+        ));
         return { kind: 'kiosk' as const, gymId, deviceId: device.id };
       });
     },

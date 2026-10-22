@@ -3,6 +3,8 @@ import { and, eq } from 'drizzle-orm';
 import { forGym, forSystem, gyms, writeAudit, revisionGuard, assertRevised, RevisionConflictError } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { deleteDemoIdentities } from '../../infra/auth/demo-cleanup.js';
+import { sandboxSettings } from '../../demo/config.js';
 
 export function createGymDeleteService(options: {
   clock: Clock; removeUploads(gymId: string): Promise<void>; scope?: typeof forGym; system?: typeof forSystem;
@@ -21,13 +23,15 @@ export function createGymDeleteService(options: {
         .where(and(eq(gyms.id, gymId), guard.matches)).returning({ revision: gyms.revision }));
       await writeAudit(tx, { gymId, actorKind: actorUserId ? 'user' : 'system', ...(actorUserId ? { actorUserId } : {}),
         action: 'gym.deletion_started', targetType: 'gym', targetId: gymId, occurredAt: options.clock.now() });
-      return updated.revision;
+      return { revision: updated.revision, sandbox: sandboxSettings(gym.settings) !== null ||
+        /^demo-reservation\.[0-9a-f-]{36}@example[.]invalid$/.test(String((gym.settings as { bootstrapOwnerEmail?: string }).bootstrapOwnerEmail ?? '')) };
     });
     await options.removeUploads(gymId);
-    // Every gym FK cascades in this single statement, including sessions and jobs.
-    // Identity is install-wide and deliberately does not cascade with a gym.
-    const removed = await system((tx) => tx.delete(gyms).where(and(eq(gyms.id, gymId), eq(gyms.revision, suspendedRevision), eq(gyms.status, 'suspended'))).returning({ id: gyms.id }));
-    if (removed.length !== 1) throw new RevisionConflictError();
+    await system(async (tx) => {
+      const removed = await tx.delete(gyms).where(and(eq(gyms.id, gymId), eq(gyms.revision, suspendedRevision.revision), eq(gyms.status, 'suspended'))).returning({ id: gyms.id });
+      if (removed.length !== 1) throw new RevisionConflictError();
+      if (suspendedRevision.sandbox) await deleteDemoIdentities(tx, gymId);
+    });
   } };
 }
 export type GymDeleteService = ReturnType<typeof createGymDeleteService>;

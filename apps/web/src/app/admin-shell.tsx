@@ -6,6 +6,7 @@ import { createRegistries } from '../lib/registries.js';
 import { t } from '../lib/i18n.js';
 import { Button } from '../components/ui/button.js';
 import type { ShellBootstrap, ShellSession } from './services.js';
+import { useDemoSandbox } from '../features/demo/notice.js';
 export function visibleAdminNavigation(
   entries: readonly NavigationEntry[], session: ShellSession, enabledModules: readonly string[],
 ) {
@@ -16,7 +17,9 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
   { state: ShellBootstrap & { session: ShellSession }; entries?: readonly NavigationEntry[];
     children: ReactNode; onSignOut: () => void; signingOut?: boolean }) {
   const [open, setOpen] = useState(false);
-  const entriesToShow = visibleAdminNavigation(entries, state.session, state.gym.enabledModules);
+  const demo = useDemoSandbox();
+  const entriesToShow = visibleAdminNavigation(entries.map((entry) => entry.id === 'adminNav.outbox'
+    ? { ...entry, enabled: demo } : entry), state.session, state.gym.enabledModules);
   return <div className="flex flex-1 flex-col">
     <header className="flex items-center justify-between gap-4 border-b border-border p-4">
       <div><p className="font-semibold">{state.gym.name}</p><p className="text-xs text-muted-foreground">{t('shell/shell:admin')}</p></div>

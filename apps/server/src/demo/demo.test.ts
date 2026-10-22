@@ -64,7 +64,7 @@ function appFor(routes: readonly RouteRegistration[], gymId: string, role: Staff
   createServerRegistry({ routes }).mount(app, authorize, new Set());
   return { app, time, ip };
 }
-const post = (app: ReturnType<typeof appFor>['app'], path: string, body: unknown = {}, headers = {}) => app.request(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+const post = (app: ReturnType<typeof appFor>['app'], path: string, body: unknown = {}, headers = {}) => app.request(path, { method: 'POST', headers: { host: 'demo.example.test', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
 beforeAll(async () => { await factory('gyms', infraContractGyms.a); await factory('gyms', infraContractGyms.b); });
 emailContract('Postgres demo outbox', async () => new OutboxEmail(infraContractGyms.a, clock(), db.forGym));
@@ -144,6 +144,10 @@ describe('demo boundaries and sandbox lifecycle', () => {
     const excluded = new Set(['gyms', 'authUser', 'authAccount', 'authVerification', 'authRateLimit', 'backupRuns']);
     for (const name of factoryTableNames) if (!excluded.has(name)) await factory(name, a.gymId);
     await f.deletion.remove(a.gymId, 1);
+    for (const role of ['owner', 'coach', 'student'] as const) {
+      expect(await accounts().findUserByEmail(demoEmail(a.gymId, role))).toBeNull();
+      expect(await accounts().findUserByEmail(demoEmail(b.gymId, role))).not.toBeNull();
+    }
     const tables = await db.app.sql`select table_name from information_schema.columns where table_schema = 'public' and column_name = 'gym_id'`;
     await db.system.sql.begin(async (query) => {
       // System context reaches system rows; gym context reaches tenant rows.

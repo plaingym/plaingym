@@ -34,13 +34,16 @@ export interface SmtpResolver {
   /** The gym's own SMTP settings when saved, otherwise the install's, otherwise null. */
   config(gymId: string): Promise<SmtpConfig | null>;
   configured(gymId: string): Promise<boolean>;
+  source(gymId: string): Promise<'gym' | 'install' | null>;
 }
 export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessEnv; scope?: typeof forGym }): SmtpResolver {
   const scope = options.scope ?? forGym, fallback = smtpFromEnvironment(options.env);
+  const storedConfig = (gymId: string) => scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
   async function config(gymId: string): Promise<SmtpConfig | null> {
-    const stored = await scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
+    const stored = await storedConfig(gymId);
     if (!stored) return fallback;
     return fromStored(storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, 'smtp_config', stored))));
   }
-  return { config, async configured(gymId) { return (await config(gymId)) !== null; } };
+  return { config, async configured(gymId) { return (await config(gymId)) !== null; },
+    async source(gymId) { return await storedConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };
 }

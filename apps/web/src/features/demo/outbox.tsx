@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
 import { t } from '../../lib/i18n.js';
-interface Message { id: string; recipient: string; subject: string; html: string; text: string; sentAt: string; }
-/** TODO(CCR): use the generated client once demo contracts are shared. */
+import { outboxResponse } from '@plaingym/shared/contracts';
+import { api } from '../../lib/api.js';
+type Message = ReturnType<typeof outboxResponse.parse>['data'][number];
 export function OutboxPage() {
   const [messages, setMessages] = useState<Message[]>([]), [next, setNext] = useState<string | null>(null);
   const [cursor, setCursor] = useState<string | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState(false);
@@ -12,8 +13,8 @@ export function OutboxPage() {
   useEffect(() => {
     const abort = new AbortController();
     setLoading(true); setError(false);
-    void fetch('/api/demo/outbox' + (cursor ? '?before=' + encodeURIComponent(cursor) : ''), { credentials: 'same-origin', signal: abort.signal, redirect: 'error' })
-      .then(async (response) => { if (!response.ok) throw new Error(); return await response.json() as { data: Message[]; next: string | null }; })
+    void api.GET('/api/demo/outbox', { params: { query: { limit: 30, ...(cursor ? { before: cursor } : {}) } }, signal: abort.signal })
+      .then((result) => { if (!result.response.ok) throw new Error(); return outboxResponse.parse(result.data); })
       .then((body) => { setMessages((current) => cursor ? [...current, ...body.data] : body.data); setNext(body.next); })
       .catch(() => { if (!abort.signal.aborted) setError(true); })
       .finally(() => { if (!abort.signal.aborted) setLoading(false); });

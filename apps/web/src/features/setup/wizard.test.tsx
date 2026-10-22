@@ -38,6 +38,23 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
 beforeEach(() => { sessionStorage.clear(); vi.clearAllMocks(); });
 afterEach(cleanup);
 describe('setup wizard', () => {
+  it('takes the installer token out of the URL and sends it only on bootstrap actions', async () => {
+    window.history.replaceState(null, '', '/setup#token=private-install-token');
+    const { client, fetcher } = start();
+    await screen.findByRole('button', { name: 'Start fresh' });
+    expect(window.location.hash).toBe('');
+    expect(sessionStorage.getItem('setup.token')).toBe('private-install-token');
+    await client.call('start', { choice: 'fresh' });
+    expect(fetcher).toHaveBeenCalledWith('/api/setup/start', expect.objectContaining({ headers: expect.objectContaining({ 'X-Setup-Token': 'private-install-token' }) }));
+    expect(fetcher.mock.calls.find(([path]) => path === '/api/setup')?.[1]?.headers).not.toHaveProperty('X-Setup-Token');
+  });
+  it('offers setup later and finishes without asking for S3 credentials', async () => {
+    const { fetcher } = start(7);
+    await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
+    await screen.findByText(/Your gym is ready/);
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/finish');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'fresh', revision: 1, skipBackups: true });
+  });
   it('starts without asking for a gym bootstrap, then signs in the newly created owner', async () => {
     const { fetcher } = start();
     await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));

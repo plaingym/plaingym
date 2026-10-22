@@ -120,6 +120,13 @@ describe('kiosk devices', () => {
     expect(await service.authenticate(gymA, registered.token)).toEqual({ kind: 'kiosk', gymId: gymA, deviceId: registered.device.id });
     const [seen] = await database.forGym(gymA, (tx) => tx.select().from(kioskDevices).where(eq(kioskDevices.id, registered.device.id)));
     expect(seen!.lastSeenAt).toEqual(clock.now());
+    const firstSeen = clock.now();
+    clock.advance(59_999);
+    await service.authenticate(gymA, registered.token);
+    expect((await database.forGym(gymA, (tx) => tx.select().from(kioskDevices).where(eq(kioskDevices.id, registered.device.id))))[0]!.lastSeenAt).toEqual(firstSeen);
+    clock.advance(1);
+    await Promise.all([service.authenticate(gymA, registered.token), service.authenticate(gymA, registered.token)]);
+    expect((await database.forGym(gymA, (tx) => tx.select().from(kioskDevices).where(eq(kioskDevices.id, registered.device.id))))[0]!.lastSeenAt).toEqual(clock.now());
     clock.advance(1000);
     const revoked = await service.revoke(mutation(), registered.device.id);
     expect(revoked.revokedAt).toBe(clock.now().toISOString());
@@ -127,8 +134,7 @@ describe('kiosk devices', () => {
     clock.advance(1000);
     expect(await service.revoke(mutation(), registered.device.id)).toEqual(revoked);
     const events = (await audits()).filter((event) => event.targetId === registered.device.id);
-    expect(events.map((event) => event.action).sort()).toEqual(['kiosk.device.registered', 'kiosk.device.revoked', 'kiosk.device.seen']);
-    expect(events.find((event) => event.actorKind === 'device')?.actorDeviceId).toBe(registered.device.id);
+    expect(events.map((event) => event.action).sort()).toEqual(['kiosk.device.registered', 'kiosk.device.revoked']);
   });
   it('rolls back device mutations when their audit cannot commit', async () => {
     const actor = { kind: 'user' as const, userId: uuidv7() }, before = await deviceRows();

@@ -32,12 +32,29 @@ format. Student data is linked to a household; staff roles stay in `staff_roles`
 Gym deletion checks revision and suspends the gym before cleaning uploads outside a
 transaction. A storage error leaves a suspended gym that an install cleanup job can
 retry. A single gym deletion cascades all rows carrying its `gym_id`, including jobs,
-sessions and audits. Install-wide identities intentionally remain, since identities
-may belong to several gyms; no gym access remains without roles/household links.
+sessions and audits. Deleting a sandbox also removes its three deterministic
+`owner/coach/student.<gym-id>@example.invalid` identities in the same transaction.
+Ordinary install-wide identities remain shared.
 
-## Integration
+## Running the demo
 
-Runtime and shared composition are integration-owned. This task exports and tests:
+The production runtime connects the boot checks, outbox delivery for login and
+signed links, upload restrictions, tenant-free entry routes, and cleanup timer.
+Open `https://<DEMO_DOMAIN>/demo` to create a sandbox. Sandbox creation accepts
+only the install hostname. Every shell shows demo controls before login guards;
+the outbox navigation appears only in a sandbox.
+
+Set `UPLOADS_S3_BUCKET`, optional `UPLOADS_S3_ENDPOINT` and `UPLOADS_S3_REGION`,
+and credentials via `UPLOADS_S3_ACCESS_KEY_ID` / `UPLOADS_S3_SECRET_ACCESS_KEY`
+(or the provider's normal credential chain). Use a dedicated uploads bucket,
+separate from backups. The runtime wraps every uploads adapter with `demoUploads`.
+
+`gym-app seed <gym-uuid>` and `pnpm seed <gym-uuid>` run the registered seed steps.
+Demo and gym-deletion HTTP contracts live in `@plaingym/shared/contracts`.
+
+## Composition
+
+Runtime and shared composition use these exports:
 
 - `demoBootCheck(env)` **before** normal auth/email/payment construction.
 - `createDemoRuntime({ env, installOrigin, removeUploads })` after DB initialization.
@@ -57,13 +74,8 @@ Runtime and shared composition are integration-owned. This task exports and test
   storage provider. Never give this helper the backup destination.
 - `DemoNotice` in the shared shell **before login/admin guards**, so an anonymous
   sandbox visitor can choose an identity; `TryDemoButton` on the demo entry page.
-  The notice links to the registered `/admin/outbox` page. The ordinary static
-  admin-nav outbox entry remains disabled until a demo-aware visibility hook exists.
+  The notice links to `/admin/outbox`; the shell enables its navigation entry
+  only after the sandbox status check succeeds.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
   `runSeeds(context)` applies the foundation followed by the registered area seeds.
   Each step owns its short transactions and must support retries.
-
-The demo and gym-delete HTTP schemas are local `TODO(CCR)` contracts pending shared
-contract approval. The setup bypass and shell mounting also require composition
-outside this task's owned paths. These are explicit handoff items, not runtime
-patches in this branch.

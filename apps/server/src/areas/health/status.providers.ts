@@ -28,14 +28,11 @@ export function createStatusProviders(options: StatusOptions = {}) {
         details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: null } };
     }),
     healthProvider('smtp', async (context) => {
-      let own = false;
-      // TODO(CCR): expose source on SmtpResolver. Its scoped query returns the stored encrypted setting;
-      // observe only presence here, without importing system tables or returning credentials.
-      const resolver = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env,
-        scope: async (gymId, query) => { const stored = await scope(gymId, query); own = Boolean(stored); return stored; } });
+      const resolver = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope });
       const configured = await resolver.configured(context.gymId);
+      const source = await resolver.source(context.gymId);
       return { id: 'smtp', status: configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
-        details: { configured, lastTestAt: null }, message: statusMessage(configured ? own ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
+        details: { configured, lastTestAt: null }, message: statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
     }),
     healthProvider('disk', async (context) => {
       if (!env.UPLOADS_DIR || !env.BACKUP_STAGING_DIR) return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskMissing') };

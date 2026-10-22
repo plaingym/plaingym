@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Button } from '../../components/ui/button.js';
 import { createJsonTransport } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 const request = createJsonTransport();
+const DemoSandboxContext = createContext(false);
+export const useDemoSandbox = () => useContext(DemoSandboxContext);
+export function DemoShell({ children }: { children: ReactNode }) {
+  const status = useDemoStatus();
+  return <DemoSandboxContext.Provider value={Boolean(status.data)}><DemoNotice /><DemoEntry />{children}</DemoSandboxContext.Provider>;
+}
+export function useDemoStatus() {
+  return useQuery({ queryKey: ['demo', 'status'], queryFn: ({ signal }) =>
+    request<{ data: { expiresAt: string } }>('/api/demo/status', undefined, signal), retry: false });
+}
+export function DemoEntry() {
+  const entry = useQuery({ queryKey: ['demo', 'entry'], queryFn: ({ signal }) =>
+    request<{ data: { enabled: true } }>('/api/demo', undefined, signal), retry: false });
+  return entry.data?.data.enabled ? <div className="p-6"><TryDemoButton /></div> : null;
+}
 /** Mount in the shell; a normal gym's 404 leaves no demo controls visible. */
 export function DemoNotice() {
-  const [expires, setExpires] = useState<string | null>(null), [error, setError] = useState(false);
-  useEffect(() => {
-    const abort = new AbortController();
-    void request<{ data: { expiresAt: string } }>('/api/demo/status', undefined, abort.signal)
-      .then((response) => setExpires(response.data.expiresAt)).catch(() => {});
-    return () => abort.abort();
-  }, []);
+  const status = useDemoStatus(), expires = status.data?.data.expiresAt;
+  const [error, setError] = useState(false);
   if (!expires) return null;
   async function login(role: 'owner' | 'coach' | 'student') {
     setError(false);

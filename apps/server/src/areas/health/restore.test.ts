@@ -35,10 +35,10 @@ let identity: string, recipient: string, root: string;
 let server: Awaited<ReturnType<typeof s3Server>>;
 let client: ReturnType<typeof createS3Client>, store: S3BackupObjectStore, uploads: LocalUploads;
 const dockerTools: ToolRunner = (tool, env) => ({
-  command: 'docker', args: ['run', '--rm', '-i', '-e', 'PGHOST', '-e', 'PGPORT',
+  command: 'docker', args: ['run', '--rm', '-i', ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT',
     '-e', 'PGDATABASE', '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT',
     'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32', tool],
-  env: { ...env, PGHOST: 'host.docker.internal' },
+  env: { ...env, PGHOST: process.platform === 'linux' ? '127.0.0.1' : 'host.docker.internal' },
 });
 let sourceMaintenance: PostgresMaintenance, targetMaintenance: PostgresMaintenance;
 function backup(options: Partial<ConstructorParameters<typeof BackupService>[0]> = {}) {
