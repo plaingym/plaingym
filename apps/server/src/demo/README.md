@@ -1,0 +1,69 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+# Demo mode
+
+The demo service creates a separate gym per visitor with a random hostname, seeded
+content packs, owner/coach/student identities, and one kiosk device. It never calls
+`gyms create` or sends a bootstrap email. The API returns the kiosk token once;
+only its SHA-256 hash is stored. Ready sandboxes do not retain bootstrap email.
+
+`DEMO_MODE=true` requires `TENANCY=multi`, `DEMO_DOMAIN` (a lowercase hostname with
+wildcard DNS/TLS), and optionally `DEMO_MAX_SANDBOXES` (1–1000, default 50).
+`demoBootCheck` rejects live Stripe keys in the environment; `verifyDemoStoredKeys`
+also decrypts and checks existing gym Stripe configuration before startup.
+
+The cap uses unique `sandbox-1` through `sandbox-N` slugs, so it holds across app
+processes and concurrent requests. Failed or unfinished allocations occupy a slot
+until deletion. Their temporary reservation marker lets expiry recover a crash
+between audited gym reservation and seeding. Creation is limited to three requests
+per client address per hour, per process; login to 20 per minute per gym/address.
+Untrusted forwarded headers do not change the bucket. Use the trusted-proxy options
+when Caddy is the sole peer. Configure the same cap on every app process.
+
+`OutboxEmail` implements `Email` with no SMTP dependency. It records text and HTML,
+never delivers to an external mailbox, and rejects calls inside transactions.
+The outbox is owner/admin-only, uses cursor pagination, and scopes detail IDs to
+the current gym. Its HTML preview disallows scripts and network requests.
+
+Identities use the existing account provisioner and auth service. Demo login captures
+and consumes a request-local magic link without an email transport, then returns the
+normal signed, secure, host-only auth cookie. It never implements another session
+format. Student data is linked to a household; staff roles stay in `staff_roles`.
+
+Gym deletion checks revision and suspends the gym before cleaning uploads outside a
+transaction. A storage error leaves a suspended gym that an install cleanup job can
+retry. A single gym deletion cascades all rows carrying its `gym_id`, including jobs,
+sessions and audits. Install-wide identities intentionally remain, since identities
+may belong to several gyms; no gym access remains without roles/household links.
+
+## Integration
+
+Runtime and shared composition are integration-owned. This task exports and tests:
+
+- `demoBootCheck(env)` **before** normal auth/email/payment construction.
+- `createDemoRuntime({ env, installOrigin, removeUploads })` after DB initialization.
+  Use its `authConfig` (outbox counts as configured delivery), `sendMagicLink`, and
+  `emailFor(gymId)` for **all** delivery paths, including signed-link email. Do not
+  construct SMTP in demo mode. Honor `skipSetup` and wrap every upload provider in
+  `demoUploads` before passing it to any feature.
+- `/api/demo/sandboxes` on the install origin **before tenant resolution**. The
+  other registrations in `demo.routes.ts` require resolved tenant context. Keep
+  the install route out of the tenant routes when composing the app.
+- `runtime.registerCleanup(queue)` returns `scheduleDue()`. Call it on startup and
+  once per minute behind the restore gate. It queues one deduplicated install job
+  per five-minute window and scans active, suspended and unfinished sandboxes.
+  Normal installs register no demo cron jobs.
+- `createUploadPrefixCleaner(store)` accepts an uploads object store; it refuses
+  foreign prefixes. Supply the deletion callback appropriate to the install's
+  storage provider. Never give this helper the backup destination.
+- `DemoNotice` in the shared shell **before login/admin guards**, so an anonymous
+  sandbox visitor can choose an identity; `TryDemoButton` on the demo entry page.
+  The notice links to the registered `/admin/outbox` page. The ordinary static
+  admin-nav outbox entry remains disabled until a demo-aware visibility hook exists.
+- `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
+  `runSeeds(context)` applies the foundation followed by the registered area seeds.
+  Each step owns its short transactions and must support retries.
+
+The demo and gym-delete HTTP schemas are local `TODO(CCR)` contracts pending shared
+contract approval. The setup bypass and shell mounting also require composition
+outside this task's owned paths. These are explicit handoff items, not runtime
+patches in this branch.

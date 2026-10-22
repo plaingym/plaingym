@@ -1,3 +1,22 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "_spdx": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Demo outbox",
+  "banner": "This is a demo gym. It is deleted after 24 hours. Email stays in the demo outbox and uploads are disabled.",
+  "expires": "Expires: {time}",
+  "try": "Try the demo",
+  "starting": "Creating your demo gym…",
+  "owner": "Sign in as owner",
+  "coach": "Sign in as coach",
+  "student": "Sign in as student",
+  "error": "The demo is unavailable. Please try again later.",
+  "loading": "Loading messages…",
+  "empty": "No emails yet. Messages from this demo gym will appear here.",
+  "unavailable": "The outbox is available only to this demo gym’s owner and admin.",
+  "recipient": "To",
+  "sent": "Sent",
+  "more": "Load more",
+  "html": "Preview HTML",
+  "back": "Back to the gym",
+  "loginSubject": "Sign in to your demo gym",
+  "loginLink": "Sign in"
 }
