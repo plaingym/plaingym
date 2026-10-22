@@ -143,7 +143,7 @@ Prefer Web-standard APIs (`fetch`, `Request`/`Response`, WebCrypto, Web Streams)
 
 ## 4. Pull Requests & AI Contributions
 * **Branches.** `main` is the only long-lived branch. Work on a short-lived branch from `main`, focused on one change. Each change lands on `main` as one squashed conventional commit, after type checking, lint, and tests pass. Outside contributions arrive as pull requests against `main`.
-* **Contributor License Agreement.** Contributors keep their copyright and sign [`CLA.md`](CLA.md) once via CLA Assistant before their first pull request is merged; the CLA check must pass. No copyright assignment. See `CONTRIBUTING.md`.
+* **Contributor License Agreement.** Contributors keep their copyright and sign [`CLA.md`](CLA.md) once, by replying to the CLA check on their pull request, before their first pull request is merged; the CLA check must pass. No copyright assignment. See `CONTRIBUTING.md`.
 * Ensure all TypeScript code passes strict type checking: `pnpm check-types` (`tsc --noEmit`).
 * Ensure all linter rules pass: `pnpm lint`.
 * Ensure tests pass: `pnpm test` (Vitest, against a real PostgreSQL).

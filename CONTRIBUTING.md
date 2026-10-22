@@ -10,7 +10,7 @@ We commit to keeping the application open source under AGPL-3.0-only.
 
 ## Contributor License Agreement (CLA)
 
-Before your first pull request can be merged, you sign our [Contributor License Agreement](CLA.md) once, by replying to the CLA Assistant bot on the pull request. It covers all of your past and future contributions.
+Before your first pull request can be merged, you sign our [Contributor License Agreement](CLA.md) once, by replying to the CLA check's comment on the pull request. It covers all of your past and future contributions.
 
 * **You keep the copyright** to your work. The CLA is a license grant, not a copyright assignment.
 * It gives the maintainer a broad license to your contribution, including the right to offer the project under other licenses alongside the AGPL (for example, a commercial license for an organization that can't use the AGPL).

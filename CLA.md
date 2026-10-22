@@ -1,10 +1,10 @@
 # Contributor License Agreement
 
-Version 1.0 · Effective **[TODO: date of first publication]**
+Version 1.0 · Effective October 21, 2026
 
-This Contributor License Agreement (the "Agreement") applies to contributions to the PlainGym project and its repositories (the "Project"), maintained by **[TODO: maintainer legal name or entity]** and its successors and assigns (the "Maintainer").
+This Contributor License Agreement (the "Agreement") applies to contributions to the PlainGym project and its repositories (the "Project"), maintained by Don Li and any successors and assigns (the "Maintainer").
 
-You sign once, and it covers all of your past and future Contributions to the Project. You sign by posting the comment requested by the CLA Assistant bot on your first pull request.
+You sign once, and it covers all of your past and future Contributions to the Project. You sign by posting the comment requested by the Project's CLA check on your first pull request.
 
 > **Plain-language summary (not part of the Agreement):** You keep the copyright to your work. You give the Maintainer a broad license to use it, including the right to offer the Project under other licenses in addition to the AGPL. Every version of the Project published under the AGPL stays available under the AGPL. You also grant a patent license and confirm that you have the right to contribute what you submit.
 
@@ -50,8 +50,8 @@ You provide Your Contributions "AS IS", without warranties or conditions of any 
 
 ## 9. General
 
-This Agreement is governed by the laws of **[TODO: governing jurisdiction]**. If any provision is found unenforceable, the rest of the Agreement remains in effect. This Agreement is the entire agreement between You and the Maintainer about Your Contributions.
+This Agreement is governed by the laws of the Province of British Columbia and the federal laws of Canada applicable there. If any provision is found unenforceable, the rest of the Agreement remains in effect. This Agreement is the entire agreement between You and the Maintainer about Your Contributions.
 
 ## How to Sign
 
-On your first pull request, the CLA Assistant bot posts a link to this Agreement. Reply with the comment it asks for (`I have read the CLA Document and I hereby sign the CLA`). The bot records your signature, which covers all of your past and future Contributions.
+On your first pull request, the Project's CLA check (a GitHub Actions workflow, commenting as `github-actions`) posts a link to this Agreement. Reply with the comment it asks for (`I have read the CLA Document and I hereby sign the CLA`). The check records your signature, which covers all of your past and future Contributions.
