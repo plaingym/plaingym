@@ -1,3 +1,13 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "onboarding.subject": "Complete your registration",
+  "onboarding.button": "Complete registration",
+  "pay_invoice.subject": "Pay your invoice",
+  "pay_invoice.button": "View and pay invoice",
+  "update_card.subject": "Update your payment card",
+  "update_card.button": "Update card",
+  "sign_waiver.subject": "Sign your waiver",
+  "sign_waiver.button": "Review and sign waiver",
+  "description": "Use the secure link below. It expires and can only be completed once.",
+  "footer": "Keep this link private. If you did not expect this email, contact your gym."
 }
