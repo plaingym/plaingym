@@ -50,6 +50,9 @@ Thumbs.db
 !.vscode/extensions.json
 .idea/
 
+# Local task worktrees (git worktree add .worktrees/<name>)
+.worktrees/
+
 # Coverage & Testing
 coverage/
 .nyc_output/
