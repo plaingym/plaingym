@@ -3,6 +3,7 @@
 set -eu
 umask 077
 SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=deploy/lib.sh
 . "$SOURCE/lib.sh"
 hostname=
 image=
@@ -23,7 +24,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ "$(id -u)" -eq 0 ] || fail 'Run install.sh as root.'
-[ -n "$hostname" ] && [ "${#hostname}" -le 253 ] || fail 'A DNS hostname is required.'
+if [ -z "$hostname" ] || [ "${#hostname}" -gt 253 ]; then fail 'A DNS hostname is required.'; fi
 printf '%s\n' "$hostname" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$' || fail 'Use a lowercase public DNS hostname, without a URL or port.'
 printf '%s\n' "$email" | grep -Eq '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' || fail 'An ACME contact email is required.'
 valid_image "$image" || fail 'Use an explicit semver image tag or sha256 digest.'

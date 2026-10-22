@@ -3,6 +3,7 @@
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=deploy/lib.sh
 . "$ROOT/lib.sh"
 [ "$(id -u)" -eq 0 ] || fail 'Run update.sh as root.'
 [ -f "$ROOT/.env" ] || fail 'Missing installation .env.'

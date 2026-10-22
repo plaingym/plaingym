@@ -43,7 +43,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck age
-          shellcheck -s sh deploy/*.sh deploy/container/*.sh deploy/test/*.sh
+          shellcheck -x -s sh deploy/*.sh deploy/container/*.sh deploy/test/*.sh
       - name: Test update orchestration
         run: sudo sh deploy/test/update.sh
       - name: Build on the native CPU
