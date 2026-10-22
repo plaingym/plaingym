@@ -15,7 +15,7 @@
     "lint": "eslint . --max-warnings 0",
     "test": "pnpm generate && vitest run",
     "build": "pnpm generate && pnpm --filter @plaingym/web build && pnpm --filter @plaingym/server build",
-    "dev": "pnpm generate && pnpm --parallel --filter './apps/*' dev",
+    "dev": "pnpm generate && pnpm --parallel --filter @plaingym/server --filter @plaingym/web dev",
     "dev:up": "docker compose -f compose.dev.yaml up -d --wait",
     "dev:down": "docker compose -f compose.dev.yaml down --volumes --remove-orphans",
     "hooks:install": "simple-git-hooks",
