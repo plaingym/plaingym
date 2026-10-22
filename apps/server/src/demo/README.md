@@ -29,7 +29,8 @@ and consumes a request-local magic link without an email transport, then returns
 normal signed, secure, host-only auth cookie. It never implements another session
 format. Student data is linked to a household; staff roles stay in `staff_roles`.
 
-Gym deletion checks revision and suspends the gym before cleaning uploads outside a
+Only demo mode configures gym deletion; on every other install `DELETE /api/settings/gym`
+returns 404. Gym deletion checks revision and suspends the gym before cleaning uploads outside a
 transaction. A storage error leaves a suspended gym that an install cleanup job can
 retry. A single gym deletion cascades all rows carrying its `gym_id`, including jobs,
 sessions and audits. Deleting a sandbox also removes its three deterministic

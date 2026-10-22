@@ -35,8 +35,6 @@ import { createDemoRuntime } from '../demo/runtime.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
-import { configureGymDeletion } from '../areas/settings/gym-delete.routes.js';
-import { createGymDeleteService } from '../areas/settings/gym-delete.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -93,7 +91,6 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const uploads = createRuntimeUploads(env, key, gymOrigin);
   const demo = await createDemoRuntime({ env, installOrigin: install ?? '', removeUploads: uploads.removeGym,
     ...(trustedProxy ? { clientIp: { trustedProxy } } : {}) });
-  if (!demo) configureGymDeletion(createGymDeleteService({ clock, removeUploads: uploads.removeGym }));
   const config = demo?.authConfig ?? initialConfig;
   const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
   const auth = createAuthService({ config, sendMagicLink: demo?.sendMagicLink ?? createAuthEmailSender((gymId) => smtp!.config(gymId)) });
