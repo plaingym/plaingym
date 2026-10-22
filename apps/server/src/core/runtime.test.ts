@@ -69,6 +69,16 @@ it('routes real login and signed-link email into the outbox without SMTP', async
   expect(messages.some((message) => message.text.includes(sandbox.origin + '/l/'))).toBe(true);
   expect(send).not.toHaveBeenCalled();
 });
+it('serves rank and import routes through the runtime composition', async () => {
+  const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
+  const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+  const headers = { host: new URL(sandbox.origin).host, cookie };
+  // Ranks answer 503 until configured with attendance queries.
+  expect((await runtime.app.request(sandbox.origin + '/api/programs', { headers })).status).toBe(200);
+  // Import and export routes exist only when composed with storage and the job queue.
+  const document = await (await runtime.app.request(sandbox.origin + '/api/openapi.json', { headers })).json() as { paths: Record<string, unknown> };
+  expect(Object.keys(document.paths)).toEqual(expect.arrayContaining(['/api/imports/uploads', '/api/exports']));
+});
 it('uses kiosk authentication ahead of sessions and blocks uploads in the running demo', async () => {
   const headers = { authorization: `Bearer ${sandbox.kioskToken}` };
   await post('/api/kiosk/lookup', { name: 'Alex', pin: '1234' }, sandbox.origin, headers);

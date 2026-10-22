@@ -36,6 +36,14 @@ import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
+import { configureRanks } from '../areas/ranks/ranks.routes.js';
+import { createAttendanceQueries } from '../areas/attendance/attendance.js';
+import { createImportPipeline } from '../areas/imports/pipeline.js';
+import { createPipelineRoutes } from '../areas/imports/pipeline.routes.js';
+import { createPipelineJobs } from '../areas/imports/pipeline.jobs.js';
+import { createExportService } from '../areas/imports/export.js';
+import { createExportRoutes } from '../areas/imports/export.routes.js';
+import { createExportJobs } from '../areas/imports/export.jobs.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -108,8 +116,16 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
   configureHealthStatus({ env });
+  const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
+  // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
+  configureRanks({ attendance: createAttendanceQueries({ clock }), clock });
+  const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
+  const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
+  const contributions = { ...areaContributions,
+    routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService)],
+    jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService)] };
   const app = createApp({
-    contributions: areaContributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
+    contributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
     session: createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session: sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {
       const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
       return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
@@ -120,8 +136,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     ...(env.SETUP_TOKEN ? { setupToken: env.SETUP_TOKEN } : {}), ...(demo ? { skipSetup: demo.skipSetup } : {}),
   });
 
-  const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
-  registerModuleJobs(createServerRegistry(areaContributions), queue, createGymSettingsAccessor());
+  registerModuleJobs(createServerRegistry(contributions), queue, createGymSettingsAccessor());
   const report = (error: unknown) => console.error('Background job error', error);
   const cleanup = demo?.registerCleanup(queue);
   let demoTimer: NodeJS.Timeout | undefined;
