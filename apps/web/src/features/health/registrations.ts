@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.health',
       labelKey: 'health/status:title',
       permission: { kind: 'staff', capability: 'settings.manage' },
-      enabled: false,
+      enabled: true,
       href: '/admin/health',
     },
   ],
