@@ -13,24 +13,30 @@ import type { RequestEnvironment } from './context.js';
 import type { JobContext, JobHandler, Jobs } from '../infra/jobs/index.js';
 
 export type PermissionMiddleware = (permission: RoutePermission) => MiddlewareHandler<RequestEnvironment>;
+export interface RouteAuthorization {
+  readonly permission: RoutePermission;
+  readonly additionalPermissions?: readonly RoutePermission[];
+}
 export interface RouteRegistration extends RegistryEntry {
-  readonly definition: RouteConfig & { readonly permission: RoutePermission };
+  readonly definition: RouteConfig & RouteAuthorization;
   mount(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware): void;
 }
 
 /** Authorization runs before request validation and the route handler. */
 export function route<const C extends RouteConfig>(
-  definition: C & { readonly permission: RoutePermission },
+  definition: C & RouteAuthorization,
   handler: RouteHandler<C, RequestEnvironment>,
 ): RouteRegistration {
   if (!isRoutePermission(definition.permission)) throw new Error('A route must declare a valid permission');
+  const permissions = [definition.permission, ...(definition.additionalPermissions ?? [])];
+  if (!permissions.every(isRoutePermission)) throw new Error('A route must declare valid additional permissions');
   const config = createRoute(definition);
   return {
     id: `${definition.method.toUpperCase()} ${definition.path}`,
     definition: config,
     mount(app, authorize) {
       const middleware = definition.middleware ? [definition.middleware].flat() : [];
-      app.openapi({ ...config, middleware: [authorize(definition.permission), ...middleware] }, handler);
+      app.openapi({ ...config, middleware: [...permissions.map((permission) => authorize(permission)), ...middleware] }, handler);
     },
   };
 }

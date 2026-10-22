@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { OpenAPIHono, z } from '@hono/zod-openapi';
-import { isRoutePermission } from '@plaingym/shared';
+import { canStaff, isRoutePermission, staffRoles } from '@plaingym/shared';
+import { membersContracts } from '@plaingym/shared/contracts';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { readFile, readdir } from 'node:fs/promises';
@@ -33,6 +34,27 @@ const allow: PermissionMiddleware = () => async (_context, next) => {
 };
 
 describe('route declarations and server composition', () => {
+  it.each(staffRoles)('enforces every medical-note permission before validation for %s', async (role) => {
+    const contract = membersContracts.updateMedicalNotes;
+    let handled = 0;
+    const entry = route({
+      method: contract.method, path: contract.path, permission: contract.permission,
+      additionalPermissions: contract.additionalPermissions,
+      request: { params: contract.params, body: { content: { 'application/json': { schema: contract.body } }, required: true } },
+      responses: { 200: { description: 'Saved', content: { 'application/json': { schema: z.object({ saved: z.boolean() }) } } } },
+    }, (context) => { handled++; return context.json({ saved: true }, 200); });
+    const app = new OpenAPIHono<RequestEnvironment>();
+    createServerRegistry({ routes: [entry] }).mount(app, permission => async (context, next) => {
+      if (permission.kind !== 'staff' || !canStaff([role], permission.capability)) return context.json({ error: 'denied' }, 403);
+      await next();
+    }, new Set());
+    const url = '/api/members/019a08bf-1234-7000-8000-000000000001/medical-notes';
+    const allowed = role === 'owner' || role === 'admin';
+    const request = (body: unknown) => app.request(url, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect((await request({})).status).toBe(allowed ? 400 : 403);
+    expect((await request({ revision: 1, medicalNotes: null })).status).toBe(allowed ? 200 : 403);
+    expect(handled).toBe(allowed ? 1 : 0);
+  });
   it('requires a permission at the type and runtime boundaries', () => {
     expect(() =>
       route(

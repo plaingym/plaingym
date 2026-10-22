@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 // Keep the error shape and conflict code identical to the HTTP conventions.
 export * from '../responses.js';
+export type { EndpointContract } from './definition.js';
 
 /** UUIDs on the wire; generated record IDs use UUIDv7. */
 export const idSchema = z.uuid();

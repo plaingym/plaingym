@@ -3,9 +3,9 @@ export * from './common.js';
 // Import contracts from '@plaingym/shared/contracts'.
 
 // Area exports: replace only the line for your area when its contracts exist.
-// members: export * from './members.js';
-// staff: export * from './staff.js';
-// links: export * from './links.js';
+export * from './members.js';
+export * from './staff.js';
+export * from './links.js';
 // schedule: export * from './schedule.js';
 // bookings: export * from './bookings.js';
 // attendance: export * from './attendance.js';
