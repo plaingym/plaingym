@@ -22,16 +22,17 @@ the installation UUIDv7 timestamp and derive their remaining bits from its UUID,
 the entity kind, and the pack's stable entity IDs. Keep those IDs stable when
 renaming definitions. Different gyms get different installation and entity IDs.
 
-Reapplication updates the pack's names, rank positions, colors, sub-ranks and program
-links, using revision guards. Unchanged records retain their revisions. Staff
-promotion criteria and program activation flags are preserved. Application is
-additive: omitted entities are retained, since gym records may reference them.
-Conflicting names, occupied rank positions, or referenced program links cause a
+A pack seeds records; after that the gym owns them. Reapplication only restores
+records that are missing (for example a deleted rank) and never changes an
+existing rank system, rank, program, or class tag, so a gym's own names, colors,
+rank order, sub-ranks, criteria, and program flags survive. A restored rank takes
+its pack position unless the gym has used that position since, in which case it
+goes after the last rank. Application is additive: omitted entities are retained,
+since gym records may reference them. Conflicting names or program links cause a
 409 and roll back the whole application. Existing class tags with matching names
-are reused as shared vocabulary; applying a pack does not rename those shared
-tags. Pack-owned tags retain their stable identity on rename.
+are reused as shared vocabulary.
 
 Every successful application writes an audit event with the submitted, validated
 definition and injected time in the same transaction. Rank colors are nullable
-six-digit hex strings in `ranks.color` and rank contracts. A pack without a rank
-color stores null; a color-only change increments that rank's revision.
+six-digit hex strings in `ranks.color` and rank contracts; a pack without a rank
+color stores null. Staff change a gym's colors through the rank update endpoint.

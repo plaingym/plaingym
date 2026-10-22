@@ -19,12 +19,14 @@ v1 format stores one color per rank.
   degrees before the separate coral and red belts. Youth stripe schemes vary,
   so the youth system supplies belt ranks without imposing a stripe scheme.
   The age labels describe the systems, not eligibility for every belt.
-- **Judo:** the senior kyu progression uses
-  [British Judo's six-grade scheme](https://www.britishjudo.org.uk/wp-content/uploads/2024/12/Kyu-Grade-Syllabus-December-2024.pdf),
-  beginning with red. Dan belt colors follow the
+- **Judo:** the kyu progression follows
+  [Judo Canada's grading page](https://judocanada.org/grading/): white (6th kyu),
+  yellow, orange, green, blue, and brown (1st kyu). Each "+" intermediate belt
+  (white-yellow through blue-brown) is a sub-rank of the kyu below it. Dan belt
+  colors follow the
   [IJF's belt history](https://www.ijf.org/news/show/the-belt-myth-and-reality-of-an-essential-symbol).
-  This is a senior starting point; youth Mon grades and other national kyu color
-  sequences are not included.
+  Other federations use different kyu colors, so gyms can rename ranks and
+  change their colors after applying the pack.
 - **Karate:** the Shotokan starting point uses JKA England colors, as listed by
   [Westminster Shotokan Karate](https://wskc-jka.co.uk/westminster-karate/granding-and-belt-system/).
   The ten kyu and ten dan grades follow the

@@ -75,20 +75,23 @@ describe('content pack application with Postgres RLS', () => {
       expect(row.gymId).toBe(gymA); expect(row.id).toMatch(/^[0-9a-f-]{14}7[0-9a-f]{3}-[89ab]/);
     }
   });
-  it('updates colors without changing identities, preserves criteria, and clears omitted colors', async () => {
+  it('keeps a gym\'s own rank colors and names when the pack is applied again', async () => {
     const definition = pack('colors');
     const installed = await service.apply(mutation(), definition);
-    const rows = await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, installed.rankSystems[0]!.id)));
-    const beginner = rows.find((row) => row.name === 'Beginner')!;
-    await database.forGym(gymA, (tx) => tx.update(ranks).set({ criteria: [{ providerId: 'classes', config: { count: 5 } }] }).where(eq(ranks.id, beginner.id)));
+    const systemId = installed.rankSystems[0]!.id;
+    const edited = await database.forGym(gymA, async (tx) => {
+      const rows = await tx.select().from(ranks).where(eq(ranks.rankSystemId, systemId));
+      const beginner = rows.find((row) => row.name === 'Beginner')!, advanced = rows.find((row) => row.name === 'Advanced')!;
+      await tx.update(ranks).set({ color: '#00ff00', name: 'Novice', criteria: [{ providerId: 'classes', config: { count: 5 } }], revision: 2 })
+        .where(eq(ranks.id, beginner.id));
+      await tx.update(ranks).set({ color: null, revision: 2 }).where(eq(ranks.id, advanced.id));
+      return tx.select().from(ranks).where(eq(ranks.rankSystemId, systemId));
+    });
+    await service.apply(mutation(), definition);
     definition.rankSystems[0]!.ranks[0]!.color = '#123456';
-    delete definition.rankSystems[0]!.ranks[1]!.color;
+    definition.rankSystems[0]!.ranks[1]!.color = '#654321';
     await service.apply(mutation(), definition);
-    const updated = await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, installed.rankSystems[0]!.id)));
-    expect(updated.find((row) => row.id === beginner.id)).toMatchObject({ color: '#123456', revision: 2, criteria: [{ providerId: 'classes', config: { count: 5 } }] });
-    expect(updated.find((row) => row.name === 'Advanced')).toMatchObject({ color: null, revision: 2 });
-    await service.apply(mutation(), definition);
-    expect(await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, installed.rankSystems[0]!.id)))).toEqual(updated);
+    expect(await database.forGym(gymA, (tx) => tx.select().from(ranks).where(eq(ranks.rankSystemId, systemId)))).toEqual(edited);
   });
   it('serializes concurrent first installation and does not duplicate any entities', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
@@ -98,28 +101,34 @@ describe('content pack application with Postgres RLS', () => {
     expect(rows.installed).toHaveLength(1); expect(rows.systems).toHaveLength(1); expect(rows.ranks).toHaveLength(2);
     expect(rows.programs).toHaveLength(2); expect(rows.tags).toHaveLength(2); expect(rows.audits).toHaveLength(5);
   });
-  it('updates by stable pack IDs, swaps rank positions, and preserves staff criteria and inactive programs', async () => {
+  it('restores only missing records on reapply and never overwrites gym edits', async () => {
     const definition = pack('editable');
     const first = await service.apply(mutation(), definition);
-    const original = await database.forGym(gymA, async (tx) => {
-      const rows = await tx.select().from(ranks).where(eq(ranks.rankSystemId, first.rankSystems[0]!.id));
-      await tx.update(ranks).set({ criteria: [{ providerId: 'classes', config: { count: 10 } }], revision: 2 }).where(eq(ranks.id, rows[0]!.id));
-      await tx.update(programs).set({ active: false, revision: 2 }).where(eq(programs.id, first.programs[0]!.id));
-      return rows;
+    const systemId = first.rankSystems[0]!.id;
+    await database.forGym(gymA, async (tx) => {
+      const rows = await tx.select().from(ranks).where(eq(ranks.rankSystemId, systemId));
+      const beginner = rows.find((row) => row.name === 'Beginner')!, advanced = rows.find((row) => row.name === 'Advanced')!;
+      await tx.update(rankSystems).set({ name: 'Our belts', revision: 2 }).where(eq(rankSystems.id, systemId));
+      await tx.delete(ranks).where(eq(ranks.id, beginner.id));
+      // The gym moved its remaining rank into the pack's first position.
+      await tx.update(ranks).set({ position: 0, subRanks: [{ id: 'tip', name: 'Tip' }], revision: 2 }).where(eq(ranks.id, advanced.id));
+      await tx.update(programs).set({ name: 'Our program', active: false, revision: 2 }).where(eq(programs.id, first.programs[0]!.id));
     });
+    const before = await snapshot();
     definition.rankSystems[0]!.name = 'Renamed system';
-    definition.rankSystems[0]!.ranks.reverse();
-    definition.rankSystems[0]!.ranks[1]!.name = 'Renamed beginner';
-    definition.rankSystems[0]!.ranks[1]!.subRanks.push({ id: 'two', name: 'Two' });
     definition.programs[0]!.name = 'Renamed program'; definition.classTags[0]!.name = 'Renamed tag';
     const second = await service.apply(mutation(), definition);
     expect(second.installedPack.id).toBe(first.installedPack.id);
-    expect(second.rankSystems[0]).toMatchObject({ id: first.rankSystems[0]!.id, name: 'Renamed system', revision: 2 });
-    expect(second.programs[0]).toMatchObject({ id: first.programs[0]!.id, name: 'Renamed program', active: false, revision: 3 });
-    const updated = (await snapshot()).ranks.filter((row) => row.rankSystemId === first.rankSystems[0]!.id);
-    expect(updated.map((row) => row.id).sort()).toEqual(original.map((row) => row.id).sort());
-    expect(updated.find((row) => row.name === 'Renamed beginner')).toMatchObject({ position: 1, subRanks: definition.rankSystems[0]!.ranks[1]!.subRanks });
-    expect(updated.find((row) => row.id === original[0]!.id)!.criteria).toEqual([{ providerId: 'classes', config: { count: 10 } }]);
+    expect(second.rankSystems[0]).toMatchObject({ id: systemId, name: 'Our belts', revision: 2 });
+    expect(second.programs[0]).toMatchObject({ id: first.programs[0]!.id, name: 'Our program', active: false, revision: 2 });
+    const after = await snapshot();
+    expect(after.tags).toEqual(before.tags);
+    const systemRanks = after.ranks.filter((row) => row.rankSystemId === systemId);
+    const advanced = before.ranks.find((row) => row.rankSystemId === systemId && row.name === 'Advanced');
+    expect(advanced).toMatchObject({ position: 0, revision: 2 });
+    expect(systemRanks.find((row) => row.name === 'Advanced')).toEqual(advanced);
+    // The deleted rank returns with the pack's values at the next free position.
+    expect(systemRanks.find((row) => row.name === 'Beginner')).toMatchObject({ position: 2, color: '#ffffff', revision: 1 });
     expect(await service.apply(mutation(), definition)).toEqual(second);
   });
   it('reuses shared class tags without changing their identity or revision', async () => {

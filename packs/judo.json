@@ -6,38 +6,63 @@
   "name": "Judo",
   "rankSystems": [
     {
-      "id": "judo-bja-senior",
-      "name": "Judo (British Judo senior kyu/dan)",
+      "id": "judo-canada",
+      "name": "Judo (Judo Canada kyu/dan)",
       "ranks": [
         {
           "id": "kyu-6",
-          "name": "6 kyu (red belt)",
-          "color": "#ff0000",
-          "subRanks": []
+          "name": "6 kyu (white belt)",
+          "color": "#ffffff",
+          "subRanks": [
+            {
+              "id": "plus",
+              "name": "6+ kyu (white-yellow belt)"
+            }
+          ]
         },
         {
           "id": "kyu-5",
           "name": "5 kyu (yellow belt)",
           "color": "#ffff00",
-          "subRanks": []
+          "subRanks": [
+            {
+              "id": "plus",
+              "name": "5+ kyu (yellow-orange belt)"
+            }
+          ]
         },
         {
           "id": "kyu-4",
           "name": "4 kyu (orange belt)",
           "color": "#ff8000",
-          "subRanks": []
+          "subRanks": [
+            {
+              "id": "plus",
+              "name": "4+ kyu (orange-green belt)"
+            }
+          ]
         },
         {
           "id": "kyu-3",
           "name": "3 kyu (green belt)",
           "color": "#008000",
-          "subRanks": []
+          "subRanks": [
+            {
+              "id": "plus",
+              "name": "3+ kyu (green-blue belt)"
+            }
+          ]
         },
         {
           "id": "kyu-2",
           "name": "2 kyu (blue belt)",
           "color": "#0000ff",
-          "subRanks": []
+          "subRanks": [
+            {
+              "id": "plus",
+              "name": "2+ kyu (blue-brown belt)"
+            }
+          ]
         },
         {
           "id": "kyu-1",
@@ -112,12 +137,12 @@
     {
       "id": "judo-fundamentals",
       "name": "Judo Fundamentals",
-      "rankSystemId": "judo-bja-senior"
+      "rankSystemId": "judo-canada"
     },
     {
       "id": "judo-all-levels",
       "name": "Judo All Levels",
-      "rankSystemId": "judo-bja-senior"
+      "rankSystemId": "judo-canada"
     }
   ],
   "classTags": [
