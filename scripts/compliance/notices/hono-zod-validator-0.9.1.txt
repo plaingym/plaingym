@@ -1,11 +1,13 @@
 The upstream repository (honojs/middleware) and the npm package ship no license
 file. The package manifest declares "license": "MIT":
 https://github.com/honojs/middleware/blob/8de0f1ea32b76d40df0ec4a06ed5af2e100ccbfd/packages/zod-validator/package.json
+The package README names the author under "Author" and the license as MIT:
+https://github.com/honojs/middleware/blob/8de0f1ea32b76d40df0ec4a06ed5af2e100ccbfd/packages/zod-validator/README.md
 The standard MIT terms follow.
 
 MIT License
 
-Copyright (c) Hono middleware contributors
+Copyright (c) Yusuke Wada
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

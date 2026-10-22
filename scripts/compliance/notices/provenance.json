@@ -19,16 +19,16 @@
     "name": "@hono/zod-openapi",
     "version": "1.6.3",
     "license": "MIT",
-    "upstream": "https://raw.githubusercontent.com/honojs/middleware/bc7d9e67119f870b5275569b371676663c74c976/packages/zod-openapi/package.json",
-    "sha256": "18a7206e3a65be898e6d9c896c480aa16db019f71733c71b2a31d67599a880c0",
+    "upstream": "https://raw.githubusercontent.com/honojs/middleware/bc7d9e67119f870b5275569b371676663c74c976/packages/zod-openapi/README.md",
+    "sha256": "c6769821eafdf4be400ccb05c3b3ef4304a4faa1b623dd088db96ff9a4a7aef0",
     "path": "scripts/compliance/notices/hono-zod-openapi-1.6.3.txt"
   },
   {
     "name": "@hono/zod-validator",
     "version": "0.9.1",
     "license": "MIT",
-    "upstream": "https://raw.githubusercontent.com/honojs/middleware/8de0f1ea32b76d40df0ec4a06ed5af2e100ccbfd/packages/zod-validator/package.json",
-    "sha256": "b6238aea7fa47274869a6824456bddafa9597e344f37fa18710b38660fc83150",
+    "upstream": "https://raw.githubusercontent.com/honojs/middleware/8de0f1ea32b76d40df0ec4a06ed5af2e100ccbfd/packages/zod-validator/README.md",
+    "sha256": "064203b77b9fae6e94744300ba93727c894128d5095ab48f0b4a244dd4d95eb6",
     "path": "scripts/compliance/notices/hono-zod-validator-0.9.1.txt"
   }
 ]

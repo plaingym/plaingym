@@ -56,7 +56,8 @@ Output is sorted, uses LF, and contains no machine paths or generation timestamp
 `notices/provenance.json` supplies exact package/version/license-bound,
 hash-verified upstream notice copies for distributions that omit license text.
 When upstream ships no license file at all, the notice reproduces the standard
-terms the manifest declares and links the immutable manifest as evidence.
+terms the manifest declares, credits the author the package README names, and
+links both immutable upstream files as evidence.
 It does not override their declared license. Node.js and operating-system package
 notices belong to the release image inventory in addition to this application file.
 
