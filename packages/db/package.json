@@ -5,9 +5,17 @@
   "type": "module",
   "license": "AGPL-3.0-only",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./schema/*": "./src/schema/*.ts",
+    "./client": "./src/client.ts",
+    "./migrate": "./src/migrate.ts",
+    "./testing/database": "./src/testing/database.ts",
+    "./testing/factories": "./src/testing/factories.ts",
+    "./testing/isolation": "./src/testing/isolation.ts"
   },
   "dependencies": {
+    "@plaingym/shared": "workspace:*",
     "drizzle-orm": "0.45.4",
     "postgres": "3.4.9"
   },

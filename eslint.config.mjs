@@ -3,6 +3,7 @@ import js from '@eslint/js';
 import { defineConfig } from 'eslint/config';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
+import { systemTableRule } from './packages/db/system-table-lint.mjs';
 
 const vendor = {
   group: [
@@ -55,6 +56,11 @@ const staticImports = [
 ];
 
 export default defineConfig(
+  {
+    files: ['apps/server/src/**'],
+    plugins: { database: { rules: { 'system-tables': systemTableRule } } },
+    rules: { 'database/system-tables': 'error' },
+  },
   { ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**', '**/routeTree.gen.ts'] },
   js.configs.recommended,
   tseslint.configs.recommended,

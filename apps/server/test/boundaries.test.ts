@@ -2,12 +2,53 @@
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { describe, expect, it } from 'vitest';
+import { systemTables } from '../../../packages/db/system-tables.mjs';
 
 const eslint = new ESLint({ cwd: fileURLToPath(new URL('../../../', import.meta.url)) });
 const area = 'apps/server/src/areas/members/service.ts';
 const portal = 'apps/server/src/areas/portal/bookings.ts';
 const links = 'apps/server/src/public/links/invoice.ts';
 const core = 'apps/server/src/core/context.ts';
+
+describe('system table access', () => {
+  it.each(systemTables)('restricts $name to the declared modules', async (table) => {
+    const source = `import { ${table.exportName} as table } from '@plaingym/db'; void table;`;
+    for (const path of [area, portal, links, core]) {
+      expect(await messages(path, source)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ ruleId: 'database/system-tables' }),
+      ]));
+    }
+    for (const pattern of table.modules) {
+      const path = 'apps/server/src/' + pattern.replace('[^/]*', '.ts').replace('.*', 'service.ts');
+      expect(await messages(path, source)).toHaveLength(0);
+    }
+  });
+  it.each([
+    "import * as schema from '@plaingym/db/schema'; void schema.authUser;",
+    "import * as schema from '@plaingym/db/schema'; void schema['jobs'];",
+    "import * as schema from '@plaingym/db/schema'; const table = 'members'; void schema[table];",
+    "import * as schema from '@plaingym/db/schema'; const { authSession } = schema; void authSession;",
+    "export { backupRuns as records } from '@plaingym/db/schema/system';",
+    "export * from '@plaingym/db/schema';",
+    "import { stripeEvents } from '../../../../../packages/db/src/schema/system.js'; void stripeEvents;",
+  ])('prevents system-table aliases and namespace bypasses: %s', async (source) => {
+    expect(await messages(area, source)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: 'database/system-tables' }),
+    ]));
+  });
+  it('permits tenant table namespaces and query operators', async () => {
+    expect(await messages(area, "import * as schema from '@plaingym/db/schema'; import { eq } from 'drizzle-orm'; void eq(schema.members.id, 'id');")).toHaveLength(0);
+  });
+  it('restricts migration and security imports', async () => {
+    const source = "import { migrateDatabase } from '@plaingym/db/migrate'; void migrateDatabase;";
+    expect(await messages(area, source)).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'database/system-tables' })]));
+    expect(await messages('apps/server/src/core/database.ts', source)).toHaveLength(0);
+    expect(await messages(core, "import { openConnection } from '@plaingym/db/client'; void openConnection;"))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'database/system-tables' })]));
+    expect(await messages('apps/server/src/core/tenancy.ts', "import { systemDatabase } from '@plaingym/db/client'; void systemDatabase;"))
+      .toHaveLength(0);
+  });
+});
 
 async function messages(filePath: string, source: string) {
   const [result] = await eslint.lintText(source, { filePath });

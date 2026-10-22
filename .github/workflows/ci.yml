@@ -54,6 +54,8 @@ jobs:
           docker exec "$POSTGRES_CONTAINER" sh -c 'printf "%s\n" "local all all trust" "host all all all scram-sha-256" > "$PGDATA/pg_hba.conf"'
           docker exec "$POSTGRES_CONTAINER" psql -U postgres -d plaingym -c 'SELECT pg_reload_conf()'
           echo "DATABASE_URL=postgres://app:$app_password@127.0.0.1:5432/plaingym" >> "$GITHUB_ENV"
+          echo "MAINTENANCE_DATABASE_URL=postgres://maintenance:$maintenance_password@127.0.0.1:5432/plaingym" >> "$GITHUB_ENV"
+          echo "TEST_DATABASE_ADMIN_URL=postgres://postgres:$bootstrap_password@127.0.0.1:5432/postgres" >> "$GITHUB_ENV"
       - run: pnpm install --frozen-lockfile
       - run: pnpm check-types
       - run: pnpm lint

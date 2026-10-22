@@ -100,6 +100,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@plaingym/shared':
+        specifier: workspace:*
+        version: link:../shared
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(postgres@3.4.9)
