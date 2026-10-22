@@ -7,14 +7,14 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
-import { jobsContract } from '../../core/registry-infra-contracts.js';
+import { jobsContract, infraContractGyms } from '../../core/registry-infra-contracts.js';
 import { PostgresJobs, PostgresJobStatsQuery, startJobsWorker } from './postgres.js';
 import { cronOccurrences, occurrenceKey } from './cron.js';
 import type { Jobs, JobOptions } from './index.js';
 
 const database = useTestDatabase();
 const factory = createFactories(database);
-const gymA = uuidv7(), gymB = uuidv7();
+const gymA = infraContractGyms.a, gymB = infraContractGyms.b;
 const options = { gymId: gymA, timezone: 'America/Vancouver' };
 let clock: TestClock;
 beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB); });
@@ -40,15 +40,7 @@ async function until(predicate: () => Promise<boolean>) {
   throw new Error('Condition did not become true');
 }
 
-// TODO(CCR): the frozen shared helper uses gym aliases a/b; real RLS needs UUIDs.
-// Only translate fixture IDs. All queue behavior still runs against real Postgres.
-jobsContract('Postgres Jobs contract', async () => {
-  const real = queue();
-  return {
-    enqueue: (name, payload, opts) => real.enqueue(name, payload, { ...opts, gymId: opts.gymId === 'a' ? gymA : gymB }),
-    handle: real.handle.bind(real), schedule: real.schedule.bind(real),
-  } satisfies Jobs;
-});
+jobsContract('Postgres Jobs contract', async () => queue());
 
 describe('Postgres enqueue and execution', () => {
   it('deduplicates concurrent requests, isolates names, and snapshots payload/timezone', async () => {

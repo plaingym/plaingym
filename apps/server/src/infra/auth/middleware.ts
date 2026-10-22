@@ -5,6 +5,7 @@ import { AppError, staffRoles as validRoles } from '@plaingym/shared';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { RequestEnvironment, Principal } from '../../core/context.js';
 import type { AuthService, ResolvedAuthGym } from './service.js';
+import { shellContracts } from '@plaingym/shared/contracts';
 
 export function sessionMiddleware(options: {
   auth: AuthService;
@@ -18,7 +19,8 @@ export function sessionMiddleware(options: {
     const resolved = options.resolve(context);
     if (resolved.gymId !== current.gym.gymId) throw new AppError('forbidden', 'Authentication gym mismatch');
     const auth = options.auth.bind(resolved);
-    const authPath = context.req.path === '/api/auth' || context.req.path.startsWith('/api/auth/');
+    const authPath = context.req.path !== shellContracts.bootstrap.path
+      && (context.req.path === '/api/auth' || context.req.path.startsWith('/api/auth/'));
     if (authPath) return auth.handler(context.req.raw);
     let session;
     try { session = await auth.checkedSession(context.req.raw); }

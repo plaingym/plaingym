@@ -19,18 +19,32 @@ function pnpm(root, args) {
   return execFileSync('pnpm', args, options);
 }
 
-export function graphPaths(roots, skipped = new Set()) {
+export function graphPaths(roots, skipped = new Set(), { skipOptionalPeers = false } = {}) {
   const paths = new Set();
+  const manifests = new Map();
   function walk(node, optional = false) {
+    let manifest;
     if (node.path) {
       if (!existsSync(node.path)) {
         if (optional || skipped.has(`${node.from}@${node.version}`)) return; // pnpm reports uninstalled optional packages for other platforms.
         throw new Error(`Required dependency is not installed: ${node.path}`);
       }
       paths.add(realpathSync(node.path));
+      if (skipOptionalPeers) {
+        if (!manifests.has(node.path)) manifests.set(node.path, json(join(node.path, 'package.json')));
+        manifest = manifests.get(node.path);
+      }
     }
     for (const field of ['dependencies', 'devDependencies', 'optionalDependencies']) {
-      for (const child of Object.values(node[field] ?? {})) walk(child, optional || field === 'optionalDependencies');
+      for (const [name, child] of Object.entries(node[field] ?? {})) {
+        // pnpm folds linked peers into dependencies, including workspace dev tools.
+        // Keep real dependency edges; bundle evidence separately covers optional
+        // integrations that are actually included in a release.
+        if (skipOptionalPeers && manifest?.peerDependenciesMeta?.[name]?.optional
+          && !Object.hasOwn(manifest.dependencies ?? {}, name)
+          && !Object.hasOwn(manifest.optionalDependencies ?? {}, name)) continue;
+        walk(child, optional || field === 'optionalDependencies');
+      }
     }
   }
   roots.forEach((node) => walk(node));
@@ -45,7 +59,7 @@ export function inventory(root, bundles) {
   const skipped = new Set(modulesText.trimStart().startsWith('{') ? JSON.parse(modulesText).skipped ?? []
     : [...(modulesText.match(/^skipped:\r?\n((?:[ \t]+.*\r?\n)*)/m)?.[1] ?? '').matchAll(/^\s+-\s+['"]?([^'"\r\n]+)['"]?\s*$/gm)].map((match) => match[1]));
   const all = JSON.parse(pnpm(root, ['list', '--recursive', '--depth', 'Infinity', '--json']));
-  const production = graphPaths(JSON.parse(pnpm(root, ['list', '--recursive', '--prod', '--depth', 'Infinity', '--json'])), skipped);
+  const production = graphPaths(JSON.parse(pnpm(root, ['list', '--recursive', '--prod', '--depth', 'Infinity', '--json'])), skipped, { skipOptionalPeers: true });
   const workspacePaths = new Set(all.map((pkg) => realpathSync(pkg.path)));
   const config = json(join(root, 'scripts/compliance/allowlist.json'));
   validateApprovals(config.approvals);

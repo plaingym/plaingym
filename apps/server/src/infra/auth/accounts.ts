@@ -16,6 +16,8 @@ export interface PasswordReset {
   /** Runs inside the same transaction as the password, revocations and audit. */
   authorize(tx: Transaction): Promise<void>;
 }
+/** Runs with the identity write in its gym-scoped transaction. No delivery here. */
+export type ProvisionAccount = (tx: Transaction, userId: string) => Promise<void>;
 export function createAccountService(config: AuthConfig, database = systemDatabase) {
   const forGym = <T>(gymId: string, fn: (tx: Transaction) => Promise<T>) => scopedDatabase(database()).forGym(gymId, fn);
   return {
@@ -24,27 +26,41 @@ export function createAccountService(config: AuthConfig, database = systemDataba
       const [user] = await database().select({ id: authUser.id }).from(authUser).where(eq(authUser.email, email.trim().toLowerCase()));
       return user ?? null;
     },
-    async provisionUser(gymId: string, email: string, name: string, clock: Clock) {
+    async provisionUser(gymId: string, email: string, name: string, clock: Clock, provision?: ProvisionAccount) {
       return forGym(gymId, async (tx) => {
         const normalized = email.trim().toLowerCase();
         const [created] = await tx.insert(authUser).values({ email: normalized, name, createdAt: clock.now(), updatedAt: clock.now() }).onConflictDoNothing({ target: authUser.email }).returning({ id: authUser.id });
         const user = created ?? (await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.email, normalized)))[0];
         if (!user) throw new AppError('unavailable', 'Account provisioning failed');
         if (created) await writeAudit(tx, { gymId, actorKind: 'system', action: 'auth.user_created', targetType: 'user', targetId: user.id, occurredAt: clock.now() });
+        await provision?.(tx, user.id);
         return user;
       });
     },
-    async createPasswordUser(gymId: string, email: string, name: string, password: string, clock: Clock) {
+    async createPasswordUser(gymId: string, email: string, name: string, password: string, clock: Clock, provision?: ProvisionAccount) {
       if (!config.passwordEnabled || config.tenancy !== 'single') throw new AppError('forbidden', 'Password login is disabled');
       if (password.length < 12 || password.length > 128) throw new AppError('invalid_request', 'Password must contain 12 to 128 characters');
       const hash = await passwordAdapter.hash(password);
-      return forGym(gymId, async (tx) => {
+      const result = await forGym(gymId, async (tx) => {
         const id = uuidv7();
-        await tx.insert(authUser).values({ id, email: email.trim().toLowerCase(), name, createdAt: clock.now(), updatedAt: clock.now() });
+        const [created] = await tx.insert(authUser).values({ id, email: email.trim().toLowerCase(), name, createdAt: clock.now(), updatedAt: clock.now() })
+          .onConflictDoNothing({ target: authUser.email }).returning({ id: authUser.id });
+        if (!created) {
+          const [user] = await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.email, email.trim().toLowerCase()));
+          const [credential] = user ? await tx.select({ password: authAccount.password }).from(authAccount)
+            .where(and(eq(authAccount.userId, user.id), eq(authAccount.providerId, 'credential'))) : [];
+          return { userId: user?.id, password: credential?.password, created: false };
+        }
         await tx.insert(authAccount).values({ userId: id, accountId: id, providerId: 'credential', password: hash, createdAt: clock.now(), updatedAt: clock.now() });
         await writeAudit(tx, { gymId, actorKind: 'system', action: 'auth.user_created', targetType: 'user', targetId: id, occurredAt: clock.now() });
-        return { userId: id };
+        await provision?.(tx, id);
+        return { userId: id, password: hash, created: true };
       });
+      if (!result.userId || !result.password || (!result.created && !await passwordAdapter.verify({ hash: result.password, password })))
+        throw new AppError('conflict', 'Account already exists with different credentials');
+      const userId = result.userId;
+      if (!result.created && provision) await forGym(gymId, (tx) => provision(tx, userId));
+      return { userId };
     },
     async resetPassword(input: PasswordReset) {
       assertNoTransaction('auth.resetPassword');

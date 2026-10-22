@@ -3,9 +3,10 @@ import { staffContracts } from '@plaingym/shared/contracts';
 import { AppError } from '@plaingym/shared';
 import { route } from '../../core/registry.js';
 import { resetStaffPassword } from './auth.reset.js';
+import { createAuthBootstrapRoutes } from './auth.bootstrap.js';
 
 const contract = staffContracts.resetPassword;
-export const routes = [route({
+export const routes = [...createAuthBootstrapRoutes(), route({
   method: contract.method, path: contract.path, permission: contract.permission,
   request: { params: contract.params, body: { required: true, content: { 'application/json': { schema: contract.body } } } },
   responses: { 200: { description: 'Password reset', content: { 'application/json': { schema: contract.response } } } },

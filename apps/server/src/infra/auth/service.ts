@@ -5,7 +5,7 @@ import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { randomBytes } from 'node:crypto';
 import { isIP } from 'node:net';
 import { systemDatabase, validateUuid, type Database } from '@plaingym/db/client';
-import { authUser, authSession, authAccount, authVerification, authRateLimit, uuidv7 } from '@plaingym/db';
+import { authUser, authSession, authAccount, authVerification, authRateLimit } from '@plaingym/db';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { Auth, Session } from './index.js';
 import type { AuthConfig } from './config.js';
@@ -57,7 +57,9 @@ export function createAuthService(options: AuthServiceOptions) {
         account: { accountLinking: { enabled: true, trustedProviders: ['google'] } },
         ...(options.google ? { socialProviders: options.google.socialProviders } : {}),
         advanced: {
-          database: { generateId: () => uuidv7() }, useSecureCookies: config.production,
+          // PostgreSQL/Drizzle supplies UUIDv7 record defaults. Declaring UUID
+          // storage also keeps Better Auth's deterministic reservation IDs valid.
+          database: { generateId: 'uuid' }, useSecureCookies: config.production,
           crossSubDomainCookies: { enabled: false },
           defaultCookieAttributes: { httpOnly: true, secure: config.production, sameSite: 'lax', path: '/' },
           ipAddress: { ipAddressHeaders: ['x-plaingym-client-ip'] },
@@ -96,6 +98,15 @@ export function createAuthService(options: AuthServiceOptions) {
       };
       return {
         ...adapter,
+        /** Internal provisioning entry point; delivery always follows the owner commit. */
+        async sendLoginLink(email: string): Promise<void> {
+          assertNoTransaction('auth.sendLoginLink');
+          if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
+          await auth.api.signInMagicLink({
+            headers: { origin: origin.origin, 'x-plaingym-client-ip': gym.clientIp },
+            body: { email: email.trim().toLowerCase(), callbackURL: new URL('/login', origin).href },
+          });
+        },
         async checkedSession(request: Request): Promise<Session | null> {
           const session = await readSession(request);
           if (session && session.session.gymId !== gym.gymId) throw new Error('session_gym_mismatch');

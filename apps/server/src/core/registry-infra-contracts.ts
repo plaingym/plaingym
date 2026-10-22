@@ -6,6 +6,11 @@ import type { Jobs } from '../infra/jobs/index.js';
 import type { Payments, CreateCharge, CheckoutRequest } from '../infra/payments/index.js';
 import type { Uploads, BackupObjectStore } from '../infra/storage/index.js';
 
+export const infraContractGyms = {
+  a: '00000000-0000-7000-8000-000000000001',
+  b: '00000000-0000-7000-8000-000000000002',
+} as const;
+
 export function stream(bytes: readonly number[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -25,12 +30,13 @@ export function authContract(
     auth: Auth;
     authenticated: Request;
     otherGym: Request;
+    userId: string;
   }>,
 ) {
   describe(name, () => {
     it('reads identity only and rejects missing and foreign-gym sessions', async () => {
-      const { auth, authenticated, otherGym } = await create();
-      expect(await auth.getSession(authenticated)).toEqual({ userId: 'user' });
+      const { auth, authenticated, otherGym, userId } = await create();
+      expect(await auth.getSession(authenticated)).toEqual({ userId });
       expect(await auth.getSession(new Request('https://gym.invalid'))).toBeNull();
       expect(await auth.getSession(otherGym)).toBeNull();
     });
@@ -56,10 +62,10 @@ export function jobsContract(name: string, create: () => Promise<Jobs>) {
   describe(name, () => {
     it('deduplicates enqueue by gym and job name', async () => {
       const jobs = await create();
-      const options = { gymId: 'a', timezone: 'UTC', idempotencyKey: 'period' };
+      const options = { gymId: infraContractGyms.a, timezone: 'UTC', idempotencyKey: 'period' };
       const first = await jobs.enqueue('charge', { invoice: 1 }, options);
       expect(await jobs.enqueue('charge', { invoice: 1 }, options)).toEqual(first);
-      expect(await jobs.enqueue('charge', { invoice: 1 }, { ...options, gymId: 'b' })).not.toEqual(first);
+      expect(await jobs.enqueue('charge', { invoice: 1 }, { ...options, gymId: infraContractGyms.b })).not.toEqual(first);
       expect(await jobs.enqueue('email', { invoice: 1 }, options)).not.toEqual(first);
     });
   });

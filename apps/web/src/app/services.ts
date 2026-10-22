@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { StaffRole } from '@plaingym/shared';
+import { shellContracts, shellBootstrapResponseSchema, type ShellBootstrap, type ShellSession } from '@plaingym/shared/contracts';
 import { createJsonTransport } from '../lib/api.js';
-export interface ShellSession {
-  readonly userId: string;
-  readonly roles: readonly StaffRole[];
-  readonly member: boolean;
-}
-export interface ShellBootstrap {
-  readonly gym: { readonly id: string; readonly name: string; readonly enabledModules: readonly string[] };
-  readonly session: ShellSession | null;
-  readonly login: { readonly password: boolean; readonly magicLink: boolean };
-}
+export type { ShellBootstrap, ShellSession };
 export interface ShellServices {
   loadBootstrap(signal?: AbortSignal): Promise<ShellBootstrap>;
   signInWithPassword(email: string, password: string): Promise<void>;
@@ -38,8 +29,8 @@ export function createShellServices(
     async signOut() { await request('/api/auth/sign-out', {}); },
   };
 }
-// TODO(CCR): replace this loader when the shared gym/session/login bootstrap contract is frozen.
-// Fail closed while authentication and tenant middleware are being connected.
-export const defaultShellServices = createShellServices(async () => {
-  throw new Error('Shell bootstrap adapter is not configured');
-});
+export function createBootstrapLoader(fetcher: typeof fetch = fetch): ShellServices['loadBootstrap'] {
+  const request = createJsonTransport(fetcher);
+  return async (signal) => shellBootstrapResponseSchema.parse(await request(shellContracts.bootstrap.path, undefined, signal)).data;
+}
+export const defaultShellServices = createShellServices(createBootstrapLoader());

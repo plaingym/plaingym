@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, createApiClient, createJsonTransport } from './api.js';
-import { createShellServices, sessionDestination } from '../app/services.js';
+import { createBootstrapLoader, createShellServices, sessionDestination } from '../app/services.js';
 import { createShellTranslator } from './i18n.js';
 
 describe('API transport', () => {
@@ -46,6 +46,14 @@ describe('API transport', () => {
   });
 });
 describe('shell projections', () => {
+  it('loads the shared bootstrap contract and rejects malformed server access', async () => {
+    const bootstrap = { gym: { id: '00000000-0000-7000-8000-000000000001', name: 'Gym', enabledModules: [] }, session: null, login: { password: true, magicLink: false } };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: bootstrap })).mockResolvedValueOnce(Response.json({ data: { ...bootstrap, session: { roles: ['owner'] } } }));
+    const signal = new AbortController().signal;
+    expect(await createBootstrapLoader(fetcher)(signal)).toEqual(bootstrap);
+    expect(fetcher).toHaveBeenCalledWith('/api/auth/bootstrap', expect.objectContaining({ signal, credentials: 'same-origin' }));
+    await expect(createBootstrapLoader(fetcher)()).rejects.toThrow();
+  });
   it('prioritizes staff access for a user who is also a member', () => {
     expect(sessionDestination({ userId: 'a', roles: ['coach'], member: true })).toBe('/admin');
     expect(sessionDestination({ userId: 'a', roles: [], member: true })).toBe('/portal');

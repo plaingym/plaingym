@@ -52,7 +52,7 @@ authContract('fake auth contract', async () => {
   const auth = new FakeAuth('gym');
   auth.seedSession('own', { gymId: 'gym', userId: 'user' });
   auth.seedSession('foreign', { gymId: 'other', userId: 'user' });
-  return { auth, authenticated: request('own'), otherGym: request('foreign') };
+  return { auth, authenticated: request('own'), otherGym: request('foreign'), userId: 'user' };
 });
 emailContract('fake email contract', async () => new FakeEmail());
 jobsContract('fake jobs contract', async () => new FakeJobs(new TestClock(initial)));

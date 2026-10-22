@@ -5,6 +5,7 @@ export * from './common.js';
 // Area exports: replace only the line for your area when its contracts exist.
 export * from './members.js';
 export * from './staff.js';
+export * from './shell.js';
 export * from './links.js';
 export * from './schedule.js';
 export * from './bookings.js';

@@ -57,15 +57,11 @@ async function fixture() {
 }
 function cookies(response: Response) { return response.headers.getSetCookie().map((value) => value.split(';')[0]).join('; '); }
 
-// TODO(CCR): authContract fixes its expected identity to a non-UUID string. Translate only the test result.
 authContract('Postgres Better Auth', async () => {
   const f = await fixture();
   const a = await f.signIn(), b = await f.signIn(f.b, f.otherOrigin);
   expect(a.status).toBe(200); expect(b.status).toBe(200);
-  return { auth: { async getSession(request) {
-    const session = await f.a.getSession(request);
-    return session ? { userId: session.userId === f.user.id ? 'user' : session.userId } : null;
-  } }, authenticated: f.request('/get-session', undefined, cookies(a)), otherGym: f.request('/get-session', undefined, cookies(b)) };
+  return { auth: f.a, userId: f.user.id, authenticated: f.request('/get-session', undefined, cookies(a)), otherGym: f.request('/get-session', undefined, cookies(b)) };
 });
 
 describe('Better Auth HTTP containment', () => {
@@ -77,7 +73,7 @@ describe('Better Auth HTTP containment', () => {
     const payload = await response.json(); expect(payload).not.toHaveProperty('token');
     expect(await f.a.getSession(f.request('/get-session', undefined, cookies(response)))).toEqual({ userId: f.user.id });
     const [session] = await database.system.db.select().from(authSession).where(eq(authSession.userId, f.user.id));
-    expect(session?.gymId).toBe(f.gymId); expect(session?.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(session?.gymId).toBe(f.gymId); expect(session?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
   it('rejects foreign sessions before any auth handler can revoke or read them', async () => {
     const f = await fixture(), login = await f.signIn(), cookie = cookies(login);
@@ -187,6 +183,20 @@ function routeApp(f: Awaited<ReturnType<typeof fixture>>) {
   return app;
 }
 describe('session middleware and atomic protected-account resets', () => {
+  it('lets the registered bootstrap route run after session resolution and isolates its projection', async () => {
+    const f = await fixture();
+    await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'coach' });
+    await factory('staffRoles', f.otherGymId, { userId: f.user.id, role: 'owner' });
+    await factory('householdUsers', f.gymId, { userId: f.user.id });
+    const app = routeApp(f), cookie = cookies(await f.signIn());
+    const response = await app.request(f.origin + '/api/auth/bootstrap', { headers: { cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toMatchObject({ data: { gym: { id: f.gymId, name: 'Test Gym' }, session: { userId: f.user.id, roles: ['coach'], member: true }, login: { password: true, magicLink: false } } });
+    const anonymous = await app.request(f.otherOrigin + '/api/auth/bootstrap');
+    expect(await anonymous.json()).toMatchObject({ data: { gym: { id: f.otherGymId }, session: null } });
+    expect((await app.request(f.otherOrigin + '/api/auth/bootstrap', { headers: { cookie } })).status).toBe(403);
+  });
   it('sets staff roles from the resolved gym and rejects foreign cookies before handlers', async () => {
     const f = await fixture();
     await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'owner' });

@@ -30,5 +30,37 @@
     "upstream": "https://raw.githubusercontent.com/honojs/middleware/8de0f1ea32b76d40df0ec4a06ed5af2e100ccbfd/packages/zod-validator/README.md",
     "sha256": "064203b77b9fae6e94744300ba93727c894128d5095ab48f0b4a244dd4d95eb6",
     "path": "scripts/compliance/notices/hono-zod-validator-0.9.1.txt"
+  },
+  {
+    "name": "@aws-sdk/credential-provider-http",
+    "version": "3.972.78",
+    "license": "Apache-2.0",
+    "upstream": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/7c2f08900ba6f6ea424ac488694de80356541402/LICENSE",
+    "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+    "path": "scripts/compliance/notices/aws-sdk-apache-2.0.txt"
+  },
+  {
+    "name": "@aws-sdk/nested-clients",
+    "version": "3.997.50",
+    "license": "Apache-2.0",
+    "upstream": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/7c2f08900ba6f6ea424ac488694de80356541402/LICENSE",
+    "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+    "path": "scripts/compliance/notices/aws-sdk-apache-2.0.txt"
+  },
+  {
+    "name": "@aws-sdk/credential-provider-login",
+    "version": "3.972.83",
+    "license": "Apache-2.0",
+    "upstream": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/7c2f08900ba6f6ea424ac488694de80356541402/LICENSE",
+    "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+    "path": "scripts/compliance/notices/aws-sdk-apache-2.0.txt"
+  },
+  {
+    "name": "@better-auth/utils",
+    "version": "0.5.0",
+    "license": "MIT",
+    "upstream": "https://raw.githubusercontent.com/better-auth/utils/c0ad05a303467b465c351d42c6465463be38ef78/LICENSE",
+    "sha256": "b5052b5db9a8720634e5243aaf019269ddd93c2e43f46a09f72b99e0004c8680",
+    "path": "scripts/compliance/notices/better-auth-utils-0.5.0.txt"
   }
 ]

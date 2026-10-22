@@ -24,6 +24,36 @@ function temporary(t) {
   return path;
 }
 
+test('optional peer tools are excluded from production but direct and bundled dependencies remain', (t) => {
+  const root = temporary(t);
+  const node = (name, manifest = {}, dependencies = {}) => {
+    const path = join(root, name.replaceAll('/', '-'));
+    mkdirSync(path);
+    writeFileSync(join(path, 'package.json'), JSON.stringify({ name, ...manifest }));
+    return { path, dependencies };
+  };
+  for (const platform of ['win32-x64', 'linux-x64', 'linux-arm64']) {
+    const native = node(`@esbuild/${platform}`);
+    const tool = node(`vitest-${platform}`, {}, { native });
+    const explicit = node(`explicit-${platform}`);
+    const required = node(`required-${platform}`);
+    const auth = node(`auth-${platform}`, {
+      peerDependenciesMeta: { vitest: { optional: true }, explicit: { optional: true } },
+      dependencies: { explicit: '1' },
+    }, { vitest: tool, explicit, required });
+    const filtered = graphPaths([auth], new Set(), { skipOptionalPeers: true });
+    assert.ok(filtered.has(auth.path));
+    assert.ok(filtered.has(explicit.path));
+    assert.ok(filtered.has(required.path));
+    assert.equal(filtered.has(tool.path), false);
+    assert.equal(filtered.has(native.path), false);
+    assert.ok(graphPaths([auth]).has(tool.path)); // Still license-check dev tools.
+    assert.ok(graphPaths([auth, tool], new Set(), { skipOptionalPeers: true }).has(native.path));
+    const notice = generateNotices({ packages: [{ name: 'optional-in-bundle', version: '1', license: 'MIT', runtime: false, bundled: true, notices: [{ name: 'LICENSE', text: 'Kept' }] }], assets: [] });
+    assert.match(notice, /optional-in-bundle@1/);
+  }
+});
+
 for (const fixture of json(new URL('./fixtures/licenses.json', import.meta.url))) {
   test(fixture.name, () => assert.equal(licenseAllowed(fixture.pkg), fixture.allowed));
 }

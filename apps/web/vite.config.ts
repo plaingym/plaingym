@@ -3,6 +3,7 @@ import { defineConfig, loadEnv } from 'vite';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../..', '');
@@ -24,10 +25,11 @@ export default defineConfig(({ mode }) => {
         autoCodeSplitting: true,
       }),
       react(),
+      tailwindcss(),
     ],
     server: {
       host: '127.0.0.1',
-      proxy: { '/healthz': `http://127.0.0.1:${env.PORT || '3000'}` },
+      proxy: { '/healthz': `http://127.0.0.1:${env.PORT || '3000'}`, '/api': `http://127.0.0.1:${env.PORT || '3000'}` },
     },
     define: {
       __SOURCE_URL__: JSON.stringify(sourceUrl),
