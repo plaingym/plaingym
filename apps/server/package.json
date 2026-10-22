@@ -6,31 +6,33 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
-    "build": "node build.mjs",
+    "build": "node build.mjs && node src/cli/restore.build.mjs",
     "start": "node --env-file-if-exists=../../.env dist/server.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1154.0",
+    "@aws-sdk/s3-request-presigner": "3.1155.0",
+    "@better-auth/drizzle-adapter": "1.7.12",
     "@hono/node-server": "2.1.5",
     "@hono/zod-openapi": "1.6.3",
     "@plaingym/db": "workspace:*",
     "@plaingym/shared": "workspace:*",
+    "@react-email/render": "2.1.1",
+    "age-encryption": "0.3.1",
+    "better-auth": "1.7.12",
     "cron-parser": "5.10.2",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.13",
-    "@react-email/render": "2.1.1",
     "nodemailer": "10.1.7",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "@aws-sdk/client-s3": "3.1154.0",
-    "@aws-sdk/s3-request-presigner": "3.1155.0",
-    "@better-auth/drizzle-adapter": "1.7.12",
-    "better-auth": "1.7.12"
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@types/nodemailer": "8.0.2",
+    "@types/react": "19.3.0",
     "esbuild": "0.28.2",
     "postgres": "3.4.9",
-    "tsx": "4.23.15",
-    "@types/nodemailer": "8.0.2",
-    "@types/react": "19.3.0"
+    "tsx": "4.23.15"
   }
 }

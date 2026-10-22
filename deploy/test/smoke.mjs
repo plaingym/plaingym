@@ -72,6 +72,9 @@ try {
   ].join('\n')]);
   assert.throws(() => compose(['exec', '-T', 'app', 'touch', '/app/should-fail']));
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
+  assert.equal(Number(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'").trim()), 51);
+  assert.equal(sql("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity)").trim(), '0');
+  compose(['exec', '-T', 'app', 'node', '/app/maintenance.mjs', 'resume']);
   // Actual role drift must fail startup, even while Postgres is healthy.
   sql('ALTER ROLE app BYPASSRLS');
   assert.throws(() => compose(['run', '--rm', '--no-deps', '-T', 'app', 'true']));
@@ -109,7 +112,7 @@ try {
   compose(['restart', 'postgres', 'app']);
   compose(['up', '-d', '--wait', '--wait-timeout', '90']);
   compose(['exec', '-T', 'app', 'node', '/app/deploy/healthcheck.mjs']);
-  console.log('PASS: HTTPS, redirect, roles, schema guard, image assets, first-boot shell and pack catalog, hardening, memory caps, restart.');
+  console.log('PASS: HTTPS, redirect, roles, boot migrations, forced RLS, image assets, first-boot shell and pack catalog, hardening, memory caps, restart.');
 } catch (error) {
   try { console.error(compose(['logs', '--no-color', '--tail', '30', 'app'])); }
   catch { /* Preserve the original failure if diagnostics are unavailable. */ }
