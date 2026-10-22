@@ -3,7 +3,7 @@ name: CI
 # Pushes to main and pull requests; a pull request's branch isn't also checked as a push.
 on:
   push:
-    branches: [main]
+    branches: [main, 'integration/**']
   pull_request:
 permissions:
   contents: read

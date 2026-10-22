@@ -2,7 +2,7 @@
 name: Image checks
 on:
   push:
-    branches: [main]
+    branches: [main, 'integration/**']
     paths:
       - 'deploy/**'
       - 'apps/**'

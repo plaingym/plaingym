@@ -2,7 +2,7 @@
 name: Repo compliance
 on:
   push:
-    branches: [main]
+    branches: [main, 'integration/**']
   pull_request:
 permissions:
   contents: read
