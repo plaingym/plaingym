@@ -126,3 +126,6 @@ export class FakeJobs implements Jobs {
     return true;
   }
 }
+
+export { PostgresJobs, PostgresJobStatsQuery, startJobsWorker } from './postgres.js';
+export type { PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';

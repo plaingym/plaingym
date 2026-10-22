@@ -11,11 +11,12 @@
   },
   "dependencies": {
     "@hono/node-server": "2.1.5",
+    "@hono/zod-openapi": "1.6.3",
     "@plaingym/db": "workspace:*",
     "@plaingym/shared": "workspace:*",
-    "hono": "4.13.13",
+    "cron-parser": "5.10.2",
     "drizzle-orm": "0.45.4",
-    "@hono/zod-openapi": "1.6.3"
+    "hono": "4.13.13"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
