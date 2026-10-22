@@ -1,0 +1,16 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+# Authentication
+
+Call `authConfig(environment, smtpConfigured)` at startup. It requires an `AUTH_SECRET` of at least 32 characters, implements `AUTH_PASSWORD_LOGIN=auto|on|off`, and rejects password login or missing SMTP in `TENANCY=multi`.
+
+After database initialization, create `createAuthService({ config, sendMagicLink })` and mount `sessionMiddleware({ auth, resolve })` after tenant resolution. `resolve` must return the resolved gym ID, its canonical origin from trusted tenant configuration, and the socket IP or an address validated by the trusted proxy. Incoming forwarded headers are stripped. Do not pass an unvalidated request host as the canonical origin. Mount `authorize` from `areas/staff/auth.permissions.ts` with the route registry. The middleware sets staff roles from the current gym; a member surface can inject its own principal loader.
+
+The HTTP wrapper exposes only password sign-in when enabled, magic-link request/verification when delivery is configured, get-session, and sign-out. Every other library endpoint returns 404. Responses do not contain session bearer tokens. Magic tokens contain the issuing gym ID, are stored hashed, expire after five minutes, and are consumed once. Callback origins and destinations are reconstructed from the gym configuration. The Google extension requires an explicit state-binding callback before it exposes its two provider routes.
+
+`sendMagicLink` receives `{ email, url, gymId }`; render `renderAuthLink` with the locale translator and send it through `Email`. Delivery runs outside database transactions. Public signup is disabled; setup and invitation services provision identities through `createAccountService().provisionUser`, and setup without SMTP uses `createPasswordUser`. Identity emails are lowercase. Neither provisioning method grants a staff role or a household link.
+
+Password hashes use Node's asynchronous Argon2id, NFKC normalization, a random 16-byte salt and a 32-byte tag, encoded as `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`. Verification accepts precisely this bounded format. A process shares two native hash slots (about 38 MiB of Argon2 working memory) and at most 64 pending requests; excess work is rejected. The burst test reports local latency and RSS. Whole-server memory measurements require the deployment environment.
+
+`resetStaffPassword` rechecks the current actor and target staff roles and household links, updates the credential, deletes all target sessions and writes the audit in one transaction. The auth system pool also enters `forGym` for this operation, so business-table RLS still restricts roles and household links to the chosen gym. Passwords and hashes are absent from audit data. `assertCanResetPassword` is reusable by other reset flows.
+
+Before dispatching CLI commands, initialize the database and call `configureAuthCli({ resolveGymId })` with the single-gym resolver. `gym-app auth reset-password <email>` prompts for a hidden password twice, requires a current owner, revokes every session and audits as the system. No password is accepted in command arguments or environment variables.

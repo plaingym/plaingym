@@ -25,3 +25,9 @@ export class FakeAuth implements Auth {
     return session?.gymId === this.gymId ? { userId: session.userId } : null;
   }
 }
+
+export { authConfig } from './config.js';
+export { createAuthService, authEndpoints } from './service.js';
+export type { AuthService, AuthServiceOptions, ResolvedAuthGym, GoogleAuthExtension } from './service.js';
+export { sessionMiddleware } from './middleware.js';
+export { createAccountService } from './accounts.js';
