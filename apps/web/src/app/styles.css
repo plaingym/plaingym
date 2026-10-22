@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+@import "tailwindcss";
+@source "../";
+@theme {
+  --color-background: #ffffff;
+  --color-foreground: #172524;
+  --color-card: #ffffff;
+  --color-primary: #155e55;
+  --color-primary-foreground: #ffffff;
+  --color-muted: #f1f5f4;
+  --color-muted-foreground: #4b5f5c;
+  --color-border: #d6e1df;
+  --color-input: #a6b9b5;
+  --color-ring: #0f766e;
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+}
