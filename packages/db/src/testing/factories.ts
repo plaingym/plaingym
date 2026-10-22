@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { getTableColumns, getTableName } from 'drizzle-orm';
+import { eq, getTableColumns, getTableName } from 'drizzle-orm';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import type { scopedDatabase, Transaction } from '../client.js';
 import { uuidv7 } from '../id.js';
@@ -33,20 +33,23 @@ const defaults = {
   classSessionPrograms: () => ({}), classSessionTags: () => ({}),
   attendances: () => ({ occurredAt: date, source: 'coach' }),
   classBookings: () => ({ bookedByKind: 'staff' }),
-  taxRates: () => ({ name: 'Test tax', basisPoints: 500 }),
-  plans: () => ({ name: 'Test Plan', amountCents: 10000, currency: 'USD', interval: 'monthly' }),
-  chargeTypes: () => ({ name: 'Test Charge', amountCents: 2000, currency: 'USD' }),
-  memberships: () => ({ interval: 'monthly', amountCents: 10000, currency: 'USD', nextDueOn: '2026-02-15', startsOn: '2026-01-15' }),
-  invoices: () => ({ kind: 'one_off', dueOn: '2026-01-15', amountCents: 10000, currency: 'USD' }),
-  invoiceLineItems: () => ({ kind: 'charge', description: 'Test charge', amountCents: 10000, currency: 'USD' }),
+  taxRates: () => ({ name: 'Test tax', rateMillionths: 50_000 }),
+  plans: () => ({ name: 'Test Plan', amountCents: 10000, interval: 'monthly' }),
+  planTaxRates: () => ({}),
+  chargeTypes: () => ({ name: 'Test Charge', amountCents: 2000 }),
+  chargeTypeTaxRates: () => ({}),
+  memberships: () => ({ interval: 'monthly', amountCents: 10000, nextDueOn: '2026-02-15', startsOn: '2026-01-15' }),
+  invoices: () => ({ kind: 'one_off', dueOn: '2026-01-15', amountCents: 10000 }),
+  invoiceSequences: () => ({}),
+  invoiceLineItems: () => ({ kind: 'charge', description: 'Test charge', amountCents: 10000 }),
   paymentMethods: () => ({ processorId: 'pm_' + uuidv7(), brand: 'visa', last4: '4242' }),
-  paymentAttempts: () => ({ attemptNumber: 1, amountCents: 10000, currency: 'USD', savedPaymentMethod: 'pm_test', stripeCustomerId: 'cus_test' }),
-  payments: () => ({ method: 'cash', amountCents: 10000, currency: 'USD', paidAt: date }),
-  refunds: () => ({ amountCents: 1000, currency: 'USD' }),
+  paymentAttempts: () => ({ attemptNumber: 1, amountCents: 10000, savedPaymentMethod: 'pm_test', stripeCustomerId: 'cus_test' }),
+  payments: () => ({ method: 'cash', amountCents: 10000, paidAt: date }),
+  refunds: () => ({ amountCents: 1000 }),
   waiverTemplates: () => ({ name: uuidv7(), version: 1, body: 'I agree.' }),
   waiverSignatures: () => ({ snapshot, snapshotHash: createHash('sha256').update(snapshot).digest('hex'),
     signatureImageKey: 'test/signature.png', signatureImageHash: 'a'.repeat(64), signedAt: date, ipAddress: '127.0.0.1' }),
-  kioskDevices: () => ({ name: 'Test Kiosk', tokenHash: uuidv7() }),
+  kioskDevices: () => ({ name: 'Test Kiosk', tokenHash: createHash('sha256').update(uuidv7()).digest('hex') }),
   linkCampaigns: () => ({ name: 'Test campaign', purpose: 'update_card' }),
   signedLinks: () => ({ tokenHash: createHash('sha256').update(uuidv7()).digest('hex'), purpose: 'update_card', expiresAt: new Date('2026-02-01Z') }),
   jobs: () => ({ name: 'test', runAt: date, idempotencyKey: uuidv7() }),
@@ -57,12 +60,21 @@ const defaults = {
 } satisfies { [K in TableName]: () => Partial<Insert<K>> };
 export const factoryTableNames = Object.keys(defaults) as TableName[];
 const bySqlName = new Map<string, TableName>(Object.entries(schema).map(([key, table]) => [getTableName(table), key as TableName]));
-/** Required dependencies are inserted in the same gym; optional relationships remain empty. */
+/**
+ * Required dependencies are inserted in the same gym; optional relationships remain empty.
+ * Money rows, including generated dependencies, use the gym's currency unless a test overrides it.
+ */
 export function createFactories(database: Pick<ReturnType<typeof scopedDatabase>, 'forGym'>) {
   async function build(tx: Transaction, name: TableName, gymId: string, overrides: Record<string, unknown>): Promise<Record<string, unknown>> {
     const table = schema[name];
     const columns = getTableColumns(table);
-    const values: Record<string, unknown> = { ...defaults[name](), ...(name === 'gyms' ? { id: gymId } : {}),
+    const inherited: Record<string, unknown> = {};
+    if (name !== 'gyms' && 'currency' in columns && overrides.currency === undefined) {
+      const [gym] = await tx.select({ currency: schema.gyms.currency }).from(schema.gyms).where(eq(schema.gyms.id, gymId));
+      if (!gym) throw new Error('Factory gym does not exist');
+      inherited.currency = gym.currency;
+    }
+    const values: Record<string, unknown> = { ...defaults[name](), ...inherited, ...(name === 'gyms' ? { id: gymId } : {}),
       ...('gymId' in columns ? { gymId } : {}), ...overrides };
     const property = (table: PgTable, columnName: string) => {
       const entry = Object.entries(getTableColumns(table)).find(([, column]) => column.name === columnName);

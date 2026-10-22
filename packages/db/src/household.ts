@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import {
@@ -22,6 +22,8 @@ interface HouseholdGrant {
   householdProfile: boolean;
   memberActivity: boolean;
   waiverTemplates: boolean;
+  /** Emergency contacts: logged-in household users only, never signed links. */
+  contacts: boolean;
 }
 const all = { kind: 'all' } as const;
 const none = { kind: 'none' } as const;
@@ -49,7 +51,7 @@ async function resolveGrant(tx: Transaction, scope: HouseholdScope): Promise<Hou
       gymId: scope.gymId, householdId: link.householdId,
       members: payer ? all : { kind: 'one', id: link.memberId! },
       invoices: payer ? all : none, cards: payer, householdProfile: payer,
-      memberActivity: true, waiverTemplates: true,
+      memberActivity: true, waiverTemplates: true, contacts: true,
     };
   }
 
@@ -60,7 +62,7 @@ async function resolveGrant(tx: Transaction, scope: HouseholdScope): Promise<Hou
   const grant: HouseholdGrant = {
     gymId: link.gymId, householdId: link.householdId,
     members: none, invoices: none, cards: false, householdProfile: false,
-    memberActivity: false, waiverTemplates: false,
+    memberActivity: false, waiverTemplates: false, contacts: false,
   };
   switch (link.purpose) {
     case 'pay_invoice':
@@ -89,28 +91,29 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     resourcePredicate(invoices.id, grant.invoices),
   );
   const memberIds = tx.select({ id: members.id }).from(members).where(memberPredicate);
+  // One projection for list and detail; medical notes and the check-in hash stay staff-only.
+  const memberFields = {
+    id: members.id, firstName: members.firstName, lastName: members.lastName,
+    dateOfBirth: members.dateOfBirth, status: members.status, photoKey: members.photoKey,
+    email: members.email, phone: members.phone, checkinCodeVersion: members.checkinCodeVersion,
+    revision: members.revision,
+    ...(grant.contacts ? { emergencyContacts: members.emergencyContacts } : {}),
+  };
   // No raw transaction, arbitrary predicate or unscoped relation loader escapes this API.
   return {
     members: async () => {
       requireAccess(grant.members.kind !== 'none');
-      return tx.select({
-        id: members.id, firstName: members.firstName, lastName: members.lastName,
-        dateOfBirth: members.dateOfBirth, status: members.status, photoKey: members.photoKey,
-        email: members.email, phone: members.phone, checkinCodeVersion: members.checkinCodeVersion,
-      }).from(members).where(memberPredicate);
+      return tx.select(memberFields).from(members).where(memberPredicate);
     },
     member: async (id: string) => {
       requireAccess(grant.members.kind !== 'none');
-      return tx.select({
-        id: members.id, firstName: members.firstName, lastName: members.lastName,
-        status: members.status, photoKey: members.photoKey,
-      }).from(members).where(and(memberPredicate, eq(members.id, id)));
+      return tx.select(memberFields).from(members).where(and(memberPredicate, eq(members.id, id)));
     },
     household: async () => {
       requireAccess(grant.householdProfile, 'Payer access required');
       return tx.select({
         id: households.id, name: households.name, email: households.email, phone: households.phone,
-        address: households.address, billingDay: households.billingDay,
+        address: households.address, billingDay: households.billingDay, revision: households.revision,
       }).from(households).where(and(eq(households.gymId, grant.gymId), eq(households.id, grant.householdId)));
     },
     bookings: async () => {
@@ -140,8 +143,10 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     },
     waiverTemplates: async () => {
       requireAccess(grant.waiverTemplates);
-      return tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
-        .where(eq(waiverTemplates.gymId, grant.gymId)).orderBy(waiverTemplates.name, desc(waiverTemplates.version));
+      // Pick each family's latest version first, then drop retired families, so retiring never resurfaces an older version.
+      const latest = tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
+        .where(eq(waiverTemplates.gymId, grant.gymId)).orderBy(waiverTemplates.name, desc(waiverTemplates.version)).as('latest');
+      return tx.select().from(latest).where(isNull(latest.retiredAt));
     },
     invoices: async () => {
       requireAccess(grant.invoices.kind !== 'none', 'Payer access required');
@@ -162,8 +167,9 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       requireAccess(grant.cards, 'Payer access required');
       return tx.select({
         id: paymentMethods.id, brand: paymentMethods.brand, last4: paymentMethods.last4,
-        expiryMonth: paymentMethods.expiryMonth, expiryYear: paymentMethods.expiryYear,
-      }).from(paymentMethods).where(and(eq(paymentMethods.gymId, grant.gymId), eq(paymentMethods.householdId, grant.householdId)));
+        expiryMonth: paymentMethods.expiryMonth, expiryYear: paymentMethods.expiryYear, isDefault: paymentMethods.isDefault,
+      }).from(paymentMethods).where(and(eq(paymentMethods.gymId, grant.gymId), eq(paymentMethods.householdId, grant.householdId),
+        isNull(paymentMethods.revokedAt)));
     },
   };
 }

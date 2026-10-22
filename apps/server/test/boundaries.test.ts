@@ -48,6 +48,52 @@ describe('system table access', () => {
     expect(await messages('apps/server/src/core/tenancy.ts', "import { systemDatabase } from '@plaingym/db/client'; void systemDatabase;"))
       .toHaveLength(0);
   });
+  const execute = "import { sql } from 'drizzle-orm'; declare const tx: { execute(query: unknown): unknown }; void tx.execute(sql`select * from gyms`);";
+  const builder = "import { sql } from 'drizzle-orm'; declare const tx: { select(fields: unknown): { from(source: unknown): unknown } };"
+    + " void tx.select({ config: sql<string>`stripe_config_encrypted` }).from(sql`gyms`);";
+  const constructed = "import { SQL, StringChunk } from 'drizzle-orm'; declare const tx: { select(fields: unknown): { from(source: unknown): unknown } };"
+    + " void tx.select({ config: new SQL([new StringChunk('stripe_config_encrypted')]) }).from(new SQL([new StringChunk('gyms')]));";
+  it.each([
+    execute,
+    builder,
+    "import { sql } from 'drizzle-orm'; void sql.raw('select 1');",
+    "import { sql as text } from 'drizzle-orm'; void text;",
+    "import { sql } from 'drizzle-orm/sql'; void sql;",
+    "import * as orm from 'drizzle-orm'; void orm;",
+    "export { sql } from 'drizzle-orm';",
+    "export * from 'drizzle-orm';",
+    "declare const tx: Record<string, (query: string) => unknown>; void tx['execute']('select 1');",
+    'declare const tx: Record<string, (query: string) => unknown>; void tx[`execute`](\'select 1\');',
+    "declare const tx: { execute(query: unknown): unknown }; const { execute: run } = tx; void run;",
+    "declare const tx: { $client: unknown }; void tx.$client;",
+    constructed,
+    "import { SQL as Query, StringChunk as Text } from 'drizzle-orm'; void new Query([new Text('gyms')]);",
+    "import { StringChunk } from 'drizzle-orm/sql'; void StringChunk;",
+    "import { SQL } from 'drizzle-orm/sql/sql'; void SQL;",
+    "import { name, placeholder } from 'drizzle-orm'; void [name, placeholder];",
+    "import { pgTable, text } from 'drizzle-orm/pg-core'; void pgTable('gyms', { config: text('stripe_config_encrypted') });",
+    "import { drizzle } from 'drizzle-orm/postgres-js'; void drizzle;",
+    "import orm from 'drizzle-orm'; void orm;",
+    "export { SQL } from 'drizzle-orm';",
+    "void import('drizzle-orm').then((orm) => orm.SQL);",
+    "declare const require: (id: string) => unknown; void require('drizzle-orm/sql');",
+  ])('keeps raw SQL, which can name system tables without an import, in reviewed infrastructure: %s', async (source) => {
+    for (const path of [area, portal, links, core]) {
+      expect(await messages(path, source)).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'database/system-tables' })]));
+    }
+  });
+  it('allows query-builder operators everywhere and raw SQL in reviewed infrastructure', async () => {
+    expect(await messages(area, "import { and, eq } from 'drizzle-orm'; void and; void eq;")).toHaveLength(0);
+    // Types carry no runtime constructor.
+    expect(await messages(area, "import type { SQL } from 'drizzle-orm'; export type Expression = SQL;")).toHaveLength(0);
+    expect(await messages(area, "import { type SQL, eq } from 'drizzle-orm'; export type Expression = SQL; void eq;")).toHaveLength(0);
+    expect(await messages(area, "import type { PgColumn } from 'drizzle-orm/pg-core'; export type Column = PgColumn;")).toHaveLength(0);
+    for (const path of ['apps/server/src/infra/jobs/worker.ts', 'apps/server/src/core/tenancy.ts', 'apps/server/src/areas/health/restore.ts']) {
+      expect(await messages(path, execute)).toHaveLength(0);
+      expect(await messages(path, builder)).toHaveLength(0);
+      expect(await messages(path, constructed)).toHaveLength(0);
+    }
+  });
 });
 
 async function messages(filePath: string, source: string) {
@@ -71,7 +117,6 @@ describe('dependency boundaries use the real ESLint configuration', () => {
 
   it.each([
     "import { eq, and } from 'drizzle-orm'; void [eq, and];",
-    "import { sql } from 'drizzle-orm'; void sql;",
     "import { members } from '@plaingym/db/schema/members'; void members;",
     "import { members } from '@plaingym/db'; void members;",
     "import { members } from '../../../../../packages/db/src/schema/members.js'; void members;",
@@ -150,7 +195,7 @@ describe('dependency boundaries use the real ESLint configuration', () => {
     }
     for (const source of [
       "import { forHousehold, members } from '@plaingym/db'; void [forHousehold, members];",
-      "import { eq, sql } from 'drizzle-orm'; void [eq, sql];",
+      "import { eq, and } from 'drizzle-orm'; void [eq, and];",
     ]) expect(await messages(path, source)).toHaveLength(0);
   });
 

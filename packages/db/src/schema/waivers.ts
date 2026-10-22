@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { check, index, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { base, choice, instant, ref, scoped } from './common.js';
 import { members } from './members.js';
+/** A template family is its name. Retiring sets retired_at on the family's latest version; publishing a new version restores it. */
 export const waiverTemplates = pgTable('waiver_templates', {
   ...base(), name: text('name').notNull(), kind: text('kind').notNull().default('waiver'),
-  version: integer('version').notNull(), body: text('body').notNull(),
+  version: integer('version').notNull(), body: text('body').notNull(), retiredAt: instant('retired_at'),
 }, (t) => [...scoped('waiver_templates', t), unique('waiver_templates_version_key').on(t.gymId, t.name, t.version),
   choice('waiver_templates_kind_check', t.kind, ['waiver', 'agreement']),
   check('waiver_templates_version_check', sql`${t.version} > 0`)]).enableRLS();
@@ -16,5 +17,6 @@ export const waiverSignatures = pgTable('waiver_signatures', {
   signedAt: instant('signed_at').notNull(), ipAddress: text('ip_address').notNull(),
 }, (t) => [...scoped('waiver_signatures', t), ref('waiver_signatures_member_fk', t.gymId, t.memberId, members),
   ref('waiver_signatures_template_fk', t.gymId, t.templateId, waiverTemplates),
+  index('waiver_signatures_member_idx').on(t.gymId, t.memberId),
   check('waiver_signatures_hash_check', sql`${t.snapshotHash} ~ '^[a-f0-9]{64}$' and ${t.signatureImageHash} ~ '^[a-f0-9]{64}$'`),
 ]).enableRLS();

@@ -3,12 +3,13 @@ import { sql } from 'drizzle-orm';
 import { check, foreignKey, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
 import { invoices } from './billing.js';
-import { base, choice, instant, ref, scoped } from './common.js';
+import { base, choice, instant, ref, scoped, sha256Check } from './common.js';
 import { households, members } from './members.js';
 export const kioskDevices = pgTable('kiosk_devices', {
   ...base(), name: text('name').notNull(), tokenHash: text('token_hash').notNull(),
   revokedAt: instant('revoked_at'), lastSeenAt: instant('last_seen_at'),
-}, (t) => [...scoped('kiosk_devices', t), unique('kiosk_devices_hash_key').on(t.gymId, t.tokenHash)]).enableRLS();
+}, (t) => [...scoped('kiosk_devices', t), unique('kiosk_devices_hash_key').on(t.gymId, t.tokenHash),
+  sha256Check('kiosk_devices_hash_check', t.tokenHash)]).enableRLS();
 export const linkCampaigns = pgTable('link_campaigns', {
   ...base(), name: text('name').notNull(), purpose: text('purpose').notNull(),
   createdBy: uuid('created_by').references(() => authUser.id),
@@ -32,4 +33,4 @@ export const signedLinks = pgTable('signed_links', {
     or (${t.purpose} = 'sign_waiver' and ${t.memberId} is not null and ${t.invoiceId} is null)
     or (${t.purpose} in ('update_card', 'onboarding') and ${t.invoiceId} is null and ${t.memberId} is null)
   `),
-  check('signed_links_hash_check', sql`${t.tokenHash} ~ '^[a-f0-9]{64}$'`)]).enableRLS();
+  sha256Check('signed_links_hash_check', t.tokenHash)]).enableRLS();

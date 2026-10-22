@@ -1,5 +1,5 @@
 {
-  "id": "be590806-394f-4b8c-974b-83e833c1debe",
+  "id": "90d8b223-011f-4bb4-87d8-de2f380310b5",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -198,6 +198,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'USD'"
+        },
         "billing_enabled": {
           "name": "billing_enabled",
           "type": "boolean",
@@ -233,6 +240,13 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -258,17 +272,33 @@
           "columns": [
             "slug"
           ]
+        },
+        "gyms_id_currency_key": {
+          "name": "gyms_id_currency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "currency"
+          ]
         }
       },
       "policies": {},
       "checkConstraints": {
+        "gyms_currency_check": {
+          "name": "gyms_currency_check",
+          "value": "\"gyms\".\"currency\" ~ '^[A-Z]{3}$'"
+        },
+        "gyms_revision_check": {
+          "name": "gyms_revision_check",
+          "value": "\"gyms\".\"revision\" > 0"
+        },
         "gyms_status_check": {
           "name": "gyms_status_check",
           "value": "\"gyms\".\"status\" in ('active', 'suspended')"
         },
         "gyms_limits_check": {
           "name": "gyms_limits_check",
-          "value": "\"gyms\".\"booking_window_days\" >= 0 and \"gyms\".\"cancellation_cutoff_minutes\" >= 0 and \"gyms\".\"backup_retention_bytes\" >= 0"
+          "value": "\"gyms\".\"booking_window_days\" >= 0 and \"gyms\".\"cancellation_cutoff_minutes\" >= 0 and (\"gyms\".\"backup_retention_bytes\" is null or \"gyms\".\"backup_retention_bytes\" >= 0)"
         }
       },
       "isRLSEnabled": false
@@ -639,7 +669,12 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "auth_user_email_lowercase_check": {
+          "name": "auth_user_email_lowercase_check",
+          "value": "\"auth_user\".\"email\" = lower(\"auth_user\".\"email\")"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.auth_verification": {
@@ -757,7 +792,51 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "household_users_member_key": {
+          "name": "household_users_member_key",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"household_users\".\"member_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "household_users_gym_user_idx": {
+          "name": "household_users_gym_user_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "household_users_gym_id_gyms_id_fk": {
           "name": "household_users_gym_id_gyms_id_fk",
@@ -923,12 +1002,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "default_payment_method_id": {
-          "name": "default_payment_method_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "pin_hash": {
           "name": "pin_hash",
           "type": "text",
@@ -941,6 +1014,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -998,6 +1078,10 @@
         "households_discount_check": {
           "name": "households_discount_check",
           "value": "\"households\".\"family_discount_basis_points\" between 0 and 10000"
+        },
+        "households_revision_check": {
+          "name": "households_revision_check",
+          "value": "\"households\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -1153,6 +1237,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -1202,7 +1293,12 @@
           "withCheck": "\"member_tags\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "member_tags_revision_check": {
+          "name": "member_tags_revision_check",
+          "value": "\"member_tags\".\"revision\" > 0"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.members": {
@@ -1322,6 +1418,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {
@@ -1425,6 +1528,14 @@
         "members_checkin_version_check": {
           "name": "members_checkin_version_check",
           "value": "\"members\".\"checkin_code_version\" > 0"
+        },
+        "members_checkin_hash_check": {
+          "name": "members_checkin_hash_check",
+          "value": "\"members\".\"checkin_code_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "members_revision_check": {
+          "name": "members_revision_check",
+          "value": "\"members\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -1456,7 +1567,7 @@
           "name": "user_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "member_id": {
           "name": "member_id",
@@ -1494,6 +1605,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -1571,7 +1689,12 @@
           "withCheck": "\"staff_profiles\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "staff_profiles_revision_check": {
+          "name": "staff_profiles_revision_check",
+          "value": "\"staff_profiles\".\"revision\" > 0"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.staff_roles": {
@@ -1608,6 +1731,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -1674,6 +1804,10 @@
         "staff_roles_role_check": {
           "name": "staff_roles_role_check",
           "value": "\"staff_roles\".\"role\" in ('owner', 'admin', 'coach', 'front_desk')"
+        },
+        "staff_roles_revision_check": {
+          "name": "staff_roles_revision_check",
+          "value": "\"staff_roles\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -1811,6 +1945,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "rank_system_id": {
+          "name": "rank_system_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "sub_rank": {
           "name": "sub_rank",
           "type": "integer",
@@ -1837,7 +1977,41 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "member_ranks_member_program_idx": {
+          "name": "member_ranks_member_program_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "program_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "promoted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "member_ranks_gym_id_gyms_id_fk": {
           "name": "member_ranks_gym_id_gyms_id_fk",
@@ -1867,32 +2041,36 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "member_ranks_program_fk": {
-          "name": "member_ranks_program_fk",
-          "tableFrom": "member_ranks",
-          "tableTo": "programs",
-          "columnsFrom": [
-            "gym_id",
-            "program_id"
-          ],
-          "columnsTo": [
-            "gym_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
         "member_ranks_rank_fk": {
           "name": "member_ranks_rank_fk",
           "tableFrom": "member_ranks",
           "tableTo": "ranks",
           "columnsFrom": [
             "gym_id",
-            "rank_id"
+            "rank_id",
+            "rank_system_id"
           ],
           "columnsTo": [
             "gym_id",
-            "id"
+            "id",
+            "rank_system_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "member_ranks_program_fk": {
+          "name": "member_ranks_program_fk",
+          "tableFrom": "member_ranks",
+          "tableTo": "programs",
+          "columnsFrom": [
+            "gym_id",
+            "program_id",
+            "rank_system_id"
+          ],
+          "columnsTo": [
+            "gym_id",
+            "id",
+            "rank_system_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -1985,6 +2163,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -2035,6 +2220,15 @@
             "gym_id",
             "name"
           ]
+        },
+        "programs_gym_id_rank_system_key": {
+          "name": "programs_gym_id_rank_system_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id",
+            "rank_system_id"
+          ]
         }
       },
       "policies": {
@@ -2049,7 +2243,12 @@
           "withCheck": "\"programs\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "programs_revision_check": {
+          "name": "programs_revision_check",
+          "value": "\"programs\".\"revision\" > 0"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.rank_systems": {
@@ -2086,6 +2285,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -2142,7 +2348,12 @@
           "withCheck": "\"rank_systems\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "rank_systems_revision_check": {
+          "name": "rank_systems_revision_check",
+          "value": "\"rank_systems\".\"revision\" > 0"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.ranks": {
@@ -2199,6 +2410,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -2250,6 +2468,15 @@
             "rank_system_id",
             "position"
           ]
+        },
+        "ranks_gym_id_rank_system_key": {
+          "name": "ranks_gym_id_rank_system_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id",
+            "rank_system_id"
+          ]
         }
       },
       "policies": {
@@ -2268,6 +2495,10 @@
         "ranks_position_check": {
           "name": "ranks_position_check",
           "value": "\"ranks\".\"position\" >= 0"
+        },
+        "ranks_revision_check": {
+          "name": "ranks_revision_check",
+          "value": "\"ranks\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -2332,7 +2563,35 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "attendances_member_time_idx": {
+          "name": "attendances_member_time_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "attendances_gym_id_gyms_id_fk": {
           "name": "attendances_gym_id_gyms_id_fk",
@@ -2533,6 +2792,33 @@
           ],
           "isUnique": true,
           "where": "\"class_bookings\".\"status\" <> 'cancelled'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "class_bookings_member_idx": {
+          "name": "class_bookings_member_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2968,9 +3254,38 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'scheduled'"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
-      "indexes": {},
+      "indexes": {
+        "class_sessions_gym_starts_idx": {
+          "name": "class_sessions_gym_starts_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "starts_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "class_sessions_gym_id_gyms_id_fk": {
           "name": "class_sessions_gym_id_gyms_id_fk",
@@ -3049,6 +3364,10 @@
         }
       },
       "checkConstraints": {
+        "class_sessions_revision_check": {
+          "name": "class_sessions_revision_check",
+          "value": "\"class_sessions\".\"revision\" > 0"
+        },
         "class_sessions_times_check": {
           "name": "class_sessions_times_check",
           "value": "\"class_sessions\".\"ends_at\" > \"class_sessions\".\"starts_at\""
@@ -3092,6 +3411,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -3141,7 +3467,12 @@
           "withCheck": "\"class_tags\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "class_tags_revision_check": {
+          "name": "class_tags_revision_check",
+          "value": "\"class_tags\".\"revision\" > 0"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.class_template_programs": {
@@ -3442,6 +3773,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -3499,6 +3837,10 @@
         }
       },
       "checkConstraints": {
+        "class_templates_revision_check": {
+          "name": "class_templates_revision_check",
+          "value": "\"class_templates\".\"revision\" > 0"
+        },
         "class_templates_schedule_check": {
           "name": "class_templates_schedule_check",
           "value": "\"class_templates\".\"weekday\" between 0 and 6 and \"class_templates\".\"duration_minutes\" > 0 and \"class_templates\".\"local_start_time\" ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'"
@@ -3508,6 +3850,123 @@
           "value": "\"class_templates\".\"capacity\" > 0"
         }
       },
+      "isRLSEnabled": true
+    },
+    "public.charge_type_tax_rates": {
+      "name": "charge_type_tax_rates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "gym_id": {
+          "name": "gym_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "charge_type_id": {
+          "name": "charge_type_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tax_rate_id": {
+          "name": "tax_rate_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "charge_type_tax_rates_gym_id_gyms_id_fk": {
+          "name": "charge_type_tax_rates_gym_id_gyms_id_fk",
+          "tableFrom": "charge_type_tax_rates",
+          "tableTo": "gyms",
+          "columnsFrom": [
+            "gym_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "charge_type_tax_rates_charge_type_fk": {
+          "name": "charge_type_tax_rates_charge_type_fk",
+          "tableFrom": "charge_type_tax_rates",
+          "tableTo": "charge_types",
+          "columnsFrom": [
+            "gym_id",
+            "charge_type_id"
+          ],
+          "columnsTo": [
+            "gym_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "charge_type_tax_rates_tax_fk": {
+          "name": "charge_type_tax_rates_tax_fk",
+          "tableFrom": "charge_type_tax_rates",
+          "tableTo": "tax_rates",
+          "columnsFrom": [
+            "gym_id",
+            "tax_rate_id"
+          ],
+          "columnsTo": [
+            "gym_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "charge_type_tax_rates_gym_id_id_key": {
+          "name": "charge_type_tax_rates_gym_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id"
+          ]
+        },
+        "charge_type_tax_rates_pair_key": {
+          "name": "charge_type_tax_rates_pair_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "charge_type_id",
+            "tax_rate_id"
+          ]
+        }
+      },
+      "policies": {
+        "charge_type_tax_rates_gym_policy": {
+          "name": "charge_type_tax_rates_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "\"charge_type_tax_rates\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid",
+          "withCheck": "\"charge_type_tax_rates\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {},
       "isRLSEnabled": true
     },
     "public.charge_types": {
@@ -3551,18 +4010,19 @@
           "primaryKey": false,
           "notNull": true
         },
-        "tax_rate_id": {
-          "name": "tax_rate_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "active": {
           "name": "active",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -3580,19 +4040,19 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "charge_types_tax_fk": {
-          "name": "charge_types_tax_fk",
+        "charge_types_currency_fk": {
+          "name": "charge_types_currency_fk",
           "tableFrom": "charge_types",
-          "tableTo": "tax_rates",
+          "tableTo": "gyms",
           "columnsFrom": [
             "gym_id",
-            "tax_rate_id"
+            "currency"
           ],
           "columnsTo": [
-            "gym_id",
-            "id"
+            "id",
+            "currency"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -3627,6 +4087,10 @@
         "charge_types_amount_check": {
           "name": "charge_types_amount_check",
           "value": "\"charge_types\".\"amount_cents\" >= 0"
+        },
+        "charge_types_revision_check": {
+          "name": "charge_types_revision_check",
+          "value": "\"charge_types\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -3714,9 +4178,43 @@
           "primaryKey": false,
           "notNull": true,
           "default": 1
+        },
+        "tax_rate_millionths": {
+          "name": "tax_rate_millionths",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tax_inclusive": {
+          "name": "tax_inclusive",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "invoice_line_items_invoice_idx": {
+          "name": "invoice_line_items_invoice_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "invoice_line_items_gym_id_gyms_id_fk": {
           "name": "invoice_line_items_gym_id_gyms_id_fk",
@@ -3738,12 +4236,14 @@
           "columnsFrom": [
             "gym_id",
             "household_id",
-            "invoice_id"
+            "invoice_id",
+            "currency"
           ],
           "columnsTo": [
             "gym_id",
             "household_id",
-            "id"
+            "id",
+            "currency"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -3824,6 +4324,10 @@
           "name": "invoice_line_items_kind_check",
           "value": "\"invoice_line_items\".\"kind\" in ('membership', 'signup_fee', 'charge', 'discount', 'tax')"
         },
+        "invoice_line_items_tax_check": {
+          "name": "invoice_line_items_tax_check",
+          "value": "(\"invoice_line_items\".\"kind\" = 'tax' and \"invoice_line_items\".\"tax_rate_millionths\" is not null and \"invoice_line_items\".\"tax_rate_millionths\" between 0 and 1000000 and \"invoice_line_items\".\"tax_inclusive\" is not null)\n    or (\"invoice_line_items\".\"kind\" <> 'tax' and \"invoice_line_items\".\"tax_rate_millionths\" is null and \"invoice_line_items\".\"tax_inclusive\" is null and \"invoice_line_items\".\"tax_rate_id\" is null)"
+        },
         "invoice_line_items_currency_check": {
           "name": "invoice_line_items_currency_check",
           "value": "\"invoice_line_items\".\"currency\" ~ '^[A-Z]{3}$'"
@@ -3831,6 +4335,91 @@
         "invoice_line_items_quantity_check": {
           "name": "invoice_line_items_quantity_check",
           "value": "\"invoice_line_items\".\"quantity\" > 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.invoice_sequences": {
+      "name": "invoice_sequences",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "gym_id": {
+          "name": "gym_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_number": {
+          "name": "last_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "invoice_sequences_gym_id_gyms_id_fk": {
+          "name": "invoice_sequences_gym_id_gyms_id_fk",
+          "tableFrom": "invoice_sequences",
+          "tableTo": "gyms",
+          "columnsFrom": [
+            "gym_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "invoice_sequences_gym_id_id_key": {
+          "name": "invoice_sequences_gym_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id"
+          ]
+        },
+        "invoice_sequences_gym_key": {
+          "name": "invoice_sequences_gym_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id"
+          ]
+        }
+      },
+      "policies": {
+        "invoice_sequences_gym_policy": {
+          "name": "invoice_sequences_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "\"invoice_sequences\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid",
+          "withCheck": "\"invoice_sequences\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "invoice_sequences_number_check": {
+          "name": "invoice_sequences_number_check",
+          "value": "\"invoice_sequences\".\"last_number\" >= 0"
         }
       },
       "isRLSEnabled": true
@@ -3876,6 +4465,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'draft'"
+        },
+        "number": {
+          "name": "number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         },
         "due_on": {
           "name": "due_on",
@@ -4009,6 +4604,21 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "invoices_currency_fk": {
+          "name": "invoices_currency_fk",
+          "tableFrom": "invoices",
+          "tableTo": "gyms",
+          "columnsFrom": [
+            "gym_id",
+            "currency"
+          ],
+          "columnsTo": [
+            "id",
+            "currency"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4028,6 +4638,33 @@
             "gym_id",
             "household_id",
             "id"
+          ]
+        },
+        "invoices_gym_household_id_currency_key": {
+          "name": "invoices_gym_household_id_currency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "household_id",
+            "id",
+            "currency"
+          ]
+        },
+        "invoices_gym_id_currency_key": {
+          "name": "invoices_gym_id_currency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id",
+            "currency"
+          ]
+        },
+        "invoices_number_key": {
+          "name": "invoices_number_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "number"
           ]
         }
       },
@@ -4051,6 +4688,10 @@
         "invoices_status_check": {
           "name": "invoices_status_check",
           "value": "\"invoices\".\"status\" in ('draft', 'open', 'processing', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded')"
+        },
+        "invoices_number_check": {
+          "name": "invoices_number_check",
+          "value": "(\"invoices\".\"status\" = 'draft' and \"invoices\".\"number\" is null) or (\"invoices\".\"status\" <> 'draft' and \"invoices\".\"number\" is not null and \"invoices\".\"number\" > 0)"
         },
         "invoices_currency_check": {
           "name": "invoices_currency_check",
@@ -4169,14 +4810,70 @@
           "primaryKey": false,
           "notNull": false
         },
-        "commitment_ends_at": {
-          "name": "commitment_ends_at",
-          "type": "timestamp with time zone",
+        "commitment_ends_on": {
+          "name": "commitment_ends_on",
+          "type": "date",
           "primaryKey": false,
           "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
-      "indexes": {},
+      "indexes": {
+        "memberships_due_idx": {
+          "name": "memberships_due_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_due_on",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "memberships_member_idx": {
+          "name": "memberships_member_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "memberships_gym_id_gyms_id_fk": {
           "name": "memberships_gym_id_gyms_id_fk",
@@ -4237,6 +4934,21 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "memberships_currency_fk": {
+          "name": "memberships_currency_fk",
+          "tableFrom": "memberships",
+          "tableTo": "gyms",
+          "columnsFrom": [
+            "gym_id",
+            "currency"
+          ],
+          "columnsTo": [
+            "id",
+            "currency"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4287,6 +4999,10 @@
         "memberships_amount_check": {
           "name": "memberships_amount_check",
           "value": "\"memberships\".\"amount_cents\" >= 0"
+        },
+        "memberships_revision_check": {
+          "name": "memberships_revision_check",
+          "value": "\"memberships\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -4426,11 +5142,13 @@
           "tableTo": "invoices",
           "columnsFrom": [
             "gym_id",
-            "invoice_id"
+            "invoice_id",
+            "currency"
           ],
           "columnsTo": [
             "gym_id",
-            "id"
+            "id",
+            "currency"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -4551,6 +5269,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "is_default": {
+          "name": "is_default",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "revoked_at": {
           "name": "revoked_at",
           "type": "timestamp with time zone",
@@ -4558,7 +5283,30 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "payment_methods_default_key": {
+          "name": "payment_methods_default_key",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "household_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payment_methods\".\"is_default\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "payment_methods_gym_id_gyms_id_fk": {
           "name": "payment_methods_gym_id_gyms_id_fk",
@@ -4630,6 +5378,10 @@
         }
       },
       "checkConstraints": {
+        "payment_methods_default_check": {
+          "name": "payment_methods_default_check",
+          "value": "not \"payment_methods\".\"is_default\" or \"payment_methods\".\"revoked_at\" is null"
+        },
         "payment_methods_last4_check": {
           "name": "payment_methods_last4_check",
           "value": "\"payment_methods\".\"last4\" ~ '^[0-9]{4}$'"
@@ -4713,7 +5465,29 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "payments_invoice_idx": {
+          "name": "payments_invoice_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "payments_gym_id_gyms_id_fk": {
           "name": "payments_gym_id_gyms_id_fk",
@@ -4734,11 +5508,13 @@
           "tableTo": "invoices",
           "columnsFrom": [
             "gym_id",
-            "invoice_id"
+            "invoice_id",
+            "currency"
           ],
           "columnsTo": [
             "gym_id",
-            "id"
+            "id",
+            "currency"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -4752,6 +5528,15 @@
           "columns": [
             "gym_id",
             "id"
+          ]
+        },
+        "payments_gym_id_currency_key": {
+          "name": "payments_gym_id_currency_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id",
+            "currency"
           ]
         },
         "payments_intent_key": {
@@ -4797,6 +5582,123 @@
           "value": "\"payments\".\"amount_cents\" > 0"
         }
       },
+      "isRLSEnabled": true
+    },
+    "public.plan_tax_rates": {
+      "name": "plan_tax_rates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "gym_id": {
+          "name": "gym_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tax_rate_id": {
+          "name": "tax_rate_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "plan_tax_rates_gym_id_gyms_id_fk": {
+          "name": "plan_tax_rates_gym_id_gyms_id_fk",
+          "tableFrom": "plan_tax_rates",
+          "tableTo": "gyms",
+          "columnsFrom": [
+            "gym_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plan_tax_rates_plan_fk": {
+          "name": "plan_tax_rates_plan_fk",
+          "tableFrom": "plan_tax_rates",
+          "tableTo": "plans",
+          "columnsFrom": [
+            "gym_id",
+            "plan_id"
+          ],
+          "columnsTo": [
+            "gym_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "plan_tax_rates_tax_fk": {
+          "name": "plan_tax_rates_tax_fk",
+          "tableFrom": "plan_tax_rates",
+          "tableTo": "tax_rates",
+          "columnsFrom": [
+            "gym_id",
+            "tax_rate_id"
+          ],
+          "columnsTo": [
+            "gym_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "plan_tax_rates_gym_id_id_key": {
+          "name": "plan_tax_rates_gym_id_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "id"
+          ]
+        },
+        "plan_tax_rates_pair_key": {
+          "name": "plan_tax_rates_pair_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "gym_id",
+            "plan_id",
+            "tax_rate_id"
+          ]
+        }
+      },
+      "policies": {
+        "plan_tax_rates_gym_policy": {
+          "name": "plan_tax_rates_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "\"plan_tax_rates\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid",
+          "withCheck": "\"plan_tax_rates\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {},
       "isRLSEnabled": true
     },
     "public.plans": {
@@ -4860,9 +5762,9 @@
           "notNull": true,
           "default": 0
         },
-        "tax_rate_id": {
-          "name": "tax_rate_id",
-          "type": "uuid",
+        "commitment_months": {
+          "name": "commitment_months",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },
@@ -4872,6 +5774,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -4889,19 +5798,19 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "plans_tax_fk": {
-          "name": "plans_tax_fk",
+        "plans_currency_fk": {
+          "name": "plans_currency_fk",
           "tableFrom": "plans",
-          "tableTo": "tax_rates",
+          "tableTo": "gyms",
           "columnsFrom": [
             "gym_id",
-            "tax_rate_id"
+            "currency"
           ],
           "columnsTo": [
-            "gym_id",
-            "id"
+            "id",
+            "currency"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -4940,6 +5849,14 @@
         "plans_amount_check": {
           "name": "plans_amount_check",
           "value": "\"plans\".\"amount_cents\" >= 0 and \"plans\".\"signup_fee_cents\" >= 0 and \"plans\".\"trial_days\" >= 0"
+        },
+        "plans_commitment_check": {
+          "name": "plans_commitment_check",
+          "value": "\"plans\".\"commitment_months\" is null or \"plans\".\"commitment_months\" > 0"
+        },
+        "plans_revision_check": {
+          "name": "plans_revision_check",
+          "value": "\"plans\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -5011,7 +5928,29 @@
           "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "refunds_payment_idx": {
+          "name": "refunds_payment_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "refunds_gym_id_gyms_id_fk": {
           "name": "refunds_gym_id_gyms_id_fk",
@@ -5032,11 +5971,13 @@
           "tableTo": "payments",
           "columnsFrom": [
             "gym_id",
-            "payment_id"
+            "payment_id",
+            "currency"
           ],
           "columnsTo": [
             "gym_id",
-            "id"
+            "id",
+            "currency"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -5118,8 +6059,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "basis_points": {
-          "name": "basis_points",
+        "rate_millionths": {
+          "name": "rate_millionths",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
@@ -5137,6 +6078,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         }
       },
       "indexes": {},
@@ -5179,9 +6127,13 @@
         }
       },
       "checkConstraints": {
-        "tax_rates_percentage_check": {
-          "name": "tax_rates_percentage_check",
-          "value": "\"tax_rates\".\"basis_points\" between 0 and 10000"
+        "tax_rates_rate_check": {
+          "name": "tax_rates_rate_check",
+          "value": "\"tax_rates\".\"rate_millionths\" between 0 and 1000000"
+        },
+        "tax_rates_revision_check": {
+          "name": "tax_rates_revision_check",
+          "value": "\"tax_rates\".\"revision\" > 0"
         }
       },
       "isRLSEnabled": true
@@ -5258,7 +6210,29 @@
           "notNull": true
         }
       },
-      "indexes": {},
+      "indexes": {
+        "waiver_signatures_member_idx": {
+          "name": "waiver_signatures_member_idx",
+          "columns": [
+            {
+              "expression": "gym_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "member_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "waiver_signatures_gym_id_gyms_id_fk": {
           "name": "waiver_signatures_gym_id_gyms_id_fk",
@@ -5382,6 +6356,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "retired_at": {
+          "name": "retired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -5539,7 +6519,12 @@
           "withCheck": "\"kiosk_devices\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "kiosk_devices_hash_check": {
+          "name": "kiosk_devices_hash_check",
+          "value": "\"kiosk_devices\".\"token_hash\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
       "isRLSEnabled": true
     },
     "public.link_campaigns": {
@@ -6270,17 +7255,23 @@
           "notNull": true,
           "default": "now()"
         },
-        "actor_id": {
-          "name": "actor_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "actor_kind": {
           "name": "actor_kind",
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actor_device_id": {
+          "name": "actor_device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         },
         "action": {
           "name": "action",
@@ -6356,14 +7347,29 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "audit_events_actor_id_auth_user_id_fk": {
-          "name": "audit_events_actor_id_auth_user_id_fk",
+        "audit_events_actor_user_id_auth_user_id_fk": {
+          "name": "audit_events_actor_user_id_auth_user_id_fk",
           "tableFrom": "audit_events",
           "tableTo": "auth_user",
           "columnsFrom": [
-            "actor_id"
+            "actor_user_id"
           ],
           "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "audit_events_device_fk": {
+          "name": "audit_events_device_fk",
+          "tableFrom": "audit_events",
+          "tableTo": "kiosk_devices",
+          "columnsFrom": [
+            "gym_id",
+            "actor_device_id"
+          ],
+          "columnsTo": [
+            "gym_id",
             "id"
           ],
           "onDelete": "no action",
@@ -6397,6 +7403,10 @@
         "audit_events_actor_check": {
           "name": "audit_events_actor_check",
           "value": "\"audit_events\".\"actor_kind\" in ('user', 'system', 'device')"
+        },
+        "audit_events_actor_reference_check": {
+          "name": "audit_events_actor_reference_check",
+          "value": "(\"audit_events\".\"actor_kind\" = 'user' and \"audit_events\".\"actor_user_id\" is not null and \"audit_events\".\"actor_device_id\" is null)\n    or (\"audit_events\".\"actor_kind\" = 'device' and \"audit_events\".\"actor_device_id\" is not null and \"audit_events\".\"actor_user_id\" is null)\n    or (\"audit_events\".\"actor_kind\" = 'system' and \"audit_events\".\"actor_user_id\" is null and \"audit_events\".\"actor_device_id\" is null)"
         }
       },
       "isRLSEnabled": true

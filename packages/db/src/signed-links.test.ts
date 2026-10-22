@@ -34,10 +34,14 @@ async function seed() {
   }
   const card = await factory('paymentMethods', gym, { householdId: household.id });
   await factory('paymentMethods', gym, { householdId: otherHousehold.id });
+  await factory('paymentMethods', gym, { householdId: household.id, revokedAt: now });
   const oldTemplate = await factory('waiverTemplates', gym, { name: 'Waiver', version: 1 });
   const currentTemplate = await factory('waiverTemplates', gym, { name: 'Waiver', version: 2 });
   const agreement = await factory('waiverTemplates', gym, { name: 'Agreement', version: 1, kind: 'agreement' });
   await factory('waiverTemplates', otherGym, { name: 'Waiver', version: 99 });
+  // A retired family stays hidden; its older, unretired version must not resurface.
+  await factory('waiverTemplates', gym, { name: 'Retired', version: 1 });
+  await factory('waiverTemplates', gym, { name: 'Retired', version: 2, retiredAt: now });
   for (const person of [member, sibling, outsider]) {
     await factory('waiverSignatures', gym, { memberId: person.id, templateId: currentTemplate.id });
     await factory('classBookings', gym, { memberId: person.id });
@@ -71,6 +75,8 @@ describe('signed-link household grants', () => {
         : purpose === 'sign_waiver' ? [data.member.id] : [];
       if (memberIds.length) {
         expect((await queries.members()).map((row) => row.id).sort()).toEqual(memberIds.sort());
+        // Emergency contacts are for logged-in household users, never signed links.
+        expect((await queries.members()).every((row) => !('emergencyContacts' in row))).toBe(true);
         const waivers = await queries.waivers();
         expect(waivers.map((row) => row.memberId).sort()).toEqual(memberIds.sort());
         expect(waivers.every((row) => !("ipAddress" in row))).toBe(true);
@@ -98,7 +104,7 @@ describe('signed-link household grants', () => {
       }
       if (purpose === 'update_card' || purpose === 'onboarding') {
         expect(await queries.paymentMethods()).toEqual([{
-          id: data.card.id, brand: 'visa', last4: '4242', expiryMonth: null, expiryYear: null,
+          id: data.card.id, brand: 'visa', last4: '4242', expiryMonth: null, expiryYear: null, isDefault: false,
         }]);
       } else {
         await expect(queries.paymentMethods()).rejects.toThrow('Payer access required');

@@ -20,6 +20,7 @@ it('scopes every household query and restricts the adult non-payer to their own 
   await factory('invoiceLineItems', gym, { householdId: first.id, invoiceId: ownInvoice.id });
   await factory('invoiceLineItems', gym, { householdId: second.id, invoiceId: otherInvoice.id });
   await factory('paymentMethods', gym, { householdId: first.id });
+  await factory('paymentMethods', gym, { householdId: first.id, revokedAt: new Date('2026-01-01Z') });
   await factory('paymentMethods', gym, { householdId: second.id });
   for (const person of [member, child, outsider]) {
     await factory('classBookings', gym, { memberId: person.id });
@@ -31,17 +32,26 @@ it('scopes every household query and restricts the adult non-payer to their own 
   await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: payer.id }, async (queries) => {
     expect((await queries.members()).map((row) => row.id).sort()).toEqual([member.id, child.id].sort());
     expect(await queries.member(outsider.id)).toEqual([]);
+    // List and detail share one projection: emergency contacts for household users, never medical notes.
+    const [detail] = await queries.member(child.id);
+    expect(detail).toEqual((await queries.members()).find((row) => row.id === child.id));
+    expect(detail).toHaveProperty('emergencyContacts');
+    expect(detail).not.toHaveProperty('medicalNotes');
+    expect(detail).not.toHaveProperty('checkinCodeHash');
     expect((await queries.invoices()).map((row) => row.id)).toEqual([ownInvoice.id]);
     expect(await queries.invoice(otherInvoice.id)).toEqual([]);
     expect(await queries.invoiceLines(otherInvoice.id)).toEqual([]);
     expect(await queries.invoiceLines(ownInvoice.id)).toHaveLength(1);
     expect(await queries.paymentMethods()).toHaveLength(1);
-    expect(await queries.household()).toHaveLength(1);
+    // Payers edit household details with compare-and-set, so the read carries the revision; PIN hash stays staff-only.
+    const [profile] = await queries.household();
+    expect(profile).toEqual({ id: first.id, name: first.name, email: null, phone: null, address: {}, billingDay: 1, revision: 1 });
     for (const query of [queries.bookings, queries.waivers, queries.attendance, queries.ranks, queries.memberships]) expect(await query()).toHaveLength(2);
     expect(queries).not.toHaveProperty('execute');
   });
   await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: adult.id }, async (queries) => {
     expect((await queries.members()).map((row) => row.id)).toEqual([member.id]);
+    expect((await queries.members())[0]).toHaveProperty('emergencyContacts');
     expect(await queries.member(child.id)).toEqual([]);
     for (const query of [queries.bookings, queries.waivers, queries.attendance, queries.ranks, queries.memberships]) expect(await query()).toHaveLength(1);
     for (const query of [queries.invoices, queries.paymentMethods, queries.household]) await expect(query()).rejects.toThrow('Payer');

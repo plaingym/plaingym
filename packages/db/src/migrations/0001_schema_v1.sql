@@ -29,16 +29,21 @@ CREATE TABLE "gyms" (
 	"backup_public_key" text,
 	"backup_blob_key_encrypted" text,
 	"backup_retention_bytes" bigint,
+	"currency" text DEFAULT 'USD' NOT NULL,
 	"billing_enabled" boolean DEFAULT false NOT NULL,
 	"member_emails_enabled" boolean DEFAULT false NOT NULL,
 	"booking_window_days" integer DEFAULT 14 NOT NULL,
 	"cancellation_cutoff_minutes" integer DEFAULT 60 NOT NULL,
 	"settings" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "gyms_slug_key" UNIQUE("slug"),
+	CONSTRAINT "gyms_id_currency_key" UNIQUE("id","currency"),
+	CONSTRAINT "gyms_currency_check" CHECK ("gyms"."currency" ~ '^[A-Z]{3}$'),
+	CONSTRAINT "gyms_revision_check" CHECK ("gyms"."revision" > 0),
 	CONSTRAINT "gyms_status_check" CHECK ("gyms"."status" in ('active', 'suspended')),
-	CONSTRAINT "gyms_limits_check" CHECK ("gyms"."booking_window_days" >= 0 and "gyms"."cancellation_cutoff_minutes" >= 0 and "gyms"."backup_retention_bytes" >= 0)
+	CONSTRAINT "gyms_limits_check" CHECK ("gyms"."booking_window_days" >= 0 and "gyms"."cancellation_cutoff_minutes" >= 0 and ("gyms"."backup_retention_bytes" is null or "gyms"."backup_retention_bytes" >= 0))
 );
 --> statement-breakpoint
 CREATE TABLE "auth_account" (
@@ -87,7 +92,8 @@ CREATE TABLE "auth_user" (
 	"email" text NOT NULL,
 	"email_verified" boolean DEFAULT false NOT NULL,
 	"image" text,
-	CONSTRAINT "auth_user_email_key" UNIQUE("email")
+	CONSTRAINT "auth_user_email_key" UNIQUE("email"),
+	CONSTRAINT "auth_user_email_lowercase_check" CHECK ("auth_user"."email" = lower("auth_user"."email"))
 );
 --> statement-breakpoint
 CREATE TABLE "auth_verification" (
@@ -124,13 +130,14 @@ CREATE TABLE "households" (
 	"address" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"billing_day" integer DEFAULT 1 NOT NULL,
 	"stripe_customer_id" text,
-	"default_payment_method_id" text,
 	"pin_hash" text,
 	"family_discount_basis_points" integer DEFAULT 0 NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "households_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "households_gym_stripe_customer_key" UNIQUE("gym_id","stripe_customer_id"),
 	CONSTRAINT "households_billing_day_check" CHECK ("households"."billing_day" between 1 and 31),
-	CONSTRAINT "households_discount_check" CHECK ("households"."family_discount_basis_points" between 0 and 10000)
+	CONSTRAINT "households_discount_check" CHECK ("households"."family_discount_basis_points" between 0 and 10000),
+	CONSTRAINT "households_revision_check" CHECK ("households"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "households" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -151,8 +158,10 @@ CREATE TABLE "member_tags" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"name" text NOT NULL,
 	"color" text,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "member_tags_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "member_tags_gym_name_key" UNIQUE("gym_id","name")
+	CONSTRAINT "member_tags_gym_name_key" UNIQUE("gym_id","name"),
+	CONSTRAINT "member_tags_revision_check" CHECK ("member_tags"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "member_tags" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -175,11 +184,14 @@ CREATE TABLE "members" (
 	"checkin_code_version" integer DEFAULT 1 NOT NULL,
 	"checkin_code_hash" text,
 	"anonymized_at" timestamp with time zone,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "members_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "members_gym_household_id_key" UNIQUE("gym_id","household_id","id"),
 	CONSTRAINT "members_gym_checkin_hash_key" UNIQUE("gym_id","checkin_code_hash"),
 	CONSTRAINT "members_status_check" CHECK ("members"."status" in ('prospect', 'trial', 'active', 'frozen', 'cancelled', 'visitor')),
-	CONSTRAINT "members_checkin_version_check" CHECK ("members"."checkin_code_version" > 0)
+	CONSTRAINT "members_checkin_version_check" CHECK ("members"."checkin_code_version" > 0),
+	CONSTRAINT "members_checkin_hash_check" CHECK ("members"."checkin_code_hash" ~ '^[a-f0-9]{64}$'),
+	CONSTRAINT "members_revision_check" CHECK ("members"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "members" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -187,15 +199,17 @@ CREATE TABLE "staff_profiles" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"user_id" uuid NOT NULL,
+	"user_id" uuid,
 	"member_id" uuid,
 	"display_name" text NOT NULL,
 	"bio" text,
 	"photo_key" text,
 	"rank" text,
 	"is_public" boolean DEFAULT false NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "staff_profiles_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "staff_profiles_gym_user_key" UNIQUE("gym_id","user_id")
+	CONSTRAINT "staff_profiles_gym_user_key" UNIQUE("gym_id","user_id"),
+	CONSTRAINT "staff_profiles_revision_check" CHECK ("staff_profiles"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "staff_profiles" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -205,9 +219,11 @@ CREATE TABLE "staff_roles" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"role" text NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "staff_roles_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "staff_roles_gym_user_key" UNIQUE("gym_id","user_id"),
-	CONSTRAINT "staff_roles_role_check" CHECK ("staff_roles"."role" in ('owner', 'admin', 'coach', 'front_desk'))
+	CONSTRAINT "staff_roles_role_check" CHECK ("staff_roles"."role" in ('owner', 'admin', 'coach', 'front_desk')),
+	CONSTRAINT "staff_roles_revision_check" CHECK ("staff_roles"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "staff_roles" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -230,6 +246,7 @@ CREATE TABLE "member_ranks" (
 	"member_id" uuid NOT NULL,
 	"program_id" uuid NOT NULL,
 	"rank_id" uuid NOT NULL,
+	"rank_system_id" uuid NOT NULL,
 	"sub_rank" integer DEFAULT 0 NOT NULL,
 	"promoted_at" timestamp with time zone NOT NULL,
 	"promoted_by" uuid,
@@ -246,8 +263,11 @@ CREATE TABLE "programs" (
 	"name" text NOT NULL,
 	"rank_system_id" uuid,
 	"active" boolean DEFAULT true NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "programs_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "programs_gym_name_key" UNIQUE("gym_id","name")
+	CONSTRAINT "programs_gym_name_key" UNIQUE("gym_id","name"),
+	CONSTRAINT "programs_gym_id_rank_system_key" UNIQUE("gym_id","id","rank_system_id"),
+	CONSTRAINT "programs_revision_check" CHECK ("programs"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "programs" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -257,7 +277,9 @@ CREATE TABLE "rank_systems" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"name" text NOT NULL,
 	"installed_pack_id" uuid,
-	CONSTRAINT "rank_systems_gym_id_id_key" UNIQUE("gym_id","id")
+	"revision" integer DEFAULT 1 NOT NULL,
+	CONSTRAINT "rank_systems_gym_id_id_key" UNIQUE("gym_id","id"),
+	CONSTRAINT "rank_systems_revision_check" CHECK ("rank_systems"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "rank_systems" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -270,9 +292,12 @@ CREATE TABLE "ranks" (
 	"position" integer NOT NULL,
 	"sub_ranks" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"criteria" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "ranks_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "ranks_gym_system_position_key" UNIQUE("gym_id","rank_system_id","position"),
-	CONSTRAINT "ranks_position_check" CHECK ("ranks"."position" >= 0)
+	CONSTRAINT "ranks_gym_id_rank_system_key" UNIQUE("gym_id","id","rank_system_id"),
+	CONSTRAINT "ranks_position_check" CHECK ("ranks"."position" >= 0),
+	CONSTRAINT "ranks_revision_check" CHECK ("ranks"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "ranks" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -345,8 +370,10 @@ CREATE TABLE "class_sessions" (
 	"capacity" integer,
 	"notes" text,
 	"status" text DEFAULT 'scheduled' NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "class_sessions_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "class_sessions_materialized_key" UNIQUE("gym_id","template_id","starts_at"),
+	CONSTRAINT "class_sessions_revision_check" CHECK ("class_sessions"."revision" > 0),
 	CONSTRAINT "class_sessions_times_check" CHECK ("class_sessions"."ends_at" > "class_sessions"."starts_at"),
 	CONSTRAINT "class_sessions_capacity_check" CHECK ("class_sessions"."capacity" > 0),
 	CONSTRAINT "class_sessions_status_check" CHECK ("class_sessions"."status" in ('scheduled', 'cancelled'))
@@ -358,8 +385,10 @@ CREATE TABLE "class_tags" (
 	"gym_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"name" text NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "class_tags_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "class_tags_name_key" UNIQUE("gym_id","name")
+	CONSTRAINT "class_tags_name_key" UNIQUE("gym_id","name"),
+	CONSTRAINT "class_tags_revision_check" CHECK ("class_tags"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "class_tags" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -396,12 +425,25 @@ CREATE TABLE "class_templates" (
 	"coach_id" uuid,
 	"capacity" integer,
 	"notes" text,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "class_templates_gym_id_id_key" UNIQUE("gym_id","id"),
+	CONSTRAINT "class_templates_revision_check" CHECK ("class_templates"."revision" > 0),
 	CONSTRAINT "class_templates_schedule_check" CHECK ("class_templates"."weekday" between 0 and 6 and "class_templates"."duration_minutes" > 0 and "class_templates"."local_start_time" ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'),
 	CONSTRAINT "class_templates_capacity_check" CHECK ("class_templates"."capacity" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "class_templates" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE TABLE "charge_type_tax_rates" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"gym_id" uuid NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"charge_type_id" uuid NOT NULL,
+	"tax_rate_id" uuid NOT NULL,
+	CONSTRAINT "charge_type_tax_rates_gym_id_id_key" UNIQUE("gym_id","id"),
+	CONSTRAINT "charge_type_tax_rates_pair_key" UNIQUE("gym_id","charge_type_id","tax_rate_id")
+);
+--> statement-breakpoint
+ALTER TABLE "charge_type_tax_rates" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "charge_types" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
@@ -409,11 +451,12 @@ CREATE TABLE "charge_types" (
 	"name" text NOT NULL,
 	"amount_cents" integer NOT NULL,
 	"currency" text NOT NULL,
-	"tax_rate_id" uuid,
 	"active" boolean DEFAULT true NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "charge_types_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "charge_types_currency_check" CHECK ("charge_types"."currency" ~ '^[A-Z]{3}$'),
-	CONSTRAINT "charge_types_amount_check" CHECK ("charge_types"."amount_cents" >= 0)
+	CONSTRAINT "charge_types_amount_check" CHECK ("charge_types"."amount_cents" >= 0),
+	CONSTRAINT "charge_types_revision_check" CHECK ("charge_types"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "charge_types" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -431,13 +474,28 @@ CREATE TABLE "invoice_line_items" (
 	"amount_cents" integer NOT NULL,
 	"currency" text NOT NULL,
 	"quantity" integer DEFAULT 1 NOT NULL,
+	"tax_rate_millionths" integer,
+	"tax_inclusive" boolean,
 	CONSTRAINT "invoice_line_items_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "invoice_line_items_kind_check" CHECK ("invoice_line_items"."kind" in ('membership', 'signup_fee', 'charge', 'discount', 'tax')),
+	CONSTRAINT "invoice_line_items_tax_check" CHECK (("invoice_line_items"."kind" = 'tax' and "invoice_line_items"."tax_rate_millionths" is not null and "invoice_line_items"."tax_rate_millionths" between 0 and 1000000 and "invoice_line_items"."tax_inclusive" is not null)
+    or ("invoice_line_items"."kind" <> 'tax' and "invoice_line_items"."tax_rate_millionths" is null and "invoice_line_items"."tax_inclusive" is null and "invoice_line_items"."tax_rate_id" is null)),
 	CONSTRAINT "invoice_line_items_currency_check" CHECK ("invoice_line_items"."currency" ~ '^[A-Z]{3}$'),
 	CONSTRAINT "invoice_line_items_quantity_check" CHECK ("invoice_line_items"."quantity" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "invoice_line_items" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE TABLE "invoice_sequences" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"gym_id" uuid NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_number" integer DEFAULT 0 NOT NULL,
+	CONSTRAINT "invoice_sequences_gym_id_id_key" UNIQUE("gym_id","id"),
+	CONSTRAINT "invoice_sequences_gym_key" UNIQUE("gym_id"),
+	CONSTRAINT "invoice_sequences_number_check" CHECK ("invoice_sequences"."last_number" >= 0)
+);
+--> statement-breakpoint
+ALTER TABLE "invoice_sequences" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "invoices" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
@@ -445,6 +503,7 @@ CREATE TABLE "invoices" (
 	"household_id" uuid NOT NULL,
 	"kind" text NOT NULL,
 	"status" text DEFAULT 'draft' NOT NULL,
+	"number" integer,
 	"due_on" date NOT NULL,
 	"period_starts_on" date,
 	"period_ends_on" date,
@@ -458,8 +517,12 @@ CREATE TABLE "invoices" (
 	"dispute_status" text,
 	CONSTRAINT "invoices_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "invoices_gym_household_id_key" UNIQUE("gym_id","household_id","id"),
+	CONSTRAINT "invoices_gym_household_id_currency_key" UNIQUE("gym_id","household_id","id","currency"),
+	CONSTRAINT "invoices_gym_id_currency_key" UNIQUE("gym_id","id","currency"),
+	CONSTRAINT "invoices_number_key" UNIQUE("gym_id","number"),
 	CONSTRAINT "invoices_kind_check" CHECK ("invoices"."kind" in ('cycle', 'one_off')),
 	CONSTRAINT "invoices_status_check" CHECK ("invoices"."status" in ('draft', 'open', 'processing', 'past_due', 'paid', 'void', 'partially_refunded', 'refunded')),
+	CONSTRAINT "invoices_number_check" CHECK (("invoices"."status" = 'draft' and "invoices"."number" is null) or ("invoices"."status" <> 'draft' and "invoices"."number" is not null and "invoices"."number" > 0)),
 	CONSTRAINT "invoices_currency_check" CHECK ("invoices"."currency" ~ '^[A-Z]{3}$'),
 	CONSTRAINT "invoices_amount_check" CHECK ("invoices"."amount_cents" >= 0),
 	CONSTRAINT "invoices_period_check" CHECK ("invoices"."kind" <> 'cycle' or ("invoices"."period_starts_on" is not null and "invoices"."period_ends_on" is not null and "invoices"."period_ends_on" > "invoices"."period_starts_on"))
@@ -483,13 +546,15 @@ CREATE TABLE "memberships" (
 	"frozen_at" timestamp with time zone,
 	"resumes_on" date,
 	"cancelled_at" timestamp with time zone,
-	"commitment_ends_at" timestamp with time zone,
+	"commitment_ends_on" date,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "memberships_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "memberships_gym_household_id_key" UNIQUE("gym_id","household_id","id"),
 	CONSTRAINT "memberships_status_check" CHECK ("memberships"."status" in ('pending', 'trial', 'active', 'frozen', 'cancelled')),
 	CONSTRAINT "memberships_interval_check" CHECK ("memberships"."interval" in ('monthly', 'annual')),
 	CONSTRAINT "memberships_currency_check" CHECK ("memberships"."currency" ~ '^[A-Z]{3}$'),
-	CONSTRAINT "memberships_amount_check" CHECK ("memberships"."amount_cents" >= 0)
+	CONSTRAINT "memberships_amount_check" CHECK ("memberships"."amount_cents" >= 0),
+	CONSTRAINT "memberships_revision_check" CHECK ("memberships"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "memberships" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -527,10 +592,12 @@ CREATE TABLE "payment_methods" (
 	"last4" text,
 	"expiry_month" integer,
 	"expiry_year" integer,
+	"is_default" boolean DEFAULT false NOT NULL,
 	"revoked_at" timestamp with time zone,
 	CONSTRAINT "payment_methods_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "payment_methods_processor_key" UNIQUE("gym_id","processor_id"),
 	CONSTRAINT "payment_methods_gym_household_id_key" UNIQUE("gym_id","household_id","id"),
+	CONSTRAINT "payment_methods_default_check" CHECK (not "payment_methods"."is_default" or "payment_methods"."revoked_at" is null),
 	CONSTRAINT "payment_methods_last4_check" CHECK ("payment_methods"."last4" ~ '^[0-9]{4}$'),
 	CONSTRAINT "payment_methods_expiry_check" CHECK ("payment_methods"."expiry_month" between 1 and 12 and "payment_methods"."expiry_year" >= 2000)
 );
@@ -549,6 +616,7 @@ CREATE TABLE "payments" (
 	"reference" text,
 	"paid_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "payments_gym_id_id_key" UNIQUE("gym_id","id"),
+	CONSTRAINT "payments_gym_id_currency_key" UNIQUE("gym_id","id","currency"),
 	CONSTRAINT "payments_intent_key" UNIQUE("gym_id","payment_intent_id"),
 	CONSTRAINT "payments_charge_key" UNIQUE("gym_id","charge_id"),
 	CONSTRAINT "payments_method_check" CHECK ("payments"."method" in ('card', 'cash', 'check', 'other')),
@@ -557,6 +625,17 @@ CREATE TABLE "payments" (
 );
 --> statement-breakpoint
 ALTER TABLE "payments" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE TABLE "plan_tax_rates" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"gym_id" uuid NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"plan_id" uuid NOT NULL,
+	"tax_rate_id" uuid NOT NULL,
+	CONSTRAINT "plan_tax_rates_gym_id_id_key" UNIQUE("gym_id","id"),
+	CONSTRAINT "plan_tax_rates_pair_key" UNIQUE("gym_id","plan_id","tax_rate_id")
+);
+--> statement-breakpoint
+ALTER TABLE "plan_tax_rates" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "plans" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
@@ -567,12 +646,15 @@ CREATE TABLE "plans" (
 	"interval" text NOT NULL,
 	"signup_fee_cents" integer DEFAULT 0 NOT NULL,
 	"trial_days" integer DEFAULT 0 NOT NULL,
-	"tax_rate_id" uuid,
+	"commitment_months" integer,
 	"active" boolean DEFAULT true NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "plans_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "plans_currency_check" CHECK ("plans"."currency" ~ '^[A-Z]{3}$'),
 	CONSTRAINT "plans_interval_check" CHECK ("plans"."interval" in ('monthly', 'annual')),
-	CONSTRAINT "plans_amount_check" CHECK ("plans"."amount_cents" >= 0 and "plans"."signup_fee_cents" >= 0 and "plans"."trial_days" >= 0)
+	CONSTRAINT "plans_amount_check" CHECK ("plans"."amount_cents" >= 0 and "plans"."signup_fee_cents" >= 0 and "plans"."trial_days" >= 0),
+	CONSTRAINT "plans_commitment_check" CHECK ("plans"."commitment_months" is null or "plans"."commitment_months" > 0),
+	CONSTRAINT "plans_revision_check" CHECK ("plans"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "plans" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -600,11 +682,13 @@ CREATE TABLE "tax_rates" (
 	"gym_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"name" text NOT NULL,
-	"basis_points" integer NOT NULL,
+	"rate_millionths" integer NOT NULL,
 	"inclusive" boolean DEFAULT false NOT NULL,
 	"active" boolean DEFAULT true NOT NULL,
+	"revision" integer DEFAULT 1 NOT NULL,
 	CONSTRAINT "tax_rates_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "tax_rates_percentage_check" CHECK ("tax_rates"."basis_points" between 0 and 10000)
+	CONSTRAINT "tax_rates_rate_check" CHECK ("tax_rates"."rate_millionths" between 0 and 1000000),
+	CONSTRAINT "tax_rates_revision_check" CHECK ("tax_rates"."revision" > 0)
 );
 --> statement-breakpoint
 ALTER TABLE "tax_rates" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -633,6 +717,7 @@ CREATE TABLE "waiver_templates" (
 	"kind" text DEFAULT 'waiver' NOT NULL,
 	"version" integer NOT NULL,
 	"body" text NOT NULL,
+	"retired_at" timestamp with time zone,
 	CONSTRAINT "waiver_templates_gym_id_id_key" UNIQUE("gym_id","id"),
 	CONSTRAINT "waiver_templates_version_key" UNIQUE("gym_id","name","version"),
 	CONSTRAINT "waiver_templates_kind_check" CHECK ("waiver_templates"."kind" in ('waiver', 'agreement')),
@@ -649,7 +734,8 @@ CREATE TABLE "kiosk_devices" (
 	"revoked_at" timestamp with time zone,
 	"last_seen_at" timestamp with time zone,
 	CONSTRAINT "kiosk_devices_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "kiosk_devices_hash_key" UNIQUE("gym_id","token_hash")
+	CONSTRAINT "kiosk_devices_hash_key" UNIQUE("gym_id","token_hash"),
+	CONSTRAINT "kiosk_devices_hash_check" CHECK ("kiosk_devices"."token_hash" ~ '^[a-f0-9]{64}$')
 );
 --> statement-breakpoint
 ALTER TABLE "kiosk_devices" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -744,8 +830,9 @@ CREATE TABLE "audit_events" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"actor_id" uuid,
 	"actor_kind" text NOT NULL,
+	"actor_user_id" uuid,
+	"actor_device_id" uuid,
 	"action" text NOT NULL,
 	"target_type" text NOT NULL,
 	"target_id" uuid NOT NULL,
@@ -753,7 +840,10 @@ CREATE TABLE "audit_events" (
 	"after" jsonb,
 	"occurred_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "audit_events_gym_id_id_key" UNIQUE("gym_id","id"),
-	CONSTRAINT "audit_events_actor_check" CHECK ("audit_events"."actor_kind" in ('user', 'system', 'device'))
+	CONSTRAINT "audit_events_actor_check" CHECK ("audit_events"."actor_kind" in ('user', 'system', 'device')),
+	CONSTRAINT "audit_events_actor_reference_check" CHECK (("audit_events"."actor_kind" = 'user' and "audit_events"."actor_user_id" is not null and "audit_events"."actor_device_id" is null)
+    or ("audit_events"."actor_kind" = 'device' and "audit_events"."actor_device_id" is not null and "audit_events"."actor_user_id" is null)
+    or ("audit_events"."actor_kind" = 'system' and "audit_events"."actor_user_id" is null and "audit_events"."actor_device_id" is null))
 );
 --> statement-breakpoint
 ALTER TABLE "audit_events" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
@@ -793,8 +883,8 @@ ALTER TABLE "staff_roles" ADD CONSTRAINT "staff_roles_user_id_auth_user_id_fk" F
 ALTER TABLE "installed_packs" ADD CONSTRAINT "installed_packs_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_member_fk" FOREIGN KEY ("gym_id","member_id") REFERENCES "public"."members"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_program_fk" FOREIGN KEY ("gym_id","program_id") REFERENCES "public"."programs"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_rank_fk" FOREIGN KEY ("gym_id","rank_id") REFERENCES "public"."ranks"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_rank_fk" FOREIGN KEY ("gym_id","rank_id","rank_system_id") REFERENCES "public"."ranks"("gym_id","id","rank_system_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_program_fk" FOREIGN KEY ("gym_id","program_id","rank_system_id") REFERENCES "public"."programs"("gym_id","id","rank_system_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "member_ranks" ADD CONSTRAINT "member_ranks_staff_fk" FOREIGN KEY ("gym_id","promoted_by") REFERENCES "public"."staff_profiles"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "programs" ADD CONSTRAINT "programs_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "programs" ADD CONSTRAINT "programs_rank_system_fk" FOREIGN KEY ("gym_id","rank_system_id") REFERENCES "public"."rank_systems"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -828,29 +918,38 @@ ALTER TABLE "class_template_tags" ADD CONSTRAINT "class_template_tags_template_f
 ALTER TABLE "class_template_tags" ADD CONSTRAINT "class_template_tags_tag_fk" FOREIGN KEY ("gym_id","tag_id") REFERENCES "public"."class_tags"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "class_templates" ADD CONSTRAINT "class_templates_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "class_templates" ADD CONSTRAINT "class_templates_coach_fk" FOREIGN KEY ("gym_id","coach_id") REFERENCES "public"."staff_profiles"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "charge_type_tax_rates" ADD CONSTRAINT "charge_type_tax_rates_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "charge_type_tax_rates" ADD CONSTRAINT "charge_type_tax_rates_charge_type_fk" FOREIGN KEY ("gym_id","charge_type_id") REFERENCES "public"."charge_types"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "charge_type_tax_rates" ADD CONSTRAINT "charge_type_tax_rates_tax_fk" FOREIGN KEY ("gym_id","tax_rate_id") REFERENCES "public"."tax_rates"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "charge_types" ADD CONSTRAINT "charge_types_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "charge_types" ADD CONSTRAINT "charge_types_tax_fk" FOREIGN KEY ("gym_id","tax_rate_id") REFERENCES "public"."tax_rates"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "charge_types" ADD CONSTRAINT "charge_types_currency_fk" FOREIGN KEY ("gym_id","currency") REFERENCES "public"."gyms"("id","currency") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invoice_line_items" ADD CONSTRAINT "invoice_line_items_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "invoice_line_items" ADD CONSTRAINT "invoice_line_items_invoice_fk" FOREIGN KEY ("gym_id","household_id","invoice_id") REFERENCES "public"."invoices"("gym_id","household_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invoice_line_items" ADD CONSTRAINT "invoice_line_items_invoice_fk" FOREIGN KEY ("gym_id","household_id","invoice_id","currency") REFERENCES "public"."invoices"("gym_id","household_id","id","currency") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invoice_line_items" ADD CONSTRAINT "invoice_line_items_membership_fk" FOREIGN KEY ("gym_id","household_id","membership_id") REFERENCES "public"."memberships"("gym_id","household_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invoice_line_items" ADD CONSTRAINT "invoice_line_items_charge_type_fk" FOREIGN KEY ("gym_id","charge_type_id") REFERENCES "public"."charge_types"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invoice_line_items" ADD CONSTRAINT "invoice_line_items_tax_fk" FOREIGN KEY ("gym_id","tax_rate_id") REFERENCES "public"."tax_rates"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invoice_sequences" ADD CONSTRAINT "invoice_sequences_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invoices" ADD CONSTRAINT "invoices_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invoices" ADD CONSTRAINT "invoices_household_fk" FOREIGN KEY ("gym_id","household_id") REFERENCES "public"."households"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invoices" ADD CONSTRAINT "invoices_currency_fk" FOREIGN KEY ("gym_id","currency") REFERENCES "public"."gyms"("id","currency") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memberships" ADD CONSTRAINT "memberships_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memberships" ADD CONSTRAINT "memberships_household_fk" FOREIGN KEY ("gym_id","household_id") REFERENCES "public"."households"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memberships" ADD CONSTRAINT "memberships_member_fk" FOREIGN KEY ("gym_id","household_id","member_id") REFERENCES "public"."members"("gym_id","household_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memberships" ADD CONSTRAINT "memberships_plan_fk" FOREIGN KEY ("gym_id","plan_id") REFERENCES "public"."plans"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "memberships" ADD CONSTRAINT "memberships_currency_fk" FOREIGN KEY ("gym_id","currency") REFERENCES "public"."gyms"("id","currency") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_attempts" ADD CONSTRAINT "payment_attempts_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payment_attempts" ADD CONSTRAINT "payment_attempts_invoice_fk" FOREIGN KEY ("gym_id","invoice_id") REFERENCES "public"."invoices"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payment_attempts" ADD CONSTRAINT "payment_attempts_invoice_fk" FOREIGN KEY ("gym_id","invoice_id","currency") REFERENCES "public"."invoices"("gym_id","id","currency") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_methods" ADD CONSTRAINT "payment_methods_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payment_methods" ADD CONSTRAINT "payment_methods_household_fk" FOREIGN KEY ("gym_id","household_id") REFERENCES "public"."households"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "payments" ADD CONSTRAINT "payments_invoice_fk" FOREIGN KEY ("gym_id","invoice_id") REFERENCES "public"."invoices"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_invoice_fk" FOREIGN KEY ("gym_id","invoice_id","currency") REFERENCES "public"."invoices"("gym_id","id","currency") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "plan_tax_rates" ADD CONSTRAINT "plan_tax_rates_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "plan_tax_rates" ADD CONSTRAINT "plan_tax_rates_plan_fk" FOREIGN KEY ("gym_id","plan_id") REFERENCES "public"."plans"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "plan_tax_rates" ADD CONSTRAINT "plan_tax_rates_tax_fk" FOREIGN KEY ("gym_id","tax_rate_id") REFERENCES "public"."tax_rates"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plans" ADD CONSTRAINT "plans_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "plans" ADD CONSTRAINT "plans_tax_fk" FOREIGN KEY ("gym_id","tax_rate_id") REFERENCES "public"."tax_rates"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "plans" ADD CONSTRAINT "plans_currency_fk" FOREIGN KEY ("gym_id","currency") REFERENCES "public"."gyms"("id","currency") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "refunds" ADD CONSTRAINT "refunds_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "refunds" ADD CONSTRAINT "refunds_payment_fk" FOREIGN KEY ("gym_id","payment_id") REFERENCES "public"."payments"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "refunds" ADD CONSTRAINT "refunds_payment_fk" FOREIGN KEY ("gym_id","payment_id","currency") REFERENCES "public"."payments"("gym_id","id","currency") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tax_rates" ADD CONSTRAINT "tax_rates_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "waiver_signatures" ADD CONSTRAINT "waiver_signatures_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "waiver_signatures" ADD CONSTRAINT "waiver_signatures_member_fk" FOREIGN KEY ("gym_id","member_id") REFERENCES "public"."members"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -868,16 +967,30 @@ ALTER TABLE "signed_links" ADD CONSTRAINT "signed_links_member_fk" FOREIGN KEY (
 ALTER TABLE "jobs" ADD CONSTRAINT "jobs_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "stripe_events" ADD CONSTRAINT "stripe_events_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_actor_id_auth_user_id_fk" FOREIGN KEY ("actor_id") REFERENCES "public"."auth_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_actor_user_id_auth_user_id_fk" FOREIGN KEY ("actor_user_id") REFERENCES "public"."auth_user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "audit_events" ADD CONSTRAINT "audit_events_device_fk" FOREIGN KEY ("gym_id","actor_device_id") REFERENCES "public"."kiosk_devices"("gym_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "email_outbox" ADD CONSTRAINT "email_outbox_gym_id_gyms_id_fk" FOREIGN KEY ("gym_id") REFERENCES "public"."gyms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "auth_account_user_idx" ON "auth_account" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "auth_session_gym_user_idx" ON "auth_session" USING btree ("gym_id","user_id");--> statement-breakpoint
 CREATE INDEX "auth_verification_identifier_idx" ON "auth_verification" USING btree ("identifier");--> statement-breakpoint
+CREATE UNIQUE INDEX "household_users_member_key" ON "household_users" USING btree ("gym_id","member_id") WHERE "household_users"."member_id" is not null;--> statement-breakpoint
+CREATE INDEX "household_users_gym_user_idx" ON "household_users" USING btree ("gym_id","user_id");--> statement-breakpoint
 CREATE INDEX "members_gym_status_idx" ON "members" USING btree ("gym_id","status");--> statement-breakpoint
+CREATE INDEX "member_ranks_member_program_idx" ON "member_ranks" USING btree ("gym_id","member_id","program_id","promoted_at");--> statement-breakpoint
+CREATE INDEX "attendances_member_time_idx" ON "attendances" USING btree ("gym_id","member_id","occurred_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "class_bookings_active_key" ON "class_bookings" USING btree ("gym_id","session_id","member_id") WHERE "class_bookings"."status" <> 'cancelled';--> statement-breakpoint
+CREATE INDEX "class_bookings_member_idx" ON "class_bookings" USING btree ("gym_id","member_id","session_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "class_bookings_waitlist_key" ON "class_bookings" USING btree ("gym_id","session_id","waitlist_position") WHERE "class_bookings"."status" = 'waitlisted';--> statement-breakpoint
+CREATE INDEX "class_sessions_gym_starts_idx" ON "class_sessions" USING btree ("gym_id","starts_at");--> statement-breakpoint
+CREATE INDEX "invoice_line_items_invoice_idx" ON "invoice_line_items" USING btree ("gym_id","invoice_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "invoices_cycle_key" ON "invoices" USING btree ("gym_id","household_id","kind","due_on") WHERE "invoices"."kind" = 'cycle';--> statement-breakpoint
+CREATE INDEX "memberships_due_idx" ON "memberships" USING btree ("gym_id","status","next_due_on");--> statement-breakpoint
+CREATE INDEX "memberships_member_idx" ON "memberships" USING btree ("gym_id","member_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "payment_attempts_pending_key" ON "payment_attempts" USING btree ("gym_id","invoice_id") WHERE "payment_attempts"."status" = 'pending';--> statement-breakpoint
+CREATE UNIQUE INDEX "payment_methods_default_key" ON "payment_methods" USING btree ("gym_id","household_id") WHERE "payment_methods"."is_default";--> statement-breakpoint
+CREATE INDEX "payments_invoice_idx" ON "payments" USING btree ("gym_id","invoice_id");--> statement-breakpoint
+CREATE INDEX "refunds_payment_idx" ON "refunds" USING btree ("gym_id","payment_id");--> statement-breakpoint
+CREATE INDEX "waiver_signatures_member_idx" ON "waiver_signatures" USING btree ("gym_id","member_id");--> statement-breakpoint
 CREATE INDEX "jobs_claim_idx" ON "jobs" USING btree ("status","run_at");--> statement-breakpoint
 CREATE INDEX "jobs_gym_status_idx" ON "jobs" USING btree ("gym_id","status");--> statement-breakpoint
 CREATE INDEX "stripe_events_gym_received_idx" ON "stripe_events" USING btree ("gym_id","received_at");--> statement-breakpoint
@@ -904,13 +1017,16 @@ CREATE POLICY "class_tags_gym_policy" ON "class_tags" AS PERMISSIVE FOR ALL TO "
 CREATE POLICY "class_template_programs_gym_policy" ON "class_template_programs" AS PERMISSIVE FOR ALL TO "app" USING ("class_template_programs"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("class_template_programs"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "class_template_tags_gym_policy" ON "class_template_tags" AS PERMISSIVE FOR ALL TO "app" USING ("class_template_tags"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("class_template_tags"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "class_templates_gym_policy" ON "class_templates" AS PERMISSIVE FOR ALL TO "app" USING ("class_templates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("class_templates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
+CREATE POLICY "charge_type_tax_rates_gym_policy" ON "charge_type_tax_rates" AS PERMISSIVE FOR ALL TO "app" USING ("charge_type_tax_rates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("charge_type_tax_rates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "charge_types_gym_policy" ON "charge_types" AS PERMISSIVE FOR ALL TO "app" USING ("charge_types"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("charge_types"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "invoice_line_items_gym_policy" ON "invoice_line_items" AS PERMISSIVE FOR ALL TO "app" USING ("invoice_line_items"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("invoice_line_items"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
+CREATE POLICY "invoice_sequences_gym_policy" ON "invoice_sequences" AS PERMISSIVE FOR ALL TO "app" USING ("invoice_sequences"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("invoice_sequences"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "invoices_gym_policy" ON "invoices" AS PERMISSIVE FOR ALL TO "app" USING ("invoices"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("invoices"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "memberships_gym_policy" ON "memberships" AS PERMISSIVE FOR ALL TO "app" USING ("memberships"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("memberships"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "payment_attempts_gym_policy" ON "payment_attempts" AS PERMISSIVE FOR ALL TO "app" USING ("payment_attempts"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("payment_attempts"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "payment_methods_gym_policy" ON "payment_methods" AS PERMISSIVE FOR ALL TO "app" USING ("payment_methods"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("payment_methods"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "payments_gym_policy" ON "payments" AS PERMISSIVE FOR ALL TO "app" USING ("payments"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("payments"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
+CREATE POLICY "plan_tax_rates_gym_policy" ON "plan_tax_rates" AS PERMISSIVE FOR ALL TO "app" USING ("plan_tax_rates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("plan_tax_rates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "plans_gym_policy" ON "plans" AS PERMISSIVE FOR ALL TO "app" USING ("plans"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("plans"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "refunds_gym_policy" ON "refunds" AS PERMISSIVE FOR ALL TO "app" USING ("refunds"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("refunds"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "tax_rates_gym_policy" ON "tax_rates" AS PERMISSIVE FOR ALL TO "app" USING ("tax_rates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("tax_rates"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint

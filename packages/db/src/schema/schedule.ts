@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, integer, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { check, index, integer, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
-import { base, choice, instant, ref, scoped } from './common.js';
+import { base, choice, instant, ref, revision, revisionCheck, scoped } from './common.js';
 import { members } from './members.js';
 import { programs } from './ranks.js';
 import { staffProfiles } from './staff.js';
 export const classTags = pgTable('class_tags', {
-  ...base(), name: text('name').notNull(),
-}, (t) => [...scoped('class_tags', t), unique('class_tags_name_key').on(t.gymId, t.name)]).enableRLS();
+  ...base(), name: text('name').notNull(), ...revision(),
+}, (t) => [...scoped('class_tags', t), unique('class_tags_name_key').on(t.gymId, t.name),
+  revisionCheck('class_tags_revision_check', t.revision)]).enableRLS();
 export const classTemplates = pgTable('class_templates', {
   ...base(), name: text('name').notNull(), weekday: integer('weekday').notNull(),
   localStartTime: text('local_start_time').notNull(), durationMinutes: integer('duration_minutes').notNull(),
-  coachId: uuid('coach_id'), capacity: integer('capacity'), notes: text('notes'),
-}, (t) => [...scoped('class_templates', t), ref('class_templates_coach_fk', t.gymId, t.coachId, staffProfiles),
+  coachId: uuid('coach_id'), capacity: integer('capacity'), notes: text('notes'), ...revision(),
+}, (t) => [...scoped('class_templates', t), revisionCheck('class_templates_revision_check', t.revision), ref('class_templates_coach_fk', t.gymId, t.coachId, staffProfiles),
   check('class_templates_schedule_check', sql`${t.weekday} between 0 and 6 and ${t.durationMinutes} > 0 and ${t.localStartTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`),
   check('class_templates_capacity_check', sql`${t.capacity} > 0`)]).enableRLS();
 export const classTemplatePrograms = pgTable('class_template_programs', {
@@ -30,8 +31,9 @@ export const classSessions = pgTable('class_sessions', {
   ...base(), templateId: uuid('template_id'), name: text('name').notNull(),
   startsAt: instant('starts_at').notNull(), endsAt: instant('ends_at').notNull(),
   coachId: uuid('coach_id'), capacity: integer('capacity'), notes: text('notes'),
-  status: text('status').notNull().default('scheduled'),
-}, (t) => [...scoped('class_sessions', t), ref('class_sessions_template_fk', t.gymId, t.templateId, classTemplates),
+  status: text('status').notNull().default('scheduled'), ...revision(),
+}, (t) => [...scoped('class_sessions', t), revisionCheck('class_sessions_revision_check', t.revision),
+  index('class_sessions_gym_starts_idx').on(t.gymId, t.startsAt), ref('class_sessions_template_fk', t.gymId, t.templateId, classTemplates),
   ref('class_sessions_coach_fk', t.gymId, t.coachId, staffProfiles),
   unique('class_sessions_materialized_key').on(t.gymId, t.templateId, t.startsAt),
   check('class_sessions_times_check', sql`${t.endsAt} > ${t.startsAt}`),
@@ -55,6 +57,7 @@ export const attendances = pgTable('attendances', {
   ref('attendances_session_fk', t.gymId, t.sessionId, classSessions), ref('attendances_program_fk', t.gymId, t.programId, programs),
   unique('attendances_session_member_key').on(t.gymId, t.sessionId, t.memberId),
   unique('attendances_source_key').on(t.gymId, t.sourceKey),
+  index('attendances_member_time_idx').on(t.gymId, t.memberId, t.occurredAt),
   choice('attendances_source_check', t.source, ['kiosk', 'coach', 'import'])]).enableRLS();
 export const classBookings = pgTable('class_bookings', {
   ...base(), memberId: uuid('member_id').notNull(), sessionId: uuid('session_id').notNull(),
@@ -64,6 +67,8 @@ export const classBookings = pgTable('class_bookings', {
 }, (t) => [...scoped('class_bookings', t), ref('class_bookings_member_fk', t.gymId, t.memberId, members),
   ref('class_bookings_session_fk', t.gymId, t.sessionId, classSessions),
   uniqueIndex('class_bookings_active_key').on(t.gymId, t.sessionId, t.memberId).where(sql`${t.status} <> 'cancelled'`),
+  index('class_bookings_member_idx').on(t.gymId, t.memberId, t.sessionId),
+  // Waitlist positions keep gaps: allocate max + 1 under the session lock and promote the lowest; never renumber.
   uniqueIndex('class_bookings_waitlist_key').on(t.gymId, t.sessionId, t.waitlistPosition).where(sql`${t.status} = 'waitlisted'`),
   choice('class_bookings_status_check', t.status, ['booked', 'waitlisted', 'cancelled']),
   choice('class_bookings_actor_check', t.bookedByKind, ['member', 'staff']),

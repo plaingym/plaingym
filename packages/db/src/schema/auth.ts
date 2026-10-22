@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { bigint, boolean, index, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { bigint, boolean, check, index, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { uuidv7 } from '../id.js';
 import { instant } from './common.js';
 import { gyms } from './gyms.js';
@@ -10,7 +11,7 @@ const identity = () => ({
 export const authUser = pgTable('auth_user', {
   ...identity(), name: text('name').notNull(), email: text('email').notNull(),
   emailVerified: boolean('email_verified').notNull().default(false), image: text('image'),
-}, (t) => [unique('auth_user_email_key').on(t.email)]);
+}, (t) => [unique('auth_user_email_key').on(t.email), check('auth_user_email_lowercase_check', sql`${t.email} = lower(${t.email})`)]);
 export const authSession = pgTable('auth_session', {
   ...identity(), gymId: uuid('gym_id').notNull().references(() => gyms.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => authUser.id, { onDelete: 'cascade' }),

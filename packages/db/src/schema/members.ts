@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
-import { base, choice, instant, ref, scoped } from './common.js';
+import { base, choice, instant, ref, revision, revisionCheck, scoped, sha256Check } from './common.js';
 export const households = pgTable('households', {
   ...base(), name: text('name').notNull(), email: text('email'), phone: text('phone'),
   address: jsonb('address').notNull().default({}), billingDay: integer('billing_day').notNull().default(1),
-  stripeCustomerId: text('stripe_customer_id'), defaultPaymentMethodId: text('default_payment_method_id'),
+  stripeCustomerId: text('stripe_customer_id'),
   pinHash: text('pin_hash'), familyDiscountBasisPoints: integer('family_discount_basis_points').notNull().default(0),
+  ...revision(),
 }, (t) => [
   ...scoped('households', t), unique('households_gym_stripe_customer_key').on(t.gymId, t.stripeCustomerId),
   check('households_billing_day_check', sql`${t.billingDay} between 1 and 31`),
   check('households_discount_check', sql`${t.familyDiscountBasisPoints} between 0 and 10000`),
+  revisionCheck('households_revision_check', t.revision),
 ]).enableRLS();
 export const members = pgTable('members', {
   ...base(), householdId: uuid('household_id').notNull(),
@@ -22,6 +24,7 @@ export const members = pgTable('members', {
   emailOptOut: boolean('email_opt_out').notNull().default(false), emailDeliverable: boolean('email_deliverable').notNull().default(true),
   checkinCodeVersion: integer('checkin_code_version').notNull().default(1),
   checkinCodeHash: text('checkin_code_hash'), anonymizedAt: instant('anonymized_at'),
+  ...revision(),
 }, (t) => [
   ...scoped('members', t), ref('members_household_fk', t.gymId, t.householdId, households),
   unique('members_gym_household_id_key').on(t.gymId, t.householdId, t.id),
@@ -29,6 +32,8 @@ export const members = pgTable('members', {
   index('members_gym_status_idx').on(t.gymId, t.status),
   choice('members_status_check', t.status, ['prospect', 'trial', 'active', 'frozen', 'cancelled', 'visitor']),
   check('members_checkin_version_check', sql`${t.checkinCodeVersion} > 0`),
+  sha256Check('members_checkin_hash_check', t.checkinCodeHash),
+  revisionCheck('members_revision_check', t.revision),
 ]).enableRLS();
 export const householdUsers = pgTable('household_users', {
   ...base(), householdId: uuid('household_id').notNull(), userId: uuid('user_id').notNull().references(() => authUser.id),
@@ -37,12 +42,16 @@ export const householdUsers = pgTable('household_users', {
   ...scoped('household_users', t), ref('household_users_household_fk', t.gymId, t.householdId, households),
   foreignKey({ name: 'household_users_member_fk', columns: [t.gymId, t.householdId, t.memberId], foreignColumns: [members.gymId, members.householdId, members.id] }),
   unique('household_users_gym_household_user_key').on(t.gymId, t.householdId, t.userId),
+  // One portal account per member; a household may still have several payers.
+  uniqueIndex('household_users_member_key').on(t.gymId, t.memberId).where(sql`${t.memberId} is not null`),
+  index('household_users_gym_user_idx').on(t.gymId, t.userId),
   choice('household_users_scope_check', t.scope, ['payer', 'member']),
   check('household_users_member_scope_check', sql`${t.scope} <> 'member' or ${t.memberId} is not null`),
 ]).enableRLS();
 export const memberTags = pgTable('member_tags', {
-  ...base(), name: text('name').notNull(), color: text('color'),
-}, (t) => [...scoped('member_tags', t), unique('member_tags_gym_name_key').on(t.gymId, t.name)]).enableRLS();
+  ...base(), name: text('name').notNull(), color: text('color'), ...revision(),
+}, (t) => [...scoped('member_tags', t), unique('member_tags_gym_name_key').on(t.gymId, t.name),
+  revisionCheck('member_tags_revision_check', t.revision)]).enableRLS();
 export const memberTagLinks = pgTable('member_tag_links', {
   ...base(), memberId: uuid('member_id').notNull(), tagId: uuid('tag_id').notNull(),
 }, (t) => [

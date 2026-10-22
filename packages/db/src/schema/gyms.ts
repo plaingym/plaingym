@@ -13,17 +13,21 @@ export const gyms = pgTable('gyms', {
   backupDestination: jsonb('backup_destination'), backupPublicKey: text('backup_public_key'),
   backupBlobKey: text('backup_blob_key_encrypted'),
   backupRetentionBytes: bigint('backup_retention_bytes', { mode: 'bigint' }),
+  currency: text('currency').notNull().default('USD'),
   billingEnabled: boolean('billing_enabled').notNull().default(false),
   memberEmailsEnabled: boolean('member_emails_enabled').notNull().default(false),
   bookingWindowDays: integer('booking_window_days').notNull().default(14),
   cancellationCutoffMinutes: integer('cancellation_cutoff_minutes').notNull().default(60),
-  settings: jsonb('settings').notNull().default({}),
+  settings: jsonb('settings').notNull().default({}), revision: integer('revision').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique('gyms_slug_key').on(t.slug),
+  unique('gyms_id_currency_key').on(t.id, t.currency),
+  check('gyms_currency_check', sql`${t.currency} ~ '^[A-Z]{3}$'`),
+  check('gyms_revision_check', sql`${t.revision} > 0`),
   check('gyms_status_check', sql`${t.status} in ('active', 'suspended')`),
-  check('gyms_limits_check', sql`${t.bookingWindowDays} >= 0 and ${t.cancellationCutoffMinutes} >= 0 and ${t.backupRetentionBytes} >= 0`),
+  check('gyms_limits_check', sql`${t.bookingWindowDays} >= 0 and ${t.cancellationCutoffMinutes} >= 0 and (${t.backupRetentionBytes} is null or ${t.backupRetentionBytes} >= 0)`),
 ]);
 export const gymDomains = pgTable('gym_domains', {
   id: uuid('id').primaryKey().$defaultFn(uuidv7),

@@ -3,9 +3,9 @@
   "dialect": "postgresql",
   "entries": [
     {
-      "idx": 0,
+      "idx": 1,
       "version": "7",
-      "when": 1792630172672,
+      "when": 1792640617431,
       "tag": "0001_schema_v1",
       "breakpoints": true
     }

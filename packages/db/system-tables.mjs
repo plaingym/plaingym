@@ -9,7 +9,10 @@ export const systemTables = [
       "core/tenancy[^/]*",
       "areas/settings/.*",
       "cli/gyms[^/]*",
-      "demo/.*"
+      "demo/.*",
+      "areas/setup/.*",
+      "areas/health/restore[^/]*",
+      "cli/restore[^/]*"
     ]
   },
   {
@@ -20,7 +23,8 @@ export const systemTables = [
       "core/tenancy[^/]*",
       "areas/settings/.*",
       "cli/gyms[^/]*",
-      "demo/.*"
+      "demo/.*",
+      "areas/setup/.*"
     ]
   },
   {
@@ -52,7 +56,9 @@ export const systemTables = [
     "exportName": "authAccount",
     "reason": "Install-wide authentication state",
     "modules": [
-      "infra/auth/.*"
+      "infra/auth/.*",
+      "areas/health/restore[^/]*",
+      "cli/restore[^/]*"
     ]
   },
   {
@@ -87,7 +93,8 @@ export const systemTables = [
     "exportName": "stripeEvents",
     "reason": "Verified webhook inbox before gym dispatch",
     "modules": [
-      "areas/billing/webhooks/inbox[^/]*"
+      "areas/billing/webhooks/inbox[^/]*",
+      "cli/replay[^/]*"
     ]
   }
 ];

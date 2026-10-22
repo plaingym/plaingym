@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, pgPolicy, pgRole, timestamp, unique, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { check, foreignKey, integer, pgPolicy, pgRole, timestamp, unique, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { uuidv7 } from '../id.js';
 import { gyms } from './gyms.js';
 const app = pgRole('app').existing();
@@ -23,3 +23,12 @@ export const choice = (name: string, column: AnyPgColumn, values: readonly strin
   check(name, sql`${column} in (${sql.join(values.map((value) => sql.raw("'" + value.replaceAll("'", "''") + "'")), sql`, `)})`);
 export const currencyCheck = (name: string, column: AnyPgColumn) =>
   check(name, sql`${column} ~ '^[A-Z]{3}$'`);
+/** Lowercase SHA-256 hex; nullable columns pass when null. */
+export const sha256Check = (name: string, column: AnyPgColumn) =>
+  check(name, sql`${column} ~ '^[a-f0-9]{64}$'`);
+/** Staff-editable rows carry a revision for compare-and-set updates (see revision.ts). */
+export const revision = () => ({ revision: integer('revision').notNull().default(1) });
+export const revisionCheck = (name: string, column: AnyPgColumn) => check(name, sql`${column} > 0`);
+/** Amounts must use the gym's single billing currency, which is locked once referenced. */
+export const gymCurrency = (name: string, table: { gymId: AnyPgColumn; currency: AnyPgColumn }) =>
+  foreignKey({ name, columns: [table.gymId, table.currency], foreignColumns: [gyms.id, gyms.currency] }).onDelete('cascade');

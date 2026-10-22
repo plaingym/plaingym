@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
+import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
-import * as schema from './schema/index.js';
 import { runInTransaction, assertNoTransaction } from '@plaingym/shared/transaction';
 import { householdQueries, type HouseholdScope } from './household.js';
 export type Sql = ReturnType<typeof postgres>;
-export type Database = ReturnType<typeof drizzle<typeof schema>>;
+export type Database = PostgresJsDatabase;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 export type Connection = ReturnType<typeof openConnection>;
 /** Raw infrastructure entry point. Feature code imports scoped helpers instead. */
 export function openConnection(url: string, max = 20) {
   const client = postgres(url, { max, connect_timeout: 10, onnotice: () => undefined });
-  const db = drizzle(client, { schema });
+  // No schema here: the relational tx.query API would reach every table, system tables included, without an import the lint can check.
+  const db = drizzle(client);
   return { sql: client, db, close: () => client.end({ timeout: 5 }) };
 }
 export function validateUuid(value: string) {
