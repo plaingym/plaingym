@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: ${COMPOSE_PROJECT_NAME:-plaingym}
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+services:
+  postgres:
+    image: postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32
+    restart: unless-stopped
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-384m}
+    shm_size: 128mb
+    entrypoint:
+      - bash
+      - -c
+      - 'install -m 0644 /opt/plaingym/01-roles.sh /docker-entrypoint-initdb.d/01-roles.sh && exec docker-entrypoint.sh "$$@"'
+      - --
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - max_connections=20
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - autovacuum_work_mem=16MB
+      - -c
+      - max_wal_size=256MB
+      - -c
+      - max_parallel_workers=0
+      - -c
+      - jit=off
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-plaingym}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      APP_PASSWORD: ${APP_PASSWORD:?required}
+      MAINTENANCE_PASSWORD: ${MAINTENANCE_PASSWORD:?required}
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./postgres/01-roles.sh:/opt/plaingym/01-roles.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U postgres -d "$$POSTGRES_DB"']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    logging: *logging
+    networks: [database]
+  app:
+    image: ${APP_IMAGE:?set an explicit version or digest}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${APP_MEMORY_LIMIT:-512m}
+    pids_limit: 128
+    tmpfs: ["/tmp:size=32m,mode=1777,noexec,nosuid"]
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=256}
+      TENANCY: single
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
+      AUTH_SECRET: ${AUTH_SECRET:?required}
+      DATABASE_URL: postgres://app:${APP_PASSWORD:?required}@postgres:5432/${POSTGRES_DB:-plaingym}
+      POSTGRES_DB: ${POSTGRES_DB:-plaingym}
+      APP_PASSWORD: ${APP_PASSWORD:?required}
+      MAINTENANCE_PASSWORD: ${MAINTENANCE_PASSWORD:?required}
+      MAINTENANCE_DATABASE_URL: postgres://maintenance:${MAINTENANCE_PASSWORD:?required}@postgres:5432/${POSTGRES_DB:-plaingym}
+      UPLOADS_DIR: /var/lib/plaingym/uploads
+      BACKUP_STAGING_DIR: /var/lib/plaingym/staging
+    volumes:
+      - appdata:/var/lib/plaingym
+    depends_on:
+      postgres: {condition: service_healthy}
+    logging: *logging
+    networks: [database, web]
+  caddy:
+    image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
+    restart: unless-stopped
+    mem_limit: ${CADDY_MEMORY_LIMIT:-128m}
+    environment:
+      GYM_HOSTNAME: ${GYM_HOSTNAME:?required}
+      ACME_EMAIL: ${ACME_EMAIL:?required}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app: {condition: service_healthy}
+    logging: *logging
+    networks: [web]
+networks:
+  database:
+    internal: true
+  web:
+volumes:
+  pgdata:
+  appdata:
+  caddy_data:
+  caddy_config:

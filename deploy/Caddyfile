@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+{$GYM_HOSTNAME} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

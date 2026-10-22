@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Image checks
+on:
+  push:
+    paths:
+      - 'deploy/**'
+      - 'apps/**'
+      - 'packages/**'
+      - '*lock*'
+      - '*package*'
+      - 'pnpm-workspace.yaml'
+      - '.npmrc'
+      - 'tsconfig*.json'
+      - 'THIRD_PARTY_LICENSES'
+      - '.github/workflows/image*.yml'
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      IMAGE: plaingym:v0.0.0-ci-${{ matrix.arch }}
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+      REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+      - name: Check scripts and configuration
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck age
+          shellcheck -s sh deploy/*.sh deploy/container/*.sh deploy/test/*.sh
+      - name: Test update orchestration
+        run: sudo sh deploy/test/update.sh
+      - name: Build on the native CPU
+        run: |
+          docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=$SOURCE_URL" --build-arg "REVISION=$REVISION" -t "$IMAGE" .
+          test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
+      - name: Test the production stack
+        run: node deploy/test/smoke.mjs "$IMAGE"
+      - name: Export tested image
+        run: docker save "$IMAGE" -o "${{ runner.temp }}/image-${{ matrix.arch }}.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
+          retention-days: 3
+  manifest:
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - name: Assemble and inspect in a temporary local registry
+        # Only this runner's loopback registry receives images. No credentials,
+        # external registry writes, repository tags, or release assets are used.
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name image-registry -p 127.0.0.1:5000:5000 registry:3@sha256:b3419cf99f8ec65bbda73e8a950fd26861012689beaf7b6577ee938995aa7d3f
+          trap 'docker rm -f image-registry >/dev/null' EXIT
+          for arch in amd64 arm64; do
+            docker load -i "$RUNNER_TEMP/images/image-$arch.tar"
+            docker tag "plaingym:v0.0.0-ci-$arch" "localhost:5000/plaingym:$arch"
+            docker push "localhost:5000/plaingym:$arch"
+          done
+          docker manifest create --insecure localhost:5000/plaingym:test localhost:5000/plaingym:amd64 localhost:5000/plaingym:arm64
+          docker manifest push --insecure localhost:5000/plaingym:test
+          docker manifest inspect --insecure localhost:5000/plaingym:test > "$RUNNER_TEMP/manifest.json"
+          jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64","linux/arm64"]' "$RUNNER_TEMP/manifest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-image-manifest
+          path: ${{ runner.temp }}/manifest.json
+          retention-days: 3

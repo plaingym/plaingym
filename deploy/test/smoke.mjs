@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import https from 'node:https';
+import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(fileURLToPath(new URL('../', import.meta.url)));
+const image = process.argv[2];
+assert.ok(image, 'Usage: node deploy/test/smoke.mjs IMAGE');
+const temporary = mkdtempSync(join(tmpdir(), 'plaingym-image-'));
+const project = 'plaingym-image-' + randomUUID();
+const envFile = join(temporary, '.env');
+const env = {
+  ...process.env,
+  COMPOSE_PROJECT_NAME: project, APP_IMAGE: image,
+  GYM_HOSTNAME: 'gym.localhost', ACME_EMAIL: 'test@example.org',
+  HTTP_PORT: '127.0.0.1:0', HTTPS_PORT: '127.0.0.1:0',
+  POSTGRES_DB: 'plaingym', POSTGRES_PASSWORD: randomBytes(24).toString('hex'),
+  APP_PASSWORD: randomBytes(24).toString('hex'), MAINTENANCE_PASSWORD: randomBytes(24).toString('hex'),
+  APP_ENCRYPTION_KEY: randomBytes(32).toString('hex'), AUTH_SECRET: randomBytes(32).toString('hex'),
+};
+writeFileSync(envFile, '', { mode: 0o600 });
+const docker = (args, options = {}) => execFileSync('docker', args, {
+  env, encoding: 'utf8', timeout: 180_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], ...options,
+});
+const prefix = ['compose', '--project-directory', root, '--env-file', envFile, '-p', project, '-f', join(root, 'compose.yaml')];
+const compose = (args, options) => docker([...prefix, ...args], options);
+const sql = (query) => compose(['exec', '-T', 'postgres', 'psql', '-X', '-U', 'postgres', '-d', 'plaingym', '-v', 'ON_ERROR_STOP=1', '-qtAc', query]);
+const get = (protocol, port, ca) => new Promise((resolveRequest, reject) => {
+  const request = protocol.get({
+    hostname: '127.0.0.1', port, path: '/healthz', servername: 'gym.localhost',
+    headers: { host: 'gym.localhost' }, ca, timeout: 5000,
+  }, (response) => {
+    let body = '';
+    response.setEncoding('utf8');
+    response.on('data', (chunk) => { body += chunk; });
+    response.on('end', () => resolveRequest({ status: response.statusCode, headers: response.headers, body }));
+  });
+  request.on('timeout', () => request.destroy(new Error('HTTPS timeout')));
+  request.on('error', reject);
+});
+try {
+  compose(['up', '-d', '--wait', '--wait-timeout', '120']);
+  const appId = compose(['ps', '-q', 'app']).trim();
+  const configuration = JSON.parse(docker(['inspect', appId]))[0];
+  assert.equal(configuration.Config.User, 'node');
+  assert.equal(configuration.HostConfig.ReadonlyRootfs, true);
+  assert.deepEqual(configuration.HostConfig.CapDrop, ['ALL']);
+  assert.ok(configuration.HostConfig.SecurityOpt.includes('no-new-privileges:true'));
+  assert.equal(configuration.HostConfig.Memory, 512 * 1024 * 1024);
+  assert.ok(!configuration.Mounts.some((mount) => /docker[.]sock/.test(mount.Destination)));
+  assert.ok(configuration.Mounts.some((mount) => mount.Type === 'volume' && mount.Destination === '/var/lib/plaingym'));
+  compose(['exec', '-T', 'app', 'sh', '-ec', [
+    'test "$(id -u)" -ne 0',
+    'test -s /app/assets/fonts/NotoSans-Regular.ttf',
+    'test -s /app/public/index.html',
+    'test -s /app/THIRD_PARTY_LICENSES',
+    'test -z "$(command -v docker)"',
+    'touch /var/lib/plaingym/staging/test && rm /var/lib/plaingym/staging/test',
+    'pg_dump --version | grep "18.6"',
+    'pg_restore --version | grep "18.6"',
+  ].join('\n')]);
+  assert.throws(() => compose(['exec', '-T', 'app', 'touch', '/app/should-fail']));
+  compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
+  // Actual role drift must fail startup, even while Postgres is healthy.
+  sql('ALTER ROLE app BYPASSRLS');
+  assert.throws(() => compose(['run', '--rm', '--no-deps', '-T', 'app', 'true']));
+  sql('ALTER ROLE app NOBYPASSRLS');
+  sql('SET ROLE maintenance; CREATE TABLE deployment_probe(id integer);');
+  assert.throws(() => compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']));
+  sql('DROP TABLE deployment_probe');
+  compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'roles']);
+
+  const caddyId = compose(['ps', '-q', 'caddy']).trim();
+  const caPath = join(temporary, 'root.crt');
+  docker(['cp', caddyId + ':/data/caddy/pki/authorities/local/root.crt', caPath]);
+  const ca = readFileSync(caPath);
+  const httpPort = Number(compose(['port', 'caddy', '80']).trim().split(':').at(-1));
+  const httpsPort = Number(compose(['port', 'caddy', '443']).trim().split(':').at(-1));
+  const redirect = await get(http, httpPort);
+  assert.equal(redirect.status, 308);
+  const response = await get(https, httpsPort, ca);
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(response.body), { status: 'ok' });
+  // Reuse initialized volumes: the role bootstrap must not run a second time.
+  compose(['restart', 'postgres', 'app']);
+  compose(['up', '-d', '--wait', '--wait-timeout', '90']);
+  compose(['exec', '-T', 'app', 'node', '/app/deploy/healthcheck.mjs']);
+  console.log('PASS: HTTPS, redirect, roles, schema guard, image assets, hardening, memory caps, restart.');
+} finally {
+  compose(['down', '--volumes', '--remove-orphans']);
+  rmSync(temporary, { recursive: true, force: true });
+}
