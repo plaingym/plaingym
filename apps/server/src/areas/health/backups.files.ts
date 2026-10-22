@@ -4,6 +4,7 @@ import { createReadStream } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === 'ENOENT';
 export async function exists(path: string): Promise<boolean> {
@@ -43,12 +44,23 @@ export async function readJson(path: string, limit = 16 * 1024 * 1024): Promise<
   return JSON.parse(await readFile(path, 'utf8')) as unknown;
 }
 /** Sync the new file and rename it before syncing its parent (Linux data volumes). */
+/** Windows refuses to replace a file that another handle (a reader, an antivirus scan) has open; retry briefly. */
+async function replaceFile(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try { await rename(from, to); return; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (process.platform !== 'win32' || attempt >= 20 || !['EPERM', 'EACCES', 'EBUSY'].includes(code)) throw error;
+      await delay(10 * attempt);
+    }
+  }
+}
 export async function atomicJson(path: string, value: unknown): Promise<void> {
   await privateDirectory(dirname(path));
   const temporary = path + '.' + randomUUID() + '.tmp';
   try {
     await saveStream(temporary, bytesStream(JSON.stringify(value)));
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
     if (process.platform !== 'win32') {
       const directory = await open(dirname(path), 'r');
       try { await directory.sync(); } finally { await directory.close(); }
