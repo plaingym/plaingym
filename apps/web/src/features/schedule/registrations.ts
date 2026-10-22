@@ -6,8 +6,8 @@ export const registration: WebRegistration = {
     {
       id: 'adminNav.schedule',
       labelKey: 'schedule/schedule:title',
-      permission: { kind: 'staff', capability: 'attendance.manage' },
-      enabled: false,
+      permission: { kind: 'staff', capability: 'bookings.manage' },
+      enabled: true,
       href: '/admin/schedule',
     },
   ],
