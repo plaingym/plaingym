@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { eq, getTableColumns, getTableName } from 'drizzle-orm';
+import { eq, getTableColumns, getTableName, sql } from 'drizzle-orm';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import type { scopedDatabase, Transaction } from '../client.js';
 import { uuidv7 } from '../id.js';
@@ -102,6 +102,10 @@ export function createFactories(database: Pick<ReturnType<typeof scopedDatabase>
     return row;
   }
   return async function factory<K extends TableName>(table: K, gymId: string, overrides: Partial<Insert<K>> = {}): Promise<Row<K>> {
-    return database.forGym(gymId, async (tx) => await build(tx, table, gymId, overrides) as Row<K>);
+    return database.forGym(gymId, async (tx) => {
+      // Fixtures insert system rows too (users, jobs, the gym itself), so the factory transaction also takes system context.
+      await tx.execute(sql`select set_config('app.system', 'on', true)`);
+      return await build(tx, table, gymId, overrides) as Row<K>;
+    });
   };
 }

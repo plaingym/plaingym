@@ -36,10 +36,25 @@ Only `gym_id` references cascade. Every reference between tenant tables is
 `revoked_at`) instead. Never use `ON DELETE SET NULL` on a composite reference:
 PostgreSQL would also null `gym_id`, which fails and blocks gym deletion.
 
-`system-tables.mjs` is the exhaustive exemption inventory and module allowlist.
-The ESLint rule consumes that same inventory. System rows are visible to the app
-role without RLS, so their named infrastructure modules must enforce the request
-boundary. The migration catalog check rejects undeclared exemptions.
+`system-tables.mjs` is the exhaustive inventory of system tables (tables a request
+reaches before, or outside, a single gym), with each table's access kind and module
+allowlist. The ESLint rule and the catalog check consume that same inventory.
+
+System tables have forced RLS too, with policies for two contexts:
+
+| Context | Set by | Sees |
+| --- | --- | --- |
+| Gym | `forGym` (`app.gym_id`) | Only its own gym's system rows: its `gyms` row (read and update, never insert or delete), domains, jobs, sessions and webhook events. Never another gym's rows, install-level rows (no gym), identity or backup history. |
+| System | `forSystem` (`app.system`, one transaction) or `systemDatabase()` (a separate pool with `app.system` on every connection, for the auth adapter, which runs its own queries) | Every system row, for tenancy lookup, authentication, job claiming, the webhook inbox, setup and restore. Grants no tenant data: gym-owned tables still require their gym. |
+
+With neither context a connection sees no system rows and can't write any (fail
+closed). Access kinds: `gym` (domains, jobs, sessions, webhook events), `gym-config`
+(`gyms`) and `system` (identity tables, backup history); the catalog check verifies
+each table's exact policies, ENABLE and FORCE. This prevents accidental cross-gym
+queries on the app role's ordinary connections; it doesn't constrain `maintenance`
+(BYPASSRLS), and `forSystem` / `systemDatabase` are lint-limited to the
+infrastructure modules the inventory lists (`systemDatabase` to `infra/auth`).
+Tests in `system-access.test.ts` issue the forbidden queries directly to prove it.
 
 Direct access is limited to the code that writes those rows: tenancy, settings,
 setup, the gym CLI and demo for `gyms`; restore for re-encrypting `gyms` and

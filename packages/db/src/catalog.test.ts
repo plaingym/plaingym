@@ -61,6 +61,19 @@ it('detects policy, FORCE, unregistered table and privilege drift', async () => 
     await applySecurity(maintenance.sql);
     await expect(assertCatalog(database.app.sql)).rejects.toThrow('members: unexpected table privileges');
     await maintenance.sql`grant select on members to app`;
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 51, tenantTableCount: 41 });
+    // System tables: their declared access policies, ENABLE and FORCE are all checked too.
+    await maintenance.sql`create policy gym_leak on gyms for select to app using (true)`;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('gyms: invalid system access policy');
+    await maintenance.sql`drop policy gym_leak on gyms`;
+    await maintenance.sql`alter table auth_user no force row level security`;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('auth_user: invalid system access policy');
+    await applySecurity(maintenance.sql);
+    await maintenance.sql`alter table jobs disable row level security`;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('jobs: invalid system access policy');
+    await maintenance.sql`alter table jobs enable row level security`;
+    await applySecurity(maintenance.sql);
+    await maintenance.sql`drop policy stripe_events_gym_policy on stripe_events`;
+    await maintenance.sql`create policy stripe_events_gym_policy on stripe_events to app using (current_setting('app.system', true) = 'on' or true)`;
+    await expect(assertCatalog(database.app.sql)).rejects.toThrow('stripe_events: invalid system access policy');
   } finally { await maintenance.close(); }
 });

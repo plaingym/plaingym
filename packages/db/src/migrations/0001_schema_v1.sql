@@ -11,6 +11,7 @@ CREATE TABLE "gym_domains" (
 	CONSTRAINT "gym_domains_hostname_check" CHECK ("gym_domains"."hostname" = lower("gym_domains"."hostname") and "gym_domains"."hostname" <> '')
 );
 --> statement-breakpoint
+ALTER TABLE "gym_domains" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "gyms" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
@@ -46,6 +47,7 @@ CREATE TABLE "gyms" (
 	CONSTRAINT "gyms_limits_check" CHECK ("gyms"."booking_window_days" >= 0 and "gyms"."cancellation_cutoff_minutes" >= 0 and ("gyms"."backup_retention_bytes" is null or "gyms"."backup_retention_bytes" >= 0))
 );
 --> statement-breakpoint
+ALTER TABLE "gyms" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "auth_account" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -63,6 +65,7 @@ CREATE TABLE "auth_account" (
 	CONSTRAINT "auth_account_provider_account_key" UNIQUE("provider_id","account_id")
 );
 --> statement-breakpoint
+ALTER TABLE "auth_account" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "auth_rate_limit" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"key" text NOT NULL,
@@ -71,6 +74,7 @@ CREATE TABLE "auth_rate_limit" (
 	CONSTRAINT "auth_rate_limit_key_key" UNIQUE("key")
 );
 --> statement-breakpoint
+ALTER TABLE "auth_rate_limit" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "auth_session" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -84,6 +88,7 @@ CREATE TABLE "auth_session" (
 	CONSTRAINT "auth_session_token_key" UNIQUE("token")
 );
 --> statement-breakpoint
+ALTER TABLE "auth_session" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "auth_user" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -96,6 +101,7 @@ CREATE TABLE "auth_user" (
 	CONSTRAINT "auth_user_email_lowercase_check" CHECK ("auth_user"."email" = lower("auth_user"."email"))
 );
 --> statement-breakpoint
+ALTER TABLE "auth_user" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "auth_verification" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -105,6 +111,7 @@ CREATE TABLE "auth_verification" (
 	"expires_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "auth_verification" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "household_users" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
@@ -795,6 +802,7 @@ CREATE TABLE "backup_runs" (
 	CONSTRAINT "backup_runs_sizes_check" CHECK ("backup_runs"."snapshot_bytes" >= 0 and "backup_runs"."upload_bytes" >= 0)
 );
 --> statement-breakpoint
+ALTER TABLE "backup_runs" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "jobs" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid,
@@ -814,6 +822,7 @@ CREATE TABLE "jobs" (
 	CONSTRAINT "jobs_attempts_check" CHECK ("jobs"."attempts" >= 0 and "jobs"."max_attempts" > 0)
 );
 --> statement-breakpoint
+ALTER TABLE "jobs" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "stripe_events" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"event_id" text NOT NULL,
@@ -826,6 +835,7 @@ CREATE TABLE "stripe_events" (
 	CONSTRAINT "stripe_events_event_key" UNIQUE("event_id")
 );
 --> statement-breakpoint
+ALTER TABLE "stripe_events" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE TABLE "audit_events" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"gym_id" uuid NOT NULL,
@@ -996,6 +1006,16 @@ CREATE INDEX "jobs_gym_status_idx" ON "jobs" USING btree ("gym_id","status");-->
 CREATE INDEX "stripe_events_gym_received_idx" ON "stripe_events" USING btree ("gym_id","received_at");--> statement-breakpoint
 CREATE INDEX "audit_events_gym_time_idx" ON "audit_events" USING btree ("gym_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "email_outbox_gym_time_idx" ON "email_outbox" USING btree ("gym_id","sent_at");--> statement-breakpoint
+CREATE POLICY "gym_domains_gym_policy" ON "gym_domains" AS PERMISSIVE FOR ALL TO "app" USING (("gym_domains"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')) WITH CHECK (("gym_domains"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on'));--> statement-breakpoint
+CREATE POLICY "gyms_read_policy" ON "gyms" AS PERMISSIVE FOR SELECT TO "app" USING (("gyms"."id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on'));--> statement-breakpoint
+CREATE POLICY "gyms_update_policy" ON "gyms" AS PERMISSIVE FOR UPDATE TO "app" USING (("gyms"."id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')) WITH CHECK (("gyms"."id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on'));--> statement-breakpoint
+CREATE POLICY "gyms_insert_policy" ON "gyms" AS PERMISSIVE FOR INSERT TO "app" WITH CHECK (current_setting('app.system', true) = 'on');--> statement-breakpoint
+CREATE POLICY "gyms_delete_policy" ON "gyms" AS PERMISSIVE FOR DELETE TO "app" USING (current_setting('app.system', true) = 'on');--> statement-breakpoint
+CREATE POLICY "auth_account_system_policy" ON "auth_account" AS PERMISSIVE FOR ALL TO "app" USING (current_setting('app.system', true) = 'on') WITH CHECK (current_setting('app.system', true) = 'on');--> statement-breakpoint
+CREATE POLICY "auth_rate_limit_system_policy" ON "auth_rate_limit" AS PERMISSIVE FOR ALL TO "app" USING (current_setting('app.system', true) = 'on') WITH CHECK (current_setting('app.system', true) = 'on');--> statement-breakpoint
+CREATE POLICY "auth_session_gym_policy" ON "auth_session" AS PERMISSIVE FOR ALL TO "app" USING (("auth_session"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')) WITH CHECK (("auth_session"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on'));--> statement-breakpoint
+CREATE POLICY "auth_user_system_policy" ON "auth_user" AS PERMISSIVE FOR ALL TO "app" USING (current_setting('app.system', true) = 'on') WITH CHECK (current_setting('app.system', true) = 'on');--> statement-breakpoint
+CREATE POLICY "auth_verification_system_policy" ON "auth_verification" AS PERMISSIVE FOR ALL TO "app" USING (current_setting('app.system', true) = 'on') WITH CHECK (current_setting('app.system', true) = 'on');--> statement-breakpoint
 CREATE POLICY "household_users_gym_policy" ON "household_users" AS PERMISSIVE FOR ALL TO "app" USING ("household_users"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("household_users"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "households_gym_policy" ON "households" AS PERMISSIVE FOR ALL TO "app" USING ("households"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("households"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "member_tag_links_gym_policy" ON "member_tag_links" AS PERMISSIVE FOR ALL TO "app" USING ("member_tag_links"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("member_tag_links"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
@@ -1035,5 +1055,8 @@ CREATE POLICY "waiver_templates_gym_policy" ON "waiver_templates" AS PERMISSIVE 
 CREATE POLICY "kiosk_devices_gym_policy" ON "kiosk_devices" AS PERMISSIVE FOR ALL TO "app" USING ("kiosk_devices"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("kiosk_devices"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "link_campaigns_gym_policy" ON "link_campaigns" AS PERMISSIVE FOR ALL TO "app" USING ("link_campaigns"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("link_campaigns"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "signed_links_gym_policy" ON "signed_links" AS PERMISSIVE FOR ALL TO "app" USING ("signed_links"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("signed_links"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
+CREATE POLICY "backup_runs_system_policy" ON "backup_runs" AS PERMISSIVE FOR ALL TO "app" USING (current_setting('app.system', true) = 'on') WITH CHECK (current_setting('app.system', true) = 'on');--> statement-breakpoint
+CREATE POLICY "jobs_gym_policy" ON "jobs" AS PERMISSIVE FOR ALL TO "app" USING (("jobs"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')) WITH CHECK (("jobs"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on'));--> statement-breakpoint
+CREATE POLICY "stripe_events_gym_policy" ON "stripe_events" AS PERMISSIVE FOR ALL TO "app" USING (("stripe_events"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')) WITH CHECK (("stripe_events"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on'));--> statement-breakpoint
 CREATE POLICY "audit_events_gym_policy" ON "audit_events" AS PERMISSIVE FOR ALL TO "app" USING ("audit_events"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("audit_events"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);--> statement-breakpoint
 CREATE POLICY "email_outbox_gym_policy" ON "email_outbox" AS PERMISSIVE FOR ALL TO "app" USING ("email_outbox"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid) WITH CHECK ("email_outbox"."gym_id" = nullif(current_setting('app.gym_id', true), '')::uuid);

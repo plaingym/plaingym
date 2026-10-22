@@ -66,8 +66,8 @@ describe('gym currency', () => {
   it('locks the gym currency once billing data references it', async () => {
     const fresh = uuidv7();
     await factory('gyms', fresh);
-    const change = (currency: string) => database.app.db.update(schema.gyms).set({ currency }).where(eq(schema.gyms.id, fresh));
-    await change('EUR');
+    const change = (currency: string) => database.forGym(fresh, (tx) => tx.update(schema.gyms).set({ currency }).where(eq(schema.gyms.id, fresh)).returning());
+    expect(await change('EUR')).toHaveLength(1);
     await factory('plans', fresh, { currency: 'EUR' });
     await expect(change('USD')).rejects.toMatchObject(rejected('23503'));
   });
@@ -82,7 +82,7 @@ describe('gym currency', () => {
     const device = await factory('kioskDevices', doomed);
     await factory('auditEvents', doomed, { actorKind: 'device', actorDeviceId: device.id });
     await factory('waiverSignatures', doomed);
-    await database.app.db.delete(schema.gyms).where(eq(schema.gyms.id, doomed));
+    await database.forSystem((tx) => tx.delete(schema.gyms).where(eq(schema.gyms.id, doomed)));
     for (const table of [schema.invoices, schema.payments, schema.auditEvents, schema.waiverSignatures]) {
       expect(await database.forGym(doomed, (tx) => tx.select().from(table))).toEqual([]);
     }

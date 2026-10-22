@@ -2,7 +2,7 @@
 import { systemTables } from './system-tables.mjs';
 /** @type {import('eslint').Rule.RuleModule} */
 export const systemTableRule = {
-  meta: { type: 'problem', schema: [], messages: { restricted: 'System table {{name}} is restricted to its declared infrastructure modules.', opaque: 'Use a statically named schema table so system-table access can be checked.', maintenance: 'Maintenance database access belongs in migrations, backup, and restore infrastructure.', rawSql: 'Raw SQL and table construction bypass the system-table check: outside reviewed infrastructure, import only query operators (eq, and, ...) from drizzle-orm and use @plaingym/db tables, or mark a reviewed exception with an eslint-disable comment that gives the reason.' } },
+  meta: { type: 'problem', schema: [], messages: { restricted: 'System table {{name}} is restricted to its declared infrastructure modules.', opaque: 'Use a statically named schema table so system-table access can be checked.', maintenance: 'Maintenance database access belongs in migrations, backup, and restore infrastructure.', systemContext: '{{name}} grants system context; it belongs only in the infrastructure modules listed in system-tables.mjs ({{scope}}).', rawSql: 'Raw SQL and table construction bypass the system-table check: outside reviewed infrastructure, import only query operators (eq, and, ...) from drizzle-orm and use @plaingym/db tables, or mark a reviewed exception with an eslint-disable comment that gives the reason.' } },
   create(context) {
     const file = context.filename.replaceAll('\\', '/').split('/apps/server/src/')[1] ?? '';
     const namespaces = new Set();
@@ -13,6 +13,11 @@ export const systemTableRule = {
     function check(name, node) {
       if (['openConnection', 'withMigrationConnection', 'migrateDatabase', 'applySecurity'].includes(name) && !maintenanceModule) {
         context.report({ node, messageId: 'maintenance' });
+      }
+      // System context reaches every gym's system rows: forSystem for listed infrastructure, the always-system pool for the auth adapter.
+      const contextScope = name === 'forSystem' ? systemTables.flatMap((entry) => entry.modules) : name === 'systemDatabase' ? ['infra/auth/.*'] : undefined;
+      if (file && contextScope && !contextScope.some((pattern) => new RegExp('^' + pattern + '$').test(file))) {
+        context.report({ node, messageId: 'systemContext', data: { name, scope: name === 'forSystem' ? 'system-table modules' : 'infra/auth' } });
       }
       const table = systemTables.find((entry) => entry.exportName === name);
       if (table && !table.modules.some((pattern) => new RegExp('^' + pattern + '$').test(file))) {

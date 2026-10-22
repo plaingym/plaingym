@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, integer, pgPolicy, pgRole, timestamp, unique, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { check, foreignKey, integer, pgPolicy, timestamp, unique, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { app } from './access.js';
 import { uuidv7 } from '../id.js';
 import { gyms } from './gyms.js';
-const app = pgRole('app').existing();
 export const instant = (name: string) => timestamp(name, { withTimezone: true });
 export const base = () => ({
   id: uuid('id').primaryKey().$defaultFn(uuidv7),

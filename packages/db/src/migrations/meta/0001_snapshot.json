@@ -1,5 +1,5 @@
 {
-  "id": "90d8b223-011f-4bb4-87d8-de2f380310b5",
+  "id": "ae36054c-bd9a-4af6-a4dc-773128f5cac9",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -74,7 +74,18 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "gym_domains_gym_policy": {
+          "name": "gym_domains_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "(\"gym_domains\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')",
+          "withCheck": "(\"gym_domains\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')"
+        }
+      },
       "checkConstraints": {
         "gym_domains_kind_check": {
           "name": "gym_domains_kind_check",
@@ -85,7 +96,7 @@
           "value": "\"gym_domains\".\"hostname\" = lower(\"gym_domains\".\"hostname\") and \"gym_domains\".\"hostname\" <> ''"
         }
       },
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.gyms": {
       "name": "gyms",
@@ -282,7 +293,45 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "gyms_read_policy": {
+          "name": "gyms_read_policy",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "app"
+          ],
+          "using": "(\"gyms\".\"id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')"
+        },
+        "gyms_update_policy": {
+          "name": "gyms_update_policy",
+          "as": "PERMISSIVE",
+          "for": "UPDATE",
+          "to": [
+            "app"
+          ],
+          "using": "(\"gyms\".\"id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')",
+          "withCheck": "(\"gyms\".\"id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')"
+        },
+        "gyms_insert_policy": {
+          "name": "gyms_insert_policy",
+          "as": "PERMISSIVE",
+          "for": "INSERT",
+          "to": [
+            "app"
+          ],
+          "withCheck": "current_setting('app.system', true) = 'on'"
+        },
+        "gyms_delete_policy": {
+          "name": "gyms_delete_policy",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "app"
+          ],
+          "using": "current_setting('app.system', true) = 'on'"
+        }
+      },
       "checkConstraints": {
         "gyms_currency_check": {
           "name": "gyms_currency_check",
@@ -301,7 +350,7 @@
           "value": "\"gyms\".\"booking_window_days\" >= 0 and \"gyms\".\"cancellation_cutoff_minutes\" >= 0 and (\"gyms\".\"backup_retention_bytes\" is null or \"gyms\".\"backup_retention_bytes\" >= 0)"
         }
       },
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.auth_account": {
       "name": "auth_account",
@@ -431,9 +480,20 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "auth_account_system_policy": {
+          "name": "auth_account_system_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "current_setting('app.system', true) = 'on'",
+          "withCheck": "current_setting('app.system', true) = 'on'"
+        }
+      },
       "checkConstraints": {},
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.auth_rate_limit": {
       "name": "auth_rate_limit",
@@ -476,9 +536,20 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "auth_rate_limit_system_policy": {
+          "name": "auth_rate_limit_system_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "current_setting('app.system', true) = 'on'",
+          "withCheck": "current_setting('app.system', true) = 'on'"
+        }
+      },
       "checkConstraints": {},
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.auth_session": {
       "name": "auth_session",
@@ -602,9 +673,20 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "auth_session_gym_policy": {
+          "name": "auth_session_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "(\"auth_session\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')",
+          "withCheck": "(\"auth_session\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')"
+        }
+      },
       "checkConstraints": {},
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.auth_user": {
       "name": "auth_user",
@@ -668,14 +750,25 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "auth_user_system_policy": {
+          "name": "auth_user_system_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "current_setting('app.system', true) = 'on'",
+          "withCheck": "current_setting('app.system', true) = 'on'"
+        }
+      },
       "checkConstraints": {
         "auth_user_email_lowercase_check": {
           "name": "auth_user_email_lowercase_check",
           "value": "\"auth_user\".\"email\" = lower(\"auth_user\".\"email\")"
         }
       },
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.auth_verification": {
       "name": "auth_verification",
@@ -740,9 +833,20 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "policies": {},
+      "policies": {
+        "auth_verification_system_policy": {
+          "name": "auth_verification_system_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "current_setting('app.system', true) = 'on'",
+          "withCheck": "current_setting('app.system', true) = 'on'"
+        }
+      },
       "checkConstraints": {},
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.household_users": {
       "name": "household_users",
@@ -6938,7 +7042,18 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "backup_runs_system_policy": {
+          "name": "backup_runs_system_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "current_setting('app.system', true) = 'on'",
+          "withCheck": "current_setting('app.system', true) = 'on'"
+        }
+      },
       "checkConstraints": {
         "backup_runs_kind_check": {
           "name": "backup_runs_kind_check",
@@ -6953,7 +7068,7 @@
           "value": "\"backup_runs\".\"snapshot_bytes\" >= 0 and \"backup_runs\".\"upload_bytes\" >= 0"
         }
       },
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.jobs": {
       "name": "jobs",
@@ -7113,7 +7228,18 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "jobs_gym_policy": {
+          "name": "jobs_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "(\"jobs\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')",
+          "withCheck": "(\"jobs\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')"
+        }
+      },
       "checkConstraints": {
         "jobs_status_check": {
           "name": "jobs_status_check",
@@ -7124,7 +7250,7 @@
           "value": "\"jobs\".\"attempts\" >= 0 and \"jobs\".\"max_attempts\" > 0"
         }
       },
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.stripe_events": {
       "name": "stripe_events",
@@ -7228,9 +7354,20 @@
           ]
         }
       },
-      "policies": {},
+      "policies": {
+        "stripe_events_gym_policy": {
+          "name": "stripe_events_gym_policy",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "app"
+          ],
+          "using": "(\"stripe_events\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')",
+          "withCheck": "(\"stripe_events\".\"gym_id\" = nullif(current_setting('app.gym_id', true), '')::uuid) or (current_setting('app.system', true) = 'on')"
+        }
+      },
       "checkConstraints": {},
-      "isRLSEnabled": false
+      "isRLSEnabled": true
     },
     "public.audit_events": {
       "name": "audit_events",

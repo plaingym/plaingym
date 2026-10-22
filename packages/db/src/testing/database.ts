@@ -61,12 +61,14 @@ export async function cloneDatabase(config: TestDatabaseConfig) {
     throw error;
   } finally { await admin.close(); }
   const app = openConnection(databaseUrl(config.appUrl, name), 2);
+  const system = openConnection(databaseUrl(config.appUrl, name), 1, 'system');
   return {
-    name, app, ...scopedDatabase(app.db),
+    name, app, system, ...scopedDatabase(app.db),
     maintenanceUrl: databaseUrl(config.maintenanceUrl, name),
     appUrl: databaseUrl(config.appUrl, name),
     cleanup: async () => {
       await app.close();
+      await system.close();
       const cleanup = openConnection(databaseUrl(config.adminUrl, 'postgres'), 1);
       try { await cleanup.sql`drop database ${cleanup.sql(name)} with (force)`; }
       finally { await cleanup.close(); }
@@ -80,10 +82,13 @@ export function useTestDatabase() {
   afterAll(async () => { await database?.cleanup(); });
   return {
     get app() { return database.app; },
+    /** Mirrors systemDatabase(): an app-role pool whose connections carry system context. */
+    get system() { return database.system; },
     get name() { return database.name; },
     get maintenanceUrl() { return database.maintenanceUrl; },
     get appUrl() { return database.appUrl; },
     forGym: ((gymId, fn) => database.forGym(gymId, fn)) as ReturnType<typeof scopedDatabase>['forGym'],
     forHousehold: ((scope, fn) => database.forHousehold(scope, fn)) as ReturnType<typeof scopedDatabase>['forHousehold'],
+    forSystem: ((fn) => database.forSystem(fn)) as ReturnType<typeof scopedDatabase>['forSystem'],
   };
 }

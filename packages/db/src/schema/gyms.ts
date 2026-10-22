@@ -2,6 +2,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, integer, jsonb, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { uuidv7 } from '../id.js';
+import { systemAccess } from './access.js';
 export const gyms = pgTable('gyms', {
   id: uuid('id').primaryKey().$defaultFn(uuidv7),
   name: text('name').notNull(), slug: text('slug').notNull(),
@@ -27,8 +28,9 @@ export const gyms = pgTable('gyms', {
   check('gyms_currency_check', sql`${t.currency} ~ '^[A-Z]{3}$'`),
   check('gyms_revision_check', sql`${t.revision} > 0`),
   check('gyms_status_check', sql`${t.status} in ('active', 'suspended')`),
+  ...systemAccess('gyms', 'gym-config', t.id),
   check('gyms_limits_check', sql`${t.bookingWindowDays} >= 0 and ${t.cancellationCutoffMinutes} >= 0 and (${t.backupRetentionBytes} is null or ${t.backupRetentionBytes} >= 0)`),
-]);
+]).enableRLS();
 export const gymDomains = pgTable('gym_domains', {
   id: uuid('id').primaryKey().$defaultFn(uuidv7),
   gymId: uuid('gym_id').notNull().references(() => gyms.id, { onDelete: 'cascade' }),
@@ -39,4 +41,5 @@ export const gymDomains = pgTable('gym_domains', {
   unique('gym_domains_gym_id_id_key').on(t.gymId, t.id),
   check('gym_domains_kind_check', sql`${t.kind} in ('default', 'custom')`),
   check('gym_domains_hostname_check', sql`${t.hostname} = lower(${t.hostname}) and ${t.hostname} <> ''`),
-]);
+  ...systemAccess('gym_domains', 'gym', t.gymId),
+]).enableRLS();

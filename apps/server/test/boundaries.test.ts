@@ -45,8 +45,24 @@ describe('system table access', () => {
     expect(await messages('apps/server/src/core/database.ts', source)).toHaveLength(0);
     expect(await messages(core, "import { openConnection } from '@plaingym/db/client'; void openConnection;"))
       .toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'database/system-tables' })]));
-    expect(await messages('apps/server/src/core/tenancy.ts', "import { systemDatabase } from '@plaingym/db/client'; void systemDatabase;"))
+    expect(await messages('apps/server/src/core/tenancy.ts', "import { forSystem } from '@plaingym/db/client'; void forSystem;"))
       .toHaveLength(0);
+  });
+  it('limits system context to the infrastructure on the system-table list', async () => {
+    const forSystem = "import { forSystem } from '@plaingym/db'; void forSystem;";
+    const systemPool = "import { systemDatabase } from '@plaingym/db/client'; void systemDatabase;";
+    for (const path of [area, portal, links, core, 'apps/server/src/areas/billing/invoices.ts']) {
+      for (const source of [forSystem, systemPool]) {
+        expect(await messages(path, source)).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'database/system-tables' })]));
+      }
+    }
+    for (const path of ['apps/server/src/core/tenancy.ts', 'apps/server/src/infra/jobs/worker.ts', 'apps/server/src/areas/billing/webhooks/inbox.ts',
+      'apps/server/src/areas/setup/gym.ts', 'apps/server/src/cli/replay.ts', 'apps/server/src/infra/auth/adapter.ts']) {
+      expect(await messages(path, forSystem)).toHaveLength(0);
+    }
+    // The always-system pool exists for the auth adapter alone.
+    expect(await messages('apps/server/src/infra/auth/adapter.ts', systemPool)).toHaveLength(0);
+    expect(await messages('apps/server/src/core/tenancy.ts', systemPool)).toEqual(expect.arrayContaining([expect.objectContaining({ ruleId: 'database/system-tables' })]));
   });
   const execute = "import { sql } from 'drizzle-orm'; declare const tx: { execute(query: unknown): unknown }; void tx.execute(sql`select * from gyms`);";
   const builder = "import { sql } from 'drizzle-orm'; declare const tx: { select(fields: unknown): { from(source: unknown): unknown } };"

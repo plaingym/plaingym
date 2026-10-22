@@ -18,13 +18,19 @@ describe('factories and gym isolation', () => {
     expect(row.id).toMatch(/^[a-f0-9-]{14}7[a-f0-9-]{21}$/);
     const table = schema[name] as PgTable;
     const columns = getTableColumns(table);
-    const system = systemTables.some((entry) => entry.name === getTableName(table));
-    const rows = await database.forGym(gymB, (tx) => tx.select().from(table).where(eq(columns.id!, row.id)));
-    // System tables deliberately require their infrastructure access boundary instead of RLS.
-    expect(rows).toHaveLength(system ? 1 : 0);
-    if (!system) {
-      expect(await database.app.db.select().from(table).where(eq(columns.id!, row.id))).toEqual([]);
-      expect(await database.forGym(gymA, (tx) => tx.select().from(table).where(and(eq(columns.id!, row.id), eq(columns.gymId!, gymA))))).toHaveLength(1);
+    const access = systemTables.find((entry) => entry.name === getTableName(table))?.access;
+    const byId = eq(columns.id!, row.id);
+    // Every table, system tables included, hides the row from another gym and from a connection with no context.
+    expect(await database.forGym(gymB, (tx) => tx.select().from(table).where(byId))).toHaveLength(0);
+    expect(await database.app.db.select().from(table).where(byId)).toEqual([]);
+    if (access === 'system') {
+      // Install-wide rows: only infrastructure in system context sees them, never a gym.
+      expect(await database.forGym(gymA, (tx) => tx.select().from(table).where(byId))).toHaveLength(0);
+      expect(await database.forSystem((tx) => tx.select().from(table).where(byId))).toHaveLength(1);
+    } else if (access) {
+      expect(await database.forGym(gymId, (tx) => tx.select().from(table).where(byId))).toHaveLength(1);
+    } else {
+      expect(await database.forGym(gymA, (tx) => tx.select().from(table).where(and(byId, eq(columns.gymId!, gymA))))).toHaveLength(1);
     }
   });
   it('rejects forged cross-gym relationships and writes', async () => {
