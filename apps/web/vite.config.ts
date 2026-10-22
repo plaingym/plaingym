@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { defineConfig, loadEnv } from 'vite';
+import { tanstackRouter } from '@tanstack/router-plugin/vite';
+import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig(({ mode }) => {
@@ -10,7 +12,19 @@ export default defineConfig(({ mode }) => {
     throw new Error('SOURCE_URL must be an HTTP(S) URL.');
   }
   return {
-    plugins: [react()],
+    plugins: [
+      tanstackRouter({
+        target: 'react',
+        routesDirectory: fileURLToPath(new URL('./src/routes', import.meta.url)),
+        generatedRouteTree: fileURLToPath(new URL('./src/routeTree.gen.ts', import.meta.url)),
+        tmpDir: fileURLToPath(new URL('./dist/.tanstack', import.meta.url)),
+        routeTreeFileHeader: ['// SPDX-License-Identifier: AGPL-3.0-only', '// @ts-nocheck'],
+        quoteStyle: 'single',
+        semicolons: true,
+        autoCodeSplitting: true,
+      }),
+      react(),
+    ],
     server: {
       host: '127.0.0.1',
       proxy: { '/healthz': `http://127.0.0.1:${env.PORT || '3000'}` },
