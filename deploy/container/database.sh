@@ -4,6 +4,15 @@ set -eu
 export PGHOST="${PGHOST:-postgres}" PGPORT="${PGPORT:-5432}" PGDATABASE="${POSTGRES_DB:-plaingym}"
 export PGUSER=maintenance PGPASSWORD="${MAINTENANCE_PASSWORD:?required}" PGCONNECT_TIMEOUT=5
 case "${1:-}" in
+  wait)
+    # Postgres may still be starting, or restarting alongside the app.
+    tries=0
+    until pg_isready -q; do
+      tries=$((tries + 1))
+      if [ "$tries" -ge 60 ]; then echo 'Database is not reachable; refusing startup' >&2; exit 1; fi
+      sleep 1
+    done
+    ;;
   roles)
     psql -X -v ON_ERROR_STOP=1 -q <<'SQL'
 DO $check$
@@ -25,5 +34,5 @@ SQL
     ;;
   migrate) exec node /app/maintenance.mjs migrate ;;
   dump) exec pg_dump --format=custom --compress=gzip:6 --no-owner ;;
-  *) echo 'Usage: database.sh roles|migrate|dump' >&2; exit 2 ;;
+  *) echo 'Usage: database.sh wait|roles|migrate|dump' >&2; exit 2 ;;
 esac

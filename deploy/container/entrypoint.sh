@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 set -eu
 umask 077
+/app/deploy/database.sh wait
 /app/deploy/database.sh roles
 # Resume verified restore state before migrations or any request/worker starts.
 node /app/maintenance.mjs resume
