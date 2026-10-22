@@ -34,3 +34,8 @@ export class FakeEmail implements Email {
     return result ?? { status: 'sent', messageId: `mail_${this.#messages.length}` };
   }
 }
+
+export { SmtpEmail, smtpOptions } from './smtp.js';
+export type { SmtpConfig } from './smtp.js';
+export { MemberEmail } from './member.js';
+export type { MemberEmailOptions, EmailSuppression, SuppressionReason } from './member.js';

@@ -1,0 +1,10 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+# Email
+
+`SmtpEmail` sends staff/security email through configured SMTP. `security` defaults to required STARTTLS; `tls` uses implicit TLS, and explicit `plain` supports a local mail capture server. Certificate validation stays enabled. Configure `host`, `port`, `from`, optional `auth` and default `replyTo`; an individual message can override `replyTo`. `verifyConnection()` authenticates without sending; `verifyTestSend(message)` verifies and delivers caller-supplied translated test content. Close the transport when disposing it. Delivery failures reject for the caller/job to handle; the transport never retries on its own.
+
+Member notifications must use `new MemberEmail({ gymId, memberId, email, settings })`, which implements the same `Email` interface. Inject the gym-settings accessor and, in tests, scoped `forGym`. It reloads the go-live switch and member flags before each send and finishes both reads before SMTP. Suppression priority is disabled, opted out, then undeliverable. The frozen schema represents undeliverability as `emailDeliverable === false`. Missing/cross-gym members or mismatched recipients fail closed. The recipient is the member's stored email (one plain address). Staff login and setup test messages use the unwrapped transport, so the member switch cannot prevent account recovery.
+
+Suppression logs contain only event, gym ID, member ID and reason; provide `logSuppression` to integrate structured logging. No recipient, credentials, rendered body or subject is logged. The wrapper also works around `FakeEmail` or a capture transport.
+
+Shared React Email components live in `emails/_shared`. `renderEmail` returns the registry's `RenderedEmail` with HTML and plain text derived from the same render. Pass the feature translator and keys for the subject, preview, footer, headings, text and buttons; the shared layout has no fixed English copy. Build templates with React `createElement` in `.ts` files, or JSX where the caller's compiler supports it.

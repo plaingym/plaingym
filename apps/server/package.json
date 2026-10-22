@@ -16,11 +16,17 @@
     "@plaingym/shared": "workspace:*",
     "cron-parser": "5.10.2",
     "drizzle-orm": "0.45.4",
-    "hono": "4.13.13"
+    "hono": "4.13.13",
+    "@react-email/render": "2.1.1",
+    "nodemailer": "10.1.7",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
     "postgres": "3.4.9",
-    "tsx": "4.23.15"
+    "tsx": "4.23.15",
+    "@types/nodemailer": "8.0.2",
+    "@types/react": "19.3.0"
   }
 }
