@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../lib/registries.js';
+import { AttendanceRosterPanel, MemberAttendancePanel } from './panels.js';
 
 export const registration: WebRegistration = {
   memberTabs: [
@@ -7,8 +8,8 @@ export const registration: WebRegistration = {
       id: 'memberTabs.attendance',
       labelKey: 'attendance/attendance:title',
       permission: { kind: 'staff', capability: 'attendance.manage' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: MemberAttendancePanel,
     },
   ],
   sessionPanels: [
@@ -16,8 +17,8 @@ export const registration: WebRegistration = {
       id: 'sessionPanels.attendance',
       labelKey: 'attendance/attendance:title',
       permission: { kind: 'staff', capability: 'attendance.manage' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: AttendanceRosterPanel,
     },
   ],
 };
