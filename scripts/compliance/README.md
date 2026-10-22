@@ -82,6 +82,7 @@ the GitHub user ID/login, signing comment ID, timestamp, agreement version, SHA-
 and blob SHA. They are saved at `signatures/cla.json` on `cla-signatures`;
 the workflow bootstraps the branch if needed and serializes writes.
 
-Enable Actions write permissions and require `CLA` and the compliance checks in
+The workflow requests its own write permissions, so the repository default for
+the Actions token can stay read-only. Require `CLA` and the compliance checks in
 the repository's branch rules. Keep the signature branch restricted to maintainers
 and this workflow. Posting a comment on an open PR rechecks its author's signature.
