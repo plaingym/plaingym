@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.imports',
       labelKey: 'imports/pipeline:title',
       permission: { kind: 'staff', capability: 'data.export' },
-      enabled: false,
+      enabled: true,
       href: '/admin/imports',
     },
   ],

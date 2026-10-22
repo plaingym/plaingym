@@ -1,3 +1,24 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Import and export", "import": "Import CSV", "file": "CSV file (UTF-8, up to 20 MB)",
+  "mapperNotice": "Import mappings are being prepared. You can upload and preview files; unavailable mappings appear in the error report.",
+  "mapper": "Import type", "mapper.people": "People", "mapper.mat": "Ranks and attendance", "mapper.memberships": "Memberships",
+  "duplicates": "Duplicates", "policy.error": "Report an error", "policy.skip": "Skip", "policy.update": "Update one match",
+  "mapping": "Match columns", "ignore": "Ignore column", "preview": "Preview", "dryRun": "Dry run", "commit": "Commit import",
+  "row": "Row", "rows": "Rows", "action": "Action", "values": "Values", "summary": "Summary", "create": "Create", "update": "Update",
+  "skip": "Skip", "error": "Error", "errors": "Errors", "previous": "Previous", "next": "Next", "processed": "Processed", "committed": "Committed",
+  "status.pending": "Queued", "status.running": "Running", "status.succeeded": "Complete", "status.failed": "Failed; review the error report",
+  "loading": "Loading…", "noAccess": "You do not have permission to import or export data.", "requestFailed": "The request failed. Please try again.",
+  "invalidCsv": "The CSV is invalid. Use UTF-8 with unique column names and the same number of cells in every row.",
+  "invalidMapping": "Choose a different source column for each field.", "notFound": "Import resource not found or expired.",
+  "duplicate": "This row has duplicate matches. Choose skip, or update a single match.", "mapperUnavailable": "This import mapping is not available yet.",
+  "chunkFailed": "This batch could not be saved. No rows in the batch were committed.",
+  "field.externalId": "External ID", "field.firstName": "First name", "field.lastName": "Last name", "field.email": "Email",
+  "field.dateOfBirth": "Date of birth", "field.status": "Status", "field.phone": "Phone", "field.householdExternalId": "Household external ID",
+  "field.householdName": "Household name", "field.billingDay": "Billing day", "field.emailOptOut": "Email opt-out", "field.tags": "Tags",
+  "field.medicalNotes": "Medical notes", "field.emergencyContacts": "Emergency contacts", "field.stripeCustomerId": "Stripe customer ID",
+  "field.stripePaymentMethodId": "Stripe payment method ID", "field.program": "Program", "field.rank": "Rank", "field.subRank": "Sub-rank",
+  "field.promotedAt": "Promotion date", "field.occurredAt": "Attendance date", "field.classTags": "Class tags", "field.plan": "Plan",
+  "field.amountCents": "Amount in cents", "field.currency": "Currency", "field.interval": "Billing interval", "field.nextDueOn": "Next due date",
+  "field.commitmentEndsOn": "Commitment end date"
 }

@@ -1,3 +1,5 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Export gym data", "description": "Download a ZIP archive containing a CSV for every gym dataset. Credentials, secret hashes, audit payloads and email bodies are excluded. Links expire after one hour.",
+  "create": "Create export", "download": "Download CSV archive", "expired": "The export download has expired. Create a new export."
 }
