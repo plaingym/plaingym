@@ -10,6 +10,8 @@ export interface PlannedRow extends ImportPreviewRow { issues: ImportIssue[] }
 export interface MapperContext extends MutationContext {
   clock: Clock;
   runId: string;
+  /** The gym's IANA timezone, for dates and times written without an offset. */
+  timezone: string;
   /** Complete immutable source for deterministic within-file duplicate detection after a restart. */
   sourceRows: readonly CsvRow[];
 }

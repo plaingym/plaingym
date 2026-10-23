@@ -25,9 +25,10 @@ is filtered by the import's gym (and row-level security), so another gym's membe
 programs or ranks are never matched.
 
 Dates use ISO 8601: `2024-03-01`, or `2024-03-01T18:30` with optional seconds and an
-optional `Z` or `±hh:mm` offset. **TODO(CCR):** the mapper context carries no gym
-timezone, so a value without an offset is read as UTC and a date alone is the start
-of that UTC day. Future dates are rejected.
+optional `Z` or `±hh:mm` offset. A value without an offset is a wall time in the gym's
+timezone, and a date alone is the start of that local day. A time skipped when clocks
+go forward moves forward by the gap; a time repeated when they go back is the earlier
+instant. A run reads every row in the timezone it started with. Future dates are rejected.
 
 ## Duplicates and re-imports
 

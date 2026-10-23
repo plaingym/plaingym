@@ -18,7 +18,8 @@ import { membershipsMapper } from './mappers/memberships.js';
 export const IMPORT_JOB = 'imports.pipeline';
 export const IMPORT_CHUNK_SIZE = 100;
 const LIFETIME = 24 * 60 * 60 * 1000;
-interface StoredRun { job: ImportJob; input: StartImportRequest; actor: MutationContext['actor']; chunkIds: string[] }
+/** `timezone` is fixed when the run starts; runs saved before it was recorded read offset-free values as UTC, as their dry runs did. */
+interface StoredRun { job: ImportJob; input: StartImportRequest; actor: MutationContext['actor']; chunkIds: string[]; timezone?: string }
 interface ChunkResult { count: number; issues: ImportIssue[] }
 export interface PipelineOptions { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock; mappers?: MapperRegistry }
 export function createImportPipeline(options: PipelineOptions) {
@@ -80,9 +81,9 @@ export function createImportPipeline(options: PipelineOptions) {
         after: { rowCount: data.rowCount }, occurredAt: clock.now() }));
       return data;
     },
-    async preview(context: MutationContext, input: ImportPlanRequest, page: Pagination) {
+    async preview(context: MutationContext, input: ImportPlanRequest, page: Pagination, timezone: string) {
       const plan = importPlanRequestSchema.parse(input), document = await load(context.gymId, plan);
-      const rows = await analyze(document, plan, { ...context, clock, runId: uuidv7(), sourceRows: document.rows });
+      const rows = await analyze(document, plan, { ...context, clock, runId: uuidv7(), timezone, sourceRows: document.rows });
       const summary = { totalRows: rows.length, create: 0, update: 0, skip: 0, errors: 0 };
       for (const row of rows) { if (row.action === 'error') summary.errors++; else summary[row.action]++; }
       return { data: rows.slice(page.offset, page.offset + page.limit).map(({ issues: _issues, ...row }) => row),
@@ -94,7 +95,7 @@ export function createImportPipeline(options: PipelineOptions) {
       const job: ImportJob = { id, uploadId: input.uploadId, mapper: input.mapper, dryRun: input.dryRun, status: 'pending',
         totalRows: document.rows.length, processedRows: 0, committedRows: 0, errorCount: 0, createdAt: clock.now().toISOString(), completedAt: null };
       const chunkIds = Array.from({ length: Math.ceil(document.rows.length / IMPORT_CHUNK_SIZE) }, () => uuidv7());
-      await store.put(context.gymId, key(context.gymId, id, 'run.json'), { job, input, actor: context.actor, chunkIds } satisfies StoredRun);
+      await store.put(context.gymId, key(context.gymId, id, 'run.json'), { job, input, actor: context.actor, chunkIds, timezone } satisfies StoredRun);
       await store.put(context.gymId, stateKey(context.gymId, id, 0), job);
       if (!input.dryRun) await scope(context.gymId, (tx) => writeAudit(tx, { id, gymId: context.gymId, actorKind: context.actor.kind,
         ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'imports.started', targetType: 'import', targetId: id,
@@ -122,7 +123,7 @@ export function createImportPipeline(options: PipelineOptions) {
       await store.putOnce(gymId, stateKey(gymId, id, 1), job);
       try {
         const document = await load(gymId, saved.input), mapper = mappers.get(saved.input.mapper);
-        const context: MapperContext = { gymId, actor: saved.actor, clock, runId: id, sourceRows: document.rows };
+        const context: MapperContext = { gymId, actor: saved.actor, clock, runId: id, timezone: saved.timezone ?? 'UTC', sourceRows: document.rows };
         for (let i = 0; i < document.rows.length; i += IMPORT_CHUNK_SIZE) {
           const source = document.rows.slice(i, i + IMPORT_CHUNK_SIZE);
           let result: ChunkResult;

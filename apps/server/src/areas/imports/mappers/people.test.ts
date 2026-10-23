@@ -31,7 +31,7 @@ function services() {
     const actor = { gymId, actor: { kind: 'system' } } as const;
     const upload = await pipeline.upload(actor, new File([csv], 'members.csv'));
     const plan: ImportPlanRequest = { uploadId: upload.id, mapper: 'people', mapping: autoMatch(parseCsv(csv).columns), duplicatePolicy: 'error', ...options };
-    return { actor, plan, preview: () => pipeline.preview(actor, plan, { limit: 100, offset: 0 }),
+    return { actor, plan, preview: () => pipeline.preview(actor, plan, { limit: 100, offset: 0 }, 'UTC'),
       async run(dryRun = false) {
         const job = await pipeline.start(actor, { ...plan, dryRun }, 'UTC');
         await pipeline.run(gymId, job.id);
@@ -189,7 +189,7 @@ describe('people mapper through the real import pipeline', () => {
     expect((await source.run()).job.committedRows).toBe(0);
     const rows = parseCsv('First Name,Last Name,Date of Birth\nOne,Date,05/06/2014\nTwo,Date,25/04/2012\n').rows;
     const plan: ImportPlanRequest = { uploadId: uuidv7(), mapper: 'people', duplicatePolicy: 'error', mapping: autoMatch(Object.keys(rows[0]!.values)) };
-    const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, sourceRows: rows };
+    const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, timezone: 'UTC', sourceRows: rows };
     const [first] = await database.forGym(gymA, (tx) => peopleMapper.analyze(tx, rows.slice(0, 1), plan, context));
     expect(first!.values.dateOfBirth).toBe('2014-06-05'); expect(first!.issues).toEqual([]);
   });
@@ -203,7 +203,7 @@ describe('people mapper through the real import pipeline', () => {
   it('rechecks payment ownership at commit and rolls back domain writes when it changed', async () => {
     const rows = parseCsv('First Name,Last Name,Stripe Customer ID,Stripe Payment Method ID\nJo,Fields,cus_New,pm_Race\n').rows;
     const plan: ImportPlanRequest = { uploadId: uuidv7(), mapper: 'people', duplicatePolicy: 'error', mapping: autoMatch(Object.keys(rows[0]!.values)) };
-    const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, sourceRows: rows };
+    const context: MapperContext = { gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, timezone: 'UTC', sourceRows: rows };
     const planned = await database.forGym(gymA, (tx) => peopleMapper.analyze(tx, rows, plan, context));
     const other = await factory('households', gymA);
     await factory('paymentMethods', gymA, { householdId: other.id, processorId: 'pm_Race' });

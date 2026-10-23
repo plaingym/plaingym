@@ -23,7 +23,7 @@ const mapping = columns.map((field) => ({ sourceColumn: field, targetField: fiel
 type Input = Partial<Record<ImportTargetField, string>>;
 const plan = (duplicatePolicy: ImportPlanRequest['duplicatePolicy'] = 'skip'): ImportPlanRequest => ({ uploadId: uuidv7(), mapper: 'mat', mapping, duplicatePolicy });
 function context(rows: readonly CsvRow[], gymId = gymA): MapperContext {
-  return { gymId, actor: { kind: 'system' }, clock, runId: uuidv7(), sourceRows: rows };
+  return { gymId, actor: { kind: 'system' }, clock, runId: uuidv7(), timezone: 'UTC', sourceRows: rows };
 }
 const source = (rows: Input[]): CsvRow[] => rows.map((values, index) => ({ rowNumber: index + 2, values: Object.fromEntries(columns.map((column) => [column, values[column] ?? ''])) }));
 async function analyze(input: Input[], gymId = gymA, duplicatePolicy: ImportPlanRequest['duplicatePolicy'] = 'skip') {
@@ -57,8 +57,8 @@ function services(gymId = gymA) {
     const data = await pipeline.upload(actor, new File([csvLine(columns) + rows.map((row) => csvLine(columns.map((column) => row[column] ?? ''))).join('')], 'mat.csv'));
     return { ...plan(), uploadId: data.id };
   }
-  async function run(input: ImportPlanRequest, dryRun = false) {
-    const job = await pipeline.start(actor, { ...input, dryRun }, 'UTC');
+  async function run(input: ImportPlanRequest, dryRun = false, timezone = 'UTC') {
+    const job = await pipeline.start(actor, { ...input, dryRun }, timezone);
     await jobs.runNext();
     return pipeline.get(gymId, job.id);
   }
@@ -78,9 +78,21 @@ describe('mat CSV mapper with PostgreSQL', () => {
       return result;
     };
     const before = await snapshot();
-    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 })).summary).toMatchObject({ create: 2, errors: 0 });
+    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 }, 'UTC')).summary).toMatchObject({ create: 2, errors: 0 });
     expect(await s.run(input, true)).toMatchObject({ status: 'succeeded', committedRows: 0, processedRows: 2 });
     expect(await snapshot()).toEqual(before);
+  });
+
+  it('reads offset-free history in the gym timezone the run started with', async () => {
+    const member = await person(), s = services();
+    const input = await s.upload([
+      { email: member.email!, program: programA.name, occurredAt: '2024-07-15T18:00', externalId: 'local-evening' },
+      { email: member.email!, program: programA.name, occurredAt: '2024-07-15T18:00Z', externalId: 'explicit-utc' },
+    ]);
+    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 }, 'America/Toronto')).summary).toMatchObject({ create: 2, errors: 0 });
+    expect(await s.run(input, false, 'America/Toronto')).toMatchObject({ status: 'succeeded', committedRows: 2 });
+    const visits = await database.forGym(gymA, (tx) => tx.select().from(attendances).where(eq(attendances.memberId, member.id)));
+    expect(visits.map((visit) => visit.occurredAt.toISOString()).sort()).toEqual(['2024-07-15T18:00:00.000Z', '2024-07-15T22:00:00.000Z']);
   });
 
   it('imports dates, preserves each program rank system, and audits without personal details', async () => {
@@ -115,7 +127,7 @@ describe('mat CSV mapper with PostgreSQL', () => {
     expect(imported.every((row) => row.occurredAt.getTime() === clock.now().getTime())).toBe(true);
     expect(await s.run(input)).toMatchObject({ status: 'succeeded', committedRows: 0 });
     for (const duplicatePolicy of ['error', 'skip', 'update'] as const) {
-      const preview = await s.pipeline.preview(s.actor, { ...input, duplicatePolicy }, { limit: 50, offset: 0 });
+      const preview = await s.pipeline.preview(s.actor, { ...input, duplicatePolicy }, { limit: 50, offset: 0 }, 'UTC');
       expect(preview.summary).toMatchObject(duplicatePolicy === 'error' ? { errors: 5 } : { skip: 5, errors: 0 });
     }
   });
@@ -148,7 +160,7 @@ describe('mat CSV mapper with PostgreSQL', () => {
       ...Array.from({ length: 99 }, (_, i) => ({ email: member.email!, externalId: 'visit-' + i, occurredAt: '2024-02-01' })),
       { firstName: member.firstName, lastName: member.lastName, program: programA.name, rank: rankA.name, promotedAt: '2024-01-01' },
     ]);
-    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 })).summary).toMatchObject({ create: 100, errors: 1 });
+    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 }, 'UTC')).summary).toMatchObject({ create: 100, errors: 1 });
     expect(await s.run(input, true)).toMatchObject({ status: 'failed', errorCount: 1, committedRows: 0 });
     expect(await s.run(input)).toMatchObject({ status: 'failed', errorCount: 1, committedRows: 100 });
   });
@@ -158,7 +170,7 @@ describe('mat CSV mapper with PostgreSQL', () => {
     const rows = Array.from({ length: 101 }, (_, index) => ({ email: member.email!, externalId: 'visit-' + index, occurredAt: '2024-03-01' }));
     rows[100] = { ...rows[0]! };
     const input = await s.upload(rows);
-    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 })).summary).toMatchObject({ create: 100, errors: 1 });
+    expect((await s.pipeline.preview(s.actor, input, { limit: 50, offset: 0 }, 'UTC')).summary).toMatchObject({ create: 100, errors: 1 });
     const sourceRows = source(rows), ctx = context(sourceRows);
     const restarted = await database.forGym(gymA, (tx) => matMapper.analyze(tx, sourceRows.slice(100), input, ctx));
     expect(restarted[0]!.issues).toEqual([expect.objectContaining({ code: 'duplicate', rowNumber: 102, message: expect.stringContaining('2') })]);
@@ -173,7 +185,7 @@ describe('mat CSV mapper with PostgreSQL', () => {
       { firstName: member.firstName, lastName: member.lastName, program: programA.name, rank: rankA.name, promotedAt: '2024-03-01' },
     ];
     const input = await s.upload(rows);
-    expect((await s.pipeline.preview(s.actor, input, { limit: 100, offset: 0 })).summary).toMatchObject({ errors: 2, create: 99 });
+    expect((await s.pipeline.preview(s.actor, input, { limit: 100, offset: 0 }, 'UTC')).summary).toMatchObject({ errors: 2, create: 99 });
     expect(await s.run(input, true)).toMatchObject({ status: 'failed', errorCount: 2, committedRows: 0 });
     expect(await s.run(input)).toMatchObject({ status: 'failed', errorCount: 2, committedRows: 99 });
     expect(await database.forGym(gymA, (tx) => tx.select().from(memberRanks).where(eq(memberRanks.memberId, member.id)))).toHaveLength(0);

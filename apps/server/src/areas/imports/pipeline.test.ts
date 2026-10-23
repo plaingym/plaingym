@@ -105,7 +105,7 @@ describe('import pipeline using Postgres and immutable uploads', () => {
       return result;
     };
     const before = await snapshot();
-    expect((await pipeline.preview(actor, plan(data.id), { limit: 50, offset: 0 })).summary.create).toBe(2);
+    expect((await pipeline.preview(actor, plan(data.id), { limit: 50, offset: 0 }, 'UTC')).summary.create).toBe(2);
     const job = await pipeline.start(actor, { ...plan(data.id), dryRun: true }, 'UTC'); await jobs.runNext();
     expect(await pipeline.get(gymA, job.id)).toMatchObject({ status: 'succeeded', committedRows: 0, processedRows: 2 });
     expect(await snapshot()).toEqual(before);
@@ -145,17 +145,17 @@ describe('import pipeline using Postgres and immutable uploads', () => {
       return rows.map((row) => ({ ...row, action: 'create', duplicateIds: [duplicateId], issues: [] }));
     } }));
     const data = await upload(pipeline, 1), input = { ...plan(data.id), duplicatePolicy };
-    const preview = await pipeline.preview(actor, input, { limit: 1, offset: 0 });
+    const preview = await pipeline.preview(actor, input, { limit: 1, offset: 0 }, 'UTC');
     expect(preview.data[0]!.action).toBe(duplicatePolicy === 'error' ? 'error' : duplicatePolicy);
     const job = await pipeline.start(actor, { ...input, dryRun: false }, 'UTC'); await jobs.runNext();
     expect(await pipeline.get(gymA, job.id)).toMatchObject({ committedRows: duplicatePolicy === 'update' ? 1 : 0, errorCount: duplicatePolicy === 'error' ? 1 : 0 });
   });
   it('rejects missing columns, expired uploads and malformed UTF-8', async () => {
     const { pipeline } = services(), data = await upload(pipeline);
-    await expect(pipeline.preview(actor, { ...plan(data.id), mapping: [{ sourceColumn: 'nonexistent', targetField: 'email' }] }, { limit: 50, offset: 0 })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(pipeline.preview(actor, { ...plan(data.id), mapping: [{ sourceColumn: 'nonexistent', targetField: 'email' }] }, { limit: 50, offset: 0 }, 'UTC')).rejects.toMatchObject({ code: 'invalid_request' });
     await expect(pipeline.upload(actor, new File([new Uint8Array([255])], 'bad.csv'))).rejects.toMatchObject({ code: 'invalid_request' });
     const later = createImportPipeline({ uploadsFor, jobs: new FakeJobs(clock), scope: database.forGym, clock: new TestClock('2100-01-01Z') });
-    await expect(later.preview(actor, plan(data.id), { limit: 50, offset: 0 })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(later.preview(actor, plan(data.id), { limit: 50, offset: 0 }, 'UTC')).rejects.toMatchObject({ code: 'not_found' });
   });
 });
 describe('full CSV exports', () => {

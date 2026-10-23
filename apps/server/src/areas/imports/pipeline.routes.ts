@@ -25,7 +25,7 @@ export function createPipelineRoutes(service: ImportPipeline): RouteRegistration
     async (c) => c.json({ data: await service.upload(importActor(c.get('context')), c.req.valid('form').file) }, 200)),
     route({ ...preview, request: { query: preview.query, body: { required: true, content: { 'application/json': { schema: preview.body } } } },
       responses: { 200: { description: 'Import preview', content: { 'application/json': { schema: preview.response } } } } },
-    async (c) => c.json(await service.preview(importActor(c.get('context')), c.req.valid('json'), c.req.valid('query')), 200)),
+    async (c) => c.json(await service.preview(importActor(c.get('context')), c.req.valid('json'), c.req.valid('query'), c.get('context').gym.timezone), 200)),
     route({ ...start, request: { body: { required: true, content: { 'application/json': { schema: start.body } } } },
       responses: { 200: { description: 'Import queued', content: { 'application/json': { schema: start.response } } } } },
     async (c) => c.json({ data: await service.start(importActor(c.get('context')), c.req.valid('json'), c.get('context').gym.timezone) }, 200)),

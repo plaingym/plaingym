@@ -4,6 +4,7 @@ import { and, asc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { attendances, auditEvents, memberRanks, members, programs, ranks, RevisionConflictError, uuidv7, type Transaction } from '@plaingym/db';
 import { classKindSchema, idSchema, instantSchema, type ImportIssue, type ImportPlanRequest, type ImportTargetField } from '@plaingym/shared/contracts';
+import { isCalendarDate, zonedInstant } from '@plaingym/shared/time';
 import { t } from '../pipeline.messages.js';
 import { DuplicateIndex, duplicateKey, type CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
@@ -30,32 +31,36 @@ const committedSchema = z.discriminatedUnion('record', [
 const INSTANT = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?\s*(Z|[+-]\d{2}:?\d{2})?)?$/i;
 
 /**
- * ISO dates and date-times. TODO(CCR): the mapper context has no gym timezone, so values
- * without an offset are read as UTC; a date alone is the start of that UTC day.
+ * ISO dates and date-times. A value without an offset is a wall time in the gym's timezone
+ * (a time skipped by a DST change moves forward; a repeated one is the earlier instant), and
+ * a date alone is the start of that local day.
  */
-export function parseInstant(value: string): Date | null {
+export function parseInstant(value: string, timezone: string): Date | null {
   const match = INSTANT.exec(value.trim());
   if (!match) return null;
   const [, y, mo, d, h = '0', mi = '0', s = '0', fraction = '', offset] = match;
   const parts = [y, mo, d, h, mi, s].map(Number) as [number, number, number, number, number, number];
   const [year, month, day, hour, minute, second] = parts;
   if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) return null;
-  if (new Date(Date.UTC(year, month - 1, day)).getUTCDate() !== day) return null;
+  if (year < 1900 || !isCalendarDate(`${y}-${mo}-${d}`)) return null;
+  const milliseconds = Number(fraction.padEnd(3, '0').slice(0, 3));
+  if (!offset) {
+    const local = zonedInstant(`${y}-${mo}-${d}`, [h, mi, s].map((part) => part.padStart(2, '0')).join(':'), timezone, { gap: 'shift' });
+    return local && new Date(local.getTime() + milliseconds);
+  }
   let shift = 0;
-  if (offset && offset.toUpperCase() !== 'Z') {
+  if (offset.toUpperCase() !== 'Z') {
     const digits = offset.replace(':', ''), hours = Number(digits.slice(1, 3)), minutes = Number(digits.slice(3));
     if (hours > 14 || minutes > 59) return null;
     shift = (offset.startsWith('-') ? -1 : 1) * (hours * 60 + minutes);
   }
-  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, Number(fraction.padEnd(3, '0').slice(0, 3))) - shift * 60_000);
-  return year < 1900 ? null : date;
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second, milliseconds) - shift * 60_000);
 }
 function readDate(value: string): string | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  return parseInstant(value)?.toISOString().slice(0, 10) === value ? value : null;
+  return isCalendarDate(value) && Number(value.slice(0, 4)) >= 1900 ? value : null;
 }
 
-function parseRow(row: CsvRow, plan: ImportPlanRequest): Source {
+function parseRow(row: CsvRow, plan: ImportPlanRequest, timezone: string): Source {
   const columns = new Map(plan.mapping.map((item) => [item.targetField, item.sourceColumn]));
   const read = (field: Field) => { const column = columns.get(field); return column === undefined ? '' : (row.values[column] ?? '').trim(); };
   const issues: ImportIssue[] = [], values: Values = {};
@@ -71,7 +76,7 @@ function parseRow(row: CsvRow, plan: ImportPlanRequest): Source {
   const promotion = Boolean(rank || promotedAt || read('subRank'));
   if (promotion && occurredAt) { issue(null, 'invalid_value', 'bothKinds'); return { row, values, issues }; }
   if (!promotion && !occurredAt) { issue(null, 'missing_required', 'recordKind'); return { row, values, issues }; }
-  const field = promotion ? 'promotedAt' : 'occurredAt', text = promotion ? promotedAt : occurredAt, at = parseInstant(text);
+  const field = promotion ? 'promotedAt' : 'occurredAt', text = promotion ? promotedAt : occurredAt, at = parseInstant(text, timezone);
   if (!text) issue(field, 'missing_required', 'missingDate');
   else if (!at) issue(field, 'invalid_value', 'invalidDate');
   if (promotion && !rank) issue('rank', 'missing_required', 'missingRank');
@@ -96,17 +101,17 @@ function attendanceKey(parsed: Parsed, memberId: string, programId: string | nul
   const identity = [memberId, parsed.at.toISOString(), programId, parsed.openMat, parsed.externalId];
   return 'mat:' + createHash('sha256').update(JSON.stringify(identity)).digest('hex');
 }
-// Scoped to one immutable run source (and mapping), never shared across files or gyms.
+// Scoped to one immutable run source (with its mapping and timezone), never shared across files or gyms.
 interface FileIndex { duplicates: DuplicateIndex; promotions: Source[] }
 const fileIndexes = new WeakMap<readonly CsvRow[], Map<string, FileIndex>>();
-function fileIndex(rows: readonly CsvRow[], plan: ImportPlanRequest): FileIndex {
-  const byMapping = fileIndexes.get(rows) ?? new Map<string, FileIndex>(), mapping = JSON.stringify(plan.mapping);
+function fileIndex(rows: readonly CsvRow[], plan: ImportPlanRequest, timezone: string): FileIndex {
+  const byMapping = fileIndexes.get(rows) ?? new Map<string, FileIndex>(), mapping = JSON.stringify([plan.mapping, timezone]);
   fileIndexes.set(rows, byMapping);
   let index = byMapping.get(mapping);
   if (!index) {
     index = { duplicates: new DuplicateIndex(), promotions: [] };
     for (const row of rows) {
-      const source = parseRow(row, plan);
+      const source = parseRow(row, plan, timezone);
       if (source.parsed) index.duplicates.add(fileKey(source.parsed), String(row.rowNumber));
       if (source.parsed?.kind === 'promotion') index.promotions.push(source);
     }
@@ -141,8 +146,8 @@ function contradicts(entry: Pick<Rung, 'position' | 'subRank' | 'at'>, others: r
 
 async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequest, context: MapperContext): Promise<PlannedRow[]> {
   const { gymId } = context, now = context.clock.now().getTime();
-  const { duplicates: index, promotions: filePromotions } = fileIndex(context.sourceRows, plan);
-  const sources = rows.map((row) => parseRow(row, plan));
+  const { duplicates: index, promotions: filePromotions } = fileIndex(context.sourceRows, plan, context.timezone);
+  const sources = rows.map((row) => parseRow(row, plan, context.timezone));
   const rowNumbers = new Set(rows.map((row) => row.rowNumber));
   const chunkIdentities = sources.flatMap((source) => source.parsed?.kind === 'promotion' ? [source.parsed.identity] : []);
   if (chunkIdentities.length) {
