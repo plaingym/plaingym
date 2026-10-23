@@ -61,7 +61,7 @@ export default defineConfig(
     plugins: { database: { rules: { 'system-tables': systemTableRule } } },
     rules: { 'database/system-tables': 'error' },
   },
-  { ignores: ['.worktrees/**', '**/node_modules/**', '**/dist/**', '**/coverage/**', '**/routeTree.gen.ts'] },
+  { ignores: ['.worktrees/**', '.pnpm-store/**', '**/node_modules/**', '**/dist/**', '**/coverage/**', '**/routeTree.gen.ts'] },
   js.configs.recommended,
   tseslint.configs.recommended,
   {
