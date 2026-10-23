@@ -32,12 +32,16 @@ export const classTemplateTags = pgTable('class_template_tags', {
 export const classSessions = pgTable('class_sessions', {
   ...base(), templateId: uuid('template_id'), name: text('name').notNull(),
   startsAt: instant('starts_at').notNull(), endsAt: instant('ends_at').notNull(),
+  // The start its template originally scheduled (null for one-off sessions, kept when the template is deleted); moving the session never changes it.
+  occurrenceStartsAt: instant('occurrence_starts_at'),
   coachId: uuid('coach_id'), capacity: integer('capacity'), notes: text('notes'),
   status: text('status').notNull().default('scheduled'), kind: text('kind').notNull().default('class'), ...revision(),
 }, (t) => [...scoped('class_sessions', t), revisionCheck('class_sessions_revision_check', t.revision),
   index('class_sessions_gym_starts_idx').on(t.gymId, t.startsAt), ref('class_sessions_template_fk', t.gymId, t.templateId, classTemplates),
   ref('class_sessions_coach_fk', t.gymId, t.coachId, staffProfiles),
+  // Kept while the previous release, whose materializer targets it, can still run against this schema.
   unique('class_sessions_materialized_key').on(t.gymId, t.templateId, t.startsAt),
+  unique('class_sessions_occurrence_key').on(t.gymId, t.templateId, t.occurrenceStartsAt),
   check('class_sessions_times_check', sql`${t.endsAt} > ${t.startsAt}`),
   check('class_sessions_capacity_check', sql`${t.capacity} > 0`),
   choice('class_sessions_status_check', t.status, ['scheduled', 'cancelled']),

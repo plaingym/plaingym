@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq } from 'drizzle-orm';
-import { auditEvents, attendances, classSessions, classSessionPrograms, classSessionTags, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { asc, eq } from 'drizzle-orm';
+import { auditEvents, attendances, classBookings, classSessions, classSessionPrograms, classSessionTags, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -182,7 +182,6 @@ describe('materialization job against PostgreSQL', () => {
     expect(await service.materialize(gymId, 'America/New_York', new TestClock('2026-03-08T00:00:00Z'))).toBe(1);
     sessions = await database.forGym(gymId, (tx) => tx.select().from(classSessions));
     expect(sessions).toHaveLength(9);
-    await expect(service.updateSession(context(gymId), first!.id, { ...sessionFields(gymId), programIds: [p1.id], coachId: null, revision: 3 })).rejects.toMatchObject({ code: 'conflict' });
     const materialized = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.session.materialized')));
     expect(materialized).toHaveLength(9);
   });
@@ -203,5 +202,99 @@ describe('materialization job against PostgreSQL', () => {
     await worker.triggerSchedule('schedule.materialize', [{ gymId: gymA, timezone: 'America/New_York' }, { gymId: gymB, timezone: 'Asia/Tokyo' }], 'today');
     await worker.runNext(); await worker.runNext();
     expect(calls).toEqual([[gymA, 'America/New_York', clock], [gymB, 'Asia/Tokyo', clock]]);
+  });
+});
+describe('moving generated sessions', () => {
+  const zone = 'America/New_York';
+  async function generated() {
+    const gymId = uuidv7(); await factory('gyms', gymId, { timezone: zone });
+    const program = await factory('programs', gymId);
+    const template = await service.createTemplate(context(gymId), { ...fields(), programIds: [program.id], coachId: null });
+    await service.materialize(gymId, zone);
+    const sessions = () => database.forGym(gymId, (tx) => tx.select().from(classSessions).orderBy(asc(classSessions.startsAt)));
+    return { gymId, program, template, sessions };
+  }
+  const move = (target: { gymId: string; program: { id: string } }, session: { id: string; revision: number }, startsAt: string, endsAt: string) =>
+    service.updateSession(context(target.gymId), session.id, { ...sessionFields(), coachId: null, programIds: [target.program.id], startsAt, endsAt, revision: session.revision });
+  it('keeps the moved session, its bookings and attendance, and never recreates it at the original time', async () => {
+    const target = await generated(), [first] = await target.sessions();
+    const member = await factory('members', target.gymId), user = await factory('authUser', target.gymId);
+    const booking = await factory('classBookings', target.gymId, { memberId: member.id, sessionId: first!.id, bookedBy: user.id });
+    const visit = await factory('attendances', target.gymId, { memberId: member.id, sessionId: first!.id });
+    // Sunday 18:00 moves to Tuesday 19:30 local time.
+    const moved = await move(target, first!, '2026-03-04T00:30:00Z', '2026-03-04T01:30:00Z');
+    expect(moved).toMatchObject({ id: first!.id, templateId: target.template.id, startsAt: '2026-03-04T00:30:00.000Z', endsAt: '2026-03-04T01:30:00.000Z', revision: first!.revision + 1 });
+    await expect(move(target, first!, '2026-03-04T01:00:00Z', '2026-03-04T02:00:00Z')).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(await service.materialize(target.gymId, zone)).toBe(0);
+    expect(await service.materialize(target.gymId, zone, new TestClock('2026-03-08T00:00:00Z'))).toBe(1);
+    const sessions = await target.sessions();
+    expect(sessions).toHaveLength(9);
+    expect(sessions.filter((session) => session.startsAt.toISOString() === '2026-03-01T23:00:00.000Z')).toEqual([]);
+    expect(sessions[0]).toMatchObject({ id: first!.id, startsAt: new Date('2026-03-04T00:30:00Z'), occurrenceStartsAt: new Date('2026-03-01T23:00:00Z') });
+    expect(await database.forGym(target.gymId, (tx) => tx.select().from(classBookings))).toEqual([booking]);
+    expect(await database.forGym(target.gymId, (tx) => tx.select().from(attendances))).toEqual([visit]);
+    const [audit] = await database.forGym(target.gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'schedule.session.updated')));
+    expect(audit).toMatchObject({ targetId: first!.id, before: expect.objectContaining({ startsAt: '2026-03-01T23:00:00.000Z' }), after: expect.objectContaining({ startsAt: '2026-03-04T00:30:00.000Z' }) });
+  });
+  it('rejects a move onto another occurrence and skips an unmaterialized occurrence a session was moved onto', async () => {
+    const target = await generated(), sessions = await target.sessions();
+    await expect(move(target, sessions[0]!, sessions[1]!.startsAt.toISOString(), sessions[1]!.endsAt.toISOString())).rejects.toMatchObject({ code: 'conflict' });
+    // The last Sunday moves one week later, onto an occurrence beyond the current horizon.
+    const last = sessions.at(-1)!, later = (date: Date) => new Date(date.getTime() + 604_800_000).toISOString();
+    await move(target, last, later(last.startsAt), later(last.endsAt));
+    expect(await service.materialize(target.gymId, zone, new TestClock('2026-03-08T00:00:00Z'))).toBe(0);
+    expect(await target.sessions()).toHaveLength(8);
+  });
+  it('keys occurrences in local time across a DST change and a template time change', async () => {
+    const target = await generated(), sessions = await target.sessions();
+    expect(sessions.every((session) => session.occurrenceStartsAt?.getTime() === session.startsAt.getTime())).toBe(true);
+    // March 8 is the first Sunday on daylight time: 18:00 local is 22:00Z. Move it to 19:00 local.
+    const dst = sessions[1]!;
+    expect(dst.startsAt.toISOString()).toBe('2026-03-08T22:00:00.000Z');
+    await move(target, dst, '2026-03-08T23:00:00Z', '2026-03-09T00:00:00Z');
+    await service.updateTemplate(context(target.gymId), target.template.id, { ...fields(), programIds: [target.program.id], coachId: null, localStartTime: '17:00', revision: target.template.revision });
+    expect(await service.materialize(target.gymId, zone, new TestClock('2026-03-08T00:00:00Z'))).toBe(1);
+    const after = await target.sessions();
+    expect(after.map((session) => [session.startsAt.toISOString(), session.occurrenceStartsAt?.toISOString()])).toEqual([
+      ['2026-03-01T23:00:00.000Z', '2026-03-01T23:00:00.000Z'], ['2026-03-08T23:00:00.000Z', '2026-03-08T22:00:00.000Z'],
+      ...['03-15', '03-22', '03-29', '04-05', '04-12', '04-19'].map((day) => Array(2).fill('2026-' + day + 'T22:00:00.000Z')),
+      ['2026-04-26T21:00:00.000Z', '2026-04-26T21:00:00.000Z'],
+    ]);
+  });
+  it('accepts inserts from the previous release\'s materializer and never duplicates them', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const program = await factory('programs', gymId);
+    const template = await service.createTemplate(context(gymId), { ...fields(), programIds: [program.id], coachId: null });
+    const legacy = () => database.forGym(gymId, (tx) => tx.insert(classSessions).values({ gymId, templateId: template.id, name: template.name,
+      startsAt: new Date('2026-03-01T23:00:00Z'), endsAt: new Date('2026-03-02T00:00:00Z'), createdAt: clock.now() })
+      .onConflictDoNothing({ target: [classSessions.gymId, classSessions.templateId, classSessions.startsAt] }).returning());
+    expect(await legacy()).toHaveLength(1);
+    expect(await service.materialize(gymId, zone)).toBe(7);
+    expect(await legacy()).toEqual([]);
+    expect(await database.forGym(gymId, (tx) => tx.select().from(classSessions))).toHaveLength(8);
+  });
+  it('keys a session the previous release generated when it is moved, so its original date is not regenerated', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { timezone: zone });
+    const program = await factory('programs', gymId);
+    const template = await service.createTemplate(context(gymId), { ...fields(), programIds: [program.id], coachId: null });
+    const [legacy] = await database.forGym(gymId, async (tx) => {
+      const rows = await tx.insert(classSessions).values({ gymId, templateId: template.id, name: template.name,
+        startsAt: new Date('2026-03-01T23:00:00Z'), endsAt: new Date('2026-03-02T00:00:00Z'), createdAt: clock.now() }).returning();
+      await tx.insert(classSessionPrograms).values({ gymId, sessionId: rows[0]!.id, programId: program.id, createdAt: clock.now() });
+      return rows;
+    });
+    expect(await service.materialize(gymId, zone)).toBe(7);
+    await move({ gymId, program }, legacy!, '2026-03-04T00:30:00Z', '2026-03-04T01:30:00Z');
+    expect(await service.materialize(gymId, zone)).toBe(0);
+    const sessions = await database.forGym(gymId, (tx) => tx.select().from(classSessions));
+    expect(sessions).toHaveLength(8);
+    expect(sessions.find((session) => session.id === legacy!.id)).toMatchObject({ startsAt: new Date('2026-03-04T00:30:00Z'), occurrenceStartsAt: new Date('2026-03-01T23:00:00Z') });
+  });
+  it('returns 404 when moving another gym\'s generated session and leaves it unchanged', async () => {
+    const own = await generated(), foreign = await generated(), [session] = await foreign.sessions();
+    const response = await request(server('owner', own.gymId), 'PUT', '/api/schedule/sessions/' + session!.id,
+      { ...sessionFields(), coachId: null, programIds: [own.program.id], startsAt: '2026-03-04T00:30:00Z', endsAt: '2026-03-04T01:30:00Z', revision: session!.revision });
+    expect(response.status).toBe(404);
+    expect((await foreign.sessions())[0]).toEqual(session);
   });
 });

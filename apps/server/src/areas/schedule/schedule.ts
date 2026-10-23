@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, ilike, inArray, lt, type SQL } from 'drizzle-orm';
+import { and, asc, eq, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
 import { forGym, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTagRequestSchema, updateClassTagRequestSchema, createClassTemplateRequestSchema, updateClassTemplateRequestSchema, createClassSessionRequestSchema, updateClassSessionRequestSchema, classTagListQuerySchema, classTemplateListQuerySchema, classSessionListQuerySchema, scheduleRevisionRequestSchema, swapSessionCoachRequestSchema, updateSessionNotesRequestSchema, updateSessionCapacityRequestSchema,
@@ -193,11 +193,12 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
       const value = updateClassSessionRequestSchema.parse(input), { revision, programIds, tagIds, ...fields } = value;
       return safe(() => scope(context.gymId, async (tx) => {
         const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
-        // TODO(CCR): an immutable occurrence key is needed to reschedule generated starts safely.
-        if (row.templateId && row.startsAt.getTime() !== Date.parse(fields.startsAt)) throw new AppError('conflict', 'Cancel this occurrence and create a replacement to change its start');
+        // A generated session keeps its occurrence key when moved, so materialization never recreates it.
+        // One generated without a key (by the previous release) was never moved, so its current start is the key.
+        const occurrenceStartsAt = row.occurrenceStartsAt ?? (row.templateId ? row.startsAt : null);
         const before = await sessionView(tx, row); await relationships(tx, value);
         const guard = revisionGuard(classSessions.revision, revision);
-        const afterRow = assertRevised(await tx.update(classSessions).set({ ...fields, startsAt: new Date(fields.startsAt), endsAt: new Date(fields.endsAt), revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
+        const afterRow = assertRevised(await tx.update(classSessions).set({ ...fields, startsAt: new Date(fields.startsAt), endsAt: new Date(fields.endsAt), occurrenceStartsAt, revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
         await mappings(tx, 'session', context.gymId, id, { programIds, tagIds }, clock.now()); const after = await sessionView(tx, afterRow);
         await audit(tx, context, 'session.updated', id, before, after); return after;
       }));
@@ -223,14 +224,19 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         const [row] = await tx.select().from(classTemplates).where(eq(classTemplates.id, id)).for('update'); if (!row) return 0;
         const template = await templateView(tx, row);
         const starts = occurrences(template, now, timezone); if (!starts.length) return 0;
-        const existing = await tx.select({ startsAt: classSessions.startsAt }).from(classSessions).where(and(eq(classSessions.templateId, id), gte(classSessions.startsAt, new Date(now.getTime() - 172_800_000)), lt(classSessions.startsAt, new Date(starts.at(-1)!.getTime() + 172_800_000))));
-        const dates = new Set(existing.map((session) => localDate(session.startsAt, timezone)));
+        const from = new Date(now.getTime() - 172_800_000), until = new Date(starts.at(-1)!.getTime() + 172_800_000);
+        // Sessions generated without a key (before it existed) were never moved, so their start is the occurrence.
+        const existing = await tx.select({ startsAt: classSessions.startsAt, occurrenceStartsAt: classSessions.occurrenceStartsAt }).from(classSessions).where(and(eq(classSessions.templateId, id), or(
+          and(gte(classSessions.occurrenceStartsAt, from), lt(classSessions.occurrenceStartsAt, until)),
+          and(isNull(classSessions.occurrenceStartsAt), gte(classSessions.startsAt, from), lt(classSessions.startsAt, until)))));
+        const dates = new Set(existing.map((session) => localDate(session.occurrenceStartsAt ?? session.startsAt, timezone)));
         let count = 0;
         for (const startsAt of starts) {
           // Template edits affect unmaterialized dates; existing sessions retain overrides.
           if (dates.has(localDate(startsAt, timezone))) continue;
-          const [session] = await tx.insert(classSessions).values({ gymId, templateId: id, name: template.name, startsAt, endsAt: new Date(startsAt.getTime() + template.durationMinutes * 60_000), coachId: template.coachId, capacity: template.capacity, notes: template.notes, kind: template.kind, createdAt: now })
-            .onConflictDoNothing({ target: [classSessions.gymId, classSessions.templateId, classSessions.startsAt] }).returning();
+          // Skip on either unique key: a retry, or a session of this template already moved to this exact start.
+          const [session] = await tx.insert(classSessions).values({ gymId, templateId: id, name: template.name, startsAt, occurrenceStartsAt: startsAt, endsAt: new Date(startsAt.getTime() + template.durationMinutes * 60_000), coachId: template.coachId, capacity: template.capacity, notes: template.notes, kind: template.kind, createdAt: now })
+            .onConflictDoNothing().returning();
           if (!session) continue;
           await mappings(tx, 'session', gymId, session.id, template, now);
           await writeAudit(tx, { gymId, actorKind: 'system', action: 'schedule.session.materialized', targetType: 'class_session', targetId: session.id, after: await sessionView(tx, session), occurredAt: now });

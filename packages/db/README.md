@@ -8,6 +8,10 @@ existing ranks keep null. Its journal entry and snapshot are numbered 0002.
 Migration `0003_open_mat.sql` adds `kind` (`class` or `open_mat`, default `class`)
 to class templates, class sessions and attendance, and `gyms.open_mat_counts_as_class`
 (default false). It marks existing session-less kiosk and coach visits as open mat.
+Migration `0004_occurrence_keys.sql` adds nullable `class_sessions.occurrence_starts_at`
+(the start a template originally scheduled) with a unique `(gym_id, template_id,
+occurrence_starts_at)` constraint, and backfills it from `starts_at` for existing
+generated sessions. The earlier `(gym_id, template_id, starts_at)` constraint stays.
 Migration tests that recreate an earlier schema undo every later migration first.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 

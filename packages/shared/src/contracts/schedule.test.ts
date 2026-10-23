@@ -98,7 +98,7 @@ describe('weekly templates and materialized sessions', () => {
     expectTypeOf<Omit<ClassTemplate, 'programIds' | 'tagIds' | 'createdAt'>>()
       .toExtend<Omit<TemplateRow, 'gymId' | 'createdAt'>>();
     expectTypeOf<Omit<ClassSession, 'programIds' | 'tagIds' | 'createdAt' | 'startsAt' | 'endsAt'>>()
-      .toExtend<Omit<SessionRow, 'gymId' | 'createdAt' | 'startsAt' | 'endsAt'>>();
+      .toExtend<Omit<SessionRow, 'gymId' | 'createdAt' | 'startsAt' | 'endsAt' | 'occurrenceStartsAt'>>();
     expectTypeOf<Omit<ClassTag, 'createdAt'>>().toExtend<Omit<TagRow, 'gymId' | 'createdAt'>>();
   });
   it('lets all staff read schedules and edit notes; only scheduling roles change sessions', () => {

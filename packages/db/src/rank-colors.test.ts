@@ -17,12 +17,14 @@ it('upgrades a schema-v1 rank in place with a null color and preserves its data'
   const maintenance = openConnection(database.maintenanceUrl, 1);
   try {
     // Recreate v1 only inside this disposable test database, retaining its rank. Later migrations are undone first.
+    await maintenance.sql`alter table class_sessions drop constraint class_sessions_occurrence_key`;
+    await maintenance.sql`alter table class_sessions drop column occurrence_starts_at`;
     for (const table of ['attendances', 'class_sessions', 'class_templates'])
       await maintenance.sql`alter table ${maintenance.sql(table)} drop column kind`;
     await maintenance.sql`alter table gyms drop column open_mat_counts_as_class`;
     await maintenance.sql`alter table ranks drop constraint ranks_color_check`;
     await maintenance.sql`alter table ranks drop column color`;
-    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 2)`;
+    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 3)`;
   } finally { await maintenance.close(); }
 
   await migrateDatabase(database.maintenanceUrl);

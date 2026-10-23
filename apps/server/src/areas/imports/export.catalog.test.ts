@@ -27,4 +27,7 @@ describe('export schema coverage and secret exclusions', () => {
     expect(Object.keys(exportCatalog.audit_events.columns)).not.toEqual(expect.arrayContaining(['before', 'after']));
     expect(Object.keys(exportCatalog.email_outbox.columns)).not.toEqual(expect.arrayContaining(['html', 'text']));
   });
+  it('keeps the occurrence key, so a moved class session stays distinct from its original date', () => {
+    expect(exportCatalog.class_sessions.columns).toHaveProperty('occurrence_starts_at.name', 'occurrence_starts_at');
+  });
 });
