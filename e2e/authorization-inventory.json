@@ -1,0 +1,741 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/attendance/totals",
+    "permission": {
+      "kind": "staff",
+      "capability": "attendance.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/attendance",
+    "permission": {
+      "kind": "staff",
+      "capability": "attendance.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/attendance",
+    "permission": {
+      "kind": "staff",
+      "capability": "attendance.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/content-packs/apply",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/content-packs/catalog",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/content-packs",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/dashboard",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/exports/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "data.export"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/exports",
+    "permission": {
+      "kind": "staff",
+      "capability": "data.export"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/households/{householdId}/billing-settings",
+    "permission": {
+      "kind": "staff",
+      "capability": "billing.read"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/households/{householdId}/billing-settings",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/households/{householdId}/pin",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/households/{householdId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/households/{householdId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/households/{householdId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/households",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/households",
+    "permission": {
+      "kind": "staff",
+      "capability": "households.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/imports/{id}/errors",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/imports/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/imports/preview",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/imports/uploads",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/imports",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/kiosk/checkin",
+    "permission": {
+      "kind": "kiosk",
+      "capability": "checkin"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/kiosk/devices/{id}/revoke",
+    "permission": {
+      "kind": "staff",
+      "capability": "kiosk_devices.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/kiosk/devices",
+    "permission": {
+      "kind": "staff",
+      "capability": "kiosk_devices.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/kiosk/devices",
+    "permission": {
+      "kind": "staff",
+      "capability": "kiosk_devices.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/kiosk/lookup",
+    "permission": {
+      "kind": "kiosk",
+      "capability": "checkin"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/kiosk/standing/{memberId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/member-tags/{tagId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "tags.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/member-tags/{tagId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "tags.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/member-tags",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/member-tags",
+    "permission": {
+      "kind": "staff",
+      "capability": "tags.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/members/{memberId}/anonymize",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.anonymize"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/members/{memberId}/medical-notes",
+    "permission": {
+      "kind": "staff",
+      "capability": "medical.read"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/members/{memberId}/medical-notes",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.manage"
+    },
+    "additionalPermissions": [
+      {
+        "kind": "staff",
+        "capability": "medical.read"
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/api/members/{memberId}/photo",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/members/{memberId}/photo",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/members/{memberId}/tags/{tagId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "tags.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/members/{memberId}/tags",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/members/{memberId}/tags",
+    "permission": {
+      "kind": "staff",
+      "capability": "tags.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/members/{memberId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/members/{memberId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/members",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/members",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/programs/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/programs",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/programs",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/promotions/bulk",
+    "permission": {
+      "kind": "staff",
+      "capability": "promotions.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/promotions/eligibility",
+    "permission": {
+      "kind": "staff",
+      "capability": "promotions.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/promotions",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/promotions",
+    "permission": {
+      "kind": "staff",
+      "capability": "promotions.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/rank-systems/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/rank-systems",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/rank-systems",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/ranks/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/ranks",
+    "permission": {
+      "kind": "staff",
+      "capability": "members.read"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/ranks",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/schedule/options",
+    "permission": {
+      "kind": "staff",
+      "capability": "bookings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/schedule/sessions/{id}/cancel",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/schedule/sessions/{id}/capacity",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/schedule/sessions/{id}/coach",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/schedule/sessions/{id}/notes",
+    "permission": {
+      "kind": "staff",
+      "capability": "class_notes.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/schedule/sessions/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "bookings.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/schedule/sessions/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/schedule/sessions",
+    "permission": {
+      "kind": "staff",
+      "capability": "bookings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/schedule/sessions",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/schedule/tags/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/schedule/tags/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/schedule/tags",
+    "permission": {
+      "kind": "staff",
+      "capability": "bookings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/schedule/tags",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/schedule/templates/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/schedule/templates/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "bookings.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/schedule/templates/{id}",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/schedule/templates",
+    "permission": {
+      "kind": "staff",
+      "capability": "bookings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/schedule/templates",
+    "permission": {
+      "kind": "staff",
+      "capability": "schedule.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/settings/go-live",
+    "permission": {
+      "kind": "staff",
+      "capability": "go_live.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/settings/go-live",
+    "permission": {
+      "kind": "staff",
+      "capability": "go_live.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/setup/finish",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/staff/invitations/accept",
+    "permission": {
+      "kind": "public"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/staff/invitations",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/staff/profiles/{staffProfileId}/photo",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/staff/profiles/{staffProfileId}/photo",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/staff/profiles/{staffProfileId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/staff/profiles/{staffProfileId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/staff/profiles",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/staff/profiles",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/staff/roles/{staffRoleId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/staff/roles/{staffRoleId}",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/staff/roles",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/staff/roles",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/staff/users/{userId}/reset-password",
+    "permission": {
+      "kind": "staff",
+      "capability": "staff.manage"
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/staff-invitation",
+    "permission": {
+      "kind": "public"
+    }
+  }
+]

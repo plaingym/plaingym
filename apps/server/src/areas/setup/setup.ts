@@ -171,7 +171,8 @@ export function createSetupService(options: {
     },
     async gym(context: MutationContext, input: SetupGymDetails) {
       const { revision, ...changes } = input;
-      const gym = await save(context, revision, 2, changes);
+      const branding = changes.branding.primaryColor === null ? { logoKey: changes.branding.logoKey } : changes.branding;
+      const gym = await save(context, revision, 2, { ...changes, branding });
       return { ...changes, revision: gym.revision };
     },
     async packs(context: MutationContext, input: SetupPacksRequest) {

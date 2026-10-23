@@ -120,7 +120,8 @@ export function createAuthService(options: AuthServiceOptions) {
         async handler(request: Request): Promise<Response> {
           assertNoTransaction('auth.handler');
           const url = new URL(request.url);
-          if (url.origin !== origin.origin || !url.pathname.startsWith('/api/auth/')) return new Response(null, { status: 404 });
+          // A TLS proxy may forward over HTTP; the resolved gym supplies the origin below.
+          if (!url.pathname.startsWith('/api/auth/')) return new Response(null, { status: 404 });
           const path = url.pathname.slice('/api/auth'.length);
           const key = `${request.method} ${path}`;
           const googleEndpoint = Boolean(options.google && (key === 'POST /sign-in/social' || key === 'GET /callback/google'));
