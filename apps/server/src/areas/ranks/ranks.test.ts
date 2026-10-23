@@ -76,6 +76,24 @@ function request(app: ReturnType<typeof server>, operation: Operation, f: Fixtur
 }
 
 describe('rank routes with real permissions and Postgres RLS', () => {
+  it('evaluates only the requested eligibility page while ready-only pagination still filters first', async () => {
+    const f = await fixture();
+    for (let i = 0; i < 4; i++) await factory('members', f.gymId, { status: 'active' });
+    let calls = 0;
+    const provider = new FakePromotionCriterionProvider('page-check', 'ranks/ranks:classes');
+    const evaluate = provider.evaluate.bind(provider);
+    provider.evaluate = async (...args) => { calls++; return evaluate(...args); };
+    f.criteria.register(provider);
+    await f.service.updateRank(f.context, f.rank.id, { revision: f.rank.revision, criteria: [{ providerId: provider.id, config: { target: 1 } }] });
+    const input = { programId: f.program.id, rankId: f.rank.id, limit: 2, offset: 2 };
+    const result = await f.service.eligibility(f.gymId, input);
+    expect(result.pagination).toEqual({ limit: 2, offset: 2, total: 5 });
+    expect(result.data).toHaveLength(2); expect(calls).toBe(2);
+    calls = 0;
+    const ready = await f.service.eligibility(f.gymId, { ...input, readyOnly: 'true' });
+    expect(ready).toMatchObject({ data: [], pagination: { total: 0 } });
+    expect(calls).toBe(5);
+  });
   for (const operation of operations) {
     for (const role of staffRoles) it(`${operation}: ${role} follows the declared permission`, async () => {
       const f = await fixture(), contract = ranksContracts[operation];

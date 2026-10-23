@@ -237,10 +237,16 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       if (!snapshot.program.active) return page(results, query);
       const latest = new Map<string, (typeof snapshot.history)[number]>();
       for (const entry of snapshot.history) if (!latest.has(entry.promotion.memberId)) latest.set(entry.promotion.memberId, entry);
-      for (const member of snapshot.roster) {
+      const candidates = snapshot.roster.filter((member) => {
         const previous = latest.get(member.id);
-        if (previous && (previous.position > snapshot.rank.position
-          || (previous.promotion.rankId === snapshot.rank.id && previous.promotion.subRank >= snapshot.rank.subRanks.length))) continue;
+        return !previous || !(previous.position > snapshot.rank.position
+          || (previous.promotion.rankId === snapshot.rank.id && previous.promotion.subRank >= snapshot.rank.subRanks.length));
+      });
+      // An unfiltered page's total is known without evaluating criteria. Ready-only
+      // pages must evaluate every candidate before filtering and paginating.
+      const selected = query.readyOnly ? candidates : candidates.slice(query.offset, query.offset + query.limit);
+      for (const member of selected) {
+        const previous = latest.get(member.id);
         const subRank = previous?.promotion.rankId === snapshot.rank.id ? previous.promotion.subRank + 1 : 0;
         const evaluated = await criteria.evaluate({ attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
           programId: snapshot.program.id, rankId: snapshot.rank.id,
@@ -252,7 +258,8 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
           program: { id: snapshot.program.id, rankSystemId: snapshot.rank.rankSystemId },
           rank: { id: snapshot.rank.id, rankSystemId: snapshot.rank.rankSystemId }, subRank, eligible, criteria: evaluated });
       }
-      return page(results, query);
+      return query.readyOnly ? page(results, query)
+        : { data: results, pagination: { limit: query.limit, offset: query.offset, total: candidates.length } };
     },
   };
 }

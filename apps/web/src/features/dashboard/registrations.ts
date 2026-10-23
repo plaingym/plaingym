@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.dashboard',
       labelKey: 'dashboard/dashboard:title',
       permission: { kind: 'staff', capability: 'members.read' },
-      enabled: false,
+      enabled: true,
       href: '/admin',
     },
   ],

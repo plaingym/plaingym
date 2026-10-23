@@ -1,3 +1,21 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Dashboard",
+  "refresh": "Refresh",
+  "loading": "Loading dashboard…",
+  "loadFailed": "Unable to load the dashboard. Please try again.",
+  "noAccess": "You do not have permission to view the dashboard.",
+  "updated": "Updated",
+  "widget.active_members": "Active members",
+  "widget.not_seen": "Not seen in 14+ days",
+  "widget.promotion_ready": "Promotion ready",
+  "description.not_seen": "Active members whose last visit was at least 14 days ago. Open mat counts as a visit. Members who have never visited appear after their first 14 days.",
+  "description.promotion_ready": "Active members who meet the criteria for their next rank or sub-rank in an active program. Each member appears once.",
+  "empty.not_seen": "No members need a follow-up.",
+  "empty.promotion_ready": "No members are ready for promotion yet.",
+  "lastSeen": "Last visit",
+  "neverSeen": "No visits recorded",
+  "showing": "Showing {shown} of {total} members.",
+  "status.not_configured": "Not set up",
+  "status.unavailable": "Temporarily unavailable"
 }
