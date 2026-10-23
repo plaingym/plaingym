@@ -67,7 +67,7 @@ authContract('Postgres Better Auth', async () => {
 describe('Better Auth HTTP containment', () => {
   it('uses the resolved HTTPS origin behind an HTTP proxy and keeps POST origin checks', async () => {
     const f = await fixture();
-    const request = (origin: string, site = 'same-origin') => new Request('http://internal.invalid/api/auth/sign-in/email', {
+    const request = (origin: string, site = 'same-origin', host = new URL(f.origin).host) => new Request(`http://${host}/api/auth/sign-in/email`, {
       method: 'POST', headers: { origin, 'sec-fetch-site': site, 'content-type': 'application/json',
         host: 'untrusted.invalid', 'x-forwarded-proto': 'http', 'x-forwarded-host': 'untrusted.invalid' },
       body: JSON.stringify({ email: f.user.email, password }),
@@ -78,6 +78,7 @@ describe('Better Auth HTTP containment', () => {
     expect(await f.a.getSession(f.request('/get-session', undefined, cookies(response)))).toEqual({ userId: f.user.id });
     expect((await f.a.handler(request('https://foreign.invalid'))).status).toBe(403);
     expect((await f.a.handler(request(f.origin, 'cross-site'))).status).toBe(403);
+    expect((await f.a.handler(request(f.origin, 'same-origin', 'internal.invalid'))).status).toBe(404);
   });
   it('signs in by lowercase email using UUIDs and secure host-only cookies', async () => {
     const f = await fixture(), response = await f.signIn();
