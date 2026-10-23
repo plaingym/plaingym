@@ -7,8 +7,16 @@ umask 077
 source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 [ "$(id -u)" -eq 0 ] || { echo 'Run this test as root in a disposable environment.' >&2; exit 1; }
 [ -x /usr/sbin/sshd ] || { echo 'host.sh reads the SSH port from /usr/sbin/sshd -T.' >&2; exit 1; }
+# sshd -T needs the privilege separation directory that a running sshd creates.
+install -d -m 0755 /run/sshd
 temporary=$(mktemp -d)
-trap 'rm -rf -- "$temporary"' EXIT
+cleanup() {
+  status=$?
+  # On a failed check, show the last installer output instead of exiting silently.
+  if [ "$status" -ne 0 ] && [ -f "$temporary/output" ]; then cat "$temporary/output" >&2; fi
+  rm -rf -- "$temporary"
+}
+trap cleanup EXIT
 mkdir "$temporary/bin"
 export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" HOSTS="$temporary/hosts" STATE="$temporary/state"
 mkdir "$STATE"
