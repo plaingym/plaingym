@@ -3,7 +3,7 @@ import { getTableName } from 'drizzle-orm';
 import type { Sql } from '../client.js';
 import * as schema from '../schema/index.js';
 import { systemTables } from '../../system-tables.mjs';
-import { appendOnlyTables, mutableAttemptColumns } from './apply.js';
+import { appendOnlyTables, deletableAppendOnlyTables, mutableAttemptColumns } from './apply.js';
 const expectedTables = Object.values(schema).map(getTableName).sort();
 const normalize = (expression: string) => expression.toLowerCase().replaceAll('::text', '').replace(/[()\s]/g, '');
 const gymPredicate = (column: string) => `${column} = nullif(current_setting('app.gym_id', true), '')::uuid`;
@@ -89,9 +89,9 @@ export async function assertCatalog(sql: Sql) {
           normalize(policy.check_expression ?? '') !== expectedPolicy) failures.push(name + ': invalid forced gym policy');
     }
     const immutable = (appendOnlyTables as readonly string[]).includes(name);
-    const attempt = name === 'payment_attempts';
+    const attempt = name === 'payment_attempts', deletable = (deletableAppendOnlyTables as readonly string[]).includes(name);
     if (!table.can_select || !table.can_insert || table.can_truncate || table.can_reference || table.can_trigger ||
-        table.can_update !== !(immutable || attempt) || table.can_delete !== !(immutable || attempt)) {
+        table.can_update !== !(immutable || attempt) || table.can_delete !== (deletable || !(immutable || attempt))) {
       failures.push(name + ': unexpected table privileges');
     }
     if (immutable || attempt) {

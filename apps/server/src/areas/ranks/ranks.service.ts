@@ -84,7 +84,9 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
     const [row] = await tx.insert(memberRanks).values({ ...base(context.gymId), ...input,
       promotedAt: new Date(input.promotedAt), promotedBy: staff?.id ?? null, notes: input.notes ?? null }).returning();
     const result = presentPromotion(row!);
-    await audit(tx, context, 'promotion.created', row!.id, null, result);
+    // Notes can hold personal details, and audit rows are append-only: record only whether there were any.
+    const { notes, ...audited } = result;
+    await audit(tx, context, 'promotion.created', row!.id, null, { ...audited, hasNotes: notes !== null });
     return result;
   }
   return {

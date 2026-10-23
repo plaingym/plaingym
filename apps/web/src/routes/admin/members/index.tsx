@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createFileRoute } from '@tanstack/react-router';
+import { MembersPage } from '../../../features/members/page.js';
 
-export const Route = createFileRoute('/admin/members/')({ component: () => null });
+export const Route = createFileRoute('/admin/members/')({ component: MembersPage });

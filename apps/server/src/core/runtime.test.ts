@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs and gym email switches in real PostgreSQL.
-import { emailOutbox, gyms, householdUsers, jobs, kioskDevices, programs } from '@plaingym/db';
+import { emailOutbox, gyms, households, householdUsers, jobs, kioskDevices, programs, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { startRuntime, runCommandLine, type Runtime } from './runtime.js';
 import { SmtpEmail } from '../infra/email/index.js';
@@ -78,6 +78,14 @@ it('serves rank and import routes through the runtime composition', async () => 
   // Import and export routes exist only when composed with storage and the job queue.
   const document = await (await runtime.app.request(sandbox.origin + '/api/openapi.json', { headers })).json() as { paths: Record<string, unknown> };
   expect(Object.keys(document.paths)).toEqual(expect.arrayContaining(['/api/imports/uploads', '/api/exports']));
+  // Household PINs hash with the gym's own key once the runtime composes members.
+  const homeId = uuidv7();
+  await database.forGym(sandbox.gymId, (tx) => tx.insert(households).values({ id: homeId, gymId: sandbox.gymId, name: 'PIN family' }));
+  const pin = await runtime.app.request(sandbox.origin + '/api/households/' + homeId + '/pin', { method: 'PUT',
+    headers: { ...headers, origin: sandbox.origin, 'content-type': 'application/json' }, body: JSON.stringify({ revision: 1, pin: '2468' }) });
+  expect(pin.status).toBe(200);
+  const [stored] = await database.forGym(sandbox.gymId, (tx) => tx.select({ pinHash: households.pinHash }).from(households).where(eq(households.id, homeId)));
+  expect(stored!.pinHash).toMatch(/^[a-f0-9]{64}$/);
 });
 it('uses kiosk authentication ahead of sessions and blocks uploads in the running demo', async () => {
   const headers = { authorization: `Bearer ${sandbox.kioskToken}` };

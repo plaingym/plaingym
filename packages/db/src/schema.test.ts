@@ -89,6 +89,8 @@ describe('factories and gym isolation', () => {
     expect(stored?.snapshot).toBe('{ "b":2, "a":1 }\n');
     await expect(database.forGym(gymA, (tx) => tx.update(schema.waiverSignatures).set({ snapshot: '{}' }).where(eq(schema.waiverSignatures.id, signature.id))))
       .rejects.toMatchObject({ cause: { code: '42501' } });
+    // A signed waiver is never edited, but erasing a member's personal data deletes it.
+    await database.forGym(gymA, (tx) => tx.delete(schema.waiverSignatures).where(eq(schema.waiverSignatures.id, signature.id)));
     const attempt = await factory('paymentAttempts', gymA);
     await expect(database.forGym(gymA, (tx) => tx.update(schema.paymentAttempts).set({ amountCents: 1 }).where(eq(schema.paymentAttempts.id, attempt.id))))
       .rejects.toMatchObject({ cause: { code: '42501' } });

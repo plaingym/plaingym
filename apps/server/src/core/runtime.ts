@@ -22,6 +22,9 @@ import { PostgresJobs, startJobsWorker } from '../infra/jobs/postgres.js';
 import { authorize } from '../areas/staff/auth.permissions.js';
 import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
+import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
+import { configureMembers } from '../areas/members/members.routes.js';
+import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
@@ -119,11 +122,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   configureRanks({ attendance: createAttendanceQueries({ clock }), clock });
+  // Household PINs use the gym's random key; member photos use the gym's file storage.
+  configureMembers({ pinSecret: createGymKeyResolver({ key }), uploadsFor: uploads.forGym, clock });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService)],
-    jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService)] };
+    jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym)] };
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
     session: createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session: sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {

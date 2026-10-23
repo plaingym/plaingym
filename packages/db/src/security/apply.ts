@@ -3,6 +3,9 @@ import type { Sql } from '../client.js';
 /** Restricted columns remain immutable for app, even through raw SQL. */
 export const mutableAttemptColumns = ['payment_intent_id', 'status', 'decline_code', 'error', 'resolved_at'] as const;
 export const appendOnlyTables = ['audit_events', 'waiver_signatures'] as const;
+/** Append-only rows the app may still delete: a signed waiver is never edited, but it is deleted
+ * (and audited) when a member's personal data is erased on request. */
+export const deletableAppendOnlyTables = ['waiver_signatures'] as const;
 /** Reviewed security SQL: idempotent and deliberately never blanket-grants table access. */
 export async function applySecurity(sql: Sql) {
   await sql.begin(async (tx) => {
@@ -12,6 +15,7 @@ export async function applySecurity(sql: Sql) {
     `;
     for (const table of tables) await tx`alter table public.${tx(table.relname)} force row level security`;
     for (const table of appendOnlyTables) await tx`revoke update, delete on table public.${tx(table)} from app`;
+    for (const table of deletableAppendOnlyTables) await tx`grant delete on table public.${tx(table)} to app`;
     await tx`revoke update, delete on table public.payment_attempts from app`;
     for (const table of [...appendOnlyTables, 'payment_attempts']) {
       const columns = await tx`select column_name from information_schema.columns where table_schema = 'public' and table_name = ${table}`;

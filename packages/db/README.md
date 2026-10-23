@@ -30,10 +30,10 @@ the same migration/security entry point. A failed check prevents successful star
 
 The security step never restores table-wide DML grants. It removes table and column
 UPDATE permissions on immutable records, then grants only the five mutable outcome
-columns on payment attempts. Audit events and waiver signatures allow INSERT and
-SELECT only. Gym deletion still cascades their rows through the gym foreign key,
-because PostgreSQL runs cascades as the table owner (`maintenance`); ordinary row
-mutation by `app` remains prohibited.
+columns on payment attempts. Audit events allow INSERT and SELECT only. Waiver
+signatures also allow DELETE, used only when a member's personal data is erased on
+request; they are never updated. Gym deletion still cascades these rows through the
+gym foreign key, because PostgreSQL runs cascades as the table owner (`maintenance`).
 
 Only `gym_id` references cascade. Every reference between tenant tables is
 `NO ACTION`: delete child rows explicitly, or archive (`active`, `retired_at`,

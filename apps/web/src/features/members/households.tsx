@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { useState, type FormEvent } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import * as c from '@plaingym/shared/contracts';
+import { Button } from '../../components/ui/button.js';
+import { Input } from '../../components/ui/input.js';
+import { Label } from '../../components/ui/label.js';
+import { memberRequest } from './api.js';
+import { Field, Panel, ErrorMessage, selectClass, text, useDraft, useMemberSave } from './common.js';
+
+export function HouseholdsManager({ gymId }: { gymId: string }) {
+  const [search, setSearch] = useState(''), [offset, setOffset] = useState(0), [selected, setSelected] = useState('');
+  const query = useQuery({ queryKey: ['members', gymId, 'household-manager', search, offset], queryFn: ({ signal }) => memberRequest(c.householdListResponseSchema,
+    '/api/households?' + new URLSearchParams({ limit: '50', offset: String(offset), ...(search ? { search } : {}) }), 'GET', undefined, signal) });
+  return <Panel title="manageHouseholds"><Field name="searchHouseholds" value={search} onChange={(value) => { setSearch(value); setOffset(0); }}/><ErrorMessage error={query.error}/>
+    <Label className="grid gap-2">{text('household')}<select className={selectClass} value={selected} onChange={(event) => setSelected(event.target.value)}><option value="">{text('createHousehold')}</option>{query.data?.data.map((home) => <option key={home.id} value={home.id}>{home.name}</option>)}</select></Label>
+    <div className="flex gap-2"><Button variant="outline" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button><Button variant="outline" disabled={!query.data || offset + 50 >= query.data.pagination.total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button></div>
+    {selected ? <HouseholdDetails key={selected} gymId={gymId} householdId={selected} onDeleted={() => setSelected('')}/> : <HouseholdForm onSaved={(home) => setSelected(home.id)}/>}
+  </Panel>;
+}
+
+export function HouseholdForm({ household, onSaved }: { household?: c.Household; onSaved?: (household: c.Household) => void }) {
+  const draft = useDraft({ name: household?.name ?? '', email: household?.email ?? '', phone: household?.phone ?? '', address: household?.address ?? ({} as c.HouseholdAddress) });
+  const state = useMemberSave(), { values, set } = draft, address = values.address;
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    void state.save(async () => {
+      // Only edited fields are sent, so a PIN or billing save in between never reverts them.
+      const changed = household ? draft.changes() : values;
+      if (household && !Object.keys(changed).length) return;
+      const input = { ...(changed.name === undefined ? {} : { name: changed.name }), ...(changed.email === undefined ? {} : { email: changed.email || null }),
+        ...(changed.phone === undefined ? {} : { phone: changed.phone || null }),
+        ...(changed.address === undefined ? {} : { address: Object.fromEntries(Object.entries(changed.address).filter(([, value]) => value)) }) };
+      const saved = household ? await memberRequest(c.householdResponseSchema, `/api/households/${household.id}`, 'PATCH', c.updateHouseholdRequestSchema.parse({ ...input, revision: household.revision }))
+        : await memberRequest(c.householdResponseSchema, '/api/households', 'POST', c.createHouseholdRequestSchema.parse(input));
+      onSaved?.(saved.data);
+    }, draft.reset);
+  }
+  return <form onSubmit={submit} className="space-y-3"><ErrorMessage error={state.error}/>
+    <Field name="householdName" value={values.name} onChange={(value) => set('name', value)} required/><Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/>
+    <div className="grid gap-3 sm:grid-cols-2">{(['line1', 'line2', 'city', 'region', 'postalCode', 'countryCode'] as const).map((key) => <Field key={key} name={key} value={address[key] ?? ''} onChange={(value) => set('address', { ...address, [key]: key === 'countryCode' ? value.toUpperCase() : value })}/>)}</div>
+    <Button type="submit" disabled={state.busy}>{text(household ? 'save' : 'createHousehold')}</Button>
+  </form>;
+}
+export function HouseholdDetails({ householdId, gymId, onDeleted }: { householdId: string; gymId: string; onDeleted?: () => void }) {
+  const query = useQuery({ queryKey: ['members', gymId, 'household', householdId], queryFn: ({ signal }) => memberRequest(c.householdResponseSchema, `/api/households/${householdId}`, 'GET', undefined, signal) });
+  const billing = useQuery({ queryKey: ['members', gymId, 'billing', householdId], queryFn: ({ signal }) => memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${householdId}/billing-settings`, 'GET', undefined, signal) });
+  return <Panel title="household"><ErrorMessage error={query.error}/>{query.data && <>
+    <HouseholdForm household={query.data.data}/>
+    <PinForm household={query.data.data}/>
+    {billing.data && <BillingForm billing={billing.data.data}/>}
+    {onDeleted && <DeleteHousehold household={query.data.data} onDeleted={onDeleted}/>}
+  </>}</Panel>;
+}
+function DeleteHousehold({ household, onDeleted }: { household: c.Household; onDeleted: () => void }) {
+  const state = useMemberSave(), [confirmed, setConfirmed] = useState(false);
+  return <div className="space-y-3 border-t pt-4"><p>{text('deleteHouseholdWarning')}</p><Label className="flex gap-2"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}/>{text('confirmDelete')}</Label>
+    <Button variant="outline" disabled={!confirmed || state.busy} onClick={() => void state.save(() => memberRequest(c.membersContracts.deleteHousehold.response, `/api/households/${household.id}`, 'DELETE', { revision: household.revision }), onDeleted)}>{text('deleteHousehold')}</Button><ErrorMessage error={state.error}/>
+  </div>;
+}
+function PinForm({ household }: { household: c.Household }) {
+  const [pin, setPin] = useState(''), state = useMemberSave();
+  const submit = (clear: boolean) => void state.save(() => memberRequest(c.householdResponseSchema, `/api/households/${household.id}/pin`, 'PUT', c.setHouseholdPinRequestSchema.parse({ revision: household.revision, pin: clear ? null : pin })), () => setPin(''));
+  return <form className="space-y-3 border-t pt-4" onSubmit={(event) => { event.preventDefault(); submit(false); }}><ErrorMessage error={state.error}/>
+    <Label className="grid gap-2">{text('pin')}<Input type="password" inputMode="numeric" autoComplete="new-password" pattern="[0-9]{4,8}" minLength={4} maxLength={8} value={pin} onChange={(event) => setPin(event.target.value)} required/></Label>
+    <div className="flex gap-2"><Button type="submit" disabled={state.busy}>{text('setPin')}</Button><Button type="button" variant="outline" disabled={state.busy} onClick={() => submit(true)}>{text('clearPin')}</Button></div>
+  </form>;
+}
+function BillingForm({ billing }: { billing: c.HouseholdBillingSettings }) {
+  const draft = useDraft({ day: String(billing.billingDay), discount: String(billing.familyDiscountBasisPoints) }), state = useMemberSave();
+  // The household revision also changes with contact and PIN saves; draft.changes() catches real conflicts.
+  return <form className="space-y-3 border-t pt-4" onSubmit={(event) => { event.preventDefault(); void state.save(async () => {
+    const { day, discount } = { ...draft.values, ...draft.changes() };
+    await memberRequest(c.householdBillingSettingsResponseSchema, `/api/households/${billing.id}/billing-settings`, 'PATCH', c.updateHouseholdBillingSettingsRequestSchema.parse({ revision: billing.revision, billingDay: Number(day), familyDiscountBasisPoints: Number(discount) }));
+  }, draft.reset); }}>
+    <ErrorMessage error={state.error}/><Field name="billingDay" type="number" value={draft.values.day} onChange={(value) => draft.set('day', value)}/><Field name="discount" type="number" value={draft.values.discount} onChange={(value) => draft.set('discount', value)}/><Button type="submit" disabled={state.busy}>{text('saveBilling')}</Button>
+  </form>;
+}

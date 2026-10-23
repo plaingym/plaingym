@@ -140,6 +140,16 @@ export const addMemberTagRequestSchema = z.strictObject({ tagId: idSchema });
 export const memberTagLinkParamsSchema = z.strictObject({ memberId: idSchema, tagId: idSchema });
 export const memberTagResponseSchema = z.strictObject({ data: memberTagSchema });
 export const memberTagListResponseSchema = listResponseSchema(memberTagSchema);
+/** Every tag assigned to one member; members carry a handful, so the list is not paginated. */
+export const memberAssignedTagsResponseSchema = z.strictObject({ data: z.array(memberTagSchema) });
+/** Revision-guarded deletion of a household or member tag. */
+export const deleteMemberRecordRequestSchema = z.strictObject({ revision: revisionSchema });
+export const memberPhotoContentTypeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp']);
+/** At most 512 KiB once decoded; the client resizes and re-encodes before uploading. */
+export const uploadMemberPhotoRequestSchema = z.strictObject({
+  revision: revisionSchema, contentType: memberPhotoContentTypeSchema,
+  base64: z.string().min(1).max(699_052).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
 export const memberTagLinkResponseSchema = z.strictObject({ data: memberTagLinkSchema });
 
 const householdUserFields = {
@@ -203,6 +213,17 @@ export const membersContracts = {
     params: memberParamsSchema, body: addMemberTagRequestSchema, response: memberTagLinkResponseSchema },
   removeTag: { method: 'delete', path: '/api/members/{memberId}/tags/{tagId}', permission: { kind: 'staff', capability: 'tags.manage' },
     params: memberTagLinkParamsSchema, response: z.strictObject({ data: z.null() }) },
+  /** Only unused households can be deleted; a household with members, invoices, logins or links returns a conflict. */
+  deleteHousehold: { method: 'delete', path: '/api/households/{householdId}', permission: { kind: 'staff', capability: 'households.manage' },
+    params: householdParamsSchema, body: deleteMemberRecordRequestSchema, response: z.strictObject({ data: z.null() }) },
+  /** Deleting a tag removes its assignments. */
+  deleteTag: { method: 'delete', path: '/api/member-tags/{tagId}', permission: { kind: 'staff', capability: 'tags.manage' },
+    params: memberTagParamsSchema, body: deleteMemberRecordRequestSchema, response: z.strictObject({ data: z.null() }) },
+  listMemberTags: { method: 'get', path: '/api/members/{memberId}/tags', permission: { kind: 'staff', capability: 'members.read' },
+    params: memberParamsSchema, response: memberAssignedTagsResponseSchema },
+  /** The photo itself is read from `GET /api/members/{memberId}/photo`, a binary response outside these JSON contracts. */
+  uploadPhoto: { method: 'post', path: '/api/members/{memberId}/photo', permission: { kind: 'staff', capability: 'members.manage' },
+    params: memberParamsSchema, body: uploadMemberPhotoRequestSchema, response: memberResponseSchema },
   listHouseholdUsers: { method: 'get', path: '/api/households/{householdId}/users', permission: { kind: 'staff', capability: 'portal_access.manage' },
     params: householdParamsSchema, query: paginationSchema, response: householdUserListResponseSchema },
   createHouseholdUser: { method: 'post', path: '/api/households/{householdId}/users', permission: { kind: 'staff', capability: 'portal_access.manage' },
@@ -238,5 +259,7 @@ export type CreateMemberTagRequest = z.infer<typeof createMemberTagRequestSchema
 export type UpdateMemberTagRequest = z.infer<typeof updateMemberTagRequestSchema>;
 export type MemberTagLink = z.infer<typeof memberTagLinkSchema>;
 export type AddMemberTagRequest = z.infer<typeof addMemberTagRequestSchema>;
+export type DeleteMemberRecordRequest = z.infer<typeof deleteMemberRecordRequestSchema>;
+export type UploadMemberPhotoRequest = z.infer<typeof uploadMemberPhotoRequestSchema>;
 export type HouseholdUser = z.infer<typeof householdUserSchema>;
 export type CreateHouseholdUserRequest = z.infer<typeof createHouseholdUserRequestSchema>;

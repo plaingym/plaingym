@@ -8,7 +8,7 @@ import type { NavigationEntry } from '@plaingym/shared';
 import { App } from '../app.js';
 import { createAppRouter } from './router.js';
 import type { ShellBootstrap, ShellServices } from './services.js';
-import { createRegistries } from '../lib/registries.js';
+import { createWebRegistries } from '@plaingym/shared';
 import { AdminShell, visibleAdminNavigation } from './admin-shell.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
 
@@ -131,7 +131,7 @@ describe('admin shell', () => {
   it('renders navigation links and toggles the mobile menu with accessible state', async () => {
     const state = { ...anonymous, session: { userId: 'coach', roles: ['coach'] as const, member: false } };
     const signOut = vi.fn();
-    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={signOut}><p>Child content</p></AdminShell> });
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={signOut}><p>Child content</p></AdminShell> });
     const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) });
     render(<RouterProvider router={router} />);
     await screen.findByRole('navigation', { name: 'Gym navigation' });

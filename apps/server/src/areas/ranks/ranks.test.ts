@@ -186,9 +186,12 @@ describe('rank editing and promotion services', () => {
     const { memberId, ...body } = f.promotion; void memberId;
     await expect(f.service.bulkPromote(f.context, { ...body, memberIds: [f.member.id, foreign.member.id] })).rejects.toMatchObject({ code: 'not_found' });
     expect(await database.forGym(f.gymId, (tx) => tx.select().from(memberRanks))).toHaveLength(0);
-    const promoted = await f.service.bulkPromote(f.context, { ...body, memberIds: [f.member.id, second.id] });
+    const promoted = await f.service.bulkPromote(f.context, { ...body, notes: 'Knee injury, call 555-0100', memberIds: [f.member.id, second.id] });
     expect(promoted.map((row) => row.memberId)).toEqual([f.member.id, second.id]);
-    expect(await database.forGym(f.gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'promotion.created')))).toHaveLength(2);
+    const audits = await database.forGym(f.gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'promotion.created')));
+    expect(audits).toHaveLength(2);
+    // Append-only audit rows must not keep notes that anonymization later clears.
+    for (const audit of audits) { expect(JSON.stringify(audit.after)).not.toContain('555-0100'); expect(audit.after).toMatchObject({ hasNotes: true }); }
   });
   it('paginates consistently, filters inactive programs, and rejects stale configuration saves', async () => {
     const f = await fixture();

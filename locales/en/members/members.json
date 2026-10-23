@@ -1,3 +1,24 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Members", "loading": "Loading…", "noAccess": "You do not have access to members.",
+  "failed": "Could not save or load these details. Check the fields and try again.",
+  "conflict": "These details changed. Refresh and review them before saving again.",
+  "firstName": "First name", "lastName": "Last name", "name": "Name", "email": "Email", "phone": "Phone",
+  "dateOfBirth": "Date of birth", "status": "Status", "status.prospect": "Prospect", "status.trial": "Trial", "status.active": "Active",
+  "status.frozen": "Frozen", "status.cancelled": "Cancelled", "status.visitor": "Visitor", "emailOptOut": "Do not send member emails",
+  "save": "Save", "refresh": "Refresh", "close": "Close", "remove": "Remove", "previous": "Previous", "next": "Next", "total": "members",
+  "addMember": "Add member", "createMember": "Create member", "profile": "Profile", "search": "Search members", "allStatuses": "All statuses",
+  "household": "Household", "householdName": "Household name", "chooseHousehold": "Choose a household", "createHousehold": "Create household", "searchHouseholds": "Find household",
+  "line1": "Address line 1", "line2": "Address line 2", "city": "City", "region": "State or province", "postalCode": "Postal code", "countryCode": "Country code (two letters)",
+  "billingDay": "Billing day (1–31)", "discount": "Family discount in basis points (100 = 1%)", "saveBilling": "Save billing settings",
+  "pin": "New household PIN (4–8 digits)", "setPin": "Set PIN", "clearPin": "Clear PIN",
+  "emergencyContacts": "Emergency contacts", "contact.name": "Contact name", "contact.phone": "Contact phone", "contact.email": "Contact email", "contact.relationship": "Relationship",
+  "addContact": "Add emergency contact", "removeContact": "Remove contact", "medicalNotes": "Medical notes",
+  "tags": "Tags", "allTags": "All tags", "manageTags": "Manage tags", "tagName": "Tag name", "color": "Color", "newTag": "New tag", "chooseTag": "Choose a tag", "addTag": "Add tag",
+  "photo": "Member photo", "uploadPhoto": "Upload photo", "removePhoto": "Remove photo",
+  "anonymize": "Erase personal data", "anonymized": "This person’s personal data has been erased.", "confirmAnonymize": "I understand this permanently erases this person’s details and signed waivers.",
+  "anonymizeWarning": "Use this only when someone asks for their data to be deleted. To stop someone training here, set their status to Cancelled instead. Erasing removes this member’s personal details, photo, medical notes, promotion notes, signed waivers and check-in access, and clears the household PIN. When no household members remain, it also removes household contacts and portal access. Invoices, payments and attendance stay, without personal details, for the gym’s records.",
+  "empty": "No members match these filters.", "profileTabs": "Member details",
+  "manageHouseholds": "Manage households", "deleteHousehold": "Delete unused household", "deleteHouseholdWarning": "Only unused households can be deleted. Households with members, invoices or other records are retained.",
+  "confirmDelete": "Delete this unused household", "confirmDeleteTag": "Remove this tag from every member and delete it", "deleteTag": "Delete tag"
 }
