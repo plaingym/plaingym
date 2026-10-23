@@ -5,6 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 
 const directory = fileURLToPath(new URL('./', import.meta.url));
+if (process.argv[2] === '--vm') {
+  const { runVm } = await import('./vm/run.mjs');
+  await runVm(process.argv.slice(3));
+  process.exit(process.exitCode ?? 0);
+}
 const root = fileURLToPath(new URL('../', import.meta.url));
 const token = () => randomBytes(32).toString('hex');
 const env = { ...process.env, E2E_POSTGRES_PASSWORD: token(), E2E_APP_PASSWORD: token(),

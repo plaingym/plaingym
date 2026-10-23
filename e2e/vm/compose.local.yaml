@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Each QEMU guest is capped at VM_CPUS host CPUs (default 1.5) and stops after VM_LIFETIME (default 4h).
+services:
+  source:
+    build: .
+    cpus: ${VM_CPUS:-1.5}
+    environment: {VM_SMP: '${VM_SMP:-2}', VM_LIFETIME: '${VM_LIFETIME:-4h}'}
+    ports: ['127.0.0.1:${VM_SOURCE_SSH_PORT:-2241}:2222', '127.0.0.1:${VM_SOURCE_HTTPS_PORT:-443}:443']
+    volumes: ['cache:/cache', 'source:/vm', '${VM_SEEDS:?required}/source:/seed:ro']
+    depends_on: [s3]
+  restore:
+    build: .
+    cpus: ${VM_CPUS:-1.5}
+    environment: {VM_SMP: '${VM_SMP:-2}', VM_LIFETIME: '${VM_LIFETIME:-4h}'}
+    ports: ['127.0.0.1:${VM_RESTORE_SSH_PORT:-2242}:2222', '127.0.0.2:${VM_RESTORE_HTTPS_PORT:-443}:443']
+    volumes: ['cache:/cache', 'restore:/vm', '${VM_SEEDS:?required}/restore:/seed:ro']
+    depends_on: [s3]
+  s3:
+    image: motoserver/moto:5.1.17@sha256:0361ac8f0cc6687dcf3835da1d60e31cf457fb0d49229d56586f2aa5c510f170
+    environment:
+      MOTO_PORT: '9000'
+volumes:
+  cache:
+    name: ${VM_CACHE_VOLUME:-plaingym-a25-cloud-images}
+    external: true
+  source:
+  restore:
+networks:
+  default:
+    ipam:
+      config: [{subnet: '10.89.25.0/24'}]

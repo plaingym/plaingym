@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Members and mat browser QA
 
+Fresh-host installation, browser backups/restore, memory and password QA live in
+[`vm/README.md`](vm/README.md). Use `node e2e/run.mjs --vm PRIVATE_CONFIG_JSON`
+from the repository root to select that suite; the default runner below keeps
+its isolated members/mat Compose workflow.
+
 Run from the repository root with the pinned Node and pnpm versions, Docker, and
 TCP port 443 available on loopback:
 

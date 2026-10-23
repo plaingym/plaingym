@@ -3,6 +3,8 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './specs',
+  testMatch: process.env.E2E_VM_CONFIG ? '**/vm.spec.ts' : '**/*.spec.ts',
+  testIgnore: process.env.E2E_VM_CONFIG ? [] : ['**/vm.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,
@@ -18,8 +20,9 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
     viewport: { width: 1024, height: 768 },
     timezoneId: 'UTC',
-    trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    // VM wizard fields include backup credentials and the one-time age key.
+    trace: process.env.E2E_VM_CONFIG ? 'off' : 'retain-on-failure',
+    screenshot: process.env.E2E_VM_CONFIG ? 'off' : 'only-on-failure',
     launchOptions: { args: ['--no-proxy-server', '--host-resolver-rules=MAP *.localhost 127.0.0.1'] },
   },
 });

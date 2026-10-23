@@ -1,0 +1,35 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "source": {
+    "url": "https://gym.example.org",
+    "fresh": true,
+    "ssh": {
+      "host": "192.0.2.10",
+      "user": "root",
+      "port": 22
+    }
+  },
+  "restore": {
+    "url": "https://gym.example.org",
+    "fresh": true,
+    "ssh": {
+      "host": "192.0.2.11",
+      "user": "root",
+      "port": 22
+    }
+  },
+  "email": "owner@example.org",
+  "bundle": {
+    "file": "../../deploy/dist/plaingym-amd64.tar",
+    "url": "https://PRESIGNED-BUNDLE-URL",
+    "bootstrapUrl": "https://PRESIGNED-BOOTSTRAP-URL"
+  },
+  "s3": {
+    "endpoint": "https://S3-ENDPOINT",
+    "region": "auto",
+    "bucket": "qa-backups",
+    "accessKeyId": "REPLACE",
+    "secretAccessKey": "REPLACE"
+  },
+  "artifacts": "./vm-results"
+}
