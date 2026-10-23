@@ -87,6 +87,21 @@ it('serves rank and import routes through the runtime composition', async () => 
   const [stored] = await database.forGym(sandbox.gymId, (tx) => tx.select({ pinHash: households.pinHash }).from(households).where(eq(households.id, homeId)));
   expect(stored!.pinHash).toMatch(/^[a-f0-9]{64}$/);
 });
+it('serves staff, dashboard, and go-live routes through the runtime composition', async () => {
+  const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
+  const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+  const headers = { host: new URL(sandbox.origin).host, cookie };
+  // Each answers 503 until the runtime configures it.
+  for (const path of ['/api/staff/profiles', '/api/dashboard', '/api/settings/go-live'])
+    expect((await runtime.app.request(sandbox.origin + path, { headers })).status, path).toBe(200);
+  // Demo invitations go to the in-app outbox; printed ones return a link on the gym's own origin.
+  const invite = await runtime.app.request(sandbox.origin + '/api/staff/invitations', { method: 'POST',
+    headers: { ...headers, origin: sandbox.origin, 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'new.coach@example.invalid', role: 'coach', delivery: 'print' }) });
+  expect(invite.status).toBe(200);
+  const { data } = await invite.json() as { data: { invitationUrl: string } };
+  expect(new URL(data.invitationUrl).origin).toBe(sandbox.origin);
+});
 it('uses kiosk authentication ahead of sessions and blocks uploads in the running demo', async () => {
   const headers = { authorization: `Bearer ${sandbox.kioskToken}` };
   await post('/api/kiosk/lookup', { name: 'Alex', pin: '1234' }, sandbox.origin, headers);

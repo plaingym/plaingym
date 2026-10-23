@@ -24,6 +24,13 @@ import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
 import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
 import { configureMembers } from '../areas/members/members.routes.js';
+import { createMembersService } from '../areas/members/members.js';
+import { configureStaffProfiles } from '../areas/staff/profiles.routes.js';
+import { createStaffInvitationService, smtpMailer } from '../areas/staff/profiles.invitations.js';
+import { configureDashboard } from '../areas/dashboard/dashboard.routes.js';
+import { configureImportStep } from '../areas/setup/import-step.js';
+import { configureGoLive } from '../areas/settings/go-live.js';
+import { createRanksService } from '../areas/ranks/ranks.service.js';
 import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
@@ -122,13 +129,22 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureHealthStatus({ env });
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
-  configureRanks({ attendance: createAttendanceQueries({ clock }), clock });
+  const attendance = createAttendanceQueries({ clock });
+  const criteria = configureRanks({ attendance, clock });
+  // The dashboard reads through the same services, with the ranks criteria registry and clock.
+  configureDashboard({ members: createMembersService({ clock }), ranks: createRanksService({ clock, criteria }), attendance });
+  // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
+  configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
+    mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
+  configureGoLive({ clock, smtpConfigured });
   // Household PINs use the gym's random key; member photos use the gym's file storage.
   const gymKey = createGymKeyResolver({ key });
   configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
+  // Setup step 8 finishes with a committed run from this pipeline.
+  configureImportStep({ imports: importPipeline, clock });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService)],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym)] };
