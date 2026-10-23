@@ -10,14 +10,15 @@ const uploadId = '019aa4a0-0000-7000-8000-000000000010', dryId = '019aa4a0-0000-
 const job = (id: string, dryRun: boolean, status: string, committedRows = 0) => ({ id, uploadId, mapper: 'people', dryRun, status, totalRows: 2,
   processedRows: status === 'pending' ? 0 : 2, committedRows, errorCount: 0, createdAt: '2026-10-22T12:00:00Z',
   completedAt: status === 'succeeded' ? '2026-10-22T12:01:00Z' : null });
-function server(options: { finish?: number; failProgressOnce?: boolean; dryFails?: boolean; partialCommit?: boolean; errorPages?: boolean } = {}) {
+function server(options: { finish?: number; failProgressOnce?: boolean; dryFails?: boolean; partialCommit?: boolean; errorPages?: boolean; deferredBackups?: boolean } = {}) {
   const polls = new Map<string, number>();
   let progressFailed = false;
   let errorsFailed = false;
   let policy = 'error';
   const fetcher = vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
     const name = String(path), body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
-    if (name === '/api/setup') return Response.json({ data: { currentStep: 8, completedSteps: [0, 1, 2, 3, 4, 5, 6, 7], completed: false, revision: 9 } });
+    if (name === '/api/setup') return Response.json({ data: options.deferredBackups ? { currentStep: 7, completedSteps: [0, 1, 2, 3, 4, 5, 6], completed: false, revision: 9 }
+      : { currentStep: 8, completedSteps: [0, 1, 2, 3, 4, 5, 6, 7], completed: false, revision: 9 } });
     if (name === '/api/setup/finish') return options.finish ? Response.json({ error: 'failed' }, { status: options.finish })
       : Response.json({ data: { completed: true, billingEnabled: false, memberEmailsEnabled: false, revision: 10 } });
     if (name === '/api/imports/uploads') return Response.json({ data: { id: uploadId, filename: 'members.csv', rowCount: 2, columns: ['First', 'Last'],
@@ -55,6 +56,13 @@ describe('setup step 8: import or start fresh', () => {
     await user.click(screen.getByRole('button', { name: 'Start fresh' }));
     expect(await screen.findByText(/Setup is complete/)).toBeDefined();
     expect(finishBody(fetcher)).toEqual({ choice: 'fresh', revision: 9 });
+  });
+  it('defers backups when the backup step was not completed', async () => {
+    const fetcher = server({ deferredBackups: true }), user = userEvent.setup();
+    render(<ImportStep fetcher={fetcher as typeof fetch} pollMs={1}/>);
+    await user.click(screen.getByRole('button', { name: 'Start fresh' }));
+    expect(await screen.findByText(/Setup is complete/)).toBeDefined();
+    expect(finishBody(fetcher)).toEqual({ choice: 'fresh', revision: 9, skipBackups: true });
   });
   it('uploads, checks with a dry run, commits, and finishes with the committed import', async () => {
     const fetcher = server(), user = userEvent.setup();

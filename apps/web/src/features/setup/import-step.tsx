@@ -49,8 +49,10 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     } finally { setBusy(false); }
   }
   const finish = (importId?: string) => run(async () => {
-    const { revision } = await client.call('status');
-    await client.call('finish', importId ? { choice: 'import', revision, importId } : { choice: 'fresh', revision });
+    const { revision, completedSteps } = await client.call('status');
+    // Reaching this step without a confirmed backup step means the owner chose to set backups up later.
+    const deferred = completedSteps.includes(7) ? {} : { skipBackups: true as const };
+    await client.call('finish', importId ? { choice: 'import', revision, importId, ...deferred } : { choice: 'fresh', revision, ...deferred });
     setDone(true);
   });
   const uploadFile = (file: File) => run(async () => {

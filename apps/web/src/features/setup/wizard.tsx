@@ -10,6 +10,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
 import { useShellServices, bootstrapKey } from '../../app/context.js';
+import { createRegistries } from '../../lib/registries.js';
 import { setupClient, type createSetupClient } from './api.js';
 
 type Client = ReturnType<typeof createSetupClient>;
@@ -38,11 +39,14 @@ function Form({ children, action, submit = 'continue' }: { children: ReactNode; 
     event.preventDefault(); const data = new FormData(event.currentTarget); void state.run(() => action(data));
   }}><fieldset disabled={state.busy} className="space-y-4">{children}<Button type="submit">{t('setup/setup:' + (state.busy ? 'saving' : submit))}</Button></fieldset></form>;
 }
-export function SetupWizard({ client = setupClient }: { client?: Client }) {
+/** Step 8 is the registered import step; it finishes setup itself. */
+const finalStep = 'setupSteps.setup.import';
+export function SetupWizard({ client = setupClient, registries = createRegistries() }: { client?: Client; registries?: ReturnType<typeof createRegistries> }) {
   const services = useShellServices(), queries = useQueryClient();
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false });
   const [override, setOverride] = useState<number | null>(null);
-  const step = Math.min(7, override ?? status.data?.currentStep ?? 0);
+  const step = Math.min(8, override ?? status.data?.currentStep ?? 0);
+  const Final = registries.setupSteps.all().find((entry) => entry.id === finalStep && entry.enabled)?.component;
   const session = useQuery({ queryKey: bootstrapKey, queryFn: () => services.loadBootstrap(), enabled: step >= 2, retry: false });
   const catalog = useQuery({ queryKey: ['setup', 'catalog'], queryFn: () => client.catalog(), enabled: step === 3 });
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
@@ -87,7 +91,7 @@ export function SetupWizard({ client = setupClient }: { client?: Client }) {
     : status.isPending && !jobId ? <p role="status">{t('setup/setup:loading')}</p>
     : jobId || restoreState === 'running' ? <p role="status">{t('setup/setup:restoring')}</p>
     : <>
-      <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {step + 1} / 8</p>
+      <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {step + 1} / 9</p>
       <h2 className="text-xl font-semibold">{t('setup/setup:step' + step)}</h2>
       {error && <Alert>{t('setup/setup:' + error)}</Alert>}
       {restoreState === 'failed' && <Alert>{t('setup/setup:restoreFailed')}</Alert>}
@@ -147,9 +151,7 @@ export function SetupWizard({ client = setupClient }: { client?: Client }) {
           <Button disabled={busy} variant="outline" onClick={() => void run(async () => { await client.call('smtp', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:skipEmail')}</Button></>}
         {step === 6 && <><p>{t('setup/setup:stripeHint')}</p><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></>}
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>
-          {backupReady || status.data?.completedSteps.includes(7) ? <Button disabled={busy} onClick={() => void run(async () => {
-            await client.call('finish', { choice: 'fresh', revision }); setBackupKey(null); setDone(true);
-          })}>{t('setup/setup:finish')}</Button>
+          {backupReady || status.data?.completedSteps.includes(7) ? <Button disabled={busy} onClick={() => { setBackupKey(null); setOverride(8); }}>{t('setup/setup:next')}</Button>
           : backupKey ? <><p>{t('setup/setup:keyWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{backupKey.privateKey}</pre>
             <p className="break-all text-sm">{backupKey.publicKey}</p><Button variant="outline" onClick={() => {
               const url = URL.createObjectURL(new Blob([backupKey.privateKey + '\n'], { type: 'text/plain' }));
@@ -158,9 +160,13 @@ export function SetupWizard({ client = setupClient }: { client?: Client }) {
               await client.call('confirmBackupKey', { revision, privateKey: text(data, 'privateKey').trim() }); setBackupKey(null); setBackupReady(true); await refresh();
             }}><Field name="privateKey" type="password" /><Label className="flex gap-2"><input type="checkbox" required />{t('setup/setup:savedKey')}</Label></Form></>
           : <Form submit="generateKey" action={async (data) => { setBackupKey(await client.call('backups', { revision, destination: destination(data) })); await refresh(); }}><Destination /></Form>}
-          <Button disabled={busy} variant="outline" onClick={() => void run(async () => {
-            await client.call('finish', { choice: 'fresh', revision, skipBackups: true }); setBackupKey(null); setDone(true);
-          })}>{t('setup/setup:skipBackups')}</Button></>}
+          {/* Step 8 sends `skipBackups` when the backup step was not completed. */}
+          <Button disabled={busy} variant="outline" onClick={() => { setBackupKey(null); setOverride(8); }}>{t('setup/setup:skipBackups')}</Button></>}
+        {step === 8 && (Final ? <><Final />{!status.data?.completedSteps.includes(7) && <Button variant="outline" onClick={() => setOverride(7)}>{t('setup/setup:backToBackups')}</Button>}</>
+          : <Button disabled={busy} onClick={() => void run(async () => {
+            const deferred = status.data?.completedSteps.includes(7) ? {} : { skipBackups: true as const };
+            await client.call('finish', { choice: 'fresh', revision, ...deferred }); setDone(true);
+          })}>{t('setup/setup:finish')}</Button>)}
       </>}
     </>}
   </Card></main></FormContext.Provider>;

@@ -78,6 +78,8 @@ describe('setup wizard contracts', () => {
   it('keeps billing and member emails off after importing or starting fresh', () => {
     expect(setupFinishRequestSchema.safeParse({ choice: 'import', importId: id, revision: 1 }).success).toBe(true);
     expect(setupFinishRequestSchema.safeParse({ choice: 'import', revision: 1 }).success).toBe(false);
+    expect(setupFinishRequestSchema.safeParse({ choice: 'import', importId: id, revision: 1, skipBackups: true }).success).toBe(true);
+    expect(setupFinishRequestSchema.safeParse({ choice: 'import', importId: id, revision: 1, skipBackups: false }).success).toBe(false);
     expect(setupFinishRequestSchema.safeParse({ choice: 'fresh', importId: id, revision: 1 }).success).toBe(false);
     const result = { completed: true, billingEnabled: false, memberEmailsEnabled: false, revision: 2 };
     expect(setupFinishResponseSchema.safeParse({ data: result }).success).toBe(true);

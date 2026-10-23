@@ -5,7 +5,8 @@
 `createImportStep({ imports, scope, clock })` accepts the import pipeline's gym-scoped
 `get` method. `finish(setup, context, input)` delegates fresh starts to the setup
 service. For an import, it requires the original setup owner, the completed backup
-step, a current revision, and a successful committed import belonging to that gym.
+step (or the payments step when `skipBackups` defers backups), a current revision,
+and a successful committed import belonging to that gym.
 An unknown or other-gym import returns 404. A running import returns 409.
 
 Import progress is read from storage between short database transactions. Finishing
@@ -22,14 +23,15 @@ another dry run before committing. Changing the file, mapping, mapper, or duplic
 policy invalidates the previous dry run. Error-list failures can be retried without
 starting another import; setup can finish only with a successful committed run.
 
-Composition: pass the runtime's `importPipeline` to `configureImportStep`, and have
-the existing setup finish handler call `importStep().finish(service, context, input)`.
-Keep that endpoint's existing permission and setup-owner checks. Registering another
-route with the same path would duplicate the frozen setup contract. Tests exercise
-the existing route factory with its finish method composed this way.
+Deferring backups (`skipBackups: true`, on either choice) clears any backup destination
+whose key was never confirmed, as a fresh finish does, and records step 8 without step 7.
 
-The web contribution exports `ImportStep` through `setupSteps.setup.import`.
-The wizard must render this registered component at step 8 after backup confirmation,
-instead of finishing directly at step 7. The current import finish contract cannot
-carry `skipBackups`; supporting imports after deferring backups requires that
-contract extension and the corresponding setup progress transition.
+Composition: the runtime passes its `importPipeline` to `configureImportStep`, and the
+setup finish route calls `importStep().finish(service, context, input)` with its existing
+permission and setup-owner checks. Without a configured pipeline, import finishes fail
+closed.
+
+The web contribution exports `ImportStep` through `setupSteps.setup.import`, which the
+wizard renders at step 8, after the backup key is confirmed or backups are set up later.
+The step sends `skipBackups` when the backup step is not complete; the wizard offers a
+way back to the backup step in that case.

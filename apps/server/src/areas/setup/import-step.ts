@@ -24,13 +24,14 @@ export function createImportStep(options: { imports?: ImportRuns; scope?: typeof
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const invalid = () => new AppError('invalid_request', t('setup/import-step:invalidImport'));
   const missing = () => new AppError('not_found', t('setup/import-step:invalidImport'));
-  async function current(tx: Transaction, context: MutationContext, revision: number) {
+  // Deferring backups follows the payments step (6) instead of a confirmed backup step (7).
+  async function current(tx: Transaction, context: MutationContext, revision: number, previousStep = 7) {
     const [gym] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
     const state = (gym?.settings as { setup?: { completed: boolean; completedSteps: number[]; ownerId?: string } } | undefined)?.setup;
     if (!gym || !state || state.completed || context.actor.kind !== 'user' || state.ownerId !== context.actor.userId)
       throw new AppError('not_found', t('setup/import-step:setupUnavailable'));
     assertRevised(gym.revision === revision ? [gym] : []);
-    if (!state.completedSteps.includes(7)) throw new AppError('conflict', t('setup/import-step:precedingStep'));
+    if (!state.completedSteps.includes(previousStep)) throw new AppError('conflict', t('setup/import-step:precedingStep'));
     return { gym, state };
   }
   async function verify(context: MutationContext, importId: string): Promise<ImportJob> {
@@ -51,15 +52,17 @@ export function createImportStep(options: { imports?: ImportRuns; scope?: typeof
     verify,
     async finish(setup: SetupFinisher, context: MutationContext, input: SetupFinishRequest) {
       if (input.choice === 'fresh') return setup.finish(context, input);
+      const previous = input.skipBackups ? 6 : 7;
       // Authorize before looking up progress; storage is called outside either transaction.
-      await scope(context.gymId, (tx) => current(tx, context, input.revision));
+      await scope(context.gymId, (tx) => current(tx, context, input.revision, previous));
       const job = await verify(context, input.importId);
-      // TODO(CCR): the import choice has no `skipBackups`, so it follows a confirmed backup step.
       return scope(context.gymId, async (tx) => {
         // Recheck under the write lock in case setup changed while reading import storage.
-        const { gym, state } = await current(tx, context, input.revision);
+        const { gym, state } = await current(tx, context, input.revision, previous);
         const guard = revisionGuard(gyms.revision, input.revision);
-        const after = assertRevised(await tx.update(gyms).set({ billingEnabled: false, memberEmailsEnabled: false,
+        // As in a fresh finish, deferring backups clears any destination whose key was never confirmed.
+        const backups = input.skipBackups ? { backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: null } : {};
+        const after = assertRevised(await tx.update(gyms).set({ ...backups, billingEnabled: false, memberEmailsEnabled: false,
           settings: { ...gym.settings as object, setup: { ...state, completed: true,
             completedSteps: [...new Set([...state.completedSteps, 8])].sort((a, b) => a - b) } },
           revision: guard.next, updatedAt: clock.now(),

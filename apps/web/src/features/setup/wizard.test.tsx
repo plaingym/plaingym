@@ -31,12 +31,14 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
     return Response.json({}, { status: 500 });
   });
   const client = createSetupClient(fetcher as typeof fetch);
+  // The registered step 8 component uses the global fetch.
+  vi.stubGlobal('fetch', fetcher);
   const query = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={client} /></ShellServicesContext.Provider></QueryClientProvider>);
   return { fetcher, client, query };
 }
 beforeEach(() => { sessionStorage.clear(); vi.clearAllMocks(); });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('setup wizard', () => {
   it('takes the installer token out of the URL and sends it only on bootstrap actions', async () => {
     window.history.replaceState(null, '', '/setup#token=private-install-token');
@@ -48,12 +50,21 @@ describe('setup wizard', () => {
     expect(fetcher).toHaveBeenCalledWith('/api/setup/start', expect.objectContaining({ headers: expect.objectContaining({ 'X-Setup-Token': 'private-install-token' }) }));
     expect(fetcher.mock.calls.find(([path]) => path === '/api/setup')?.[1]?.headers).not.toHaveProperty('X-Setup-Token');
   });
-  it('offers setup later and finishes without asking for S3 credentials', async () => {
+  it('offers setup later and finishes from step 8 without asking for S3 credentials', async () => {
     const { fetcher } = start(7);
     await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
-    await screen.findByText(/Your gym is ready/);
+    expect(await screen.findByText('Step 9 / 9')).toBeDefined();
+    expect(fetcher.mock.calls.find(([path]) => path === '/api/setup/finish')).toBeUndefined();
+    await userEvent.click(screen.getByRole('button', { name: 'Start fresh' }));
+    await screen.findByText(/Setup is complete/);
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/finish');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'fresh', revision: 1, skipBackups: true });
+  });
+  it('returns from step 8 to the backup step when backups were deferred', async () => {
+    start(7);
+    await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to backups' }));
+    expect(await screen.findByRole('button', { name: 'Generate backup key' })).toBeDefined();
   });
   it('starts without asking for a gym bootstrap, then signs in the newly created owner', async () => {
     const { fetcher } = start();
@@ -92,11 +103,15 @@ describe('setup wizard', () => {
     expect(screen.queryByRole('button', { name: 'Finish setup' })).toBeNull();
     expect(screen.getByText(/Only your backup private key can open them/)).toBeDefined();
   });
-  it('can finish after a confirmed key survives a reload', async () => {
-    start(8, [0, 1, 2, 3, 4, 5, 6, 7]);
-    await userEvent.click(await screen.findByRole('button', { name: 'Finish setup' }));
-    expect(await screen.findByText(/Your gym is ready/)).toBeDefined();
+  it('can finish at step 8 after a confirmed key survives a reload', async () => {
+    const { fetcher } = start(8, [0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(await screen.findByText('Import or start fresh')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Back to backups' })).toBeNull();
+    await userEvent.click(await screen.findByRole('button', { name: 'Start fresh' }));
+    expect(await screen.findByText(/Setup is complete/)).toBeDefined();
     expect(screen.getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login');
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/finish');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'fresh', revision: 1 });
   });
   it('retains entered fields on a failed save', async () => {
     const { fetcher } = start(2);

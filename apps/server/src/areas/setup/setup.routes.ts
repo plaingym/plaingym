@@ -7,6 +7,7 @@ import type { RequestEnvironment } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { setupService, type createSetupService } from './setup.js';
 import { defaultSetupRestore, type createSetupRestore } from './setup.restore.js';
+import { importStep, type ImportStep } from './import-step.js';
 
 type Service = ReturnType<typeof createSetupService>;
 function owner(c: Context<RequestEnvironment>): MutationContext {
@@ -15,8 +16,9 @@ function owner(c: Context<RequestEnvironment>): MutationContext {
   if (!principal.roles.includes('owner')) throw new AppError('forbidden', 'Owner access required');
   return { gymId: gym.gymId, actor: { kind: 'user', userId: principal.userId } };
 }
+/** Finishing (step 8) goes through the import step, which hands fresh starts back to the setup service. */
 export function createSetupRoutes(getService: () => Service = setupService,
-  providedRestore?: () => ReturnType<typeof createSetupRestore>) {
+  providedRestore?: () => ReturnType<typeof createSetupRestore>, getImportStep: () => ImportStep = importStep) {
   let restore: ReturnType<typeof createSetupRestore> | undefined;
   const getRestore = () => providedRestore?.() ?? (restore ??= defaultSetupRestore(getService()));
   const recover = async () => { if (providedRestore || process.env.BACKUP_STAGING_DIR) await getRestore().recover(); };
@@ -42,7 +44,7 @@ export function createSetupRoutes(getService: () => Service = setupService,
           case 'stripe': return c.json({ data: await service.stripe(context, setupContracts.stripe.body.parse(input)) }, 200);
           case 'backups': return c.json({ data: await service.backups(context, setupContracts.backups.body.parse(input)) }, 200);
           case 'confirmBackupKey': return c.json({ data: await service.confirmBackupKey(context, setupContracts.confirmBackupKey.body.parse(input)) }, 200);
-          case 'finish': return c.json({ data: await service.finish(context, setupContracts.finish.body.parse(input)) }, 200);
+          case 'finish': return c.json({ data: await getImportStep().finish(service, context, setupContracts.finish.body.parse(input)) }, 200);
         }
       });
     }),

@@ -62,8 +62,7 @@ function server(role: StaffRole | 'anonymous', userId = ownerA, gymId = gymA) {
     await next();
   });
   app.onError(errorHandler);
-  // This is the same composition hook the integration owner will connect in setup.routes.ts.
-  createServerRegistry({ routes: createSetupRoutes(() => ({ ...setup, finish: (context, input) => step.finish(setup, context, input) })) })
+  createServerRegistry({ routes: createSetupRoutes(() => setup, undefined, () => step) })
     .mount(app, authorize, new Set());
   return app;
 }
@@ -144,6 +143,17 @@ describe('setup step 8: import or start fresh', () => {
       completed: false, completedSteps: [0, 1, 2, 3, 4, 5, 6], ownerId: ownerA } } }).where(eq(gyms.id, gymA)));
     expect((await finishRequest(server('owner'), { choice: 'import', revision: before.revision, importId })).status).toBe(409);
     expect(await revision(gymA)).toMatchObject({ revision: before.revision, billingEnabled: true, memberEmailsEnabled: true });
+  });
+  it('finishes an import after deferred backups and clears any unconfirmed destination', async () => {
+    const importId = await importRun(gymA, ownerA);
+    await database.forGym(gymA, (tx) => tx.update(gyms).set({ backupDestination: 's3', settings: { setup: {
+      completed: false, completedSteps: [0, 1, 2, 3, 4, 5, 6], ownerId: ownerA } } }).where(eq(gyms.id, gymA)));
+    const before = await revision(gymA);
+    const response = await finishRequest(server('owner'), { choice: 'import', revision: before.revision, importId, skipBackups: true });
+    expect(response.status).toBe(200);
+    const after = await revision(gymA);
+    expect(after).toMatchObject({ backupDestination: null, s3Config: null, backupPublicKey: null, backupBlobKey: null, billingEnabled: false, memberEmailsEnabled: false });
+    expect((after.settings as { setup: { completed: boolean; completedSteps: number[] } }).setup).toMatchObject({ completed: true, completedSteps: [0, 1, 2, 3, 4, 5, 6, 8] });
   });
   it('checks the revision again after reading import progress outside the transaction', async () => {
     const importId = await importRun(gymA, ownerA), before = await revision(gymA);

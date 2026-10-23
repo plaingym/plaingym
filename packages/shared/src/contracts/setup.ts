@@ -83,9 +83,10 @@ export const setupRestoreResponseSchema = z.strictObject({ data: z.discriminated
   z.strictObject({ status: z.literal('restored'), jobId: idSchema, billingEnabled: z.literal(false), next: z.literal('login') }),
   z.strictObject({ status: z.literal('failed'), jobId: idSchema, message: z.string().min(1) }),
 ]) });
+/** Step 8. `skipBackups` defers backups: it follows the payments step and clears any unconfirmed destination. */
 export const setupFinishRequestSchema = z.discriminatedUnion('choice', [
   z.strictObject({ choice: z.literal('fresh'), revision: revisionSchema, skipBackups: z.literal(true).optional() }),
-  z.strictObject({ choice: z.literal('import'), revision: revisionSchema, importId: idSchema }),
+  z.strictObject({ choice: z.literal('import'), revision: revisionSchema, importId: idSchema, skipBackups: z.literal(true).optional() }),
 ]);
 export const setupFinishResponseSchema = z.strictObject({ data: z.strictObject({
   completed: z.literal(true), billingEnabled: z.literal(false), memberEmailsEnabled: z.literal(false), revision: revisionSchema,
