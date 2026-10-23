@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.staff',
       labelKey: 'staff/profiles:title',
       permission: { kind: 'staff', capability: 'staff.manage' },
-      enabled: false,
+      enabled: true,
       href: '/admin/staff',
     },
   ],
