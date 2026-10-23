@@ -1,3 +1,22 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "missingMember": "Add an email, or a first and last name, to match a member.",
+  "invalidBirthDate": "Use a date of birth like 2010-05-31.",
+  "recordKind": "Add either a rank with its promotion date, or an attendance date.",
+  "bothKinds": "A row holds either a promotion or an attendance, not both.",
+  "missingDate": "Add the date.",
+  "invalidDate": "Use a date like 2024-03-01, or a date and time like 2024-03-01T18:30, optionally with a UTC offset.",
+  "futureDate": "This date is in the future.",
+  "missingRank": "Add the rank.",
+  "missingProgram": "Promotions need a program.",
+  "duplicateRow": "Same as row {row} in this file.",
+  "unknownMember": "No member matches this row.",
+  "ambiguousMember": "Several members match this row. Add an email, both names, or a date of birth to tell them apart.",
+  "unknownProgram": "No program has this name.",
+  "ambiguousProgram": "Several programs match this name.",
+  "noRankSystem": "This program has no rank system.",
+  "unknownRank": "No rank with this name exists in the program's rank system.",
+  "ambiguousRank": "Several ranks in the program's rank system have this name.",
+  "invalidSubRank": "Use a sub-rank number from 0 to {max}, or the name of one of this rank's sub-ranks.",
+  "historyConflict": "This promotion conflicts with the member's promotion history in this program."
 }
