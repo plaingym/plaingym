@@ -48,6 +48,8 @@ jobs:
           shellcheck -x -s sh deploy/*.sh deploy/container/*.sh deploy/test/*.sh
       - name: Test update orchestration
         run: sudo sh deploy/test/update.sh
+      - name: Test install and bootstrap checks
+        run: sudo sh deploy/test/install.sh
       - name: Build on the native CPU
         run: |
           docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=$SOURCE_URL" --build-arg "REVISION=$REVISION" --build-arg "VERSION=$VERSION" -t "$IMAGE" .

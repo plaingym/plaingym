@@ -1,14 +1,12 @@
 #cloud-config
 # SPDX-License-Identifier: AGPL-3.0-only
-# Maintainer test of an unpublished build. Replace HOSTNAME and EMAIL.
-# User-data installs Docker, then waits up to 30 minutes for two private uploads:
-#   /root/plaingym-deploy.tar (tar of deploy's contents, not its parent directory)
-#   /root/plaingym-image.tar  (docker save plaingym:v0.0.0-local)
-# While cloud-init runs, scp those files as *.partial; rename each to its final
-# name only after its upload finishes. SSH remains available during the wait.
+# Maintainer test of an unpublished build, as provider user-data. Build the bundle
+# with deploy/test/prepare-bundle.ps1, upload it and bootstrap.sh to private HTTPS
+# storage, then replace BOOTSTRAP_URL, BUNDLE_URL, SHA256, HOSTNAME and EMAIL.
+# This is the same one command an operator can paste over SSH instead.
 # No task branch, image, tag, or artifact needs to be published.
 package_update: true
-packages: [ca-certificates, curl]
+packages: [ca-certificates, curl, python3]
 write_files:
   - path: /root/install-plaingym-local.sh
     permissions: '0700'
@@ -17,24 +15,7 @@ write_files:
       # SPDX-License-Identifier: AGPL-3.0-only
       set -eu
       umask 077
-      install -d -m 0755 /etc/apt/keyrings
-      curl --fail --silent --show-error --location --proto '=https' https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-      chmod 0644 /etc/apt/keyrings/docker.asc
-      . /etc/os-release
-      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' "$(dpkg --print-architecture)" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
-      apt-get update
-      DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-      systemctl enable --now docker
-      attempts=0
-      until [ -f /root/plaingym-deploy.tar ] && [ -f /root/plaingym-image.tar ]; do
-        attempts=$((attempts + 1))
-        [ "$attempts" -lt 360 ] || { echo 'Private deployment uploads did not arrive' >&2; exit 1; }
-        sleep 5
-      done
-      staging=$(mktemp -d /root/plaingym-deploy.XXXXXXXX)
-      trap 'rm -rf -- "$staging"' EXIT
-      tar -xf /root/plaingym-deploy.tar -C "$staging"
-      docker load -i /root/plaingym-image.tar
-      sh "$staging/install.sh" --hostname HOSTNAME --email EMAIL --image plaingym:v0.0.0-local --local-image
+      curl --fail --silent --show-error --location --proto '=https' 'BOOTSTRAP_URL' \
+        | sh -s -- --bundle-url 'BUNDLE_URL' --sha256 SHA256 -- --hostname HOSTNAME --email EMAIL
 runcmd:
   - [sh, /root/install-plaingym-local.sh]

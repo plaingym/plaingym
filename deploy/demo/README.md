@@ -149,10 +149,9 @@ new bundle and its new checksum; no new hosting service or server-side upload
 step is needed. These commands follow Cloudflare's [AWS CLI example](https://developers.cloudflare.com/r2/examples/aws/aws-cli/)
 and [presigned URL documentation](https://developers.cloudflare.com/r2/api/s3/presigned-urls/).
 
-The host setup is the unchanged bootstrap block from `deploy/install.sh`, guarded
-by exact boundaries in `host.sh`; shared configuration helpers come from `lib.sh`.
-This avoids maintaining a second copy while the base installer also starts a
-single-gym stack. The local tests check that those boundaries still exist.
+Host setup (Docker, firewall, unattended upgrades, swap) is the shared
+`deploy/host.sh` that the gym installer also runs, so there is one copy; shared
+configuration helpers come from `lib.sh`.
 
 ## Local validation
 

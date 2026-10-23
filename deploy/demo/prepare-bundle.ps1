@@ -15,11 +15,8 @@ if ($LASTEXITCODE -ne 0 -or $appArchitecture -ne $Architecture) { throw 'Build a
 $caddyImage = 'plaingym-caddy:v2.11.7-cf0.2.4'
 docker build --platform "linux/$Architecture" -t $caddyImage -f (Join-Path $PSScriptRoot 'Dockerfile') $PSScriptRoot
 if ($LASTEXITCODE -ne 0) { throw 'Prebuilt Caddy image failed.' }
-# Reuse the standard maintainer app export, which tags the app v0.0.0-local.
-& (Join-Path $deployRoot 'test/prepare-bundle.ps1') -Image $Image
-if ($LASTEXITCODE -ne 0) { throw 'App export failed.' }
 New-Item -ItemType Directory -Force -Path (Join-Path $staging 'deploy/demo/images'), (Join-Path $staging 'deploy/postgres') | Out-Null
-foreach ($file in @('compose.yaml', 'lib.sh', 'install.sh')) { Copy-Item -LiteralPath (Join-Path $deployRoot $file) -Destination (Join-Path $staging "deploy/$file") }
+foreach ($file in @('compose.yaml', 'lib.sh', 'host.sh', 'install.sh')) { Copy-Item -LiteralPath (Join-Path $deployRoot $file) -Destination (Join-Path $staging "deploy/$file") }
 Copy-Item -LiteralPath (Join-Path $deployRoot 'postgres/01-roles.sh') -Destination (Join-Path $staging 'deploy/postgres/01-roles.sh')
 foreach ($file in @('install.sh', 'host.sh', 'lib.sh', 'update.sh', 'snapshots.py', 'bootstrap.sh', 'config.py', 'compose.yaml', 'Caddyfile', 'Caddyfile.local.conf', 'README.md')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $staging "deploy/demo/$file")
@@ -33,7 +30,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Caddy export failed.' }
 [IO.File]::WriteAllText((Join-Path $staging 'deploy/demo/images.env'), "# SPDX-License-Identifier: AGPL-3.0-only`nAPP_IMAGE=$AppTag`nCADDY_IMAGE=$caddyImage`nBUNDLE_ARCHITECTURE=$Architecture`n", [Text.UTF8Encoding]::new($false))
 $archivePath = Join-Path $bundleOutput "plaingym-demo-$Architecture.tar"
 # Explicit members exclude credentials, local test fixtures and stale staging files.
-tar -cf $archivePath -C $staging deploy/compose.yaml deploy/lib.sh deploy/install.sh deploy/postgres/01-roles.sh deploy/demo/install.sh deploy/demo/host.sh deploy/demo/lib.sh deploy/demo/update.sh deploy/demo/snapshots.py deploy/demo/bootstrap.sh deploy/demo/config.py deploy/demo/compose.yaml deploy/demo/Caddyfile deploy/demo/Caddyfile.local.conf deploy/demo/README.md deploy/demo/images.env deploy/demo/images/app.tar deploy/demo/images/caddy.tar
+tar -cf $archivePath -C $staging deploy/compose.yaml deploy/lib.sh deploy/host.sh deploy/install.sh deploy/postgres/01-roles.sh deploy/demo/install.sh deploy/demo/host.sh deploy/demo/lib.sh deploy/demo/update.sh deploy/demo/snapshots.py deploy/demo/bootstrap.sh deploy/demo/config.py deploy/demo/compose.yaml deploy/demo/Caddyfile deploy/demo/Caddyfile.local.conf deploy/demo/README.md deploy/demo/images.env deploy/demo/images/app.tar deploy/demo/images/caddy.tar
 if ($LASTEXITCODE -ne 0) { throw 'Demo bundle export failed.' }
 $checksum = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
 Write-Output "Bundle: $archivePath"

@@ -54,16 +54,44 @@ sudo sh install.sh --hostname gym.example.org --email owner@example.org \
 ```
 
 Substitute an existing image tag or digest. No released image is assumed to
-exist. For a maintainer build, export it using `docker save`, transfer the
-archive privately, run `sudo docker load -i image.tar`, and pass
-`--image plaingym:v0.0.0-local --local-image`. The image is never built on the
-server. Use the matching CPU architecture.
+exist. The image is never built on the server; use the matching CPU
+architecture.
+
+Before changing anything, the installer checks its inputs: the hostname must
+resolve (A, and AAAA if present) only to this server, so use DNS-only records,
+not a proxy. If a check fails, nothing on the server was changed.
+
+### One command from a bundle
+
+For a maintainer build, create a checksummed bundle (deployment files plus the
+image) on your own computer:
+
+```powershell
+deploy/test/prepare-bundle.ps1 -Image YOUR_TESTED_IMAGE
+```
+
+Upload `deploy/dist/plaingym-ARCH.tar` and `deploy/bootstrap.sh` to private
+HTTPS storage, for example an R2 bucket with presigned links (the commands are in
+`demo/README.md`, **Host the bundle in the existing R2 bucket**). Then paste the
+command it prints on the server:
+
+```sh
+curl --fail --silent --show-error --location --proto '=https' 'BOOTSTRAP_URL'   | sudo sh -s -- --bundle-url 'BUNDLE_URL' --sha256 SHA256   -- --hostname gym.example.org --email owner@example.org
+```
+
+`bootstrap.sh` verifies the SHA256 before extracting anything, refuses a bundle
+for another CPU architecture, and runs `install.sh --image-archive`. A bundle
+already on the server can be passed with `--bundle-file PATH` instead.
 
 The installer configures Docker, firewall rules, unattended OS security
 updates, and swap. It generates six independent secrets, then starts the
 stack in `/opt/plaingym`. Its `.env` is mode 0600 in a mode-0700 directory;
 public bootstrap/configuration files are readable by their containers.
-Re-running against an existing `.env` stops without replacing secrets.
+Re-running the same command is safe: it keeps `.env` and its secrets, leaves
+the installed files and the running image alone, starts anything that stopped,
+and prints the setup link again (or the sign-in address once setup is done). A
+re-run with a different hostname, email, or image stops without changes; change
+the image with `update.sh`.
 Containers have rotating logs. Only Caddy publishes ports. The app runs as
 `node` with a read-only root filesystem, dropped capabilities, no Docker
 access, a small temporary filesystem, and disk-backed state/staging storage.
@@ -92,8 +120,8 @@ deferred with **Set up later**; the health page reports them as not configured.
 
 `cloud-init.yaml` automates the same installer from a reviewed public commit.
 Replace its commit, hostname, email, and image placeholders before supplying
-it as provider user-data. `cloud-init-local.yaml` accepts a directly transferred
-bundle and image for unpublished builds; its transfer instructions are inline.
+it as provider user-data. `cloud-init-local.yaml` runs the one bundle command
+above as user-data for unpublished builds.
 
 For manual Compose use, copy `.env.example` to `.env`, set real independent
 URL-safe values and an image pin, protect it with `chmod 600 .env`, and run
