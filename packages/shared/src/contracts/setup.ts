@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { currencySchema, idSchema, revisionSchema } from './common.js';
+import { gymAddressSchema } from './settings.js';
 
 export const setupStepSchema = z.int32().min(0).max(8);
 export const setupTimezoneSchema = z.string().regex(/^(UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)+)$/)
@@ -19,7 +20,7 @@ export const setupOwnerRequestSchema = z.strictObject({
 export const setupOwnerResponseSchema = z.strictObject({ data: z.strictObject({ userId: idSchema }) });
 export const setupGymDetailsSchema = z.strictObject({
   name: z.string().trim().min(1), timezone: setupTimezoneSchema,
-  address: z.record(z.string(), z.string()), currency: currencySchema,
+  address: gymAddressSchema, currency: currencySchema,
   branding: z.strictObject({ logoKey: z.string().nullable(), primaryColor: z.string().regex(/^#[a-fA-F0-9]{6}$/).nullable() }),
   revision: revisionSchema,
 });

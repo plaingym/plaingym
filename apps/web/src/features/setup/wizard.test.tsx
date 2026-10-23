@@ -66,6 +66,22 @@ describe('setup wizard', () => {
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/finish');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'fresh', revision: 1, skipBackups: true });
   });
+  it('sends the street address in the shared address shape and omits it when blank', async () => {
+    const { fetcher } = start(2);
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Mat Academy');
+    await userEvent.type(screen.getByLabelText('Street address'), ' 123 Main ');
+    await userEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+    await screen.findByText('Step 4 / 9');
+    const gym = (index: number) => JSON.parse(String(fetcher.mock.calls.filter(([path]) => path === '/api/setup/gym')[index]?.[1]?.body)) as { address: unknown };
+    expect(gym(0).address).toEqual({ line1: '123 Main' });
+    cleanup();
+    const blank = start(2);
+    await userEvent.type(await screen.findByLabelText('Gym name'), 'Mat Academy');
+    await userEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+    await screen.findByText('Step 4 / 9');
+    const call = blank.fetcher.mock.calls.find(([path]) => path === '/api/setup/gym');
+    expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ address: {} });
+  });
   it('returns from step 8 to the backup step when backups were deferred', async () => {
     start(7);
     await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));

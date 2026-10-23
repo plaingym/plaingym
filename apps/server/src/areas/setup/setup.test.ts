@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { gyms, auditEvents, ranks, programs, staffRoles } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
-import { setupContracts, setupStatusResponseSchema } from '@plaingym/shared/contracts';
+import { gymAddressSchema, setupContracts, setupStatusResponseSchema } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { createApp } from '../../core/app.js';
 import { TestClock } from '../../core/clock.js';
@@ -94,10 +94,14 @@ describe('first-boot setup', () => {
     const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
     expect(cookie).toBeTruthy();
     let revision = (await service.status()).revision;
-    const details = { name: 'Mat Academy', timezone: 'America/Vancouver', currency: 'CAD', address: { street: '123 Main' }, branding: { logoKey: null, primaryColor: '#2563eb' } };
+    const details = { name: 'Mat Academy', timezone: 'America/Vancouver', currency: 'CAD', address: { line1: '123 Main' }, branding: { logoKey: null, primaryColor: '#2563eb' } };
     expect((await call('/api/setup/gym', 'PUT', { ...details, revision })).status).toBe(401);
     expect((await call('/api/setup/website', 'PUT', { revision, websiteEnabled: true, existingSiteUrl: null }, cookie)).status).toBe(409);
+    // Settings and the shell bootstrap read the same address shape, so setup must not store any other.
+    expect((await call('/api/setup/gym', 'PUT', { ...details, address: { street: '123 Main' }, revision }, cookie)).status).toBe(400);
     const updated = await call('/api/setup/gym', 'PUT', { ...details, revision }, cookie); expect(updated.status).toBe(200);
+    const [stored] = await database.forSystem((tx) => tx.select({ address: gyms.address }).from(gyms));
+    expect(gymAddressSchema.parse(stored!.address)).toEqual({ line1: '123 Main' });
     expect((await call('/api/setup/gym', 'PUT', { ...details, revision }, cookie)).status).toBe(409);
     revision = (await service.status()).revision;
     expect((await call('/api/setup/packs', 'POST', { revision, packs: [{ packId: 'unknown', version: 1 }] }, cookie)).status).toBe(400);
