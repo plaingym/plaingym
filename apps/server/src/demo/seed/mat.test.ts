@@ -65,7 +65,8 @@ describe('demo mat seed', { timeout: 60_000 }, () => {
   it('creates a lived-in sandbox in a few seconds through the area services', async () => {
     const f = fixture(), started = performance.now();
     const sandbox = await f.service.create();
-    expect(performance.now() - started).toBeLessThan(15_000);
+    // A guard against gross regressions: alone a sandbox takes ~5 s, but full-suite load has taken it past 20 s.
+    expect(performance.now() - started).toBeLessThan(40_000);
     const now = f.time.now().getTime();
     const rows = await db.forGym(sandbox.gymId, async (tx) => ({
       members: await tx.select().from(members), households: await tx.select().from(households), roles: await tx.select().from(staffRoles),
