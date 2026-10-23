@@ -22,6 +22,9 @@ export interface RouteRegistration extends RegistryEntry {
   mount(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware): void;
 }
 
+/** Contract fields spread into a definition hold Zod schemas; `request` and `responses` document the route.
+ * Kept in the document, a recursive schema such as `z.json()` becomes circular once it has parsed a value. */
+const contractOnly = new Set(['params', 'query', 'body', 'response', 'contentType']);
 /** Authorization runs before request validation and the route handler. */
 export function route<const C extends RouteConfig>(
   definition: C & RouteAuthorization,
@@ -31,12 +34,13 @@ export function route<const C extends RouteConfig>(
   const permissions = [definition.permission, ...(definition.additionalPermissions ?? [])];
   if (!permissions.every(isRoutePermission)) throw new Error('A route must declare valid additional permissions');
   const config = createRoute(definition);
+  const documented = Object.fromEntries(Object.entries(config).filter(([key]) => !contractOnly.has(key))) as unknown as typeof config;
   return {
     id: `${definition.method.toUpperCase()} ${definition.path}`,
     definition: config,
     mount(app, authorize) {
       const middleware = definition.middleware ? [definition.middleware].flat() : [];
-      app.openapi({ ...config, middleware: [...permissions.map((permission) => authorize(permission)), ...middleware] }, handler);
+      app.openapi({ ...documented, middleware: [...permissions.map((permission) => authorize(permission)), ...middleware] }, handler);
     },
   };
 }

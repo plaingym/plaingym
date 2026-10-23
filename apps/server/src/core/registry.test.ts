@@ -98,6 +98,19 @@ describe('route declarations and server composition', () => {
     expect(source).toContain('createClient<paths>');
     expect(source).toContain('id: string');
   });
+  it('keeps contract schemas out of the document, even recursive ones that have parsed values', async () => {
+    const config = z.record(z.string(), z.json());
+    const contract = { method: 'post', path: '/criteria', permission: { kind: 'staff', capability: 'members.read' }, body: z.object({ config }), response: z.object({ ok: z.boolean() }) } as const;
+    const entry = route({ ...contract, request: { body: { content: { 'application/json': { schema: z.object({ config: config.openapi({ type: 'object', additionalProperties: {} }) }) } } } },
+      responses: { 200: { description: 'Saved', content: { 'application/json': { schema: contract.response } } } } }, (context) => context.json({ ok: true }, 200));
+    const app = new OpenAPIHono<RequestEnvironment>();
+    createServerRegistry({ routes: [entry] }).mount(app, allow, new Set());
+    contract.body.parse({ config: { target: 3, nested: [1, 'two'] } });
+    const document = JSON.parse(JSON.stringify(app.getOpenAPIDocument({ openapi: '3.0.3', info: { title: 'Fixture', version: '1' } })));
+    expect(document.paths['/criteria'].post).not.toHaveProperty('body');
+    expect(document.paths['/criteria'].post.requestBody).toBeDefined();
+    expect(entry.definition.permission).toEqual(contract.permission);
+  });
   it('does not run another method permission middleware on a matching path', async () => {
     const app = new OpenAPIHono<RequestEnvironment>();
     const get = route(
