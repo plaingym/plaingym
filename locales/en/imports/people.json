@@ -1,3 +1,24 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "required": "This value is required.",
+  "tooLong": "This value is too long.",
+  "unsupportedField": "The people import doesn't use this field. Remove it from the mapping.",
+  "medicalNotes": "Medical notes are never imported. Remove this column from the mapping and add notes on the member's profile.",
+  "invalidEmail": "Enter a valid email address.",
+  "invalidDate": "Enter a real past date, such as 2012-04-25.",
+  "ambiguousDate": "This date could be day-first or month-first. Use the YYYY-MM-DD format.",
+  "invalidStatus": "Use prospect, trial, active, frozen, cancelled, or visitor.",
+  "invalidBoolean": "Use yes or no.",
+  "invalidBillingDay": "Use a day of the month from 1 to 31.",
+  "invalidCustomer": "Use a Stripe customer ID, which starts with cus_.",
+  "invalidPaymentMethod": "Use a Stripe payment method ID, such as one starting with pm_.",
+  "duplicateInFile": "This person also appears in row {row}.",
+  "familyMismatch": "Rows in the same household have different values for this field.",
+  "ambiguousFamily": "This family matches more than one existing household. Review the family links before importing.",
+  "usedByOtherFamily": "Another household in this file uses the same ID.",
+  "customerInUse": "This Stripe customer already belongs to another household.",
+  "customerConflict": "This household already has a different Stripe customer.",
+  "paymentMethodInUse": "This payment method already belongs to another household.",
+  "paymentMethodNeedsCustomer": "A saved payment method needs the household's Stripe customer ID.",
+  "unnamedHousehold": "Imported household"
 }
