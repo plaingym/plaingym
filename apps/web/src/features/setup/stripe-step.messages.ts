@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+/** Feature-local fallback until the integration owner adds these keys to the locale catalog. */
+export const stripeStepMessages = {
+  title: 'Connect Stripe', intro: 'Use a restricted key from your Stripe Dashboard. Use test mode while setting up. Card details stay on Stripe’s pages.',
+  permissions: 'Key permissions', customers: 'Customers', intents: 'Payment Intents', checkout: 'Checkout Sessions', setupIntents: 'Setup Intents',
+  methods: 'Payment Methods', refunds: 'Charges and Refunds', webhooks: 'Webhook Endpoints', events: 'Events', disputes: 'Disputes',
+  write: 'Write', read: 'Read', other: 'Set every other permission to None.',
+  key: 'Restricted Stripe key', configure: 'Validate and connect', busy: 'Connecting…', skip: 'Set up later',
+  failed: 'Could not connect. Check the key, its permissions, and your connection, then try again.',
+  changed: 'Setup changed. Your key has been cleared. Try again with the current setup.',
+  invalid: 'Enter a restricted key beginning with rk_test_ or rk_live_.',
+  done: 'Stripe step saved. Continue to backups.', next: 'Continue to backups',
+};
