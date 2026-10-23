@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { forGym, forSystem, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
+import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { parseEncryptionKey, encryptSecret } from '../../core/secrets.js';
@@ -18,6 +18,7 @@ import { loadContentPacks } from '../ranks/packs.loader.js';
 import { createContentPackService } from '../ranks/packs.js';
 import { setupTestMessage } from '../../emails/setup/setup.js';
 import { processAlive, processStart, type ProcessLease } from './setup.process.js';
+import { createStripeStep } from './stripe-step.js';
 
 interface Progress { completedSteps: number[]; completed: boolean; ownerId?: string; backupRecipient?: string; }
 type Gym = typeof gyms.$inferSelect;
@@ -38,9 +39,11 @@ const missing = () => new AppError('not_found', 'Setup is unavailable');
 export function createSetupService(options: {
   key: Buffer; origin: string; clock?: Clock; scope?: typeof forGym; system?: typeof forSystem;
   provisionOwner?: ProvisionOwner; sendTest?: (config: SmtpConfig, message: EmailMessage) => Promise<void>;
-  env?: NodeJS.ProcessEnv;
+  env?: NodeJS.ProcessEnv; stripeProvisioner?: Parameters<typeof createStripeStep>[0]['provisioner'];
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem, clock = options.clock ?? defaultClock;
+  const stripeStep = createStripeStep({ key: options.key, origin: options.origin, clock, scope,
+    ...(options.stripeProvisioner ? { provisioner: options.stripeProvisioner } : {}) });
   const env = options.env ?? process.env;
   async function install() {
     if ((env.TENANCY ?? 'single') !== 'single' || env.DEMO_MODE === 'true') throw missing();
@@ -213,11 +216,8 @@ export function createSetupService(options: {
       const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, stored) });
       return { configured: true, test: 'sent' as const, revision: gym.revision };
     },
-    async stripe(context: MutationContext, input: { choice: 'skip' | 'configure'; revision: number }) {
-      if (input.choice !== 'skip') throw new AppError('invalid_request', 'Skip payment configuration to continue');
-      const gym = await save(context, input.revision, 6);
-      return { configured: false, mode: null, webhookRegistered: false, revision: gym.revision };
-    },
+    /** Step 6 validates the restricted key and registers the webhook outside any transaction. */
+    stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },
     async backups(context: MutationContext, input: SetupBackupRequest) {
       const { state } = await current(context, input.revision, 7);
       const privateKey = await generateIdentity(), publicKey = await identityToRecipient(privateKey);

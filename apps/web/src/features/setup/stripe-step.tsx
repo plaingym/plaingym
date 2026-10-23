@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { createTranslator } from '@plaingym/shared';
-import { locales } from '@plaingym/shared/locales';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Alert } from '../../components/ui/alert.js';
+import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
-import { stripeStepMessages } from './stripe-step.messages.js';
 
-const t = createTranslator({ ...locales.en, 'setup/stripe-step': { ...stripeStepMessages, ...locales.en?.['setup/stripe-step'] } });
 const label = (key: string) => t('setup/stripe-step:' + key);
 const permissions = ['customers', 'intents', 'checkout', 'setupIntents', 'methods', 'refunds', 'webhooks', 'events', 'disputes'];
 export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof fetch; onComplete?: () => void }) {

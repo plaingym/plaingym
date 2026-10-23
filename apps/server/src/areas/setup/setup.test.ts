@@ -33,7 +33,9 @@ const setupToken = 'private-setup-token-at-least-32-characters';
 const env = { AUTH_SECRET: 'setup-test-secret-with-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'auto' };
 const config = authConfig(env), sendTest = vi.fn(async () => { assertNoTransaction('setup test email'); });
 const ownerService = createOwnerService({ accounts: createAccountService(config), clock, async sendMagicLink() { throw new Error('Password bootstrap must not send a link'); } });
-const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest });
+const registered = vi.fn(async () => ({ endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' }));
+const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest,
+  stripeProvisioner: () => ({ async validate() { assertNoTransaction('setup Stripe validation'); }, register: registered }) });
 const smtp = createSmtpResolver({ key, env, scope: database.forGym });
 const auth = createAuthService({ config, async sendMagicLink() {} });
 let directory: string;
@@ -118,7 +120,12 @@ describe('first-boot setup', () => {
     expect(passwordLogin(config, await smtp.configured(gymId))).toBe(false);
     expect((await call('/api/auth/sign-in/email', 'POST', { email: owner.email, password: owner.password })).status).toBe(404);
     revision = (await service.status()).revision;
-    expect((await call('/api/setup/stripe', 'PUT', { choice: 'skip', revision }, cookie)).status).toBe(200);
+    const stripe = await call('/api/setup/stripe', 'PUT', { choice: 'configure', restrictedKey: 'rk_test_PrivateSetupKey', revision }, cookie);
+    expect(await stripe.json()).toMatchObject({ data: { configured: true, mode: 'test', webhookRegistered: true } });
+    expect(registered).toHaveBeenCalledWith(gymId, origin, revision);
+    const [configured] = await database.forSystem((tx) => tx.select().from(gyms));
+    expect(JSON.parse(decryptSecret(key, 'stripe_config', configured!.stripeConfig!))).toEqual({ apiKey: 'rk_test_PrivateSetupKey',
+      mode: 'test', endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' });
     revision = (await service.status()).revision;
     const destination = { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'gym-backups', accessKeyId: 'access-key', secretAccessKey: 'private-storage-key' };
     const backup = await call('/api/setup/backups', 'POST', { revision, destination }, cookie); expect(backup.status).toBe(200);
@@ -136,7 +143,7 @@ describe('first-boot setup', () => {
     expect(decryptSecret(key, 's3_config', row!.s3Config!)).toContain('private-storage-key');
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);
-    expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password/);
+    expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password|PrivateSetupKey|whsec_/);
     expect(audits.every((audit) => audit.occurredAt.getTime() === clock.now().getTime())).toBe(true);
     revision = (await service.status()).revision;
     expect((await call('/api/setup/finish', 'POST', { choice: 'fresh', revision }, cookie)).status).toBe(200);

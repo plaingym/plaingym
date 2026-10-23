@@ -50,6 +50,12 @@ describe('setup wizard', () => {
     expect(fetcher).toHaveBeenCalledWith('/api/setup/start', expect.objectContaining({ headers: expect.objectContaining({ 'X-Setup-Token': 'private-install-token' }) }));
     expect(fetcher.mock.calls.find(([path]) => path === '/api/setup')?.[1]?.headers).not.toHaveProperty('X-Setup-Token');
   });
+  it('renders the registered Stripe step at step 6', async () => {
+    start(6);
+    expect(await screen.findByLabelText('Restricted Stripe key')).toBeDefined();
+    expect(screen.getByText('Step 7 / 9')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Validate and connect' })).toBeDefined();
+  });
   it('offers setup later and finishes from step 8 without asking for S3 credentials', async () => {
     const { fetcher } = start(7);
     await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
@@ -93,7 +99,7 @@ describe('setup wizard', () => {
     expect(screen.getByText(/SPF and DKIM/)).toBeDefined();
     expect(screen.getByText(/AUTH_PASSWORD_LOGIN=auto/)).toBeDefined();
     await userEvent.click(await screen.findByRole('button', { name: 'Skip email configuration' }));
-    await screen.findByText(/Continue with billing paused/);
+    await screen.findByLabelText('Restricted Stripe key');
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/smtp');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'skip', revision: 1 });
   });

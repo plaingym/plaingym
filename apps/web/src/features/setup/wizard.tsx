@@ -39,14 +39,15 @@ function Form({ children, action, submit = 'continue' }: { children: ReactNode; 
     event.preventDefault(); const data = new FormData(event.currentTarget); void state.run(() => action(data));
   }}><fieldset disabled={state.busy} className="space-y-4">{children}<Button type="submit">{t('setup/setup:' + (state.busy ? 'saving' : submit))}</Button></fieldset></form>;
 }
-/** Step 8 is the registered import step; it finishes setup itself. */
-const finalStep = 'setupSteps.setup.import';
+/** Step 6 is the registered Stripe step; step 8 is the registered import step, which finishes setup itself. */
+const stripeStep = 'setupSteps.setup.stripe', finalStep = 'setupSteps.setup.import';
 export function SetupWizard({ client = setupClient, registries = createRegistries() }: { client?: Client; registries?: ReturnType<typeof createRegistries> }) {
   const services = useShellServices(), queries = useQueryClient();
   const status = useQuery({ queryKey: key, queryFn: () => client.call('status'), retry: false });
   const [override, setOverride] = useState<number | null>(null);
   const step = Math.min(8, override ?? status.data?.currentStep ?? 0);
-  const Final = registries.setupSteps.all().find((entry) => entry.id === finalStep && entry.enabled)?.component;
+  const registered = (id: string) => registries.setupSteps.all().find((entry) => entry.id === id && entry.enabled)?.component;
+  const Stripe = registered(stripeStep), Final = registered(finalStep);
   const session = useQuery({ queryKey: bootstrapKey, queryFn: () => services.loadBootstrap(), enabled: step >= 2, retry: false });
   const catalog = useQuery({ queryKey: ['setup', 'catalog'], queryFn: () => client.catalog(), enabled: step === 3 });
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
@@ -149,7 +150,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             <Field name="host" /><Field name="port" type="number" value="587" /><Label className="flex gap-2"><input type="checkbox" name="secure" />{t('setup/setup:secure')}</Label>
             <Field name="username" /><Field name="smtpPassword" type="password" /><Field name="from" type="email" /><Field name="testTo" type="email" /></Form>
           <Button disabled={busy} variant="outline" onClick={() => void run(async () => { await client.call('smtp', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:skipEmail')}</Button></>}
-        {step === 6 && <><p>{t('setup/setup:stripeHint')}</p><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></>}
+        {step === 6 && (Stripe ? <Stripe />
+          : <><p>{t('setup/setup:stripeHint')}</p><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></>)}
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>
           {backupReady || status.data?.completedSteps.includes(7) ? <Button disabled={busy} onClick={() => { setBackupKey(null); setOverride(8); }}>{t('setup/setup:next')}</Button>
           : backupKey ? <><p>{t('setup/setup:keyWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{backupKey.privateKey}</pre>
