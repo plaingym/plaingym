@@ -39,6 +39,16 @@ Ordinary install-wide identities remain shared.
 
 ## Running the demo
 
+The [demo installer](../../../../deploy/demo/README.md) sets up the server, wildcard
+TLS, and S3 configuration. Open its printed link to create a sandbox, then use the
+demo controls to log in as owner or coach. No command line setup is needed in a sandbox.
+
+The [mat seed guide](seed/mat.md) describes the sample households, schedule and
+promotion history. Seeded households use kiosk PIN **2468**. Search by a **full
+member name**, for example **Marcus Rivera**, then enter that PIN. A broad search
+such as "family" or "Ma" can match several households; the kiosk refuses ambiguous
+matches. Staff can find other sample members' full names in the members page.
+
 The production runtime connects the boot checks, outbox delivery for login and
 signed links, upload restrictions, tenant-free entry routes, and cleanup timer.
 Open `https://<DEMO_DOMAIN>/demo` to create a sandbox. Sandbox creation accepts

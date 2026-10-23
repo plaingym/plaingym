@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+{
+    email {$ACME_EMAIL}
+    admin off
+}
+# Only these two names are managed. Never enable on-demand sandbox certificates.
+{$GYM_HOSTNAME}, *.{$GYM_HOSTNAME} {
+    tls {
+        issuer acme {
+            dir {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+            dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+            resolvers 1.1.1.1 1.0.0.1
+        }
+    }
+    encode zstd gzip
+    @landing {
+        host {$GYM_HOSTNAME}
+        path /
+    }
+    redir @landing /demo 302
+    reverse_proxy app:3000
+}

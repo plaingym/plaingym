@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Overlay on ../compose.yaml; the installer copies both into its own directory.
+services:
+  app:
+    environment:
+      TENANCY: multi
+      DEMO_MODE: 'true'
+      DEMO_DOMAIN: ${GYM_HOSTNAME:?required}
+      DEMO_MAX_SANDBOXES: ${DEMO_MAX_SANDBOXES:-50}
+      AUTH_PASSWORD_LOGIN: 'off'
+      UPLOADS_S3_ENDPOINT: ${UPLOADS_S3_ENDPOINT:?required}
+      UPLOADS_S3_BUCKET: ${UPLOADS_S3_BUCKET:?required}
+      UPLOADS_S3_REGION: ${UPLOADS_S3_REGION:-auto}
+      UPLOADS_S3_ACCESS_KEY_ID: ${UPLOADS_S3_ACCESS_KEY_ID:?required}
+      UPLOADS_S3_SECRET_ACCESS_KEY: ${UPLOADS_S3_SECRET_ACCESS_KEY:?required}
+  caddy:
+    image: ${CADDY_IMAGE:?use the prebuilt Cloudflare proxy}
+    environment:
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?required}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
