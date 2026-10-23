@@ -34,7 +34,8 @@ export function GeneralSettingsForm() {
           websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null };
         result = await client.PATCH('/api/settings', { body });
       } else if (kind === 'booking') result = await client.PATCH('/api/settings/booking', { body: {
-        revision, bookingWindowDays: Number(value('bookingWindowDays')), cancellationCutoffMinutes: Number(value('cancellationCutoffMinutes')) } });
+        revision, bookingWindowDays: Number(value('bookingWindowDays')), cancellationCutoffMinutes: Number(value('cancellationCutoffMinutes')),
+        openMatCountsAsClass: form.has('openMatCountsAsClass') } });
       else result = await client.PATCH('/api/settings/currency', { body: { revision, currency: value('currency').toUpperCase() } });
       if (!result.response.ok) { setMessage(t(result.response.status === 409 ? 'settings/settings:conflict' : 'settings/settings:error')); return; }
       setSettings(gymSettingsResponseSchema.parse(result.data).data); setMessage(t('settings/settings:saved'));
@@ -63,6 +64,8 @@ export function GeneralSettingsForm() {
       <h2>{t('settings/settings:booking')}</h2><fieldset disabled={busy} className="space-y-4">
         <label className="block">{t('settings/settings:bookingWindow')}<input type="number" min="0" step="1" required name="bookingWindowDays" defaultValue={settings.bookingWindowDays} className={fieldClass}/></label>
         <label className="block">{t('settings/settings:cancellationCutoff')}<input type="number" min="0" step="1" required name="cancellationCutoffMinutes" defaultValue={settings.cancellationCutoffMinutes} className={fieldClass}/></label>
+        <label className="block"><input type="checkbox" name="openMatCountsAsClass" defaultChecked={settings.openMatCountsAsClass}/> {t('settings/settings:openMatCountsAsClass')}</label>
+        <p>{t('settings/settings:openMatHelp')}</p>
         <button type="submit" className="rounded border px-4 py-2">{t('settings/settings:save')}</button>
       </fieldset>
     </form>

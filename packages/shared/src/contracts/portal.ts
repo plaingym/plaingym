@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import { memberStatusSchema, classSessionStatusSchema, membershipStatusSchema, billingIntervalSchema,
-  attendanceSourceSchema, invoiceKindSchema, invoiceStatusSchema } from './states.js';
+  attendanceSourceSchema, classKindSchema, invoiceKindSchema, invoiceStatusSchema } from './states.js';
 import type { EndpointContract } from './definition.js';
 import {
   amountCentsSchema, currencySchema, dateSchema, idSchema, instantSchema,
@@ -67,7 +67,7 @@ export const portalMembershipSchema = z.strictObject({
 export const portalMembershipListResponseSchema = listResponseSchema(portalMembershipSchema);
 export const portalAttendanceSchema = z.strictObject({
   id: idSchema, memberId: idSchema, sessionId: idSchema.nullable(), programId: idSchema.nullable(),
-  occurredAt: instantSchema, source: attendanceSourceSchema,
+  occurredAt: instantSchema, source: attendanceSourceSchema, kind: classKindSchema,
 });
 export const portalAttendanceQuerySchema = paginationSchema.extend({
   programId: idSchema.optional(), tagId: idSchema.optional(), since: instantSchema.optional(),

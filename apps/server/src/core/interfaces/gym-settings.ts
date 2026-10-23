@@ -13,6 +13,8 @@ export interface GymSettings {
   readonly websiteEnabled: boolean;
   readonly bookingWindowDays: number;
   readonly cancellationCutoffMinutes: number;
+  /** Open-mat visits count toward classes attended only when enabled. */
+  readonly openMatCountsAsClass: boolean;
   readonly revision: Revision;
 }
 export interface GymSettingsAccessor { get(gymId: Id): Promise<GymSettings>; }
@@ -27,9 +29,9 @@ export class FakeGymSettingsAccessor implements GymSettingsAccessor {
     for (const value of [settings.bookingWindowDays, settings.cancellationCutoffMinutes])
       if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid booking rule');
     const { gymId, timezone, currency, billingEnabled, memberEmailsEnabled, websiteEnabled,
-      bookingWindowDays, cancellationCutoffMinutes, revision } = settings;
+      bookingWindowDays, cancellationCutoffMinutes, openMatCountsAsClass, revision } = settings;
     this.#settings.set(gymId, { gymId, timezone, currency, billingEnabled, memberEmailsEnabled,
-      websiteEnabled, bookingWindowDays, cancellationCutoffMinutes, revision });
+      websiteEnabled, bookingWindowDays, cancellationCutoffMinutes, openMatCountsAsClass, revision });
   }
   async get(gymId: Id): Promise<GymSettings> {
     const value = this.#settings.get(gymId) ?? notFound();

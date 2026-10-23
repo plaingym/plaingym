@@ -19,8 +19,10 @@ export const gymAddressSchema = z.strictObject({
 export const gymBrandingSchema = z.strictObject({
   logoKey: z.string().min(1).nullable().optional(), primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
 });
+/** Open mat counts toward classes attended (rank criteria and class totals) only when enabled. */
 export const bookingRulesSchema = z.strictObject({
   bookingWindowDays: z.int32().nonnegative(), cancellationCutoffMinutes: z.int32().nonnegative(),
+  openMatCountsAsClass: z.boolean(),
 });
 export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean() });
 /** An allowlist projection: credentials, PIN/QR keys, and opaque settings never leave the service. */

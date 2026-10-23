@@ -24,8 +24,10 @@ const session = {
 
 describe('weekly templates and materialized sessions', () => {
   it('preserves local wall time and accepts the repeated DST hour as a positive duration', () => {
-    expect(createClassTemplateRequestSchema.parse(template)).toEqual(template);
-    expect(createClassSessionRequestSchema.parse(session)).toEqual(session);
+    // Kind defaults to a class on create.
+    expect(createClassTemplateRequestSchema.parse(template)).toEqual({ ...template, kind: 'class' });
+    expect(createClassSessionRequestSchema.parse({ ...session, kind: 'open_mat' })).toEqual({ ...session, kind: 'open_mat' });
+    expect(createClassSessionRequestSchema.safeParse({ ...session, kind: 'seminar' }).success).toBe(false);
     expect(createClassTemplateRequestSchema.parse({ ...template, weekday: 6, localStartTime: '23:59' }).weekday).toBe(6);
   });
   it.each(['24:00', '12:60', '1:30', '01:30:00', '01:30Z', ' 01:30'])('rejects invalid local time %s', (localStartTime) => {
@@ -57,12 +59,14 @@ describe('weekly templates and materialized sessions', () => {
   it('accepts full replacement edits only with the revision read by the client', () => {
     for (const [schema, body] of [
       [updateClassTagRequestSchema, { name: 'Open training' }],
-      [updateClassTemplateRequestSchema, template], [updateClassSessionRequestSchema, session],
+      [updateClassTemplateRequestSchema, { ...template, kind: 'open_mat' }], [updateClassSessionRequestSchema, { ...session, kind: 'class' }],
     ] as const) {
       expect(schema.safeParse(body).success).toBe(false);
       for (const revision of [0, -1, 1.5, '1']) expect(schema.safeParse({ ...body, revision }).success).toBe(false);
       expect(schema.safeParse({ ...body, revision: 2 }).success).toBe(true);
     }
+    // A full replacement must restate the kind instead of silently resetting it.
+    expect(updateClassTemplateRequestSchema.safeParse({ ...template, revision: 2 }).success).toBe(false);
     expect(scheduleRevisionRequestSchema.safeParse({}).success).toBe(false);
   });
   it('rejects missing revisions on every schedule mutation that edits or deletes a record', () => {

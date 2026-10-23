@@ -16,7 +16,7 @@ beforeEach(() => {
   client.members.mockResolvedValue({ data: [{ id: memberId, firstName: 'River', lastName: 'Lee' }], total: 1 });
   client.checkedIn.mockResolvedValue([]);
   client.record.mockResolvedValue({ id: 'visit', memberId });
-  client.totals.mockResolvedValue({ memberId, total: 3, byProgram: [{ programId, count: 3 }], byTag: [{ tagId, count: 2 }] });
+  client.totals.mockResolvedValue({ memberId, total: 3, classes: 2, openMat: 1, byProgram: [{ programId, count: 3 }], byTag: [{ tagId, count: 2 }] });
   client.labels.mockResolvedValue({ programs: [{ id: programId, name: 'Fundamentals', active: true }], tags: [{ id: tagId, name: 'Practice' }] });
 });
 afterEach(cleanup);

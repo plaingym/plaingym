@@ -19,14 +19,14 @@ async function templateView(tx: Transaction, row: TemplateRow): Promise<ClassTem
   const programIds = (await tx.select({ id: classTemplatePrograms.programId }).from(classTemplatePrograms).where(eq(classTemplatePrograms.templateId, row.id)).orderBy(asc(classTemplatePrograms.programId))).map((value) => value.id);
   const tagIds = (await tx.select({ id: classTemplateTags.tagId }).from(classTemplateTags).where(eq(classTemplateTags.templateId, row.id)).orderBy(asc(classTemplateTags.tagId))).map((value) => value.id);
   return classTemplateSchema.parse({ id: row.id, name: row.name, weekday: row.weekday, localStartTime: row.localStartTime,
-    durationMinutes: row.durationMinutes, coachId: row.coachId, capacity: row.capacity, notes: row.notes,
+    durationMinutes: row.durationMinutes, coachId: row.coachId, capacity: row.capacity, notes: row.notes, kind: row.kind,
     revision: row.revision, createdAt: row.createdAt.toISOString(), programIds, tagIds });
 }
 async function sessionView(tx: Transaction, row: SessionRow): Promise<ClassSession> {
   const programIds = (await tx.select({ id: classSessionPrograms.programId }).from(classSessionPrograms).where(eq(classSessionPrograms.sessionId, row.id)).orderBy(asc(classSessionPrograms.programId))).map((value) => value.id);
   const tagIds = (await tx.select({ id: classSessionTags.tagId }).from(classSessionTags).where(eq(classSessionTags.sessionId, row.id)).orderBy(asc(classSessionTags.tagId))).map((value) => value.id);
   return classSessionSchema.parse({ id: row.id, name: row.name, templateId: row.templateId, status: row.status,
-    coachId: row.coachId, capacity: row.capacity, notes: row.notes, revision: row.revision,
+    coachId: row.coachId, capacity: row.capacity, notes: row.notes, kind: row.kind, revision: row.revision,
     createdAt: row.createdAt.toISOString(), startsAt: row.startsAt.toISOString(), endsAt: row.endsAt.toISOString(), programIds, tagIds });
 }
 async function relationships(tx: Transaction, input: { programIds: string[]; tagIds: string[]; coachId: string | null }) {
@@ -229,7 +229,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         for (const startsAt of starts) {
           // Template edits affect unmaterialized dates; existing sessions retain overrides.
           if (dates.has(localDate(startsAt, timezone))) continue;
-          const [session] = await tx.insert(classSessions).values({ gymId, templateId: id, name: template.name, startsAt, endsAt: new Date(startsAt.getTime() + template.durationMinutes * 60_000), coachId: template.coachId, capacity: template.capacity, notes: template.notes, createdAt: now })
+          const [session] = await tx.insert(classSessions).values({ gymId, templateId: id, name: template.name, startsAt, endsAt: new Date(startsAt.getTime() + template.durationMinutes * 60_000), coachId: template.coachId, capacity: template.capacity, notes: template.notes, kind: template.kind, createdAt: now })
             .onConflictDoNothing({ target: [classSessions.gymId, classSessions.templateId, classSessions.startsAt] }).returning();
           if (!session) continue;
           await mappings(tx, 'session', gymId, session.id, template, now);

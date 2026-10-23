@@ -5,7 +5,7 @@ import { FakeJobStatsQuery } from './job-stats.js';
 import { FakeWebhookHealthQuery } from './webhook-health.js';
 import { gym, otherGym } from './test-fixtures.js';
 const settings = { gymId: gym, timezone: 'America/Vancouver', currency: 'CAD', billingEnabled: false,
-  memberEmailsEnabled: false, websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60, revision: 1 };
+  memberEmailsEnabled: false, websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, revision: 1 };
 describe('Operational read interfaces', () => {
   it('returns explicit settings fields and rejects unknown gyms', async () => {
     const fake = new FakeGymSettingsAccessor([{ ...settings, stripeConfig: 'secret' } as typeof settings]);

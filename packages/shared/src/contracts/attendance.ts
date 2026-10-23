@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
-import { attendanceSourceSchema } from './states.js';
+import { attendanceSourceSchema, classKindSchema } from './states.js';
 import { idSchema, instantSchema, listResponseSchema, paginationSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 
@@ -9,18 +9,19 @@ const manageAttendance = { kind: 'staff', capability: 'attendance.manage' } as c
 export { attendanceSourceSchema } from './states.js';
 export const attendanceSchema = z.strictObject({
   id: idSchema, memberId: idSchema, sessionId: idSchema.nullable(), programId: idSchema.nullable(),
-  occurredAt: instantSchema, source: attendanceSourceSchema, createdAt: instantSchema,
+  occurredAt: instantSchema, source: attendanceSourceSchema, kind: classKindSchema, createdAt: instantSchema,
 });
 export const attendanceResponseSchema = z.strictObject({ data: attendanceSchema });
 export const attendanceListResponseSchema = listResponseSchema(attendanceSchema);
-/** Source and import deduplication keys are assigned by the service, never by the coach form. */
+/** Source and import deduplication keys are assigned by the service, never by the coach form. The kind comes
+ * from the session; a visit without a session is open mat. */
 export const recordAttendanceRequestSchema = z.strictObject({
   memberId: idSchema, sessionId: idSchema.nullable(), programId: idSchema.nullable(),
   occurredAt: instantSchema.optional(),
 });
 export const attendanceListQuerySchema = paginationSchema.extend({
   memberId: idSchema.optional(), sessionId: idSchema.optional(), programId: idSchema.optional(),
-  tagId: idSchema.optional(), source: attendanceSourceSchema.optional(),
+  tagId: idSchema.optional(), source: attendanceSourceSchema.optional(), kind: classKindSchema.optional(),
   since: instantSchema.optional(), until: instantSchema.optional(),
 }).refine((value) => !value.since || !value.until || Date.parse(value.until) > Date.parse(value.since), {
   path: ['until'], message: 'Range must end after it starts',
@@ -31,8 +32,9 @@ export const attendanceTotalsQuerySchema = z.strictObject({
 }).refine((value) => !value.since || !value.until || Date.parse(value.until) > Date.parse(value.since), {
   path: ['until'], message: 'Range must end after it starts',
 });
+/** `total` counts every visit; `classes` follows the gym's open-mat setting; per-program and per-tag counts include open mat. */
 export const attendanceTotalsSchema = z.strictObject({
-  memberId: idSchema, total: z.int().nonnegative(),
+  memberId: idSchema, total: z.int().nonnegative(), classes: z.int().nonnegative(), openMat: z.int().nonnegative(),
   byProgram: z.array(z.strictObject({ programId: idSchema, count: z.int().nonnegative() })),
   byTag: z.array(z.strictObject({ tagId: idSchema, count: z.int().nonnegative() })),
 });

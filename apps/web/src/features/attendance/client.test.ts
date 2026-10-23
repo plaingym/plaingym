@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { attendanceClient } from './client.js';
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const entry = (n: number) => ({ id: id(n), memberId: id(1), sessionId: id(2), programId: null,
-  source: 'coach', occurredAt: '2026-10-22T12:00:00Z', createdAt: '2026-10-22T12:00:00Z' });
+  source: 'coach', kind: 'class', occurredAt: '2026-10-22T12:00:00Z', createdAt: '2026-10-22T12:00:00Z' });
 afterEach(() => vi.unstubAllGlobals());
 describe('attendance HTTP client', () => {
   it('loads every roster attendance page with the session filter and validates responses', async () => {

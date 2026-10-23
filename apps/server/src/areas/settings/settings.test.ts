@@ -51,7 +51,7 @@ describe('settings service and routes', () => {
     expect(a.name).toBe('Gym A'); expect(b.name).toBe('Gym B');
     expect(JSON.stringify(a)).not.toMatch(/smtp|password|privateConfig|secret/);
     const accessor = createGymSettingsAccessor({ scope: database.forGym });
-    expect(Object.keys(await accessor.get(gymA)).sort()).toEqual(['gymId', 'timezone', 'currency', 'billingEnabled', 'memberEmailsEnabled', 'websiteEnabled', 'bookingWindowDays', 'cancellationCutoffMinutes', 'revision'].sort());
+    expect(Object.keys(await accessor.get(gymA)).sort()).toEqual(['gymId', 'timezone', 'currency', 'billingEnabled', 'memberEmailsEnabled', 'websiteEnabled', 'bookingWindowDays', 'cancellationCutoffMinutes', 'openMatCountsAsClass', 'revision'].sort());
     await expect(service.get(uuidv7())).rejects.toMatchObject({ code: 'not_found' });
   });
   it.each(staffRoles)('checks all settings endpoints for %s before validation', async (role) => {

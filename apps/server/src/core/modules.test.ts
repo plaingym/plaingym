@@ -27,7 +27,7 @@ it('checks module activation on every request without disabling core routes', as
 it('reads each job gym settings at execution time, including after a module toggle', async () => {
   const gymA = uuidv7(), gymB = uuidv7(), ran: string[] = [];
   const base = { timezone: 'UTC', currency: 'USD', revision: 1, billingEnabled: false, memberEmailsEnabled: false,
-    websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60 };
+    websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false };
   const settings = new FakeGymSettingsAccessor([{ ...base, gymId: gymA, websiteEnabled: true }, { ...base, gymId: gymB }]);
   const worker = new FakeJobs(clock);
   const registry = createServerRegistry({ modules: [{ ...websiteModule, jobs: [{ id: 'website.refresh',

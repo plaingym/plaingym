@@ -16,7 +16,7 @@ vi.mock('../../lib/api.js', async (importOriginal) => ({ ...await importOriginal
 const id = '00000000-0000-7000-8000-000000000001', programId = '00000000-0000-7000-8000-000000000002';
 const options = { timezone: 'America/New_York', programs: [{ id: programId, name: 'Program A' }], coaches: [] };
 const session: ClassSession = { id, name: 'Evening class', startsAt: '2026-03-02T23:00:00Z', endsAt: '2026-03-03T00:00:00Z',
-  templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: '<script>Keep plain</script>', programIds: [programId], tagIds: [], revision: 4, createdAt: '2026-03-01T00:00:00Z' };
+  templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: '<script>Keep plain</script>', kind: 'class', programIds: [programId], tagIds: [], revision: 4, createdAt: '2026-03-01T00:00:00Z' };
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = id) {
   const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', enabledModules: [] }, session: { userId: id, roles, member: !roles.length }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
@@ -91,8 +91,9 @@ describe('schedule calendar and session detail', () => {
     render(<SchedulePage/>); fireEvent.click(await screen.findByRole('button', { name: 'New weekly class' }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Morning class' } });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Program A' }));
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'open_mat' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/templates', { body: { name: 'Morning class', weekday: 1, localStartTime: '18:00', durationMinutes: 60, coachId: null, capacity: null, notes: null, programIds: [programId], tagIds: [] } }));
+    await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/templates', { body: { name: 'Morning class', weekday: 1, localStartTime: '18:00', durationMinutes: 60, coachId: null, capacity: null, notes: null, kind: 'open_mat', programIds: [programId], tagIds: [] } }));
   });
   it('fails closed for a member and never requests schedule data', () => {
     bootstrap([]); render(<SchedulePage/>);

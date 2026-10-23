@@ -22,7 +22,7 @@ let capture: Awaited<ReturnType<typeof captureSmtp>>;
 let smtp: SmtpEmail;
 function setEnabled(gymId: string, enabled: boolean) {
   settings.set({ gymId, timezone: 'UTC', currency: 'USD', billingEnabled: false, memberEmailsEnabled: enabled,
-    websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60, revision: 1 });
+    websiteEnabled: false, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, revision: 1 });
 }
 function emailFor(gymId = gymA, memberId = memberA) {
   return new MemberEmail({ gymId, memberId, settings, email: smtp, forGym: database.forGym, logSuppression: log });

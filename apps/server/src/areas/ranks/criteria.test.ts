@@ -22,7 +22,7 @@ describe('promotion criterion providers', () => {
       ['2026-10-21T12:00:00Z', gymId, uuidv7(), programId],
       ['2026-10-21T12:00:00Z', gymId, memberId, uuidv7()],
     ].map(([occurredAt, owner, person, program]) => ({ gymId: owner!,
-      entry: { id: uuidv7(), occurredAt: occurredAt!, memberId: person!, programId: program!, sessionId: null, source: 'import' },
+      entry: { id: uuidv7(), occurredAt: occurredAt!, memberId: person!, programId: program!, sessionId: null, source: 'import', kind: 'class' },
       sessionProgramIds: [], sessionTagIds: [] })));
     const [result] = await createPromotionCriteria(attendance).evaluate(context, [criterion('classes-since-promotion', 3)], new Set());
     expect(result).toMatchObject({ current: 2, target: 3, met: false });

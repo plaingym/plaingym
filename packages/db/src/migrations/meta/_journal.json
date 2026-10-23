@@ -15,6 +15,13 @@
       "when": 1792693674618,
       "tag": "0002_rank_colors",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792724502510,
+      "tag": "0003_open_mat",
+      "breakpoints": true
     }
   ]
 }

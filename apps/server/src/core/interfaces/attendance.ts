@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { Id, IsoInstant, ListResponse, Pagination } from '@plaingym/shared/contracts';
+import type { ClassKind, Id, IsoInstant, ListResponse, Pagination } from '@plaingym/shared/contracts';
 import { paginationSchema } from '@plaingym/shared/contracts';
 import { instant, notFound, scopedKey } from './common.js';
 import type { MemberHouseholdContext, PortalIdentity } from './member-household.js';
@@ -11,6 +11,7 @@ export interface AttendanceEntry {
   readonly programId: Id | null;
   readonly occurredAt: IsoInstant;
   readonly source: 'kiosk' | 'coach' | 'import';
+  readonly kind: ClassKind;
 }
 export interface AttendanceFilter {
   readonly memberId?: Id;
@@ -20,6 +21,8 @@ export interface AttendanceFilter {
   /** Inclusive lower bound, exclusive upper bound. */
   readonly since?: IsoInstant;
   readonly until?: IsoInstant;
+  /** Only classes attended: open-mat visits are included only when the gym counts open mat as classes. */
+  readonly classesOnly?: boolean;
 }
 /** Household implementations use forHousehold; gym scope is for authorized staff/jobs/kiosk. */
 export type AttendanceScope = { readonly kind: 'gym'; readonly gymId: Id }
@@ -38,8 +41,11 @@ export interface AttendanceFixture {
 }
 export class FakeAttendanceQueries implements AttendanceQueries {
   readonly #entries: readonly AttendanceFixture[];
-  constructor(entries: readonly AttendanceFixture[] = [], readonly households?: MemberHouseholdContext) {
+  readonly #openMatClassGyms: ReadonlySet<Id>;
+  /** `openMatClassGyms` lists the gyms that count open mat as classes. */
+  constructor(entries: readonly AttendanceFixture[] = [], readonly households?: MemberHouseholdContext, openMatClassGyms: readonly Id[] = []) {
     this.#entries = structuredClone(entries);
+    this.#openMatClassGyms = new Set(openMatClassGyms);
   }
   async #matching(scope: AttendanceScope, filter: AttendanceFilter): Promise<AttendanceEntry[]> {
     const context = scope.kind === 'household'
@@ -49,6 +55,7 @@ export class FakeAttendanceQueries implements AttendanceQueries {
     const since = filter.since === undefined ? -Infinity : instant(filter.since);
     const until = filter.until === undefined ? Infinity : instant(filter.until);
     if (until < since) throw new Error('Attendance range ends before it starts');
+    const classesOnly = filter.classesOnly === true && !this.#openMatClassGyms.has(gymId);
     const seen = new Set<string>();
     return this.#entries.filter(({ gymId: owner, entry, sessionProgramIds, sessionTagIds }) => {
       scopedKey(gymId, entry.id);
@@ -56,6 +63,7 @@ export class FakeAttendanceQueries implements AttendanceQueries {
         && (!filter.programId || filter.programId === entry.programId
           || (entry.sessionId !== null && sessionProgramIds.includes(filter.programId)))
         && (!filter.tagId || (entry.sessionId !== null && sessionTagIds.includes(filter.tagId)))
+        && (!classesOnly || entry.kind === 'class')
         && instant(entry.occurredAt) >= since && instant(entry.occurredAt) < until;
       if (!matches || seen.has(entry.id)) return false;
       seen.add(entry.id);

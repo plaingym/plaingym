@@ -44,7 +44,7 @@ export function createPromotionCriteria(attendance: AttendanceQueries): Promotio
     async evaluate(context, value) {
       const { target } = targetSchema.parse(value);
       const current = await attendance.countSince(context.attendanceScope, {
-        memberId: context.memberId, programId: context.programId,
+        memberId: context.memberId, programId: context.programId, classesOnly: true,
         since: context.promotedAt ?? '1970-01-01T00:00:00.000Z', until: context.clock.now().toISOString(),
       });
       return progress(current, target);

@@ -13,9 +13,18 @@ a trusted source key, which is unique within the gym. HTTP forms always record `
 as the source. Kiosk callers pass a device audit actor and `kiosk` source directly to
 the service after device authorization.
 
-Open-mat visits have no session. Each submission creates a separate visit, even at the
-same instant. Clients must not automatically retry these writes. Imported open-mat
-visits can be retried safely using a source key.
+Each attendance stores a kind, `class` or `open_mat`, fixed when it is recorded: a
+session check-in copies the session's kind, and a kiosk or coach visit without a
+session is open mat. Imports without a session default to `class` and may pass
+`open_mat`. Later session edits never reclassify recorded attendance.
+
+Open mat is a visit, not a class. Unscheduled open-mat visits have no session, and
+each submission creates a separate visit, even at the same instant. Clients must not
+automatically retry these writes. Imported visits can be retried safely using a
+source key. The `classesOnly` filter (used by the classes-since-promotion criterion)
+and the `classes` total leave open mat out unless the gym's
+`openMatCountsAsClass` setting is on (it is off by default). `total` and the
+per-program and per-tag counts include every visit.
 
 Program filters include the attendance's direct program and the materialized session's
 program links. Tags come only from materialized session links. A visit counts once in

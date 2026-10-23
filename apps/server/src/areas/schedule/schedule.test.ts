@@ -31,11 +31,11 @@ beforeAll(async () => {
 });
 function fields(gymId = gymA): CreateClassTemplateRequest {
   return { name: 'Evening class', weekday: 0, localStartTime: '18:00', durationMinutes: 60, coachId: gymId === gymA ? coachA : coachB,
-    capacity: null, notes: null, programIds: [gymId === gymA ? programA : programB], tagIds: [] };
+    capacity: null, notes: null, kind: 'class', programIds: [gymId === gymA ? programA : programB], tagIds: [] };
 }
 function sessionFields(gymId = gymA) {
-  const { name, coachId, capacity, notes, programIds, tagIds } = fields(gymId);
-  return { name, coachId, capacity, notes, programIds, tagIds, startsAt: '2026-03-02T18:00:00Z', endsAt: '2026-03-02T19:00:00Z' };
+  const { name, coachId, capacity, notes, kind, programIds, tagIds } = fields(gymId);
+  return { name, coachId, capacity, notes, kind, programIds, tagIds, startsAt: '2026-03-02T18:00:00Z', endsAt: '2026-03-02T19:00:00Z' };
 }
 function server(role: StaffRole | 'anonymous' | 'member' = 'owner', gymId = gymA) {
   const app = new OpenAPIHono<RequestEnvironment>();
@@ -120,6 +120,21 @@ describe('schedule routes and tenant isolation', () => {
     const responses = await Promise.all([10, 20].map((capacity) => request(server(), 'PATCH', '/api/schedule/sessions/' + session.id + '/capacity', { revision: 1, capacity })));
     expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
     await expect(service.changeSession(context(), session.id, 'notes', { revision: 1, notes: 'stale' })).rejects.toBeInstanceOf(RevisionConflictError);
+  });
+  it('materializes open-mat templates as open-mat sessions and defaults new records to classes', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const program = await factory('programs', gymId);
+    const base = { ...fields(), coachId: null, programIds: [program.id] };
+    const withoutKind: Partial<CreateClassTemplateRequest> = { ...base }; delete withoutKind.kind;
+    expect((await service.createTemplate(context(gymId), withoutKind as CreateClassTemplateRequest)).kind).toBe('class');
+    const template = await service.createTemplate(context(gymId), { ...base, kind: 'open_mat', weekday: 3 });
+    await service.materialize(gymId, 'America/New_York');
+    const sessions = await database.forGym(gymId, (tx) => tx.select().from(classSessions).where(eq(classSessions.templateId, template.id)));
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions.every((session) => session.kind === 'open_mat')).toBe(true);
+    const updated = await service.updateTemplate(context(gymId), template.id, { ...base, kind: 'class', weekday: 3, revision: template.revision });
+    expect(updated.kind).toBe('class');
+    expect((await service.getSession(gymId, sessions[0]!.id)).kind).toBe('open_mat');
   });
   it('keeps sessions and attendance on template deletion and exposes no session DELETE route', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);

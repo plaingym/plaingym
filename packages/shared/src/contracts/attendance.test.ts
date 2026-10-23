@@ -9,7 +9,7 @@ import {
 
 const id = '019a08bf-1234-7000-8000-000000000001';
 const occurredAt = '2026-10-21T12:00:00Z';
-const attendance = { id, memberId: id, sessionId: null, programId: null, occurredAt, createdAt: occurredAt, source: 'import' };
+const attendance = { id, memberId: id, sessionId: null, programId: null, occurredAt, createdAt: occurredAt, source: 'import', kind: 'class' };
 
 describe('attendance contracts', () => {
   it('accepts imported and open-mat history without a session or program', () => {
@@ -21,7 +21,7 @@ describe('attendance contracts', () => {
     const { sessionId, ...missingSession } = attendance;
     expect(sessionId).toBeNull();
     expect(attendanceSchema.safeParse(missingSession).success).toBe(false);
-    for (const change of [{ source: 'admin' }, { occurredAt: '2026-10-21' }, { sessionId: '1' }, { createdAt: null }]) {
+    for (const change of [{ source: 'admin' }, { kind: 'seminar' }, { occurredAt: '2026-10-21' }, { sessionId: '1' }, { createdAt: null }]) {
       expect(attendanceSchema.safeParse({ ...attendance, ...change }).success).toBe(false);
     }
   });
@@ -32,7 +32,7 @@ describe('attendance contracts', () => {
     }
   });
   it('supports source, program, tag, session and time filters with shared pagination', () => {
-    const query = { memberId: id, sessionId: id, programId: id, tagId: id, source: 'import', since: occurredAt, until: '2026-10-22T12:00:00Z' };
+    const query = { memberId: id, sessionId: id, programId: id, tagId: id, source: 'import', kind: 'open_mat', since: occurredAt, until: '2026-10-22T12:00:00Z' };
     expect(attendanceListQuerySchema.parse(query)).toMatchObject({ ...query, limit: 50, offset: 0 });
     expect(attendanceListQuerySchema.safeParse({ ...query, until: occurredAt }).success).toBe(false);
     expect(attendanceListQuerySchema.safeParse({ ...query, since: '2026-10-23T12:00:00Z' }).success).toBe(false);
@@ -40,7 +40,7 @@ describe('attendance contracts', () => {
     expect(attendanceListQuerySchema.safeParse({ ...query, householdId: id }).success).toBe(false);
   });
   it('keeps per-program and per-tag counts independent: a class can count for several', () => {
-    const result = { data: { memberId: id, total: 1, byProgram: [{ programId: id, count: 1 }], byTag: [{ tagId: id, count: 1 }] } };
+    const result = { data: { memberId: id, total: 1, classes: 0, openMat: 1, byProgram: [{ programId: id, count: 1 }], byTag: [{ tagId: id, count: 1 }] } };
     expect(attendanceTotalsResponseSchema.parse(result)).toEqual(result);
     expect(attendanceTotalsResponseSchema.safeParse({ data: { ...result.data, total: -1 } }).success).toBe(false);
     expect(attendanceTotalsResponseSchema.safeParse({ data: { ...result.data, byTag: [{ tagId: id, count: 1.5 }] } }).success).toBe(false);

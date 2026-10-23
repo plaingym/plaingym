@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
-import { classSessionStatusSchema } from './states.js';
+import { classKindSchema, classSessionStatusSchema } from './states.js';
 import { idSchema, instantSchema, listResponseSchema, paginationSchema, revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 
@@ -12,7 +12,7 @@ const nameSchema = z.string().trim().min(1);
 const relatedIdsSchema = z.array(idSchema).refine((ids) => new Set(ids).size === ids.length, 'IDs must be unique');
 export const scheduleIdParamsSchema = z.strictObject({ id: idSchema });
 export const scheduleRevisionRequestSchema = z.strictObject({ revision: revisionSchema });
-export { classSessionStatusSchema } from './states.js';
+export { classKindSchema, classSessionStatusSchema } from './states.js';
 /** Sunday is 0. Local wall time is interpreted in the gym timezone during materialization. */
 export const classTemplateFieldsSchema = z.strictObject({
   name: nameSchema,
@@ -22,6 +22,7 @@ export const classTemplateFieldsSchema = z.strictObject({
   coachId: idSchema.nullable(),
   capacity: z.int32().positive().nullable(),
   notes: z.string().nullable(),
+  kind: classKindSchema,
   programIds: relatedIdsSchema.refine((ids) => ids.length > 0, 'A class needs a program'),
   tagIds: relatedIdsSchema,
 });
@@ -33,7 +34,8 @@ export const classTagSchema = z.strictObject({
 export const classTagResponseSchema = z.strictObject({ data: classTagSchema });
 export const classTagListResponseSchema = listResponseSchema(classTagSchema);
 export const classTagListQuerySchema = paginationSchema.extend({ search: z.string().trim().min(1).optional() });
-export const createClassTemplateRequestSchema = classTemplateFieldsSchema;
+/** Kind defaults to a class on create; full-replacement updates must send it. */
+export const createClassTemplateRequestSchema = classTemplateFieldsSchema.extend({ kind: classKindSchema.default('class') });
 /** Full replacement keeps weekday, local time, duration and mappings in one revision-guarded save. */
 export const updateClassTemplateRequestSchema = classTemplateFieldsSchema.extend({ revision: revisionSchema });
 export const classTemplateSchema = classTemplateFieldsSchema.extend({
@@ -51,11 +53,12 @@ const sessionFieldsSchema = z.strictObject({
   coachId: idSchema.nullable(),
   capacity: z.int32().positive().nullable(),
   notes: z.string().nullable(),
+  kind: classKindSchema,
   programIds: relatedIdsSchema.refine((ids) => ids.length > 0, 'A class needs a program'),
   tagIds: relatedIdsSchema,
 });
 const orderedTimes = (value: { startsAt: string; endsAt: string }) => Date.parse(value.endsAt) > Date.parse(value.startsAt);
-export const createClassSessionRequestSchema = sessionFieldsSchema.refine(orderedTimes, {
+export const createClassSessionRequestSchema = sessionFieldsSchema.extend({ kind: classKindSchema.default('class') }).refine(orderedTimes, {
   path: ['endsAt'], message: 'Session must end after it starts',
 });
 export const updateClassSessionRequestSchema = sessionFieldsSchema.extend({ revision: revisionSchema }).refine(orderedTimes, {
@@ -110,6 +113,7 @@ export type ClassTemplate = z.infer<typeof classTemplateSchema>;
 export type CreateClassTemplateRequest = z.infer<typeof createClassTemplateRequestSchema>;
 export type UpdateClassTemplateRequest = z.infer<typeof updateClassTemplateRequestSchema>;
 export type ClassTemplateListQuery = z.infer<typeof classTemplateListQuerySchema>;
+export type ClassKind = z.infer<typeof classKindSchema>;
 export type ClassSession = z.infer<typeof classSessionSchema>;
 export type CreateClassSessionRequest = z.infer<typeof createClassSessionRequestSchema>;
 export type UpdateClassSessionRequest = z.infer<typeof updateClassSessionRequestSchema>;

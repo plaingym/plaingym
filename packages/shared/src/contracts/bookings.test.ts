@@ -62,7 +62,7 @@ describe('booking and waitlist contracts', () => {
     expect(memberBookingSchema.safeParse({ ...safeProjection, medicalNotes: 'private' }).success).toBe(false);
   });
   it('ties checked-in roster entries to the same member and session as the booking', () => {
-    const attendance = { id: otherId, memberId: id, sessionId: id, programId: null, occurredAt: createdAt, createdAt, source: 'coach' };
+    const attendance = { id: otherId, memberId: id, sessionId: id, programId: null, occurredAt: createdAt, createdAt, source: 'coach', kind: 'class' };
     expect(bookingRosterEntrySchema.parse({ booking, attendance }).attendance?.id).toBe(otherId);
     expect(bookingRosterEntrySchema.parse({ booking, attendance: null }).attendance).toBeNull();
     expect(bookingRosterEntrySchema.parse({ booking: null, attendance }).booking).toBeNull();

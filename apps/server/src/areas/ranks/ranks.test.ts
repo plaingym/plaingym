@@ -143,7 +143,7 @@ describe('rank editing and promotion services', () => {
     const f = await fixture();
     await factory('staffProfiles', f.gymId, { userId });
     const attendance = new FakeAttendanceQueries(['2026-09-20Z', '2026-10-02Z'].map((date) => ({ gymId: f.gymId,
-      entry: { id: uuidv7(), memberId: f.member.id, programId: f.program.id, sessionId: null, source: 'import', occurredAt: new Date(date).toISOString() },
+      entry: { id: uuidv7(), memberId: f.member.id, programId: f.program.id, sessionId: null, source: 'import', kind: 'class', occurredAt: new Date(date).toISOString() },
       sessionProgramIds: [], sessionTagIds: [] })));
     const service = createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(attendance) });
     await service.updateRank(f.context, f.rank.id, { revision: 1, criteria: [

@@ -6,34 +6,42 @@ import {
 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import {
-  attendanceListQuerySchema, attendanceSchema, attendanceSourceSchema, attendanceTotalsQuerySchema,
+  attendanceListQuerySchema, attendanceSchema, attendanceSourceSchema, attendanceTotalsQuerySchema, classKindSchema,
   idSchema, instantSchema, paginationSchema, recordAttendanceRequestSchema,
-  type Attendance, type AttendanceListQuery, type AttendanceSource, type AttendanceTotals,
+  type Attendance, type AttendanceListQuery, type AttendanceSource, type AttendanceTotals, type ClassKind,
   type AttendanceTotalsQuery, type Pagination, type RecordAttendanceRequest,
 } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../../core/interfaces/attendance.js';
+import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 
 type Row = typeof attendances.$inferSelect;
 type Filter = { readonly [K in keyof AttendanceFilter]?: AttendanceFilter[K] | undefined }
-  & { sessionId?: string | undefined; source?: AttendanceSource | undefined };
+  & { sessionId?: string | undefined; source?: AttendanceSource | undefined; kind?: ClassKind | undefined;
+    /** Resolved from `classesOnly` and the gym's open-mat setting. */
+    excludeOpenMat?: boolean | undefined };
 export interface AttendanceMutation {
   readonly gymId: string;
   readonly actor: { kind: 'user'; userId: string } | { kind: 'system' } | { kind: 'device'; deviceId: string };
 }
-/** Trusted callers assign the source; coach HTTP requests cannot impersonate a kiosk or import. */
-export interface AttendanceOrigin { source: AttendanceSource; sourceKey?: string; }
-export interface AttendanceOptions { scope?: typeof forGym; householdScope?: typeof forHousehold; clock?: Clock; }
+/** Trusted callers assign the source; coach HTTP requests cannot impersonate a kiosk or import.
+ * Only imports without a session may set the kind; it defaults to a class. */
+export interface AttendanceOrigin { source: AttendanceSource; sourceKey?: string; kind?: ClassKind; }
+export interface AttendanceOptions {
+  scope?: typeof forGym; householdScope?: typeof forHousehold; clock?: Clock; settings?: GymSettingsAccessor;
+}
 function missing(): never { throw new AppError('not_found', 'Resource not found'); }
 const present = (row: Row): Attendance => attendanceSchema.parse({
   id: row.id, memberId: row.memberId, sessionId: row.sessionId, programId: row.programId,
-  occurredAt: row.occurredAt.toISOString(), source: row.source, createdAt: row.createdAt.toISOString(),
+  occurredAt: row.occurredAt.toISOString(), source: row.source, kind: row.kind, createdAt: row.createdAt.toISOString(),
 });
 
 function validateFilter(filter: Filter) {
   for (const id of [filter.memberId, filter.programId, filter.tagId, filter.sessionId])
     if (id !== undefined) idSchema.parse(id);
   if (filter.source !== undefined) attendanceSourceSchema.parse(filter.source);
+  if (filter.kind !== undefined) classKindSchema.parse(filter.kind);
   if (filter.since !== undefined) instantSchema.parse(filter.since);
   if (filter.until !== undefined) instantSchema.parse(filter.until);
   if (filter.since && filter.until && Date.parse(filter.until) < Date.parse(filter.since))
@@ -44,6 +52,8 @@ function predicate(tx: Transaction, gymId: string, filter: Filter) {
     filter.memberId ? eq(attendances.memberId, filter.memberId) : undefined,
     filter.sessionId ? eq(attendances.sessionId, filter.sessionId) : undefined,
     filter.source ? eq(attendances.source, filter.source) : undefined,
+    filter.kind ? eq(attendances.kind, filter.kind) : undefined,
+    filter.excludeOpenMat ? eq(attendances.kind, 'class') : undefined,
     filter.since ? gte(attendances.occurredAt, new Date(filter.since)) : undefined,
     filter.until ? lt(attendances.occurredAt, new Date(filter.until)) : undefined,
     filter.programId ? or(eq(attendances.programId, filter.programId), inArray(attendances.sessionId,
@@ -82,7 +92,11 @@ async function sessionLinks(tx: Transaction, gymId: string, rows: readonly Row[]
 
 export function createAttendanceService(options: AttendanceOptions = {}) {
   const scope = options.scope ?? forGym, householdScope = options.householdScope ?? forHousehold;
-  const clock = options.clock ?? defaultClock;
+  const clock = options.clock ?? defaultClock, settings = options.settings ?? createGymSettingsAccessor({ scope });
+  async function countsOpenMat(gymId: string) { return (await settings.get(gymId)).openMatCountsAsClass; }
+  async function resolve(gymId: string, filter: Filter): Promise<Filter> {
+    return filter.classesOnly ? { ...filter, excludeOpenMat: !(await countsOpenMat(gymId)) } : filter;
+  }
   async function listInGym(gymId: string, filter: Filter, page: Pagination, requireResources: boolean) {
     validateFilter(filter);
     const { limit, offset } = paginationSchema.parse({ limit: page.limit, offset: page.offset });
@@ -112,13 +126,15 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
     return rows.filter((row) => (!filter.memberId || row.memberId === filter.memberId)
       && (!filter.since || row.occurredAt.getTime() >= Date.parse(filter.since))
       && (!filter.until || row.occurredAt.getTime() < Date.parse(filter.until))
+      && (!filter.kind || row.kind === filter.kind) && (!filter.excludeOpenMat || row.kind === 'class')
       && (!filter.programId || row.programId === filter.programId
         || (row.sessionId !== null && links.get(row.sessionId)?.programs.has(filter.programId)))
       && (!filter.tagId || (row.sessionId !== null && links.get(row.sessionId)?.tags.has(filter.tagId))))
       .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime() || a.id.localeCompare(b.id));
   }
   const queries: AttendanceQueries = {
-    async countSince(context, filter) {
+    async countSince(context, input) {
+      const filter = await resolve(context.kind === 'gym' ? context.gymId : context.identity.gymId, input);
       if (context.kind === 'household') return (await householdRows(context.identity, filter)).length;
       validateFilter(filter);
       return scope(context.gymId, async (tx) => {
@@ -126,17 +142,19 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
         return total!.value;
       });
     },
-    async history(context, filter, page) {
+    async history(context, input, page) {
+      const filter = await resolve(context.kind === 'gym' ? context.gymId : context.identity.gymId, input);
       if (context.kind === 'gym') {
         const result = await listInGym(context.gymId, filter, page, false);
-        return { ...result, data: result.data.map(({ id, memberId, sessionId, programId, occurredAt, source }) => ({
-          id, memberId, sessionId, programId, occurredAt, source,
+        return { ...result, data: result.data.map(({ id, memberId, sessionId, programId, occurredAt, source, kind }) => ({
+          id, memberId, sessionId, programId, occurredAt, source, kind,
         })) };
       }
       const { limit, offset } = paginationSchema.parse({ limit: page.limit, offset: page.offset });
       const rows = await householdRows(context.identity, filter);
-      return { data: rows.slice(offset, offset + limit).map(({ id, memberId, sessionId, programId, occurredAt, source }) => ({
+      return { data: rows.slice(offset, offset + limit).map(({ id, memberId, sessionId, programId, occurredAt, source, kind }) => ({
         id, memberId, sessionId, programId, occurredAt: occurredAt.toISOString(), source: attendanceSourceSchema.parse(source),
+        kind: classKindSchema.parse(kind),
       })), pagination: { limit, offset, total: rows.length } };
     },
   };
@@ -147,6 +165,11 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       attendanceSourceSchema.parse(origin.source);
       if (origin.sourceKey !== undefined && (origin.source !== 'import' || !origin.sourceKey.trim()))
         throw new AppError('invalid_request', 'Only imports accept a nonempty source key');
+      if (origin.kind !== undefined && (origin.source !== 'import' || value.sessionId))
+        throw new AppError('invalid_request', 'Only imports without a session accept a kind');
+      if (origin.kind !== undefined) classKindSchema.parse(origin.kind);
+      // The session decides the kind; a live visit without a session is open mat.
+      let kind: ClassKind = origin.kind ?? (origin.source === 'import' ? 'class' : 'open_mat');
       return scope(context.gymId, async (tx) => {
         const gymId = context.gymId, now = clock.now();
         await requireReferences(tx, gymId, { memberId: value.memberId,
@@ -162,11 +185,12 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           ));
           if (existing) return present(existing);
           if (session.status === 'cancelled') throw new AppError('conflict', 'Session is cancelled');
+          kind = classKindSchema.parse(session.kind);
         }
         const [inserted] = await tx.insert(attendances).values({
           id: uuidv7(now.getTime()), gymId, memberId: value.memberId, sessionId: value.sessionId,
           programId: value.programId, occurredAt: value.occurredAt ? new Date(value.occurredAt) : now,
-          source: origin.source, sourceKey: origin.sourceKey ?? null, createdAt: now,
+          source: origin.source, sourceKey: origin.sourceKey ?? null, kind, createdAt: now,
         }).onConflictDoNothing().returning();
         if (!inserted) {
           if (!value.sessionId && !origin.sourceKey) throw new AppError('conflict', 'Attendance already exists');
@@ -191,7 +215,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       return listInGym(gymId, value, value, true);
     },
     async totals(gymId: string, input: AttendanceTotalsQuery): Promise<AttendanceTotals> {
-      const filter = attendanceTotalsQuerySchema.parse(input);
+      const filter = attendanceTotalsQuerySchema.parse(input), openMatIsClass = await countsOpenMat(gymId);
       return scope(gymId, async (tx) => {
         await requireReferences(tx, gymId, filter);
         const rows = await tx.select().from(attendances).where(predicate(tx, gymId, filter));
@@ -204,7 +228,8 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           for (const id of programIds) byProgram.set(id, (byProgram.get(id) ?? 0) + 1);
           for (const id of session?.tags ?? []) byTag.set(id, (byTag.get(id) ?? 0) + 1);
         }
-        return { memberId: filter.memberId, total: rows.length,
+        const openMat = rows.filter((row) => row.kind === 'open_mat').length;
+        return { memberId: filter.memberId, total: rows.length, classes: openMatIsClass ? rows.length : rows.length - openMat, openMat,
           byProgram: [...byProgram].sort(([a], [b]) => a.localeCompare(b)).map(([programId, count]) => ({ programId, count })),
           byTag: [...byTag].sort(([a], [b]) => a.localeCompare(b)).map(([tagId, count]) => ({ tagId, count })) };
       });

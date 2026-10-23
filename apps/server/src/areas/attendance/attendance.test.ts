@@ -15,6 +15,7 @@ import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createAttendanceService } from './attendance.js';
 import { createAttendanceRoutes } from './attendance.routes.js';
+import { createSettingsService } from '../settings/settings.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-10-22T12:00:00Z');
@@ -85,6 +86,39 @@ describe('attendance service with PostgreSQL', () => {
       .rejects.toMatchObject({ code: 'conflict' });
     expect((await snapshot(f.gymId)).rows).toHaveLength(3);
     expect((await snapshot(f.gymId)).audits).toHaveLength(3);
+  });
+  it('records open mat as visits that count as classes only when the gym opts in', async () => {
+    const f = await fixture();
+    const openMat = await factory('classSessions', f.gymId, { kind: 'open_mat' });
+    const visit = { ...f.input, occurredAt: since };
+    const recorded = [
+      await service.record(f.context, visit),
+      await service.record(f.context, { ...visit, sessionId: null }),
+      await service.record(f.context, { ...visit, sessionId: openMat.id }),
+      await service.record(f.context, { ...visit, sessionId: null }, { source: 'import', sourceKey: 'legacy:1' }),
+      await service.record(f.context, { ...visit, sessionId: null }, { source: 'import', sourceKey: 'legacy:2', kind: 'open_mat' }),
+    ];
+    expect(recorded.map((row) => row.kind)).toEqual(['class', 'open_mat', 'open_mat', 'class', 'open_mat']);
+    await expect(service.record(f.context, visit, { source: 'coach', kind: 'class' })).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(service.record(f.context, visit, { source: 'import', sourceKey: 'legacy:3', kind: 'class' })).rejects.toMatchObject({ code: 'invalid_request' });
+    const payer = await factory('authUser', f.gymId);
+    await factory('householdUsers', f.gymId, { householdId: f.member.householdId, userId: payer.id, scope: 'payer' });
+    const scopes = [{ kind: 'gym' as const, gymId: f.gymId },
+      { kind: 'household' as const, identity: { gymId: f.gymId, householdId: f.member.householdId, userId: payer.id } }];
+    const counts = async (classesOnly: boolean) => Promise.all(scopes.map((scope) =>
+      service.queries.countSince(scope, { memberId: f.member.id, since, classesOnly })));
+    expect(await counts(false)).toEqual([5, 5]);
+    expect(await counts(true)).toEqual([2, 2]);
+    expect((await service.queries.history(scopes[1]!, { classesOnly: true }, page)).data.map((row) => row.kind)).toEqual(['class', 'class']);
+    expect(await service.totals(f.gymId, { memberId: f.member.id })).toMatchObject({ total: 5, classes: 2, openMat: 3 });
+    expect((await service.list(f.gymId, { ...page, kind: 'open_mat' })).pagination.total).toBe(3);
+    const settings = createSettingsService({ scope: database.forGym, clock });
+    await settings.update(f.context, 'booking', { revision: (await settings.get(f.gymId)).revision, openMatCountsAsClass: true });
+    expect(await counts(true)).toEqual([5, 5]);
+    expect(await service.totals(f.gymId, { memberId: f.member.id })).toMatchObject({ total: 5, classes: 5, openMat: 3 });
+    // A later change to the session never reclassifies recorded attendance.
+    await database.forGym(f.gymId, (tx) => tx.update(classSessions).set({ kind: 'class' }).where(eq(classSessions.id, openMat.id)));
+    expect((await service.list(f.gymId, { ...page, kind: 'open_mat' })).pagination.total).toBe(3);
   });
   it('rejects fresh check-ins to cancelled sessions, but still returns an existing check-in', async () => {
     const f = await fixture();

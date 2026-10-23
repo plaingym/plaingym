@@ -19,6 +19,7 @@ export const gyms = pgTable('gyms', {
   memberEmailsEnabled: boolean('member_emails_enabled').notNull().default(false),
   bookingWindowDays: integer('booking_window_days').notNull().default(14),
   cancellationCutoffMinutes: integer('cancellation_cutoff_minutes').notNull().default(60),
+  openMatCountsAsClass: boolean('open_mat_counts_as_class').notNull().default(false),
   settings: jsonb('settings').notNull().default({}), revision: integer('revision').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

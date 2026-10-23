@@ -11,7 +11,7 @@ import { canStaff, staffRoles } from '../permissions.js';
 const settings = {
   id: '019a08bf-1234-7000-8000-000000000001', name: 'The Gym', slug: 'the-gym', timezone: 'America/Vancouver',
   address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null, currency: 'CAD',
-  bookingWindowDays: 14, cancellationCutoffMinutes: 60, billingEnabled: false, memberEmailsEnabled: false,
+  bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false,
   revision: 1, createdAt: '2026-10-21T20:00:00Z', updatedAt: '2026-10-21T20:00:00Z',
 };
 
@@ -28,7 +28,7 @@ describe('gym settings contracts', () => {
     type Row = typeof gyms.$inferSelect;
     expectTypeOf<Omit<GymSettings, 'createdAt' | 'updatedAt'>>().toExtend<
       Pick<Row, Exclude<keyof GymSettings, 'createdAt' | 'updatedAt'>>>();
-    expectTypeOf<BookingRules>().toEqualTypeOf<Pick<Row, 'bookingWindowDays' | 'cancellationCutoffMinutes'>>();
+    expectTypeOf<BookingRules>().toEqualTypeOf<Pick<Row, 'bookingWindowDays' | 'cancellationCutoffMinutes' | 'openMatCountsAsClass'>>();
     expectTypeOf<GoLiveSwitches>().toEqualTypeOf<Pick<Row, 'billingEnabled' | 'memberEmailsEnabled'>>();
   });
   it.each(['stripeConfig', 'smtpConfig', 's3Config', 'qrKey', 'backupBlobKey', 'settings', 'pinHash', 'tokenHash'])(

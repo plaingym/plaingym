@@ -12,6 +12,7 @@ const projection = {
   id: gyms.id, name: gyms.name, slug: gyms.slug, timezone: gyms.timezone, address: gyms.address, branding: gyms.branding,
   websiteEnabled: gyms.websiteEnabled, existingSiteUrl: gyms.existingSiteUrl, currency: gyms.currency,
   bookingWindowDays: gyms.bookingWindowDays, cancellationCutoffMinutes: gyms.cancellationCutoffMinutes,
+  openMatCountsAsClass: gyms.openMatCountsAsClass,
   billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled,
   revision: gyms.revision, createdAt: gyms.createdAt, updatedAt: gyms.updatedAt,
 };
@@ -64,7 +65,8 @@ export function createGymSettingsAccessor(options: Parameters<typeof createSetti
     const value = await service.get(gymId);
     return { gymId: value.id, timezone: value.timezone, currency: value.currency,
       billingEnabled: value.billingEnabled, memberEmailsEnabled: value.memberEmailsEnabled, websiteEnabled: value.websiteEnabled,
-      bookingWindowDays: value.bookingWindowDays, cancellationCutoffMinutes: value.cancellationCutoffMinutes, revision: value.revision };
+      bookingWindowDays: value.bookingWindowDays, cancellationCutoffMinutes: value.cancellationCutoffMinutes,
+      openMatCountsAsClass: value.openMatCountsAsClass, revision: value.revision };
   } };
 }
 export const gymSettingsAccessor = createGymSettingsAccessor();

@@ -8,7 +8,7 @@ const gymScope = { kind: 'gym' as const, gymId: gym };
 const since = '2026-10-20T00:00:00Z';
 const at = '2026-10-21T00:00:00Z';
 const entry = (n: number, owner = gym): AttendanceFixture => ({ gymId: owner,
-  entry: { id: id(n), memberId: member, sessionId: id(10), programId: id(11), occurredAt: at, source: 'coach' },
+  entry: { id: id(n), memberId: member, sessionId: id(10), programId: id(11), occurredAt: at, source: 'coach', kind: 'class' },
   sessionProgramIds: [id(11), id(12)], sessionTagIds: [id(13)],
 });
 describe('AttendanceQueries fake', () => {
@@ -25,6 +25,12 @@ describe('AttendanceQueries fake', () => {
     expect(await fake.countSince(gymScope, { memberId: member, since, programId: id(11) })).toBe(1);
     expect(await fake.countSince(gymScope, { memberId: member, since, programId: id(12) })).toBe(0);
     expect(await fake.countSince(gymScope, { memberId: member, since, tagId: id(13) })).toBe(0);
+  });
+  it('counts open mat as classes only for gyms that opt in', async () => {
+    const openMat = { ...entry(21), entry: { ...entry(21).entry, sessionId: null, kind: 'open_mat' as const } };
+    const fakes = [new FakeAttendanceQueries([entry(20), openMat]), new FakeAttendanceQueries([entry(20), openMat], undefined, [gym])];
+    expect(await Promise.all(fakes.map((fake) => fake.countSince(gymScope, { memberId: member, since })))).toEqual([2, 2]);
+    expect(await Promise.all(fakes.map((fake) => fake.countSince(gymScope, { memberId: member, since, classesOnly: true })))).toEqual([1, 2]);
   });
   it('uses inclusive/exclusive instant boundaries across offsets', async () => {
     const fake = new FakeAttendanceQueries([entry(20)]);

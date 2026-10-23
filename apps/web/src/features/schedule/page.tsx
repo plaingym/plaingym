@@ -46,7 +46,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   return <article className="space-y-4 rounded border p-4">
     <h2 className="text-xl font-semibold">{session.name}</h2>
     <p>{new Intl.DateTimeFormat(undefined, { timeZone: options.timezone, dateStyle: 'full', timeStyle: 'short' }).format(new Date(session.startsAt))} · {options.timezone}</p>
-    <p>{text(session.status)}</p>
+    <p>{text(session.status)} · {text(session.kind)}</p>
     <p>{options.coaches.find((coach) => coach.id === session.coachId)?.name ?? text('unassigned')}</p>
     <p>{text('capacity')}: {session.capacity ?? text('unlimited')}</p>
     <p className="whitespace-pre-wrap">{session.notes}</p>
@@ -67,7 +67,7 @@ function ClassEditor({ template, options, tags, onSaved, onClose, standalone = f
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) ?? '');
     const common = { name: value('name'), coachId: value('coachId') || null, capacity: value('capacity') ? Number(value('capacity')) : null,
-      notes: value('notes') || null, programIds: form.getAll('programIds').map(String), tagIds: form.getAll('tagIds').map(String) };
+      notes: value('notes') || null, kind: value('kind') || 'class', programIds: form.getAll('programIds').map(String), tagIds: form.getAll('tagIds').map(String) };
     setBusy(true); setNotice('');
     try {
       let result;
@@ -93,6 +93,7 @@ function ClassEditor({ template, options, tags, onSaved, onClose, standalone = f
         <Label className="block">{text('duration')}<Input name="durationMinutes" type="number" min={1} step={1} required defaultValue={template?.durationMinutes ?? 60}/></Label></>}
       <Label className="block">{text('coach')}<select name="coachId" defaultValue={template?.coachId ?? ''} className={fields}><option value="">{text('unassigned')}</option>{options.coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</select></Label>
       <Label className="block">{text('capacity')}<Input name="capacity" type="number" min={1} step={1} defaultValue={template?.capacity ?? ''}/></Label>
+      <Label className="block">{text('kind')}<select name="kind" defaultValue={template?.kind ?? 'class'} className={fields}><option value="class">{text('class')}</option><option value="open_mat">{text('open_mat')}</option></select></Label>
       <fieldset><legend>{text('programs')}</legend>{options.programs.map((program) => <label className="block" key={program.id}><input type="checkbox" name="programIds" value={program.id} defaultChecked={template?.programIds.includes(program.id)}/> {program.name}</label>)}</fieldset>
       <fieldset><legend>{text('tags')}</legend>{tags.map((tag) => <label className="block" key={tag.id}><input type="checkbox" name="tagIds" value={tag.id} defaultChecked={template?.tagIds.includes(tag.id)}/> {tag.name}</label>)}</fieldset>
       <Label className="block">{text('notes')}<textarea name="notes" defaultValue={template?.notes ?? ''} className={fields}/></Label>

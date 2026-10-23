@@ -101,6 +101,8 @@ function MemberAttendance({ memberId }: { memberId: string }) {
     <Button variant="outline" disabled={loading || saving} onClick={() => setReload((value) => value + 1)}>{t('attendance/attendance:refresh')}</Button>
     {totals && <>
       <p>{t('attendance/attendance:total', { count: totals.total })}</p>
+      <p>{t('attendance/attendance:classes', { count: totals.classes })}</p>
+      <p>{t('attendance/attendance:openMatTotal', { count: totals.openMat })}</p>
       <table className="w-full text-left"><caption className="text-left font-semibold">{t('attendance/attendance:byProgram')}</caption>
         <thead><tr><th scope="col">{t('attendance/attendance:program')}</th><th scope="col">{t('attendance/attendance:count')}</th></tr></thead>
         <tbody>{totals.byProgram.map((row) => <tr key={row.programId}>

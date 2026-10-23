@@ -9,9 +9,11 @@ Duration is elapsed minutes, including when a session crosses a DST transition.
 
 Materialization locks one template per short transaction. The unique occurrence
 constraint protects retries, and existing local dates are preserved when a
-template's start time changes. Program and tag mappings are copied to sessions;
+template's start time changes. Program and tag mappings and the kind (`class` or
+`open_mat`) are copied to sessions;
 subsequent template edits affect only dates that have not been materialized.
 Cancellation, coach swaps, notes and capacity overrides survive retries.
+The kind defaults to `class` on create; full-replacement updates must restate it.
 
 Generated start times cannot be moved while the template is attached. An
 immutable occurrence key is needed to support that operation safely
