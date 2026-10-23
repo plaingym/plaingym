@@ -24,6 +24,11 @@ const driver = {
   ],
   message: 'Database drivers and connection adapters belong in packages/db/.',
 };
+// Date and time conversion goes through the shared time module only.
+const temporal = {
+  group: ['temporal-polyfill', 'temporal-polyfill/**'],
+  message: 'Use @plaingym/shared/time for timezone and calendar conversions.',
+};
 const rawClient = {
   regex: '(?:^@plaingym/db/|(?:^|/)packages/db/)(?:src/)?client(?:[./]|$)',
   message: 'Import scoped helpers and schema from the database package, not its client module.',
@@ -68,7 +73,7 @@ export default defineConfig(
     files: ['**/*.{js,jsx,mjs,cjs,ts,tsx,mts,cts}'],
     languageOptions: { globals: globals.node },
     rules: {
-      'no-restricted-imports': ['error', { patterns: [vendor] }],
+      'no-restricted-imports': ['error', { patterns: [vendor, temporal] }],
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
@@ -80,7 +85,7 @@ export default defineConfig(
   {
     files: ['apps/server/src/**'],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [vendor, driver, ...rawDatabase] }],
+      'no-restricted-imports': ['error', { patterns: [vendor, temporal, driver, ...rawDatabase] }],
     },
   },
   {
@@ -90,13 +95,13 @@ export default defineConfig(
   },
   {
     files: ['apps/server/src/infra/**'],
-    rules: { 'no-restricted-imports': ['error', { patterns: [driver] }] },
+    rules: { 'no-restricted-imports': ['error', { patterns: [temporal, driver] }] },
   },
   {
     files: ['apps/server/src/core/**'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [
-        vendor, driver,
+        vendor, temporal, driver,
         { regex: '(^|/)modules(/|$)', message: 'Core must not depend on feature modules.' },
       ] }],
     },
@@ -105,7 +110,7 @@ export default defineConfig(
     files: ['apps/server/src/areas/portal/**', 'apps/server/src/public/links/**'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [
-        vendor, driver, ...rawDatabase,
+        vendor, temporal, driver, ...rawDatabase,
         {
           // Any core module could forward forGym; schema namespaces stay allowed.
           regex: [...databaseEntrypoints, '(?:^|/)core/'].join('|'),
@@ -114,5 +119,9 @@ export default defineConfig(
         },
       ] }],
     },
+  },
+  {
+    files: ['packages/shared/src/time.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [vendor] }] },
   },
 );

@@ -104,7 +104,7 @@ Prefer Web-standard APIs (`fetch`, `Request`/`Response`, WebCrypto, Web Streams)
 * Migrations must be **expand/contract**: never drop or rename a column in the same release that stops using it. Users skip versions.
 * Every gym-owned table has `gym_id uuid not null`, leading its indexes and unique constraints (e.g. `(gym_id, email)`).
 * Primary keys are UUIDv7 in native `uuid` columns, generated in app code. Never expose sequential IDs.
-* Store money as integer cents with an explicit `currency` column. Store timestamps as `timestamptz`. Compute billing dates in the gym's IANA `timezone`.
+* Store money as integer cents with an explicit `currency` column. Store timestamps as `timestamptz`. Compute billing dates in the gym's IANA `timezone`. Convert between local times, calendar dates, and instants only with `@plaingym/shared/time`; formatting for display may use `Intl` directly.
 * Enums are `text` with `CHECK` constraints; structured data uses `jsonb`.
 * Secrets stored in the database are encrypted with `APP_ENCRYPTION_KEY`.
 * State-changing service calls write an `audit_events` row.
