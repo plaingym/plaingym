@@ -12,7 +12,7 @@ import {
 const id = '019a08bf-1234-7000-8000-000000000001';
 const otherId = '019a08bf-1234-7000-8000-000000000002';
 const now = '2026-10-21T12:00:00Z';
-const member = { id, firstName: 'Alex', lastInitial: 'S', photoKey: null };
+const member = { id, firstName: 'Alex', lastInitial: 'S', photoUrl: null };
 const device = { id, name: 'Reception tablet', createdAt: now, revokedAt: null, lastSeenAt: null };
 const session = { id, name: 'Evening class', startsAt: now, endsAt: '2026-10-21T13:00:00Z' };
 const safeResults = [
@@ -37,7 +37,7 @@ describe('kiosk privacy and device contracts', () => {
   it('accepts only a first name, a Unicode last initial, and an optional photo for display', () => {
     for (const lastInitial of ['S', '张', 'ع', 'E\u0301', '𐐀']) expect(kioskMemberIdentitySchema.parse({ ...member, lastInitial }).lastInitial).toBe(lastInitial);
     for (const lastInitial of ['', 'Smith', '张三', 'S.']) expect(kioskMemberIdentitySchema.safeParse({ ...member, lastInitial }).success).toBe(false);
-    for (const extra of [{ lastName: 'Smith' }, { medicalNotes: 'private' }, { householdId: otherId }, { pinHash: 'secret' }, { checkinCodeHash: 'secret' }, { email: 'private@example.test' }, { status: 'active' }]) {
+    for (const extra of [{ lastName: 'Smith' }, { photoKey: 'gym/members/key' }, { medicalNotes: 'private' }, { householdId: otherId }, { pinHash: 'secret' }, { checkinCodeHash: 'secret' }, { email: 'private@example.test' }, { status: 'active' }]) {
       expect(kioskMemberIdentitySchema.safeParse({ ...member, ...extra }).success).toBe(false);
       expect(kioskLookupResponseSchema.safeParse({ data: { status: 'select_member', members: [{ ...member, ...extra }] } }).success).toBe(false);
     }
@@ -86,8 +86,8 @@ describe('kiosk privacy and device contracts', () => {
   it('keeps the device and identity projections tied to persisted fields', () => {
     expectTypeOf<Omit<KioskDevice, 'createdAt' | 'revokedAt' | 'lastSeenAt'>>()
       .toExtend<Omit<typeof kioskDevices.$inferSelect, 'gymId' | 'createdAt' | 'revokedAt' | 'lastSeenAt' | 'tokenHash'>>();
-    expectTypeOf<Pick<KioskMemberIdentity, 'id' | 'firstName' | 'photoKey'>>()
-      .toExtend<Pick<typeof members.$inferSelect, 'id' | 'firstName' | 'photoKey'>>();
+    expectTypeOf<Pick<KioskMemberIdentity, 'id' | 'firstName'>>()
+      .toExtend<Pick<typeof members.$inferSelect, 'id' | 'firstName'>>();
   });
   it('reserves device management for owner/admin and check-in for device credentials', () => {
     for (const endpoint of Object.values(kioskContracts)) {

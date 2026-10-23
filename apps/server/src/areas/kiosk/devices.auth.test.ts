@@ -7,7 +7,7 @@ import { kioskContracts, portalContracts } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import { createKioskDeviceService } from './devices.js';
 import { createKioskDeviceRoutes } from './devices.routes.js';
-import { createKioskAuthMiddleware, type KioskAuthOptions } from './devices.auth.js';
+import { createKioskAuthMiddleware, markKioskPinVerified, type KioskAuthOptions } from './devices.auth.js';
 import { createApp } from '../../core/app.js';
 import { route } from '../../core/registry.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
@@ -25,10 +25,18 @@ beforeAll(async () => {
   token = first.token; deviceId = first.device.id;
   secondToken = (await service.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Second device' })).token;
 });
+let verificationGate: Promise<void> | undefined;
+let verificationStarted: (() => void) | undefined;
 const checkinRoutes = [
   route({ ...kioskContracts.lookup, request: { body: { required: true, content: { 'application/json': { schema: kioskContracts.lookup.body } } } },
     responses: { 200: { description: 'Lookup fixture', content: { 'application/json': { schema: kioskContracts.lookup.response } } } } },
-  (c) => c.json({ data: { status: 'see_front_desk' as const } }, 200)),
+  async (c) => {
+    if (c.req.valid('json').name === 'Verified') {
+      verificationStarted?.(); await verificationGate;
+      markKioskPinVerified(c.req.raw);
+    }
+    return c.json({ data: { status: 'see_front_desk' as const } }, 200);
+  }),
   route({ ...kioskContracts.checkinNamePin, request: { body: { required: true, content: { 'application/json': { schema: kioskContracts.checkinNamePin.body } } } },
     responses: { 200: { description: 'Check-in fixture', content: { 'application/json': { schema: kioskContracts.checkinNamePin.response } } } } },
   (c) => c.json({ data: [{ status: 'see_front_desk' as const }] }, 200)),
@@ -122,6 +130,26 @@ describe('kiosk authentication middleware', () => {
     expect((await request(app, bodies[2][0], token, bodies[2][1])).status).toBe(200);
     clock.advance(60_000);
     expect((await request(app)).status).toBe(200);
+  });
+  it('releases verified attempts without resetting earlier failed PINs, even for a neutral standing result', async () => {
+    const { app } = server({ pinLimit: 2 });
+    expect((await request(app)).status).toBe(200);
+    for (let i = 0; i < 12; i++) expect((await request(app, bodies[0][0], token, { ...pinBody, name: 'Verified' })).status).toBe(200);
+    expect((await request(app)).status).toBe(200);
+    expect((await request(app)).status).toBe(429);
+  });
+  it('reserves in-flight attempts so concurrent requests cannot bypass the PIN limit', async () => {
+    const { app } = server({ pinLimit: 1 });
+    let release!: () => void;
+    verificationGate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const first = request(app, bodies[0][0], token, { ...pinBody, name: 'Verified' });
+    try {
+      await started;
+      expect((await request(app)).status).toBe(429);
+    } finally { release(); verificationStarted = undefined; verificationGate = undefined; }
+    expect((await first).status).toBe(200);
+    expect((await request(app, bodies[0][0], token, { ...pinBody, name: 'Verified' })).status).toBe(200);
   });
   it('shares the client address budget across devices and ignores untrusted forwarding headers', async () => {
     const { app } = server({ pinLimit: 2, peerAddress: () => '192.0.2.1' });

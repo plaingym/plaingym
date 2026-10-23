@@ -24,6 +24,7 @@ import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
 import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
 import { configureMembers } from '../areas/members/members.routes.js';
+import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
@@ -123,7 +124,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   configureRanks({ attendance: createAttendanceQueries({ clock }), clock });
   // Household PINs use the gym's random key; member photos use the gym's file storage.
-  configureMembers({ pinSecret: createGymKeyResolver({ key }), uploadsFor: uploads.forGym, clock });
+  const gymKey = createGymKeyResolver({ key });
+  configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
+  configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const contributions = { ...areaContributions,

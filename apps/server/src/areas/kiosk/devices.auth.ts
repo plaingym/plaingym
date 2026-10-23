@@ -8,6 +8,12 @@ import { createKioskDeviceService } from './devices.js';
 
 const checkins = [kioskContracts.lookup, kioskContracts.checkinNamePin, kioskContracts.checkinQr];
 const pinPaths = new Set<string>([kioskContracts.lookup.path, kioskContracts.checkinNamePin.path]);
+const pinAttempts = new WeakMap<Request, { verified: boolean }>();
+/** Called only after the check-in service verifies the household's name and PIN. */
+export function markKioskPinVerified(request: Request): void {
+  const attempt = pinAttempts.get(request);
+  if (attempt) attempt.verified = true;
+}
 export interface KioskAuthOptions extends ClientIpOptions {
   readonly service?: ReturnType<typeof createKioskDeviceService>;
   /** Wrap the existing session middleware: it must not overwrite a kiosk principal. */
@@ -51,10 +57,24 @@ export function createKioskAuthMiddleware(options: KioskAuthOptions = {}): Middl
         c.header('Retry-After', String(Math.max(1, Math.ceil(((blocked?.resetAt ?? now + windowMs) - now) / 1000))));
         throw new AppError('rate_limited', 'Too many requests.');
       }
-      for (const key of keys) {
+      const reservations = keys.map((key) => {
         const bucket = buckets.get(key) ?? { count: 0, resetAt: now + windowMs };
         bucket.count++; buckets.set(key, bucket);
+        return { key, bucket };
+      });
+      // Reserve before verification so concurrent guesses cannot bypass the limit.
+      // Successful PIN checks release only their own slots, never earlier failures.
+      const attempt = { verified: false };
+      pinAttempts.set(c.req.raw, attempt);
+      try { await next(); }
+      finally {
+        pinAttempts.delete(c.req.raw);
+        if (attempt.verified) for (const { key, bucket } of reservations) {
+          if (buckets.get(key) !== bucket) continue;
+          if (--bucket.count === 0) buckets.delete(key);
+        }
       }
+      return;
     }
     await next();
   };

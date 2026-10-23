@@ -1,3 +1,12 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Kiosk check-in",
+  "ok": "This member can check in at the kiosk.",
+  "frontDesk": "The kiosk sends this member to the front desk:",
+  "reason.missing_waiver": "A current waiver isn't signed.",
+  "reason.inactive": "The member's status doesn't allow check-in (only active, trial and visitor members can check in).",
+  "reason.billing": "Billing needs attention.",
+  "reason.unknown": "Another check needs attention ({code}).",
+  "loading": "Checking…",
+  "error": "Kiosk standing couldn't be loaded."
 }

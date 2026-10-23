@@ -28,8 +28,9 @@ const lastInitialSchema = z.string().refine(
   (value) => [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(value)].length === 1,
   'Only the last initial may be displayed',
 );
+/** `photoUrl` is a short-lived signed link to the member's photo (the kiosk can't use staff photo routes). */
 export const kioskMemberIdentitySchema = z.strictObject({
-  id: idSchema, firstName: z.string().min(1), lastInitial: lastInitialSchema, photoKey: z.string().min(1).nullable(),
+  id: idSchema, firstName: z.string().min(1), lastInitial: lastInitialSchema, photoUrl: z.string().min(1).nullable(),
 });
 export const kioskLookupResponseSchema = z.strictObject({
   data: z.discriminatedUnion('status', [
@@ -60,7 +61,8 @@ export const kioskSessionChoiceSchema = z.strictObject({
 export const kioskCheckinResultSchema = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('checked_in'), member: kioskMemberIdentitySchema }),
   z.strictObject({ status: z.literal('already_checked_in'), member: kioskMemberIdentitySchema }),
-  z.strictObject({ status: z.literal('select_session'), member: kioskMemberIdentitySchema, sessions: z.array(kioskSessionChoiceSchema).min(1) }),
+  // An empty list means no class is running now: the member may choose open mat (sessionId null).
+  z.strictObject({ status: z.literal('select_session'), member: kioskMemberIdentitySchema, sessions: z.array(kioskSessionChoiceSchema) }),
   z.strictObject({ status: z.literal('see_front_desk') }),
 ]);
 export const kioskCheckinResponseSchema = z.strictObject({ data: kioskCheckinResultSchema });
@@ -75,7 +77,19 @@ export const kioskContracts = {
   checkinQr: { method: 'post', path: '/api/kiosk/checkin/qr', permission: checkin, body: kioskQrCheckinRequestSchema, response: kioskCheckinResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
+/** Why the kiosk sends a member to the front desk, for staff only; the kiosk itself never shows a reason.
+ * Codes come from standing checks (`missing_waiver`, `inactive`, `billing`, and any a module adds). */
+export const kioskStandingSchema = z.strictObject({
+  memberId: idSchema, status: z.enum(['ok', 'front_desk']), reasons: z.array(z.string().min(1)),
+});
+export const kioskStandingResponseSchema = z.strictObject({ data: kioskStandingSchema });
+export const kioskStandingContracts = {
+  memberStanding: { method: 'get', path: '/api/kiosk/standing/{memberId}', permission: { kind: 'staff', capability: 'members.read' },
+    params: z.strictObject({ memberId: idSchema }), response: kioskStandingResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
+
 export type KioskDevice = z.infer<typeof kioskDeviceSchema>;
+export type KioskStanding = z.infer<typeof kioskStandingSchema>;
 export type RegisterKioskDeviceRequest = z.infer<typeof registerKioskDeviceRequestSchema>;
 export type RegisterKioskDeviceResponse = z.infer<typeof registerKioskDeviceResponseSchema>;
 export type KioskMemberIdentity = z.infer<typeof kioskMemberIdentitySchema>;
