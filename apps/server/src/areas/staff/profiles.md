@@ -16,21 +16,9 @@ The profile form saves the presentation fields before its separate photo request
 
 ## Integration
 
-The existing staff barrel already exports every profile, role, invitation, acceptance-page, and photo route. Generation sees all of them without contacting infrastructure. Every route returns 503 until runtime calls:
+The staff barrel exports every profile, role, invitation, acceptance-page, and photo route. Every route returns 503 until `core/runtime.ts` calls `configureStaffProfiles` with an invitation service (the runtime's auth config, SMTP check, and the gym's SMTP mailer or the demo outbox), the gym's upload provider, and the canonical origin resolver. Demo mode keeps uploads disabled.
 
-```ts
-configureStaffProfiles({
-  invitations: createStaffInvitationService({ config, smtpConfigured,
-    mailer: demo ? demo.emailFor : smtpMailer(smtp!),
-  }),
-  uploadsFor: uploads.forGym,
-  origin: originFor,
-});
-```
-
-The exports come from `profiles.routes.ts` and `profiles.invitations.ts`. Use the runtime's existing auth config, canonical hostname resolver, per-gym SMTP resolver, and upload provider. The demo mailer must remain the in-app outbox and its upload provider must keep uploads disabled. No extra routes need to be mounted. Runtime composition is integration-owned.
-
-TODO(CCR T11): promote the public invitation acceptance request/response and page into shared contracts. TODO(CCR T18): promote the profile photo upload/read contracts and remove writable photo keys from ordinary profile requests. These declarations remain local until then; the browser already uses the generated API client for invitations and photo uploads. No schema or frozen contract files are changed. The password reset backend remains the existing staff-auth route; only its UI is added.
+The JSON contracts live in `packages/shared`: `staffContracts.uploadPhoto` and the public `staffInvitationContracts.acceptInvitation`. The photo read and the `/staff-invitation` page are binary and HTML responses outside the JSON contracts. Ordinary profile requests cannot carry a photo key; an update may only clear one with `photoKey: null`. The password reset backend remains the existing staff-auth route; only its UI is added.
 
 ## Validation
 

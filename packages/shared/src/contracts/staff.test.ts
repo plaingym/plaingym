@@ -6,7 +6,8 @@ import {
   createStaffProfileRequestSchema, grantStaffRoleRequestSchema, inviteStaffRequestSchema,
   inviteStaffResponseSchema, publicStaffProfileSchema, revokeStaffRoleRequestSchema,
   staffContracts, staffProfileListQuerySchema, staffProfileSchema, staffRoleSchema,
-  updateStaffProfileRequestSchema, updateStaffRoleRequestSchema,
+  updateStaffProfileRequestSchema, updateStaffRoleRequestSchema, acceptStaffInvitationRequestSchema,
+  staffInvitationContracts, uploadStaffPhotoRequestSchema,
   type PublicStaffProfile, type StaffProfile, type StaffRoleRecord,
 } from '@plaingym/shared/contracts';
 
@@ -78,6 +79,21 @@ describe('staff profiles and roles', () => {
       expect(isRoutePermission(endpoint.permission)).toBe(true);
       expect(canStaff([role], endpoint.permission.capability)).toBe(role === 'owner' || role === 'admin');
     }
+  });
+  it('sets photos only through the upload endpoint', () => {
+    expect(createStaffProfileRequestSchema.safeParse({ displayName: 'Coach', photoKey: 'gym/staff/key' }).success).toBe(false);
+    expect(updateStaffProfileRequestSchema.safeParse({ revision: 1, photoKey: 'gym/staff/key' }).success).toBe(false);
+    expect(updateStaffProfileRequestSchema.parse({ revision: 1, photoKey: null })).toEqual({ revision: 1, photoKey: null });
+    expect(uploadStaffPhotoRequestSchema.safeParse({ revision: 1, contentType: 'image/png', base64: 'iVBORw==' }).success).toBe(true);
+    expect(uploadStaffPhotoRequestSchema.safeParse({ revision: 1, contentType: 'image/gif', base64: 'R0lGOA==' }).success).toBe(false);
+    expect(uploadStaffPhotoRequestSchema.safeParse({ revision: 1, contentType: 'image/png', base64: 'not base64' }).success).toBe(false);
+  });
+  it('accepts invitations publicly with a single-use token', () => {
+    expect(staffInvitationContracts.acceptInvitation.permission).toEqual({ kind: 'public' });
+    const token = 'a'.repeat(64);
+    expect(acceptStaffInvitationRequestSchema.parse({ token, name: ' Alex ' })).toEqual({ token, name: 'Alex' });
+    expect(acceptStaffInvitationRequestSchema.safeParse({ token: 'A'.repeat(64), name: 'Alex' }).success).toBe(false);
+    expect(acceptStaffInvitationRequestSchema.safeParse({ token, name: 'Alex', password: 'short' }).success).toBe(false);
   });
   it('matches the locked schema without requiring profiles to have a login', () => {
     expectTypeOf<StaffProfile>().toExtend<Wire<Pick<typeof staffProfiles.$inferSelect, keyof StaffProfile>>>();

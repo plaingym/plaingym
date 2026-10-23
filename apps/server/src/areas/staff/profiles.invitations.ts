@@ -4,21 +4,15 @@ import { staffRoles, staffProfiles, writeAudit } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import type { InviteStaffRequest, InviteStaffResponse } from '@plaingym/shared/contracts';
-import { z } from '@hono/zod-openapi';
+import { acceptStaffInvitationRequestSchema, type AcceptStaffInvitationRequest, type InviteStaffRequest, type InviteStaffResponse } from '@plaingym/shared/contracts';
 import { createAccountService } from '../../infra/auth/accounts.js';
-import { createInvitationStore, invitationTokenSchema } from '../../infra/auth/invitations.js';
+import { createInvitationStore } from '../../infra/auth/invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { SmtpEmail, type Email } from '../../infra/email/index.js';
 import type { SmtpResolver } from '../settings/smtp.js';
 import { renderStaffInvitation } from '../../emails/staff/profiles.js';
 import { assertStaffManager, staffAudit, staffRoleRecord, type StaffActor } from './profiles.js';
 
-/** TODO(CCR T11): move the acceptance request and its public route into shared contracts. */
-export const acceptStaffInvitationSchema = z.strictObject({
-  token: invitationTokenSchema, name: z.string().trim().min(1).max(200), password: z.string().min(12).max(128).optional(),
-});
-export type AcceptStaffInvitationRequest = z.input<typeof acceptStaffInvitationSchema>;
 export interface StaffInvitationOptions {
   readonly config: AuthConfig;
   smtpConfigured(gymId: string): Promise<boolean>;
@@ -72,7 +66,7 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
       return { data: { delivery: 'email', staffRole: result.staffRole } };
     },
     async acceptInvitation(gymId: string, raw: AcceptStaffInvitationRequest, clock: Clock) {
-      const input = acceptStaffInvitationSchema.parse(raw);
+      const input = acceptStaffInvitationRequestSchema.parse(raw);
       await store.accept({ gymId, token: input.token, password: input.password, passwordMode: await passwordRequired(gymId), clock }, async (tx, binding) => {
         const [role] = await tx.select().from(staffRoles).where(eq(staffRoles.id, binding.staffRoleId)).for('update');
         if (!role || role.userId !== binding.userId || role.role !== binding.role || role.revision !== binding.revision)

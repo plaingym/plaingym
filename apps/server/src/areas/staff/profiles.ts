@@ -23,7 +23,7 @@ export async function staffAudit(tx: Transaction, actor: StaffActor, action: str
   await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.actorUserId, action, targetType, targetId, occurredAt: actor.clock.now() });
 }
 export function createStaffProfileService(scope = forGym) {
-  async function links(tx: Transaction, input: CreateStaffProfileRequest | UpdateStaffProfileRequest) {
+  async function links(tx: Transaction, input: Pick<CreateStaffProfileRequest, 'userId' | 'memberId'>) {
     if (input.userId) {
       const [role] = await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, input.userId));
       if (!role) throw new AppError('not_found', 'Staff account not found');
@@ -33,7 +33,8 @@ export function createStaffProfileService(scope = forGym) {
       if (!member) throw new AppError('not_found', 'Member not found');
     }
   }
-  async function saveProfile(actor: StaffActor, id: string, input: UpdateStaffProfileRequest, photo = false) {
+  // Only attachPhoto passes a new key; requests may at most clear one, which is rechecked here for direct callers.
+  async function saveProfile(actor: StaffActor, id: string, input: Omit<UpdateStaffProfileRequest, 'photoKey'> & { photoKey?: string | null | undefined }, photo = false) {
     if (typeof input.photoKey === 'string' && !photo) throw new AppError('invalid_request', 'Use the profile photo upload endpoint');
     return scope(actor.gymId, async (tx) => {
       await assertStaffManager(tx, actor.actorUserId);
@@ -67,7 +68,7 @@ export function createStaffProfileService(scope = forGym) {
       });
     },
     async createProfile(actor: StaffActor, input: CreateStaffProfileRequest) {
-      if (typeof input.photoKey === 'string') throw new AppError('invalid_request', 'Use the profile photo upload endpoint');
+      if ((input as { photoKey?: unknown }).photoKey !== undefined) throw new AppError('invalid_request', 'Use the profile photo upload endpoint');
       return scope(actor.gymId, async (tx) => {
         await assertStaffManager(tx, actor.actorUserId); await links(tx, input);
         const [row] = await tx.insert(staffProfiles).values({ ...input, gymId: actor.gymId, createdAt: actor.clock.now() }).onConflictDoNothing().returning();

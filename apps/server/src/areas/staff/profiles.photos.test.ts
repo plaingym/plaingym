@@ -70,8 +70,8 @@ it('bounds and validates raster bytes, refuses stale revisions, and rejects arbi
     await expect(service.upload(actor(), profile.id, 1, bytes, type)).rejects.toMatchObject({ code: 'invalid_request' });
   expect((await post(server(), profile.id, { ...body(), base64: '!!!!' })).status).toBe(400);
   expect((await post(server(), profile.id, { ...body(), base64: 'A'.repeat(720_001) })).status).toBe(400);
-  await expect(profiles.updateProfile(actor(), profile.id, { revision: 1, photoKey: gymA + '/staff/arbitrary' })).rejects.toMatchObject({ code: 'invalid_request' });
-  await expect(profiles.createProfile(actor(), { displayName: 'Bad', photoKey: gymA + '/members/stolen' })).rejects.toMatchObject({ code: 'invalid_request' });
+  await expect(profiles.updateProfile(actor(), profile.id, { revision: 1, photoKey: gymA + '/staff/arbitrary' } as never)).rejects.toMatchObject({ code: 'invalid_request' });
+  await expect(profiles.createProfile(actor(), { displayName: 'Bad', photoKey: gymA + '/members/stolen' } as never)).rejects.toMatchObject({ code: 'invalid_request' });
 });
 it('marks the new upload deleted if a concurrent edit wins before attachment', async () => {
   const profile = (await profiles.createProfile(actor(), { displayName: 'Concurrent photo' })).data;

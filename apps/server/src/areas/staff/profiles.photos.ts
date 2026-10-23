@@ -3,17 +3,12 @@ import { forGym, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
-import { staffProfileParamsSchema, staffProfileResponseSchema } from '@plaingym/shared/contracts';
+import { staffContracts } from '@plaingym/shared/contracts';
 import type { Uploads } from '../../infra/storage/index.js';
 import { route } from '../../core/registry.js';
 import { assertStaffManager, createStaffProfileService, type StaffActor } from './profiles.js';
-import { validatePhoto, maxPhotoBytes } from '../members/photos.js';
+import { validatePhoto } from '../members/photos.js';
 
-/** TODO(CCR T18): promote staff photo upload/read declarations into shared contracts. */
-export const uploadStaffPhotoSchema = z.strictObject({
-  revision: z.int().positive(), contentType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
-  base64: z.string().min(4).max(4 * Math.ceil(maxPhotoBytes / 3)).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
-});
 export function createStaffPhotoService(uploadsFor: (gymId: string) => Promise<Uploads>, scope = forGym) {
   const profiles = createStaffProfileService(scope);
   return {
@@ -51,11 +46,11 @@ export function createStaffPhotoService(uploadsFor: (gymId: string) => Promise<U
 export type StaffPhotoService = ReturnType<typeof createStaffPhotoService>;
 export function createStaffPhotoRoutes(service: StaffPhotoService | (() => StaffPhotoService)) {
   const current = () => typeof service === 'function' ? service() : service;
-  const permission = { kind: 'staff', capability: 'staff.manage' } as const;
-  return [route({ method: 'post', path: '/api/staff/profiles/{staffProfileId}/photo', permission,
+  const upload = staffContracts.uploadPhoto, { permission } = upload;
+  return [route({ ...upload,
     middleware: bodyLimit({ maxSize: 720_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }),
-    request: { params: staffProfileParamsSchema, body: { required: true, content: { 'application/json': { schema: uploadStaffPhotoSchema } } } },
-    responses: { 200: { description: 'Staff photo uploaded', content: { 'application/json': { schema: staffProfileResponseSchema } } } },
+    request: { params: upload.params, body: { required: true, content: { 'application/json': { schema: upload.body } } } },
+    responses: { 200: { description: 'Staff photo uploaded', content: { 'application/json': { schema: upload.response } } } },
   }, async (c) => {
     const { principal, gym, clock } = c.get('context');
     if (principal.kind !== 'staff' || principal.gymId !== gym.gymId) throw new AppError('not_found', 'Gym not found');
@@ -63,7 +58,7 @@ export function createStaffPhotoRoutes(service: StaffPhotoService | (() => Staff
     c.header('Cache-Control', 'no-store');
     return c.json(await current().upload({ gymId: gym.gymId, actorUserId: principal.userId, clock }, c.req.valid('param').staffProfileId,
       input.revision, Buffer.from(input.base64, 'base64'), input.contentType), 200);
-  }), route({ method: 'get', path: '/api/staff/profiles/{staffProfileId}/photo', permission, request: { params: staffProfileParamsSchema },
+  }), route({ method: 'get', path: '/api/staff/profiles/{staffProfileId}/photo', permission, request: { params: upload.params },
     responses: { 200: { description: 'Staff photo', content: { 'image/jpeg': { schema: z.string().openapi({ format: 'binary' }) } } } },
   }, async (c) => {
     const { principal, gym, clock } = c.get('context');

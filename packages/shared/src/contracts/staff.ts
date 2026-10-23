@@ -40,11 +40,14 @@ export const staffProfileSchema = z.strictObject({
 export const publicStaffProfileSchema = staffProfileSchema.pick({
   id: true, displayName: true, bio: true, photoKey: true, rank: true,
 });
-const staffProfileEditableSchema = staffProfileSchema.omit({ id: true, revision: true, createdAt: true });
+/** Photos are set only through the upload endpoint; an ordinary update may clear one (`photoKey: null`). */
+const staffProfileEditableSchema = staffProfileSchema.omit({ id: true, photoKey: true, revision: true, createdAt: true });
 export const createStaffProfileRequestSchema = staffProfileEditableSchema.partial().extend({
   displayName: staffProfileSchema.shape.displayName,
 });
 export const updateStaffProfileRequestSchema = staffProfileEditableSchema.partial().extend({
+  // Typed as a nullable string so the generated client keeps the field; only null passes validation.
+  photoKey: z.string().nullable().refine((value) => value === null, 'Use the profile photo upload endpoint').optional(),
   revision: revisionSchema,
 });
 export const staffProfileParamsSchema = z.strictObject({ staffProfileId: idSchema });
@@ -72,6 +75,18 @@ export const resetStaffPasswordRequestSchema = z.strictObject({
   newPassword: z.string().min(12).max(128),
 });
 export const staffUserParamsSchema = z.strictObject({ userId: idSchema });
+/** Invitation tokens are 32 random bytes in hex, valid for seven days and usable once. */
+export const staffInvitationTokenSchema = z.string().regex(/^[a-f0-9]{64}$/);
+/** A password is required only when the gym uses password login; otherwise the account signs in by email. */
+export const acceptStaffInvitationRequestSchema = z.strictObject({
+  token: staffInvitationTokenSchema, name: z.string().trim().min(1).max(200), password: z.string().min(12).max(128).optional(),
+});
+export const staffPhotoContentTypeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp']);
+/** At most 512 KiB once decoded; the client resizes and re-encodes before uploading. */
+export const uploadStaffPhotoRequestSchema = z.strictObject({
+  revision: revisionSchema, contentType: staffPhotoContentTypeSchema,
+  base64: z.string().min(4).max(699_052).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+});
 
 /**
  * API declarations only. Password resets require single tenancy + password mode, end all
@@ -100,6 +115,15 @@ export const staffContracts = {
     body: inviteStaffRequestSchema, response: inviteStaffResponseSchema },
   resetPassword: { method: 'post', path: '/api/staff/users/{userId}/reset-password', permission: { kind: 'staff', capability: 'staff.manage' },
     params: staffUserParamsSchema, body: resetStaffPasswordRequestSchema, response: z.strictObject({ data: z.null() }) },
+  /** The photo itself is read from `GET /api/staff/profiles/{staffProfileId}/photo`, a binary response outside these JSON contracts. */
+  uploadPhoto: { method: 'post', path: '/api/staff/profiles/{staffProfileId}/photo', permission: { kind: 'staff', capability: 'staff.manage' },
+    params: staffProfileParamsSchema, body: uploadStaffPhotoRequestSchema, response: staffProfileResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
+/** Public: the invitee has no session yet. Accepts a printed or emailed invitation from the
+ * server-rendered `GET /staff-invitation` page; the token binds the gym, account, and role. */
+export const staffInvitationContracts = {
+  acceptInvitation: { method: 'post', path: '/api/staff/invitations/accept', permission: { kind: 'public' },
+    body: acceptStaffInvitationRequestSchema, response: z.strictObject({ data: z.null() }) },
 } as const satisfies Record<string, EndpointContract>;
 
 export type StaffRoleName = z.infer<typeof staffRoleNameSchema>;
@@ -118,3 +142,5 @@ export type StaffProfileListResponse = z.infer<typeof staffProfileListResponseSc
 export type InviteStaffRequest = z.infer<typeof inviteStaffRequestSchema>;
 export type InviteStaffResponse = z.infer<typeof inviteStaffResponseSchema>;
 export type ResetStaffPasswordRequest = z.infer<typeof resetStaffPasswordRequestSchema>;
+export type AcceptStaffInvitationRequest = z.infer<typeof acceptStaffInvitationRequestSchema>;
+export type UploadStaffPhotoRequest = z.infer<typeof uploadStaffPhotoRequestSchema>;

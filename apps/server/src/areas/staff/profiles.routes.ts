@@ -2,13 +2,13 @@
 import { z } from '@hono/zod-openapi';
 import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { staffContracts } from '@plaingym/shared/contracts';
+import { staffContracts, staffInvitationContracts } from '@plaingym/shared/contracts';
 import type { Context } from 'hono';
 import { route } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { createStaffProfileService, type StaffActor } from './profiles.js';
-import { acceptStaffInvitationSchema, type StaffInvitationService } from './profiles.invitations.js';
+import type { StaffInvitationService } from './profiles.invitations.js';
 import { createStaffPhotoRoutes, createStaffPhotoService } from './profiles.photos.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { invitationPage } from './profiles.accept.js';
@@ -54,18 +54,18 @@ export function createStaffProfileRoutes(service?: ReturnType<typeof createStaff
 /** Integration injects the invitation service with createSmtpResolver and the canonical gym origin. */
 export function createStaffInvitationRoutes(service: StaffInvitationService | (() => StaffInvitationService), origin: Origin) {
   const current = () => typeof service === 'function' ? service() : service;
-  const invite = staffContracts.inviteStaff, t = createTranslator(locales.en ?? {});
+  const invite = staffContracts.inviteStaff, accept = staffInvitationContracts.acceptInvitation, t = createTranslator(locales.en ?? {});
   return [route({ ...invite, request: { body: { required: true, content: { 'application/json': { schema: invite.body } } } }, responses: { 200: { description: 'Staff invitation', content: { 'application/json': { schema: invite.response } } } } }, async (c) => {
     c.header('Cache-Control', 'no-store'); return c.json(await current().inviteStaff(actor(c), c.req.valid('json'), origin(c)), 200);
   }),
-  // TODO(CCR T11): promote these public acceptance routes into shared contracts.
-  route({ method: 'post', path: '/api/staff/invitations/accept', permission: { kind: 'public' }, middleware: rateLimit({ limit: 10 }),
-    request: { body: { required: true, content: { 'application/json': { schema: acceptStaffInvitationSchema } } } },
-    responses: { 200: { description: 'Invitation accepted', content: { 'application/json': { schema: z.strictObject({ data: z.null() }) } } } },
+  route({ ...accept, middleware: rateLimit({ limit: 10 }),
+    request: { body: { required: true, content: { 'application/json': { schema: accept.body } } } },
+    responses: { 200: { description: 'Invitation accepted', content: { 'application/json': { schema: accept.response } } } },
   }, async (c) => {
     c.header('Cache-Control', 'no-store'); const { gym, clock } = c.get('context');
     return c.json(await current().acceptInvitation(gym.gymId, c.req.valid('json'), clock), 200);
   }),
+  // The acceptance page is server-rendered HTML, outside the JSON contracts.
   route({ method: 'get', path: '/staff-invitation', permission: { kind: 'public' }, responses: { 200: { description: 'Accept staff invitation', content: { 'text/html': { schema: z.string() } } } } }, async (c) => {
     c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer');
     return c.html(invitationPage(t, await current().passwordRequired(c.get('context').gym.gymId)).toString(), 200);
