@@ -8,7 +8,10 @@ the server registry. The static part exports stay empty until this composition
 is wired. Do not register both static and composed routes.
 
 CSV uploads and run manifests live only under the gym's immutable `Uploads`
-prefix. Uploads expire after 24 hours. No source bytes or preview values are
+prefix. Uploads expire after 24 hours. The hourly `imports.retention` job marks
+an upload's files deleted once it expires, and a run's state and error reports, or
+an export's manifests, 30 days after their last write; the next upload sweep
+removes them. No source bytes or preview values are
 stored in PostgreSQL. Preview and dry runs perform read queries only; a dry run
 still uses the infrastructure job queue and storage for its progress and report.
 

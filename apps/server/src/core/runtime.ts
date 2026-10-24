@@ -58,6 +58,7 @@ import { createPipelineJobs } from '../areas/imports/pipeline.jobs.js';
 import { createExportService } from '../areas/imports/export.js';
 import { createExportRoutes } from '../areas/imports/export.routes.js';
 import { createExportJobs } from '../areas/imports/export.jobs.js';
+import { createImportRetention, createImportRetentionJobs } from '../areas/imports/retention.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -159,6 +160,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
+      ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),
       ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
         ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };
   const app = createApp({
