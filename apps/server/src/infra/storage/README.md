@@ -27,7 +27,10 @@ application-owned and must not be writable by other users.
 Both upload adapters reserve keys atomically across processes. Reservations are
 permanent, including after a failed write or sweep; retry a failed upload using a
 new key. Separate, monotonic deletion and sweep markers prevent delayed operations
-from reviving deleted files. `markDeleted()` retains readable bytes. Call `sweep()`
+from reviving deleted files. The one exception is `restore()` on the adapter
+classes (not the `Uploads` interface), used only by install restore under the
+backup lock with admission closed: it publishes a snapshot's file under its key,
+keeps an already stored file, and clears a deletion marker; a swept key fails. `markDeleted()` retains readable bytes. Call `sweep()`
 only while holding the backup lock and pass all keys protected by the snapshot.
 An interrupted sweep is retried on its next run. Failed writes can leave private,
 unpublished objects; never reuse or manually remove their reservations.

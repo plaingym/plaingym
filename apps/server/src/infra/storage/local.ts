@@ -87,6 +87,8 @@ class LocalBackend implements UploadBackend {
   }
   async put(key: string, body: ReadableStream<Uint8Array>, contentType: string): Promise<ObjectInfo> {
     const temporary = this.path(key, 'body.part');
+    // Only the reservation holder writes a key; a part left by a crash is never published.
+    await rm(temporary, { force: true });
     const file = await open(temporary, 'wx', 0o600);
     const hash = createHash('sha256'); let size = 0;
     try {
@@ -110,6 +112,7 @@ class LocalBackend implements UploadBackend {
     } catch (error) { if (missing(error)) return null; throw error; }
   }
   async remove(key: string): Promise<void> { await rm(this.path(key, 'body'), { force: true }); }
+  async undelete(key: string): Promise<void> { await rm(this.path(key, 'deleted'), { force: true }); }
   signature(key: string, expires: string): Buffer {
     return createHmac('sha256', this.signingKey).update(JSON.stringify([this.options.gymId, key, expires])).digest();
   }

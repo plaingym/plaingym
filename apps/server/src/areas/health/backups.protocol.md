@@ -11,8 +11,9 @@ node maintenance.mjs restore SNAPSHOT_UUID --config /private/restore.json
 node maintenance.mjs resume
 ```
 
-It reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`, and
-`UPLOADS_DIR`. Snapshot creation also reads `DATABASE_URL` and the single gym's
+It reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`,
+`UPLOADS_DIR`, and the `UPLOADS_S3_*` settings when uploads live in S3: snapshots
+read uploads through the same storage resolver as the app. Snapshot creation also reads `DATABASE_URL` and the single gym's
 stored backup settings. The encrypted S3 configuration holds `accessKeyId` and
 `secretAccessKey`; `backup_destination` holds `bucket`, optional `endpoint`, and
 `region` (default `auto`). The gym also stores its native age public recipient,
@@ -53,8 +54,11 @@ the default budget is 8 GB with 128 MiB of in-flight reserve.
 ## Restore activation and recovery
 
 Restore downloads and verifies the manifest, dump, recovery keys, and every blob
-before closing admission or changing the current database or uploads. It builds
-a complete LocalUploads tree in staging on the same filesystem as uploads.
+before closing admission or changing the current database or uploads. For an
+uploads directory it builds a complete LocalUploads tree in staging on the same
+filesystem as uploads. When the install keeps uploads in S3, it stages the
+verified plaintext files instead; the journal records which target it chose, and
+a restart with a different storage configuration refuses to continue.
 
 The restore journal and request/job activity leases live on the data volume,
 outside the overwritten database. `RestoreGate.middleware()` wraps requests;
@@ -70,6 +74,12 @@ pg_restore, migrates forward, and applies the same security/catalog check as boo
 One short transaction re-encrypts every field in the encrypted-field registry,
 preserves QR key plaintext, pauses billing, and writes restore audit events.
 The external journal commits each uploads rename before reopening admission.
+With S3 uploads, the switch instead marks every stored file that the snapshot
+doesn't contain as deleted (so the next sweep removes it, as the directory restore
+discards the old tree), then restores each snapshot file under its key: missing
+files are published, stored ones kept, and deletions marked after the snapshot
+cleared, so a sweep never removes a file the restored database references. Both
+steps are idempotent and repeat from the start after a restart.
 
 A restart resumes without needing to retain the age private identity.
 Before the rekey receipt it repeats reset/restore/migrate/rekey from verified

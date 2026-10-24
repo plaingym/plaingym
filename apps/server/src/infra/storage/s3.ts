@@ -208,6 +208,7 @@ class S3UploadBackend implements UploadBackend {
   }
   async get(key: string): Promise<ReadableStream<Uint8Array> | null> { return this.store.getObject(this.blobKey(key)); }
   async remove(key: string): Promise<void> { await this.store.deleteObject(this.blobKey(key)); }
+  async undelete(key: string): Promise<void> { await this.store.deleteObject(this.prefix + 'deleted/' + digest(key)); }
   async signedUrl(key: string, seconds: number): Promise<string> {
     return getSignedUrl(this.options.client, new GetObjectCommand({ Bucket: this.options.bucket, Key: this.blobKey(key) }),
       { expiresIn: seconds, signingDate: this.store.clock.now() });

@@ -9,6 +9,7 @@ import { clock } from '../../core/clock.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.js';
 import { RestoreService } from '../health/restore.js';
+import { createRuntimeUploads } from '../../infra/storage/runtime.js';
 import { RestoreGate } from '../health/restore.gate.js';
 import { PostgresMaintenance } from '../health/backups.database.js';
 import { atomicJson } from '../health/backups.files.js';
@@ -143,13 +144,16 @@ export function defaultSetupRestore(service: {
     async restore(input) {
       const client = createS3Client({ endpoint: input.source.endpoint, region: input.source.region,
         credentials: { accessKeyId: input.source.accessKeyId, secretAccessKey: input.source.secretAccessKey } });
+      const appEncryptionKey = parseEncryptionKey(required('APP_ENCRYPTION_KEY'));
+      // Files go back wherever this install keeps uploads: its directory or its S3 bucket.
+      const uploads = createRuntimeUploads(process.env, appEncryptionKey, async () => 'https://restore.invalid');
       try {
         await new RestoreService({ store: new S3BackupObjectStore({ client, bucket: input.source.bucket, clock }),
           database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')), clock,
-          appEncryptionKey: parseEncryptionKey(required('APP_ENCRYPTION_KEY')), stagingDirectory,
-          uploadsDirectory: required('UPLOADS_DIR'), gate,
+          appEncryptionKey, stagingDirectory, uploadsDirectory: required('UPLOADS_DIR'), gate,
+          ...(uploads.restoreStore ? { uploadsStore: uploads.restoreStore } : {}),
         }).restore(snapshotId(input.snapshotPrefix), input.privateKey);
-      } finally { client.destroy(); }
+      } finally { client.destroy(); uploads.close(); }
     },
   });
 }

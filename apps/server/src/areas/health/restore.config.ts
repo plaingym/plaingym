@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { forSystem, gyms } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { createS3Client, LocalUploads, S3BackupObjectStore } from '../../infra/storage/index.js';
+import { createS3Client, S3BackupObjectStore, type Uploads } from '../../infra/storage/index.js';
 import { decryptSecret, parseEncryptionKey } from '../../core/secrets.js';
 import { BackupService } from './backups.js';
 import { PostgresMaintenance } from './backups.database.js';
@@ -31,15 +31,14 @@ export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupCon
   return { recipient: gym.backupPublicKey, blobKey: parseEncryptionKey(decryptSecret(appKey, 'backup_blob_key', gym.backupBlobKey)),
     appEncryptionKey: appKey, budgetBytes, destination, gymId: gym.id };
 }
+/** `uploadsFor` is the runtime storage resolver, so snapshots capture uploads wherever the install keeps them. */
 export function configuredBackup(config: InstallBackupConfig, database: PostgresMaintenance,
-  clock: Clock, stagingDirectory: string, uploadsDirectory: string) {
+  clock: Clock, stagingDirectory: string, uploadsFor: (gymId: string) => Promise<Uploads>) {
   const client = createS3Client({ region: config.destination.region,
     ...(config.destination.endpoint ? { endpoint: config.destination.endpoint } : {}),
     credentials: { accessKeyId: config.destination.accessKeyId, secretAccessKey: config.destination.secretAccessKey } });
   const store = new S3BackupObjectStore({ client, bucket: config.destination.bucket, clock });
-  const source = new LocalUploads({ gymId: config.gymId, root: uploadsDirectory, downloadUrl: 'https://backup.invalid/uploads',
-    signingKey: config.appEncryptionKey, clock });
   return { client, store, service: new BackupService({ database, store, clock, recipient: config.recipient,
     appEncryptionKey: config.appEncryptionKey, blobKey: config.blobKey, budgetBytes: config.budgetBytes,
-    stagingDirectory, uploads: async () => new Map([[config.gymId, source]]) }) };
+    stagingDirectory, uploads: async () => new Map([[config.gymId, await uploadsFor(config.gymId)]]) }) };
 }

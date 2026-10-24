@@ -33,6 +33,8 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
       }
       return env.DEMO_MODE === 'true' ? demoUploads(uploads) : uploads;
     },
+    /** Restore writes a snapshot's files back into the bucket; directory installs swap the uploads tree instead. */
+    restoreStore: client && bucket ? async (gymId: string) => new S3Uploads({ client, bucket, gymId: idSchema.parse(gymId) }) : undefined,
     async removeGym(gymId: string): Promise<void> {
       assertNoTransaction('storage.deleteGym');
       idSchema.parse(gymId);

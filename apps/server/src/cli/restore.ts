@@ -5,6 +5,7 @@ import type { Command } from './index.js';
 import { clock } from '../core/clock.js';
 import { parseEncryptionKey } from '../core/secrets.js';
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
+import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { readIdentityFile } from '../areas/health/backups.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
@@ -19,16 +20,26 @@ function required(name: string): string {
 }
 export function maintenanceEnvironment() {
   const stagingDirectory = required('BACKUP_STAGING_DIR'), uploadsDirectory = required('UPLOADS_DIR');
+  const appEncryptionKey = parseEncryptionKey(required('APP_ENCRYPTION_KEY'));
+  // The same storage the app uses; maintenance never creates download links.
+  const uploads = createRuntimeUploads(process.env, appEncryptionKey, async () => 'https://maintenance.invalid');
   return { database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')),
-    appEncryptionKey: parseEncryptionKey(required('APP_ENCRYPTION_KEY')), stagingDirectory, uploadsDirectory,
+    appEncryptionKey, stagingDirectory, uploadsDirectory, uploads,
     gate: new RestoreGate(dirname(stagingDirectory)), clock };
+}
+function restoreOptions(environment: ReturnType<typeof maintenanceEnvironment>) {
+  const { uploads, ...options } = environment;
+  return { ...options, ...(uploads.restoreStore ? { uploadsStore: uploads.restoreStore } : {}) };
 }
 export async function maintenanceCommand(args: readonly string[]): Promise<void> {
   if (args[0] === 'migrate') { await new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')).migrate(); return; }
   const environment = maintenanceEnvironment();
+  try { await maintenance(args, environment); } finally { environment.uploads.close(); }
+}
+async function maintenance(args: readonly string[], environment: ReturnType<typeof maintenanceEnvironment>): Promise<void> {
   if (args[0] === 'snapshot') {
     const config = await loadBackupConfig(environment.appEncryptionKey);
-    const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploadsDirectory);
+    const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
     try { await backup.service.snapshot(args[1] === 'pre-upgrade' ? 'pre_upgrade' : 'manual'); }
     finally { backup.client.destroy(); }
     return;
@@ -36,7 +47,7 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
   if (args[0] === 'resume') {
     // Resumption uses already authenticated staging; it never requires saving the private age identity.
     const unusedStore = new S3BackupObjectStore({ client: createS3Client({}), bucket: 'unused' });
-    try { await new RestoreService({ ...environment, store: unusedStore }).resume(); }
+    try { await new RestoreService({ ...restoreOptions(environment), store: unusedStore }).resume(); }
     finally { unusedStore.options.client.destroy(); }
     return;
   }
@@ -53,7 +64,7 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
     credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey } });
   try {
     const store = new S3BackupObjectStore({ client, bucket: config.bucket, clock });
-    await new RestoreService({ ...environment, store }).restore(id, await readIdentityFile(config.identityFile));
+    await new RestoreService({ ...restoreOptions(environment), store }).restore(id, await readIdentityFile(config.identityFile));
   } finally { client.destroy(); }
 }
 export const commands: readonly Command[] = [{

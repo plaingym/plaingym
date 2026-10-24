@@ -176,12 +176,12 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     await schedule();
   }
   let backupTimer: NodeJS.Timeout | undefined;
-  if (gate && env.MAINTENANCE_DATABASE_URL && env.UPLOADS_DIR) {
+  if (gate && env.MAINTENANCE_DATABASE_URL) {
     const database = new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL);
-    const staging = env.BACKUP_STAGING_DIR!, uploads = env.UPLOADS_DIR;
+    const staging = env.BACKUP_STAGING_DIR!;
     // Backups exist only after the owner configures them in setup, so the service is built per run.
     const backups = registerBackupJobs(queue, { async snapshot(kind) {
-      const backup = configuredBackup(await loadBackupConfig(key), database, clock, staging, uploads);
+      const backup = configuredBackup(await loadBackupConfig(key), database, clock, staging, uploads.forGym);
       try { return await backup.service.snapshot(kind); } finally { backup.client.destroy(); }
     } }, clock, () => gate.isClosed());
     const schedule = async () => {

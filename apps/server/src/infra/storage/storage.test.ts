@@ -74,6 +74,22 @@ describe('durable upload safety', () => {
       expect(await store.sweep({ before: clock.now() })).toEqual(['gym/a']);
       expect(await store.head('gym/missing')).toBeNull(); await store.markDeleted('gym/missing');
     });
+    it(`${implementation}: restores missing files, keeps stored ones, revives later deletions, and refuses swept keys`, async () => {
+      const store = implementation === 'local' ? await local() : new S3Uploads({ ...options(), gymId: 'gym' });
+      const createdAt = new Date('2026-01-01T00:00:00Z');
+      await store.restore('gym/missing', stream([1]), 'image/png', createdAt);
+      expect(await store.head('gym/missing')).toMatchObject({ key: 'gym/missing', size: 1, contentType: 'image/png', createdAt });
+      await store.put('gym/kept', stream([2]), 'text/plain');
+      await store.restore('gym/kept', stream([9]), 'text/plain', createdAt);
+      expect(await readBytes(await store.get('gym/kept'))).toEqual([2]);
+      await store.markDeleted('gym/kept');
+      await store.restore('gym/kept', stream([2]), 'text/plain', createdAt);
+      expect((await store.head('gym/kept'))!.deletedAt).toBeUndefined();
+      expect(await store.sweep({ before: clock.now() })).toEqual([]);
+      await store.markDeleted('gym/kept');
+      expect(await store.sweep({ before: clock.now() })).toEqual(['gym/kept']);
+      await expect(store.restore('gym/kept', stream([2]), 'text/plain', createdAt)).rejects.toThrow('swept');
+    });
     it(`${implementation}: rejects ambiguous and control-character keys before touching storage`, async () => {
       const store = implementation === 'local' ? await local() : new S3Uploads({ ...options(), gymId: 'gym' });
       for (const key of ['/gym/x', 'gym/../x', 'gym/./x', 'gym\\x', 'gym/a\0b', 'gym/a\u007fb', 'gym/a\u0085b', 'gym/', 'other/a']) {

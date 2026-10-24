@@ -7,7 +7,7 @@ import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { decrypt } from '../../infra/age/index.js';
 import { LocalUploads } from '../../infra/storage/index.js';
-import type { BackupObjectStore } from '../../infra/storage/index.js';
+import type { BackupObjectStore, S3Uploads } from '../../infra/storage/index.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { atomicJson, childPath, exists, fileStream, privateDirectory, readJson, saveStream } from './backups.files.js';
@@ -20,6 +20,8 @@ const phaseSchema = z.enum(['verified', 'database_restored', 'migrated', 'rekeye
 const stateSchema = z.strictObject({
   version: z.literal(1), id: z.uuid(), phase: phaseSchema, staging: z.string().regex(/^restore-[A-Za-z0-9]+$/),
   currentKey: z.string().regex(/^[a-f0-9]{64}$/),
+  // Journals written before object-store restore have no target and restored into the directory.
+  uploads: z.enum(['directory', 'store']).optional(),
 });
 export type RestorePhase = z.infer<typeof phaseSchema>;
 export interface RestoreOptions {
@@ -29,6 +31,8 @@ export interface RestoreOptions {
   readonly appEncryptionKey: Buffer;
   readonly stagingDirectory: string;
   readonly uploadsDirectory: string;
+  /** Set when the install keeps uploads in S3: files are restored into the bucket instead of the directory. */
+  readonly uploadsStore?: (gymId: string) => Promise<S3Uploads>;
   readonly gate: RestoreGate;
   /** Tests can simulate power loss at each durable transition. */
   readonly checkpoint?: (phase: RestorePhase | 'old_uploads_renamed' | 'new_uploads_renamed' | 'secret_field') => void;
@@ -53,7 +57,7 @@ export class RestoreService {
       await privateDirectory(o.stagingDirectory);
       const staging = await mkdtemp(join(o.stagingDirectory, 'restore-'));
       await privateDirectory(dirname(resolve(o.uploadsDirectory)));
-      if ((await stat(staging)).dev !== (await stat(dirname(resolve(o.uploadsDirectory)))).dev) {
+      if (!o.uploadsStore && (await stat(staging)).dev !== (await stat(dirname(resolve(o.uploadsDirectory)))).dev) {
         await rm(staging, { recursive: true, force: true });
         throw new Error('Restore staging and uploads must share a filesystem');
       }
@@ -79,8 +83,9 @@ export class RestoreService {
         await verifyFile(join(staging, 'database.age'), references.database);
         await saveStream(join(staging, 'database.dump'), await decrypt(identity, fileStream(join(staging, 'database.age'))));
         await verifyFile(join(staging, 'database.dump'), manifest.database.plaintext);
-        // Prepare a complete new LocalUploads tree without opening or modifying the current uploads tree.
-        const uploadTree = join(staging, 'uploads');
+        // Prepare a complete new LocalUploads tree without opening or modifying the current uploads tree,
+        // or, for an object store, verified plaintext files to publish once the database is restored.
+        const uploadTree = join(staging, o.uploadsStore ? 'objects' : 'uploads');
         await privateDirectory(uploadTree);
         for (const [index, upload] of manifest.uploads.entries()) {
           const cipher = join(staging, 'blob-' + index + '.age'), plain = join(staging, 'blob-' + index);
@@ -88,6 +93,7 @@ export class RestoreService {
           await verifyFile(cipher, upload.encrypted);
           await saveStream(plain, await decrypt(identity, fileStream(cipher)));
           await verifyFile(plain, upload.plaintext);
+          if (o.uploadsStore) { await rm(cipher); await rename(plain, join(uploadTree, String(index))); continue; }
           const local = new LocalUploads({ gymId: upload.gymId, root: uploadTree,
             signingKey: o.appEncryptionKey, downloadUrl: 'https://restore.invalid/uploads',
             clock: { now: () => new Date(upload.createdAt) } });
@@ -95,7 +101,8 @@ export class RestoreService {
           await rm(cipher); await rm(plain);
         }
         const state = { version: 1 as const, id, phase: 'verified' as RestorePhase, staging: basename(staging),
-          currentKey: createHash('sha256').update(o.appEncryptionKey).digest('hex') };
+          currentKey: createHash('sha256').update(o.appEncryptionKey).digest('hex'),
+          uploads: o.uploadsStore ? 'store' as const : 'directory' as const };
         // Durable activation closes admission on every process sharing this data volume.
         await atomicJson(o.gate.statePath, state);
         activated = true;
@@ -133,6 +140,8 @@ export class RestoreService {
     const o = this.options, staging = childPath(o.stagingDirectory, state.staging);
     if (state.currentKey !== createHash('sha256').update(o.appEncryptionKey).digest('hex'))
       throw new Error('Current install key changed during restore');
+    if ((state.uploads ?? 'directory') !== (o.uploadsStore ? 'store' : 'directory'))
+      throw new Error('Upload storage changed during restore');
     const save = async (phase: RestorePhase) => {
       state.phase = phase; await atomicJson(o.gate.statePath, state); o.checkpoint?.(phase);
     };
@@ -151,6 +160,27 @@ export class RestoreService {
     // Staging and uploads must be on the same data volume so both renames are atomic.
     await privateDirectory(dirname(current));
     if (state.phase === 'rekeyed') await save('moving_old');
+    if (state.phase === 'moving_old' && o.uploadsStore) {
+      // Files uploaded after the snapshot are unreferenced once it is restored: mark them deleted, as the
+      // directory restore discards the old tree, so a later sweep removes them.
+      const restored = new Set(manifest.uploads.map((upload) => upload.key));
+      for (const gymId of await o.database.gymIds()) {
+        const store = await o.uploadsStore(gymId);
+        for (const upload of await store.list()) if (!restored.has(upload.key) && !upload.deletedAt) await store.markDeleted(upload.key);
+      }
+      o.checkpoint?.('old_uploads_renamed');
+      await save('moving_new');
+    }
+    if (state.phase === 'moving_new' && o.uploadsStore) {
+      // Idempotent per file, so a resumed restore repeats this step from the start.
+      for (const [index, upload] of manifest.uploads.entries()) {
+        const plain = join(staging, 'objects', String(index));
+        await verifyFile(plain, upload.plaintext);
+        await (await o.uploadsStore(upload.gymId)).restore(upload.key, fileStream(plain), upload.contentType, new Date(upload.createdAt));
+      }
+      o.checkpoint?.('new_uploads_renamed');
+      await save('uploads_switched');
+    }
     if (state.phase === 'moving_old') {
       if (!await exists(previous) && await exists(current)) {
         await rename(current, previous); o.checkpoint?.('old_uploads_renamed');

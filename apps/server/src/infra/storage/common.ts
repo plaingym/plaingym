@@ -47,6 +47,8 @@ export interface UploadBackend {
   put(key: string, body: ReadableStream<Uint8Array>, contentType: string): Promise<ObjectInfo>;
   get(key: string): Promise<ReadableStream<Uint8Array> | null>;
   remove(key: string): Promise<void>;
+  /** Removes a deletion marker. Only restore calls it, while every other writer is stopped. */
+  undelete(key: string): Promise<void>;
   signedUrl(key: string, seconds: number): Promise<string>;
 }
 
@@ -88,6 +90,24 @@ export class DurableUploads implements Uploads {
     const record = await this.backend.record(key);
     if (record?.info && !record.swept && !record.info.deletedAt)
       await this.backend.save({ ...record, info: { ...record.info, deletedAt: this.clock.now() } });
+  }
+  /**
+   * Restore only, under the backup lock with request and job admission closed: publishes a snapshot's file
+   * under its original key, keeping the identical file when it is still stored, and clears a deletion marked
+   * after the snapshot so a later sweep cannot remove a file the restored database references.
+   */
+  async restore(key: string, body: UploadBody, contentType: string, createdAt: Date): Promise<void> {
+    assertNoTransaction('storage.restore'); gymKey(this.gymId, key);
+    const record = await this.backend.record(key);
+    if (record?.swept) throw new Error('Upload was swept after this snapshot');
+    if (record?.info) {
+      if (record.info.deletedAt) await this.backend.undelete(key);
+      return;
+    }
+    // A reservation without a published record never held readable bytes, so restore may fill it.
+    if (!record) await this.backend.reserve(key);
+    const info = { ...await this.backend.put(key, bodyStream(body), contentType), key, createdAt };
+    await this.backend.save({ key, info });
   }
   async sweep(options: { before: Date; protectedKeys?: ReadonlySet<string> }): Promise<readonly string[]> {
     assertNoTransaction('storage.sweep'); cutoff(options.before);

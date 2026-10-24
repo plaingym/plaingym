@@ -76,6 +76,12 @@ export class PostgresMaintenance {
     for await (const chunk of output) { void chunk; }
   }
   async migrate(): Promise<void> { await migrateDatabase(this.url); }
+  /** The restored install's gyms, for restoring their object-store uploads. */
+  async gymIds(): Promise<string[]> {
+    const connection = openConnection(this.url, 1);
+    try { return (await connection.sql<{ id: string }[]>`select id from gyms order by id`).map((row) => row.id); }
+    finally { await connection.close(); }
+  }
   /** One short, atomic database transaction. Retrying recognizes already re-encrypted envelopes. */
   async rekey(oldKey: Buffer, newKey: Buffer, clock: Clock, afterField?: (field: string) => void): Promise<void> {
     const connection = openConnection(this.url, 1);
