@@ -38,11 +38,13 @@ server's `PORT`. SMTP capture is on port 1025. All published ports bind to loopb
 On first boot, print the private setup link in another terminal and open it:
 
 ```sh
-pnpm --filter @plaingym/server exec tsx --env-file=../../.env src/index.ts setup-link
+pnpm cli setup-link
 ```
 
 The token is required to create the first owner or restore a backup. Backups
 can be deferred with **Set up later**. Use `pnpm seed <gym-uuid>` to apply sample content.
+`pnpm cli <command>` runs any server command with the root `.env`, as `gym-app <command>`
+does in a deployed container.
 
 `pnpm build` creates `apps/server/dist/server.mjs` with its adjacent `assets/`
 and `apps/web/dist/`. Run the server with `pnpm --filter @plaingym/server start`
