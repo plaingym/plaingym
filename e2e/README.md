@@ -16,7 +16,9 @@ pnpm --dir e2e check-types
 pnpm --dir e2e test
 ```
 
-On Windows use `pnpm.cmd` if PowerShell blocks unsigned command shims. Set
+CI runs this suite in the **End-to-end** workflow on every integration branch, nightly,
+and on demand, keeping `coverage/` (the report, and traces of failed tests) as an artifact for
+seven days. On Windows use `pnpm.cmd` if PowerShell blocks unsigned command shims. Set
 `E2E_BROWSER_CHANNEL=msedge` to use an installed Edge instead of bundled Chromium.
 
 The runner archives **committed HEAD** and builds it with `deploy/Dockerfile`.
