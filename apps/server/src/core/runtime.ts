@@ -46,6 +46,7 @@ import { demoBootCheck } from '../demo/config.js';
 import { createDemoRuntime } from '../demo/runtime.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { createUploadDownloadRoute } from './uploads-download.js';
+import { logError } from './log.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
@@ -173,7 +174,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   });
 
   registerModuleJobs(createServerRegistry(contributions), queue, createGymSettingsAccessor());
-  const report = (error: unknown) => console.error('Background job error', error);
+  const report = (error: unknown) => logError('jobs.error', {}, error);
   const cleanup = demo?.registerCleanup(queue);
   let demoTimer: NodeJS.Timeout | undefined;
   if (cleanup) {

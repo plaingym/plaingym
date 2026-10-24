@@ -3,8 +3,10 @@ import { RevisionConflictError } from '@plaingym/db';
 import { AppError, errorResponse } from '@plaingym/shared';
 import { z } from '@hono/zod-openapi';
 import { HTTPException } from 'hono/http-exception';
+import { routePath } from 'hono/route';
 import type { Context, ErrorHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
+import { logError } from './log.js';
 
 export function normalizeError(error: unknown): AppError {
   if (error instanceof AppError) return error;
@@ -30,4 +32,10 @@ export function respondError(context: Context<RequestEnvironment>, error: unknow
   return context.json(errorResponse(safe, context.get('context').requestId), safe.status);
 }
 
-export const errorHandler: ErrorHandler<RequestEnvironment> = (error, context) => respondError(context, error);
+export const errorHandler: ErrorHandler<RequestEnvironment> = (error, context) => {
+  // The caller gets a generic 500 with the request ID; the cause is recorded here, keyed by that ID.
+  // The route pattern, never the path: signed-link tokens are path segments.
+  if (normalizeError(error).code === 'internal')
+    logError('http.unhandled', { requestId: context.get('context')?.requestId ?? null, method: context.req.method, route: routePath(context, -1) }, error);
+  return respondError(context, error);
+};

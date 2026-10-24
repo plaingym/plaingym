@@ -7,6 +7,7 @@ import { AppError } from '@plaingym/shared';
 import { createApp } from './app.js';
 import { sourceUrl } from './source-link.js';
 import { normalizeError } from './errors.js';
+import { setLogSink } from './log.js';
 
 it.each([
   [new AppError('unauthenticated', 'Sign in.'), 401, 'unauthenticated'],
@@ -50,4 +51,26 @@ it('reads the source override at factory creation', () => {
     if (previous === undefined) delete process.env.SOURCE_URL;
     else process.env.SOURCE_URL = previous;
   }
+});
+
+it('logs an unexpected error by request ID and route, without bound parameters or the request path', async () => {
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  try {
+    // A query error carries the submitted values after its first line, as Drizzle's do.
+    const failure = new Error('Failed query: insert into members (email) values ($1)\nparams: private@example.test',
+      { cause: Object.assign(new Error('duplicate key value violates unique constraint "members_email_key"'), { code: '23505' }) });
+    const app = createApp({ resolveGym: async (_context, next) => { await next(); }, session: async (_context, next) => { await next(); },
+      authorize: () => async (_context, next) => { await next(); } });
+    app.get('/l/:token', () => { throw failure; });
+    app.get('/api/known', () => { throw new AppError('not_found', 'Not found.'); });
+    const response = await app.request('/l/secret-link-token?signature=secret');
+    expect(response.status).toBe(500);
+    expect((await app.request('/api/known')).status).toBe(404);
+    expect(lines).toHaveLength(1);
+    const entry = JSON.parse(lines[0]!);
+    expect(entry).toMatchObject({ level: 'error', event: 'http.unhandled', requestId: response.headers.get('x-request-id'), method: 'GET', route: '/l/:token',
+      error: { name: 'Error', message: 'Failed query: insert into members (email) values ($1)', cause: { code: '23505' } } });
+    expect(entry.error.frames.length).toBeGreaterThan(0);
+    for (const secret of ['private@example.test', 'secret-link-token', 'signature']) expect(lines[0]).not.toContain(secret);
+  } finally { setLogSink(previous); }
 });
