@@ -9,6 +9,9 @@ import type { Uploads } from './index.js';
 import { createUploadPrefixCleaner } from '../../demo/storage.js';
 import { demoUploads } from '../../demo/uploads.js';
 
+/** Local download links are served by `core/uploads-download.ts`. */
+export const uploadDownloadPath = '/api/uploads/download';
+
 export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin: (gymId: string) => Promise<string>) {
   const bucket = env.UPLOADS_S3_BUCKET;
   if (env.TENANCY === 'multi' && !bucket) throw new Error('TENANCY=multi requires UPLOADS_S3_BUCKET');
@@ -26,7 +29,7 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
       else {
         if (!env.UPLOADS_DIR) throw new Error('Set UPLOADS_DIR');
         uploads = new LocalUploads({ root: env.UPLOADS_DIR, gymId, signingKey: key,
-          downloadUrl: new URL('/api/uploads/download', await origin(gymId)).href });
+          downloadUrl: new URL(uploadDownloadPath, await origin(gymId)).href });
       }
       return env.DEMO_MODE === 'true' ? demoUploads(uploads) : uploads;
     },

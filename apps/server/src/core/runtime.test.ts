@@ -77,7 +77,7 @@ it('serves rank and import routes through the runtime composition', async () => 
   expect((await runtime.app.request(sandbox.origin + '/api/programs', { headers })).status).toBe(200);
   // Import and export routes exist only when composed with storage and the job queue.
   const document = await (await runtime.app.request(sandbox.origin + '/api/openapi.json', { headers })).json() as { paths: Record<string, unknown> };
-  expect(Object.keys(document.paths)).toEqual(expect.arrayContaining(['/api/imports/uploads', '/api/exports']));
+  expect(Object.keys(document.paths)).toEqual(expect.arrayContaining(['/api/imports/uploads', '/api/exports', '/api/uploads/download']));
   // Household PINs hash with the gym's own key once the runtime composes members.
   const homeId = uuidv7();
   await database.forGym(sandbox.gymId, (tx) => tx.insert(households).values({ id: homeId, gymId: sandbox.gymId, name: 'PIN family' }));

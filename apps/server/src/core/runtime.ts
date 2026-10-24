@@ -44,6 +44,7 @@ import { runCli, type CommandIO } from '../cli/index.js';
 import { demoBootCheck } from '../demo/config.js';
 import { createDemoRuntime } from '../demo/runtime.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
+import { createUploadDownloadRoute } from './uploads-download.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
@@ -146,7 +147,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Setup step 8 finishes with a committed run from this pipeline.
   configureImportStep({ imports: importPipeline, clock });
   const contributions = { ...areaContributions,
-    routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService)],
+    routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
+      createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym)] };
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), authorize,

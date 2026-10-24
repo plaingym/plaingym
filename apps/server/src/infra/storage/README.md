@@ -12,7 +12,9 @@ across restarts. The handler resolves the gym, creates its adapter, and passes t
 full request URL to `getSigned()`. A null result means the link is invalid, expired,
 or unavailable. The handler streams valid results and uses `head(key)` for content
 type. Signed URLs expire at the exact expiry instant and are bound to the gym,
-key, configured origin, and path. No HTTP route is mounted by this module.
+key, configured origin, and path. No HTTP route is mounted by this module; the
+runtime mounts `core/uploads-download.ts` at `uploadDownloadPath`
+(`/api/uploads/download`).
 
 Local disk uses private directories and files (0700/0600 on systems supporting
 POSIX permissions), a SHA-256 directory name per gym and per logical key, and
