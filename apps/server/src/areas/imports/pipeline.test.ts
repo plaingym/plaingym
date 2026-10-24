@@ -178,6 +178,24 @@ describe('full CSV exports', () => {
     const expired = createExportService({ uploadsFor, jobs: new FakeJobs(clock), scope: database.forGym, clock: new TestClock('2100-01-01Z') });
     await expect(expired.get(gymA, job.id)).rejects.toMatchObject({ code: 'not_found' });
   });
+  it('marks archives deleted once their link expires, so a sweep removes the exported data', async () => {
+    const time = new TestClock('2099-10-22T12:00:00Z'), storage = new FakeUploads(gymA, time), jobs = new FakeJobs(time);
+    const exports = createExportService({ uploadsFor: async () => storage, jobs, scope: database.forGym, clock: time });
+    createServerRegistry({ jobs: createExportJobs(exports) }).registerJobs(jobs, new Set());
+    expect(jobs.schedules.get('imports.export.expire')).toBe('17 * * * *');
+    const job = await exports.create(actor, 'UTC'); await jobs.runNext();
+    const archive = `${gymA}/imports/exports/${job.id}/export.zip`;
+    // An archive whose run never recorded a result expires a link lifetime after it was written.
+    const orphan = `${gymA}/imports/exports/${uuidv7()}/export.zip`;
+    await storage.put(orphan, new Uint8Array([1]), 'application/zip');
+    time.advance(59 * 60_000);
+    expect(await exports.expire(gymA)).toBe(0);
+    time.advance(60_001);
+    expect(await exports.expire(gymA)).toBe(2);
+    expect(await exports.expire(gymA)).toBe(0);
+    expect(await storage.sweep({ before: time.now() })).toEqual([archive, orphan].sort());
+    expect(await storage.get(archive)).toBeNull();
+  });
 });
 describe('HTTP permissions and gym isolation', () => {
   it.each(staffRoles)('allows only owner/admin on all seven routes (%s)', async (role) => {

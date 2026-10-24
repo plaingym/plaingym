@@ -31,6 +31,12 @@ export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupCon
   return { recipient: gym.backupPublicKey, blobKey: parseEncryptionKey(decryptSecret(appKey, 'backup_blob_key', gym.backupBlobKey)),
     appEncryptionKey: appKey, budgetBytes, destination, gymId: gym.id };
 }
+const notConfigured = ['Backup destination and public key are not configured', 'Install snapshots require exactly one configured gym'];
+/** Whether this install takes snapshots. Only an unconfigured install answers false; other failures throw. */
+export async function backupsConfigured(appKey: Buffer): Promise<boolean> {
+  try { await loadBackupConfig(appKey); return true; }
+  catch (error) { if (error instanceof Error && notConfigured.includes(error.message)) return false; throw error; }
+}
 /** `uploadsFor` is the runtime storage resolver, so snapshots capture uploads wherever the install keeps them. */
 export function configuredBackup(config: InstallBackupConfig, database: PostgresMaintenance,
   clock: Clock, stagingDirectory: string, uploadsFor: (gymId: string) => Promise<Uploads>) {

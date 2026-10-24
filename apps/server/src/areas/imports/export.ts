@@ -11,6 +11,7 @@ import { exportCatalog } from './export.catalog.js';
 import { csvLine } from './pipeline.csv.js';
 import { archiveStream, type ArchiveEntry } from './export.zip.js';
 export const EXPORT_JOB = 'imports.export';
+export const EXPORT_EXPIRY_JOB = 'imports.export.expire';
 const DOWNLOAD_LIFETIME = 60 * 60;
 export function createExportService(options: { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock, store = new PipelineStore(options.uploadsFor);
@@ -45,6 +46,23 @@ export function createExportService(options: { uploadsFor: UploadsFor; jobs: Job
         throw error;
       }
       return job;
+    },
+    /**
+     * Marks each archive deleted once its download link has expired, so the next sweep removes the exported
+     * personal data. An archive whose run never finished expires a link lifetime after it was written.
+     */
+    async expire(gymId: string): Promise<number> {
+      const uploads = await options.uploadsFor(gymId), prefix = `${gymId}/imports/exports/`, now = clock.now().getTime();
+      let expired = 0;
+      for (const info of await uploads.list(prefix)) {
+        if (!info.key.endsWith('/export.zip') || info.deletedAt) continue;
+        const id = info.key.slice(prefix.length, -'/export.zip'.length);
+        const finished = await store.exists(gymId, key(gymId, id, 'finished.json'))
+          ? await store.get<ExportJob>(gymId, key(gymId, id, 'finished.json')) : undefined;
+        const expiresAt = finished?.expiresAt ? Date.parse(finished.expiresAt) : info.createdAt.getTime() + DOWNLOAD_LIFETIME * 1000;
+        if (expiresAt <= now) { await uploads.markDeleted(info.key); expired++; }
+      }
+      return expired;
     },
     async get(gymId: string, id: string): Promise<ExportJob> {
       for (const state of ['finished', 'running', 'pending']) {

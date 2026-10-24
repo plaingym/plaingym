@@ -37,7 +37,8 @@ import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
-import { configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
+import { backupsConfigured, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
+import { createUploadSweepJobs } from '../areas/health/uploads-sweep.js';
 import { RestoreGate } from '../areas/health/restore.gate.js';
 import { configureAuthCli } from '../cli/auth.js';
 import { runCli, type CommandIO } from '../cli/index.js';
@@ -156,7 +157,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
-    jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym)] };
+    jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
+      ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
+        ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
     session: createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session: sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {

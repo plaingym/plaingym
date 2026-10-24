@@ -44,7 +44,8 @@ fields, credential hashes, audit before/after payloads, processor error text and
 email subject/body fields are excluded. Audit and email metadata remain present.
 The schema coverage test fails if any non-system table lacks a dataset.
 
-Download links expire one hour after completion. Storage manifests contain the
+Download links expire one hour after completion; the hourly `imports.export.expire`
+job then marks the archive deleted, and the next upload sweep removes it. Storage manifests contain the
 signed link only within the requesting gym's prefix. Export jobs currently use
 an immutable claim and one attempt: an interrupted export must be requested
 again. **TODO(CCR):** add retention and recovery of unfinished export manifests
