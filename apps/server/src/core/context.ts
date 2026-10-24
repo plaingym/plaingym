@@ -31,6 +31,8 @@ export interface RequestContext {
   readonly gym: GymContext;
   readonly principal: Principal;
   readonly clock: Clock;
+  /** The client address behind the trusted proxy, or `unknown` without a socket. */
+  readonly clientIp?: string;
 }
 
 export interface RequestEnvironment {

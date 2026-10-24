@@ -78,3 +78,31 @@ it('shares a conservative bucket when no socket address is available', async () 
 it.each([0, -1, NaN, Infinity, 0.5])('rejects invalid limiter settings: %s', (value) => {
   for (const key of ['limit', 'windowMs', 'maxBuckets']) expect(() => rateLimit({ [key]: value })).toThrow();
 });
+
+it('gives route-level limiters the trusted client address, not the proxy socket', async () => {
+  const { app } = fixture({ limit: 100, trustedProxy: (address) => address === '127.0.0.1' });
+  // Configured without proxy options, as a route's own limiter is.
+  app.post('/api/invite', rateLimit({ limit: 1 }), (context) => context.json({ ok: true }));
+  const invite = (client: string) => app.request('/api/invite', { method: 'POST', headers: { 'x-forwarded-for': client } });
+  expect((await invite('198.51.100.2')).status).toBe(200);
+  expect((await invite('198.51.100.3')).status).toBe(200);
+  expect((await invite('198.51.100.2')).status).toBe(429);
+});
+
+it('limits requests before the session middleware answers them', async () => {
+  const clock = new TestClock('2026-01-01T00:00:00Z');
+  let answered = 0;
+  const app = createApp({ clock,
+    resolveGym: async (context, next) => {
+      context.set('context', { ...context.get('context'), gym: { gymId: 'gym', timezone: 'UTC', enabledModules: new Set() } });
+      await next();
+    },
+    // The session middleware answers auth requests without calling next, as Better Auth dispatch does.
+    session: async (context) => { answered++; return context.json({ ok: true }); },
+    authorize: () => async (_context, next) => { await next(); },
+    rateLimit: { limit: 1, peerAddress: () => '127.0.0.1' },
+  });
+  expect((await app.request('/api/auth/sign-in/email', { method: 'POST' })).status).toBe(200);
+  expect((await app.request('/api/auth/sign-in/email', { method: 'POST' })).status).toBe(429);
+  expect(answered).toBe(1);
+});

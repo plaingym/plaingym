@@ -19,7 +19,7 @@ const session: MiddlewareHandler<RequestEnvironment> = async (_context, next) =>
 const allow: PermissionMiddleware = () => async (_context, next) => { await next(); };
 
 describe('server application composition', () => {
-  it('runs context, tenancy, session, CSRF, limiter, authorization, validation, and handler in order', async () => {
+  it('runs context, tenancy, limiter, session, CSRF, authorization, validation, and handler in order', async () => {
     const calls: string[] = [];
     const entry = route({ method: 'post', path: '/api/fixture', permission: { kind: 'public' },
       request: { body: { required: true, content: { 'application/json': { schema: z.object({ value: z.string() }) } } } },
@@ -41,20 +41,22 @@ describe('server application composition', () => {
         await next();
       },
       origin: (context) => { expect(context.get('context').principal.kind).toBe('staff'); calls.push('csrf'); return 'http://localhost'; },
-      rateLimit: { limit: 1, peerAddress: (context) => { expect(context.get('context').principal.kind).toBe('staff'); calls.push('limit'); return '127.0.0.1'; } },
+      // The client address is resolved once, with the request context, before tenancy.
+      rateLimit: { limit: 2, peerAddress: (context) => { expect(context.get('context').requestId).toMatch(/^[a-f0-9-]{36}$/); calls.push('address'); return '127.0.0.1'; } },
       authorize: () => async (_context, next) => { calls.push('authorize'); await next(); },
     });
     const request = (body: string, origin = 'http://localhost') => app.request('/api/fixture', {
       method: 'POST', headers: { cookie: 'session=secret', origin, 'content-type': 'application/json' }, body,
     });
     expect((await request('{"value":"ok"}')).status).toBe(200);
-    expect(calls).toEqual(['gym', 'session', 'csrf', 'limit', 'authorize', 'handler']);
+    expect(calls).toEqual(['address', 'gym', 'session', 'csrf', 'authorize', 'handler']);
     calls.length = 0;
     expect((await request('{}', 'https://evil.example')).status).toBe(403);
-    expect(calls).toEqual(['gym', 'session', 'csrf']);
+    expect(calls).toEqual(['address', 'gym', 'session', 'csrf']);
     calls.length = 0;
+    // The limiter answers before the session middleware, which handles auth requests itself.
     expect((await request('{}')).status).toBe(429);
-    expect(calls).toEqual(['gym', 'session', 'csrf', 'limit']);
+    expect(calls).toEqual(['address', 'gym']);
   });
 
   it('authorizes before input validation and formats validation and malformed JSON errors', async () => {

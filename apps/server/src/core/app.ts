@@ -9,7 +9,8 @@ import type { RequestContext, RequestEnvironment } from './context.js';
 import { createServerRegistry, type PermissionMiddleware, type ServerContributions } from './registry.js';
 import { errorHandler, respondError } from './errors.js';
 import { csrf, type CanonicalOrigin } from './csrf.js';
-import { rateLimit, type RateLimitOptions } from './rate-limit.js';
+import { clientIp, rateLimit, type RateLimitOptions } from './rate-limit.js';
+import { requestBodyLimit, type BodyLimits } from './body-limit.js';
 import { mountHealthz } from './healthz.js';
 import { mountSourceLink, sourceUrl } from './source-link.js';
 import { mountOpenApi } from './openapi.js';
@@ -24,6 +25,7 @@ export interface AppOptions {
   readonly clock?: Clock;
   readonly origin?: CanonicalOrigin;
   readonly rateLimit?: RateLimitOptions;
+  readonly bodyLimits?: BodyLimits;
   readonly sourceUrl?: string;
   readonly publicDirectory?: string;
   /** Install-local gate, before any tenant database access. */
@@ -44,10 +46,13 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     // A caller cannot choose a log-correlation ID or inject response headers with it.
     const requestId = randomUUID();
     // Gym is populated only by resolveGym; install endpoints never read it.
+    // Resolved once at the proxy boundary, so every limiter buckets the actual client.
     context.set('context', { requestId, principal: { kind: 'anonymous' }, clock: options.clock ?? systemClock } as RequestContext);
+    context.set('context', { ...context.get('context'), clientIp: clientIp(context, options.rateLimit) });
     context.header('X-Request-ID', requestId);
     await next();
   });
+  app.use('*', requestBodyLimit(options.bodyLimits));
   app.onError(errorHandler);
   app.notFound((context) => respondError(context, new AppError('not_found', 'Not found.')));
   // These explicitly public install endpoints do not have a gym principal yet.
@@ -94,9 +99,10 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   for (const entry of installRoutes.filter((entry) => entry.id === catalogId)) entry.mount(app, authorizeInstall);
   app.use('*', staticAssets(options.publicDirectory));
   app.use('*', options.resolveGym);
+  // Flood protection runs before the session middleware, which answers auth requests itself.
+  app.use('*', rateLimit(options.rateLimit));
   app.use('*', options.session);
   app.use('*', csrf(options.origin));
-  app.use('*', rateLimit(options.rateLimit));
   const registry = createServerRegistry({ ...contributions,
     routes: (contributions.routes ?? []).filter((entry) => !installRoutes.includes(entry) && !demoInstallRoutes.includes(entry)),
   });

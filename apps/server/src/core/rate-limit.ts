@@ -41,8 +41,9 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
   }
   const buckets = new Map<string, { count: number; resetAt: number }>();
   return async (context, next) => {
-    const { clock, gym } = context.get('context');
-    const now = clock.now().getTime(), key = `${gym?.gymId ?? 'install'}:${clientIp(context, options)}`;
+    const { clock, gym, clientIp: resolved } = context.get('context');
+    // Route-level limiters share the app's proxy-aware address instead of the proxy's socket peer.
+    const now = clock.now().getTime(), key = `${gym?.gymId ?? 'install'}:${resolved ?? clientIp(context, options)}`;
     let bucket = buckets.get(key);
     if (bucket && bucket.resetAt <= now) { buckets.delete(key); bucket = undefined; }
     if (!bucket) {
