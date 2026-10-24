@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { backupRuns, forSystem } from '@plaingym/db';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore, type BackupObjectStore } from '../../infra/storage/index.js';
 import { loadBackupConfig, type InstallBackupConfig } from './restore.config.js';
-import { inventory } from './backups.retention.js';
+import { inventory, prunePlan, UnverifiedInventory } from './backups.retention.js';
 import { healthProvider, statusMessage } from './status.js';
 
 export function createBackupHealthProvider(options: {
@@ -36,7 +36,11 @@ export function createBackupHealthProvider(options: {
       .from(backupRuns).where(eq(backupRuns.status, 'succeeded')).orderBy(desc(backupRuns.startedAt)));
     const destination = open(settings);
     try {
-      const state = await inventory(destination.store, settings.blobKey);
+      const state = await inventory(destination.store, settings.blobKey, async (prefixes) => new Map((await scope((tx) => tx
+        .select({ prefix: backupRuns.objectPrefix, status: backupRuns.status }).from(backupRuns)
+        .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status])));
+      // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
+      if (prunePlan(state, context.clock.now()).stopped) throw new UnverifiedInventory('Pruning stopped');
       const latest = runs.find((run) => state.snapshots.some((snapshot) => snapshot.id === run.id));
       const blobs = await destination.store.listObjects('blobs/');
       const retainedBytes = [...state.objects, ...blobs].reduce((total, object) => total + object.size, 0);

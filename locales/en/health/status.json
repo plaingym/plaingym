@@ -19,7 +19,7 @@
   "backupHealthy": "The latest completed snapshot is available for restore.",
   "backupOverdue": "Backups are overdue: no restorable snapshot from the last two hours.",
   "backupCapacity": "The retention budget may not have room for the next snapshot and staging reserve.",
-  "backupPruningStopped": "Backup inventory could not be verified. Pruning has stopped; check the backup destination and reference lists.",
+  "backupPruningStopped": "Backup inventory could not be verified. Pruning has stopped, and new snapshots keep everything already stored; check the backup destination and reference lists.",
   "keyReminder": "Keep your backup private key safe. Losing it means losing access to your backups.",
   "checkedAt": "Checked",
   "unknown": "Unknown",

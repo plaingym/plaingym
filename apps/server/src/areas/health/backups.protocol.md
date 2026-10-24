@@ -46,8 +46,16 @@ the encrypted staging file. Install-level jobs use durable occurrence keys.
 
 Retention shares snapshots between 24 hourly, 7 daily, and 4 weekly buckets,
 plus two pre-upgrade snapshots no older than 30 days. Pruning first validates all
-reference lists and referenced blob sizes. Missing or invalid references stop
-both pruning and sweeping. Every retained upload is protected from sweeping.
+reference lists and referenced blob sizes. Each run is recorded in `backup_runs`
+before anything is uploaded, and runs hold the backup lock, so a prefix with no
+reference list whose run never succeeded is an abandoned publication: pruning
+deletes it and the blobs no committed snapshot references. A committed snapshot
+with a missing object is an interrupted deletion when the retention policy would
+drop it anyway, and pruning finishes it; when the policy would keep it, or when a
+reference list is missing for a successful run, invalid, or unexplained, pruning
+and sweeping stop. Stopped pruning never stops the next snapshot: it publishes,
+deletes nothing, and references already stored blobs as they are instead of
+re-encrypting over them. Every retained upload is protected from sweeping.
 A budget failure is reported instead of silently dropping the recovery objective;
 the default budget is 8 GB with 128 MiB of in-flight reserve.
 

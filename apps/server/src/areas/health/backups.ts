@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { backupRuns, forSystem } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -11,7 +11,7 @@ import type { BackupObjectStore, ObjectInfo, Uploads } from '../../infra/storage
 import { bytesStream, fileDigest, fileStream, privateDirectory, saveStream } from './backups.files.js';
 import { backupKindSchema, blobName, manifestSchema, publicReferences, referenceStream, snapshotPrefix } from './backups.format.js';
 import type { BackupKind, Manifest, Snapshot, UploadReference } from './backups.format.js';
-import { inventory, pruneUnlocked } from './backups.retention.js';
+import { inventory, pruneUnlocked, UnverifiedInventory, type RunStatuses } from './backups.retention.js';
 import { PostgresMaintenance } from './backups.database.js';
 
 export interface BackupOptions {
@@ -34,6 +34,10 @@ export class BackupService {
     if (options.appEncryptionKey.length !== 32 || options.blobKey.length !== 32) throw new Error('Invalid backup recovery key');
     this.scope = options.scope ?? { forSystem };
   }
+  /** Each run is recorded before anything is uploaded, so an uncommitted prefix can be traced to its run. */
+  readonly runs: RunStatuses = async (prefixes) => new Map((await this.scope.forSystem((tx) => tx
+    .select({ prefix: backupRuns.objectPrefix, status: backupRuns.status }).from(backupRuns)
+    .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status]));
   async #upload(key: string, path: string): Promise<ObjectInfo> {
     // Every retry opens the encrypted staging file anew; the store aborts failed multipart sessions.
     for (let attempt = 1; ; attempt++) {
@@ -52,9 +56,12 @@ export class BackupService {
       await this.scope.forSystem(async (tx) => { await tx.insert(backupRuns).values({ id, kind, startedAt, objectPrefix: prefix }); });
       let committed = false;
       try {
-        await pruneUnlocked(o.store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1));
-        const previous = await inventory(o.store, o.blobKey);
+        // An unverifiable inventory stops pruning but never the next snapshot: one interrupted run must not end backups.
+        try { await pruneUnlocked(o.store, o.blobKey, sources, startedAt, 0, o.budgetBytes, new Date(startedAt.getTime() - 1), this.runs); }
+        catch (error) { if (!(error instanceof UnverifiedInventory)) throw error; }
+        const previous = await inventory(o.store, o.blobKey, this.runs);
         const reusable = new Map(previous.snapshots.flatMap((s) => s.uploads.map((u) => [u.blob, u] as const)));
+        const stored = new Set((await o.store.listObjects('blobs/')).map((blob) => blob.key));
         const dumpHash = createHash('sha256'); let dumpBytes = 0;
         const dump = (await o.database.dump()).pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) { dumpHash.update(chunk); dumpBytes += chunk.length; controller.enqueue(chunk); },
@@ -76,7 +83,13 @@ export class BackupService {
             const known = reusable.get(blob);
             let encrypted: UploadReference['encrypted'];
             if (known) encrypted = known.encrypted;
-            else {
+            else if (stored.has(blob)) {
+              // Never overwrite a stored blob: re-encryption would break the references of snapshots that use it.
+              const body = await o.store.getObject(blob);
+              if (!body) throw new Error('Upload blob disappeared during backup');
+              const copy = join(staging, 'existing.age');
+              encrypted = await saveStream(copy, body); await rm(copy);
+            } else {
               const path = join(staging, String(references.length) + '.age');
               encrypted = await saveStream(path, await encrypt(o.recipient, fileStream(raw)));
               pending.push({ key: blob, path, size: encrypted.size });
@@ -129,7 +142,7 @@ export class BackupService {
   async prune(): Promise<{ retainedBytes: number; protectedKeys: ReadonlySet<string> }> {
     const o = this.options;
     return o.database.locked(async () => pruneUnlocked(o.store, o.blobKey, await o.uploads(), o.clock.now(),
-      o.reserveBytes, o.budgetBytes));
+      o.reserveBytes, o.budgetBytes, o.clock.now(), this.runs));
   }
 }
 /** Useful for restore verification and operator diagnostics without exposing recovery plaintext. */

@@ -304,6 +304,34 @@ describe('install snapshot and restore with real Postgres and S3', () => {
     expect(await uploads.get(gymId + '/photo')).not.toBeNull();
   });
 
+  it('removes an interrupted publication under the lock and keeps publishing snapshots', async () => {
+    // A process killed after uploading the dump: its run is recorded as running and no reference list exists.
+    const id = uuidv7(), prefix = snapshotPrefix(id);
+    await source.forSystem((tx) => tx.insert(backupRuns).values({ id, kind: 'hourly', startedAt: clock.now(), objectPrefix: prefix }));
+    await store.putObject(prefix + 'database.age', new Blob(['partial dump']).stream());
+    await store.putObject('blobs/' + 'f'.repeat(64) + '.age', new Blob(['orphan blob']).stream());
+    for (let run = 0; run < 2; run++) { clock.advance(3_600_000); await backup().snapshot('hourly'); }
+    const state = await inventory(store, blobKey);
+    expect(state.snapshots).toHaveLength(2);
+    expect(state.abandoned).toEqual([]); expect(state.suspect).toEqual([]);
+    expect(server.objects.has('backups/' + prefix + 'database.age')).toBe(false);
+    expect(server.objects.has('backups/blobs/' + 'f'.repeat(64) + '.age')).toBe(false);
+  });
+
+  it('keeps publishing over an unverifiable reference list without deleting or rewriting anything', async () => {
+    const first = await backup().snapshot();
+    const key = 'backups/' + snapshotPrefix(first.id) + 'references.json', reference = server.objects.get(key)!;
+    reference.bytes = Buffer.from(reference.bytes.toString().replace('"mac":"', '"mac":"f'));
+    const before = new Map([...server.objects].map(([name, object]) => [name, Buffer.from(object.bytes)]));
+    clock.advance(3_600_000);
+    const second = await backup().snapshot('hourly');
+    for (const [name, bytes] of before) expect(server.objects.get(name)?.bytes).toEqual(bytes);
+    // The stored blob is referenced as it is, not re-encrypted over the copy the first snapshot needs.
+    expect(second.uploads[0]).toEqual(first.uploads[0]);
+    // The new snapshot is complete and restorable even though pruning stays stopped.
+    await restore().restore(second.id, identity);
+  });
+
   it('keeps a file deleted while the dump is running in that snapshot', async () => {
     const original = sourceMaintenance.dump.bind(sourceMaintenance);
     const wrapped = new PostgresMaintenance(source.maintenanceUrl, dockerTools);
