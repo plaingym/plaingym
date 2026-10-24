@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { auditEvents, households, members, memberTags, memberTagLinks, paymentMethods, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -41,9 +41,10 @@ function services() {
   return { pipeline, load };
 }
 const snapshot = (gymId = gymA) => database.forGym(gymId, async (tx) => ({
-  members: await tx.select().from(members), households: await tx.select().from(households),
-  methods: await tx.select().from(paymentMethods), tags: await tx.select().from(memberTags),
-  links: await tx.select().from(memberTagLinks), audits: await tx.select().from(auditEvents),
+  // Postgres returns unordered rows in any order, so compare in ID order.
+  members: await tx.select().from(members).orderBy(asc(members.id)), households: await tx.select().from(households).orderBy(asc(households.id)),
+  methods: await tx.select().from(paymentMethods).orderBy(asc(paymentMethods.id)), tags: await tx.select().from(memberTags).orderBy(asc(memberTags.id)),
+  links: await tx.select().from(memberTagLinks).orderBy(asc(memberTagLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)),
 }));
 
 describe('people mapper through the real import pipeline', () => {
