@@ -265,6 +265,16 @@ export class StripePayments implements Payments {
     }
     return value;
   }
+  async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
+    assertNoTransaction('payments.adoptCustomer');
+    const path = this.#path('customers', customerId), customer = await this.#get(path);
+    if (customer.deleted === true) throw new Error('Customer was deleted');
+    const owner = data(customer.metadata ?? {}).gym_id;
+    if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
+    // Metadata updates merge, so the customer's other keys stay.
+    if (owner === undefined) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
+    return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null };
+  }
   async findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]> {
     assertNoTransaction('payments.findCustomerByEmail');
     const matches: { id: string; email: string }[] = [];

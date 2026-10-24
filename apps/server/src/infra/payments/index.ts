@@ -134,6 +134,12 @@ export interface Payments {
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
   expireCheckout(id: string): Promise<CheckoutExpiry>;
   findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]>;
+  /**
+   * Tags a customer created outside this app (an imported Stripe customer ID) with this gym, so charges and
+   * Checkout accept it. Idempotent; refuses a customer tagged for another gym or deleted. Call it only on
+   * staff-provided IDs, never on IDs taken from untrusted input.
+   */
+  adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
 }
 
@@ -561,6 +567,13 @@ export class FakePayments implements Payments {
     return structuredClone(
       this.#customers.filter((customer) => customer.email.toLowerCase() === email.toLowerCase()),
     );
+  }
+  /** Seeded customers belong to this gym; unknown IDs fail like a missing Stripe customer. */
+  async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
+    assertNoTransaction('payments.adoptCustomer');
+    const customer = this.#customers.find((item) => item.id === customerId);
+    if (!customer) throw new Error('No such customer');
+    return { id: customer.id, email: customer.email };
   }
   signWebhook(body: Uint8Array): string {
     return createHmac('sha256', this.webhookSecret).update(body).digest('hex');

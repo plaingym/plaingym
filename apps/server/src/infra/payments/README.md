@@ -19,8 +19,10 @@ Explicitly created Customers, intents, Checkout sessions, inline Products, refun
 and webhook endpoints receive `gym_id` metadata. Checkout also puts metadata on its
 PaymentIntent or SetupIntent. Stripe-generated child objects are matched through
 their parent: a card's Customer, or a refund/dispute's Charge and PaymentIntent.
-Imported customers must be tagged with this gym before using this adapter; email
-matches are restricted to tagged customers and ambiguity fails closed. The saved
+Customers created elsewhere (imported Stripe customer IDs) carry no `gym_id` and are
+refused until `adoptCustomer(id)` tags them; it is idempotent and refuses customers
+tagged for another gym. Call it only on staff-provided IDs. Email matches are
+restricted to tagged customers and ambiguity fails closed. The saved
 method is returned explicitly; a Checkout success never implies a Customer default.
 
 `parseWebhook` verifies the exact bytes and timestamp through the SDK. It only

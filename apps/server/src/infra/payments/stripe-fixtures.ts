@@ -66,6 +66,9 @@ export class StripeFixtures implements PaymentTransport {
       const object = this.objects.get(objectId);
       if (!object) throw Object.assign(new Error('No such object'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
       if (input.method === 'GET') return object;
+      if (!action && resource === 'customers') {
+        object.metadata = { ...object.metadata as ObjectData, ...params.metadata as ObjectData }; return object;
+      }
       if (action === 'confirm') {
         if (object.status === 'canceled') throw new Error('Intent canceled');
         const card = String(object.payment_method).slice(-4);

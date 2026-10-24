@@ -273,6 +273,27 @@ it('validates every permission including Setup Intents, Events and Disputes, and
   }
   await stripeProvisioner(new StripeFixtures(gymId)).validate();
 });
+it('adopts an imported customer once, so charges and email matching accept it, and refuses customers of other gyms', async () => {
+  const { payments, transport } = fixture();
+  transport.objects.set('cus_imported', { id: 'cus_imported', object: 'customer', email: 'imported@example.invalid', metadata: { legacy_id: '42' } });
+  transport.objects.set('pm_imported', { id: 'pm_imported', object: 'payment_method', customer: 'cus_imported', card: { last4: '4242', exp_month: 12, exp_year: 2030 } });
+  const imported = { ...charge, customerId: 'cus_imported', paymentMethodId: 'pm_imported', idempotencyKey: 'invoice_imported:1:create' };
+  await expect(payments.createCharge(imported)).rejects.toThrow('no gym metadata');
+  expect(await payments.findCustomerByEmail('imported@example.invalid')).toEqual([]);
+  expect(await payments.adoptCustomer('cus_imported')).toEqual({ id: 'cus_imported', email: 'imported@example.invalid' });
+  expect(transport.objects.get('cus_imported')!.metadata).toEqual({ legacy_id: '42', gym_id: gymId });
+  const writes = transport.requests.filter((request) => request.method === 'POST').length;
+  await payments.adoptCustomer('cus_imported');
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(writes);
+  expect(await payments.findCustomerByEmail('imported@example.invalid')).toEqual([{ id: 'cus_imported', email: 'imported@example.invalid' }]);
+  await expect(payments.createCharge(imported)).resolves.toMatchObject({ id: expect.stringMatching(/^pi_/) });
+  transport.objects.set('cus_foreign', { id: 'cus_foreign', object: 'customer', email: null, metadata: { gym_id: '00000000-0000-7000-8000-000000000002' } });
+  await expect(payments.adoptCustomer('cus_foreign')).rejects.toThrow('another gym');
+  transport.objects.set('cus_deleted', { id: 'cus_deleted', object: 'customer', deleted: true });
+  await expect(payments.adoptCustomer('cus_deleted')).rejects.toThrow('deleted');
+  await expect(payments.adoptCustomer('cus_missing')).rejects.toThrow();
+  await expect(payments.adoptCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
+});
 it('blocks all provider operations inside a database transaction before any request', async () => {
   const { payments, transport } = fixture();
   await runInTransaction(async () => {
@@ -281,7 +302,7 @@ it('blocks all provider operations inside a database transaction before any requ
       () => payments.readPaymentObject({ kind: 'setup', id: 'seti_fixture' }), () => payments.listChangesSince(new Date()),
       () => payments.refund({ chargeId: 'pi_fixture', amount: 1, idempotencyKey: 'refund' }), () => payments.createCheckout(checkout),
       () => payments.expireCheckout('cs_fixture'), () => payments.findCustomerByEmail('payer@example.invalid'),
-      () => payments.parseWebhook(new Uint8Array(), '')];
+      () => payments.adoptCustomer('cus_fixture'), () => payments.parseWebhook(new Uint8Array(), '')];
     for (const call of calls) await expect(call()).rejects.toThrow('transaction');
   });
   expect(transport.requests).toEqual([]);
