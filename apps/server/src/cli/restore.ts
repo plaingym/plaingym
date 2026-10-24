@@ -68,6 +68,13 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
   } finally { client.destroy(); }
 }
 export const commands: readonly Command[] = [{
+  id: 'migrate', description: 'Apply database migrations as the maintenance role',
+  async run(_args, io) {
+    if (!process.env.MAINTENANCE_DATABASE_URL) { io.stderr('Set MAINTENANCE_DATABASE_URL (see .env.example)'); return 1; }
+    try { await maintenanceCommand(['migrate']); io.stdout('Database migrated'); return 0; }
+    catch (error) { io.stderr('Migration failed: ' + (error instanceof Error ? error.name : 'unknown error')); return 1; }
+  },
+}, {
   id: 'restore', description: 'Restore an authenticated encrypted install snapshot',
   async run(args, io) {
     try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing remains paused'); return 0; }

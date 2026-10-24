@@ -218,6 +218,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
 export async function runCommandLine(args: readonly string[], io: CommandIO, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   if (args[0] === 'restore') return runCli(args, io);
   if (args[0] === 'setup-link') return createSetupLinkCommand(env).run(args.slice(1), io);
+  // Migrating needs only the maintenance role, as in the container entrypoint.
+  if (args[0] === 'migrate') return runCli(args, io);
   try { await prepare(env); }
   catch (error) { io.stderr(error instanceof Error ? error.message : 'Startup failed'); return 1; }
   try { return await runCli(args, io); } finally { await closeDatabase(); }

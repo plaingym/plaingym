@@ -10,7 +10,8 @@ Use Node **24.22.1**, pnpm **10.34.7**, and Docker with Linux containers.
 
 1. Copy `.env.example` to `.env` (UTF-8 without BOM).
 2. Replace all three password placeholders with different random, URL-safe values.
-   Update `DATABASE_URL` to match the app password, database name and port.
+   Update `DATABASE_URL` and `MAINTENANCE_DATABASE_URL` to match the app and
+   maintenance passwords, database name and port.
    Set `SOURCE_URL` to the public source URL for your checkout.
    Generate independent `AUTH_SECRET` and `SETUP_TOKEN` values, and a 32-byte
    `APP_ENCRYPTION_KEY` encoded as 64 hex characters (`openssl rand -hex 32`).
@@ -26,6 +27,9 @@ pnpm test
 pnpm dev
 ```
 
+`pnpm dev:up` starts PostgreSQL and Mailpit and then runs `pnpm db:migrate`, which
+applies migrations as the `maintenance` role (`MAINTENANCE_DATABASE_URL`); run
+`pnpm db:migrate` again after pulling changes that add migrations.
 On Windows use `pnpm.cmd` if PowerShell blocks `pnpm.ps1`. The server is at
 `http://127.0.0.1:3000/healthz`, Vite at `http://127.0.0.1:5173`, and Mailpit at
 `http://127.0.0.1:8025` with the example ports. Vite proxies `/healthz` to the

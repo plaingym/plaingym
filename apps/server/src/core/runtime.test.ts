@@ -37,6 +37,18 @@ it('sizes the app pool from DATABASE_POOL_MAX within the connection budget', () 
   expect(poolSize({ DATABASE_POOL_MAX: '4' })).toBe(4);
   for (const value of ['0', '-1', '1.5', 'many', '101']) expect(() => poolSize({ DATABASE_POOL_MAX: value })).toThrow('DATABASE_POOL_MAX');
 });
+it('migrates through the maintenance role from the command line, without the app settings', async () => {
+  const io = { stdout: vi.fn(), stderr: vi.fn() };
+  try {
+    vi.stubEnv('MAINTENANCE_DATABASE_URL', '');
+    expect(await runCommandLine(['migrate'], io, {})).toBe(1);
+    expect(io.stderr).toHaveBeenCalledWith(expect.stringContaining('MAINTENANCE_DATABASE_URL'));
+    // The test database is already migrated, so this proves the command is safe to repeat.
+    vi.stubEnv('MAINTENANCE_DATABASE_URL', database.maintenanceUrl);
+    expect(await runCommandLine(['migrate'], io, {})).toBe(0);
+    expect(io.stdout).toHaveBeenCalledWith('Database migrated');
+  } finally { vi.unstubAllEnvs(); }
+});
 it('refuses live keys before trying to open a database', async () => {
   await expect(startRuntime({ ...env(), DATABASE_URL: 'invalid', STRIPE_KEY: 'sk_live_forbidden' })).rejects.toThrow(/live/);
 });
