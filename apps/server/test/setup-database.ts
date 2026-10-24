@@ -13,13 +13,17 @@ function credentialUrl(base: string, user: string, password: string | undefined,
   if (!password) throw new Error('Database tests require ' + variable + ' or the matching bootstrap password');
   const url = new URL(base); url.username = user; url.password = password; return url.toString();
 }
+/**
+ * Uses an existing test server only when named explicitly (CI's service container), never the developer
+ * database in DATABASE_URL. Each test file still gets its own clone of a freshly migrated template.
+ */
 export default async function setupDatabase(project: TestProject) {
-  if (process.env.DATABASE_URL) {
-    const appUrl = process.env.DATABASE_URL;
+  if (process.env.TEST_DATABASE_URL) {
+    const appUrl = process.env.TEST_DATABASE_URL;
     const template = await prepareTemplate({
       appUrl,
-      maintenanceUrl: process.env.MAINTENANCE_DATABASE_URL ?? credentialUrl(appUrl, 'maintenance', process.env.MAINTENANCE_PASSWORD, 'MAINTENANCE_DATABASE_URL'),
-      adminUrl: process.env.TEST_DATABASE_ADMIN_URL ?? credentialUrl(appUrl, 'postgres', process.env.POSTGRES_PASSWORD, 'TEST_DATABASE_ADMIN_URL'),
+      maintenanceUrl: process.env.TEST_MAINTENANCE_DATABASE_URL ?? credentialUrl(appUrl, 'maintenance', process.env.TEST_MAINTENANCE_PASSWORD, 'TEST_MAINTENANCE_DATABASE_URL'),
+      adminUrl: process.env.TEST_DATABASE_ADMIN_URL ?? credentialUrl(appUrl, 'postgres', process.env.TEST_POSTGRES_PASSWORD, 'TEST_DATABASE_ADMIN_URL'),
     });
     project.provide('testDatabase', template.config);
     return template.cleanup;

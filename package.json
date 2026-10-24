@@ -14,6 +14,8 @@
     "check-types": "pnpm generate && tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/server/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
     "lint": "eslint . --max-warnings 0",
     "test": "pnpm generate && vitest run",
+    "test:unit": "pnpm generate && vitest run --project unit",
+    "test:integration": "pnpm generate && vitest run --project integration",
     "build": "pnpm generate && pnpm --filter @plaingym/web build && pnpm --filter @plaingym/server build",
     "dev": "pnpm generate && pnpm --parallel --filter @plaingym/server --filter @plaingym/web dev",
     "dev:up": "docker compose -f compose.dev.yaml up -d --wait && pnpm db:migrate",

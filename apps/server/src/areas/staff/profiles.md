@@ -22,4 +22,4 @@ The JSON contracts live in `packages/shared`: `staffContracts.uploadPhoto` and t
 
 ## Validation
 
-Run `pnpm test` with `DATABASE_URL` unset. The repository setup starts disposable PostgreSQL and clones a fresh migrated database per integration test file. Staff coverage includes every route's role permissions, cross-gym records and links, stale revisions, photo replacement/clear and losing-write cleanup, token replay/expiry/concurrent consumption, printed/password and SMTP/email flows, existing credential protection, OpenAPI registration, missing runtime configuration, generated-client transport, and browser workflows.
+Run `pnpm test`. The repository setup starts disposable PostgreSQL and clones a fresh migrated database per integration test file. Staff coverage includes every route's role permissions, cross-gym records and links, stale revisions, photo replacement/clear and losing-write cleanup, token replay/expiry/concurrent consumption, printed/password and SMTP/email flows, existing credential protection, OpenAPI registration, missing runtime configuration, generated-client transport, and browser workflows.

@@ -56,15 +56,20 @@ not alter an existing database.
 ## Checks and boundaries
 
 `pnpm install && pnpm test` works on a fresh clone with Node, pnpm, and Docker
-running; no `.env` or manual database startup is needed. When `DATABASE_URL` is
-unset, the test setup starts a unique, disposable PostgreSQL 18 compose project
-on a random loopback port, bootstraps its roles, and removes its containers and
-volume after the run. It starts only Postgres, not Mailpit.
+running; no `.env` or manual database startup is needed, and tests never read
+`.env` or your dev database. Tests split into two Vitest projects: `pnpm test:unit`
+runs the files that need no database, without Docker; `pnpm test:integration`
+runs the rest, and `pnpm test` runs both. For integration tests the setup starts a
+unique, disposable PostgreSQL 18 compose project on a random loopback port,
+bootstraps its roles, and removes its containers and volume after the run. It
+starts only Postgres, not Mailpit. A test file belongs to the integration
+project when it uses the `@plaingym/db/testing` helpers.
 
-An explicit `DATABASE_URL` (including one in `.env`) uses that database instead;
-start it with `pnpm dev:up` if it is your dev stack. CI supplies its service
-database this way. A missing or unreachable database fails the run; no tests
-silently skip. The smoke test reads PostgreSQL catalogs as `app`, checking role
+To use an existing test server instead, set `TEST_DATABASE_URL` (the `app` role),
+with `TEST_MAINTENANCE_DATABASE_URL` and `TEST_DATABASE_ADMIN_URL`. CI supplies its
+service database this way. A missing or unreachable database fails the run; no
+tests silently skip. Tests silence the app's error log lines; `TEST_LOGS=1` shows
+them. The smoke test reads PostgreSQL catalogs as `app`, checking role
 privileges, ownership and DML-only defaults. It creates no tables.
 
 ESLint limits vendor SDKs to server `infra/`. Within `apps/server/src/`, database

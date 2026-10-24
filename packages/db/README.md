@@ -256,11 +256,12 @@ Restore enumerates this registry; unknown secret classes throw.
 ## Database tests
 
 With Docker running, `pnpm test` starts disposable PostgreSQL automatically.
-When `DATABASE_URL` is set, also provide `MAINTENANCE_DATABASE_URL` and
-`TEST_DATABASE_ADMIN_URL`, or the matching `MAINTENANCE_PASSWORD` and
-`POSTGRES_PASSWORD`. All three must address the same server. The admin connection
-is used only to create and drop randomly named test databases, never for test
-application queries. Tests do not migrate or erase the database named in DATABASE_URL.
+To use an existing server, set `TEST_DATABASE_URL` with
+`TEST_MAINTENANCE_DATABASE_URL` and `TEST_DATABASE_ADMIN_URL` (or the matching
+`TEST_MAINTENANCE_PASSWORD` and `TEST_POSTGRES_PASSWORD`). All three must address
+the same server. The admin connection is used only to create and drop randomly
+named test databases, never for test application queries. Tests never read `.env`,
+and never migrate or erase the database named in `TEST_DATABASE_URL`.
 
 Global setup builds and verifies a migrated template, then closes its connections.
 Each integration file calls `useTestDatabase()` to get a fresh clone and an app pool
