@@ -49,7 +49,9 @@ and `apps/web/dist/`. Run the server with `pnpm --filter @plaingym/server start`
 and preview the web build with `pnpm --filter @plaingym/web preview`.
 Development runs the two apps separately.
 
-`pnpm dev:down` removes this compose project's containers **and database volume**.
+`pnpm dev:stop` stops PostgreSQL and Mailpit and keeps the database; `pnpm dev:up`
+starts them again. `pnpm dev:reset` removes this compose project's containers
+**and database volume**.
 Initialization runs only on an empty volume; changing passwords in `.env` does
 not alter an existing database.
 
