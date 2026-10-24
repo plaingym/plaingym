@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.billing.plans',
       labelKey: 'billing/catalog:title',
       permission: { kind: 'staff', capability: 'plans.manage' },
-      enabled: false,
+      enabled: true,
       href: '/admin/billing/plans',
     },
   ],
