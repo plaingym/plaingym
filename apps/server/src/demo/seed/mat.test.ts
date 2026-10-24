@@ -85,9 +85,10 @@ describe('demo mat seed', { timeout: 60_000 }, () => {
     expect(rows.profiles.find((row) => row.displayName === 'Jordan Lee')?.userId).toBe(coach.userId);
     expect(rows.templates).toHaveLength(demoTemplates.reduce((total, item) => total + item.weekdays.length, 0));
     expect(rows.templates.every((row) => row.kind === 'open_mat' || row.coachId !== null)).toBe(true);
-    // A populated calendar: the history weeks behind and as many ahead, with one upcoming cancellation.
+    // A populated calendar: the history weeks behind and the 8-week horizon ahead (created with each template),
+    // with one upcoming cancellation.
     expect(rows.sessions.filter((row) => row.startsAt.getTime() < now).length).toBe(historyWeeks * rows.templates.length);
-    expect(rows.sessions.filter((row) => row.startsAt.getTime() >= now).length).toBe(historyWeeks * rows.templates.length);
+    expect(rows.sessions.filter((row) => row.startsAt.getTime() >= now).length).toBe(8 * rows.templates.length);
     expect(rows.sessions.filter((row) => row.status === 'cancelled')).toHaveLength(1);
     expect(rows.visits.filter((row) => row.occurredAt.getTime() > now - 2 * day).length).toBeGreaterThan(0);
     expect(rows.visits.some((row) => row.kind === 'open_mat')).toBe(true);

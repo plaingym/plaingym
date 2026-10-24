@@ -161,12 +161,13 @@ describe('schedule routes and tenant isolation', () => {
   });
 });
 describe('materialization job against PostgreSQL', () => {
-  it('serializes concurrent retries, snapshots mappings, preserves overrides and extends the horizon', async () => {
-    const gymId = uuidv7(); await factory('gyms', gymId);
+  it('materializes on create, serializes concurrent retries, snapshots mappings, preserves overrides and extends the horizon', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/New_York' });
     const p1 = await factory('programs', gymId), p2 = await factory('programs', gymId), tag = await factory('classTags', gymId);
     const template = await service.createTemplate(context(gymId), { ...fields(), programIds: [p1.id, p2.id], tagIds: [tag.id], coachId: null });
+    expect(await database.forGym(gymId, (tx) => tx.select().from(classSessions))).toHaveLength(8);
     const counts = await Promise.all([service.materialize(gymId, 'America/New_York'), service.materialize(gymId, 'America/New_York')]);
-    expect(counts.sort()).toEqual([0, 8]);
+    expect(counts).toEqual([0, 0]);
     let sessions = await database.forGym(gymId, (tx) => tx.select().from(classSessions));
     expect(sessions).toHaveLength(8);
     const [first] = sessions.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
@@ -206,6 +207,10 @@ describe('materialization job against PostgreSQL', () => {
 });
 describe('moving generated sessions', () => {
   const zone = 'America/New_York';
+  // The previous release left a new template's sessions to the nightly job.
+  const asPreviousRelease = (gymId: string) => database.forGym(gymId, async (tx) => {
+    await tx.delete(classSessionPrograms); await tx.delete(classSessionTags); await tx.delete(classSessions);
+  });
   async function generated() {
     const gymId = uuidv7(); await factory('gyms', gymId, { timezone: zone });
     const program = await factory('programs', gymId);
@@ -265,6 +270,7 @@ describe('moving generated sessions', () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     const program = await factory('programs', gymId);
     const template = await service.createTemplate(context(gymId), { ...fields(), programIds: [program.id], coachId: null });
+    await asPreviousRelease(gymId);
     const legacy = () => database.forGym(gymId, (tx) => tx.insert(classSessions).values({ gymId, templateId: template.id, name: template.name,
       startsAt: new Date('2026-03-01T23:00:00Z'), endsAt: new Date('2026-03-02T00:00:00Z'), createdAt: clock.now() })
       .onConflictDoNothing({ target: [classSessions.gymId, classSessions.templateId, classSessions.startsAt] }).returning());
@@ -277,6 +283,7 @@ describe('moving generated sessions', () => {
     const gymId = uuidv7(); await factory('gyms', gymId, { timezone: zone });
     const program = await factory('programs', gymId);
     const template = await service.createTemplate(context(gymId), { ...fields(), programIds: [program.id], coachId: null });
+    await asPreviousRelease(gymId);
     const [legacy] = await database.forGym(gymId, async (tx) => {
       const rows = await tx.insert(classSessions).values({ gymId, templateId: template.id, name: template.name,
         startsAt: new Date('2026-03-01T23:00:00Z'), endsAt: new Date('2026-03-02T00:00:00Z'), createdAt: clock.now() }).returning();

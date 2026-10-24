@@ -66,6 +66,31 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
   const audit = async (tx: Transaction, context: MutationContext, action: string, id: string, before: unknown, after: unknown) => {
     await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind, ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'schedule.' + action, targetType: 'schedule', targetId: id, before, after, occurredAt: clock.now() });
   };
+  /** Generates a template's missing sessions within the horizon, in the caller's transaction. */
+  async function materializeTemplate(tx: Transaction, gymId: string, id: string, timezone: string, now: Date): Promise<number> {
+    const [row] = await tx.select().from(classTemplates).where(eq(classTemplates.id, id)).for('update'); if (!row) return 0;
+    const template = await templateView(tx, row);
+    const starts = occurrences(template, now, timezone); if (!starts.length) return 0;
+    const from = new Date(now.getTime() - 172_800_000), until = new Date(starts.at(-1)!.getTime() + 172_800_000);
+    // Sessions generated without a key (before it existed) were never moved, so their start is the occurrence.
+    const existing = await tx.select({ startsAt: classSessions.startsAt, occurrenceStartsAt: classSessions.occurrenceStartsAt }).from(classSessions).where(and(eq(classSessions.templateId, id), or(
+      and(gte(classSessions.occurrenceStartsAt, from), lt(classSessions.occurrenceStartsAt, until)),
+      and(isNull(classSessions.occurrenceStartsAt), gte(classSessions.startsAt, from), lt(classSessions.startsAt, until)))));
+    const dates = new Set(existing.map((session) => localDate(session.occurrenceStartsAt ?? session.startsAt, timezone)));
+    let count = 0;
+    for (const startsAt of starts) {
+      // Template edits affect unmaterialized dates; existing sessions retain overrides.
+      if (dates.has(localDate(startsAt, timezone))) continue;
+      // Skip on either unique key: a retry, or a session of this template already moved to this exact start.
+      const [session] = await tx.insert(classSessions).values({ gymId, templateId: id, name: template.name, startsAt, occurrenceStartsAt: startsAt, endsAt: new Date(startsAt.getTime() + template.durationMinutes * 60_000), coachId: template.coachId, capacity: template.capacity, notes: template.notes, kind: template.kind, createdAt: now })
+        .onConflictDoNothing().returning();
+      if (!session) continue;
+      await mappings(tx, 'session', gymId, session.id, template, now);
+      await writeAudit(tx, { gymId, actorKind: 'system', action: 'schedule.session.materialized', targetType: 'class_session', targetId: session.id, after: await sessionView(tx, session), occurredAt: now });
+      count++;
+    }
+    return count;
+  }
   const service = {
     async options(gymId: string) {
       const { timezone } = await settings.get(gymId);
@@ -125,22 +150,27 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
     },
     async createTemplate(context: MutationContext, input: CreateClassTemplateRequest) {
       const value = createClassTemplateRequestSchema.parse(input), { programIds, tagIds, ...fields } = value;
+      const { timezone } = await settings.get(context.gymId);
       return safe(() => scope(context.gymId, async (tx) => {
         await relationships(tx, value);
         const [row] = await tx.insert(classTemplates).values({ ...fields, gymId: context.gymId, createdAt: clock.now() }).returning();
         await mappings(tx, 'template', context.gymId, row!.id, { programIds, tagIds }, clock.now()); const after = await templateView(tx, row!);
-        await audit(tx, context, 'template.created', after.id, null, after); return after;
+        await audit(tx, context, 'template.created', after.id, null, after);
+        // Upcoming sessions exist as soon as the template does, not after the nightly job.
+        await materializeTemplate(tx, context.gymId, after.id, timezone, clock.now()); return after;
       }));
     },
     async updateTemplate(context: MutationContext, id: string, input: UpdateClassTemplateRequest) {
       const value = updateClassTemplateRequestSchema.parse(input), { revision, programIds, tagIds, ...fields } = value;
+      const { timezone } = await settings.get(context.gymId);
       return safe(() => scope(context.gymId, async (tx) => {
         const [row] = await tx.select().from(classTemplates).where(eq(classTemplates.id, id)).for('update'); if (!row) missing();
         const before = await templateView(tx, row); await relationships(tx, value);
         const guard = revisionGuard(classTemplates.revision, revision);
         const afterRow = assertRevised(await tx.update(classTemplates).set({ ...fields, revision: guard.next }).where(and(eq(classTemplates.id, id), guard.matches)).returning());
         await mappings(tx, 'template', context.gymId, id, { programIds, tagIds }, clock.now()); const after = await templateView(tx, afterRow);
-        await audit(tx, context, 'template.updated', id, before, after); return after;
+        await audit(tx, context, 'template.updated', id, before, after);
+        await materializeTemplate(tx, context.gymId, id, timezone, clock.now()); return after;
       }));
     },
     async deleteTemplate(context: MutationContext, id: string, input: ScheduleRevisionRequest) {
@@ -220,30 +250,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
       const now = jobClock.now(); let created = 0;
       const ids = await scope(gymId, (tx) => tx.select({ id: classTemplates.id }).from(classTemplates).orderBy(asc(classTemplates.id)));
       // One template per transaction bounds locks and lets other gyms keep checking in.
-      for (const { id } of ids) created += await scope(gymId, async (tx) => {
-        const [row] = await tx.select().from(classTemplates).where(eq(classTemplates.id, id)).for('update'); if (!row) return 0;
-        const template = await templateView(tx, row);
-        const starts = occurrences(template, now, timezone); if (!starts.length) return 0;
-        const from = new Date(now.getTime() - 172_800_000), until = new Date(starts.at(-1)!.getTime() + 172_800_000);
-        // Sessions generated without a key (before it existed) were never moved, so their start is the occurrence.
-        const existing = await tx.select({ startsAt: classSessions.startsAt, occurrenceStartsAt: classSessions.occurrenceStartsAt }).from(classSessions).where(and(eq(classSessions.templateId, id), or(
-          and(gte(classSessions.occurrenceStartsAt, from), lt(classSessions.occurrenceStartsAt, until)),
-          and(isNull(classSessions.occurrenceStartsAt), gte(classSessions.startsAt, from), lt(classSessions.startsAt, until)))));
-        const dates = new Set(existing.map((session) => localDate(session.occurrenceStartsAt ?? session.startsAt, timezone)));
-        let count = 0;
-        for (const startsAt of starts) {
-          // Template edits affect unmaterialized dates; existing sessions retain overrides.
-          if (dates.has(localDate(startsAt, timezone))) continue;
-          // Skip on either unique key: a retry, or a session of this template already moved to this exact start.
-          const [session] = await tx.insert(classSessions).values({ gymId, templateId: id, name: template.name, startsAt, occurrenceStartsAt: startsAt, endsAt: new Date(startsAt.getTime() + template.durationMinutes * 60_000), coachId: template.coachId, capacity: template.capacity, notes: template.notes, kind: template.kind, createdAt: now })
-            .onConflictDoNothing().returning();
-          if (!session) continue;
-          await mappings(tx, 'session', gymId, session.id, template, now);
-          await writeAudit(tx, { gymId, actorKind: 'system', action: 'schedule.session.materialized', targetType: 'class_session', targetId: session.id, after: await sessionView(tx, session), occurredAt: now });
-          count++;
-        }
-        return count;
-      });
+      for (const { id } of ids) created += await scope(gymId, (tx) => materializeTemplate(tx, gymId, id, timezone, now));
       return created;
     },
   };

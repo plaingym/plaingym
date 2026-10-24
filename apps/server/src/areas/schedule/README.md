@@ -3,7 +3,9 @@
 
 Weekly templates use Sunday = 0 and a local wall-clock start time. The
 `schedule.materialize` job runs at midnight in each gym's IANA timezone and
-creates occurrences for today through the next 55 calendar dates. It skips
+creates occurrences for today through the next 55 calendar dates. Creating or
+updating a template materializes that template in the same transaction, so its
+upcoming sessions exist right away rather than after the next nightly run. It skips
 nonexistent DST times and chooses the earlier instant when a time repeats.
 Duration is elapsed minutes, including when a session crosses a DST transition.
 
