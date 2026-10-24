@@ -51,6 +51,9 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     context.set('context', { ...context.get('context'), clientIp: clientIp(context, options.rateLimit) });
     context.header('X-Request-ID', requestId);
     await next();
+    // No page of the app is meant to be framed (clickjacking defense); a route's own CSP is kept as it is.
+    context.res.headers.set('X-Frame-Options', 'DENY');
+    if (!context.res.headers.has('Content-Security-Policy')) context.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
   });
   app.use('*', requestBodyLimit(options.bodyLimits));
   app.onError(errorHandler);

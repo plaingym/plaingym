@@ -59,6 +59,19 @@ describe('server application composition', () => {
     expect(calls).toEqual(['address', 'gym']);
   });
 
+  it('forbids framing every response, keeping the policy a route sets', async () => {
+    const app = createApp({ resolveGym, session: async (_context, next) => { await next(); }, authorize: () => async (_context, next) => { await next(); } });
+    app.get('/api/plain', (context) => context.json({ ok: true }));
+    app.get('/api/own-policy', (context) => context.body('file', 200, { 'Content-Security-Policy': "default-src 'none'; sandbox" }));
+    for (const path of ['/api/plain', '/api/missing', '/healthz']) {
+      const response = await app.request(path);
+      expect(response.headers.get('x-frame-options')).toBe('DENY');
+      expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+    }
+    const own = await app.request('/api/own-policy');
+    expect(own.headers.get('x-frame-options')).toBe('DENY');
+    expect(own.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+  });
   it('authorizes before input validation and formats validation and malformed JSON errors', async () => {
     const entry = route({ method: 'post', path: '/api/validate', permission: { kind: 'staff', capability: 'members.read' },
       request: { body: { required: true, content: { 'application/json': { schema: z.object({ name: z.string() }) } } } },
