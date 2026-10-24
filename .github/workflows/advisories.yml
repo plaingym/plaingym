@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Dependency advisories
+# Pinned dependencies and the license check don't notice advisories published after a release.
+# This fails on any high or critical advisory in a production dependency; moderate and lower
+# advisories are listed in the run log for review.
+on:
+  schedule:
+    - cron: '41 5 * * 1'
+  pull_request:
+    paths: ['pnpm-lock.yaml', '**/package.json']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - name: List every advisory
+        run: pnpm audit --prod || true
+      - name: Fail on high or critical advisories
+        run: pnpm audit --prod --audit-level=high
