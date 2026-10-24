@@ -8,7 +8,8 @@ const args = process.argv.slice(2);
 try {
   if (args[0] === 'snapshot') {
     if (!process.env.DATABASE_URL) throw new Error('Missing application database URL');
-    await initializeDatabase(process.env.DATABASE_URL);
+    // Snapshot bookkeeping needs one connection per pool (connectionBudget.maintenanceCli).
+    await initializeDatabase(process.env.DATABASE_URL, 1, 1);
   }
   await maintenanceCommand(args);
 } catch {

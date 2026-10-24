@@ -19,6 +19,8 @@ services:
       - -c
       - shared_buffers=128MB
       - -c
+      # 3 reserved for superusers, app pool 8 + auth 2, the app's backup 2, a maintenance CLI snapshot 4,
+      # and 1 spare (connectionBudget in packages/db/src/client.ts; a test checks the sum).
       - max_connections=20
       - -c
       - work_mem=2MB

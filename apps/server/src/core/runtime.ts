@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { dirname } from 'node:path';
 import type { Context } from 'hono';
-import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
+import { connectionBudget, initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { createApp } from './app.js';
@@ -71,6 +71,13 @@ export function publicOrigin(env: NodeJS.ProcessEnv): string | undefined {
   return url.origin;
 }
 
+/** The app pool size: `DATABASE_POOL_MAX`, else the budgeted default that fits the shipped Postgres. */
+export function poolSize(env: NodeJS.ProcessEnv): number {
+  if (env.DATABASE_POOL_MAX === undefined) return connectionBudget.application;
+  const value = Number(env.DATABASE_POOL_MAX);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new Error('DATABASE_POOL_MAX must be an integer from 1 to 100');
+  return value;
+}
 /** Shared setup for the server and the database-backed CLI commands. */
 async function prepare(env: NodeJS.ProcessEnv) {
   const demo = demoBootCheck(env);
@@ -79,7 +86,7 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const config = demo.enabled ? authConfig({ ...env, AUTH_PASSWORD_LOGIN: 'off' }, true) : authConfig(env);
   const install = publicOrigin(env) ?? (demo.enabled ? `https://${demo.domain}` : undefined);
   if (mode === 'single' && !install) throw new Error('Set GYM_HOSTNAME or PUBLIC_ORIGIN');
-  await initializeDatabase(required(env, 'DATABASE_URL'));
+  await initializeDatabase(required(env, 'DATABASE_URL'), poolSize(env));
   const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
   configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp ? smtp.configured(gymId) : Promise.resolve(true) });
   return { key, mode, config, install, smtp };

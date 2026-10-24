@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs and gym email switches in real PostgreSQL.
 import { emailOutbox, gyms, households, householdUsers, jobs, kioskDevices, programs, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
-import { startRuntime, runCommandLine, type Runtime } from './runtime.js';
+import { poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
 import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
@@ -32,6 +32,11 @@ beforeAll(async () => {
 });
 afterAll(async () => { await runtime?.stop(); await rm(directory, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
+it('sizes the app pool from DATABASE_POOL_MAX within the connection budget', () => {
+  expect(poolSize({})).toBe(8);
+  expect(poolSize({ DATABASE_POOL_MAX: '4' })).toBe(4);
+  for (const value of ['0', '-1', '1.5', 'many', '101']) expect(() => poolSize({ DATABASE_POOL_MAX: value })).toThrow('DATABASE_POOL_MAX');
+});
 it('refuses live keys before trying to open a database', async () => {
   await expect(startRuntime({ ...env(), DATABASE_URL: 'invalid', STRIPE_KEY: 'sk_live_forbidden' })).rejects.toThrow(/live/);
 });

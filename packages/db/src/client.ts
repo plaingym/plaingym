@@ -60,13 +60,30 @@ export function scopedDatabase(db: Database) {
   }
   return { forGym, forHousehold, forSystem };
 }
+/**
+ * Connections per use, budgeted against the shipped `max_connections` (`deploy/compose.yaml`) minus the slots
+ * reserved for superusers. Queries beyond a pool's size wait in the pool instead of failing at the server.
+ * A maintenance CLI snapshot (`update.sh` takes one before upgrading) can run beside the app's own backup.
+ */
+export const connectionBudget = {
+  /** The app process's pool; `DATABASE_POOL_MAX` overrides it. */
+  application: 8,
+  /** The authentication adapter's system-context pool. */
+  authentication: 2,
+  /** The app's backup: the advisory-lock session and pg_dump (or pg_restore during a restore). */
+  backup: 2,
+  /** A maintenance CLI snapshot: one app and one system connection, the lock session, and pg_dump. */
+  maintenanceCli: 4,
+} as const;
 let application: ReturnType<typeof scopedDatabase> | undefined;
 let applicationConnection: Connection | undefined;
 let systemConnection: Connection | undefined;
-export async function initializeDatabase(url: string, max = 20) {
+export async function initializeDatabase(url: string, max: number = connectionBudget.application,
+  systemMax: number = connectionBudget.authentication) {
   if (applicationConnection) throw new Error('Database already initialized');
+  for (const size of [max, systemMax]) if (!Number.isSafeInteger(size) || size < 1) throw new Error('Pool sizes must be positive integers');
   const connection = openConnection(url, max);
-  const system = openConnection(url, 2, 'system');
+  const system = openConnection(url, systemMax, 'system');
   try {
     const [role] = await connection.sql`
       select current_user as name, rolsuper, rolbypassrls, rolcreatedb, rolcreaterole,
