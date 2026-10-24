@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
-import { forGym, members, memberRanks, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
+import { and, asc, eq, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
+import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
   invoices, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
@@ -107,6 +107,14 @@ export function createMembersService(options: MembersOptions = {}) {
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
           .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
         await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
+        // An erased member is never billed again: their memberships end with the erasure, in the same transaction.
+        const open = await tx.select({ id: memberships.id, revision: memberships.revision }).from(memberships)
+          .where(and(eq(memberships.memberId, id), ne(memberships.status, 'cancelled'))).for('update');
+        for (const membership of open) {
+          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, revision: membership.revision + 1 })
+            .where(eq(memberships.id, membership.id));
+          await audit(tx, context, 'billing.membership.cancelled', 'membership', membership.id);
+        }
         // Promotion history stays (ranks, dates, IDs); its free-text notes can name or describe the member.
         await tx.update(memberRanks).set({ notes: null }).where(eq(memberRanks.memberId, id));
         // Erasure on request removes signed waivers too: their snapshot, signature image and IP address.

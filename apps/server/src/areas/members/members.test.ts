@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq, inArray } from 'drizzle-orm';
-import { members, memberRanks, waiverSignatures, households, invoices, invoiceLineItems, attendances, householdUsers, signedLinks, auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { members, memberRanks, memberships, waiverSignatures, households, invoices, invoiceLineItems, attendances, householdUsers, signedLinks, auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -211,6 +211,23 @@ describe('members and households', () => {
     await service.anonymizeMember(context(), person.id, { revision: 1 });
     expect(await service.getHousehold(gymA, home.id)).toMatchObject({ name: home.name });
     expect(await service.getMember(gymA, sibling.id)).toMatchObject({ firstName: sibling.firstName });
+  });
+  it('cancels the erased member\'s memberships in the same transaction and leaves the household\'s others billable', async () => {
+    const { home, person } = await routeFixture(gymA);
+    const sibling = await factory('members', gymA, { householdId: home.id });
+    const plan = await factory('plans', gymA);
+    const owned = (memberId: string, status: string, extra = {}) => factory('memberships', gymA, { householdId: home.id, memberId, planId: plan.id, status, ...extra });
+    const active = await owned(person.id, 'active'), trial = await owned(person.id, 'trial', { trialEndsOn: '2026-02-01' });
+    const frozen = await owned(person.id, 'frozen', { resumesOn: '2026-03-01' });
+    const ended = await owned(person.id, 'cancelled', { cancelledAt: new Date('2025-12-01Z') });
+    const siblings = await owned(sibling.id, 'active');
+    await service.anonymizeMember(context(), person.id, { revision: 1 });
+    const rows = new Map((await database.forGym(gymA, (tx) => tx.select().from(memberships))).map((row) => [row.id, row]));
+    for (const id of [active.id, trial.id, frozen.id])
+      expect(rows.get(id)).toMatchObject({ status: 'cancelled', cancelledAt: clock.now(), resumesOn: null, revision: 2 });
+    expect(rows.get(ended.id)).toEqual(ended); expect(rows.get(siblings.id)).toEqual(siblings);
+    const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.membership.cancelled')));
+    expect(audits.map((audit) => audit.targetId).sort()).toEqual([active.id, trial.id, frozen.id].sort());
   });
   it('uses immutable gym-prefixed photo keys, cleans up failed saves, and rejects foreign keys and unsafe images', async () => {
     const { person } = await routeFixture(gymA);
