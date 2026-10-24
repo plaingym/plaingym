@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { and, asc, eq, sql } from 'drizzle-orm';
-import { forGym, forSystem, jobs, uuidv7 } from '@plaingym/db';
+import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, jobs, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js';
@@ -125,7 +125,7 @@ export class PostgresJobs implements Jobs {
     return this.#database.forSystem(async (tx) => {
       // Serialize only the short cap check + claim across processes. A second worker
       // skips this tick rather than waiting with a pooled connection held.
-      const lock = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(1886151021, 2) as acquired`);
+      const lock = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(${advisoryLockNamespace}::int, ${advisoryLocks.jobClaims}::int) as acquired`);
       if (!lock[0]?.acquired) return undefined;
       await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null,
         lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'

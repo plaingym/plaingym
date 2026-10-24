@@ -4,6 +4,7 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { runInTransaction, assertNoTransaction } from '@plaingym/shared/transaction';
+import { advisoryLockNamespace, advisoryLocks } from './locks.js';
 import { householdQueries, type HouseholdScope } from './household.js';
 export type Sql = ReturnType<typeof postgres>;
 export type Database = PostgresJsDatabase;
@@ -107,12 +108,12 @@ export async function withMigrationConnection<T>(url: string, folder: string, af
   try {
     const [role] = await connection.sql`select current_user as name`;
     if (role?.name !== 'maintenance') throw new Error('Migrations require maintenance');
-    await connection.sql`select pg_advisory_lock(1886151021, 1)`;
+    await connection.sql`select pg_advisory_lock(${advisoryLockNamespace}::int, ${advisoryLocks.migrations}::int)`;
     locked = true;
     await migrate(connection.db, { migrationsFolder: folder });
     return await after(connection);
   } finally {
-    try { if (locked) await connection.sql`select pg_advisory_unlock(1886151021, 1)`; }
+    try { if (locked) await connection.sql`select pg_advisory_unlock(${advisoryLockNamespace}::int, ${advisoryLocks.migrations}::int)`; }
     finally { await connection.close(); }
   }
 }

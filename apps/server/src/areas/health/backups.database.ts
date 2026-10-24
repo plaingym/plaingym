@@ -7,7 +7,7 @@ import { sql } from 'drizzle-orm';
 // Reviewed maintenance infrastructure: a dedicated connection holds the backup lock outside transactions.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection } from '@plaingym/db/client';
-import { encryptedFields, uuidv7, writeAudit } from '@plaingym/db';
+import { advisoryLockNamespace, advisoryLocks, encryptedFields, uuidv7, writeAudit } from '@plaingym/db';
 import { migrateDatabase } from '@plaingym/db/migrate';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -24,7 +24,7 @@ export class PostgresMaintenance {
     assertNoTransaction('backup.lock');
     const connection = openConnection(this.url, 1);
     try {
-      await connection.sql`select pg_advisory_lock(1886151021, 2)`;
+      await connection.sql`select pg_advisory_lock(${advisoryLockNamespace}::int, ${advisoryLocks.backups}::int)`;
       return await action();
     } finally { await connection.close(); }
   }

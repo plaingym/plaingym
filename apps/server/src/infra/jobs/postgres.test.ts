@@ -2,7 +2,9 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { jobs, uuidv7 } from '@plaingym/db';
+import { advisoryLockNamespace, advisoryLocks, jobs, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- holds the backup advisory lock exactly as a running snapshot does
+import { openConnection } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
@@ -69,6 +71,16 @@ describe('Postgres enqueue and execution', () => {
     await expect(q.enqueue('x', undefined, options)).rejects.toThrow();
     expect(await rows()).toHaveLength(0);
     expect(() => queue({ perGymConcurrency: 0 })).toThrow();
+  });
+  it('keeps claiming jobs while a backup holds its lock', async () => {
+    const backup = openConnection(database.maintenanceUrl, 1);
+    try {
+      await backup.sql`select pg_advisory_lock(${advisoryLockNamespace}::int, ${advisoryLocks.backups}::int)`;
+      const q = queue(); let ran = false; q.handle('unrelated', async () => { ran = true; });
+      await q.enqueue('unrelated', {}, options);
+      expect(await q.runNext()).toBe(true);
+      expect(ran).toBe(true);
+    } finally { await backup.close(); }
   });
   it('does not claim future jobs or jobs with no local handler', async () => {
     const q = queue(); q.handle('future', async () => {});

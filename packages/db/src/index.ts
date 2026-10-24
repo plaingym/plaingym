@@ -4,6 +4,7 @@ export { forGym, forHousehold, forSystem } from './client.js';
 export type { Transaction } from './client.js';
 export type { HouseholdScope } from './household.js';
 export { uuidv7 } from './id.js';
+export { advisoryLockNamespace, advisoryLocks } from './locks.js';
 export { writeAudit } from './audit.js';
 export { allocateInvoiceNumber } from './invoice-numbers.js';
 export { assertRevised, revisionGuard, RevisionConflictError } from './revision.js';
