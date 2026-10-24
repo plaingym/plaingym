@@ -58,7 +58,8 @@ it('logs an unexpected error by request ID and route, without bound parameters o
   try {
     // A query error carries the submitted values after its first line, as Drizzle's do.
     const failure = new Error('Failed query: insert into members (email) values ($1)\nparams: private@example.test',
-      { cause: Object.assign(new Error('duplicate key value violates unique constraint "members_email_key"'), { code: '23505' }) });
+      { cause: Object.assign(new Error('duplicate key value violates unique constraint "members_email_key"'),
+        { code: '23505', table_name: 'members', constraint_name: 'members_email_key', detail: 'Key (email)=(private@example.test) already exists.' }) });
     const app = createApp({ resolveGym: async (_context, next) => { await next(); }, session: async (_context, next) => { await next(); },
       authorize: () => async (_context, next) => { await next(); } });
     app.get('/l/:token', () => { throw failure; });
@@ -69,8 +70,24 @@ it('logs an unexpected error by request ID and route, without bound parameters o
     expect(lines).toHaveLength(1);
     const entry = JSON.parse(lines[0]!);
     expect(entry).toMatchObject({ level: 'error', event: 'http.unhandled', requestId: response.headers.get('x-request-id'), method: 'GET', route: '/l/:token',
-      error: { name: 'Error', message: 'Failed query: insert into members (email) values ($1)', cause: { code: '23505' } } });
+      error: { name: 'Error', query: 'insert into members (email) values ($1)',
+        cause: { code: '23505', table_name: 'members', constraint_name: 'members_email_key' } } });
+    expect(entry.error.message).toBeUndefined(); expect(entry.error.cause.message).toBeUndefined();
     expect(entry.error.frames.length).toBeGreaterThan(0);
     for (const secret of ['private@example.test', 'secret-link-token', 'signature']) expect(lines[0]).not.toContain(secret);
+  } finally { setLogSink(previous); }
+});
+
+it('never logs what an error message or its cause says, even on the first line', async () => {
+  const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+  try {
+    const failure = new Error('select secret from private_table; password=hidden',
+      { cause: Object.assign(new Error('invalid input syntax for type uuid: "private@example.test"'), { code: '22P02', routine: 'string_to_uuid' }) });
+    const app = createApp({ resolveGym: async (_context, next) => { await next(); }, session: async (_context, next) => { await next(); },
+      authorize: () => async (_context, next) => { await next(); } });
+    app.get('/api/fail', () => { throw failure; });
+    expect((await app.request('/api/fail')).status).toBe(500);
+    expect(JSON.parse(lines[0]!).error).toMatchObject({ name: 'Error', cause: { code: '22P02', routine: 'string_to_uuid' } });
+    for (const secret of ['password', 'hidden', 'private_table', 'private@example.test']) expect(lines.join(' ')).not.toContain(secret);
   } finally { setLogSink(previous); }
 });
