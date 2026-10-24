@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
     "build": "node build.mjs && node src/cli/restore.build.mjs",
-    "start": "node --env-file-if-exists=../../.env dist/server.mjs"
+    "start": "node --env-file-if-exists=../../.env dist/server.mjs",
+    "migrate": "tsx --env-file-if-exists=../../.env src/index.ts migrate",
+    "seed": "tsx --env-file-if-exists=../../.env src/index.ts seed"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1154.0",

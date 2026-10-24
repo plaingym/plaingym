@@ -19,13 +19,13 @@
     "build": "pnpm generate && pnpm --filter @plaingym/web build && pnpm --filter @plaingym/server build",
     "dev": "pnpm generate && pnpm --parallel --filter @plaingym/server --filter @plaingym/web dev",
     "dev:up": "docker compose -f compose.dev.yaml up -d --wait && pnpm db:migrate",
-    "db:migrate": "pnpm --filter @plaingym/server exec tsx --env-file-if-exists=../../.env src/index.ts migrate",
+    "db:migrate": "pnpm --filter @plaingym/server run migrate",
     "dev:down": "docker compose -f compose.dev.yaml down --volumes --remove-orphans",
     "hooks:install": "simple-git-hooks",
     "verify": "node scripts/verify.mjs",
     "prepare": "node apps/server/install-hooks.mjs",
     "generate": "pnpm --filter @plaingym/server exec tsx ../../scripts/generate.mjs",
-    "seed": "pnpm --filter @plaingym/server exec tsx --env-file-if-exists=../../.env src/index.ts seed"
+    "seed": "pnpm --filter @plaingym/server run seed"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
