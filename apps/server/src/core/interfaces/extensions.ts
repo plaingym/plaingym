@@ -15,6 +15,8 @@ export interface CriterionContext {
   readonly rankId: Id;
   readonly promotedAt: IsoInstant | null;
   readonly dateOfBirth: IsoDate | null;
+  /** The gym's IANA timezone, for calendar-date criteria such as birthdays. */
+  readonly timezone: string;
   readonly clock: Clock;
 }
 export interface CriterionProgress { readonly current: number; readonly target: number; readonly met: boolean; }

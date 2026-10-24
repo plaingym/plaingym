@@ -17,6 +17,8 @@ import {
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { notFound, conflict } from '../../core/interfaces/common.js';
 import type { PromotionCriteria } from './criteria.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
+import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 
 const present = <T extends { createdAt: Date }>(row: T) => ({ ...row, createdAt: row.createdAt.toISOString() });
 const presentPromotion = (row: typeof memberRanks.$inferSelect) => promotionSchema.parse({
@@ -40,8 +42,9 @@ async function safe<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
-export function createRanksService(options: { scope?: typeof forGym; clock: Clock; criteria: PromotionCriteria }) {
+export function createRanksService(options: { scope?: typeof forGym; clock: Clock; criteria: PromotionCriteria; settings?: GymSettingsAccessor }) {
   const scope = options.scope ?? forGym, { clock, criteria } = options;
+  const settings = options.settings ?? createGymSettingsAccessor({ scope });
   const base = (gymId: string) => { const now = clock.now(); return { gymId, id: uuidv7(now.getTime()), createdAt: now }; };
   async function audit(tx: Transaction, context: MutationContext, action: string, targetId: string, before: unknown, after: unknown) {
     await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
@@ -221,6 +224,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
     },
     async eligibility(gymId: string, input: unknown, enabledModules: ReadonlySet<string> = new Set()) {
       const query = eligibilityListQuerySchema.parse(input), now = clock.now();
+      const { timezone } = await settings.get(gymId);
       const snapshot = await scope(gymId, async (tx) => {
         const { program, rank } = await references(tx, query.programId, query.rankId);
         const roster = await tx.select({ id: members.id, createdAt: members.createdAt, dateOfBirth: members.dateOfBirth })
@@ -250,7 +254,7 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         const subRank = previous?.promotion.rankId === snapshot.rank.id ? previous.promotion.subRank + 1 : 0;
         const evaluated = await criteria.evaluate({ attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
           programId: snapshot.program.id, rankId: snapshot.rank.id,
-          promotedAt: (previous?.promotion.promotedAt ?? member.createdAt).toISOString(), dateOfBirth: member.dateOfBirth,
+          promotedAt: (previous?.promotion.promotedAt ?? member.createdAt).toISOString(), dateOfBirth: member.dateOfBirth, timezone,
           clock: { now: () => new Date(now) } }, snapshot.rank.criteria, enabledModules);
         const eligible = evaluated.every((item) => item.met);
         if (query.readyOnly && !eligible) continue;

@@ -9,7 +9,7 @@ import { createPromotionCriteria } from './criteria.js';
 const gymId = uuidv7(), memberId = uuidv7(), programId = uuidv7(), rankId = uuidv7();
 const context: CriterionContext = { gymId, memberId, programId, rankId,
   attendanceScope: { kind: 'gym', gymId }, promotedAt: '2026-10-01T12:00:00Z', dateOfBirth: '2010-10-23',
-  clock: new TestClock('2026-10-22T12:00:00Z') };
+  timezone: 'UTC', clock: new TestClock('2026-10-22T12:00:00Z') };
 const criterion = (providerId: string, target: number) => ({ providerId, config: { target } });
 describe('promotion criterion providers', () => {
   it('counts only this gym, member, program and promotion window through AttendanceQueries', async () => {
@@ -35,6 +35,16 @@ describe('promotion criterion providers', () => {
       .toMatchObject([{ current: 22, met: true }, { current: 16, met: true }]);
     expect(await evaluate({ ...context, promotedAt: null, dateOfBirth: null }))
       .toMatchObject([{ current: 0, met: false }, { current: 0, met: false }]);
+  });
+  it('counts birthdays on the gym local date', async () => {
+    const registry = createPromotionCriteria(new FakeAttendanceQueries());
+    const age = async (timezone: string, at: string) =>
+      (await registry.evaluate({ ...context, timezone, clock: new TestClock(at) }, [criterion('minimum-age', 16)], new Set()))[0];
+    // 2026-10-22 16:00 in Vancouver is already the 23rd in UTC, and the 23rd in Tokyo.
+    expect(await age('America/Vancouver', '2026-10-22T23:00:00Z')).toMatchObject({ current: 15, met: false });
+    expect(await age('America/Vancouver', '2026-10-23T07:00:00Z')).toMatchObject({ current: 16, met: true });
+    expect(await age('Asia/Tokyo', '2026-10-22T15:00:00Z')).toMatchObject({ current: 16, met: true });
+    expect(await age('UTC', '2026-10-22T15:00:00Z')).toMatchObject({ current: 15, met: false });
   });
   it('accepts a fake module provider with prototype methods, scoped to enabled modules', async () => {
     const registry = createPromotionCriteria(new FakeAttendanceQueries());

@@ -6,7 +6,7 @@ import { instantSchema, moneySchema } from '@plaingym/shared/contracts';
 import { FakeDashboardWidgetProvider, FakeHealthTileProvider, FakeKioskStandingCheck, FakePromotionCriterionProvider } from './extensions.js';
 import type { HealthTileProvider } from './extensions.js';
 import { clock, gym, otherGym, member, id } from './test-fixtures.js';
-const criterionContext = { attendanceScope: { kind: 'gym' as const, gymId: gym }, gymId: gym, memberId: member, programId: id(10), rankId: id(11), promotedAt: null, dateOfBirth: null, clock: clock() };
+const criterionContext = { attendanceScope: { kind: 'gym' as const, gymId: gym }, gymId: gym, memberId: member, programId: id(10), rankId: id(11), promotedAt: null, dateOfBirth: null, timezone: 'UTC', clock: clock() };
 const staff = () => ({ gymId: gym, roles: ['owner'] as const, clock: clock() });
 // Representative wire shapes: provider payloads retain their injected contract's exact type.
 const mrrSchema = z.strictObject({ id: z.literal('mrr'), titleKey: z.string(),

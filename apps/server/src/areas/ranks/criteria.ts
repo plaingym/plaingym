@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from '@hono/zod-openapi';
 import { AppError, Registry } from '@plaingym/shared';
+import { localDate } from '@plaingym/shared/time';
 import type { PromotionCriterion, CriterionProgress } from '@plaingym/shared/contracts';
 import type { AttendanceQueries } from '../../core/interfaces/attendance.js';
 import type { CriterionContext, PromotionCriterionProvider } from '../../core/interfaces/extensions.js';
@@ -62,7 +63,7 @@ export function createPromotionCriteria(attendance: AttendanceQueries): Promotio
     async evaluate(context, value) {
       const { target } = targetSchema.parse(value);
       if (context.dateOfBirth === null) return { current: 0, target, met: target === 0 };
-      const today = context.clock.now().toISOString().slice(0, 10);
+      const today = localDate(context.clock.now(), context.timezone);
       const current = Math.max(0, Number(today.slice(0, 4)) - Number(context.dateOfBirth.slice(0, 4))
         - (today.slice(5) < context.dateOfBirth.slice(5) ? 1 : 0));
       return progress(current, target);
