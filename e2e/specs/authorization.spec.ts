@@ -59,9 +59,14 @@ test('every route enforces all staff roles, anonymous access and device boundari
     const allowed = permissions.every((permission) => permission.kind === 'public'
       || (permission.kind === 'staff' && all.includes(role as Role) && matrix[permission.capability!].includes(role as Role))
       || (permission.kind === 'kiosk' && role === 'device'));
-    if (role === 'device' && entry.permission.kind !== 'kiosk' && entry.permission.kind !== 'public') expect(response.status, detail).toBe(404);
-    else if (allowed) expect([200, 400, 404, 409], detail).toContain(response.status);
-    else expect(response.status, detail).toBe(role === 'anonymous' || (role === 'device' && entry.permission.kind === 'public') ? 401 : 403);
+    // A device token is accepted on check-in endpoints only: tenant routes, public ones included, answer it with
+    // 404. Public install routes (the content-pack catalog, setup, demo) run before tenancy and answer it like anyone.
+    if (role === 'device' && entry.permission.kind === 'public') expect([200, 400, 404, 409], detail).toContain(response.status);
+    else if (role === 'device' && entry.permission.kind !== 'kiosk') expect(response.status, detail).toBe(404);
+    // A missing ID makes 404 the right answer only where the path has one; on a collection route a 404 is a
+    // missing mount or a wrong denial, never an allowed response.
+    else if (allowed) expect(/\{[^}]+\}/.test(entry.path) ? [200, 400, 404, 409] : [200, 400, 409], detail).toContain(response.status);
+    else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
 });
