@@ -29,7 +29,8 @@ export default defineConfig(({ mode }) => {
     ],
     server: {
       host: '127.0.0.1',
-      proxy: Object.fromEntries(['/healthz', '/api', '/source'].map((path) => [path, `http://127.0.0.1:${env.PORT || '3000'}`])),
+      // Keep the browser's Host: the auth handler only serves the gym's own host (PUBLIC_ORIGIN).
+      proxy: Object.fromEntries(['/healthz', '/api', '/source'].map((path) => [path, { target: `http://127.0.0.1:${env.PORT || '3000'}`, changeOrigin: false }])),
     },
     define: {
       __SOURCE_URL__: JSON.stringify(sourceUrl),

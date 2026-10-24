@@ -1,16 +1,30 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 @import "tailwindcss";
 @source "../";
+/* Design tokens. Components use these names (bg-primary, text-muted-foreground,
+   border-border, ...) rather than raw colors, so every screen reads as one product.
+   Type and spacing use Tailwind's default scale; the conventions are in apps/web/README.md. */
 @theme {
   --color-background: #ffffff;
   --color-foreground: #172524;
   --color-card: #ffffff;
+  --color-card-foreground: #172524;
   --color-primary: #155e55;
   --color-primary-foreground: #ffffff;
+  --color-secondary: #e3eeec;
+  --color-secondary-foreground: #123d38;
   --color-muted: #f1f5f4;
   --color-muted-foreground: #4b5f5c;
+  --color-accent: #e3eeec;
+  --color-accent-foreground: #123d38;
+  --color-destructive: #b42318;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #146c43;
+  --color-warning: #8a5300;
   --color-border: #d6e1df;
   --color-input: #a6b9b5;
   --color-ring: #0f766e;
   --font-sans: ui-sans-serif, system-ui, sans-serif;
+  /* Header height; sticky panels below the header offset by it. */
+  --spacing-header: 3.5rem;
 }

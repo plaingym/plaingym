@@ -128,6 +128,7 @@ Prefer Web-standard APIs (`fetch`, `Request`/`Response`, WebCrypto, Web Streams)
 * Billing and authorization tests run against a real PostgreSQL database (fresh per test file), not database mocks.
 
 ### 5. UI & Component Standards
+* **Mobile-first:** build every screen for a 360 px wide phone first and scale up to tablet and desktop (Tailwind base classes for the phone layout, `sm:` / `md:` / `lg:` for larger screens). No horizontal page scrolling; touch targets at least 44 px; text readable without zooming; wide tables become stacked rows or scroll inside their own container; navigation collapses into a menu. The kiosk is tablet-first but must still work on a phone. Check every screen you build or change at 360 px and on desktop. Conventions and shared components: `apps/web/README.md`.
 * Use `shadcn/ui` components located in `apps/web/src/components/ui`.
 * Never write custom CSS files if Tailwind utility classes can achieve the same result.
 * The check-in kiosk (`/kiosk`) must be tablet/touch-friendly and work smoothly in full-screen browser mode.

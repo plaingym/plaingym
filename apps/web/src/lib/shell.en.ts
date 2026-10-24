@@ -14,5 +14,5 @@ export const shellMessages = {
   error: 'Something went wrong. Please try again.', home: 'Go to sign in',
   skip: 'Skip to content', menu: 'Menu', navigation: 'Gym navigation',
   signOut: 'Sign out', noAccess: 'Your account does not have staff access.',
-  admin: 'Gym administration',
+  admin: 'Gym administration', closeMenu: 'Close menu', account: 'Account', signedInAs: 'Signed in as',
 } as const;

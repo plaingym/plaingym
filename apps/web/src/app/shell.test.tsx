@@ -145,8 +145,32 @@ describe('admin shell', () => {
     expect(menu.getAttribute('aria-expanded')).toBe('false');
     await user.click(menu);
     expect(menu.getAttribute('aria-expanded')).toBe('true');
+    expect(menu.getAttribute('aria-label')).toBe('Close menu');
+    // Opening moves focus into the menu; Escape closes it and returns focus to the button.
+    expect(document.activeElement).toBe(screen.getByRole('link', { name: 'Members' }));
+    await user.keyboard('{Escape}');
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(menu);
+    await user.click(menu);
+    fireEvent.pointerDown(screen.getByText('Child content'));
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    const account = screen.getByRole('button', { name: 'Account' });
+    expect(account.getAttribute('aria-expanded')).toBe('false');
+    await user.click(account);
+    expect(screen.getByText('Coach')).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(signOut).toHaveBeenCalledOnce();
+  });
+  it('closes the phone menu after navigating', async () => {
+    const state = { ...anonymous, session: { userId: 'coach', roles: ['coach'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+    const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) });
+    render(<RouterProvider router={router} />);
+    const user = userEvent.setup();
+    const menu = await screen.findByRole('button', { name: 'Menu' });
+    await user.click(menu);
+    await user.click(screen.getByRole('link', { name: 'Members' }));
+    await waitFor(() => expect(menu.getAttribute('aria-expanded')).toBe('false'));
   });
   it('redirects anonymous admin visits to login', async () => {
     const router = start(services(), '/admin/members');
