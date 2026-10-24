@@ -7,7 +7,27 @@ on:
 permissions:
   contents: read
 jobs:
+  reuse:
+    # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
+    # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.lookup.outputs.passed }}
+    steps:
+      - id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api "repos/${{ github.repository }}/actions/workflows/compliance.yml/runs?head_sha=${{ github.sha }}&status=success" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length' || echo 0)"
+          if [ "$count" -gt 0 ]; then echo passed=true; else echo passed=false; fi >> "$GITHUB_OUTPUT"
   compliance:
+    needs: reuse
+    if: ${{ !cancelled() && needs.reuse.outputs.passed != 'true' }}
     # Each platform audits the optional dependencies actually installed for it.
     strategy:
       fail-fast: false

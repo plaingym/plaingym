@@ -74,8 +74,15 @@ schema namespaces, and shared-contract namespaces remain available. Server runti
 imports are static and cannot use `createRequire`; frontend lazy imports and test
 module reloads remain available.
 
-The pre-push hook runs types, lint and tests. Local `pnpm install` installs or
-refreshes it automatically; `pnpm hooks:install` can reinstall it manually.
+`pnpm verify` runs types, lint, tests and compliance on a clean checkout and
+records the tree it checked (in the shared `.git` directory, keyed by tree, Node
+version and platform). The pre-push hook runs the same verification for the commit
+being pushed, unless that tree is already recorded; deleting a remote branch pushes
+no code and runs nothing. Pushing the same tree again, or a commit you verified
+before, therefore never repeats the suite. On a push to `main`, CI likewise reuses
+a passing run of the same commit (from its integration branch) instead of
+repeating it. Local `pnpm install` installs or refreshes the hook automatically;
+`pnpm hooks:install` can reinstall it manually.
 Dependency lifecycle scripts are allowlisted for esbuild and the reviewed
 simple-git-hooks installer only. Source archives and CI skip the root hook setup.
 

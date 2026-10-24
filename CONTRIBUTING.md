@@ -27,7 +27,7 @@ Before your first pull request can be merged, you sign our [Contributor License 
 
 * Read [`AGENTS.md`](AGENTS.md). It holds the project's engineering rules (authorization, schema, billing safety, vendor modules, discipline-agnostic core) and applies to human and AI contributors alike.
 * Use conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`) with a concise body, in commit messages and PR titles. Don't add AI session trailers or attribution links.
-* Make sure strict type checking, lint, and tests pass: `pnpm check-types`, `pnpm lint`, `pnpm test`.
+* Make sure strict type checking, lint, tests, and compliance pass: `pnpm verify` runs all four once on your committed checkout (the pre-push hook runs it for you and skips a tree it has already verified).
 * Start every new source file with an SPDX header: `// SPDX-License-Identifier: AGPL-3.0-only`.
 * New dependencies must use a license on the allowlist in `AGENTS.md`. The CI license check blocks anything else.
 * Every new member-facing route needs a cross-member access test (member A gets 403/404 on member B's data).

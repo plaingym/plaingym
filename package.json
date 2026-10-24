@@ -19,6 +19,7 @@
     "dev:up": "docker compose -f compose.dev.yaml up -d --wait",
     "dev:down": "docker compose -f compose.dev.yaml down --volumes --remove-orphans",
     "hooks:install": "simple-git-hooks",
+    "verify": "node scripts/verify.mjs",
     "prepare": "node apps/server/install-hooks.mjs",
     "generate": "pnpm --filter @plaingym/server exec tsx ../../scripts/generate.mjs",
     "seed": "pnpm --filter @plaingym/server exec tsx --env-file-if-exists=../../.env src/index.ts seed"
@@ -34,6 +35,6 @@
     "globals": "17.13.0"
   },
   "simple-git-hooks": {
-    "pre-push": "pnpm check-types && pnpm lint && pnpm test"
+    "pre-push": "if [ -f scripts/verify.mjs ]; then node scripts/verify.mjs --pre-push; else pnpm check-types && pnpm lint && pnpm test; fi"
   }
 }
