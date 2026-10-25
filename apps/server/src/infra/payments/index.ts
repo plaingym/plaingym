@@ -16,6 +16,8 @@ export interface ChargeIdentity {
   readonly currency: string;
   readonly customerId: string;
   readonly paymentMethodId?: string;
+  /** The processor's charge for the latest confirmation (Stripe `latest_charge`), once one was attempted. */
+  readonly latestChargeId?: string;
   readonly metadata: PaymentMetadata;
 }
 export type ChargeOutcome =
@@ -166,6 +168,7 @@ export function normalizeChargeOutcome(charge: ProviderChargeState, error?: unkn
     currency: charge.currency,
     customerId: charge.customerId,
     ...(charge.paymentMethodId ? { paymentMethodId: charge.paymentMethodId } : {}),
+    ...(charge.latestChargeId ? { latestChargeId: charge.latestChargeId } : {}),
     metadata: { ...charge.metadata },
   };
   if (charge.status === 'succeeded') return { ...identity, status: 'succeeded' };
@@ -328,6 +331,8 @@ export class FakePayments implements Payments {
         currency: charge.currency,
         customerId: charge.customerId,
         ...(charge.paymentMethodId ? { paymentMethodId: charge.paymentMethodId } : {}),
+        // As at Stripe, a confirmation that reached the card network created a charge.
+        ...(status === 'succeeded' || status === 'failed' ? { latestChargeId: this.#id('ch') } : {}),
         metadata: charge.metadata,
       };
       const next: StoredCharge =
@@ -459,6 +464,7 @@ export class FakePayments implements Payments {
         currency: request.currency!,
         customerId: session.customerId,
         paymentMethodId,
+        latestChargeId: this.#id('ch'),
         metadata: session.metadata,
         status: 'succeeded',
       });

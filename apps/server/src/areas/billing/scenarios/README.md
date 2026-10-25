@@ -41,10 +41,10 @@ use the injected gym-local clock, including the daylight-saving transition.
 
 Contract requests raised for integration:
 
-* `ChargeOutcome` exposes the PaymentIntent ID only; `CardSuccess` requires both
-  `paymentIntentId` and a Stripe Charge ID. Checkout's `chargeId` also currently
-  represents a PaymentIntent. Expose the actual charge identity or explicitly
-  revise the transition contract. Tests must not invent a charge ID from a PI ID.
+* Charge outcomes now carry the processor's `latestChargeId` next to the
+  PaymentIntent ID, which `CardSuccess` needs. Checkout's `chargeId` is still a
+  PaymentIntent ID; read the charge through `findCharge`. Tests must not invent a
+  charge ID from a PaymentIntent ID.
 * Publish controllable runner/retry/reconciliation and inbox/handler entry points
   with observable durable effects. No frozen service signature currently expresses
   scheduled retries or webhook delivery, so those workflows remain todo instead of

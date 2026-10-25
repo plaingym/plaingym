@@ -15,8 +15,10 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
     it.each([['4242', 'succeeded'], ['0341', 'failed'], ['3155', 'succeeded'], ['3184', 'action_required']] as const)(
       'normalizes card %s after the setup fixture', async (card, status) => {
         const { payments, charge } = await create(card), intent = await payments.createCharge(charge);
-        expect(await payments.confirmCharge(intent.id, { idempotencyKey: charge.idempotencyKey + ':confirm' })).toMatchObject({ status });
-        expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status });
+        // A success names the processor's charge as well as the intent; invoice transitions need both.
+        const charged = status === 'succeeded' ? { latestChargeId: expect.stringMatching(/^ch_/) } : {};
+        expect(await payments.confirmCharge(intent.id, { idempotencyKey: charge.idempotencyKey + ':confirm' })).toMatchObject({ status, ...charged });
+        expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status, ...charged });
       });
     it('rejects reuse with changed immutable parameters', async () => {
       const { payments, charge } = await create(); await payments.createCharge(charge);

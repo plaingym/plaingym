@@ -102,6 +102,7 @@ export class StripePayments implements Payments {
   #intent(object: ObjectData, error?: unknown): ChargeOutcome {
     return normalizeChargeOutcome({ id: id(object.id), amount: Number(object.amount), currency: String(object.currency),
       customerId: id(object.customer), ...(object.payment_method ? { paymentMethodId: id(object.payment_method) } : {}),
+      ...(object.latest_charge ? { latestChargeId: id(object.latest_charge) } : {}),
       metadata: this.#metadata(object), status: String(object.status),
       ...(object.last_payment_error ? { last_payment_error: data(object.last_payment_error) as { code?: string } } : {}) }, error);
   }

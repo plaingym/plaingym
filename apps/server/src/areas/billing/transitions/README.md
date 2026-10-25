@@ -14,9 +14,9 @@ attempts ignore generic failure snapshots. `applyChargeOutcome` accepts the
 normalized `Payments` outcome, maps every `action_required` to `requires_action`,
 and ignores pending/unknown outcomes. Consumers must obtain current provider
 state, rather than apply old event snapshots. A success requires the actual
-processor Charge ID as well as the PaymentIntent ID; the current payments
-interface supplies only the latter (an open interface CCR). Do not invent a
-Charge ID in production.
+processor Charge ID as well as the PaymentIntent ID: `applyChargeOutcome` takes
+it from the outcome's `latestChargeId` unless the caller passes one. Never derive
+a Charge ID from a PaymentIntent ID.
 
 Payments, attempt resolution, invoice changes, audits and follow-up instructions
 commit together. Work is written as append-only `billing.transition.effect.*`

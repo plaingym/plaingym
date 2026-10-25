@@ -379,6 +379,16 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await f.read()).invoice.status).toBe('paid');
     expect(await f.effects.publish(f.gymId)).toBe(2);
   });
+  it('records the processor Charge ID from the provider outcome when the caller has none', async () => {
+    const f = await fixture();
+    const outcome = await f.provider.confirmCharge(f.success.paymentIntentId, { idempotencyKey: `${f.invoice.id}:1:confirm` });
+    if (outcome.status !== 'succeeded') throw new Error('Expected a successful charge');
+    const { chargeId: _chargeId, ...identity } = f.success;
+    expect(_chargeId).not.toBe(outcome.latestChargeId);
+    expect((await applyChargeOutcome(f.transitions, f.context, identity, outcome))?.outcome).toBe('applied');
+    expect((await f.read()).payments).toMatchObject([{ paymentIntentId: outcome.id, chargeId: outcome.latestChargeId }]);
+    expect(outcome.latestChargeId).toMatch(/^ch_/);
+  });
   it('sweeps hourly and publishes only effects inside its window', async () => {
     expect(createTransitionJobs().find(job => job.id === 'billing.transitions.publish')?.cron).toBe('11 * * * *');
     const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure);

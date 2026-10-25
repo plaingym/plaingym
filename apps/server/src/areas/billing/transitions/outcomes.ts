@@ -11,8 +11,9 @@ export async function applyChargeOutcome(transitions: InvoiceTransitions, contex
   if (outcome.metadata.gymId !== context.gymId || outcome.metadata.invoiceId !== identity.invoiceId
     || (outcome.metadata.attemptId && outcome.metadata.attemptId !== identity.attemptId)) conflict('Payment outcome identity mismatch');
   if (outcome.status === 'succeeded') {
-    if (!identity.chargeId) conflict('Successful payment requires its processor Charge ID');
-    return transitions.cardSucceeded(context, { ...identity, chargeId: identity.chargeId, paymentIntentId: outcome.id,
+    const chargeId = identity.chargeId ?? outcome.latestChargeId;
+    if (!chargeId) conflict('Successful payment requires its processor Charge ID');
+    return transitions.cardSucceeded(context, { ...identity, chargeId, paymentIntentId: outcome.id,
       amountCents: outcome.amount, currency: outcome.currency.toUpperCase() as 'USD' | 'CAD' });
   }
   if (!identity.attemptId) conflict('Failed payment requires its attempt ID');
