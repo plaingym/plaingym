@@ -1,3 +1,11 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "receiptSubject": "Receipt for invoice {number}",
+  "receiptBody": "Payment of {amount} received for invoice {number}. Thank you.",
+  "failedSubject": "Payment needed for invoice {number}",
+  "failedBody": "The payment for invoice {number} could not be collected. Pay this invoice: {payUrl}\nUpdate your saved card: {updateUrl}",
+  "actionSubject": "Authentication needed for invoice {number}",
+  "actionBody": "Your bank requires authentication for invoice {number}. Complete payment: {payUrl}\nUpdate your saved card: {updateUrl}",
+  "duplicateSubject": "Duplicate payment for invoice {number}",
+  "duplicateBody": "An additional card payment of {amount} arrived for invoice {number}, which was already paid. An automatic refund was queued. Check the refund status in billing."
 }

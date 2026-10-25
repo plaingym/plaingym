@@ -71,9 +71,8 @@ links, and staff notices. Runtime must supply a gym SMTP resolver (or demo
 outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability. Tokens are
 never persisted in effect/audit payloads; failed deliveries revoke their links.
-The English catalog lives here temporarily because the locale/template stubs are
-outside this task's ownership; moving it to `locales/en/billing/transitions.json`
-is a CCR. A supplied translator falls back to these messages for missing keys.
+Messages live in `locales/en/billing/transitions.json`; a supplied translator
+falls back to the English catalog for missing keys.
 SMTP delivery is at least once if a process dies after SMTP accepts a message but
 before the completion audit commits; transport-level exactly-once delivery is not
 provided by Email. Ordinary transition/webhook replay creates one delivery job.

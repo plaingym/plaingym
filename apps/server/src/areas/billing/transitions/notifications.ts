@@ -2,6 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { forGym, households, members, type payments } from '@plaingym/db';
 import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
@@ -19,18 +20,8 @@ export interface TransitionNotifications {
   dunning(notice: TransitionNotice & { actionRequired: boolean }): Promise<void>;
   staffNotice(notice: TransitionNotice): Promise<void>;
 }
-// TODO(CCR): move this catalog to locales/en/billing/transitions.json when its ownership is extended.
-export const transitionMessages = {
-  receiptSubject: 'Receipt for invoice {number}',
-  receiptBody: 'Payment of {amount} received for invoice {number}. Thank you.',
-  failedSubject: 'Payment needed for invoice {number}',
-  failedBody: 'The payment for invoice {number} could not be collected. Pay this invoice: {payUrl}\nUpdate your saved card: {updateUrl}',
-  actionSubject: 'Authentication needed for invoice {number}',
-  actionBody: 'Your bank requires authentication for invoice {number}. Complete payment: {payUrl}\nUpdate your saved card: {updateUrl}',
-  duplicateSubject: 'Duplicate payment for invoice {number}',
-  duplicateBody: 'An additional card payment of {amount} arrived for invoice {number}, which was already paid. An automatic refund was queued. Check the refund status in billing.',
-};
-const defaultTranslator = createTranslator({ 'billing/transitions': transitionMessages });
+// English messages live in locales/en/billing/transitions.json.
+const defaultTranslator = createTranslator(locales.en ?? {});
 const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
 /** Runtime supplies the gym SMTP resolver (or demo outbox), trusted origin and staff recipients. */
