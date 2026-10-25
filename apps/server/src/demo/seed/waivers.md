@@ -20,5 +20,5 @@ Visitor image uploads remain forbidden. The full demo test uses the real S3
 adapter against a loopback protocol fixture, follows the returned PDF link,
 checks the 403 image-upload response and reruns the real seed CLI.
 
-The remaining runtime wiring is `configureWaivers({ uploadsFor: uploads.forGym })`
-in `core/runtime.ts`; the seed composition is already wired.
+`core/runtime.ts` configures the waiver routes with the gym's storage, and the seed
+composition is wired as well.

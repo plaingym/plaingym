@@ -46,8 +46,8 @@ uploads are not yet swept by this area; cleanup should retain referenced images.
 
 ## Composition
 
-Call `configureWaivers({ uploadsFor: uploads.forGym })` from the runtime before
-serving the existing area registrations. The prewired waiver routes and web
+`core/runtime.ts` calls `configureWaivers({ uploadsFor: uploads.forGym, clock })`
+before serving the existing area registrations. The prewired waiver routes and web
 registrations need no barrel changes. Admin templates use `settings.manage`;
 signing/uploads use `members.manage`; reads and PDFs use `members.read`.
 These are staff routes, not portal or signed-link routes.

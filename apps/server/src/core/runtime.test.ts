@@ -114,12 +114,12 @@ it('serves rank and import routes through the runtime composition', async () => 
   const [stored] = await database.forGym(sandbox.gymId, (tx) => tx.select({ pinHash: households.pinHash }).from(households).where(eq(households.id, homeId)));
   expect(stored!.pinHash).toMatch(/^[a-f0-9]{64}$/);
 });
-it('serves staff, dashboard, and go-live routes through the runtime composition', async () => {
+it('serves staff, dashboard, go-live, and waiver routes through the runtime composition', async () => {
   const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
   const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
   const headers = { host: new URL(sandbox.origin).host, cookie };
-  // Each answers 503 until the runtime configures it.
-  for (const path of ['/api/staff/profiles', '/api/dashboard', '/api/settings/go-live'])
+  // Each fails until the runtime configures it.
+  for (const path of ['/api/staff/profiles', '/api/dashboard', '/api/settings/go-live', '/api/waivers/templates', '/api/waivers/signatures'])
     expect((await runtime.app.request(sandbox.origin + path, { headers })).status, path).toBe(200);
   // Demo invitations go to the in-app outbox; printed ones return a link on the gym's own origin.
   const invite = await runtime.app.request(sandbox.origin + '/api/staff/invitations', { method: 'POST',

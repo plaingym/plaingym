@@ -32,6 +32,7 @@ import { configureImportStep } from '../areas/setup/import-step.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
 import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
+import { configureWaivers } from '../areas/waivers/waivers.routes.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
@@ -164,6 +165,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const gymKey = createGymKeyResolver({ key });
   configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
+  // Signature images and rendered waiver PDFs use the gym's file storage.
+  configureWaivers({ uploadsFor: uploads.forGym, clock });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
