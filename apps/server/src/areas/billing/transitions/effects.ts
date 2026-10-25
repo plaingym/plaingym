@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, notInArray } from 'drizzle-orm';
+import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
 import { auditEvents, forGym, invoiceLineItems, paymentAttempts, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -14,6 +14,8 @@ import type { TransitionNotifications } from './notifications.js';
 import { audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal, type TransitionEffect } from './store.js';
 
 export const effectJob = 'billing.transitions.effect';
+/** How far back the publisher looks. A publish normally follows its commit at once, or within the hour. */
+export const publishWindowDays = 30;
 export interface TransitionEffectOptions {
   scope?: typeof forGym;
   clock?: Clock;
@@ -31,9 +33,13 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   async function publish(gymId: string) {
     const gym = await options.settings.get(gymId);
+    // Effects are published right after their transition commits, or by the hourly sweep. Searching a bounded
+    // window keeps this on the (gym, time) audit index instead of scanning the gym's whole audit history.
+    const since = new Date(clock.now().getTime() - publishWindowDays * 86_400_000);
     const rows = await scope(gymId, tx => tx.select().from(auditEvents).where(and(
-      eq(auditEvents.action, effectCreated), notInArray(auditEvents.targetId,
-        tx.select({ id: auditEvents.targetId }).from(auditEvents).where(eq(auditEvents.action, effectPublished)))))
+      eq(auditEvents.action, effectCreated), gte(auditEvents.occurredAt, since), notInArray(auditEvents.targetId,
+        tx.select({ id: auditEvents.targetId }).from(auditEvents)
+          .where(and(eq(auditEvents.action, effectPublished), gte(auditEvents.occurredAt, since))))))
       .orderBy(asc(auditEvents.id)).limit(100));
     for (const row of rows) {
       const work = row.after as TransitionEffect;

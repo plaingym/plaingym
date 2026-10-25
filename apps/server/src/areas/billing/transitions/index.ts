@@ -5,10 +5,16 @@ import type { Clock } from '@plaingym/shared';
 import { idSchema, moneySchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
-import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
+import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
+import { logError } from '../../../core/log.js';
 import { accepted, audit, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal, type InvoiceRow } from './store.js';
 
-export interface TransitionOptions { scope?: typeof forGym; clock?: Clock; }
+export interface TransitionOptions {
+  scope?: typeof forGym;
+  clock?: Clock;
+  /** Runs after every transition commits, outside its transaction: publishes the follow-up work it recorded. */
+  afterCommit?: (gymId: string) => Promise<unknown>;
+}
 type PaymentRow = typeof payments.$inferSelect;
 export function createInvoiceTransitions(options: TransitionOptions = {}): InvoiceTransitions {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -75,7 +81,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     await audit(tx, context, clock, 'billing.attempt.resolved', 'payment_attempt', row.id,
       { status, declineCode }, { status: row.status, declineCode: row.declineCode });
   }
-  return {
+  const service: InvoiceTransitions = {
     cardSucceeded: pay,
     manualPayment: pay,
     async cardFailed(context: MutationContext, request: CardFailure) {
@@ -159,6 +165,19 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         return result('applied', next);
       });
     },
+  };
+  // The transition has committed; a failed publish is recovered by the hourly sweep, never by failing the caller.
+  async function published(context: MutationContext, work: Promise<InvoiceTransitionResult>) {
+    const value = await work;
+    try { await options.afterCommit?.(context.gymId); }
+    catch (error) { logError('billing.transitions.publish_failed', { gymId: context.gymId }, error); }
+    return value;
+  }
+  return {
+    cardSucceeded: (context, request) => published(context, service.cardSucceeded(context, request)),
+    manualPayment: (context, request) => published(context, service.manualPayment(context, request)),
+    cardFailed: (context, request) => published(context, service.cardFailed(context, request)),
+    refund: (context, request) => published(context, service.refund(context, request)),
   };
 }
 function samePayment(row: PaymentRow, request: CardSuccess | ManualPayment, method: string) {

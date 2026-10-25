@@ -6,6 +6,7 @@ import { auditEvents, invoiceLineItems, invoices, members, memberships, paymentA
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
+import { setLogSink } from '../../../core/log.js';
 import { FakePayments, normalizeChargeOutcome } from '../../../infra/payments/index.js';
 import { FakeJobs } from '../../../infra/jobs/index.js';
 import { FakeEmail } from '../../../infra/email/index.js';
@@ -363,5 +364,27 @@ describe('invoice transitions with real PostgreSQL', () => {
     const event = (await f.read()).audits.find(a => a.action === effectCreated)!;
     await expect(f.effects.run(event.targetId, { gymId: stranger.gymId, jobId: uuidv7(), timezone: 'UTC', attempt: 1, clock: f.clock }))
       .rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('publishes effects right after commit, and a failed publish neither fails the transition nor loses work', async () => {
+    const f = await fixture();
+    const published = createInvoiceTransitions({ ...f.options, afterCommit: gymId => f.effects.publish(gymId) });
+    expect((await published.cardFailed(f.context, f.failure)).outcome).toBe('applied');
+    expect(f.jobs.jobs).toHaveLength(4);
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      const failing = createInvoiceTransitions({ ...f.options, afterCommit: async () => { throw new Error('queue unavailable'); } });
+      expect((await failing.cardSucceeded(f.context, f.success)).outcome).toBe('applied');
+    } finally { setLogSink(previous); }
+    expect(lines.map(line => JSON.parse(line).event)).toEqual(['billing.transitions.publish_failed']);
+    expect((await f.read()).invoice.status).toBe('paid');
+    expect(await f.effects.publish(f.gymId)).toBe(2);
+  });
+  it('sweeps hourly and publishes only effects inside its window', async () => {
+    expect(createTransitionJobs().find(job => job.id === 'billing.transitions.publish')?.cron).toBe('11 * * * *');
+    const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure);
+    f.clock.set('2028-04-10T17:00:00Z');
+    expect(await f.effects.publish(f.gymId)).toBe(0);
+    f.clock.set('2028-03-11T17:00:00Z');
+    expect(await f.effects.publish(f.gymId)).toBe(4);
   });
 });

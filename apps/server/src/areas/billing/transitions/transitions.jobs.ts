@@ -8,7 +8,9 @@ let configured: TransitionEffects | undefined;
 export function configureTransitionEffects(effects: TransitionEffects) { configured = effects; }
 export function createTransitionJobs(read: () => TransitionEffects | undefined = () => configured): readonly JobRegistration[] {
   return [
-    { id: 'billing.transitions.publish', cron: '* * * * *', async handler(_payload, context) {
+    // Transitions publish their effects after commit; this sweep only recovers a publish lost to a crash or
+    // queue outage. Hourly, since every scheduled occurrence is a job row for every gym.
+    { id: 'billing.transitions.publish', cron: '11 * * * *', async handler(_payload, context) {
       await read()?.publish(context.gymId);
     } },
     { id: effectJob, async handler(payload, context) {

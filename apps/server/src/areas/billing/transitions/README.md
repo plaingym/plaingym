@@ -29,10 +29,14 @@ changed. Audit retention must preserve these records until that migration exists
 
 `createTransitionEffects` takes Jobs, gym settings, the same transition service,
 MembershipLifecycle, a per-gym Payments resolver, notifications and a retry
-callback. `publish(gymId)` dispatches up to 100 unpublished instructions with
-durable job idempotency keys. Publishing again after a lost queue acknowledgement
-does not duplicate work. `createTransitionJobs` supplies the minute publisher and
-effect handler; both are already included through the existing billing job barrel.
+callback. `publish(gymId)` dispatches up to 100 unpublished instructions from the
+last 30 days with durable job idempotency keys. Publishing again after a lost
+queue acknowledgement does not duplicate work. Pass
+`afterCommit: (gymId) => effects.publish(gymId)` to `createInvoiceTransitions` so
+work is published as soon as its transition commits; a failed publish is logged
+and never fails the committed transition. `createTransitionJobs` supplies an
+hourly recovery sweep and the effect handler; both are already included through
+the existing billing job barrel.
 The production publisher is inert until `configureTransitionEffects(effects)` is
 called. No HTTP route is added by this service.
 
@@ -74,11 +78,12 @@ SMTP delivery is at least once if a process dies after SMTP accepts a message bu
 before the completion audit commits; transport-level exactly-once delivery is not
 provided by Email. Ordinary transition/webhook replay creates one delivery job.
 
-Integration wiring: construct one transition service and inject it into the
-runner, webhook handlers, manual-payment/refund consumers and effect worker;
-inject the real membership lifecycle and per-gym payment/email resolvers; call
-`configureTransitionEffects`. The retry consumer is injected when the charge
-runner is assembled. Runtime composition is integration-owned and is unchanged
-by this task. Tests compose the real membership service, notification helper,
+Runtime wiring: nothing in the runtime calls the transitions yet, so
+`configureTransitionEffects` is not called and the hourly sweep does nothing.
+The first consumer to be wired (charge runner, webhook handlers, manual payments
+and refunds) constructs one transition service with `afterCommit`, injects it
+into every consumer and the effect worker, gives the worker the real membership
+lifecycle, per-gym payment and email resolvers and the runner's retry callback,
+and calls `configureTransitionEffects`. Tests compose the real membership service, notification helper,
 signed-link service and job registrations with FakePayments/FakeJobs/FakeEmail
 against PostgreSQL, plus recorded synthetic Stripe fixtures through StripePayments.
