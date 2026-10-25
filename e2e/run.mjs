@@ -14,7 +14,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const token = () => randomBytes(32).toString('hex');
 const env = { ...process.env, E2E_POSTGRES_PASSWORD: token(), E2E_APP_PASSWORD: token(),
   E2E_MAINTENANCE_PASSWORD: token(), E2E_AUTH_SECRET: token(), E2E_ENCRYPTION_KEY: token(),
-  E2E_SETUP_TOKEN: token(), E2E_IMAGE: process.env.E2E_IMAGE ?? 'plaingym:e2e',
+  E2E_SETUP_TOKEN: token(), E2E_S3_SECRET: token(), E2E_IMAGE: process.env.E2E_IMAGE ?? 'plaingym:e2e',
   E2E_COMPOSE_PROJECT: 'plaingym-e2e-' + randomBytes(6).toString('hex') };
 
 function command(binary, args, options = {}) {

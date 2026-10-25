@@ -35,10 +35,18 @@ services:
       AUTH_PASSWORD_LOGIN: 'on'
       DATABASE_URL: postgres://app:${E2E_APP_PASSWORD}@postgres:5432/plaingym
       MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@postgres:5432/plaingym
+  # S3-compatible storage for demo sandboxes: the seed stores waiver signature images.
+  demo-s3:
+    image: versity/versitygw:v1.0.20@sha256:c2f9b9289d237b85736214dfbef376b7d092b8540e1456d547aaa35dd03ad0b3
+    entrypoint: [sh, -c, 'mkdir -p /data/plaingym && exec versitygw --port :7070 --region auto posix /data']
+    environment:
+      ROOT_ACCESS_KEY: e2e
+      ROOT_SECRET_KEY: ${E2E_S3_SECRET:?required}
   demo:
     image: ${E2E_IMAGE:?required}
     depends_on:
       demo-postgres: {condition: service_healthy}
+      demo-s3: {condition: service_started}
     environment:
       <<: *app-env
       PGHOST: demo-postgres
@@ -49,11 +57,11 @@ services:
       AUTH_PASSWORD_LOGIN: 'off'
       DATABASE_URL: postgres://app:${E2E_APP_PASSWORD}@demo-postgres:5432/plaingym
       MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@demo-postgres:5432/plaingym
-      # Demo writes are disabled before this provider is called.
-      UPLOADS_S3_BUCKET: unused
-      UPLOADS_S3_ENDPOINT: http://127.0.0.1:1
-      UPLOADS_S3_ACCESS_KEY_ID: unused
-      UPLOADS_S3_SECRET_ACCESS_KEY: unused
+      # Visitor uploads stay disabled; only the seed and generated waiver PDFs write here.
+      UPLOADS_S3_BUCKET: plaingym
+      UPLOADS_S3_ENDPOINT: http://demo-s3:7070
+      UPLOADS_S3_ACCESS_KEY_ID: e2e
+      UPLOADS_S3_SECRET_ACCESS_KEY: ${E2E_S3_SECRET}
   caddy:
     image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
     ports: ['127.0.0.1:443:443']

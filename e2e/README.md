@@ -28,7 +28,8 @@ already-built image; make sure it contains the commit being tested. No developer
 the build context. The production build and entrypoint are unchanged.
 
 Each run starts its own Compose project: two fresh PostgreSQL databases, a
-single-gym install, a demo install, and Caddy with local TLS. Credentials are
+single-gym install, a demo install with S3-compatible storage (VersityGW) for its seeded
+files, and Caddy with local TLS. Credentials are
 random for each run. Nothing is exposed except `127.0.0.1:443`. Chromium's resolver
 maps `*.localhost` to loopback; the API helper connects to loopback while keeping
 the hostname, TLS SNI, Origin and cookies. No public DNS or host-file edits are
