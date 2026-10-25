@@ -70,7 +70,9 @@ process high-water RSS on 2026-10-25:
 | Bundle | Latin | 128.2 | 165.3 |
 | Bundle | Mixed | 149.6 | 191.1 |
 
-The test enforces <300 MiB RSS under the 256 MiB V8 old-space cap for all four
-cases, plus source Cyrillic. It asserts that Latin and Cyrillic never load CJK
-or Arabic. These are isolated-renderer measurements, not whole-install
-measurements. Combined API/database/backup workloads require separate checks.
+The test enforces <300 MiB RSS for the shipped esbuild bundle; source runs
+record RSS without a cap because `tsx` compiles in-process. All runs retain the
+256 MiB V8 old-space cap and assert <256 MiB heap. It asserts that Latin and
+Cyrillic never load CJK or Arabic. These are isolated-renderer measurements, not
+whole-install measurements. Combined API/database/backup workloads require
+separate checks.

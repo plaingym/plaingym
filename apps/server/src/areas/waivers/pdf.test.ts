@@ -89,7 +89,7 @@ describe('immutable waiver rendering', () => {
       const records = run.stdout.trim().split('\n').map(line => JSON.parse(line) as { run: string; rssMiB: number; heapMiB: number; pages: number; fonts: string[] });
       expect(records.map(r => r.run)).toEqual(['cold', 'repeated']);
       for (const record of records) {
-        expect(record.pages).toBe(20); expect(record.rssMiB).toBeLessThan(300); expect(record.heapMiB).toBeLessThan(256);
+        expect(record.pages).toBe(20); if (bundle) expect(record.rssMiB).toBeLessThan(300); expect(record.heapMiB).toBeLessThan(256);
         expect(record.fonts).toEqual(mode === 'mixed' ? ['NotoSans-Regular.ttf', 'NotoSansCJKsc-Regular.ttf', 'NotoSansArabic-Regular.ttf'] : ['NotoSans-Regular.ttf']);
       }
       console.info('Waiver memory:', bundle ? 'bundle' : 'source', mode, records);
