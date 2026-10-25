@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { t } from './pipeline.messages.js';
-import { and, eq } from 'drizzle-orm';
-import { forGym, auditEvents, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+import { and, asc, eq } from 'drizzle-orm';
+import { forGym, auditEvents, importRuns, importChunks, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { importPlanRequestSchema, startImportRequestSchema, type ImportUpload, type ImportJob, type ImportIssue,
   type ImportPlanRequest, type Pagination, type StartImportRequest } from '@plaingym/shared/contracts';
@@ -21,6 +21,12 @@ const LIFETIME = 24 * 60 * 60 * 1000;
 /** `timezone` is fixed when the run starts; runs saved before it was recorded read offset-free values as UTC, as their dry runs did. */
 interface StoredRun { job: ImportJob; input: StartImportRequest; actor: MutationContext['actor']; chunkIds: string[]; timezone?: string }
 interface ChunkResult { count: number; issues: ImportIssue[] }
+type Run = typeof importRuns.$inferSelect;
+function runJob(run: Run): ImportJob {
+  return { id: run.id, uploadId: run.input.uploadId, mapper: run.input.mapper, dryRun: run.dryRun, status: run.status,
+    totalRows: run.totalRows, processedRows: run.processedRows, committedRows: run.committedRows, errorCount: run.errorCount,
+    createdAt: run.createdAt.toISOString(), completedAt: run.completedAt?.toISOString() ?? null };
+}
 export interface PipelineOptions { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock; mappers?: MapperRegistry }
 export function createImportPipeline(options: PipelineOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -28,6 +34,9 @@ export function createImportPipeline(options: PipelineOptions) {
   const mappers = options.mappers ?? new MapperRegistry([peopleMapper, matMapper, membershipsMapper]);
   const key = (gymId: string, id: string, file: string) => store.key(gymId, 'runs', id, file);
   const stateKey = (gymId: string, id: string, index: number) => key(gymId, id, `state-${String(index).padStart(8, '0')}.json`);
+  const runWhere = (gymId: string, id: string) => and(eq(importRuns.gymId, gymId), eq(importRuns.id, id));
+  const findRun = (gymId: string, id: string) => scope(gymId, async (tx) =>
+    (await tx.select().from(importRuns).where(runWhere(gymId, id)))[0]);
   async function load(gymId: string, plan: ImportPlanRequest): Promise<CsvDocument> {
     const meta = await store.get<ImportUpload>(gymId, store.key(gymId, 'uploads', plan.uploadId, 'meta.json'));
     if (Date.parse(meta.expiresAt) <= clock.now().getTime()) throw new AppError('not_found', t('imports/pipeline:notFound'));
@@ -58,10 +67,75 @@ export function createImportPipeline(options: PipelineOptions) {
     return result;
   }
   async function get(gymId: string, id: string): Promise<ImportJob> {
+    const run = await findRun(gymId, id);
+    if (run) return runJob(run);
     const files = await (await options.uploadsFor(gymId)).list(key(gymId, id, 'state-'));
     const latest = files.filter((file) => !file.deletedAt).sort((a, b) => b.key.localeCompare(a.key))[0];
     if (!latest) throw new AppError('not_found', t('imports/pipeline:notFound'));
     return store.get<ImportJob>(gymId, latest.key);
+  }
+  async function runStored(saved: Run, attempt: number): Promise<void> {
+    const { gymId, id } = saved;
+    if (saved.completedAt) return;
+    await scope(gymId, (tx) => tx.update(importRuns).set({ status: 'running', updatedAt: clock.now() })
+      .where(and(runWhere(gymId, id), eq(importRuns.status, 'pending'))));
+    try {
+      const document = await load(gymId, saved.input), mapper = mappers.get(saved.input.mapper);
+      const context: MapperContext = { gymId, actor: saved.actor, clock, runId: id, timezone: saved.timezone, sourceRows: document.rows };
+      const chunks = await scope(gymId, (tx) => tx.select().from(importChunks)
+        .where(and(eq(importChunks.gymId, gymId), eq(importChunks.runId, id))).orderBy(asc(importChunks.position)));
+      for (const chunk of chunks) {
+        const source = document.rows.slice(chunk.position * IMPORT_CHUNK_SIZE, (chunk.position + 1) * IMPORT_CHUNK_SIZE);
+        async function commitChunk(failure?: ChunkResult): Promise<void> {
+          await scope(gymId, async (tx) => {
+            // A short run-row lock serializes deliveries and counters. Domain writes, chunk result and
+            // aggregate progress commit together; a restarted worker never depends on storage checkpoints.
+            const [run] = await tx.select().from(importRuns).where(runWhere(gymId, id)).for('update');
+            if (!run || run.completedAt) return;
+            const [current] = await tx.select().from(importChunks)
+              .where(and(eq(importChunks.gymId, gymId), eq(importChunks.id, chunk.id)));
+            if (!current || current.completedAt) return;
+            let result = failure;
+            if (!result) {
+              const planned = policy(await mapper.analyze(tx, source, saved.input, context), saved.input);
+              if (planned.length !== source.length || planned.some((row, index) => row.rowNumber !== source[index]!.rowNumber))
+                throw new Error('Invalid mapper results');
+              const valid = planned.filter((row) => !row.issues.length && (row.action === 'create' || row.action === 'update'));
+              const count = saved.dryRun || !valid.length ? 0 : await mapper.commit(tx, valid, context);
+              if (!Number.isInteger(count) || count < 0 || count > valid.length) throw new Error('Invalid mapper commit count');
+              result = { count, issues: planned.flatMap((row) => row.issues) };
+            }
+            const now = clock.now(), processedRows = run.processedRows + current.rowCount;
+            const errorCount = run.errorCount + result.issues.length, completed = processedRows === run.totalRows;
+            await tx.update(importChunks).set({ committedRows: result.count, issues: result.issues, completedAt: now })
+              .where(and(eq(importChunks.gymId, gymId), eq(importChunks.id, chunk.id)));
+            await tx.update(importRuns).set({ processedRows, committedRows: run.committedRows + result.count, errorCount,
+              updatedAt: now, status: completed ? (errorCount ? 'failed' : 'succeeded') : 'running', completedAt: completed ? now : null })
+              .where(runWhere(gymId, id));
+            if (!saved.dryRun) await writeAudit(tx, { id: chunk.id, gymId, actorKind: context.actor.kind,
+              ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'imports.chunk.committed',
+              targetType: 'import', targetId: id, after: { offset: chunk.position * IMPORT_CHUNK_SIZE, count: result.count,
+                errorCount: result.issues.length }, occurredAt: now });
+          });
+        }
+        try { await commitChunk(); }
+        catch {
+          // The domain transaction rolled back. Safe issues are durable in the same transaction as progress.
+          // If another worker won, commitChunk observes the completed chunk and leaves its result intact.
+          await commitChunk({ count: 0, issues: source.map((row) => ({ rowNumber: row.rowNumber, column: null,
+            code: 'conflict', message: t('imports/pipeline:chunkFailed') })) });
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      // An empty CSV still has a durable terminal state.
+      if (!saved.totalRows) await scope(gymId, (tx) => tx.update(importRuns)
+        .set({ status: 'succeeded', completedAt: clock.now(), updatedAt: clock.now() }).where(runWhere(gymId, id)));
+    } catch (error) {
+      if (attempt >= 5) await scope(gymId, (tx) => tx.update(importRuns)
+        .set({ status: 'failed', completedAt: clock.now(), updatedAt: clock.now() })
+        .where(and(runWhere(gymId, id), eq(importRuns.status, 'running'))));
+      throw error;
+    }
   }
   return {
     async upload(context: MutationContext, file: File): Promise<ImportUpload> {
@@ -95,20 +169,33 @@ export function createImportPipeline(options: PipelineOptions) {
       const job: ImportJob = { id, uploadId: input.uploadId, mapper: input.mapper, dryRun: input.dryRun, status: 'pending',
         totalRows: document.rows.length, processedRows: 0, committedRows: 0, errorCount: 0, createdAt: clock.now().toISOString(), completedAt: null };
       const chunkIds = Array.from({ length: Math.ceil(document.rows.length / IMPORT_CHUNK_SIZE) }, () => uuidv7());
-      await store.put(context.gymId, key(context.gymId, id, 'run.json'), { job, input, actor: context.actor, chunkIds, timezone } satisfies StoredRun);
-      await store.put(context.gymId, stateKey(context.gymId, id, 0), job);
-      if (!input.dryRun) await scope(context.gymId, (tx) => writeAudit(tx, { id, gymId: context.gymId, actorKind: context.actor.kind,
-        ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'imports.started', targetType: 'import', targetId: id,
-        after: { totalRows: job.totalRows }, occurredAt: clock.now() }));
+      await scope(context.gymId, async (tx) => {
+        await tx.insert(importRuns).values({ id, gymId: context.gymId, input, actor: context.actor, timezone, dryRun: input.dryRun,
+          totalRows: job.totalRows, createdAt: new Date(job.createdAt), updatedAt: clock.now() });
+        if (chunkIds.length) await tx.insert(importChunks).values(chunkIds.map((chunkId, position) => ({
+          id: chunkId, gymId: context.gymId, runId: id, position,
+          rowCount: Math.min(IMPORT_CHUNK_SIZE, document.rows.length - position * IMPORT_CHUNK_SIZE), createdAt: clock.now(),
+        })));
+        if (!input.dryRun) await writeAudit(tx, { id, gymId: context.gymId, actorKind: context.actor.kind,
+          ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'imports.started', targetType: 'import', targetId: id,
+          after: { totalRows: job.totalRows }, occurredAt: clock.now() });
+      });
       try { await options.jobs.enqueue(IMPORT_JOB, { id }, { gymId: context.gymId, timezone, idempotencyKey: id, maxAttempts: 5 }); }
       catch (error) {
-        await store.put(context.gymId, stateKey(context.gymId, id, 99999999), { ...job, status: 'failed', completedAt: clock.now().toISOString() });
+        await scope(context.gymId, (tx) => tx.update(importRuns).set({ status: 'failed', completedAt: clock.now(), updatedAt: clock.now() })
+          .where(runWhere(context.gymId, id)));
         throw error;
       }
       return job;
     },
     get,
     async errors(gymId: string, id: string, page: Pagination) {
+      if (await findRun(gymId, id)) {
+        const chunks = await scope(gymId, (tx) => tx.select({ issues: importChunks.issues }).from(importChunks)
+          .where(and(eq(importChunks.gymId, gymId), eq(importChunks.runId, id))).orderBy(asc(importChunks.position)));
+        const issues = chunks.flatMap((chunk) => chunk.issues);
+        return { data: issues.slice(page.offset, page.offset + page.limit), pagination: { ...page, total: issues.length } };
+      }
       await get(gymId, id);
       const files = await (await options.uploadsFor(gymId)).list(key(gymId, id, 'issues-'));
       const issues: ImportIssue[] = [];
@@ -117,6 +204,9 @@ export function createImportPipeline(options: PipelineOptions) {
       return { data: issues.slice(page.offset, page.offset + page.limit), pagination: { ...page, total: issues.length } };
     },
     async run(gymId: string, id: string, attempt = 1): Promise<void> {
+      const run = await findRun(gymId, id);
+      if (run) return runStored(run, attempt);
+      // Runs created by the previous release stay on its protocol while old workers may still write them.
       const saved = await store.get<StoredRun>(gymId, key(gymId, id, 'run.json'));
       if (await store.exists(gymId, stateKey(gymId, id, 99999999))) return;
       const job = { ...saved.job, status: 'running' as ImportJob['status'] };
@@ -128,7 +218,7 @@ export function createImportPipeline(options: PipelineOptions) {
           const source = document.rows.slice(i, i + IMPORT_CHUNK_SIZE);
           let result: ChunkResult;
           const chunkId = saved.chunkIds[i / IMPORT_CHUNK_SIZE]!;
-          // TODO(CCR): audit rows temporarily provide atomic chunk checkpoints.
+          // Compatibility checkpoint for runs created by the previous release.
           // No CSV values are stored here. A chunk checkpoint and its domain writes commit together.
           const checkpoint = async (tx: Transaction, result: ChunkResult) => {
             if (!saved.input.dryRun) await writeAudit(tx, { id: chunkId, gymId, actorKind: context.actor.kind,

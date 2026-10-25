@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { auditEvents, attendances, forGym, memberTags, uuidv7 } from '@plaingym/db';
+import { auditEvents, attendances, forGym, importRuns, importChunks, exportRuns, memberTags, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, canStaff, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -77,19 +77,20 @@ describe('import pipeline using Postgres and immutable uploads', () => {
     const mapper = fixtureMapper({ async commit(tx, rows, context) {
       maxChunk = Math.max(maxChunk, rows.length); return fixtureMapper().commit(tx, rows, context);
     } });
-    class CheckinUploads extends FakeUploads {
-      override async put(key: string, ...args: Parameters<FakeUploads['put']> extends [string, ...infer R] ? R : never) {
-        if (key.endsWith('state-00000002.json')) {
-          // Storage is reached outside the import transaction, before the next chunk begins.
-          const tags = await database.forGym(gymA, (tx) => tx.select({ id: memberTags.id }).from(memberTags));
+    const before = (await database.forGym(gymA, (tx) => tx.select().from(memberTags))).length;
+    const scope: typeof forGym = async (gymId, fn) => {
+      const result = await database.forGym(gymId, fn);
+      if (!checkinAt) {
+        // The first chunk is durably committed and the next transaction has not begun.
+        const tags = await database.forGym(gymA, (tx) => tx.select({ id: memberTags.id }).from(memberTags));
+        if (tags.length - before === IMPORT_CHUNK_SIZE) {
           checkinAt = tags.length;
           await database.forGym(gymA, (tx) => tx.insert(attendances).values({ gymId: gymA, memberId: member.id, source: 'coach', occurredAt: clock.now() }));
         }
-        return super.put(key, ...args);
       }
-    }
-    const storage = new CheckinUploads(gymA, clock), { pipeline, jobs } = services(mapper, async () => storage);
-    const before = (await database.forGym(gymA, (tx) => tx.select().from(memberTags))).length;
+      return result;
+    };
+    const { pipeline, jobs } = services(mapper, uploadsFor, scope);
     const data = await upload(pipeline, 5000), job = await pipeline.start(actor, { ...plan(data.id), dryRun: false }, 'UTC');
     await jobs.runNext();
     expect(await pipeline.get(gymA, job.id)).toMatchObject({ status: 'succeeded', processedRows: 5000, committedRows: 5000, errorCount: 0 });
@@ -97,7 +98,7 @@ describe('import pipeline using Postgres and immutable uploads', () => {
     expect((await database.forGym(gymA, (tx) => tx.select().from(attendances).where(eq(attendances.memberId, member.id))))).toHaveLength(1);
     expect((await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, job.id))))).toHaveLength(51);
   }, 60_000);
-  it('a dry run and preview leave every gym-owned table unchanged', async () => {
+  it('a dry run and preview leave domain data unchanged while recording run progress', async () => {
     const { pipeline, jobs } = services(), data = await upload(pipeline);
     const snapshot = async () => {
       const result: Record<string, unknown> = {};
@@ -110,23 +111,34 @@ describe('import pipeline using Postgres and immutable uploads', () => {
     expect(await pipeline.get(gymA, job.id)).toMatchObject({ status: 'succeeded', committedRows: 0, processedRows: 2 });
     expect(await snapshot()).toEqual(before);
   });
-  it('resumes after a crash between a committed chunk and its storage progress update without duplicates', async () => {
+  it('resumes a committed chunk after losing the commit acknowledgement without duplicates under concurrent delivery', async () => {
+    const active: { runId?: string } = {};
     let crashed = false;
-    class CrashUploads extends FakeUploads {
-      override async put(key: string, ...args: Parameters<FakeUploads['put']> extends [string, ...infer R] ? R : never) {
-        if (!crashed && key.endsWith('state-00000002.json')) { crashed = true; throw new Error('simulated worker crash'); }
-        return super.put(key, ...args);
+    const scope: typeof forGym = async (gymId, fn) => {
+      if (crashed) throw new Error('simulated worker crash');
+      const result = await database.forGym(gymId, fn);
+      if (active.runId) {
+        const [run] = await database.forGym(gymA, (tx) => tx.select().from(importRuns).where(eq(importRuns.id, active.runId!)));
+        if (run?.processedRows === 100) { crashed = true; throw new Error('simulated worker crash'); }
       }
-    }
-    const storage = new CrashUploads(gymA, clock), { pipeline } = services(fixtureMapper(), async () => storage);
+      return result;
+    };
+    const storage = new FakeUploads(gymA, clock), { pipeline } = services(fixtureMapper(), async () => storage, scope);
     const data = await upload(pipeline, 250), job = await pipeline.start(actor, { ...plan(data.id), dryRun: false }, 'UTC');
+    active.runId = job.id;
     await expect(pipeline.run(gymA, job.id)).rejects.toThrow('simulated worker crash');
-    // A new process uses the same DB and objects, with no in-memory run state.
+    // No progress or error files exist. A new process needs only the tables to read progress.
+    expect(await storage.list(`${gymA}/imports/runs/${job.id}/`)).toEqual([]);
+    const offline = services(fixtureMapper(), async () => { throw new Error('storage offline'); }).pipeline;
+    expect(await offline.get(gymA, job.id)).toMatchObject({ status: 'running', processedRows: 100, committedRows: 100 });
+    expect((await offline.errors(gymA, job.id, { limit: 50, offset: 0 })).data).toEqual([]);
     const restarted = services(fixtureMapper(), async () => storage).pipeline;
     await Promise.all([restarted.run(gymA, job.id), restarted.run(gymA, job.id)]);
     expect(await restarted.get(gymA, job.id)).toMatchObject({ status: 'succeeded', processedRows: 250, committedRows: 250 });
     const rows = await database.forGym(gymA, (tx) => tx.select().from(memberTags));
     expect(rows.filter((row) => row.name.startsWith(job.id + ':'))).toHaveLength(250);
+    const chunks = await database.forGym(gymA, (tx) => tx.select().from(importChunks).where(eq(importChunks.runId, job.id)));
+    expect(chunks).toHaveLength(3); expect(chunks.every((chunk) => chunk.completedAt)).toBe(true);
   });
   it('rolls back the entire failed chunk and paginates safe error reports', async () => {
     const { pipeline, jobs } = services(fixtureMapper({ async commit(tx, rows, context) {
@@ -136,8 +148,29 @@ describe('import pipeline using Postgres and immutable uploads', () => {
     expect(await pipeline.get(gymA, job.id)).toMatchObject({ status: 'failed', committedRows: 0, processedRows: 150, errorCount: 150 });
     const report = await pipeline.errors(gymA, job.id, { limit: 50, offset: 100 });
     expect(report.data).toHaveLength(50); expect(report.pagination.total).toBe(150); expect(JSON.stringify(report)).not.toContain('private SQL');
+    const offline = services(fixtureMapper(), async () => { throw new Error('storage offline'); }).pipeline;
+    expect(await offline.errors(gymA, job.id, { limit: 50, offset: 100 })).toEqual(report);
     const rows = await database.forGym(gymA, (tx) => tx.select().from(memberTags));
     expect(rows.some((row) => row.name.startsWith(job.id + ':'))).toBe(false);
+  });
+  it('retries a worker killed during its chunk transaction, without retaining partial rows', async () => {
+    let killed = false;
+    const scope: typeof forGym = (gymId, fn) => {
+      if (killed) return Promise.reject(new Error('worker stopped'));
+      return database.forGym(gymId, fn);
+    };
+    const mapper = fixtureMapper({ async commit(tx, rows, context) {
+      await fixtureMapper().commit(tx, rows, context); killed = true; throw new Error('worker stopped');
+    } });
+    const { pipeline } = services(mapper, uploadsFor, scope);
+    const data = await upload(pipeline, 150), job = await pipeline.start(actor, { ...plan(data.id), dryRun: false }, 'UTC');
+    await expect(pipeline.run(gymA, job.id)).rejects.toThrow('worker stopped');
+    const restarted = services().pipeline;
+    expect(await restarted.get(gymA, job.id)).toMatchObject({ processedRows: 0, committedRows: 0, errorCount: 0 });
+    await restarted.run(gymA, job.id);
+    expect(await restarted.get(gymA, job.id)).toMatchObject({ status: 'succeeded', processedRows: 150, committedRows: 150 });
+    const rows = await database.forGym(gymA, (tx) => tx.select().from(memberTags));
+    expect(rows.filter((row) => row.name.startsWith(job.id + ':'))).toHaveLength(150);
   });
   it.each(['skip', 'update', 'error'] as const)('applies duplicate policy %s in preview and execution', async (duplicatePolicy) => {
     const duplicateId = uuidv7();
@@ -170,6 +203,10 @@ describe('full CSV exports', () => {
     const result = await exports.get(gymA, job.id);
     expect(exportJobSchema.safeParse(result).success).toBe(true); expect(result.status).toBe('succeeded');
     const storage = await uploadsFor(gymA), archive = await storage.get(`${gymA}/imports/exports/${job.id}/export.zip`);
+    expect((await storage.list(`${gymA}/imports/exports/${job.id}/`)).map((info) => info.key)).toEqual([`${gymA}/imports/exports/${job.id}/export.zip`]);
+    const offline = services(fixtureMapper(), async () => { throw new Error('storage offline'); }).exports;
+    expect(await offline.get(gymA, job.id)).toEqual(result);
+    expect(await database.forGym(gymA, (tx) => tx.select().from(exportRuns).where(eq(exportRuns.id, job.id)))).toHaveLength(1);
     const raw = await new Response(archive).text();
     for (const dataset of exportDatasets) expect(raw).toContain(dataset + '.csv');
     expect(raw).toContain("'=FORMULA");

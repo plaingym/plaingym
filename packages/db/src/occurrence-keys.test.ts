@@ -23,9 +23,10 @@ it('upgrades class sessions in place, keying generated sessions by their start a
   const maintenance = openConnection(database.maintenanceUrl, 1);
   try {
     // Recreate the previous schema only inside this disposable test database, retaining its rows.
+    await maintenance.sql`drop table import_chunks, import_runs, export_runs`;
     await maintenance.sql`alter table class_sessions drop constraint class_sessions_occurrence_key`;
     await maintenance.sql`alter table class_sessions drop column occurrence_starts_at`;
-    await maintenance.sql`delete from drizzle.__drizzle_migrations where created_at = (select max(created_at) from drizzle.__drizzle_migrations)`;
+    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 2)`;
   } finally { await maintenance.close(); }
 
   await migrateDatabase(database.maintenanceUrl);

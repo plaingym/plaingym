@@ -6,14 +6,16 @@ import { exportDatasets } from '@plaingym/shared/contracts';
 import { exportCatalog } from './export.catalog.js';
 const root = new URL('../../../../../', import.meta.url);
 describe('export schema coverage and secret exclusions', () => {
-  it('covers every non-system schema table and every contract dataset exactly once', () => {
+  it('covers every domain table and every contract dataset exactly once', () => {
     const schemaRoot = new URL('packages/db/src/schema/', root);
     const systemSource = readFileSync(new URL('packages/db/system-tables.mjs', root), 'utf8');
     const systemNames = new Set([...systemSource.matchAll(/"name": "([^"]+)"/g)].map((match) => match[1]));
     const tableNames = readdirSync(schemaRoot).filter((file) => file.endsWith('.ts')).flatMap((file) =>
       [...readFileSync(new URL(file, schemaRoot), 'utf8').matchAll(/pgTable\(['"]([^'"]+)['"]/g)].map((match) => match[1]!));
     expect(tableNames.length).toBeGreaterThan(exportDatasets.length);
-    expect(tableNames.filter((name) => !systemNames.has(name)).sort()).toEqual(Object.keys(exportCatalog).sort());
+    // Operational run state has its own retention deadline; it is not a portable gym dataset.
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs']);
+    expect(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort()).toEqual(Object.keys(exportCatalog).sort());
     expect(Object.keys(exportCatalog).sort()).toEqual([...exportDatasets].sort());
   });
   it('never selects an encrypted field, credential hash, opaque audit payload or email body', () => {

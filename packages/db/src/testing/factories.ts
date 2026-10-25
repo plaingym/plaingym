@@ -57,6 +57,10 @@ const defaults = {
   stripeEvents: () => ({ eventId: 'evt_' + uuidv7(), type: 'test.event', payload: {} }),
   auditEvents: () => ({ actorKind: 'system', action: 'test.created', targetType: 'test', targetId: uuidv7(), occurredAt: date }),
   emailOutbox: () => ({ recipient: 'test@example.test', subject: 'Test', html: '<p>Test</p>', text: 'Test', sentAt: date }),
+  importRuns: () => ({ input: { uploadId: uuidv7(), mapper: 'people', mapping: [{ sourceColumn: 'Name', targetField: 'firstName' }],
+    duplicatePolicy: 'error', dryRun: false }, actor: { kind: 'system' }, timezone: 'UTC', dryRun: false, totalRows: 1, updatedAt: date }),
+  importChunks: () => ({ position: 0, rowCount: 1 }),
+  exportRuns: () => ({ datasets: [], updatedAt: date }),
 } satisfies { [K in TableName]: () => Partial<Insert<K>> };
 export const factoryTableNames = Object.keys(defaults) as TableName[];
 const bySqlName = new Map<string, TableName>(Object.entries(schema).map(([key, table]) => [getTableName(table), key as TableName]));

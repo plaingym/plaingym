@@ -42,6 +42,22 @@ describe('factories and gym isolation', () => {
     expect(await database.forGym(gymA, (tx) => tx.update(schema.members).set({ firstName: 'Forged' }).where(eq(schema.members.id, member.id)).returning())).toEqual([]);
     expect(await database.forGym(gymA, (tx) => tx.delete(schema.members).where(eq(schema.members.id, member.id)).returning())).toEqual([]);
   });
+  it('keeps import chunks in their run gym, deduplicates positions, and requires explicit chunk retention', async () => {
+    const run = await factory('importRuns', gymB);
+    await expect(factory('importChunks', gymA, { runId: run.id })).rejects.toMatchObject({ cause: { code: '23503' } });
+    await factory('importChunks', gymB, { runId: run.id });
+    await expect(factory('importChunks', gymB, { runId: run.id })).rejects.toMatchObject({ cause: { code: '23505' } });
+    expect(await database.forGym(gymA, (tx) => tx.update(schema.importRuns).set({ status: 'failed' })
+      .where(eq(schema.importRuns.id, run.id)).returning())).toEqual([]);
+    expect(await database.forGym(gymA, (tx) => tx.delete(schema.importRuns).where(eq(schema.importRuns.id, run.id)).returning())).toEqual([]);
+    await expect(database.forGym(gymB, (tx) => tx.delete(schema.importRuns).where(eq(schema.importRuns.id, run.id))))
+      .rejects.toMatchObject({ cause: { code: '23503' } });
+    await database.forGym(gymB, async (tx) => {
+      await tx.delete(schema.importChunks).where(eq(schema.importChunks.runId, run.id));
+      await tx.delete(schema.importRuns).where(eq(schema.importRuns.id, run.id));
+    });
+    expect(await database.forGym(gymB, (tx) => tx.select().from(schema.importChunks).where(eq(schema.importChunks.runId, run.id)))).toEqual([]);
+  });
   it('keeps household/member composite references within one household', async () => {
     const first = await factory('members', gymA);
     const second = await factory('households', gymA);

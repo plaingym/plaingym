@@ -42,15 +42,17 @@ describe('import and export contracts', () => {
     expectTypeOf<ImportJob['status']>().toExtend<typeof jobs.$inferSelect.status>();
     expectTypeOf<ImportJob['id']>().toEqualTypeOf<typeof jobs.$inferSelect.id>();
   });
-  it('covers every locked gym-owned table and excludes the exhaustive system-table inventory', () => {
+  it('covers every domain table and excludes system tables and retained run state', () => {
     // Compare the export manifest with the authoritative schema declarations.
     const schemaDirectory = new URL('../../../db/src/schema/', import.meta.url);
     const tableNames = readdirSync(schemaDirectory).filter((file) => file.endsWith('.ts')).flatMap((file) =>
       [...readFileSync(new URL(file, schemaDirectory), 'utf8').matchAll(/pgTable\('([^']+)'/g)].map((match) => match[1]!),
     );
     const systemNames = new Set(systemTables.map((table) => table.name));
-    expect([...exportDatasets].sort()).toEqual(tableNames.filter((name) => !systemNames.has(name)).sort());
-    for (const name of systemNames) expect(exportDatasetSchema.safeParse(name).success).toBe(false);
+    // Progress, retained issues, and signed archive links are operational state, not portable gym datasets.
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs']);
+    expect([...exportDatasets].sort()).toEqual(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort());
+    for (const name of [...systemNames, ...runState]) expect(exportDatasetSchema.safeParse(name).success).toBe(false);
   });
   it('requires all datasets once and gives a download only to a completed export', () => {
     const pending = { id, status: 'pending', datasets: [...exportDatasets], createdAt: now,

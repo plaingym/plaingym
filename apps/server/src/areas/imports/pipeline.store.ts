@@ -4,7 +4,7 @@ import { AppError } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { Uploads } from '../../infra/storage/index.js';
 export type UploadsFor = (gymId: string) => Promise<Uploads>;
-/** TODO(CCR): dedicated run/chunk tables should replace manifests and the import audit checkpoints. */
+/** Immutable source uploads and compatibility reads/writes for runs created by older releases. */
 export class PipelineStore {
   constructor(readonly uploadsFor: UploadsFor) {}
   key(gymId: string, kind: string, id: string, file: string): string { return `${gymId}/imports/${kind}/${id}/${file}`; }
