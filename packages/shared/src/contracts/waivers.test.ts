@@ -6,6 +6,7 @@ import {
   waiverContracts, waiverTemplateSchema, waiverCreateTemplateRequestSchema,
   waiverPublishTemplateRequestSchema, waiverRetireTemplateRequestSchema, waiverSignRequestSchema,
   waiverSignatureSchema, waiverSigningSnapshotSchema, waiverTemplateListQuerySchema, waiverSignatureListResponseSchema,
+  waiverUploadRequestSchema,
   type WaiverTemplate, type WaiverSignature,
 } from './index.js';
 
@@ -67,11 +68,17 @@ describe('waiver version and signature contracts', () => {
     for (const [name, contract] of Object.entries(waiverContracts)) {
       expect(isRoutePermission(contract.permission)).toBe(true);
       for (const role of staffRoles) {
-        const allowed = managers.has(name) ? ['owner', 'admin'].includes(role) : name === 'sign' ? role !== 'coach' : true;
+        const allowed = managers.has(name) ? ['owner', 'admin'].includes(role) : ['sign', 'uploadSignature'].includes(name) ? role !== 'coach' : true;
         expect(canStaff([role], contract.permission.capability), `${name}: ${role}`).toBe(allowed);
       }
       expect(canStaff([], contract.permission.capability)).toBe(false);
     }
+  });
+  it('validates signature uploads and optional local commitment dates', () => {
+    expect(waiverUploadRequestSchema.parse({ memberId: id, pngBase64: 'YWJj' }).memberId).toBe(id);
+    expect(waiverUploadRequestSchema.safeParse({ memberId: id, pngBase64: 'data:image/png;base64,YWJj' }).success).toBe(false);
+    expect(waiverSignRequestSchema.parse({ ...signing, commitmentEndsOn: '2027-02-28' }).commitmentEndsOn).toBe('2027-02-28');
+    expect(waiverSignRequestSchema.safeParse({ ...signing, commitmentEndsOn: '2027-02-30' }).success).toBe(false);
   });
   it('matches the locked database projections after timestamp serialization', () => {
     type TemplateRow = typeof waiverTemplates.$inferSelect;

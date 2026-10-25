@@ -21,8 +21,7 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
       credentials: { accessKeyId: env.UPLOADS_S3_ACCESS_KEY_ID, secretAccessKey: env.UPLOADS_S3_SECRET_ACCESS_KEY },
     } : {}),
   }) : undefined;
-  return {
-    async forGym(gymId: string): Promise<Uploads> {
+  async function unwrapped(gymId: string): Promise<Uploads> {
       idSchema.parse(gymId);
       let uploads: Uploads;
       if (client && bucket) uploads = new S3Uploads({ client, bucket, gymId });
@@ -31,8 +30,15 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
         uploads = new LocalUploads({ root: env.UPLOADS_DIR, gymId, signingKey: key,
           downloadUrl: new URL(uploadDownloadPath, await origin(gymId)).href });
       }
+      return uploads;
+  }
+  return {
+    async forGym(gymId: string): Promise<Uploads> {
+      const uploads = await unwrapped(gymId);
       return env.DEMO_MODE === 'true' ? demoUploads(uploads) : uploads;
     },
+    /** Trusted seed composition only; never inject into request-facing features. */
+    forSeed: unwrapped,
     /** Restore writes a snapshot's files back into the bucket; directory installs swap the uploads tree instead. */
     restoreStore: client && bucket ? async (gymId: string) => new S3Uploads({ client, bucket, gymId: idSchema.parse(gymId) }) : undefined,
     async removeGym(gymId: string): Promise<void> {

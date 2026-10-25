@@ -13,14 +13,16 @@ import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
 import { encryptSecret, parseEncryptionKey } from './secrets.js';
+import { s3Server } from '../infra/storage/s3-server.test-helper.js';
 
 const database = useTestDatabase();
 const origin = 'https://demo.example.test';
 let runtime: Runtime, directory: string;
+let storage: Awaited<ReturnType<typeof s3Server>>;
 let sandbox: { gymId: string; origin: string; kioskToken: string };
 const env = () => ({ DATABASE_URL: database.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32), AUTH_SECRET: 'runtime-secret-with-at-least-32-characters',
   TENANCY: 'multi', DEMO_MODE: 'true', DEMO_DOMAIN: 'demo.example.test', PUBLIC_ORIGIN: origin, NODE_ENV: 'production',
-  UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: 'http://127.0.0.1:1',
+  UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: storage.endpoint,
   UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
   // Invalid SMTP would fail immediately if demo startup constructed a resolver.
   SMTP_HOST: 'never-connect.invalid', SMTP_SECURITY: 'invalid',
@@ -30,9 +32,10 @@ const post = (path: string, body: unknown, base = origin, extra: Record<string, 
 });
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'runtime-demo-'));
+  storage = await s3Server();
   runtime = await startRuntime(env());
 });
-afterAll(async () => { await runtime?.stop(); await rm(directory, { recursive: true, force: true }); vi.restoreAllMocks(); });
+afterAll(async () => { await runtime?.stop(); await storage?.close(); await rm(directory, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
 it('sizes the app pool from DATABASE_POOL_MAX within the connection budget', () => {
   expect(poolSize({})).toBe(8);
@@ -165,9 +168,14 @@ it('stores a signed Stripe event for its gym and queues its dispatch through the
 it('registers seed and webhook replay in the real CLI', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
   await runtime.stop();
-  expect(await runCommandLine(['seed', sandbox.gymId], io, env())).toBe(0);
-  expect(io.stdout).toHaveBeenCalledWith('Seed complete');
-  expect(await runCommandLine(['replay', '--gym', sandbox.gymId, 'evt_runtime'], io, env())).toBe(0);
-  expect(io.stdout).toHaveBeenCalledWith(expect.stringMatching(/^Webhook replay queued: /));
-  expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(2);
+  // A real CLI process reads these settings from its environment as well as
+  // passing them into runtime preparation. Seed storage now uses them too.
+  for (const [name, value] of Object.entries(env())) vi.stubEnv(name, value);
+  try {
+    expect(await runCommandLine(['seed', sandbox.gymId], io, env())).toBe(0);
+    expect(io.stdout).toHaveBeenCalledWith('Seed complete');
+    expect(await runCommandLine(['replay', '--gym', sandbox.gymId, 'evt_runtime'], io, env())).toBe(0);
+    expect(io.stdout).toHaveBeenCalledWith(expect.stringMatching(/^Webhook replay queued: /));
+    expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(2);
+  } finally { vi.unstubAllEnvs(); }
 });

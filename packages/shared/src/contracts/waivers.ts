@@ -42,6 +42,7 @@ export const waiverSigningSnapshotSchema = z.strictObject({
   template: waiverTemplateSchema.pick({ id: true, name: true, kind: true, version: true, body: true }),
   member: z.strictObject({ id: idSchema, firstName: z.string().min(1), lastName: z.string().min(1), dateOfBirth: dateSchema.nullable() }),
   signer: waiverSignerSchema, signedAt: instantSchema,
+  commitmentEndsOn: dateSchema.nullable().optional(),
   signatureImage: z.strictObject({ key: z.string().min(1), hash: waiverDigestSchema }),
 });
 // The service checks age from the scoped member record and requires a guardian
@@ -51,6 +52,7 @@ export const waiverSignRequestSchema = z.strictObject({
   memberId: idSchema, templateId: idSchema, templateVersion: waiverTemplateVersionSchema,
   signer: waiverSignerSchema, signatureImageKey: z.string().min(1),
   signatureImageHash: waiverDigestSchema, consent: z.literal(true),
+  commitmentEndsOn: dateSchema.nullable().optional(),
 });
 export const waiverSignatureSchema = z.strictObject({
   id: idSchema, memberId: idSchema, templateId: idSchema,
@@ -67,8 +69,17 @@ export const waiverPdfResponseSchema = z.strictObject({
   data: z.strictObject({ url: z.url({ protocol: /^https?$/ }), expiresAt: instantSchema }),
 });
 
+export const waiverUploadRequestSchema = z.strictObject({
+  memberId: idSchema,
+  pngBase64: z.string().min(1).max(350_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+export const waiverUploadResponseSchema = z.strictObject({ data: z.strictObject({
+  signatureImageKey: z.string().min(1), signatureImageHash: waiverDigestSchema,
+}) });
+
 
 export const waiverContracts = {
+  uploadSignature: { method: 'post', path: '/api/waivers/signature-images', permission: { kind: 'staff', capability: 'members.manage' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
   listTemplates: { method: 'get', path: '/api/waivers/templates', permission: { kind: 'staff', capability: 'members.read' }, query: waiverTemplateListQuerySchema, response: waiverTemplateListResponseSchema },
   createTemplate: { method: 'post', path: '/api/waivers/templates', permission: { kind: 'staff', capability: 'settings.manage' }, body: waiverCreateTemplateRequestSchema, response: waiverTemplateResponseSchema },
   publishTemplate: { method: 'post', path: '/api/waivers/templates/{templateId}/versions', permission: { kind: 'staff', capability: 'settings.manage' }, params: waiverTemplateParamsSchema, body: waiverPublishTemplateRequestSchema, response: waiverTemplateResponseSchema },

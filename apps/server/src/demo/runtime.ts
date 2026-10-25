@@ -37,7 +37,7 @@ export async function createDemoRuntime(options: {
   const authentication = authConfig({ ...env, AUTH_PASSWORD_LOGIN: 'off' }, true);
   const identities = createDemoIdentities({ config, authConfig: authentication, clock: defaultClock });
   const deletion = createGymDeleteService({ clock: defaultClock, removeUploads: options.removeUploads });
-  const service = createDemoService({ config, key, clock: defaultClock, deletion, identities, seed: runSeeds });
+  const service = createDemoService({ config, key, clock: defaultClock, deletion, identities, seed: context => runSeeds(context, undefined, { env }) });
   configureDemoRoutes(service, { installOrigin: options.installOrigin, ...(options.clientIp ? { clientIp: options.clientIp } : {}) });
   configureGymDeletion(deletion);
   const t = createTranslator(locales.en ?? {});

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../lib/registries.js';
+import { WaiversTab } from './screens.js';
 
 export const registration: WebRegistration = {
   adminNav: [
@@ -7,7 +8,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.waivers',
       labelKey: 'waivers/waivers:title',
       permission: { kind: 'staff', capability: 'members.manage' },
-      enabled: false,
+      enabled: true,
       href: '/admin/waivers',
     },
   ],
@@ -16,8 +17,8 @@ export const registration: WebRegistration = {
       id: 'memberTabs.waivers',
       labelKey: 'waivers/waivers:title',
       permission: { kind: 'staff', capability: 'members.read' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: WaiversTab,
     },
   ],
 };
