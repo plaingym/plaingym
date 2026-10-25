@@ -12,6 +12,14 @@ import { createWebRegistries } from '@plaingym/shared';
 import { AdminShell, visibleAdminNavigation } from './admin-shell.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
 
+// The real root shell discovers capabilities independently of the injected
+// authentication services. Give these ordinary-gym fixtures a successful mode.
+vi.hoisted(() => {
+  const fetcher = globalThis.fetch;
+  vi.stubGlobal('fetch', (...args: Parameters<typeof fetch>) => args[0] === '/api/demo'
+    ? Promise.resolve(Response.json({ data: { mode: 'disabled' } })) : fetcher(...args));
+});
+
 const anonymous: ShellBootstrap = {
   gym: { id: 'gym-a', name: 'Training Academy', enabledModules: [] }, session: null,
   login: { password: true, magicLink: true },

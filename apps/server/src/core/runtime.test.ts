@@ -59,11 +59,16 @@ it('reprints the setup link without requiring a database connection', async () =
   expect(await runCommandLine(['setup-link'], io, { PUBLIC_ORIGIN: origin })).toBe(1);
 });
 it('serves the demo entry and creates sandboxes before tenant resolution, with setup disabled', async () => {
-  expect((await runtime.app.request(origin + '/api/demo')).status).toBe(200);
+  const discovery = await runtime.app.request(origin + '/api/demo');
+  expect(discovery.status).toBe(200);
+  expect(await discovery.json()).toEqual({ data: { mode: 'entry' } });
   const response = await post('/api/demo/sandboxes', {});
   expect(response.status).toBe(201);
   sandbox = (await response.json()).data;
-  expect((await runtime.app.request(sandbox.origin + '/api/demo', { headers: { host: new URL(sandbox.origin).host } })).status).toBe(404);
+  const status = await runtime.app.request(sandbox.origin + '/api/demo', { headers: { host: new URL(sandbox.origin).host } });
+  expect(status.status).toBe(200);
+  expect(await status.json()).toEqual({ data: { mode: 'sandbox', expiresAt: expect.any(String) } });
+  expect((await runtime.app.request('https://unknown.example.test/api/demo')).status).toBe(404);
   expect((await post('/api/setup/owner', {}, sandbox.origin)).status).toBe(404);
   expect((await runtime.app.request(sandbox.origin + '/api/setup', { headers: { host: new URL(sandbox.origin).host } })).status).toBe(404);
   expect((await database.forGym(sandbox.gymId, (tx) => tx.select().from(programs))).length).toBeGreaterThan(0);

@@ -3,6 +3,7 @@ import { forSystem, gyms } from '@plaingym/db';
 import { createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { clock as defaultClock } from '../core/clock.js';
+import { tenancyMode } from '../core/tenancy.js';
 import type { ClientIpOptions } from '../core/rate-limit.js';
 import { decryptSecret, parseEncryptionKey } from '../core/secrets.js';
 import { authConfig } from '../infra/auth/config.js';
@@ -29,7 +30,7 @@ export async function createDemoRuntime(options: {
   env?: NodeJS.ProcessEnv; installOrigin: string; clientIp?: ClientIpOptions; removeUploads(gymId: string): Promise<void>;
 }) {
   const env = options.env ?? process.env, config = demoBootCheck(env);
-  if (!config.enabled) { disableDemoRoutes(); return undefined; }
+  if (!config.enabled) { disableDemoRoutes(options.installOrigin, tenancyMode(env.TENANCY ?? 'single')); return undefined; }
   const key = parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? '');
   await verifyDemoStoredKeys(key);
   // Delivery is configured by the outbox, so this mode requires no SMTP host.

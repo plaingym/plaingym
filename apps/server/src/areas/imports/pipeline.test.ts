@@ -198,6 +198,13 @@ describe('full CSV exports', () => {
   });
 });
 describe('HTTP permissions and gym isolation', () => {
+  it.each(['application/json', 'text/plain', 'application/x-www-form-urlencoded'])('rejects %s uploads with the usual 400 response', async (contentType) => {
+    const response = await server('owner').request('/api/imports/uploads', {
+      method: 'POST', headers: { 'content-type': contentType }, body: JSON.stringify({ file: 'people.csv' }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual(errorResponse(new AppError('invalid_request', 'The request must contain a multipart file upload.'), 'imports-test'));
+  });
   it.each(staffRoles)('allows only owner/admin on all seven routes (%s)', async (role) => {
     const app = server(role), allowed = role === 'owner' || role === 'admin';
     const form = new FormData(); form.set('file', new File(['First Name\nTest'], 'test.csv'));

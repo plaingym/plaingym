@@ -12,7 +12,11 @@ export const outboxParams = z.object({ id: z.uuid() });
 export const demoLoginRequest = z.strictObject({ role: demoRoleSchema });
 export const demoLoginResponse = z.strictObject({ data: z.strictObject({ redirect: z.enum(['/admin', '/portal']) }) });
 export const outboxMessageResponse = z.strictObject({ data: outboxMessage });
-export const demoEntryResponse = z.strictObject({ data: z.strictObject({ enabled: z.literal(true) }) });
+export const demoEntryResponse = z.strictObject({ data: z.discriminatedUnion('mode', [
+  z.strictObject({ mode: z.literal('disabled') }),
+  z.strictObject({ mode: z.literal('entry') }),
+  z.strictObject({ mode: z.literal('sandbox'), expiresAt: z.iso.datetime() }),
+]) });
 export const demoContracts = {
   entry: { method: 'get', path: '/api/demo', permission: { kind: 'public' }, response: demoEntryResponse },
   create: { method: 'post', path: '/api/demo/sandboxes', permission: { kind: 'public' }, successStatus: 201, response: sandboxResponse },

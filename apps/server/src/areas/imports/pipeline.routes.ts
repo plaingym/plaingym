@@ -20,7 +20,11 @@ const uploadBody = importsContracts.upload.body.extend({
 export function createPipelineRoutes(service: ImportPipeline): RouteRegistration[] {
   const { upload, preview, start, get, errors } = importsContracts;
   return [
-    route({ ...upload, request: { body: { required: true, content: { 'multipart/form-data': { schema: uploadBody } } } },
+    route({ ...upload, middleware: [async (c, next) => {
+      if (c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'multipart/form-data')
+        throw new AppError('invalid_request', 'The request must contain a multipart file upload.');
+      await next();
+    }], request: { body: { required: true, content: { 'multipart/form-data': { schema: uploadBody } } } },
       responses: { 200: { description: 'CSV upload', content: { 'application/json': { schema: upload.response } } } } },
     async (c) => c.json({ data: await service.upload(importActor(c.get('context')), c.req.valid('form').file) }, 200)),
     route({ ...preview, request: { query: preview.query, body: { required: true, content: { 'application/json': { schema: preview.body } } } },

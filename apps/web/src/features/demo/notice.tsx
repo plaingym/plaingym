@@ -1,28 +1,60 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { demoEntryResponse } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { createJsonTransport } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 const request = createJsonTransport();
-const DemoSandboxContext = createContext(false);
-export const useDemoSandbox = () => useContext(DemoSandboxContext);
+type DemoDiscovery = ReturnType<typeof demoEntryResponse.parse>['data'];
+const DemoContext = createContext<DemoDiscovery | undefined>(undefined);
+export const useDemoSandbox = () => useContext(DemoContext)?.mode === 'sandbox';
 export function DemoShell({ children }: { children: ReactNode }) {
-  const status = useDemoStatus();
-  return <DemoSandboxContext.Provider value={Boolean(status.data)}><DemoNotice /><DemoEntry />{children}</DemoSandboxContext.Provider>;
-}
-export function useDemoStatus() {
-  return useQuery({ queryKey: ['demo', 'status'], queryFn: ({ signal }) =>
-    request<{ data: { expiresAt: string } }>('/api/demo/status', undefined, signal), retry: false });
+  const discovery = useQuery({
+    queryKey: ['demo', 'discovery', window.location.origin],
+    // Let an in-flight discovery finish across a StrictMode/root remount, so it
+    // can be shared by the next observer rather than cancelled and requested twice.
+    queryFn: async () => demoEntryResponse.parse(await request('/api/demo')),
+    staleTime: Infinity, gcTime: Infinity, retry: false,
+    refetchOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+  });
+  const mode = discovery.data?.data;
+  const expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
+  const [expiredAt, setExpiredAt] = useState<string>();
+  const { refetch } = discovery;
+  useEffect(() => {
+    if (!expires) return;
+    let checked = false;
+    const checkExpiry = () => {
+      if (checked || Date.parse(expires) > Date.now()) return;
+      checked = true;
+      setExpiredAt(expires);
+      void refetch();
+    };
+    const timer = window.setTimeout(checkExpiry, Math.max(0, Date.parse(expires) - Date.now()));
+    // Background tabs can throttle timers; recheck expiry when they return.
+    window.addEventListener('focus', checkExpiry);
+    window.addEventListener('online', checkExpiry);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', checkExpiry);
+      window.removeEventListener('online', checkExpiry);
+    };
+  }, [expires, refetch]);
+  const expired = expires !== undefined && (expiredAt === expires || Date.parse(expires) <= Date.now());
+  return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}>
+    {(discovery.isError || expired) && <div className="p-4" role="alert">
+      <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
+    </div>}
+    <DemoNotice /><DemoEntry />{children}
+  </DemoContext.Provider>;
 }
 export function DemoEntry() {
-  const entry = useQuery({ queryKey: ['demo', 'entry'], queryFn: ({ signal }) =>
-    request<{ data: { enabled: true } }>('/api/demo', undefined, signal), retry: false });
-  return entry.data?.data.enabled ? <div className="p-6"><TryDemoButton /></div> : null;
+  return useContext(DemoContext)?.mode === 'entry' ? <div className="p-6"><TryDemoButton /></div> : null;
 }
-/** Mount in the shell; a normal gym's 404 leaves no demo controls visible. */
+/** The root shares discovery with every demo control and sandbox consumer. */
 export function DemoNotice() {
-  const status = useDemoStatus(), expires = status.data?.data.expiresAt;
+  const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
   const [error, setError] = useState(false);
   if (!expires) return null;
   async function login(role: 'owner' | 'coach' | 'student') {

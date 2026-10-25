@@ -36,6 +36,10 @@ needed. Browser TLS verification is disabled only for the local Caddy certificat
 The runner removes its containers, volumes and fixture cache after the tests,
 including on a test failure.
 
+The `fresh-setup` Playwright project checks the real wizard at 360 px and desktop
+before owner creation. The `members-mat` project depends on it, so test-file order
+cannot cause the install fixture to initialize first.
+
 The single-gym fixture goes through the setup API with the installer's setup
 token, installs a content pack and accepts printed staff invitations. It uses
 real password sessions for owner, admin, coach and front desk, plus a registered

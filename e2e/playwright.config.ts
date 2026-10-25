@@ -3,8 +3,10 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './specs',
-  testMatch: process.env.E2E_VM_CONFIG ? '**/vm.spec.ts' : '**/*.spec.ts',
-  testIgnore: process.env.E2E_VM_CONFIG ? [] : ['**/vm.spec.ts'],
+  projects: process.env.E2E_VM_CONFIG ? [{ name: 'vm', testMatch: '**/vm.spec.ts' }] : [
+    { name: 'fresh-setup', testMatch: '**/fresh-setup.spec.ts' },
+    { name: 'members-mat', testMatch: '**/*.spec.ts', testIgnore: ['**/vm.spec.ts', '**/fresh-setup.spec.ts'], dependencies: ['fresh-setup'] },
+  ],
   fullyParallel: false,
   workers: 1,
   retries: 0,
