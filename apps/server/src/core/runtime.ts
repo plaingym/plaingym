@@ -59,6 +59,12 @@ import { createExportService } from '../areas/imports/export.js';
 import { createExportRoutes } from '../areas/imports/export.routes.js';
 import { createExportJobs } from '../areas/imports/export.jobs.js';
 import { createImportRetention, createImportRetentionJobs } from '../areas/imports/retention.js';
+import { createPaymentsResolver } from '../areas/setup/stripe-step.js';
+import { createWebhookInbox } from '../areas/billing/webhooks/inbox.js';
+import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.routes.js';
+import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
+import { configureWebhookReplay } from '../cli/replay.js';
+import type { Jobs } from '../infra/jobs/index.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
@@ -93,6 +99,12 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
   configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp ? smtp.configured(gymId) : Promise.resolve(true) });
   return { key, mode, config, install, smtp };
+}
+/** Stripe events for each gym, verified by that gym's own Stripe settings; the CLI replays through the same inbox. */
+function webhookInbox(key: Buffer, jobs: Jobs) {
+  const inbox = createWebhookInbox({ paymentsFor: createPaymentsResolver({ key, clock }), jobs, gymSettings: createGymSettingsAccessor(), clock });
+  configureWebhookReplay(inbox);
+  return inbox;
 }
 
 export interface Runtime {
@@ -156,6 +168,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
   configureImportStep({ imports: importPipeline, clock });
+  // The inbox route and its dispatcher job; a gym without Stripe settings answers 503.
+  const inbox = webhookInbox(key, queue);
+  configureWebhookInboxRoutes(inbox);
+  configureWebhookInboxJobs(inbox);
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
@@ -222,7 +238,7 @@ export async function runCommandLine(args: readonly string[], io: CommandIO, env
   if (args[0] === 'setup-link') return createSetupLinkCommand(env).run(args.slice(1), io);
   // Migrating needs only the maintenance role, as in the container entrypoint.
   if (args[0] === 'migrate') return runCli(args, io);
-  try { await prepare(env); }
+  try { webhookInbox((await prepare(env)).key, new PostgresJobs({ clock })); }
   catch (error) { io.stderr(error instanceof Error ? error.message : 'Startup failed'); return 1; }
   try { return await runCli(args, io); } finally { await closeDatabase(); }
 }

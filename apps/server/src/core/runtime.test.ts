@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createHmac } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs and gym email switches in real PostgreSQL.
-import { emailOutbox, gyms, households, householdUsers, jobs, kioskDevices, programs, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs, stored webhooks and gym settings in real PostgreSQL.
+import { emailOutbox, gyms, households, householdUsers, jobs, kioskDevices, programs, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
 import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
+import { encryptSecret, parseEncryptionKey } from './secrets.js';
 
 const database = useTestDatabase();
 const origin = 'https://demo.example.test';
@@ -137,9 +139,35 @@ it('keeps install sandbox creation behind the restore gate', async () => {
   try { expect((await post('/api/demo/sandboxes', {})).status).toBe(503); }
   finally { await atomicJson(join(directory, 'restore-state.json'), { phase: 'complete' }); }
 });
-it('registers seed in the real CLI', async () => {
+it('stores a signed Stripe event for its gym and queues its dispatch through the runtime composition', async () => {
+  const delivery = (id: string) => {
+    const body = JSON.stringify({ id, object: 'event', type: 'payment_intent.succeeded', livemode: false,
+      data: { object: { id: 'pi_runtime', object: 'payment_intent', metadata: { gym_id: sandbox.gymId } } } });
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = `t=${timestamp},v1=${createHmac('sha256', 'whsec_runtime').update(`${timestamp}.${body}`).digest('hex')}`;
+    // A browser cookie on the request must not trip the origin check that guards cookie-authenticated writes.
+    return runtime.app.request(sandbox.origin + '/webhooks/stripe', { method: 'POST', body,
+      headers: { host: new URL(sandbox.origin).host, 'stripe-signature': signature, 'content-type': 'application/json', cookie: 'unrelated=1' } });
+  };
+  // The sandbox has no Stripe settings yet.
+  const unconfigured = await delivery('evt_runtime');
+  expect(unconfigured.status).toBe(503);
+  expect(await unconfigured.text()).toContain('Payments are not set up for this gym');
+  const config = { apiKey: 'rk_test_runtime', endpointId: 'we_runtime', webhookSecret: 'whsec_runtime', mode: 'test' };
+  await database.forGym(sandbox.gymId, (tx) => tx.update(gyms).set({
+    stripeConfig: encryptSecret(parseEncryptionKey('ab'.repeat(32)), 'stripe_config', JSON.stringify(config)) }).where(eq(gyms.id, sandbox.gymId)));
+  expect((await delivery('evt_runtime')).status).toBe(200);
+  expect((await delivery('evt_runtime')).status).toBe(200);
+  const stored = await database.forGym(sandbox.gymId, (tx) => tx.select().from(stripeEvents));
+  expect(stored).toMatchObject([{ eventId: 'evt_runtime', gymId: sandbox.gymId, type: 'payment_intent.succeeded' }]);
+  expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(1);
+});
+it('registers seed and webhook replay in the real CLI', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
   await runtime.stop();
   expect(await runCommandLine(['seed', sandbox.gymId], io, env())).toBe(0);
   expect(io.stdout).toHaveBeenCalledWith('Seed complete');
+  expect(await runCommandLine(['replay', '--gym', sandbox.gymId, 'evt_runtime'], io, env())).toBe(0);
+  expect(io.stdout).toHaveBeenCalledWith(expect.stringMatching(/^Webhook replay queued: /));
+  expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(2);
 });

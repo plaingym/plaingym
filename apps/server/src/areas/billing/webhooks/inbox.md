@@ -8,6 +8,14 @@ clock, and scoped database helpers. A resolver returning `null` produces a 503 w
 area registries. The `createWebhookInboxRoutes` / `createWebhookInboxJobs` factories
 are available for isolated composition.
 
+The runtime (`core/runtime.ts`) builds one inbox from `createPaymentsResolver`, the
+Postgres queue and the gym settings accessor, configures the route and dispatcher
+job, and configures replay for the command line. The route is served on each gym's
+own host, after tenant resolution. No billing handlers are registered yet, so
+stored events are marked processed without side effects. The install-level demo
+route below is not mounted: sandboxes have no Stripe settings, so their deliveries
+answer 503.
+
 The public POST `/webhooks/stripe` reads the body once as bytes and delegates all
 signature and ownership verification to `payments.parseWebhook`. Only
 `PaymentWebhookError('webhook_invalid')` becomes 400. An event not belonging to the
