@@ -112,7 +112,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           if (!await recorded(tx, 'billing.invoice.dunning_started', invoice.id)) {
             await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { attemptId: row.id });
             // Effects convert these local calendar days to instants using the gym timezone.
-            for (const day of [3, 7, 14]) await effect(tx, context, clock,
+            for (const day of [3, 7]) await effect(tx, context, clock,
               { kind: 'retry', invoiceId: invoice.id, retryDay: day });
           }
         }

@@ -106,7 +106,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(f.email.messages).toHaveLength(1); expect(f.email.messages[0]!.subject).toContain('Receipt');
     expect(rows.audits.filter(row => row.action === 'billing.membership.activated')).toHaveLength(1);
   });
-  it('replays a failure once, emits signed dunning links, and schedules days 3/7/14 across DST', async () => {
+  it('replays a failure once, emits signed dunning links, and schedules days 3/7 across DST', async () => {
     const f = await fixture();
     expect((await f.transitions.cardFailed(f.context, f.failure)).invoice.status).toBe('past_due');
     expect((await f.transitions.cardFailed(f.context, f.failure)).outcome).toBe('ignored');
@@ -114,7 +114,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.drain();
     expect(f.email.messages).toHaveLength(1); expect(stateEvents(await f.read())).toHaveLength(1);
     const retryJobs = f.jobs.jobs.filter(job => job.runAt > f.clock.now());
-    expect(retryJobs.map(job => job.runAt.toISOString())).toEqual(['2028-03-13T16:00:00.000Z', '2028-03-17T16:00:00.000Z', '2028-03-24T16:00:00.000Z']);
+    expect(retryJobs.map(job => job.runAt.toISOString())).toEqual(['2028-03-13T16:00:00.000Z', '2028-03-17T16:00:00.000Z']);
     const tokens = [...f.email.messages[0]!.text.matchAll(/https:\/\/gym.example.invalid\/l\/([\w-]+)/g)].map(m => m[1]!);
     expect(tokens).toHaveLength(2);
     const links = createSignedLinksService(f.options);
@@ -132,7 +132,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await Promise.all([failed.transitions.cardFailed(failed.context, failed.failure),
       failed.transitions.cardFailed(failed.context, failed.failure)])).map(r => r.outcome).sort()).toEqual(['applied', 'ignored']);
     expect(stateEvents(await failed.read())).toHaveLength(1);
-    expect((await failed.read()).audits.filter(a => a.action === effectCreated)).toHaveLength(4);
+    expect((await failed.read()).audits.filter(a => a.action === effectCreated)).toHaveLength(3);
   });
   it.each([
     { code: 'authentication_required' },
@@ -173,7 +173,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' })).outcome).toBe('ignored');
     const after = await f.read();
     expect(after.invoice).toEqual(before.invoice);
-    expect(after.audits.filter(a => a.action === effectCreated)).toHaveLength(4);
+    expect(after.audits.filter(a => a.action === effectCreated)).toHaveLength(3);
     expect(after.attempts.find(a => a.id === f.attempt.id)!.status).toBe('requires_action');
     await f.drain(); expect(f.email.messages).toEqual([]);
   });
@@ -325,10 +325,17 @@ describe('invoice transitions with real PostgreSQL', () => {
     const work = (await f.read()).audits.filter(a => a.action === effectCompleted);
     expect(work).toHaveLength(2);
   });
-  it('retries only on days 3/7/14 and leaves an unpaid invoice past_due after the last retry', async () => {
+  it('retries only on days 3/7, emails every failed attempt, and leaves an unpaid invoice past_due after the last retry', async () => {
     const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure); await f.drain();
-    for (const day of ['13', '17', '24']) { f.clock.set(`2028-03-${day}T16:00:00Z`); await f.drain(); }
-    expect(f.retry).toHaveBeenCalledTimes(3); expect((await f.read()).invoice.status).toBe('past_due');
+    for (const [attemptNumber, day] of [[2, '13'], [3, '17']] as const) {
+      f.clock.set(`2028-03-${day}T16:00:00Z`); await f.drain();
+      const paymentIntentId = `pi_retry_${attemptNumber}`;
+      const attempt = await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber, paymentIntentId });
+      await f.transitions.cardFailed(f.context, { ...f.failure, attemptId: attempt.id, paymentIntentId }); await f.drain();
+    }
+    f.clock.set('2028-03-24T16:00:00Z'); await f.drain();
+    expect(f.retry).toHaveBeenCalledTimes(2); expect((await f.read()).invoice.status).toBe('past_due');
+    expect(f.email.messages.filter(message => message.subject.startsWith('Payment needed'))).toHaveLength(3);
   });
   it.each(['frozen', 'cancelled'])('does not resume or revive a %s membership', async status => {
     const f = await fixture();
@@ -369,7 +376,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     const f = await fixture();
     const published = createInvoiceTransitions({ ...f.options, afterCommit: gymId => f.effects.publish(gymId) });
     expect((await published.cardFailed(f.context, f.failure)).outcome).toBe('applied');
-    expect(f.jobs.jobs).toHaveLength(4);
+    expect(f.jobs.jobs).toHaveLength(3);
     const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
     try {
       const failing = createInvoiceTransitions({ ...f.options, afterCommit: async () => { throw new Error('queue unavailable'); } });
@@ -395,6 +402,6 @@ describe('invoice transitions with real PostgreSQL', () => {
     f.clock.set('2028-04-10T17:00:00Z');
     expect(await f.effects.publish(f.gymId)).toBe(0);
     f.clock.set('2028-03-11T17:00:00Z');
-    expect(await f.effects.publish(f.gymId)).toBe(4);
+    expect(await f.effects.publish(f.gymId)).toBe(3);
   });
 });

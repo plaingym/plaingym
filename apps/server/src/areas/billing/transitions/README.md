@@ -46,9 +46,10 @@ cancelled memberships; a sign-up fee alone does not end a trial. Revision checks
 protect concurrent membership edits. Replaying a partially completed activation
 does not activate a membership twice.
 
-Cycle failures enqueue dunning and one schedule per invoice: days 3, 7 and 14 at
+Cycle failures enqueue dunning and one schedule per invoice: days 3 and 7 at
 09:00 in the gym's timezone, including DST changes. Repeated failures never reset
-that schedule. Dunning for an older attempt is suppressed. Retry jobs recheck
+that schedule. Each failure of the latest attempt sends one dunning email, so a
+member gets up to three. Dunning for an older attempt is suppressed. Retry jobs recheck
 unpaid state and billing enablement; the injected runner must also check these
 when reserving the attempt and expire/reconcile open Checkout sessions before
 charging. Paid invoices suppress queued dunning/retries. The last unpaid retry

@@ -34,8 +34,8 @@ through their real entry points when C1.5, C2.1 and C2.2 merge. Merely removing
 
 The workflow todos are acceptance specifications where no current callable contract
 can drive the whole path. Their titles record concrete outcomes and dependency IDs.
-In particular, the retry timeline is March 1 → March 4 → March 8 → March 15 (days
-3, 7, 14 measured from the original failure), with checks just before each deadline,
+In particular, the retry timeline is March 1 → March 4 → March 8 (days 3 and 7
+measured from the original failure), with checks just before each deadline,
 at the deadline, on replay, and after final exhaustion/success. The runner should
 use the injected gym-local clock, including the daylight-saving transition.
 

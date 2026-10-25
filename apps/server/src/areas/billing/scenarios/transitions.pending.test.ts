@@ -144,12 +144,12 @@ describe('pending billing workflows: dependency and acceptance recorded in each 
   it.todo('[C1.5/C2.2/C2.1] deliver a signed success webhook before confirm returns; replay event ID and runner result leave one durable payment, receipt and activation');
   it.todo('[C1.5/C2.2/C2.1] deliver success after the runner result; replay through the durable inbox leaves one payment and one receipt');
   it.todo('[C1.5/C2.2] reject invalid signatures before inbox insertion; repeated event ID enqueues one processor job');
-  it.todo('[C1.6/C2.1] decline on March 1 schedules retries on March 4, 8 and 15 (days 3, 7, 14), never 3/7/14 days after the previous retry');
+  it.todo('[C1.6/C2.1] decline on March 1 schedules retries on March 4 and 8 (days 3 and 7), never 3/7 days after the previous retry');
   it.todo('[C1.6/C2.1] advance clock just before and at each retry deadline: no early attempt, exactly one due attempt, replay creates none');
-  it.todo('[C1.6/C2.1] all three retries decline: invoice remains past_due after day 14 and no fourth retry or duplicate dunning mail is scheduled');
-  it.todo('[C1.6/C2.1] day-7 retry succeeds: day-14 job is a no-op, invoice stays paid and late failure never reopens it');
+  it.todo('[C1.6/C2.1] both retries decline: each failure sends one dunning mail, invoice remains past_due after day 7 and no third retry is scheduled');
+  it.todo('[C1.6/C2.1] day-3 retry succeeds: day-7 job is a no-op, invoice stays paid and late failure never reopens it');
   it.todo('[C1.6/C2.1/C2.4] authentication_required (thrown, last_payment_error or requires_action) sends a signed action link and follows the same retry calendar');
-  it.todo('[C2.1/C2.3] one-off decline or SCA stays open; clock advances beyond day 14 without a retry job or dunning email');
+  it.todo('[C2.1/C2.3] one-off decline or SCA stays open; clock advances beyond day 7 without a retry job or dunning email');
   it.todo('[C2.1/C2.4] expire an open pay session before retry; already-completed or uncertain expiration reconciles instead of charging again');
   it.todo('[C2.1/C2.4] pay link succeeds during the retry window, cancels later charging and produces one receipt');
   it.todo('[C2.1] persist pending attempt before create and compare-and-set the intent ID before confirm; delayed create loses to reconciliation and is cancelled');
