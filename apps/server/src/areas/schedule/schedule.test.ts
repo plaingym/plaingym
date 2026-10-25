@@ -119,6 +119,7 @@ describe('schedule routes and tenant isolation', () => {
     const { session } = await resources();
     const responses = await Promise.all([10, 20].map((capacity) => request(server(), 'PATCH', '/api/schedule/sessions/' + session.id + '/capacity', { revision: 1, capacity })));
     expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(await responses.find((response) => response.status === 409)!.json()).toMatchObject({ error: { code: 'conflict' } });
     await expect(service.changeSession(context(), session.id, 'notes', { revision: 1, notes: 'stale' })).rejects.toBeInstanceOf(RevisionConflictError);
   });
   it('materializes open-mat templates as open-mat sessions and defaults new records to classes', async () => {
@@ -243,7 +244,13 @@ describe('moving generated sessions', () => {
   });
   it('rejects a move onto another occurrence and skips an unmaterialized occurrence a session was moved onto', async () => {
     const target = await generated(), sessions = await target.sessions();
-    await expect(move(target, sessions[0]!, sessions[1]!.startsAt.toISOString(), sessions[1]!.endsAt.toISOString())).rejects.toMatchObject({ code: 'conflict' });
+    await expect(move(target, sessions[0]!, sessions[1]!.startsAt.toISOString(), sessions[1]!.endsAt.toISOString())).rejects.toMatchObject({ code: 'session_start_taken', status: 409 });
+    const response = await request(server('owner', target.gymId), 'PUT', '/api/schedule/sessions/' + sessions[0]!.id, {
+      ...sessionFields(), coachId: null, programIds: [target.program.id], revision: sessions[0]!.revision,
+      startsAt: sessions[1]!.startsAt.toISOString(), endsAt: sessions[1]!.endsAt.toISOString(),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: 'session_start_taken' } });
     // The last Sunday moves one week later, onto an occurrence beyond the current horizon.
     const last = sessions.at(-1)!, later = (date: Date) => new Date(date.getTime() + 604_800_000).toISOString();
     await move(target, last, later(last.startsAt), later(last.endsAt));

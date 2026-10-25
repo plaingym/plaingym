@@ -1,5 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "closeDialog": "Close dialog",
   "title": "Ranks & promotions",
   "loading": "Loading ranks…",
   "error": "Unable to complete this action. Refresh to check the current records before retrying.",
@@ -62,5 +63,15 @@
   "history": "Promotion history",
   "noHistory": "No promotions recorded yet.",
   "promote": "Record promotion",
-  "manualHelp": "Review the criteria, then record the coach's decision. A promotion resets attendance and time counters."
+  "manualHelp": "Review the criteria, then record the coach's decision. A promotion resets attendance and time counters.",
+  "loadFailed": "Ranks couldn't be loaded. Check your connection and try again.",
+  "noSystemsTitle": "No rank systems yet",
+  "noSystemsReadOnly": "An owner or admin can set up rank systems in Configure ranks.",
+  "noRanksHelp": "Use Add rank to create the first rank in this system.",
+  "readyHelp": "Members who meet the criteria for the selected rank. Select the ones the coaches have approved, then promote them together.",
+  "noEligibleReady": "Nobody meets the criteria yet. Turn off \"Show ready members only\" to see everyone's progress.",
+  "noEligibleAll": "Nobody is working toward this rank in this program.",
+  "selectAll": "Select everyone who is ready",
+  "noProgramsYet": "No programs yet.",
+  "noSubRanks": "No sub-ranks. Add stripes, degrees or tips if this rank has them."
 }

@@ -4,10 +4,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Alert } from '../../components/ui/alert.js';
+import { Badge } from '../../components/ui/table.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
 export const text = (key: string) => t('members/members:' + key);
-export const selectClass = 'min-h-10 rounded-md border bg-background px-3 py-2 text-sm';
 export function Field({ name, value, onChange, type = 'text', required = false }: { name: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
   return <Label className="grid gap-2">{text(name)}<Input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)}/></Label>;
 }
@@ -49,5 +49,9 @@ export function useDraft<T extends Record<string, unknown>>(server: T) {
   };
 }
 export function Panel({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="space-y-4 rounded-xl border bg-card p-5"><h2 className="text-lg font-semibold">{text(title)}</h2>{children}</section>;
+  return <section className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6"><h2 className="text-lg font-semibold">{text(title)}</h2>{children}</section>;
+}
+const statusTones = { active: 'success', trial: 'default', prospect: 'default', frozen: 'warning', cancelled: 'muted', visitor: 'muted' } as const;
+export function StatusBadge({ status }: { status: keyof typeof statusTones }) {
+  return <Badge tone={statusTones[status]} className="shrink-0">{text('status.' + status)}</Badge>;
 }

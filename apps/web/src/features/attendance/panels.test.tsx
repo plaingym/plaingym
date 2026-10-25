@@ -33,6 +33,8 @@ describe('registered attendance panels', () => {
     await user.click(await screen.findByRole('button', { name: 'Check in River Lee' }));
     const checked = await screen.findByRole('button', { name: 'River Lee is checked in' });
     expect((checked as HTMLButtonElement).disabled).toBe(true);
+    // Disabled, but legible: a done check-in keeps full opacity in the success colors.
+    expect(checked.className).toContain('text-success'); expect(checked.className).not.toContain('disabled:opacity-50');
     await user.click(checked);
     expect(client.record).toHaveBeenCalledTimes(1);
     expect(client.record).toHaveBeenCalledWith({ memberId, sessionId, programId: null });

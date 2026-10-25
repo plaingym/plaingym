@@ -17,5 +17,7 @@
   "neverSeen": "No visits recorded",
   "showing": "Showing {shown} of {total} members.",
   "status.not_configured": "Not set up",
-  "status.unavailable": "Temporarily unavailable"
+  "status.unavailable": "Temporarily unavailable",
+  "empty": "Nothing to show yet",
+  "emptyHelp": "Widgets appear here as members, attendance and ranks are added."
 }

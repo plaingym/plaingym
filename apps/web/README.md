@@ -36,6 +36,8 @@ its action), and `ErrorState` (with `onRetry`; never show server error details).
 `TableContainer`, a labelled, keyboard-focusable region. The page itself never
 scrolls sideways.
 
+**Dialogs.** Editors and confirmations open in a `Dialog` rather than inline below the page, so on a phone they take the whole screen and keep their actions in reach. Show a save error inside the dialog, not only on the page behind it.
+
 **Forms.** `Input`, `Select` and `Textarea` are 44 px tall with 16 px text, so
 phones don't zoom into fields. Wrap checkboxes in `CheckboxField` so the whole
 row is the touch target. Every control has a visible `Label`.
@@ -51,6 +53,7 @@ API:
 | `Card`, `Alert`, `Badge` | Grouped content, inline messages, status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
 | `Input`, `Select`, `Textarea`, `CheckboxField`, `Label` | Form controls |
 | `TableContainer`, `StackedList`, `StackedItem` | Wide tables and their phone layout |
+| `Dialog` | A modal open while mounted: full screen on phones, a centered panel from `sm` (`size="wide"` for more room); Escape and the close button call `onClose`, and focus returns to the opener |
 | `MenuIcon`, `CloseIcon`, `UserIcon`, … | Small inline icons, decorative unless labelled |
 
 **Tokens.** Colors are design tokens in `src/app/styles.css` (`bg-primary`,
@@ -65,4 +68,4 @@ between page sections, `gap-3` within groups, cards `p-4 sm:p-6`.
 elements are real buttons and links with accessible names. The production-image
 e2e suite (`e2e/specs/mobile.spec.ts`) checks the admin shell at 360 px and
 desktop width: every admin page reachable through the menu, no sideways
-scrolling, 44 px shell targets, and axe WCAG 2.1 A/AA.
+scrolling, 44 px shell targets, and axe WCAG 2.1 A/AA; `e2e/specs/mobile-screens.spec.ts` checks the admin screens themselves at both widths (whole-page axe, 44 px content targets) and their main flows.

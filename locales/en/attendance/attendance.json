@@ -28,5 +28,11 @@
   "openMatHelp": "Record a visit without a scheduled class. Each submission records a separate visit. Open mat counts toward classes attended only if the gym setting is on.",
   "noProgram": "No program",
   "recordOpenMat": "Record open-mat visit",
-  "recorded": "Open-mat visit recorded."
+  "recorded": "Open-mat visit recorded.",
+  "checkedCount": "{count} checked in",
+  "noMembersHelp": "Search matches a first name, last name or email. Try a different name, or clear the search.",
+  "none": "None yet.",
+  "totalLabel": "Visits",
+  "classesLabel": "Classes",
+  "openMatTotalLabel": "Open mat"
 }

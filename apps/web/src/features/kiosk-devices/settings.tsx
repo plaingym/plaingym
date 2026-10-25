@@ -8,6 +8,7 @@ import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Alert } from '../../components/ui/alert.js';
+import { TableContainer } from '../../components/ui/table.js';
 
 const pageSize = 20;
 export function KioskDevicesSettings() {
@@ -70,7 +71,7 @@ export function KioskDevicesSettings() {
     </form>
     <Button variant="outline" disabled={busy} onClick={() => setReload((value) => value + 1)}>{t('kiosk/devices:refresh')}</Button>
     {busy && <p role="status">{t('kiosk/devices:loading')}</p>}
-    {page && <div className="overflow-x-auto"><table className="w-full text-left">
+    {page && <TableContainer label={t('kiosk/devices:title')}><table className="w-full text-left">
       <caption className="sr-only">{t('kiosk/devices:title')}</caption>
       <thead><tr>{['name', 'created', 'lastSeen', 'status', 'actions'].map((key) =>
         <th key={key} scope="col" className="p-2">{t('kiosk/devices:' + key)}</th>)}</tr></thead>
@@ -84,7 +85,7 @@ export function KioskDevicesSettings() {
           aria-label={t('kiosk/devices:revokeNamed', { name: device.name })} onClick={() => void revoke(device.id)}>
           {t('kiosk/devices:revoke')}</Button></td>
       </tr>)}</tbody>
-    </table>{page.data.length === 0 && <p>{t('kiosk/devices:empty')}</p>}</div>}
+    </table>{page.data.length === 0 && <p className="p-2">{t('kiosk/devices:empty')}</p>}</TableContainer>}
     <div className="flex gap-2">
       <Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>{t('kiosk/devices:previous')}</Button>
       <Button variant="outline" disabled={busy || !page || offset + pageSize >= page.pagination.total} onClick={() => setOffset(offset + pageSize)}>{t('kiosk/devices:next')}</Button>

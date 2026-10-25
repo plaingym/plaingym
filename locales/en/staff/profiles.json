@@ -1,5 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "closeDialog": "Close dialog",
   "title": "Staff",
   "profiles": "Staff profiles",
   "invite": "Invite staff",
@@ -59,5 +60,9 @@
   "invitationAccepted": "Invitation accepted. You can now sign in.",
   "signIn": "Sign in",
   "javascriptRequired": "Enable JavaScript to accept this invitation.",
-  "source": "Source code"
+  "source": "Source code",
+  "searchButton": "Search",
+  "noProfiles": "No staff profiles yet",
+  "noProfilesHelp": "Add a profile for each coach or staff member. Profiles can appear on the public website; access is granted separately below.",
+  "emptyHelp": "Try a different name."
 }

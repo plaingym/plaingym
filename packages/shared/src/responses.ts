@@ -5,6 +5,7 @@ export const errorStatus = {
   forbidden: 403,
   not_found: 404,
   conflict: 409,
+  session_start_taken: 409,
   rate_limited: 429,
   unavailable: 503,
   internal: 500,

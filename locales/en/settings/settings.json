@@ -1,6 +1,8 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Settings",
+  "noSections": "No settings available for your role",
+  "noSectionsHelp": "Ask a gym owner or administrator if you need to change a setting.",
   "general": "Gym details",
   "name": "Gym name",
   "timezone": "Timezone",

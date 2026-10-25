@@ -47,7 +47,7 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   expect(imported.data).toMatchObject([{ source: 'import', programId: install.program.id }]);
   await page.goto(gymOrigin + '/admin/schedule');
   await page.getByRole('button', { name: 'New one-off session', exact: true }).click();
-  const form = page.locator('form').filter({ has: page.getByRole('heading', { name: 'New one-off session', exact: true }) });
+  const form = page.getByRole('dialog', { name: 'New one-off session', exact: true });
   await form.getByLabel('Name', { exact: true }).fill('QA evening class');
   const start = new Date(Date.now() - 5 * 60_000).toISOString().slice(0, 16);
   const end = new Date(Date.now() + 55 * 60_000).toISOString().slice(0, 16);

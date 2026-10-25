@@ -74,11 +74,11 @@ describe('rank management', () => {
     start(<RanksWorkspace gymId={gymId} configure promote={false} client={client}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Foundation' }));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Edited' } });
-    const editor = screen.getByRole('heading', { name: 'Edit rank' }).closest('form')!;
+    const editor = screen.getByRole('form', { name: 'Edit rank' });
     fireEvent.submit(editor);
     await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateRank', expect.objectContaining({ revision: 3, name: 'Edited' }), rank.id));
     await screen.findByText(/The record changed or the change conflicts/);
-    expect(screen.getByRole('heading', { name: 'Edit rank' })).toBeDefined();
+    expect(screen.getByRole('dialog', { name: 'Edit rank' })).toBeDefined();
   });
   it('registers a real member tab and renders promotion history with its rank system', async () => {
     const registries = createWebRegistries([registration]);

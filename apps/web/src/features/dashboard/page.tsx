@@ -7,6 +7,8 @@ import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
+import { Page, PageHeader } from '../../components/ui/page.js';
+import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states.js';
 import { DashboardWidgets } from './widgets.js';
 import { BillingDashboardPanel, billingWidgetViews } from './billing.widgets.js';
 
@@ -17,21 +19,19 @@ function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly Staff
     if (!result.response.ok) throw new Error('Dashboard request failed');
     return matDashboardResponseSchema.parse(result.data).data;
   }, refetchInterval: 60_000 });
-  return <main className="mx-auto max-w-7xl space-y-6 p-6">
-    <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1>
-      <Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>{label('refresh')}</Button></div>
-    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert>
-      : <>
-        <DashboardWidgets widgets={query.data.widgets} roles={roles} views={billingWidgetViews}/>
-        <p className="text-xs text-muted-foreground">{label('updated')}: <time dateTime={query.data.generatedAt}>{new Date(query.data.generatedAt).toLocaleString()}</time></p>
-      </>}
+  return <Page>
+    <PageHeader title={label('title')} description={query.data && <>{label('updated')}: <time dateTime={query.data.generatedAt}>{new Date(query.data.generatedAt).toLocaleString()}</time></>}
+      actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>{label('refresh')}</Button>}/>
+    {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
+      : query.data.widgets.length === 0 ? <EmptyState title={label('empty')} description={label('emptyHelp')}/>
+      : <DashboardWidgets widgets={query.data.widgets} roles={roles} views={billingWidgetViews}/>}
     {canStaff(roles, 'billing.read') && <BillingDashboardPanel gymId={gymId} roles={roles}/>}
-  </main>;
+  </Page>;
 }
 export function DashboardPage() {
   const bootstrap = useBootstrap();
-  if (bootstrap.isPending) return <p role="status">{label('loading')}</p>;
-  if (bootstrap.isError) return <Alert>{label('loadFailed')}</Alert>;
-  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Alert>{label('noAccess')}</Alert>;
+  if (bootstrap.isPending) return <Page><LoadingState label={label('loading')}/></Page>;
+  if (bootstrap.isError) return <Page><ErrorState message={label('loadFailed')} onRetry={() => void bootstrap.refetch()}/></Page>;
+  if (!bootstrap.data.session || !canStaff(bootstrap.data.session.roles, 'members.read')) return <Page><Alert>{label('noAccess')}</Alert></Page>;
   return <DashboardPanel key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id} roles={bootstrap.data.session.roles}/>;
 }

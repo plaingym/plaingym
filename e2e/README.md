@@ -62,6 +62,14 @@ The checks cover:
   seed CLI runs materialization again, plus a stale-revision conflict.
 * A portrait touch viewport, real fullscreen, kiosk privacy reset, source link,
   and axe WCAG A/AA checks.
+* The admin screens at 360 px and 1280 px (`mobile.spec.ts` for the shell, `mobile-screens.spec.ts`
+  for the screens): no sideways scrolling, 44 px targets, axe WCAG A/AA on whole pages, finding a member,
+  a promotion, moving a generated session (and the refusal when it lands on another occurrence's
+  exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
+  and Tokyo gym time with a Honolulu browser, verify stored instants and local display, and reject
+  the New York spring daylight-saving gap. A coach's direct Settings URL has an explanatory empty state.
+  Its two tests each start
+  in a fresh window of the app's flood limit, so they add about three minutes of waiting.
 * Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
 

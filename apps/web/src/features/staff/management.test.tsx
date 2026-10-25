@@ -24,7 +24,7 @@ it('denies coaches without fetching staff data', () => {
 });
 it('shows and dismisses a printed invitation without persisting it', async () => {
   const service = services(), user = userEvent.setup(); render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
-  await screen.findByRole('button', { name: 'Edit' }); await user.type(screen.getByLabelText('Email address'), 'coach@example.test');
+  await screen.findByRole('button', { name: 'Edit Alex Coach' }); await user.type(screen.getByLabelText('Email address'), 'coach@example.test');
   await user.click(screen.getByRole('button', { name: 'Invite staff' }));
   const field = await screen.findByLabelText('Invitation link') as HTMLInputElement;
   expect(field.value).toBe('https://gym.example.test/staff-invitation#private-token');
@@ -33,8 +33,8 @@ it('shows and dismisses a printed invitation without persisting it', async () =>
 });
 it('submits the profile revision and keeps a stale edit for review with a conflict message', async () => {
   const service = services(), user = userEvent.setup(); vi.mocked(service.updateProfile).mockRejectedValue(new StaffRequestError(409));
-  render(<StaffManagement roles={['admin']} passwordEnabled services={service}/>); await screen.findByRole('button', { name: 'Edit' });
-  await user.click(screen.getByRole('button', { name: 'Edit' })); const name = screen.getByLabelText('Display name');
+  render(<StaffManagement roles={['admin']} passwordEnabled services={service}/>); await screen.findByRole('button', { name: 'Edit Alex Coach' });
+  await user.click(screen.getByRole('button', { name: 'Edit Alex Coach' })); const name = screen.getByLabelText('Display name');
   await user.clear(name); await user.type(name, 'Alex Updated'); await user.click(screen.getByRole('button', { name: 'Save profile' }));
   await screen.findByText('This record changed. Reload staff before saving again.');
   expect(service.updateProfile).toHaveBeenCalledWith(profile.id, expect.objectContaining({ revision: 7, displayName: 'Alex Updated', bio: 'Coach bio' }));
@@ -42,20 +42,20 @@ it('submits the profile revision and keeps a stale edit for review with a confli
 });
 it('requires confirmation before revocation and sends its revision', async () => {
   const service = services(), user = userEvent.setup(); render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
-  await screen.findByRole('button', { name: 'Edit' }); await user.click(screen.getByRole('button', { name: 'Revoke access' }));
+  await screen.findByRole('button', { name: 'Edit Alex Coach' }); await user.click(screen.getByRole('button', { name: 'Revoke access' }));
   expect(service.revokeRole).not.toHaveBeenCalled(); await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
   await waitFor(() => expect(service.revokeRole).toHaveBeenCalledWith('coach-role', 2));
 });
 it('uses the existing password reset endpoint and clears password input after failure', async () => {
   const service = services(), user = userEvent.setup(); vi.mocked(service.resetPassword).mockRejectedValue(new Error('private database details'));
-  render(<StaffManagement roles={['admin']} passwordEnabled services={service}/>); await screen.findByRole('button', { name: 'Edit' });
+  render(<StaffManagement roles={['admin']} passwordEnabled services={service}/>); await screen.findByRole('button', { name: 'Edit Alex Coach' });
   expect(screen.getAllByRole('button', { name: 'Reset password' })).toHaveLength(1);
   const password = screen.getByLabelText('New password'); await user.type(password, 'new-safe-password'); await user.click(screen.getByRole('button', { name: 'Reset password' }));
   await screen.findByText(/Unable to save or load staff/); expect((password as HTMLInputElement).value).toBe('');
   expect(service.resetPassword).toHaveBeenCalledWith(profile.userId, 'new-safe-password'); expect(document.body.textContent).not.toContain('private database details');
 });
 it('hides password resets when password login is disabled', async () => {
-  render(<StaffManagement roles={['owner']} passwordEnabled={false} services={services()}/>); await screen.findByRole('button', { name: 'Edit' });
+  render(<StaffManagement roles={['owner']} passwordEnabled={false} services={services()}/>); await screen.findByRole('button', { name: 'Edit Alex Coach' });
   expect(screen.queryByLabelText('New password')).toBeNull();
 });
 it('saves a profile before uploading its resized photo and retains the saved identity after upload failure', async () => {
@@ -63,7 +63,7 @@ it('saves a profile before uploading its resized photo and retains the saved ide
   vi.mocked(resizeStaffPhoto).mockResolvedValue(photo);
   vi.mocked(service.uploadPhoto).mockRejectedValueOnce(new StaffRequestError(503));
   render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
-  await screen.findByRole('button', { name: 'Edit' }); await user.click(screen.getByRole('button', { name: 'Add profile' }));
+  await screen.findByRole('button', { name: 'Edit Alex Coach' }); await user.click(screen.getByRole('button', { name: 'Add profile' }));
   await user.type(screen.getByLabelText('Display name'), 'New coach');
   await user.upload(screen.getByLabelText('Profile photo'), photo);
   await user.click(screen.getByRole('button', { name: 'Save profile' }));
@@ -80,7 +80,7 @@ it('previews by profile ID and clears photos through a revisioned profile update
   const service = services(), user = userEvent.setup();
   vi.mocked(service.profiles).mockResolvedValue({ data: [{ ...profile, photoKey: 'private/storage/key' }], pagination: { limit: 25, offset: 0, total: 1 } });
   render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
-  await screen.findByRole('button', { name: 'Edit' }); await user.click(screen.getByRole('button', { name: 'Edit' }));
+  await screen.findByRole('button', { name: 'Edit Alex Coach' }); await user.click(screen.getByRole('button', { name: 'Edit Alex Coach' }));
   expect(screen.getByRole('img').getAttribute('src')).toBe(`/api/staff/profiles/${profile.id}/photo`);
   await user.click(screen.getByLabelText('Remove photo')); await user.click(screen.getByRole('button', { name: 'Save profile' }));
   await waitFor(() => expect(service.updateProfile).toHaveBeenCalledWith(profile.id, expect.objectContaining({ revision: 7, photoKey: null })));

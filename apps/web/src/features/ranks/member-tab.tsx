@@ -4,13 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { useBootstrap } from '../../app/context.js';
 import type { ExtensionViewProps } from '../../lib/registries.js';
-import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
-import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
-import { Label } from '../../components/ui/label.js';
+import { Select } from '../../components/ui/select.js';
+import { ErrorState, LoadingState } from '../../components/ui/states.js';
+import { Badge } from '../../components/ui/table.js';
 import { ranksClient, type RanksClient } from './api.js';
+import { Criteria, Field } from './page.js';
 import { text } from './rank-editor.js';
 
 export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClient }: {
@@ -43,42 +44,46 @@ export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClien
     } catch (error) { setMessage(text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error')); }
     finally { setBusy(false); }
   }
-  if (history.isPending || catalog.isPending) return <p role="status">{text('loading')}</p>;
-  if (history.isError || catalog.isError) return <Alert>{text('error')}<Button onClick={() => void cache.invalidateQueries({ queryKey: key })}>{text('refresh')}</Button></Alert>;
-  return <section className="space-y-4">
-    <h2 className="text-lg font-semibold">{text('history')}</h2>
-    {message && <p role="status">{message}</p>}
-    {!history.data.length && <p>{text('noHistory')}</p>}
-    <ol className="space-y-3">{history.data.map((entry) => {
-      const rank = catalog.data.ranks.find((item) => item.id === entry.rankId);
-      return <li key={entry.id} className="rounded border p-3" data-rank-system={entry.rankSystemId}>
-        <p>{catalog.data.programs.find((item) => item.id === entry.programId)?.name} — {rank?.name} {entry.subRank > 0 ? rank?.subRanks[entry.subRank - 1]?.name ?? entry.subRank : ''}</p>
-        <p className="text-sm">{text('system')}: {catalog.data.systems.find((item) => item.id === entry.rankSystemId)?.name}</p>
-        <time dateTime={entry.promotedAt}>{new Date(entry.promotedAt).toLocaleString()}</time>{entry.notes && <p className="whitespace-pre-wrap">{entry.notes}</p>}
-      </li>;
-    })}</ol>
-    {promote && <form onSubmit={(event) => void submit(event)} className="space-y-4">
-      <h3 className="font-semibold">{text('promote')}</h3><p className="text-sm text-muted-foreground">{text('manualHelp')}</p>
-      <fieldset disabled={busy} className="space-y-4">
-        <Label className="block">{text('program')}<select className="block min-h-11 w-full rounded border px-3" value={programId} onChange={(event) => { setProgram(event.target.value); setRank(''); }}>
+  const retry = () => void cache.invalidateQueries({ queryKey: key });
+  if (history.isPending || catalog.isPending) return <LoadingState label={text('loading')}/>;
+  if (history.isError || catalog.isError) return <ErrorState message={text('loadFailed')} onRetry={retry}/>;
+  return <section className="grid items-start gap-6 lg:grid-cols-2">
+    <div className="min-w-0 space-y-4">
+      <h2 className="text-lg font-semibold">{text('history')}</h2>
+      {!history.data.length && <p className="text-sm text-muted-foreground">{text('noHistory')}</p>}
+      <ol className="space-y-3">{history.data.map((entry) => {
+        const rank = catalog.data.ranks.find((item) => item.id === entry.rankId);
+        return <li key={entry.id} className="space-y-1 rounded-lg border border-border p-3" data-rank-system={entry.rankSystemId}>
+          <p className="break-words font-medium">{catalog.data.programs.find((item) => item.id === entry.programId)?.name} — {rank?.name} {entry.subRank > 0 ? rank?.subRanks[entry.subRank - 1]?.name ?? entry.subRank : ''}</p>
+          <p className="text-sm text-muted-foreground">{text('system')}: {catalog.data.systems.find((item) => item.id === entry.rankSystemId)?.name}</p>
+          <p className="text-sm"><time dateTime={entry.promotedAt}>{new Date(entry.promotedAt).toLocaleString()}</time></p>
+          {entry.notes && <p className="whitespace-pre-wrap break-words">{entry.notes}</p>}
+        </li>;
+      })}</ol>
+    </div>
+    {promote ? <form onSubmit={(event) => void submit(event)} className="min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6">
+      <h3 className="text-lg font-semibold">{text('promote')}</h3><p className="text-sm text-muted-foreground">{text('manualHelp')}</p>
+      {message && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{message}</p>}
+      <fieldset disabled={busy} className="min-w-0 space-y-4">
+        <Field label={text('program')}><Select value={programId} onChange={(event) => { setProgram(event.target.value); setRank(''); }}>
           {!programs.length && <option value="">{text('noPrograms')}</option>}{programs.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select></Label>
-        <Label className="block">{text('targetRank')}<select className="block min-h-11 w-full rounded border px-3" value={rankId} onChange={(event) => setRank(event.target.value)}>
-          {!ranks.length && <option value="">{text('noRanks')}</option>}{ranks.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select></Label>
-        <Label className="block">{text('subRank')}<select key={rankId} className="block min-h-11 w-full rounded border px-3" name="subRank" defaultValue="0">
-          <option value="0">{text('baseRank')}</option>{rank?.subRanks.map((item, index) => <option key={item.id} value={index + 1}>{item.name}</option>)}
-        </select></Label>
-        {progress.isFetching && <p role="status">{text('loading')}</p>}{progress.isError && <Alert>{text('error')}</Alert>}
-        {progress.data && <div><p>{text(progress.data.eligible ? 'eligible' : 'notEligible')}</p>{progress.data.criteria.map((criterion, index) => <div key={index}>
-          <span>{t(criterion.labelKey)}: {criterion.current} / {criterion.target}</span>
-          <progress className="block w-full" aria-label={t(criterion.labelKey)} max={criterion.target || 1} value={criterion.target === 0 ? 1 : Math.min(criterion.current, criterion.target)}/>
-        </div>)}</div>}
-        <Label className="block">{text('promotedAt')}<Input name="promotedAt" type="datetime-local" required/></Label>
-        <Label className="block">{text('notes')}<Input name="notes"/></Label>
-        <Button type="submit" disabled={!programId || !rankId}>{text('promote')}</Button>
+        </Select></Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={text('targetRank')}><Select value={rankId} onChange={(event) => setRank(event.target.value)}>
+            {!ranks.length && <option value="">{text('noRanks')}</option>}{ranks.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </Select></Field>
+          <Field label={text('subRank')}><Select key={rankId} name="subRank" defaultValue="0">
+            <option value="0">{text('baseRank')}</option>{rank?.subRanks.map((item, index) => <option key={item.id} value={index + 1}>{item.name}</option>)}
+          </Select></Field>
+        </div>
+        {progress.isFetching && <LoadingState label={text('loading')}/>}{progress.isError && <ErrorState message={text('loadFailed')} onRetry={retry}/>}
+        {progress.data && <div className="space-y-2"><Badge tone={progress.data.eligible ? 'success' : 'muted'}>{text(progress.data.eligible ? 'eligible' : 'notEligible')}</Badge>
+          <Criteria criteria={progress.data.criteria}/></div>}
+        <Field label={text('promotedAt')}><Input name="promotedAt" type="datetime-local" required/></Field>
+        <Field label={text('notes')}><Input name="notes"/></Field>
+        <Button type="submit" className="w-full sm:w-auto" disabled={!programId || !rankId}>{text('promote')}</Button>
       </fieldset>
-    </form>}
+    </form> : message && <p role="status">{message}</p>}
   </section>;
 }
 export function MemberRanksTab({ memberId }: ExtensionViewProps) {

@@ -56,7 +56,12 @@ async function mappings(tx: Transaction, kind: 'template' | 'session', gymId: st
 async function safe<T>(work: () => Promise<T>): Promise<T> {
   try { return await work(); } catch (error) {
     const cause = error instanceof Error && 'cause' in error ? error.cause : error;
-    if (typeof cause === 'object' && cause !== null && 'code' in cause && ['23503', '23505'].includes(String(cause.code))) conflict();
+    if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+      if (cause.code === '23505' && 'constraint_name' in cause && cause.constraint_name === 'class_sessions_materialized_key') {
+        throw new AppError('session_start_taken', 'Another session of this weekly class already starts at this time.');
+      }
+      if (['23503', '23505'].includes(String(cause.code))) conflict();
+    }
     throw error;
   }
 }

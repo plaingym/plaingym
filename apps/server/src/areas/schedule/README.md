@@ -28,7 +28,7 @@ without a key (by the previous release) are treated as never moved: their start
 is their occurrence, and the first move stores it as their key.
 The earlier `(gym_id, template_id, starts_at)` constraint is kept while the
 previous release may still run against this schema, so a session can't be moved
-onto the exact start of another session of the same template (409), and an
+onto the exact start of another session of the same template (409 `session_start_taken`), and an
 occurrence whose start a moved session already holds is not generated.
 There is no hard-delete session endpoint. Deleting a template detaches its
 sessions with revision increments and audits, retaining attendance and mappings.

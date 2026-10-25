@@ -5,10 +5,12 @@ import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
+import { LoadingState } from '../../components/ui/states.js';
+import { Badge } from '../../components/ui/table.js';
 
 type Checklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
 const label = (key: string, values?: Record<string, string>) => t('settings/go-live:' + key, values);
-const statusStyle = { ready: 'text-green-700', needs_attention: 'text-amber-700', not_applicable: 'text-muted-foreground' } as const;
+const statusTone = { ready: 'success', needs_attention: 'warning', not_applicable: 'muted' } as const;
 
 /** Shows the billing and member-email switches with the readiness checklist from the go-live contract. */
 export function GoLiveSettings() {
@@ -39,24 +41,24 @@ export function GoLiveSettings() {
   }
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
-    <p>{label('help')}</p>
+    <p className="text-sm text-muted-foreground">{label('help')}</p>
     {message && <Alert>{label(message)}{message === 'error' && !checklist &&
-      <Button variant="outline" className="ml-3" onClick={() => { setMessage(null); setReload((value) => value + 1); }}>{label('retry')}</Button>}</Alert>}
-    {!checklist ? busy && <p role="status">{label('loading')}</p> : <>
+      <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={() => { setMessage(null); setReload((value) => value + 1); }}>{label('retry')}</Button>}</Alert>}
+    {!checklist ? busy && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');
-        return <li key={name} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
-          <div><p className="font-medium">{label(name)}: <span>{label(on ? 'on' : 'off')}</span></p>
+        return <li key={name} className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0"><p className="font-medium">{label(name)}: <span>{label(on ? 'on' : 'off')}</span></p>
             <p className="text-sm text-muted-foreground">{label(name === 'billingEnabled' ? 'billingHelp' : 'memberEmailsHelp')}</p></div>
           <Button variant={on ? 'outline' : 'default'} disabled={busy} aria-pressed={on}
             aria-label={label('toggleNamed', { action, name: label(name) })} onClick={() => void toggle(name)}>{action}</Button>
         </li>;
       })}</ul>
-      {busy && <p role="status">{label('saving')}</p>}
+      {busy && <p role="status" className="text-sm text-muted-foreground">{label('saving')}</p>}
       <h3 className="font-semibold">{label('checklist')}</h3>
-      <ul className="space-y-2">{checklist.items.map((item) => <li key={item.id} className="flex flex-wrap justify-between gap-2">
-        <span><span className="font-medium">{label('item.' + item.id)}</span> · <span className="text-sm">{item.message}</span></span>
-        <span className={'text-sm font-medium ' + statusStyle[item.status]}>{label('status.' + item.status)}</span>
+      <ul className="divide-y divide-border rounded-lg border border-border">{checklist.items.map((item) => <li key={item.id} className="flex items-start justify-between gap-3 p-3">
+        <span className="min-w-0"><span className="block font-medium">{label('item.' + item.id)}</span><span className="block break-words text-sm text-muted-foreground">{item.message}</span></span>
+        <Badge tone={statusTone[item.status]} className="shrink-0">{label('status.' + item.status)}</Badge>
       </li>)}</ul>
     </>}
   </section>;

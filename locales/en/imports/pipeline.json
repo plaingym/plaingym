@@ -20,5 +20,8 @@
   "field.stripePaymentMethodId": "Stripe payment method ID", "field.program": "Program", "field.rank": "Rank", "field.subRank": "Sub-rank",
   "field.promotedAt": "Promotion date", "field.occurredAt": "Attendance date", "field.classTags": "Class tags", "field.plan": "Plan",
   "field.amountCents": "Amount in cents", "field.currency": "Currency", "field.interval": "Billing interval", "field.nextDueOn": "Next due date",
-  "field.commitmentEndsOn": "Commitment end date"
+  "field.commitmentEndsOn": "Commitment end date",
+  "steps": "Import steps", "stepUpload": "Upload a CSV", "stepMatch": "Match columns",
+  "stepCheck": "Preview and dry run", "stepCommit": "Commit", "commitHelp": "Run a dry run with no errors before committing. Changing the type, duplicates or columns needs a new dry run.",
+  "previewTable": "Preview rows", "errorReport": "Error report"
 }

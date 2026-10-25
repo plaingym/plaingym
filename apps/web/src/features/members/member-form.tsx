@@ -3,8 +3,9 @@ import type { FormEvent } from 'react';
 import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Label } from '../../components/ui/label.js';
+import { CheckboxField, Select } from '../../components/ui/select.js';
 import { memberRequest } from './api.js';
-import { ErrorMessage, Field, selectClass, text, useDraft, useMemberSave } from './common.js';
+import { ErrorMessage, Field, text, useDraft, useMemberSave } from './common.js';
 
 export function MemberForm({ member, householdId, onSaved }: { member?: c.Member; householdId: string; onSaved?: (member: c.Member) => void }) {
   const draft = useDraft({ firstName: member?.firstName ?? '', lastName: member?.lastName ?? '', email: member?.email ?? '',
@@ -28,12 +29,12 @@ export function MemberForm({ member, householdId, onSaved }: { member?: c.Member
   return <form className="space-y-4" onSubmit={submit}><ErrorMessage error={state.error}/>
     <div className="grid gap-3 sm:grid-cols-2"><Field name="firstName" value={values.firstName} onChange={(value) => set('firstName', value)} required/><Field name="lastName" value={values.lastName} onChange={(value) => set('lastName', value)} required/>
       <Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/><Field name="dateOfBirth" type="date" value={values.dateOfBirth} onChange={(value) => set('dateOfBirth', value)}/>
-      <Label className="grid gap-2">{text('status')}<select className={selectClass} value={values.status} onChange={(event) => set('status', c.memberStatusSchema.parse(event.target.value))}>{c.memberStatusSchema.options.map((value) => <option key={value} value={value}>{text('status.' + value)}</option>)}</select></Label>
-    </div><Label className="flex items-center gap-2"><input type="checkbox" checked={values.emailOptOut} onChange={(event) => set('emailOptOut', event.target.checked)}/>{text('emailOptOut')}</Label>
-    <fieldset className="space-y-3"><legend className="font-medium">{text('emergencyContacts')}</legend>{contacts.map((contact, index) => {
+      <Label className="grid gap-2">{text('status')}<Select value={values.status} onChange={(event) => set('status', c.memberStatusSchema.parse(event.target.value))}>{c.memberStatusSchema.options.map((value) => <option key={value} value={value}>{text('status.' + value)}</option>)}</Select></Label>
+    </div><CheckboxField label={text('emailOptOut')} checked={values.emailOptOut} onChange={(event) => set('emailOptOut', event.target.checked)}/>
+    <fieldset className="min-w-0 space-y-3"><legend className="font-medium">{text('emergencyContacts')}</legend>{contacts.map((contact, index) => {
       const change = (key: keyof c.EmergencyContact, value: string) => set('emergencyContacts', contacts.map((entry, position) => position === index ? { ...entry, [key]: value || (key === 'name' || key === 'phone' ? '' : null) } : entry));
-      return <div key={index} className="grid gap-3 rounded-md border p-3 sm:grid-cols-2">{(['name', 'relationship', 'phone', 'email'] as const).map((key) => <Field key={key} name={'contact.' + key} value={contact[key] ?? ''} required={key === 'name' || key === 'phone'} type={key === 'email' ? 'email' : 'text'} onChange={(value) => change(key, value)}/>)}<Button type="button" variant="outline" onClick={() => set('emergencyContacts', contacts.filter((_, position) => position !== index))}>{text('removeContact')}</Button></div>;
-    })}<Button type="button" variant="outline" onClick={() => set('emergencyContacts', [...contacts, { name: '', phone: '', email: null, relationship: null }])}>{text('addContact')}</Button></fieldset>
-    <Button type="submit" disabled={state.busy}>{text(member ? 'save' : 'createMember')}</Button>
+      return <div key={index} className="grid gap-3 rounded-lg border border-border p-3 sm:grid-cols-2">{(['name', 'relationship', 'phone', 'email'] as const).map((key) => <Field key={key} name={'contact.' + key} value={contact[key] ?? ''} required={key === 'name' || key === 'phone'} type={key === 'email' ? 'email' : 'text'} onChange={(value) => change(key, value)}/>)}<Button type="button" variant="outline" className="sm:col-span-2 sm:justify-self-start" onClick={() => set('emergencyContacts', contacts.filter((_, position) => position !== index))}>{text('removeContact')}</Button></div>;
+    })}<Button type="button" variant="outline" className="w-full sm:w-auto" onClick={() => set('emergencyContacts', [...contacts, { name: '', phone: '', email: null, relationship: null }])}>{text('addContact')}</Button></fieldset>
+    <Button type="submit" className="w-full sm:w-auto" disabled={state.busy}>{text(member ? 'save' : 'createMember')}</Button>
   </form>;
 }

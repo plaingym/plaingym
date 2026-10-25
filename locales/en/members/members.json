@@ -1,5 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "closeDialog": "Close dialog",
   "title": "Members", "loading": "Loading…", "noAccess": "You do not have access to members.",
   "failed": "Could not save or load these details. Check the fields and try again.",
   "conflict": "These details changed. Refresh and review them before saving again.",
@@ -20,5 +21,13 @@
   "anonymizeWarning": "Use this only when someone asks for their data to be deleted. To stop someone training here, set their status to Cancelled instead. Erasing removes this member’s personal details, photo, medical notes, promotion notes, signed waivers and check-in access, and clears the household PIN. When no household members remain, it also removes household contacts and portal access. Invoices, payments and attendance stay, without personal details, for the gym’s records.",
   "empty": "No members match these filters.", "profileTabs": "Member details",
   "manageHouseholds": "Manage households", "deleteHousehold": "Delete unused household", "deleteHouseholdWarning": "Only unused households can be deleted. Households with members, invoices or other records are retained.",
-  "confirmDelete": "Delete this unused household", "confirmDeleteTag": "Remove this tag from every member and delete it", "deleteTag": "Delete tag"
+  "confirmDelete": "Delete this unused household", "confirmDeleteTag": "Remove this tag from every member and delete it", "deleteTag": "Delete tag",
+  "loadFailed": "These details couldn't be loaded. Check your connection and try again.", "created": "Member created:", "filters": "Filter members",
+  "noMembers": "No members yet", "noMembersHelp": "Add your first member, or import a CSV from Import and export.", "noMembersReadOnly": "Members appear here once staff add or import them.",
+  "emptyHelp": "Search matches a first name, last name or email, one at a time. Try a different name, status or tag.", "clearFilters": "Clear filters", "showing": "{from}–{to} of {total} members",
+  "step.household": "1. Household", "step.member": "2. Member details", "chooseHouseholdFirst": "Choose a household, or create one, to enter the member's details.",
+  "tag": "Tag", "createTag": "Create tag", "showHouseholds": "Show households",
+  "hideHouseholds": "Hide households", "backToMembers": "All members", "noContacts": "No emergency contacts.",
+  "noPhoto": "No photo.", "noMedicalNotes": "No medical notes.", "noTags": "No tags yet.",
+  "removeTag": "Remove tag"
 }
