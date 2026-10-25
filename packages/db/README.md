@@ -12,6 +12,10 @@ Migration `0004_occurrence_keys.sql` adds nullable `class_sessions.occurrence_st
 (the start a template originally scheduled) with a unique `(gym_id, template_id,
 occurrence_starts_at)` constraint, and backfills it from `starts_at` for existing
 generated sessions. The earlier `(gym_id, template_id, starts_at)` constraint stays.
+Migration `0005_import_run_state.sql` adds the gym-owned `import_runs`, `import_chunks`
+and `export_runs` tables that hold import and export progress. Migration
+`0006_membership_anniversary.sql` adds nullable `memberships.anniversary_on`, the
+original anniversary of an annual membership; existing rows keep null.
 Migration tests that recreate an earlier schema undo every later migration first.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
