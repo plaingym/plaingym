@@ -41,6 +41,8 @@ export const memberships = pgTable('memberships', {
   status: text('status').notNull().default('pending'), interval: text('interval').notNull(),
   amountCents: integer('amount_cents').notNull(), currency: text('currency').notNull(),
   nextDueOn: date('next_due_on').notNull(), startsOn: date('starts_on').notNull(), trialEndsOn: date('trial_ends_on'),
+  // Original annual billing anniversary; retained when next_due_on advances or clamps in a short year.
+  anniversaryOn: date('anniversary_on'),
   frozenAt: instant('frozen_at'), resumesOn: date('resumes_on'), cancelledAt: instant('cancelled_at'),
   // Recorded, never enforced; kept when the plan changes.
   commitmentEndsOn: date('commitment_ends_on'), ...revision(),

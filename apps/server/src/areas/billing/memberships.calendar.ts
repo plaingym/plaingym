@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { addDays, isCalendarDate } from '@plaingym/shared/time';
 import { dateSchema } from '@plaingym/shared/contracts';
+import { nextBillingDate } from './invoicing/calendar.js';
 
 /** TODO(CCR): promote clamped month arithmetic to shared/time. No instants or offsets here. */
 export function addCalendarMonths(date: string, months: number, anchor = Number(date.slice(8))) {
@@ -15,7 +16,9 @@ export function addCalendarMonths(date: string, months: number, anchor = Number(
   throw new Error('Calendar date out of range');
 }
 /** Matches the invoice engine: a monthly date off the billing day is a short stub up to that day. */
-export function advanceDue(date: string, interval: 'monthly' | 'annual', anchor: number) {
+export function advanceDue(date: string, interval: 'monthly' | 'annual', anchor: number, annualAnchorOn?: string | null) {
+  if (interval === 'annual' && annualAnchorOn != null)
+    return nextBillingDate({ dueOn: date, interval, billingDay: anchor, annualAnchorOn });
   if (interval === 'annual') return addCalendarMonths(date, 12, anchor);
   const aligned = householdNextDate(date, anchor);
   return aligned !== date ? aligned : addCalendarMonths(date, 1, anchor);

@@ -36,6 +36,13 @@
       "when": 1792904559926,
       "tag": "0005_import_run_state",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792947833778,
+      "tag": "0006_membership_anniversary",
+      "breakpoints": true
     }
   ]
 }

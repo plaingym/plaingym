@@ -3,7 +3,7 @@ import { and, asc, eq, gt, lte, ne, or } from 'drizzle-orm';
 import { forGym, memberships, households, members, plans, auditEvents, planTaxRates, taxRates,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { localDate } from '@plaingym/shared/time';
+import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { MembershipLifecycle, AssignMembership, MembershipEdit, UpdateMembership } from '../../core/interfaces/membership-lifecycle.js';
@@ -14,14 +14,27 @@ import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
 
 type Row = typeof memberships.$inferSelect;
-const present = ({ gymId: _gymId, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
+const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const conflict = (message: string): never => { throw new AppError('conflict', message); };
+/** Explicit date changes set a new anniversary, except the normal short-year clamp. */
+function editedAnniversary(before: Row, interval: string, nextDueOn?: string): string | null {
+  if (interval !== 'annual') return null;
+  if (before.interval !== 'annual') return nextDueOn ?? before.nextDueOn;
+  if (nextDueOn === undefined) return before.anniversaryOn;
+  const original = before.anniversaryOn;
+  const sameAnniversary = original?.slice(5) === nextDueOn.slice(5);
+  const clampedLeapDay = original?.slice(5) === '02-29' && nextDueOn.slice(5) === '02-28' &&
+    !isCalendarDate(nextDueOn.slice(0, 4) + '-02-29');
+  return sameAnniversary || clampedLeapDay ? original : nextDueOn;
+}
 /** Persisted in the assignment audit so invoice integration can recover after downtime. */
 export interface AssignmentBilling {
   firstPeriod: 'prorate_now' | 'next_billing_date';
   startsOn: string; nextDueOn: string; amountCents: number; currency: string; signupFeeCents: number;
+  /** Persisted annual anniversary, passed directly to the invoice calculators. */
+  annualAnchorOn?: string;
   taxes: { id: string; name: string; rateMillionths: number; inclusive: boolean }[];
 }
 export interface MembershipOptions {
@@ -96,10 +109,12 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const row = catalogMissing((await tx.insert(memberships).values({ id: request.id, gymId: context.gymId,
         householdId: home.id, memberId: member.id, planId: plan.id, amountCents: plan.amountCents, currency: plan.currency,
         interval: plan.interval, status, startsOn: request.startsOn, nextDueOn, trialEndsOn,
+        anniversaryOn: plan.interval === 'annual' ? nextDueOn : null,
         commitmentEndsOn: plan.commitmentMonths === null ? null : addCalendarMonths(request.startsOn, plan.commitmentMonths), createdAt: clock.now() }).returning())[0]);
       const attached = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths, inclusive: taxRates.inclusive })
         .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, plan.id)).orderBy(asc(taxRates.id));
       const billing: AssignmentBilling = { firstPeriod: request.firstPeriod, startsOn: request.startsOn, nextDueOn,
+        ...(row.anniversaryOn === null ? {} : { annualAnchorOn: row.anniversaryOn }),
         amountCents: plan.amountCents, currency: plan.currency, signupFeeCents: plan.signupFeeCents, taxes: attached };
       const result = present(row);
       await catalogAudit(tx, context, clock, 'billing.membership.assigned', 'membership', row.id, undefined, { request, membership: result, billing });
@@ -146,16 +161,17 @@ export function createMembershipService(options: MembershipOptions = {}) {
         let due = request.nextDueOn ?? before.nextDueOn;
         c.dateSchema.parse(due);
         if (due < before.startsOn) conflict('Billing cannot start before membership starts');
+        const anniversaryOn = editedAnniversary(before, before.interval, request.nextDueOn);
         if (before.status === 'frozen') {
           const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
           const today = localDate(clock.now(), gym.timezone);
           if (request.nextDueOn !== undefined && due < before.nextDueOn) conflict('Resume must preserve the skipped cycle');
-          const anchor = before.interval === 'annual' ? Number(before.nextDueOn.slice(8)) : home.billingDay;
+          const anchor = before.interval === 'annual' ? Number(due.slice(8)) : home.billingDay;
           // Cycles from a scheduled resume date on are owed, even if this runs late (downtime, a late staff resume).
           const owedFrom = before.resumesOn !== null && before.resumesOn < today ? before.resumesOn : today;
-          while (due < owedFrom) due = advanceDue(due, before.interval as c.BillingInterval, anchor);
+          while (due < owedFrom) due = advanceDue(due, before.interval as c.BillingInterval, anchor, anniversaryOn);
         }
-        return { status: 'active', nextDueOn: due, frozenAt: null, resumesOn: null };
+        return { status: 'active', nextDueOn: due, anniversaryOn, frozenAt: null, resumesOn: null };
       });
     },
     async freeze(context: MutationContext, request: MembershipEdit & { resumesOn?: string | null }) {
@@ -166,8 +182,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (request.resumesOn != null && c.dateSchema.parse(request.resumesOn) <= today) conflict('Resume date must be in the future');
         const home = catalogMissing((await tx.select().from(households).where(eq(households.id, before.householdId)))[0]);
         const anchor = before.interval === 'annual' ? Number(before.nextDueOn.slice(8)) : home.billingDay;
-        let nextDueOn = advanceDue(before.nextDueOn, before.interval as c.BillingInterval, anchor);
-        while (request.resumesOn && nextDueOn < request.resumesOn) nextDueOn = advanceDue(nextDueOn, before.interval as c.BillingInterval, anchor);
+        let nextDueOn = advanceDue(before.nextDueOn, before.interval as c.BillingInterval, anchor, before.anniversaryOn);
+        while (request.resumesOn && nextDueOn < request.resumesOn) nextDueOn = advanceDue(nextDueOn, before.interval as c.BillingInterval, anchor, before.anniversaryOn);
         return { status: 'frozen', frozenAt: clock.now(), resumesOn: request.resumesOn ?? null, nextDueOn };
       });
     },
@@ -185,8 +201,11 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const plan = changes.planId ? await getPlan(tx, changes.planId) : undefined;
         if (plan && plan.currency !== before.currency || changes.price && changes.price.currency !== before.currency) conflict('Currency does not match');
         if (changes.nextDueOn && changes.nextDueOn < before.startsOn) conflict('Billing cannot start before membership starts');
+        const interval = changes.interval ?? plan?.interval ?? before.interval;
+        const anniversaryOn = editedAnniversary(before, interval, changes.nextDueOn);
         return { ...(plan ? { planId: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval } : {}),
-          ...(changes.price ?? {}), ...(changes.interval ? { interval: changes.interval } : {}), ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}) };
+          ...(changes.price ?? {}), ...(changes.interval ? { interval: changes.interval } : {}),
+          ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}), anniversaryOn };
       });
     },
     changePlan(context: MutationContext, request: MembershipEdit & { planId: string }): Promise<c.Membership> { return service.update(context, request); },

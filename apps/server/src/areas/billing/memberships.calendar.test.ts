@@ -14,6 +14,14 @@ describe('membership calendar dates', () => {
     expect(advanceDue('2028-02-29', 'monthly', 31)).toBe('2028-03-31');
     expect(advanceDue('2028-02-29', 'annual', 29)).toBe('2029-02-28');
   });
+  it('keeps a February 29 annual anniversary through short years', () => {
+    let dueOn = '2028-02-29';
+    for (const expected of ['2029-02-28', '2030-02-28', '2031-02-28', '2032-02-29']) {
+      dueOn = advanceDue(dueOn, 'annual', Number(dueOn.slice(8)), '2028-02-29');
+      expect(dueOn).toBe(expected);
+    }
+    expect(advanceDue('2031-02-28', 'annual', 28, null)).toBe('2032-02-28');
+  });
   it.each([
     ['2028-02-10', 31, '2028-02-29'], ['2028-02-29', 31, '2028-02-29'],
     ['2028-03-16', 15, '2028-04-15'], ['2028-12-16', 15, '2029-01-15'],
