@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import AxeBuilder from '@axe-core/playwright';
-import { localDate, weekday, zonedInstant } from '../../packages/shared/src/time.js';
 import type { BrowserContext, Page, TestInfo } from '@playwright/test';
 import { expect, gymOrigin, test, type Install, type Person, type RecordId } from '../support.js';
 
 const screens = ['/admin', '/admin/members', '/admin/schedule', '/admin/ranks', '/admin/staff', '/admin/imports', '/admin/settings'];
 const browserZone = 'Pacific/Honolulu';
+// Wall-clock reads through Intl, so this independent suite never loads application modules or their dependencies.
+function wall(instant: Date, timeZone: string) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(instant).map((part) => [part.type, part.value]));
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+}
+const localDate = (instant: Date, timeZone: string) => wall(instant, timeZone).date;
+/** Day of the week of a `YYYY-MM-DD` date, 0 (Sunday) to 6 (Saturday). */
+const weekday = (date: string) => new Date(date + 'T00:00:00Z').getUTCDay();
 const viewports = [
   { name: 'phone', viewport: { width: 360, height: 740 }, hasTouch: true },
   { name: 'desktop', viewport: { width: 1280, height: 800 }, hasTouch: false },
@@ -166,7 +174,8 @@ for (const { name: size, viewport, hasTouch } of viewports) {
         await expect(dialog.getByText(/^Session moved\./)).toBeVisible();
         const moved = (await owner.json<{ data: Session }>('/api/schedule/sessions/' + first.id)).data;
         expect(moved).toMatchObject({ id: first.id, revision: first.revision + 1 });
-        expect(Date.parse(moved.startsAt)).toBe(zonedInstant(localDate(new Date(first.startsAt), zone), '19:30', zone, { gap: 'skip' })!.getTime());
+        expect(wall(new Date(moved.startsAt), zone)).toEqual({ date: localDate(new Date(first.startsAt), zone), time: '19:30' });
+        expect(Date.parse(moved.startsAt) % 60_000).toBe(0);
         expect(Date.parse(moved.endsAt) - Date.parse(moved.startsAt)).toBe(60 * 60_000);
         await expect(dialog.getByText('19:30–20:30 · ' + zone, { exact: true })).toBeVisible();
         expect((await owner.json<{ data: Session }>('/api/schedule/sessions/' + second.id)).data.startsAt).toBe(second.startsAt);
