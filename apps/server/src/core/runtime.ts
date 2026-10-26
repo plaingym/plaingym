@@ -160,11 +160,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   async function gymMail(gymId: string) {
     const [origin, mail, details] = await Promise.all([gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId), settings.get(gymId)]);
     if (!demo && !mail) throw new AppError('unavailable', 'Email is not configured for this gym');
-    return { origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), t, gymName: details.name };
+    return { origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), t, gymName: details.name,
+      memberEmailsEnabled: details.memberEmailsEnabled };
   }
   configureSignedLinkDelivery({ async prepare(gymId) {
-    const [details, mail] = await Promise.all([settings.get(gymId), gymMail(gymId)]);
-    return { gymId, memberEmailsEnabled: details.memberEmailsEnabled, ...mail };
+    return { gymId, ...await gymMail(gymId) };
   } });
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.

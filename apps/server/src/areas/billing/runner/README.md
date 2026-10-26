@@ -28,10 +28,13 @@ the held invoice to the conflicting cycle and records the period.
 
 Cycle and assignment invoices over seven days overdue are held with `needsReview`
 on the next daily run, including first-period proration and sign-up fees. Staff
-confirmation uses the staff invoice `release-hold` action (owners/admins), then a
-normal collection action. Recording cash/check also confirms a held invoice and
-audits the payment that cleared it. Merely rerunning the daily catch-up sweep does
-not confirm it.
+confirmation uses the staff invoice `release-hold` action (owners/admins). The
+release audit is the confirmation: released invoices are never held again, and
+the next daily run collects them unless staff charge or record a payment first.
+The overdue query selects only cycle and assignment invoices and excludes released
+invoices using the gym/action/target audit index. Recording cash/check also
+confirms a held invoice and audits the payment that cleared it. Merely rerunning
+the daily catch-up sweep does not confirm it.
 Zero-value invoices settle through `InvoiceTransitions.settleZero`. They require
 no saved card, attempt, provider resolution, customer adoption or Checkout calls.
 Billing enablement and review holds still apply. Settlement records no payment
@@ -154,8 +157,10 @@ a replacement payment date.
    do not independently schedule another set of retries.
    The daily and reconciliation jobs throw `Charge runner is not configured`
    for an enabled gym if composition was omitted; disabled gyms may remain inert.
-4. Staff release overdue holds on the invoice page. Restore reconciliation returns
-   an operations report; owner confirmation to resume billing is a separate operation.
+4. Staff release overdue holds on the invoice page, confirming collection on the
+   next daily run unless they charge or record a payment first. Released invoices
+   are never held again. Restore reconciliation returns an operations report;
+   owner confirmation to resume billing is a separate operation.
 
 The PostgreSQL suite covers reservation visibility, replay, concurrent runs,
 recorded synthetic Stripe adapter fixtures, customer adoption, catch-up, local

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, inArray, isNull, lt, lte } from 'drizzle-orm';
-import { forGym, households, invoices, memberships, paymentAttempts, paymentMethods, uuidv7 } from '@plaingym/db';
+import { and, asc, desc, eq, inArray, isNull, lt, lte, notExists, or } from 'drizzle-orm';
+import { auditEvents, forGym, households, invoices, memberships, paymentAttempts, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { addDays, localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -12,7 +12,7 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError } from '../../../core/log.js';
 import { assignmentInvoices, audit, generateCycle, system } from './store.js';
 import { createReconciliation } from './reconciliation.js';
-import { eligibility, isAssignmentInvoice, skipped, type ChargeMode, type Skipped } from './eligibility.js';
+import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, skipped, type ChargeMode, type Skipped } from './eligibility.js';
 import { releaseActionNeeded, releaseCheckout } from './releases.js';
 export { releaseActionNeeded, releaseCheckout } from './releases.js';
 
@@ -155,12 +155,14 @@ export function createChargeRunner(options: RunnerOptions) {
       while (await scope(gymId, tx => generateCycle(tx, gym, clock, home.id, today))) generatedPeriods++;
     }
     // Also hold invoices issued before the outage, e.g. a gym that was missing its saved card.
-    const overdue = await scope(gymId, tx => tx.select({ id: invoices.id, kind: invoices.kind }).from(invoices).where(and(
-      eq(invoices.status, 'open'), eq(invoices.needsReview, false), lt(invoices.dueOn, addDays(today, -7)))));
+    const needsOverdueReview = (tx: Transaction) => and(eq(invoices.status, 'open'), eq(invoices.needsReview, false),
+      lt(invoices.dueOn, addDays(today, -7)), or(eq(invoices.kind, 'cycle'), assignmentInvoiceCondition(tx)),
+      notExists(tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.gymId, invoices.gymId),
+        eq(auditEvents.action, 'billing.invoice.review_released'), eq(auditEvents.targetId, invoices.id)))));
+    const overdue = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(needsOverdueReview(tx)));
     for (const bill of overdue) await scope(gymId, async tx => {
-      if (bill.kind !== 'cycle' && !await isAssignmentInvoice(tx, bill.id)) return;
       const changed = await tx.update(invoices).set({ needsReview: true }).where(and(eq(invoices.id, bill.id),
-        eq(invoices.status, 'open'), eq(invoices.needsReview, false))).returning();
+        needsOverdueReview(tx))).returning();
       if (changed.length) await audit(tx, system(gymId), clock, 'billing.runner.overdue_held', 'invoice', bill.id, { needsReview: true });
     });
     const due = await scope(gymId, async tx => {

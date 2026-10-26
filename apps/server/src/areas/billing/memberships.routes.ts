@@ -24,7 +24,7 @@ export function createMembershipRoutes(service?: MembershipService, hooks?: Memb
       if (assigned) {
         try {
           const result = await assigned(ctx.gym.gymId, data.householdId);
-          for (const error of result.errors) logError('billing.collect_assigned', { gymId: ctx.gym.gymId }, new Error(error.message));
+          for (const error of result.errors) logError('billing.collect_assigned', { gymId: ctx.gym.gymId, invoiceId: error.invoiceId }, new Error(error.message));
         } catch (error) { logError('billing.collect_assigned', { gymId: ctx.gym.gymId }, error); }
       }
       return { data };

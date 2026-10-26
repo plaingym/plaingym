@@ -147,9 +147,9 @@ describe('invoice and household payment UI', () => {
     const release = screen.queryByRole('button', { name: 'Release review hold' });
     if (!access.refund) { expect(release).toBeNull(); return; }
     fireEvent.click(release!);
-    expect(screen.getByText('Confirm that this overdue invoice may be collected. This clears the hold without charging a card.')).toBeDefined();
+    expect(screen.getByText('Confirm collection of this overdue invoice. The next billing run will charge the saved card unless you charge it now or record a payment first.')).toBeDefined();
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' }));
-    await screen.findByText('Review hold released. Choose how to collect this invoice.');
+    await screen.findByText('Review hold released. The next billing run will charge the saved card unless you charge it now or record a payment first.');
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Release review hold' })).toBeNull());
     expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/charge'))).toBe(false);
   });

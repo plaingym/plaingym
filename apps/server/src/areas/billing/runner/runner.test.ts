@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { allocateInvoiceNumber, auditEvents, households, invoiceLineItems, invoices, memberships, paymentAttempts, paymentMethods, payments, refunds, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -21,6 +21,7 @@ import { createInvoiceTransitions } from '../transitions/index.js';
 import { createTransitionEffects } from '../transitions/effects.js';
 import { createTransitionJobs } from '../transitions/transitions.jobs.js';
 import { createChargeRunner } from './index.js';
+import { assignmentInvoiceCondition, isAssignmentInvoice } from './eligibility.js';
 import { createRunnerJobs } from './runner.jobs.js';
 import { createWebhookInbox } from '../webhooks/inbox.js';
 import { composeBillingWebhooks } from '../webhooks/handlers/composition.js';
@@ -311,6 +312,73 @@ describe('runner review regression cases with PostgreSQL', () => {
       householdId: f.home.id, memberId: member.id, planId: plan.id, startsOn: '2028-03-01', nextDueOn: '2028-04-01', firstPeriod: 'prorate_now' });
     return { membership, lifecycle };
   }
+  it.each([
+    ['cycle', 'cycle', ['membership'], true],
+    ['assignment', 'one_off', ['membership', 'signup_fee'], true],
+    ['discounted and taxed assignment', 'one_off', ['membership', 'signup_fee', 'discount', 'tax'], true],
+    ['staff charge', 'one_off', ['charge'], false],
+    ['mixed staff charge', 'one_off', ['membership', 'charge'], false],
+    ['empty invoice', 'one_off', [], false],
+  ] as const)('SQL and application assignment predicates agree for %s', async (_name, kind, kinds, expected) => {
+    const f = await fixture(), bill = await invoice(f);
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ kind }).where(eq(invoices.id, bill.id)));
+    for (const lineKind of kinds) await factory('invoiceLineItems', f.gymId, {
+      householdId: f.home.id, invoiceId: bill.id, kind: lineKind,
+      ...(lineKind === 'membership' ? { membershipId: f.membership.id } : {}),
+      ...(lineKind === 'tax' ? { taxRateMillionths: 50000, taxInclusive: false } : {}),
+    });
+    await db.forGym(f.gymId, async tx => {
+      const matching = await tx.select({ id: invoices.id }).from(invoices)
+        .where(and(eq(invoices.id, bill.id), assignmentInvoiceCondition(tx)));
+      expect(matching.length > 0).toBe(expected);
+      expect(await isAssignmentInvoice(tx, bill.id)).toBe(expected);
+    });
+  });
+  it.each([
+    ['cycle', false], ['assignment', false], ['cycle', true], ['assignment', true],
+  ] as const)('keeps a released %s invoice released through daily collection (declined: %s)', async (kind, declined) => {
+    const f = await fixture({ status: 'cancelled' });
+    const bill = kind === 'cycle' ? await invoice(f) : await oneOff(f, 'membership');
+    f.clock.set('2028-03-11T17:00:00Z');
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 0, errors: [] });
+    expect((await f.read()).invoices[0]).toMatchObject({ id: bill.id, needsReview: true });
+    const owner = await factory('authUser', f.gymId);
+    await factory('staffRoles', f.gymId, { userId: owner.id, role: 'owner' });
+    const service = createPaymentService({ ...f.serviceOptions, transitions: f.transitions, runner: f.runner,
+      paymentsFor: async () => f.provider });
+    const create = vi.spyOn(f.provider, 'createCharge');
+    await service.releaseHold({ gymId: f.gymId, actor: { kind: 'user', userId: owner.id } }, bill.id);
+    expect(create).not.toHaveBeenCalled();
+    if (declined) f.provider.respondNextConfirmation('declined');
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 1, errors: [] });
+    f.clock.advance(86400000);
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 0, errors: [] });
+    const rows = await f.read();
+    expect(rows.invoices[0]).toMatchObject({ id: bill.id, needsReview: false,
+      status: declined ? kind === 'cycle' ? 'past_due' : 'open' : 'paid' });
+    expect(rows.attempts).toHaveLength(1);
+    expect(rows.attempts[0]!.status).toBe(declined ? 'failed' : 'succeeded');
+    expect(rows.payments).toHaveLength(declined ? 0 : 1);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(rows.audits.filter(row => row.action === 'billing.runner.overdue_held' && row.targetId === bill.id)).toHaveLength(1);
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.review_released' && row.targetId === bill.id)).toHaveLength(1);
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.dunning_started')).toHaveLength(declined && kind === 'cycle' ? 1 : 0);
+  });
+  it.each(['cycle', 'assignment'] as const)('keeps an unreleased %s invoice held on every daily run', async kind => {
+    const f = await fixture({ status: 'cancelled' });
+    const bill = kind === 'cycle' ? await invoice(f) : await oneOff(f, 'membership');
+    const create = vi.spyOn(f.provider, 'createCharge');
+    f.clock.set('2028-03-11T17:00:00Z');
+    for (let day = 0; day < 3; day++) {
+      expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 0, errors: [] });
+      expect((await f.read()).invoices[0]).toMatchObject({ id: bill.id, status: 'open', needsReview: true });
+      f.clock.advance(86400000);
+    }
+    const rows = await f.read();
+    expect(rows.audits.filter(row => row.action === 'billing.runner.overdue_held')).toHaveLength(1);
+    expect(rows.attempts).toHaveLength(0);
+    expect(create).not.toHaveBeenCalled();
+  });
   it('collects assignment proration and sign-up fees after commit, without collecting another household', async () => {
     const f = await fixture();
     const create = vi.spyOn(f.provider, 'createCharge');

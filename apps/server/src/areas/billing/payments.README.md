@@ -29,7 +29,10 @@ expiry that reveals success pays the invoice and refuses cash as already paid.
 Pending attempts still block cash; unavailable Stripe blocks any required release.
 
 Owners and admins may release a review hold through the audited `release-hold`
-action, which only clears `needsReview` under the invoice lock. It never charges.
+action, which clears `needsReview` under the invoice lock and records the staff
+confirmation. It never charges by itself, but makes the invoice eligible for the
+next daily run unless staff charge or record a payment first. The runner never
+holds a released invoice again.
 Any staff member with `payments.record` may record cash/check on a held invoice;
 the recorded payment confirms and clears the hold with an audit linked to that
 payment. The transitions handle a card outcome that races another payment.

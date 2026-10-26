@@ -107,8 +107,10 @@ node apps/server/src/public/links/styles.build.mjs apps/web/dist
 This uses the pinned web Tailwind version and shared design tokens, plus the
 existing esbuild toolchain. Browser code is built separately, avoiding server
 transpiler helpers in the browser. Generated CSS and JavaScript are not committed.
-`pnpm dev` builds into the ignored `apps/server/public/` directory before starting
-the server and web watcher. From the repository root, using the pinned Node version:
+`pnpm dev` builds into the ignored `apps/server/public/` directory once at startup,
+before starting the server and web watcher. After changing the link styles or
+client script, rerun `node apps/server/src/public/links/styles.build.mjs apps/server/public`
+or restart `pnpm dev`. From the repository root, using the pinned Node version:
 
 ```sh
 pnpm dev

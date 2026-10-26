@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, exists, isNull, notExists, notInArray } from 'drizzle-orm';
 import { auditEvents, households, invoiceLineItems, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -11,9 +11,17 @@ export type SkipReason = 'billing_disabled' | 'not_payable' | 'needs_review' | '
   | 'reservation_lost' | 'action_required' | 'collection_changed';
 export const skipped = (reason: SkipReason) => ({ status: 'skipped' as const, reason });
 export type Skipped = ReturnType<typeof skipped>;
+const assignmentLineKinds = ['membership', 'signup_fee', 'discount', 'tax'];
+/** Correlated to the outer invoice, with the same line rules as isAssignmentInvoice. */
+export function assignmentInvoiceCondition(tx: Transaction) {
+  const lines = () => tx.select({ id: invoiceLineItems.id }).from(invoiceLineItems);
+  const sameInvoice = and(eq(invoiceLineItems.gymId, invoices.gymId), eq(invoiceLineItems.invoiceId, invoices.id));
+  return and(exists(lines().where(sameInvoice)),
+    notExists(lines().where(and(sameInvoice, notInArray(invoiceLineItems.kind, assignmentLineKinds)))));
+}
 export async function isAssignmentInvoice(tx: Transaction, invoiceId: string) {
   const lines = await tx.select({ kind: invoiceLineItems.kind }).from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, invoiceId));
-  return lines.length > 0 && lines.every(line => ['membership', 'signup_fee', 'discount', 'tax'].includes(line.kind));
+  return lines.length > 0 && lines.every(line => assignmentLineKinds.includes(line.kind));
 }
 export interface Eligible {
   status: 'eligible';
