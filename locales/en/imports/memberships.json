@@ -1,3 +1,23 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "missingMember": "Supply an email or both first and last names for an existing member.",
+  "missingPlan": "Choose an existing plan by name or ID.",
+  "missingDueDate": "Supply the next billing date from the previous system.",
+  "invalidDate": "Use a real calendar date in YYYY-MM-DD format.",
+  "invalidPrice": "Enter a nonnegative whole number of cents, at most 2147483647.",
+  "invalidInterval": "Use monthly or annual for the billing interval.",
+  "invalidCurrency": "Use a three-letter currency code.",
+  "invalidDay": "Billing day must be a whole number from 1 to 31.",
+  "invalidStatus": "Import active renewals only; manage trials, freezes and cancellations separately.",
+  "unknownMember": "No existing member matches this identity.",
+  "ambiguousMember": "Several members match; supply names or a birth date to identify one member.",
+  "unknownPlan": "No active plan matches this name or ID.",
+  "ambiguousPlan": "Several plans have this name; map the plan ID instead.",
+  "currencyMismatch": "The imported currency must match the plan currency.",
+  "duplicateRow": "This member and plan already appear in row {row}.",
+  "billingDayConflict": "Monthly renewals in a household must share one billing day, allowing shorter months.",
+  "existingScheduleConflict": "An existing monthly membership uses another billing day; review the household's schedule first.",
+  "immutableMembership": "Only active or pending memberships can be updated by this import.",
+  "beforeStartsOn": "The next billing date cannot be before the membership start date.",
+  "invalidAnnualDay": "For annual renewals, billing day must match the due date's day, except 29 for February 28 in a non-leap year."
 }
