@@ -90,6 +90,10 @@ it('tags all explicitly created objects and sends Endive parameters', async () =
   expect(payment?.params?.payment_intent_data).toMatchObject({ metadata: { gym_id: gymId }, setup_future_usage: 'off_session' });
   expect(payment?.params).not.toHaveProperty('payment_method_types');
   expect(creates.find((input) => input.path === '/v1/webhook_endpoints')?.params?.api_version).toBe(STRIPE_API_VERSION);
+  const enabled = creates.find((input) => input.path === '/v1/webhook_endpoints')?.params?.enabled_events;
+  expect(enabled).toContain('payment_method.automatically_updated');
+  expect(enabled).not.toContain('charge.dispute.funds_reinstated');
+  expect(enabled).not.toContain('charge.dispute.funds_withdrawn');
 });
 it('reconciles untagged dashboard refunds and disputes through Charge -> PaymentIntent', async () => {
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
@@ -300,6 +304,7 @@ it('blocks all provider operations inside a database transaction before any requ
     const calls = [() => payments.createCharge(charge), () => payments.confirmCharge('pi_fixture', { idempotencyKey: 'confirm' }),
       () => payments.cancelCharge('pi_fixture'), () => payments.findCharge({ kind: 'charge', id: 'pi_fixture' }),
       () => payments.readPaymentObject({ kind: 'setup', id: 'seti_fixture' }), () => payments.listChangesSince(new Date()),
+      () => payments.listRefunds('pi_fixture'),
       () => payments.refund({ chargeId: 'pi_fixture', amount: 1, idempotencyKey: 'refund' }), () => payments.createCheckout(checkout),
       () => payments.expireCheckout('cs_fixture'), () => payments.findCustomerByEmail('payer@example.invalid'),
       () => payments.adoptCustomer('cus_fixture'), () => payments.parseWebhook(new Uint8Array(), '')];

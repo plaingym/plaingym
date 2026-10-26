@@ -20,7 +20,7 @@ export const STRIPE_EVENTS = ['payment_intent.created', 'payment_intent.succeede
   'payment_intent.requires_action', 'payment_intent.processing', 'payment_intent.canceled',
   'checkout.session.completed', 'checkout.session.expired', 'checkout.session.async_payment_succeeded',
   'checkout.session.async_payment_failed', 'setup_intent.succeeded', 'setup_intent.setup_failed',
-  'payment_method.attached', 'payment_method.updated', 'charge.refunded', 'refund.created', 'refund.updated',
+  'payment_method.attached', 'payment_method.updated', 'payment_method.automatically_updated', 'charge.refunded', 'refund.created', 'refund.updated',
   'refund.failed', 'charge.dispute.created', 'charge.dispute.updated', 'charge.dispute.closed'];
 
 export function data(value: unknown): ObjectData {
@@ -38,6 +38,10 @@ function money(amount: number | undefined, currency: string | undefined): void {
     throw new Error('Expected positive integer cents in usd or cad');
 }
 function key(value: string): void { if (!value || value.length > 200) throw new Error('Invalid idempotency key'); }
+function timestamp(value: Json | undefined): Date {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error('Invalid provider timestamp');
+  return new Date(value * 1000);
+}
 class NotForGym extends Error {}
 function queryString(params: ObjectData): string {
   const query = new URLSearchParams();
@@ -151,18 +155,34 @@ export class StripePayments implements Payments {
       }
     } catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference: { kind: 'charge', id: objectId } }; throw error; }
   }
-  async findCharge(reference: ChargeReference): Promise<ChargeOutcome> {
+  async findCharge(reference: ChargeReference, options?: { includeSuccessTime?: boolean }): Promise<ChargeOutcome> {
     assertNoTransaction('payments.findCharge');
+    let outcome: ChargeOutcome;
     try {
-      if (reference.kind === 'charge') return this.#intent(await this.#ownedIntent(reference.id));
-      const session = await this.#checkout(await this.#get(this.#path('checkout/sessions', reference.id)));
-      return session.chargeId ? this.#intent(await this.#ownedIntent(session.chargeId)) : { status: 'unknown', reference };
+      if (reference.kind === 'charge') outcome = this.#intent(await this.#ownedIntent(reference.id));
+      else {
+        const session = await this.#checkout(await this.#get(this.#path('checkout/sessions', reference.id)));
+        outcome = session.chargeId ? this.#intent(await this.#ownedIntent(session.chargeId)) : { status: 'unknown', reference };
+      }
     } catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference }; throw error; }
+    // Opt in so existing caller request sequences remain unchanged. A missing Charge is retryable,
+    // never an unknown intent and never permission to substitute the processing clock.
+    if (options?.includeSuccessTime && outcome.status === 'succeeded') {
+      if (!outcome.latestChargeId) throw new Error('Successful payment requires its processor Charge ID');
+      const charge = await this.#get(this.#path('charges', outcome.latestChargeId));
+      if (id(charge.payment_intent) !== outcome.id) throw new Error('Successful Charge parent mismatch');
+      return { ...outcome, succeededAt: timestamp(charge.created) };
+    }
+    return outcome;
   }
   async #checkout(object: ObjectData): Promise<CheckoutSession> {
     const metadata = this.#metadata(object), chargeId = optionalId(object.payment_intent), setupId = optionalId(object.setup_intent);
-    let paymentMethodId: string | undefined;
-    if (chargeId) paymentMethodId = optionalId((await this.#ownedIntent(chargeId)).payment_method);
+    let paymentMethodId: string | undefined, savesCard = object.mode === 'setup';
+    if (chargeId) {
+      const intent = await this.#ownedIntent(chargeId);
+      paymentMethodId = optionalId(intent.payment_method);
+      savesCard = intent.setup_future_usage === 'off_session' || intent.setup_future_usage === 'on_session';
+    }
     if (setupId) {
       const setup = await this.#get(this.#path('setup_intents', setupId)); this.#metadata(setup);
       paymentMethodId = optionalId(setup.payment_method);
@@ -170,7 +190,7 @@ export class StripePayments implements Payments {
     if (!['open', 'complete', 'expired'].includes(String(object.status)) || !['setup', 'payment'].includes(String(object.mode)))
       throw new Error('Invalid Checkout state');
     return { id: id(object.id), mode: object.mode as 'payment' | 'setup', url: String(object.url ?? ''),
-      status: object.status as CheckoutSession['status'], customerId: id(object.customer), metadata,
+      status: object.status as CheckoutSession['status'], customerId: id(object.customer), metadata, savesCard,
       ...(chargeId ? { chargeId } : {}), ...(setupId ? { setupId } : {}), ...(paymentMethodId ? { paymentMethodId } : {}) };
   }
   async createCheckout(request: CheckoutRequest): Promise<CheckoutSession> {
@@ -230,6 +250,27 @@ export class StripePayments implements Payments {
     return this.#refund(await this.#post('/v1/refunds', { payment_intent: request.chargeId, amount: request.amount,
       metadata: { gym_id: this.gymId, ...(data(parent.metadata).invoice_id ? { invoice_id: data(parent.metadata).invoice_id } : {}) } }, request.idempotencyKey));
   }
+  async listRefunds(chargeId: string): Promise<readonly Refund[]> {
+    assertNoTransaction('payments.listRefunds');
+    await this.#ownedIntent(chargeId);
+    const refunds: Refund[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      const page = await this.#get('/v1/refunds', { payment_intent: chargeId, limit: 100, ...(cursor ? { starting_after: cursor } : {}) });
+      const objects = (page.data as Json[]).map(data);
+      for (const object of objects) {
+        const refund = await this.#refund(object);
+        if (refund.chargeId !== chargeId) throw new Error('Refund parent mismatch');
+        if (!seen.has(refund.id)) refunds.push(refund);
+        seen.add(refund.id);
+      }
+      const next = page.has_more ? id(objects.at(-1)?.id) : undefined;
+      if (page.has_more && (!objects.length || next === cursor)) throw new Error('Invalid Stripe refund page');
+      cursor = next;
+    } while (cursor);
+    return refunds;
+  }
   async readPaymentObject(reference: PaymentObjectReference): Promise<PaymentObjectResult> {
     assertNoTransaction('payments.readPaymentObject');
     try { return { status: 'found', value: await this.#read(reference) }; }
@@ -244,7 +285,8 @@ export class StripePayments implements Payments {
       case 'dispute': {
         const object = await this.#get(this.#path('disputes', reference.id)), parent = await this.#parentIntent(object);
         value = { kind: 'dispute', object: { id: id(object.id), chargeId: id(parent.id), amount: Number(object.amount),
-          status: object.status === 'won' || object.status === 'lost' ? object.status : 'open' } }; break;
+          status: object.status === 'won' || object.status === 'lost' ? object.status
+            : ['warning_closed', 'charge_refunded', 'prevented'].includes(String(object.status)) ? 'closed' : 'open' } }; break;
       }
       case 'setup': {
         const object = await this.#get(this.#path('setup_intents', reference.id));
@@ -260,7 +302,7 @@ export class StripePayments implements Payments {
         if (!object.customer) throw new NotForGym('Payment method has no customer');
         await this.#ownedCustomer(id(object.customer));
         const card = data(object.card);
-        value = { kind: 'payment_method', object: { id: id(object.id), customerId: id(object.customer), last4: String(card.last4),
+        value = { kind: 'payment_method', object: { id: id(object.id), createdAt: timestamp(object.created), customerId: id(object.customer), last4: String(card.last4),
           expiresMonth: Number(card.exp_month), expiresYear: Number(card.exp_year) } }; break;
       }
     }

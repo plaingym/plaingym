@@ -43,6 +43,13 @@
       "when": 1792947833778,
       "tag": "0006_membership_anniversary",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792991071503,
+      "tag": "0007_payment_method_processor_created_at",
+      "breakpoints": true
     }
   ]
 }

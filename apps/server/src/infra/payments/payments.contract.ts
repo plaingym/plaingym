@@ -42,8 +42,32 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       const { payments, checkout } = await create();
       const session = await payments.createCheckout({ ...checkout, mode: 'setup' });
       expect(session.mode).toBe('setup');
+      expect(session.savesCard).toBe(true);
       expect(await payments.expireCheckout(session.id)).toEqual({ status: 'expired' });
       expect(await payments.expireCheckout('cs_missing')).toEqual({ status: 'uncertain' });
+    });
+    it('lists only the refunds of the requested payment intent', async () => {
+      const { payments, charge } = await create(), first = await payments.createCharge(charge);
+      await payments.confirmCharge(first.id, { idempotencyKey: charge.idempotencyKey + ':confirm' });
+      const other = await payments.createCharge({ ...charge, idempotencyKey: charge.idempotencyKey + ':other' });
+      await payments.confirmCharge(other.id, { idempotencyKey: charge.idempotencyKey + ':other:confirm' });
+      expect(await payments.listRefunds(first.id)).toEqual([]);
+      const refund = await payments.refund({ chargeId: first.id, amount: charge.amount, idempotencyKey: charge.idempotencyKey + ':refund' });
+      await payments.refund({ chargeId: other.id, amount: charge.amount, idempotencyKey: charge.idempotencyKey + ':other:refund' });
+      expect(await payments.listRefunds(first.id)).toEqual([refund]);
+      expect(await payments.listRefunds(first.id)).toEqual([refund]);
+      await expect(payments.listRefunds('pi_missing')).rejects.toThrow();
+    });
+    it('reads the provider success time on demand and retains it across repeated lookups', async () => {
+      const { payments, charge } = await create(), intent = await payments.createCharge(charge);
+      await payments.confirmCharge(intent.id, { idempotencyKey: charge.idempotencyKey + ':confirm' });
+      const outcome = await payments.findCharge({ kind: 'charge', id: intent.id }, { includeSuccessTime: true });
+      expect(outcome).toMatchObject({ status: 'succeeded', succeededAt: expect.any(Date) });
+      expect(await payments.findCharge({ kind: 'charge', id: intent.id }, { includeSuccessTime: true })).toEqual(outcome);
+    });
+    it.each([true, false])('reports whether payment Checkout saves the card: %s', async saveForOffSession => {
+      const { payments, checkout } = await create();
+      expect(await payments.createCheckout({ ...checkout, saveForOffSession })).toMatchObject({ savesCard: saveForOffSession });
     });
     it('pages through changes and re-fetches the current charge state', async () => {
       const { payments, charge, since = new Date() } = await create();

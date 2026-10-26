@@ -106,6 +106,7 @@ export const paymentMethods = pgTable('payment_methods', {
   ...base(), householdId: uuid('household_id').notNull(), processorId: text('processor_id').notNull(),
   brand: text('brand'), last4: text('last4'), expiryMonth: integer('expiry_month'), expiryYear: integer('expiry_year'),
   isDefault: boolean('is_default').notNull().default(false), revokedAt: instant('revoked_at'),
+  processorCreatedAt: instant('processor_created_at'),
 }, (t) => [...scoped('payment_methods', t), ref('payment_methods_household_fk', t.gymId, t.householdId, households),
   unique('payment_methods_processor_key').on(t.gymId, t.processorId),
   unique('payment_methods_gym_household_id_key').on(t.gymId, t.householdId, t.id),

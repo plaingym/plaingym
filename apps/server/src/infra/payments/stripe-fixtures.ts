@@ -11,7 +11,7 @@ export class StripeFixtures implements PaymentTransport {
   constructor(readonly gymId: string, readonly now = 1792756800) {
     this.objects.set('cus_fixture', { id: 'cus_fixture', object: 'customer', email: 'payer@example.invalid', metadata: { gym_id: gymId } });
     for (const card of ['4242', '0341', '3155', '3184']) this.objects.set('pm_' + card, {
-      id: 'pm_' + card, object: 'payment_method', customer: 'cus_fixture', card: { last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
+      id: 'pm_' + card, object: 'payment_method', created: now, customer: 'cus_fixture', card: { last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
     });
   }
   completeCheckout(sessionId: string): void {
@@ -20,6 +20,9 @@ export class StripeFixtures implements PaymentTransport {
     if (session.mode === 'payment') {
       const intent = this.objects.get(String(session.payment_intent))!;
       intent.status = 'succeeded'; intent.payment_method = 'pm_3155';
+      if (!intent.setup_future_usage) intent.payment_method = this.#store('pm', { object: 'payment_method', customer: null,
+        card: { last4: '3155', exp_month: 12, exp_year: 2030 } }).id;
+      intent.latest_charge = this.#store('ch', { object: 'charge', payment_intent: intent.id, metadata: intent.metadata }).id;
     } else {
       const setup = this.objects.get(String(session.setup_intent))!;
       setup.status = 'succeeded'; setup.payment_method = 'pm_3155';
@@ -58,6 +61,8 @@ export class StripeFixtures implements PaymentTransport {
         created: this.now, data: { object: { id: object.id, object: object.object, status: 'stale_snapshot' } } }))
         : [...this.objects.values()].filter((object) => object.object === kind[resource]);
       if (params.email) objects = objects.filter((object) => object.email === params.email);
+      if (resource === 'refunds' && params.payment_intent) objects = objects.filter(object =>
+        (object.payment_intent ?? this.objects.get(String(object.charge))?.payment_intent) === params.payment_intent);
       const after = params.starting_after ? objects.findIndex((object) => object.id === params.starting_after) + 1 : 0;
       const limit = Number(params.limit ?? 100);
       return { data: objects.slice(after, after + limit), has_more: after + limit < objects.length };
@@ -94,7 +99,8 @@ export class StripeFixtures implements PaymentTransport {
     if (resource === 'checkout/sessions') {
       const mode = params.mode, metadata = (params[mode === 'payment' ? 'payment_intent_data' : 'setup_intent_data'] as ObjectData).metadata;
       const linked = this.#store(mode === 'payment' ? 'pi' : 'seti', { object: mode === 'payment' ? 'payment_intent' : 'setup_intent',
-        customer: params.customer, metadata, status: 'requires_payment_method', payment_method: null, amount: 100, currency: 'usd' });
+        customer: params.customer, metadata, status: 'requires_payment_method', payment_method: null, amount: 100, currency: 'usd',
+        ...(mode === 'payment' ? { setup_future_usage: (params.payment_intent_data as ObjectData).setup_future_usage ?? null } : {}) });
       return this.#store('cs', { object: 'checkout.session', ...params, status: 'open', url: 'https://checkout.invalid/fixture',
         [mode === 'payment' ? 'payment_intent' : 'setup_intent']: linked.id });
     }

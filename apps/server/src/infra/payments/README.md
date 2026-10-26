@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Payments adapter
 
-The frozen `Payments` types, `FakePayments`, and `normalizeChargeOutcome` stay exported
+The `Payments` types, `FakePayments`, and `normalizeChargeOutcome` are exported
 from `index.ts`. Import `StripePayments`, `stripeTransport`, and
 `STRIPE_API_VERSION` from `stripe.ts`. Only this directory imports the Stripe SDK
 (`stripe` **23.0.0**). All requests and webhook registrations pin
@@ -25,6 +25,35 @@ tagged for another gym. Call it only on staff-provided IDs. Email matches are
 restricted to tagged customers and ambiguity fails closed. The saved
 method is returned explicitly; a Checkout success never implies a Customer default.
 
+`CheckoutSession.savesCard` is derived from the payment intent's
+`setup_future_usage` (or setup mode). A payment Checkout without that setting
+does not require an attached card. `PaymentMethod.createdAt` comes from the
+provider's `created` timestamp; the fake captures its clock when the method is
+first recorded and preserves it across updates. Consumers store that time to
+order defaults independently of webhook arrival or event retention.
+
+`findCharge(reference, { includeSuccessTime: true })` adds `succeededAt` to a
+successful outcome by retrieving the latest Charge and reading its `created`
+timestamp. It verifies the Charge's parent intent. Missing/invalid time or an
+unresolved Charge fails the lookup; callers must not substitute their processing
+clock. The option is explicit so default lookups, confirmation, cancellation,
+and change-feed requests keep their existing request sequences and strict replay
+compatibility. The fake records success time when confirmation or Checkout
+completion succeeds and keeps it on later reads.
+
+`listRefunds(paymentIntentId)` checks intent ownership and pages
+`GET /v1/refunds?payment_intent=<id>&limit=100`, following `starting_after`.
+It returns all current refunds for that intent, including untagged dashboard
+refunds, and refuses a mismatched parent. It never scans events or unrelated
+payment intents/disputes. Refunds can be refreshed individually with
+`readPaymentObject` before applying invoice transitions.
+
+Dispute status is normalized to `open`, `won`, `lost`, or `closed`.
+`warning_closed`, legacy `charge_refunded`, and `prevented` map to `closed`,
+without claiming a win or loss. Consumers preserve terminal states on stale
+delivery. The invoice dispute-status column is nullable text; no dispute-status
+CHECK constraint exists in the current schema.
+
 `parseWebhook` verifies the exact bytes and timestamp through the SDK. It only
 extracts identity and routing from signed events. Events without gym metadata
 (including dashboard refunds and disputes) require parent lookup. Read the body
@@ -40,8 +69,7 @@ these outcomes in the webhook inbox:
 
 Stripe API errors during identity or parent lookup retain their original error;
 return a retryable non-2xx response. A missing parent is an API failure, not proof
-that an event belongs elsewhere. `Payments` and `FakePayments` exports are unchanged;
-the fake does not yet produce these error codes.
+that an event belongs elsewhere. The fake does not produce these error codes.
 
 `listChangesSince` reads every event page and re-fetches the referenced objects at
 the pinned version. It then pages through PaymentIntents, refunds, and disputes by
@@ -67,6 +95,10 @@ registration proves Webhook Endpoints Write and returns the endpoint-specific
 secret. Credentials and that secret are stored together, encrypted as `stripe_config`.
 Retries use a deterministic endpoint key. If saving loses the revision race, no
 credentials activate; an unreferenced endpoint can remain for operator review.
+New endpoints subscribe to `payment_method.automatically_updated` as well as
+`payment_method.updated`. Provisioning creates endpoints; it does not update
+`enabled_events` on an existing endpoint. Existing installations must update
+that subscription separately to receive automatic card updates.
 
 ## Offline contracts and recording
 
@@ -198,7 +230,7 @@ saves encrypted configuration and an audit atomically with a revision guard.
 `createStripeStepRoutes(step)` implements the existing PUT `/api/setup/stripe`
 contract. Replace the old skip-only registration; never mount both.
 `createPaymentsResolver({ key, scope?, clock? })(gymId)` returns the configured
-adapter or null. No credentials or SDK types cross the frozen interface.
+adapter or null. No credentials or SDK types cross the interface.
 
 The registered web `StripeStep` is phone-first, masks its key, shows all required
 permissions, and clears the key on success or failure. The wizard shell must

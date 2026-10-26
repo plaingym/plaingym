@@ -21,7 +21,7 @@ export interface ChargeIdentity {
   readonly metadata: PaymentMetadata;
 }
 export type ChargeOutcome =
-  | (ChargeIdentity & { status: 'succeeded' })
+  | (ChargeIdentity & { status: 'succeeded'; succeededAt?: Date })
   | (ChargeIdentity & { status: 'failed'; code: 'declined' | 'canceled' | 'provider_error' })
   | (ChargeIdentity & { status: 'action_required'; code: 'authentication_required' })
   | (ChargeIdentity & { status: 'pending' })
@@ -53,6 +53,7 @@ export type CheckoutRequest = CheckoutOptions &
 export interface CheckoutSession {
   readonly id: string;
   readonly mode: 'payment' | 'setup';
+  readonly savesCard: boolean;
   readonly url: string;
   readonly status: 'open' | 'complete' | 'expired';
   readonly chargeId?: string;
@@ -75,10 +76,11 @@ export interface Dispute {
   readonly id: string;
   readonly chargeId: string;
   readonly amount: number;
-  readonly status: 'open' | 'won' | 'lost';
+  readonly status: 'open' | 'won' | 'lost' | 'closed';
 }
 export interface PaymentMethod {
   readonly id: string;
+  readonly createdAt: Date;
   readonly customerId: string;
   readonly last4: string;
   readonly expiresMonth: number;
@@ -122,7 +124,10 @@ export interface Payments {
   createCharge(request: CreateCharge): Promise<{ id: string }>;
   confirmCharge(id: string, options: { idempotencyKey: string }): Promise<ChargeOutcome>;
   cancelCharge(id: string): Promise<ChargeOutcome>;
-  findCharge(reference: ChargeReference): Promise<ChargeOutcome>;
+  /** includeSuccessTime retrieves the latest Charge's creation time for payment accounting. */
+  findCharge(reference: ChargeReference, options?: { includeSuccessTime?: boolean }): Promise<ChargeOutcome>;
+  /** All refunds of this PaymentIntent, including dashboard refunds; no event-history scan. */
+  listRefunds(chargeId: string): Promise<readonly Refund[]>;
   /** Re-fetches the referenced object at the adapter's pinned API version. */
   readPaymentObject(reference: PaymentObjectReference): Promise<PaymentObjectResult>;
   listChangesSince(
@@ -147,6 +152,7 @@ export interface Payments {
 
 export interface ProviderChargeState extends ChargeIdentity {
   status: string;
+  succeededAt?: Date;
   last_payment_error?: { code?: string } | null;
 }
 
@@ -171,7 +177,7 @@ export function normalizeChargeOutcome(charge: ProviderChargeState, error?: unkn
     ...(charge.latestChargeId ? { latestChargeId: charge.latestChargeId } : {}),
     metadata: { ...charge.metadata },
   };
-  if (charge.status === 'succeeded') return { ...identity, status: 'succeeded' };
+  if (charge.status === 'succeeded') return { ...identity, status: 'succeeded', ...(charge.succeededAt ? { succeededAt: charge.succeededAt } : {}) };
   if (charge.status === 'canceled') return { ...identity, status: 'failed', code: 'canceled' };
   if (
     charge.status === 'requires_action' ||
@@ -235,8 +241,8 @@ export class FakePayments implements Payments {
   seedCustomer(customer: { id: string; email: string }): void {
     this.#customers.push({ ...customer });
   }
-  recordPaymentMethod(method: PaymentMethod): void {
-    this.#methods.set(method.id, structuredClone(method));
+  recordPaymentMethod(method: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date }): void {
+    this.#methods.set(method.id, structuredClone({ ...method, createdAt: method.createdAt ?? this.#methods.get(method.id)?.createdAt ?? this.clock.now() }));
     this.#record('payment_method', method.id);
   }
   recordSetup(setup: SetupOutcome): void {
@@ -341,7 +347,7 @@ export class FakePayments implements Payments {
           : status === 'action_required'
             ? { ...identity, status, code: 'authentication_required' }
             : status === 'succeeded'
-              ? { ...identity, status: 'succeeded' }
+              ? { ...identity, status: 'succeeded', succeededAt: this.clock.now() }
               : { ...identity, status: 'pending' };
       this.#charges.set(id, next);
       this.#record('charge', id);
@@ -359,13 +365,18 @@ export class FakePayments implements Payments {
     this.#record('charge', id);
     return structuredClone(result);
   }
-  async findCharge(reference: ChargeReference): Promise<ChargeOutcome> {
+  async findCharge(reference: ChargeReference, _options?: { includeSuccessTime?: boolean }): Promise<ChargeOutcome> {
     assertNoTransaction('payments.findCharge');
     const id = reference.kind === 'checkout' ? this.#checkouts.get(reference.id)?.chargeId : reference.id;
     if (!id || this.#uncertain.has(reference.id) || this.#uncertain.has(id)) {
       return { status: 'unknown', reference: { ...reference } };
     }
     return structuredClone(this.#charges.get(id) ?? { status: 'unknown', reference });
+  }
+  async listRefunds(chargeId: string): Promise<readonly Refund[]> {
+    assertNoTransaction('payments.listRefunds');
+    if (!this.#charges.has(chargeId) || this.#uncertain.has(chargeId)) throw new Error('Refund payment is unresolved');
+    return structuredClone([...this.#refunds.values()].filter(refund => refund.chargeId === chargeId));
   }
   async readPaymentObject(reference: PaymentObjectReference): Promise<PaymentObjectResult> {
     assertNoTransaction('payments.readPaymentObject');
@@ -421,6 +432,7 @@ export class FakePayments implements Payments {
           id,
           customerId,
           mode: request.mode,
+          savesCard: request.mode === 'setup' || request.saveForOffSession,
           url: `https://checkout.invalid/${id}`,
           status: 'open',
           metadata: { gymId: this.gymId, ...(request.invoiceId ? { invoiceId: request.invoiceId } : {}) },
@@ -441,7 +453,7 @@ export class FakePayments implements Payments {
     if (session.status === 'complete') return structuredClone(session);
     const chargeId = session.mode === 'payment' ? this.#id('pi') : undefined;
     const paymentMethodId = this.#id('pm');
-    this.recordPaymentMethod({
+    if (session.savesCard) this.recordPaymentMethod({
       id: paymentMethodId,
       customerId: session.customerId,
       last4: '4242',
@@ -467,6 +479,7 @@ export class FakePayments implements Payments {
         latestChargeId: this.#id('ch'),
         metadata: session.metadata,
         status: 'succeeded',
+        succeededAt: this.clock.now(),
       });
       this.#record('charge', chargeId);
     }

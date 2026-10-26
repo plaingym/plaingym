@@ -1,0 +1,2619 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only; recorded synthetic StripeFixtures API exchanges, no live account",
+  "version": 1,
+  "gymId": "00000000-0000-7000-8000-000000000001",
+  "exchanges": [
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/checkout/sessions",
+        "params": {
+          "mode": "payment",
+          "customer": "cus_fixture",
+          "success_url": "https://gym.example.invalid/ok",
+          "cancel_url": "https://gym.example.invalid/cancel",
+          "allowed_payment_method_types": [
+            "card"
+          ],
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "payment_intent_data": {
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "invoice_id": "00000000-0000-7000-8000-000000000002"
+            },
+            "setup_future_usage": "off_session"
+          },
+          "line_items": [
+            {
+              "quantity": 1,
+              "price_data": {
+                "currency": "usd",
+                "unit_amount": 10000,
+                "product_data": {
+                  "name": "Invoice payment",
+                  "metadata": {
+                    "gym_id": "00000000-0000-7000-8000-000000000001",
+                    "invoice_id": "00000000-0000-7000-8000-000000000002"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "idempotencyKey": "checkout"
+      },
+      "output": {
+        "id": "cs_2",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "setup_future_usage": "off_session"
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "usd",
+              "unit_amount": 10000,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002"
+                }
+              }
+            }
+          }
+        ],
+        "status": "open",
+        "url": "https://checkout.invalid/fixture",
+        "payment_intent": "pi_1"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "requires_payment_method",
+        "payment_method": null,
+        "amount": 100,
+        "currency": "usd",
+        "setup_future_usage": "off_session"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_2"
+      },
+      "output": {
+        "id": "cs_2",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "setup_future_usage": "off_session"
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "usd",
+              "unit_amount": 10000,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002"
+                }
+              }
+            }
+          }
+        ],
+        "status": "complete",
+        "url": null,
+        "payment_intent": "pi_1"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_2"
+      },
+      "output": {
+        "id": "cs_2",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "setup_future_usage": "off_session"
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "usd",
+              "unit_amount": 10000,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002"
+                }
+              }
+            }
+          }
+        ],
+        "status": "complete",
+        "url": null,
+        "payment_intent": "pi_1"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2030
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_2"
+      },
+      "output": {
+        "id": "cs_2",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "setup_future_usage": "off_session"
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "usd",
+              "unit_amount": 10000,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002"
+                }
+              }
+            }
+          }
+        ],
+        "status": "complete",
+        "url": null,
+        "payment_intent": "pi_1"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_2"
+      },
+      "output": {
+        "id": "cs_2",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "setup_future_usage": "off_session"
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "usd",
+              "unit_amount": 10000,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002"
+                }
+              }
+            }
+          }
+        ],
+        "status": "complete",
+        "url": null,
+        "payment_intent": "pi_1"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2030
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "POST",
+        "path": "/v1/checkout/sessions",
+        "params": {
+          "mode": "setup",
+          "customer": "cus_fixture",
+          "success_url": "https://gym.example.invalid/ok",
+          "cancel_url": "https://gym.example.invalid/cancel",
+          "allowed_payment_method_types": [
+            "card"
+          ],
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          },
+          "setup_intent_data": {
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        },
+        "idempotencyKey": "setup"
+      },
+      "output": {
+        "id": "cs_5",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "setup",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "setup_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          }
+        },
+        "status": "open",
+        "url": "https://checkout.invalid/fixture",
+        "setup_intent": "seti_4"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "requires_payment_method",
+        "payment_method": null,
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_5"
+      },
+      "output": {
+        "id": "cs_5",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "setup",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "setup_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          }
+        },
+        "status": "complete",
+        "url": null,
+        "setup_intent": "seti_4"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2030
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_5"
+      },
+      "output": {
+        "id": "cs_5",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "setup",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "setup_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          }
+        },
+        "status": "complete",
+        "url": null,
+        "setup_intent": "seti_4"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2030
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2030
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_4"
+      },
+      "output": {
+        "id": "seti_4",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2030
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2035
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2035
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2035
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_methods/pm_3155"
+      },
+      "output": {
+        "id": "pm_3155",
+        "object": "payment_method",
+        "created": 1792929600,
+        "customer": "cus_fixture",
+        "card": {
+          "last4": "3155",
+          "exp_month": 12,
+          "exp_year": 2035
+        },
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds",
+        "params": {
+          "payment_intent": "pi_1",
+          "limit": 100
+        }
+      },
+      "output": {
+        "data": [
+          {
+            "id": "re_dashboard",
+            "object": "refund",
+            "charge": "ch_2",
+            "amount": 2500,
+            "currency": "usd",
+            "status": "succeeded",
+            "metadata": {},
+            "created": 1792929600
+          }
+        ],
+        "has_more": false
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds",
+        "params": {
+          "payment_intent": "pi_1",
+          "limit": 100
+        }
+      },
+      "output": {
+        "data": [
+          {
+            "id": "re_dashboard",
+            "object": "refund",
+            "charge": "ch_2",
+            "amount": 2500,
+            "currency": "usd",
+            "status": "succeeded",
+            "metadata": {},
+            "created": 1792929600
+          }
+        ],
+        "has_more": false
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/refunds/re_dashboard"
+      },
+      "output": {
+        "id": "re_dashboard",
+        "object": "refund",
+        "charge": "ch_2",
+        "amount": 2500,
+        "currency": "usd",
+        "status": "succeeded",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_2"
+      },
+      "output": {
+        "id": "ch_2",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "metadata": {},
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/disputes/dp_recorded"
+      },
+      "output": {
+        "id": "dp_recorded",
+        "object": "dispute",
+        "charge": "ch_checkout",
+        "amount": 10000,
+        "status": "lost",
+        "metadata": {}
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/disputes/dp_recorded"
+      },
+      "output": {
+        "id": "dp_recorded",
+        "object": "dispute",
+        "charge": "ch_checkout",
+        "amount": 10000,
+        "status": "lost",
+        "metadata": {}
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/disputes/dp_recorded"
+      },
+      "output": {
+        "id": "dp_recorded",
+        "object": "dispute",
+        "charge": "ch_checkout",
+        "amount": 10000,
+        "status": "lost",
+        "metadata": {}
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/disputes/dp_recorded"
+      },
+      "output": {
+        "id": "dp_recorded",
+        "object": "dispute",
+        "charge": "ch_checkout",
+        "amount": 10000,
+        "status": "lost",
+        "metadata": {}
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/disputes/dp_recorded"
+      },
+      "output": {
+        "id": "dp_recorded",
+        "object": "dispute",
+        "charge": "ch_checkout",
+        "amount": 10000,
+        "status": "lost",
+        "metadata": {}
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/disputes/dp_recorded"
+      },
+      "output": {
+        "id": "dp_recorded",
+        "object": "dispute",
+        "charge": "ch_checkout",
+        "amount": 10000,
+        "status": "lost",
+        "metadata": {}
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/charges/ch_checkout"
+      },
+      "output": {
+        "id": "ch_checkout",
+        "object": "charge",
+        "payment_intent": "pi_1",
+        "created": 1792929600
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_1"
+      },
+      "output": {
+        "id": "pi_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    }
+  ]
+}
