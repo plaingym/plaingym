@@ -23,9 +23,10 @@ export function composeBillingWebhooks(options: {
   staffRecipients: Parameters<typeof createTransitionNotifications>[0]['staffRecipients'];
 }) {
   let retry: TransitionEffectOptions['retry'] | undefined;
+  const notifications = createTransitionNotifications(options);
   const transitions = createInvoiceTransitions({ ...options, afterCommit: gymId => effects.publish(gymId) });
   const effects = createTransitionEffects({ ...options, transitions,
-    memberships: createMembershipService(options), notifications: createTransitionNotifications(options),
+    memberships: createMembershipService(options), notifications,
     async payments(gymId) {
       const provider = await options.paymentsFor(gymId);
       if (!provider) throw new Error('Payments are not configured for this gym');
@@ -38,5 +39,5 @@ export function composeBillingWebhooks(options: {
   });
   registerBillingWebhookHandlers(options.inbox, { ...options, transitions });
   configureTransitionEffects(effects);
-  return { transitions, effects, attachRetry(handler: TransitionEffectOptions['retry']) { retry = handler; } };
+  return { transitions, effects, notifications, attachRetry(handler: TransitionEffectOptions['retry']) { retry = handler; } };
 }

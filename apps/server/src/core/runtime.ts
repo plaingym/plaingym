@@ -70,6 +70,9 @@ import { createChargeRunner } from '../areas/billing/runner/index.js';
 import { configureChargeRunner } from '../areas/billing/runner/runner.jobs.js';
 import { createMembershipService } from '../areas/billing/memberships.js';
 import { configureMemberships } from '../areas/billing/memberships.routes.js';
+import { createPaymentService } from '../areas/billing/payments.js';
+import { configurePayments } from '../areas/billing/payments.routes.js';
+import { configurePaymentDelivery } from '../areas/billing/payments.jobs.js';
 import { createBillingAlerts, createDisputeAlertProvider } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
@@ -206,6 +209,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureChargeRunner(runner);
   configureMemberships(createMembershipService({ clock, settings: createGymSettingsAccessor(), onAssigned: runner.onAssigned }),
     { assigned: runner.collectAssigned });
+  const detachCard = async (gymId: string, id: string) => (await requirePayments(gymId)).detachPaymentMethod(id);
+  configurePayments(createPaymentService({ settings: createGymSettingsAccessor(), clock, jobs: queue, paymentsFor,
+    transitions: billing.transitions, runner, detachCard }));
+  configurePaymentDelivery({ notifications: billing.notifications, detachCard });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
