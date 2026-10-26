@@ -39,7 +39,7 @@ describe('billing scenarios: calculated invoices → payment provider contract',
     f.payments.respondNextConfirmation(response);
     expect(await f.provider.confirmCharge(f.created.id, f.confirm)).toMatchObject({ status });
     expect(invoiceDetail((await f.cycle()).invoice, f.clock).invoice.amountCents).toBe(10_000);
-    // Invoice state and retry jobs are checked by the pending C1.6/C2.1 scenarios.
+    // Durable invoice transitions have separate scenarios; retry execution waits for the charge runner.
   });
 
   it.each([
@@ -67,7 +67,7 @@ describe('billing scenarios: calculated invoices → payment provider contract',
     expect(await f.provider.findCharge({ kind: 'charge', id: f.created.id })).toMatchObject({ status: 'succeeded', amount: 10_000 });
     f.payments.setUncertain(f.created.id);
     expect(await f.provider.findCharge({ kind: 'charge', id: f.created.id })).toEqual({ status: 'unknown', reference: { kind: 'charge', id: f.created.id } });
-    // A runner must leave this unresolved instead of creating another attempt (C2.1).
+    // The charge runner must leave this unresolved instead of creating another attempt.
   });
 
   it('collects a pending sibling first period through Checkout and returns the explicit saved method', async () => {
@@ -87,7 +87,7 @@ describe('billing scenarios: calculated invoices → payment provider contract',
     expect(await f.payments.findCharge({ kind: 'checkout', id: session.id })).toMatchObject({ status: 'succeeded',
       amount: 1600, paymentMethodId: completed.paymentMethodId, metadata: { invoiceId: detail.invoice.id } });
     expect(await f.payments.expireCheckout(session.id)).toMatchObject({ status: 'already_completed' });
-    // No pretend activation here: the webhook → transition → lifecycle path needs C1.6/C2.2.
+    // Activation through webhook → transition → lifecycle waits for the webhook handlers.
     expect((await f.lifecycle.get(f.gymId, membership.id)).status).toBe('pending');
   });
 

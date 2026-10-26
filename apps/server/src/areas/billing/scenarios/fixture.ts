@@ -65,7 +65,7 @@ export async function billingFixture(db: ReturnType<typeof useTestDatabase>, opt
     payments, customerId, plan, assign, priced, pricing, cycle };
 }
 
-/** Contract projection only: issuing, numbering and durable invoice writes belong to C2.1/C2.3. */
+/** Contract projection only: issuing, numbering and durable writes belong to the charge runner and payments service. */
 export function invoiceDetail(calculated: CalculatedInvoice | null, clock: TestClock): InvoiceDetail {
   expect(calculated).not.toBeNull();
   if (!calculated) throw new Error('Expected a calculated invoice');
