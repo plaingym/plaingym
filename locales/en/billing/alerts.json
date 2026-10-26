@@ -1,3 +1,12 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "cardExpirySubject": "Update your card before your next payment",
+  "cardExpiryBody": "Your default card expires in {expiry}, before your next billing date on {dueOn}. Please update your card using the secure link below.",
+  "cardExpiryButton": "Update your card",
+  "disputeSubject": "Payment dispute for invoice {number}",
+  "disputeBody": "A payment dispute ({disputeId}) was recorded for invoice {number}. Current status: {status}. Review your gym dashboard using the link below.",
+  "disputeButton": "Review payment dispute",
+  "gymNameFallback": "Your gym",
+  "footer": "This billing notice was sent by your gym.",
+  "disputesTitle": "Open payment disputes"
 }

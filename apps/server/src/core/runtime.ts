@@ -66,6 +66,8 @@ import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.rou
 import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
 import { configureWebhookReplay } from '../cli/replay.js';
 import { composeBillingWebhooks } from '../areas/billing/webhooks/handlers/composition.js';
+import { createBillingAlerts, createDisputeAlertProvider } from '../areas/billing/alerts/index.js';
+import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import type { Jobs } from '../infra/jobs/index.js';
 
@@ -146,24 +148,26 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const settings = createSettingsService(), t = createTranslator(locales.en ?? {});
   // Member-facing mail goes through the gym's SMTP (or the demo outbox), with links on the gym's own origin.
   async function gymMail(gymId: string) {
-    const [origin, mail] = await Promise.all([gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId)]);
+    const [origin, mail, details] = await Promise.all([gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId), settings.get(gymId)]);
     if (!demo && !mail) throw new AppError('unavailable', 'Email is not configured for this gym');
-    return { origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), t };
+    return { origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), t, gymName: details.name };
   }
   configureSignedLinkDelivery({ async prepare(gymId) {
     const [details, mail] = await Promise.all([settings.get(gymId), gymMail(gymId)]);
-    return { gymId, gymName: details.name, memberEmailsEnabled: details.memberEmailsEnabled, ...mail };
+    return { gymId, memberEmailsEnabled: details.memberEmailsEnabled, ...mail };
   } });
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
   configureHealthStatus({ env });
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
+  const accounts = createAccountService(config);
+  configureBillingAlerts(createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail }));
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   const attendance = createAttendanceQueries({ clock });
   const criteria = configureRanks({ attendance, clock });
   // The dashboard reads through the same services, with the ranks criteria registry and clock.
-  configureDashboard({ members: createMembersService({ clock }), ranks: createRanksService({ clock, criteria }), attendance });
+  configureDashboard({ members: createMembersService({ clock }), ranks: createRanksService({ clock, criteria }), attendance }, [createDisputeAlertProvider()]);
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
@@ -185,7 +189,6 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureWebhookInboxJobs(inbox);
   // Webhook handlers apply payment outcomes through the one invoice transition service, whose effects
   // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
-  const accounts = createAccountService(config);
   composeBillingWebhooks({ inbox, jobs: queue, settings: createGymSettingsAccessor(), paymentsFor, clock, prepare: gymMail,
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
   const contributions = { ...areaContributions,
