@@ -16,8 +16,9 @@ calling `createCustomer` outside the transaction. The key is
 stores a SHA-256 digest of the exact request, keeping names and emails out of the
 append-only audit log. Concurrent callers use identical parameters and the same
 provider key. A final short transaction locks the household, saves the returned
-ID only while `stripe_customer_id` is null, increments its revision and writes
-`billing.customer.linked`. A concurrently imported ID wins.
+ID only while `stripe_customer_id` is null and writes `billing.customer.linked`.
+A concurrently imported ID wins. Linking leaves the household revision
+unchanged: the ID is hidden from staff, so an open staff edit still saves.
 
 A lost response or failed database save retries the reserved request for at most
 23 hours. The reservation is never renewed: Stripe can discard idempotency keys

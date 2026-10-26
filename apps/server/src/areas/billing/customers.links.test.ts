@@ -256,15 +256,16 @@ describe('new household billing through production route registrations', () => {
     expect(JSON.parse(f.log.mock.calls[0]![0])).toMatchObject({ reason: 'Error', gymId: f.gymId, householdId: f.householdId });
     expect(f.log.mock.calls[0]![0]).not.toContain('payer@example');
   });
-  it('a concurrent admin edit receives a conflict after lazy customer linking advances the revision', async () => {
+  it('a concurrent admin edit still saves after lazy customer linking and keeps the linked customer', async () => {
     const f = await fixture();
     const household = (await f.read()).household;
-    await f.customers.ensureCustomer(f.gymId, f.householdId);
+    const customerId = await f.customers.ensureCustomer(f.gymId, f.householdId);
     const response = await f.admin.request(origin + '/api/households/' + f.householdId, {
       method: 'PATCH', headers: { origin, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Edited Household', revision: household.revision }),
     });
-    expect(response.status).toBe(409);
-    expect((await f.read()).household.name).toBe(household.name);
+    expect(response.status).toBe(200);
+    expect((await f.read()).household).toMatchObject({ name: 'Edited Household', stripeCustomerId: customerId,
+      revision: household.revision + 1 });
   });
 });

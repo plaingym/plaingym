@@ -31,7 +31,7 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect(create).toHaveBeenCalledExactlyOnceWith({ email: f.household.email, name: f.household.name,
       householdId: f.household.id, idempotencyKey: `household:${f.household.id}:customer` });
     const saved = await f.read();
-    expect(saved.household).toMatchObject({ stripeCustomerId: id, revision: 2 });
+    expect(saved.household).toMatchObject({ stripeCustomerId: id, revision: f.household.revision });
     expect(saved.audits.map(a => a.action).sort()).toEqual(['billing.customer.creation_reserved', 'billing.customer.linked']);
     expect(saved.audits.every(a => a.occurredAt.getTime() === f.clock.now().getTime())).toBe(true);
     expect(JSON.stringify(saved.audits)).not.toContain(f.household.email!);

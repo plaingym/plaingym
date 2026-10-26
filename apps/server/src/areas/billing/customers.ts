@@ -91,7 +91,8 @@ export function createCustomersService(options: CustomersOptions) {
       if (!household) throw new AppError('not_found', 'Household not found');
       // An import or another opener may have linked the household while Stripe was called.
       if (household.stripeCustomerId) return household.stripeCustomerId;
-      const [saved] = await tx.update(households).set({ stripeCustomerId: customer.id, revision: household.revision + 1 })
+      // The ID is system-owned and hidden from staff, so linking leaves the staff edit revision unchanged.
+      const [saved] = await tx.update(households).set({ stripeCustomerId: customer.id })
         .where(and(eq(households.id, householdId), isNull(households.stripeCustomerId))).returning();
       if (!saved) throw new AppError('conflict', 'Household changed');
       await audit(tx, gymId, householdId, 'billing.customer.linked', { customerId: customer.id });
