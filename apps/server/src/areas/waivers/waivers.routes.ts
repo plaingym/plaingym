@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
+import type { MiddlewareHandler } from 'hono';
 import { AppError } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
-import type { RequestContext } from '../../core/context.js';
+import { rateLimit } from '../../core/rate-limit.js';
+import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createWaiversService, type WaiversService, type WaiverOptions } from './waivers.js';
 
 let configured: WaiversService | undefined;
@@ -15,6 +17,11 @@ const mutation = (ctx: RequestContext) => {
 };
 export function createWaiverRoutes(service?: WaiversService) {
   const get = () => { const value = service ?? configured; if (!value) throw new Error('Waivers not configured'); return value; };
+  const pdfLimit = rateLimit({ limit: 10, windowMs: 60_000, perGym: true });
+  const limitDemoPdf: MiddlewareHandler<RequestEnvironment> = async (ctx, next) => {
+    if (await get().isDemo(ctx.get('context').gym.gymId)) return pdfLimit(ctx, next);
+    await next();
+  };
   const handlers: Record<keyof typeof c.waiverContracts, (ctx: RequestContext, p: Record<string, string>, q: unknown, b: unknown) => Promise<unknown>> = {
     listTemplates: (ctx, _p, q) => get().listTemplates(ctx.gym.gymId, q),
     createTemplate: async (ctx, _p, _q, b) => ({ data: await get().createTemplate(mutation(ctx), c.waiverCreateTemplateRequestSchema.parse(b)) }),
@@ -31,7 +38,8 @@ export function createWaiverRoutes(service?: WaiversService) {
   return Object.entries(c.waiverContracts).map(([key, value]) => {
     const contract: c.EndpointContract = value;
     return route({ ...contract,
-      middleware: bodyLimit({ maxSize: 400_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }),
+      middleware: [bodyLimit({ maxSize: 400_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }),
+        ...(key === 'pdf' ? [limitDemoPdf] : [])],
       request: { ...(contract.params instanceof z.ZodObject ? { params: contract.params } : {}), ...(contract.query instanceof z.ZodObject ? { query: contract.query } : {}),
         ...(contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}) },
       responses: { 200: { description: 'Waiver response', content: { 'application/json': { schema: contract.response } } } },

@@ -9,6 +9,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { notFound, conflict } from '../../core/interfaces/common.js';
 import type { Uploads } from '../../infra/storage/index.js';
+import { DemoUploads } from '../../demo/uploads.js';
 import { digest, invalid, needsGuardian, readSnapshot, serializeSnapshot, validateSignatureImage } from './snapshot.js';
 import { renderWaiver, validateTemplatePdf } from './pdf.js';
 
@@ -165,16 +166,27 @@ export function createWaiversService(options: WaiverOptions) {
     async getSignature(gymId: string, id: string) {
       return scope(gymId, async tx => { const [row] = await tx.select().from(waiverSignatures).where(eq(waiverSignatures.id, id)); return row ? signature(row) : notFound(); });
     },
+    async isDemo(gymId: string) { return (await options.uploadsFor(gymId)) instanceof DemoUploads; },
     async pdf(gymId: string, id: string) {
       const row = await service.getSignature(gymId, id), snapshot = readSnapshot(row.snapshot, row.snapshotHash);
       if (snapshot.signatureImage.key !== row.signatureImageKey || snapshot.signatureImage.hash !== row.signatureImageHash) throw new Error('Waiver image integrity failure');
-      const png = await image(gymId, row.memberId, row.signatureImageKey, row.signatureImageHash);
-      const bytes = await (options.render ?? renderWaiver)(row.snapshot, row.snapshotHash, png);
-      // Ephemeral PDF copies are immediately tombstoned for the normal storage sweep.
-      const uploads = await options.uploadsFor(gymId), key = `${gymId}/waivers/${row.memberId}/pdf/${uuidv7(clock.now().getTime())}.pdf`;
-      await uploads.put(key, bytes, 'application/pdf');
-      await uploads.markDeleted(key);
-      await service.getSignature(gymId, id); // Do not issue a fresh URL after an erasure during rendering.
+      const uploads = await options.uploadsFor(gymId);
+      const render = async () => {
+        const png = await image(gymId, row.memberId, row.signatureImageKey, row.signatureImageHash);
+        return (options.render ?? renderWaiver)(row.snapshot, row.snapshotHash, png);
+      };
+      const freshKey = () => `${gymId}/waivers/${row.memberId}/pdf/${uuidv7(clock.now().getTime())}.pdf`;
+      let key: string;
+      if (uploads instanceof DemoUploads) key = await uploads.waiverPdf(row.signatureImageKey, render, freshKey);
+      else {
+        const bytes = await render();
+        // Production copies remain ephemeral and use the normal deferred sweep.
+        key = freshKey();
+        await uploads.put(key, bytes, 'application/pdf');
+        await uploads.markDeleted(key);
+      }
+      try { await service.getSignature(gymId, id); } // Never issue a fresh URL after erasure during rendering.
+      catch (error) { if (uploads instanceof DemoUploads) await uploads.markDeleted(key); throw error; }
       const url = await uploads.signedUrl(key, 300); if (!url) notFound();
       return { data: { url, expiresAt: new Date(clock.now().getTime() + 300_000).toISOString() } };
     },

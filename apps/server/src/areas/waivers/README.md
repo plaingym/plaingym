@@ -44,6 +44,21 @@ indefinitely. Existing signed URLs remain usable until expiry. Signature images
 are marked for deletion by the member-erasure service. Abandoned unsigned image
 uploads are not yet swept by this area; cleanup should retain referenced images.
 
+Demo downloads reuse one immutable PDF keyed by the signature image, keeping the
+same JSON response and five-minute signed URLs. The demo upload wrapper refuses
+all ordinary puts; only its waiver cache can create that copy. Concurrent requests
+share a render, and later requests (including after a restart) only read storage.
+If the cached PDF upload failed and left no stored copy, each download falls back
+to a fresh copy marked deleted right away. This costs up to about seven storage
+writes per download, still bounded by ten downloads per gym per minute.
+The cache stays until image erasure also tombstones its PDF, or sandbox cleanup
+removes the gym. Erasure during rendering prevents a fresh link and tombstones any
+copy written in the meantime. Production downloads still render and tombstone a
+new copy each time. The PDF route allows ten demo requests per gym per minute
+across all client addresses, before storage reads or rendering. This uses the
+process-local route limiter; deployments with several app processes need a shared
+limit to retain the same total budget.
+
 ## Composition
 
 `core/runtime.ts` calls `configureWaivers({ uploadsFor: uploads.forGym, clock })`

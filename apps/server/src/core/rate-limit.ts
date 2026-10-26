@@ -28,6 +28,8 @@ export function clientIp(context: Context<RequestEnvironment>, options: ClientIp
 }
 
 export interface RateLimitOptions extends ClientIpOptions {
+  /** Share one route budget across every client address of the resolved gym. */
+  readonly perGym?: boolean;
   readonly limit?: number;
   readonly windowMs?: number;
   readonly maxBuckets?: number;
@@ -43,7 +45,8 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
   return async (context, next) => {
     const { clock, gym, clientIp: resolved } = context.get('context');
     // Route-level limiters share the app's proxy-aware address instead of the proxy's socket peer.
-    const now = clock.now().getTime(), key = `${gym?.gymId ?? 'install'}:${resolved ?? clientIp(context, options)}`;
+    const now = clock.now().getTime(), key = options.perGym ? gym?.gymId ?? 'install'
+      : `${gym?.gymId ?? 'install'}:${resolved ?? clientIp(context, options)}`;
     let bucket = buckets.get(key);
     if (bucket && bucket.resetAt <= now) { buckets.delete(key); bucket = undefined; }
     if (!bucket) {
