@@ -155,9 +155,10 @@ export function createChargeRunner(options: RunnerOptions) {
       while (await scope(gymId, tx => generateCycle(tx, gym, clock, home.id, today))) generatedPeriods++;
     }
     // Also hold invoices issued before the outage, e.g. a gym that was missing its saved card.
-    const overdue = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(and(
-      eq(invoices.kind, 'cycle'), eq(invoices.status, 'open'), eq(invoices.needsReview, false), lt(invoices.dueOn, addDays(today, -7)))));
+    const overdue = await scope(gymId, tx => tx.select({ id: invoices.id, kind: invoices.kind }).from(invoices).where(and(
+      eq(invoices.status, 'open'), eq(invoices.needsReview, false), lt(invoices.dueOn, addDays(today, -7)))));
     for (const bill of overdue) await scope(gymId, async tx => {
+      if (bill.kind !== 'cycle' && !await isAssignmentInvoice(tx, bill.id)) return;
       const changed = await tx.update(invoices).set({ needsReview: true }).where(and(eq(invoices.id, bill.id),
         eq(invoices.status, 'open'), eq(invoices.needsReview, false))).returning();
       if (changed.length) await audit(tx, system(gymId), clock, 'billing.runner.overdue_held', 'invoice', bill.id, { needsReview: true });

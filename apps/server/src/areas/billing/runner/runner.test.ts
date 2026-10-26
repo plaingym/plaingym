@@ -16,6 +16,7 @@ import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
 import { FakeEmail } from '../../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createMembershipService } from '../memberships.js';
+import { createPaymentService } from '../payments.js';
 import { createInvoiceTransitions } from '../transitions/index.js';
 import { createTransitionEffects } from '../transitions/effects.js';
 import { createTransitionJobs } from '../transitions/transitions.jobs.js';
@@ -320,6 +321,45 @@ describe('runner review regression cases with PostgreSQL', () => {
     expect((await f.read()).payments.map(row => row.amountCents).sort()).toEqual([10000, 2500]);
     expect(await f.runner.collectAssigned(f.gymId, f.home.id)).toEqual({ attempted: 0, errors: [] });
     expect((await other.read()).payments).toHaveLength(0);
+  });
+  it('holds old assignment charges when a card arrives late, and lets staff collect after releasing the hold', async () => {
+    const f = await fixture({ dueOn: '2028-04-01' });
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ isDefault: false }).where(eq(paymentMethods.householdId, f.home.id)));
+    await assign(f);
+    expect(await f.runner.collectAssigned(f.gymId, f.home.id)).toEqual({ attempted: 0, errors: [] });
+    const staffInvoice = await oneOff(f);
+    f.clock.set('2028-03-11T17:00:00Z');
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ isDefault: true }).where(eq(paymentMethods.householdId, f.home.id)));
+    const create = vi.spyOn(f.provider, 'createCharge');
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 0, errors: [] });
+    expect(create).not.toHaveBeenCalled();
+    let rows = await f.read();
+    const held = rows.invoices.filter(row => row.id !== staffInvoice.id);
+    expect(held).toHaveLength(2);
+    expect(held.every(row => row.status === 'open' && row.needsReview)).toBe(true);
+    expect(rows.invoices.find(row => row.id === staffInvoice.id)!.needsReview).toBe(false);
+    await f.runner.daily(f.gymId);
+    expect((await f.read()).audits.filter(row => row.action === 'billing.runner.overdue_held')).toHaveLength(2);
+    const owner = await factory('authUser', f.gymId);
+    await factory('staffRoles', f.gymId, { userId: owner.id, role: 'owner' });
+    const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: owner.id } };
+    const service = createPaymentService({ ...f.serviceOptions, transitions: f.transitions, runner: f.runner, paymentsFor: async () => f.provider });
+    for (const bill of held) {
+      await service.releaseHold(context, bill.id);
+      await service.charge(context, bill.id);
+    }
+    rows = await f.read();
+    expect(rows.payments).toHaveLength(2);
+    expect(rows.invoices.filter(row => row.id !== staffInvoice.id).every(row => row.status === 'paid' && !row.needsReview)).toBe(true);
+  });
+  it.each([6, 7])('automatically collects assignment invoices %i days overdue', async days => {
+    const f = await fixture({ dueOn: '2028-04-01' });
+    await assign(f);
+    f.clock.advance(days * 86400000);
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 2, errors: [] });
+    const rows = await f.read();
+    expect(rows.payments).toHaveLength(2);
+    expect(rows.invoices.every(row => row.status === 'paid' && !row.needsReview)).toBe(true);
   });
   it('activates a zero-value assigned membership through the normal effect job without a receipt', async () => {
     const f = await fixture(); const { membership, lifecycle } = await assign(f, 0, 0);

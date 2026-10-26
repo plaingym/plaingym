@@ -26,8 +26,8 @@ onto an already-issued period gets a separate one-off for that period with
 existing cycle, including paid and void invoices, stays unchanged. An audit links
 the held invoice to the conflicting cycle and records the period.
 
-Periods over seven days old are issued with `needsReview`, and an existing open
-cycle invoice that ages beyond seven days is held on the next daily run. Staff
+Cycle and assignment invoices over seven days overdue are held with `needsReview`
+on the next daily run, including first-period proration and sign-up fees. Staff
 confirmation uses the staff invoice `release-hold` action (owners/admins), then a
 normal collection action. Recording cash/check also confirms a held invoice and
 audits the payment that cleared it. Merely rerunning the daily catch-up sweep does
