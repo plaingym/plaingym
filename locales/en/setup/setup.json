@@ -1,6 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "title": "Set up your gym",
+  "actions": "Setup actions",
   "step": "Step",
   "step0": "Start fresh or restore a backup",
   "step1": "Create your owner account",

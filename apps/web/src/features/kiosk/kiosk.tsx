@@ -8,6 +8,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
 import { playTone } from './feedback.js';
+import { DemoKioskHint } from '../demo/notice.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('kiosk/kiosk:' + key, values);
 /** Results stay on screen briefly; an unfinished selection resets after inactivity so the next member starts clean. */
@@ -18,7 +19,7 @@ type Screen =
   | { kind: 'select'; name: string; pin: string; members: KioskMemberIdentity[]; chosen: Set<string> }
   | { kind: 'results'; name: string; pin: string; members: KioskMemberIdentity[]; rows: Row[] };
 const settled = (rows: readonly Row[]) => rows.every((row) => row.result && row.result.status !== 'select_session');
-const big = 'min-h-16 text-xl';
+const big = 'min-h-12 h-auto whitespace-normal break-words px-3 py-3 text-lg sm:min-h-16 sm:text-xl';
 
 export function KioskApp() {
   const [token, setToken] = useState<string | null>(() => readToken());
@@ -28,10 +29,11 @@ export function KioskApp() {
 
 function DeviceSetup({ onSaved }: { onSaved: (token: string) => void }) {
   const [value, setValue] = useState('');
-  return <main id="main-content" className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-6 p-6">
-    <h1 className="text-3xl font-semibold">{text('setupTitle')}</h1><p className="text-lg">{text('setupHelp')}</p>
+  return <main id="main-content" className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-4 p-4 sm:gap-6 sm:p-6">
+    <h1 className="text-2xl font-semibold sm:text-3xl">{text('setupTitle')}</h1><p className="text-base sm:text-lg">{text('setupHelp')}</p>
+    <DemoKioskHint />
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSaved(value.trim()); }}>
-      <Label className="grid gap-2 text-lg">{text('token')}<Input value={value} onChange={(event) => setValue(event.target.value)} autoComplete="off" required/></Label>
+      <Label className="grid gap-2 text-lg">{text('token')}<Input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" required/></Label>
       <Button type="submit" className={big + ' w-full'}>{text('saveToken')}</Button>
     </form>
   </main>;
@@ -88,10 +90,11 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     setScreen({ ...screen, rows: screen.rows.map((row) => row.member.id === memberId ? { ...row, result } : row) });
   });
 
-  return <main id="main-content" className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 p-6" aria-busy={busy}
+  return <main id="main-content" className="mx-auto flex w-full max-w-3xl min-w-0 flex-1 flex-col gap-4 p-4 sm:gap-6 sm:p-6" aria-busy={busy}
     onPointerDown={() => setActivity((value) => value + 1)} onKeyDown={() => setActivity((value) => value + 1)}>
-    <div className="flex items-center justify-between gap-4"><h1 className="text-3xl font-semibold">{text('title')}</h1>
+    <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
+    <DemoKioskHint />
     {screen.kind === 'search' && <Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>}
     {screen.kind === 'select' && <Select screen={screen} busy={busy} onChange={setScreen} onSubmit={() => submit(screen)} onCancel={reset}/>}
     {screen.kind === 'results' && <Results screen={screen} busy={busy} onChoose={(memberId, sessionId) => choose(screen, memberId, sessionId)} onDone={reset}
@@ -105,13 +108,13 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
   const [name, setName] = useState(''), [pin, setPin] = useState('');
   const press = (digit: string) => setPin((value) => value.length < 8 ? value + digit : value);
   function submit(event: FormEvent) { event.preventDefault(); if (name.trim() && pin.length >= 4 && !busy) { onSearch(name.trim(), pin); setPin(''); } }
-  return <form className="space-y-6" onSubmit={submit}>
+  return <form className="space-y-4 sm:space-y-6" onSubmit={submit}>
     {message && <Alert role="status">{text(message === 'error' ? 'error' : 'notFound')}</Alert>}
-    <Label className="grid gap-2 text-xl">{text('name')}<Input className="h-16 text-2xl" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
+    <Label className="grid gap-2 text-lg sm:text-xl">{text('name')}<Input className="h-12 text-lg sm:h-16 sm:text-2xl" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoCapitalize="words" required/></Label>
     <div className="space-y-3"><Label className="grid gap-2 text-xl">{text('pin')}
       <Input type="password" inputMode="numeric" autoComplete="off" maxLength={8} pattern="[0-9]{4,8}" required
         className="h-14 text-center text-3xl tracking-[0.5em]" value={pin} onChange={(event) => setPin(event.target.value.replace(/[^0-9]/g, '').slice(0, 8))}/></Label>
-      <div className="grid grid-cols-3 gap-3">{['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => <Button key={digit} type="button" variant="outline" className={big} onClick={() => press(digit)}>{digit}</Button>)}
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">{['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => <Button key={digit} type="button" variant="outline" className={big} onClick={() => press(digit)}>{digit}</Button>)}
         <Button type="button" variant="outline" className={big} onClick={() => setPin('')}>{text('clear')}</Button>
         <Button type="button" variant="outline" className={big} onClick={() => press('0')}>0</Button>
         <Button type="button" variant="outline" className={big} aria-label={text('backspace')} onClick={() => setPin((value) => value.slice(0, -1))}>⌫</Button></div></div>
@@ -120,10 +123,10 @@ function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_fou
 }
 
 function Person({ member }: { member: KioskMemberIdentity }) {
-  return <span className="flex items-center gap-4">{member.photoUrl
-    ? <img src={member.photoUrl} alt="" className="h-16 w-16 rounded-full object-cover"/>
-    : <span aria-hidden className="flex h-16 w-16 items-center justify-center rounded-full bg-muted text-2xl">{member.firstName.slice(0, 1)}</span>}
-    <span className="text-2xl">{text('person', { first: member.firstName, initial: member.lastInitial })}</span></span>;
+  return <span className="flex min-w-0 items-center gap-3 sm:gap-4">{member.photoUrl
+    ? <img src={member.photoUrl} alt="" className="size-12 shrink-0 rounded-full object-cover sm:size-16"/>
+    : <span aria-hidden className="flex size-12 shrink-0 items-center justify-center rounded-full bg-muted text-xl sm:size-16 sm:text-2xl">{member.firstName.slice(0, 1)}</span>}
+    <span className="min-w-0 break-words text-xl sm:text-2xl">{text('person', { first: member.firstName, initial: member.lastInitial })}</span></span>;
 }
 
 function Select({ screen, busy, onChange, onSubmit, onCancel }: { screen: Extract<Screen, { kind: 'select' }>; busy: boolean;
@@ -147,8 +150,8 @@ function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extrac
   const time = (session: KioskSessionChoice) => new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(session.startsAt));
   return <section className="space-y-4" aria-live="polite">
     <ul className="space-y-3">{screen.rows.map(({ member, result }) => <li key={member.id} className={'space-y-3 rounded-xl border-2 p-4 '
-      + (result?.status === 'checked_in' || result?.status === 'already_checked_in' ? 'border-green-600 bg-green-600/10' : 'border-border')}>
-      <div className="flex items-center justify-between gap-4"><Person member={member}/>
+      + (result?.status === 'checked_in' || result?.status === 'already_checked_in' ? 'border-success bg-success/10' : 'border-border')}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"><Person member={member}/>
         <span className="text-xl font-medium">{text(!result ? 'error' : result.status === 'select_session' ? 'chooseClass' : result.status)}</span></div>
       {result?.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">
         {result.sessions.map((session) => <Button key={session.id} className={big} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: time(session) })}</Button>)}

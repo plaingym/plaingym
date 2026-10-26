@@ -5,14 +5,15 @@ import { importsContracts, importJobSchema, importTargetFieldSchema, importUploa
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
+import { Select } from '../../components/ui/select.js';
 import { Alert } from '../../components/ui/alert.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError, createJsonTransport } from '../../lib/api.js';
 import { createSetupClient } from './api.js';
+import { SetupActions } from './actions.js';
 
 const label = (key: string, values?: Record<string, string | number>) => t('setup/import-step:' + key, values);
 const pipeline = (key: string) => t('imports/pipeline:' + key);
-const selectStyle = 'min-h-11 rounded-md border border-input bg-background px-3';
 type Failure = 'error' | 'changed' | 'invalidImport' | 'running';
 
 /**
@@ -67,7 +68,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     setJob(importJobSchema.parse((await request<{ data: unknown }>('/api/imports',
       { uploadId: upload.id, mapper, mapping, duplicatePolicy, dryRun })).data));
   });
-  if (done) return <div className="space-y-3"><p role="status">{label('finished')}</p><a href="/login" className="underline">{t('setup/setup:signIn')}</a></div>;
+  if (done) return <div className="space-y-3"><p role="status">{label('finished')}</p><a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></div>;
   const checked = job?.dryRun && job.status === 'succeeded' && job.errorCount === 0;
   const committed = job && !job.dryRun && job.status === 'succeeded';
   const active = busy || (!!job && !finished) || !!committed;
@@ -78,44 +79,44 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     {pollFailed && <Button variant="outline" onClick={() => {
       setFailure(null); setPollFailed(false); setPollRetry((value) => value + 1);
     }}>{label('retryProgress')}</Button>}
-    {!importing ? <div className="flex flex-wrap gap-3">
+    {!importing ? <SetupActions>
       <Button disabled={busy} onClick={() => void finish()}>{label('fresh')}</Button>
       <Button variant="outline" disabled={busy} onClick={() => setImporting(true)}>{label('import')}</Button>
-    </div> : <div className="space-y-4">
+    </SetupActions> : <div className="space-y-4">
       <p>{label('importHelp')}</p>
       <div className="space-y-2"><Label htmlFor="setup-import-file">{pipeline('file')}</Label>
         <Input id="setup-import-file" type="file" accept=".csv,text/csv" disabled={active}
           onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadFile(file); }}/></div>
-      {upload && <fieldset disabled={active} className="space-y-3">
+      {upload && <fieldset disabled={active} className="min-w-0 space-y-3">
         <legend className="font-medium">{pipeline('mapping')}</legend>
-        <p>{upload.filename} · {pipeline('rows')}: {upload.rowCount}</p>
-        <Label className="flex flex-wrap items-center gap-3">{pipeline('mapper')}<select className={selectStyle} value={mapper}
+        <p className="break-words">{upload.filename} · {pipeline('rows')}: {upload.rowCount}</p>
+        <Label className="grid gap-2">{pipeline('mapper')}<Select value={mapper}
           onChange={(event) => { setMapper(event.target.value as ImportMapper); setJob(undefined); }}>
-          {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{pipeline('mapper.' + id)}</option>)}</select></Label>
-        <Label className="flex flex-wrap items-center gap-3">{pipeline('duplicates')}<select className={selectStyle} value={duplicatePolicy}
+          {(['people', 'mat', 'memberships'] as const).map((id) => <option key={id} value={id}>{pipeline('mapper.' + id)}</option>)}</Select></Label>
+        <Label className="grid gap-2">{pipeline('duplicates')}<Select value={duplicatePolicy}
           onChange={(event) => { setDuplicatePolicy(event.target.value as ImportPlanRequest['duplicatePolicy']); setJob(undefined); }}>
-          {(['error', 'skip', 'update'] as const).map((policy) => <option key={policy} value={policy}>{pipeline('policy.' + policy)}</option>)}</select></Label>
-        {upload.columns.map((column) => <Label key={column} className="flex flex-wrap items-center justify-between gap-3">{column}
-          <select className={selectStyle} value={mapping.find((item) => item.sourceColumn === column)?.targetField ?? ''} onChange={(event) => {
+          {(['error', 'skip', 'update'] as const).map((policy) => <option key={policy} value={policy}>{pipeline('policy.' + policy)}</option>)}</Select></Label>
+        {upload.columns.map((column) => <Label key={column} className="grid gap-2 break-words sm:grid-cols-2 sm:items-center">{column}
+          <Select value={mapping.find((item) => item.sourceColumn === column)?.targetField ?? ''} onChange={(event) => {
             const target = importTargetFieldSchema.safeParse(event.target.value);
             setMapping((previous) => [...previous.filter((item) => item.sourceColumn !== column && item.targetField !== event.target.value),
               ...(target.success ? [{ sourceColumn: column, targetField: target.data }] : [])]); setJob(undefined);
           }}><option value="">{pipeline('ignore')}</option>
-            {importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{pipeline('field.' + field)}</option>)}</select></Label>)}
-        <div className="flex flex-wrap gap-3">
-          <Button variant="outline" disabled={!mapping.length || !!committed} onClick={() => void start(true)}>{pipeline('dryRun')}</Button>
-          <Button disabled={!checked} onClick={() => void start(false)}>{pipeline('commit')}</Button>
-        </div>
+            {importTargetFieldSchema.options.map((field) => <option key={field} value={field}>{pipeline('field.' + field)}</option>)}</Select></Label>)}
       </fieldset>}
       {job && <div role="status"><p>{label('status', { status: label('status.' + job.status) })}</p>
         <p>{pipeline('processed')}: {job.processedRows}/{job.totalRows} · {label('committed', { count: job.committedRows })} · {pipeline('errors')}: {job.errorCount}</p>
         {job.dryRun && job.status === 'succeeded' && <p>{label('dryRunOnly')}</p>}</div>}
       {job?.status === 'failed' && job.committedRows > 0 && <Alert>{label('partialImport')}</Alert>}
       {job && finished && job.errorCount > 0 && <ImportIssues key={job.id} id={job.id} fetcher={fetcher}/>}
-      <div className="flex flex-wrap gap-3">
+      <SetupActions>
+        {upload && !committed && <>
+          <Button variant="outline" disabled={active || !mapping.length} onClick={() => void start(true)}>{pipeline('dryRun')}</Button>
+          <Button disabled={active || !checked} onClick={() => void start(false)}>{pipeline('commit')}</Button>
+        </>}
         {committed && <Button disabled={busy} onClick={() => void finish(job.id)}>{label('finishWithImport')}</Button>}
         <Button variant="outline" disabled={active || !!committed} onClick={() => { setImporting(false); setUpload(undefined); setJob(undefined); setFailure(null); }}>{label('back')}</Button>
-      </div>
+      </SetupActions>
     </div>}
   </div>;
 }

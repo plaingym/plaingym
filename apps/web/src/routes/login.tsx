@@ -7,6 +7,8 @@ import { Input } from '../components/ui/input.js';
 import { Label } from '../components/ui/label.js';
 import { Card } from '../components/ui/card.js';
 import { Alert } from '../components/ui/alert.js';
+import { LoadingState, ErrorState } from '../components/ui/states.js';
+import { PageHeader } from '../components/ui/page.js';
 import { ApiError } from '../lib/api.js';
 import { t } from '../lib/i18n.js';
 import { bootstrapKey, useBootstrap, useShellServices } from '../app/context.js';
@@ -37,9 +39,9 @@ function LoginPage() {
     },
     onError: () => setPassword(''),
   });
-  if (bootstrap.isPending) return <main id="main-content" className="p-6" role="status">{t('shell/shell:loading')}</main>;
-  if (bootstrap.isError) return <main id="main-content" className="p-6"><Alert>{t('shell/shell:loadFailed')}</Alert>
-    <Button onClick={() => void bootstrap.refetch()}>{t('shell/shell:retry')}</Button></main>;
+  if (bootstrap.isPending) return <main id="main-content" className="mx-auto w-full max-w-md p-4 sm:p-6"><LoadingState /></main>;
+  if (bootstrap.isError) return <main id="main-content" className="mx-auto w-full max-w-md p-4 sm:p-6">
+    <ErrorState message={t('shell/shell:loadFailed')} onRetry={() => void bootstrap.refetch()} /></main>;
   const destination = bootstrap.data.session && sessionDestination(bootstrap.data.session);
   if (destination) return <Navigate to={destination} replace />;
   const methods = bootstrap.data.login;
@@ -51,15 +53,14 @@ function LoginPage() {
     if (mode === 'password' && methods.password) login.mutate('password');
     if (mode === 'magic' && methods.magicLink) login.mutate('magic');
   };
-  return <main id="main-content" className="flex flex-1 items-center justify-center p-6">
-    <Card className="w-full max-w-md space-y-6">
-      <div><p className="text-sm text-muted-foreground">{bootstrap.data.gym.name}</p>
-        <h1 className="mt-2 text-2xl font-semibold">{t('shell/shell:title')}</h1></div>
+  return <main id="main-content" className="flex flex-1 items-start justify-center px-4 py-6 sm:items-center sm:p-6">
+    <Card className="w-full min-w-0 max-w-md space-y-6 p-4 sm:p-6">
+      <PageHeader title={t('shell/shell:title')} description={bootstrap.data.gym.name} />
       {sent ? <div className="space-y-4"><p role="status">{t('shell/shell:sent')}</p>
-        <Button variant="outline" onClick={() => { setSent(false); setEmail(''); login.reset(); }}>{t('shell/shell:sendAgain')}</Button></div>
+        <Button variant="outline" className="w-full" onClick={() => { setSent(false); setEmail(''); login.reset(); }}>{t('shell/shell:sendAgain')}</Button></div>
       : methods.password || methods.magicLink ? <form onSubmit={submit} className="space-y-4" aria-busy={login.isPending}>
         <div className="space-y-2"><Label htmlFor="login-email">{t('shell/shell:email')}</Label>
-          <Input id="login-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending} /></div>
+          <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending} /></div>
         {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
           <Input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending} /></div>}
         {login.isError && <Alert>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}

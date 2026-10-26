@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { demoEntryResponse } from '@plaingym/shared/contracts';
+import { useRouterState } from '@tanstack/react-router';
+import { demoEntryResponse, sandboxResponse } from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
+import { Alert } from '../../components/ui/alert.js';
+import { Dialog } from '../../components/ui/dialog.js';
+import { LoadingState } from '../../components/ui/states.js';
+import { saveToken } from '../kiosk/api.js';
 import { createJsonTransport } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 const request = createJsonTransport();
 type DemoDiscovery = ReturnType<typeof demoEntryResponse.parse>['data'];
 const DemoContext = createContext<DemoDiscovery | undefined>(undefined);
-export const useDemoSandbox = () => useContext(DemoContext)?.mode === 'sandbox';
+export const useDemoMode = () => useContext(DemoContext)?.mode;
+export const useDemoSandbox = () => useDemoMode() === 'sandbox';
 export function DemoShell({ children }: { children: ReactNode }) {
+  // Capture before a child route's login guard can redirect and discard the fragment.
+  const [kioskToken, setKioskToken] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('kioskToken'));
   const discovery = useQuery({
     queryKey: ['demo', 'discovery', window.location.origin],
     // Let an in-flight discovery finish across a StrictMode/root remount, so it
@@ -42,31 +50,71 @@ export function DemoShell({ children }: { children: ReactNode }) {
     };
   }, [expires, refetch]);
   const expired = expires !== undefined && (expiredAt === expires || Date.parse(expires) <= Date.now());
+  const activeSandbox = mode?.mode === 'sandbox' && !discovery.isError && !expired;
+  useEffect(() => {
+    if (!activeSandbox || !kioskToken) return;
+    saveToken(kioskToken);
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    if (fragment.has('kioskToken')) {
+      fragment.delete('kioskToken');
+      const remaining = fragment.toString();
+      window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search + (remaining ? '#' + remaining : ''));
+    }
+    setKioskToken(null);
+  }, [activeSandbox, kioskToken]);
   return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}>
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
-    <DemoNotice /><DemoEntry />{children}
+    <DemoNotice /><DemoEntry />{kioskToken && (discovery.isPending || activeSandbox) ? <LoadingState /> : children}
   </DemoContext.Provider>;
 }
 export function DemoEntry() {
-  return useContext(DemoContext)?.mode === 'entry' ? <div className="p-6"><TryDemoButton /></div> : null;
+  return useContext(DemoContext)?.mode === 'entry' ? <aside aria-label={t('demo/demo:entryTitle')} className="border-b border-border bg-secondary p-4 sm:p-6">
+    <div className="mx-auto flex max-w-4xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0 space-y-1"><p className="font-semibold">{t('demo/demo:entryTitle')}</p><p>{t('demo/demo:entryHelp')}</p></div><TryDemoButton />
+    </div></aside> : null;
+}
+/** Uses the root's discovery result; ordinary installs never fetch demo status. */
+export function DemoKioskHint() {
+  return useDemoSandbox() ? <div className="rounded-xl border border-border bg-secondary p-3 text-sm">
+    <p className="font-semibold">{t('demo/demo:kioskTitle')}</p><p>{t('demo/demo:kioskHint')}</p>
+  </div> : null;
 }
 /** The root shares discovery with every demo control and sandbox consumer. */
 export function DemoNotice() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const atKiosk = pathname === '/kiosk' || pathname.startsWith('/kiosk/');
   const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
-  const [error, setError] = useState(false);
+  const [error, setError] = useState(false), [pending, setPending] = useState(false), [help, setHelp] = useState(false);
   if (!expires) return null;
   async function login(role: 'owner' | 'coach' | 'student') {
-    setError(false);
+    if (pending) return;
+    setPending(true); setError(false);
     try { const result = await request<{ data: { redirect: '/admin' | '/portal' } }>('/api/demo/login', { role }); window.location.assign(result.data.redirect); }
-    catch { setError(true); }
+    catch { setError(true); setPending(false); }
   }
-  return <aside className="space-y-2 border-b bg-amber-50 p-4 text-slate-900" aria-label={t('demo/demo:title')}>
-    <p>{t('demo/demo:banner')}</p><p>{t('demo/demo:expires', { time: new Date(expires).toLocaleString() })}</p>
-    <div className="flex flex-wrap gap-2">{(['owner', 'coach', 'student'] as const).map((role) => <Button key={role} type="button" variant="outline" onClick={() => { void login(role); }}>{t(`demo/demo:${role}`)}</Button>)}</div>
-    <a className="underline" href="/admin/outbox">{t('demo/demo:title')}</a>
-    {error && <p role="alert">{t('demo/demo:error')}</p>}
+  return <aside className="border-b border-border bg-secondary px-4 py-3" aria-label={t('demo/demo:controls')}>
+    <div className="mx-auto max-w-6xl space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">{t('demo/demo:sandbox')}</p>
+        <Button type="button" variant="outline" onClick={() => setHelp(true)}>{t('demo/demo:guide')}</Button></div>
+      <div role="group" aria-label={t('demo/demo:roles')} className="grid grid-cols-3 gap-2 sm:max-w-md">
+        {(['owner', 'coach', 'student'] as const).map((role) => <Button key={role} type="button" variant="outline" className="min-w-0 px-2" disabled={pending}
+          aria-label={t(`demo/demo:${role}`)} onClick={() => { void login(role); }}>{t(`demo/demo:${role}Label`)}</Button>)}
+      </div>
+      <div className="flex flex-col gap-1 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4">
+        {!atKiosk && <><a className="inline-flex min-h-11 items-center underline" href="/kiosk">{t('demo/demo:kioskTitle')}</a>
+          <p>{t('demo/demo:kioskHint')}</p></>}
+        <p className="text-muted-foreground">{t('demo/demo:expires', { time: new Date(expires).toLocaleString() })}</p>
+      </div>
+      {error && <Alert>{t('demo/demo:error')}</Alert>}
+    </div>
+    {help && <Dialog title={t('demo/demo:guide')} closeLabel={t('demo/demo:close')} onClose={() => setHelp(false)}>
+      <div className="space-y-4"><p>{t('demo/demo:banner')}</p><p>{t('demo/demo:roleHelp')}</p>{!atKiosk && <DemoKioskHint />}
+        <a className="inline-flex min-h-11 items-center underline" href="/admin/outbox">{t('demo/demo:title')}</a>
+        <Button type="button" className="w-full" onClick={() => setHelp(false)}>{t('demo/demo:explore')}</Button>
+      </div>
+    </Dialog>}
   </aside>;
 }
 export function TryDemoButton() {
@@ -74,9 +122,11 @@ export function TryDemoButton() {
   async function start() {
     setPending(true); setError(false);
     try {
-      const response = await request<{ data: { origin: string } }>('/api/demo/sandboxes', {});
-      window.location.assign(new URL('/admin', response.data.origin).href);
+      const { data } = sandboxResponse.parse(await request('/api/demo/sandboxes', {}));
+      const destination = new URL('/admin', data.origin);
+      destination.hash = new URLSearchParams({ kioskToken: data.kioskToken }).toString();
+      window.location.assign(destination.href);
     } catch { setError(true); setPending(false); }
   }
-  return <div><Button type="button" disabled={pending} onClick={() => { void start(); }}>{t(pending ? 'demo/demo:starting' : 'demo/demo:try')}</Button>{error && <p role="alert">{t('demo/demo:error')}</p>}</div>;
+  return <div className="space-y-2 sm:shrink-0"><Button type="button" className="w-full" disabled={pending} onClick={() => { void start(); }}>{t(pending ? 'demo/demo:starting' : 'demo/demo:try')}</Button>{error && <Alert>{t('demo/demo:error')}</Alert>}</div>;
 }

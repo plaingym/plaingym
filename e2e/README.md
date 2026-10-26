@@ -37,12 +37,15 @@ needed. Browser TLS verification is disabled only for the local Caddy certificat
 The runner removes its containers, volumes and fixture cache after the tests,
 including on a test failure.
 
-The `fresh-setup` Playwright project checks the real wizard at 360 px and desktop
-before owner creation. The `members-mat` project depends on it, so test-file order
-cannot cause the install fixture to initialize first.
+The `fresh-setup` Playwright project completes the real wizard before the other
+projects, checking each owned step at 360, 768, and 1280 px: no sideways scrolling,
+44 px targets, reachable primary actions, and axe WCAG A/AA. It also opens the
+restore form and exercises the import choice; the payment step uses its existing
+skip action. The `members-mat` project depends on it, so test-file order cannot
+cause the install fixture to initialize first.
 
-The single-gym fixture goes through the setup API with the installer's setup
-token, installs a content pack and accepts printed staff invitations. It uses
+The single-gym fixture reuses the browser's completed setup (or goes through the
+setup API when run without dependencies) and accepts printed staff invitations. It uses
 real password sessions for owner, admin, coach and front desk, plus a registered
 device token. The demo fixture creates two seeded sandboxes through the public
 entry point and uses real one-click sessions.
@@ -73,6 +76,16 @@ The checks cover:
   in a fresh window of the app's flood limit, so they add about three minutes of waiting.
 * Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
+* Login errors and a successful password sign-in; the demo entry button creating
+  a sandbox, compact role switching and the demo guide dialog; and device setup,
+  name/PIN search, family selection and check-in at all three widths, with axe
+  A/AA throughout (`setup-kiosk-demo.spec.ts`). The visitor-facing kiosk example
+  uses the full name Marcus Rivera and PIN 2468, avoiding ambiguous households.
+  Outbox preview dialogs are checked too; axe excludes the email iframe, whose
+  sandbox deliberately forbids scripts, while the test checks its sandbox and title.
+
+Browser specs and their helpers import only e2e tooling and local test helpers.
+The End-to-end workflow installs this package independently of the application.
 
 `authorization-inventory.json` is a reviewed snapshot, not regenerated during
 tests. The running OpenAPI document must match it. It includes the locally

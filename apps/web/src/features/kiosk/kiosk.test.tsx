@@ -39,6 +39,7 @@ describe('kiosk check-in screen', () => {
   it('sets up a device without a staff login', () => {
     vi.mocked(readToken).mockReturnValue(null);
     render(<KioskApp/>);
+    expect(screen.getByLabelText('Device token').getAttribute('autocomplete')).toBe('new-password');
     fireEvent.change(screen.getByLabelText('Device token'), { target: { value: ' new-token ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save and start check-in' }));
     expect(saveToken).toHaveBeenCalledWith('new-token');

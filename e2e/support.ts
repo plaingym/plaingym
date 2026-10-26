@@ -81,19 +81,26 @@ async function initialize(): Promise<Install> {
   const guest = new Client(gymOrigin), owner = new Client(gymOrigin);
   const token = process.env.E2E_SETUP_TOKEN;
   if (!token) throw new Error('Run through pnpm --dir e2e test to create an isolated install');
-  expect((await guest.request('/api/setup/start', 'POST', { choice: 'fresh' })).status).toBe(403);
-  const setup = new Client(gymOrigin, { 'x-setup-token': token });
-  await setup.json('/api/setup/start', 'POST', { choice: 'fresh' });
-  await setup.json('/api/setup/owner', 'POST', { name: 'QA Owner', email: 'owner@example.invalid', password });
-  await owner.login('owner@example.invalid');
-  const revision = async () => (await owner.json<{ data: { revision: number } }>('/api/setup')).data.revision;
-  await owner.json('/api/setup/gym', 'PUT', { name: 'QA academy', timezone: 'UTC', currency: 'USD', address: {},
-    branding: { logoKey: null, primaryColor: null }, revision: await revision() });
-  await owner.json('/api/setup/packs', 'POST', { packs: [{ packId: 'bjj', version: 1 }], revision: await revision() });
-  await owner.json('/api/setup/website', 'PUT', { websiteEnabled: false, existingSiteUrl: null, revision: await revision() });
-  await owner.json('/api/setup/smtp', 'PUT', { choice: 'skip', revision: await revision() });
-  await owner.json('/api/setup/stripe', 'PUT', { choice: 'skip', revision: await revision() });
-  await owner.json('/api/setup/finish', 'POST', { choice: 'fresh', skipBackups: true, revision: await revision() });
+  const setupStatus = await guest.request('/api/setup');
+  if (setupStatus.status === 200) {
+    expect((await guest.request('/api/setup/start', 'POST', { choice: 'fresh' })).status).toBe(403);
+    const setup = new Client(gymOrigin, { 'x-setup-token': token });
+    await setup.json('/api/setup/start', 'POST', { choice: 'fresh' });
+    await setup.json('/api/setup/owner', 'POST', { name: 'QA Owner', email: 'owner@example.invalid', password });
+    await owner.login('owner@example.invalid');
+    const revision = async () => (await owner.json<{ data: { revision: number } }>('/api/setup')).data.revision;
+    await owner.json('/api/setup/gym', 'PUT', { name: 'QA academy', timezone: 'UTC', currency: 'USD', address: {},
+      branding: { logoKey: null, primaryColor: null }, revision: await revision() });
+    await owner.json('/api/setup/packs', 'POST', { packs: [{ packId: 'bjj', version: 1 }], revision: await revision() });
+    await owner.json('/api/setup/website', 'PUT', { websiteEnabled: false, existingSiteUrl: null, revision: await revision() });
+    await owner.json('/api/setup/smtp', 'PUT', { choice: 'skip', revision: await revision() });
+    await owner.json('/api/setup/stripe', 'PUT', { choice: 'skip', revision: await revision() });
+    await owner.json('/api/setup/finish', 'POST', { choice: 'fresh', skipBackups: true, revision: await revision() });
+  } else {
+    expect(setupStatus.status).toBe(404);
+    // The prerequisite browser project completes setup using these same test credentials.
+    await owner.login('owner@example.invalid');
+  }
   const clients = { owner } as Record<Role, Client>;
   for (const role of ['admin', 'coach', 'front_desk'] as const) {
     const email = `${role}@example.invalid`;

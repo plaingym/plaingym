@@ -2,20 +2,23 @@
 // @vitest-environment jsdom
 import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { focusManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const fetcher = vi.fn();
+const route = vi.hoisted(() => ({ pathname: '/admin' }));
+vi.mock('@tanstack/react-router', () => ({ useRouterState: () => route.pathname }));
 vi.stubGlobal('fetch', fetcher);
-const { DemoShell, useDemoSandbox } = await import('./notice.js');
-beforeEach(() => fetcher.mockReset());
+const { DemoShell, DemoKioskHint, useDemoSandbox } = await import('./notice.js');
+const { readToken } = await import('../kiosk/api.js');
+beforeEach(() => { fetcher.mockReset(); localStorage.clear(); route.pathname = '/admin'; window.history.replaceState(null, '', '/admin'); });
 afterEach(() => { cleanup(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
 afterAll(() => vi.unstubAllGlobals());
 function Consumer() {
   return <p>{useDemoSandbox() ? 'Sandbox consumer' : 'Ordinary consumer'}</p>;
 }
-function start(client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } })) {
-  const view = render(<StrictMode><QueryClientProvider client={client}><DemoShell><p>Login screen</p><Consumer /></DemoShell></QueryClientProvider></StrictMode>);
+function start(client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } }), children = <><p>Login screen</p><Consumer /></>) {
+  const view = render(<StrictMode><QueryClientProvider client={client}><DemoShell>{children}</DemoShell></QueryClientProvider></StrictMode>);
   return { ...view, client };
 }
 it('shares one successful disabled discovery across navigation, focus, reconnect and root remounts', async () => {
@@ -46,6 +49,38 @@ it('shows a demo entry button without requiring a tenant or login', async () => 
   expect(screen.getByText('Ordinary consumer')).toBeDefined();
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+it('saves the sandbox kiosk token and strips only its fragment parameter before mounting the route', async () => {
+  window.history.replaceState({ route: 'kept' }, '', '/admin?view=welcome#kioskToken=visitor-device&tab=members');
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  start();
+  await screen.findByText('Login screen');
+  expect(readToken()).toBe('visitor-device');
+  expect(window.location.pathname + window.location.search + window.location.hash).toBe('/admin?view=welcome#tab=members');
+  expect(window.history.state).toEqual({ route: 'kept' });
+  expect(fetcher.mock.calls.map(([path]) => path)).toEqual(['/api/demo']);
+});
+it.each(['disabled', 'entry'] as const)('ignores kiosk token handoffs in %s mode', async (mode) => {
+  window.history.replaceState(null, '', '/demo#kioskToken=ignored-device');
+  fetcher.mockResolvedValue(Response.json({ data: { mode } }));
+  const view = start();
+  await waitFor(() => expect(view.client.isFetching()).toBe(0));
+  expect(readToken()).toBeNull();
+  expect(window.location.hash).toBe('#kioskToken=ignored-device');
+  expect(screen.getByText('Login screen')).toBeDefined();
+});
+it('does not consume a token until sandbox discovery succeeds', async () => {
+  window.history.replaceState(null, '', '/admin#kioskToken=visitor-device');
+  let discover!: (response: Response) => void;
+  fetcher.mockReturnValue(new Promise<Response>((resolve) => { discover = resolve; }));
+  start();
+  expect(readToken()).toBeNull();
+  expect(window.location.hash).toBe('#kioskToken=visitor-device');
+  expect(screen.queryByText('Login screen')).toBeNull();
+  await act(async () => { discover(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } })); });
+  await screen.findByText('Login screen');
+  expect(readToken()).toBe('visitor-device');
+  expect(window.location.hash).toBe('');
+});
 it('shows all sandbox identities before the login screen guard', async () => {
   fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
   start();
@@ -55,6 +90,54 @@ it('shows all sandbox identities before the login screen guard', async () => {
   expect(screen.getByText('Login screen')).toBeDefined();
   expect(screen.getByText('Sandbox consumer')).toBeDefined();
   expect(screen.queryByRole('button', { name: 'Try the demo' })).toBeNull();
+  expect(screen.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toBeDefined();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it('opens the guide under its own label without offering sandbox creation', async () => {
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  start();
+  const button = await screen.findByRole('button', { name: 'Demo guide' });
+  button.focus(); fireEvent.click(button);
+  const guide = screen.getByRole('dialog', { name: 'Demo guide' });
+  expect(within(guide).getByText(/Marcus Rivera.*2468/)).toBeDefined();
+  expect(screen.queryByRole('button', { name: 'Try the demo' })).toBeNull();
+  fireEvent.click(within(guide).getByRole('button', { name: 'Close demo guide' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo guide' }));
+});
+it('disables all role switches while one is pending and restores them after a failure', async () => {
+  let fail!: (reason: Error) => void;
+  const pending = new Promise<Response>((_resolve, reject) => { fail = reject; });
+  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }))
+    .mockReturnValueOnce(pending);
+  start();
+  fireEvent.click(await screen.findByRole('button', { name: 'Sign in as coach' }));
+  for (const role of ['owner', 'coach', 'student']) {
+    const button = screen.getByRole('button', { name: 'Sign in as ' + role }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+  }
+  expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(1);
+  await act(async () => { fail(new TypeError('Offline')); });
+  await screen.findByRole('alert');
+  expect((screen.getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(false);
+});
+it.each(['disabled', 'entry', 'sandbox'] as const)('shows the kiosk hint only for a sandbox (%s)', async (mode) => {
+  route.pathname = '/kiosk';
+  fetcher.mockResolvedValue(Response.json({ data: mode === 'sandbox' ? { mode, expiresAt: new Date(Date.now() + 3600_000).toISOString() } : { mode } }));
+  const view = start(undefined, <DemoKioskHint />);
+  await waitFor(() => expect(view.client.isFetching()).toBe(0));
+  expect(screen.queryAllByText(/Search the full name Marcus Rivera/)).toHaveLength(mode === 'sandbox' ? 1 : 0);
+  expect(screen.queryByRole('link', { name: 'Try the kiosk' })).toBeNull();
+});
+it('updates the compact banner when navigating to the kiosk without new discovery requests', async () => {
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  const view = start();
+  await screen.findByRole('link', { name: 'Try the kiosk' });
+  route.pathname = '/kiosk/';
+  view.rerender(<QueryClientProvider client={view.client}><DemoShell><DemoKioskHint /></DemoShell></QueryClientProvider>);
+  expect(screen.queryByRole('link', { name: 'Try the kiosk' })).toBeNull();
+  expect(screen.getAllByText(/Search the full name Marcus Rivera/)).toHaveLength(1);
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
 it.each(['server', 'transport', 'invalid response'] as const)('keeps a %s error visible and permits an explicit retry', async (failure) => {

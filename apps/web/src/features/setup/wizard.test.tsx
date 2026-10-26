@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createWebRegistries } from '@plaingym/shared';
 import { ShellServicesContext } from '../../app/context.js';
 import type { ShellServices } from '../../app/services.js';
 import { ApiError } from '../../lib/api.js';
 import { SetupWizard } from './wizard.js';
 import { createSetupClient } from './api.js';
+import { createRegistries, type ExtensionView } from '../../lib/registries.js';
 
 const services: ShellServices = {
   loadBootstrap: vi.fn(async () => ({ gym: { id: 'gym', name: 'Academy', enabledModules: [] }, session: { userId: 'owner', roles: ['owner'] as const, member: false }, login: { password: true, magicLink: false } })),
   signInWithPassword: vi.fn(async () => {}), requestMagicLink: vi.fn(async () => {}), signOut: vi.fn(async () => {}),
 };
-function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) => i)) {
+function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) => i), registries = createRegistries()) {
   let currentStep = step, revision = 1;
   const fetcher = vi.fn(async (path: RequestInfo | URL, options?: RequestInit) => {
     const name = String(path), body = options?.body ? JSON.parse(String(options.body)) as Record<string, unknown> : {};
@@ -27,6 +29,7 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
     if (name.endsWith('/gym')) { currentStep = 3; revision++; return Response.json({ data: { ...body, revision } }); }
     if (name.endsWith('/packs')) { currentStep = 4; revision++; return Response.json({ data: { currentStep, completedSteps: [0, 1, 2, 3], completed: false, revision } }); }
     if (name.endsWith('/smtp')) { currentStep = 6; revision++; return Response.json({ data: { configured: false, test: 'not_sent', revision } }); }
+    if (name.endsWith('/stripe')) { currentStep = 7; revision++; return Response.json({ data: { configured: false, mode: null, webhookRegistered: false, revision } }); }
     if (name.endsWith('/finish')) return Response.json({ data: { completed: true, billingEnabled: false, memberEmailsEnabled: false, revision: ++revision } });
     return Response.json({}, { status: 500 });
   });
@@ -34,12 +37,79 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
   // The registered step 8 component uses the global fetch.
   vi.stubGlobal('fetch', fetcher);
   const query = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={client} /></ShellServicesContext.Provider></QueryClientProvider>);
+  render(<QueryClientProvider client={query}><ShellServicesContext.Provider value={services}><SetupWizard client={client} registries={registries} /></ShellServicesContext.Provider></QueryClientProvider>);
   return { fetcher, client, query };
 }
 beforeEach(() => { sessionStorage.clear(); vi.clearAllMocks(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('setup wizard', () => {
+  it('keeps restore submit and Back together, and Back works without validating the restore form', async () => {
+    const { fetcher } = start();
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore a backup' }));
+    const actions = screen.getByRole('group', { name: 'Setup actions' });
+    const restore = within(actions).getByRole('button', { name: 'Restore a backup' });
+    expect(restore.getAttribute('type')).toBe('submit');
+    const back = within(actions).getByRole('button', { name: 'Back' });
+    restore.focus(); await userEvent.tab();
+    expect(document.activeElement).toBe(back);
+    await userEvent.keyboard('{Enter}');
+    await screen.findByRole('button', { name: 'Start fresh' });
+    expect(fetcher.mock.calls.some(([path]) => path === '/api/setup/restore')).toBe(false);
+  });
+  it('keeps email submit and skip in one bar and skipping works with empty required fields', async () => {
+    const { fetcher } = start(5);
+    await screen.findByRole('button', { name: 'Send test email and save' });
+    const actions = screen.getByRole('group', { name: 'Setup actions' });
+    const submit = within(actions).getByRole('button', { name: 'Send test email and save' });
+    expect(submit.getAttribute('type')).toBe('submit');
+    const skip = within(actions).getByRole('button', { name: 'Skip email configuration' });
+    expect(skip.getAttribute('type')).toBe('button');
+    submit.focus(); await userEvent.tab();
+    expect(document.activeElement).toBe(skip);
+    await userEvent.keyboard('{Enter}');
+    await screen.findByLabelText('Restricted Stripe key');
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/smtp');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'skip', revision: 1 });
+  });
+  it('keeps backup setup-later, import finish and Back to backups in working action bars', async () => {
+    const { fetcher } = start(7);
+    await screen.findByRole('button', { name: 'Generate backup key' });
+    const backupActions = screen.getByRole('group', { name: 'Setup actions' });
+    expect(within(backupActions).getByRole('button', { name: 'Generate backup key' }).getAttribute('type')).toBe('submit');
+    await userEvent.click(within(backupActions).getByRole('button', { name: 'Set up later' }));
+    let actions = screen.getByRole('group', { name: 'Setup actions' });
+    expect(within(actions).getByRole('button', { name: 'Start fresh' })).toBeDefined();
+    await userEvent.click(within(actions).getByRole('button', { name: 'Back to backups' }));
+    await screen.findByRole('button', { name: 'Generate backup key' });
+    expect(fetcher.mock.calls.some(([path]) => path === '/api/setup/finish')).toBe(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Set up later' }));
+    actions = screen.getByRole('group', { name: 'Setup actions' });
+    await userEvent.click(within(actions).getByRole('button', { name: 'Start fresh' }));
+    await screen.findByText(/Setup is complete/);
+    expect(screen.queryByRole('button', { name: 'Back to backups' })).toBeNull();
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/finish');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'fresh', revision: 1, skipBackups: true });
+  });
+  it('submits the owner form from its action bar', async () => {
+    start(1);
+    await userEvent.type(await screen.findByLabelText('Your name'), 'Gym Owner');
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@example.org');
+    await userEvent.type(screen.getByLabelText('Password (12–128 characters)'), 'owner-password-123');
+    const submit = within(screen.getByRole('group', { name: 'Setup actions' })).getByRole('button', { name: 'Save and continue' });
+    expect(submit.getAttribute('type')).toBe('submit');
+    await userEvent.click(submit);
+    await screen.findByLabelText('Gym name');
+    expect(services.signInWithPassword).toHaveBeenCalledWith('owner@example.org', 'owner-password-123');
+  });
+  it('keeps the unregistered payment fallback in an action bar and continues to backups', async () => {
+    const { fetcher } = start(6, [0, 1, 2, 3, 4, 5], createWebRegistries<ExtensionView>([]));
+    await screen.findByText('Payment configuration is not set up. Continue with billing paused.');
+    const actions = screen.getByRole('group', { name: 'Setup actions' });
+    await userEvent.click(within(actions).getByRole('button', { name: 'Save and continue' }));
+    await screen.findByRole('button', { name: 'Generate backup key' });
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/stripe');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'skip', revision: 1 });
+  });
   it('takes the installer token out of the URL and sends it only on bootstrap actions', async () => {
     window.history.replaceState(null, '', '/setup#token=private-install-token');
     const { client, fetcher } = start();
