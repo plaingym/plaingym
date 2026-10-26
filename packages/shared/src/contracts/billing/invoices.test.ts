@@ -2,6 +2,14 @@
 import { expect, it } from 'vitest';
 import { canStaff } from '@plaingym/shared';
 import { releaseInvoiceHoldContract as contract } from './invoices.js';
+import { invoiceListQuerySchema } from './invoices.js';
+
+it('accepts only the explicit open-dispute filter', () => {
+  expect(invoiceListQuerySchema.parse({ dispute: 'open' }).dispute).toBe('open');
+  expect(invoiceListQuerySchema.parse({}).dispute).toBeUndefined();
+  for (const dispute of ['true', 'false', true, false, 'closed', ''])
+    expect(invoiceListQuerySchema.safeParse({ dispute }).success).toBe(false);
+});
 
 it('limits review confirmation to owners and admins without a payment body', () => {
   expect(contract.path).toBe('/api/billing/invoices/{invoiceId}/release-hold');

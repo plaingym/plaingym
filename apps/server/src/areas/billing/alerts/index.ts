@@ -2,7 +2,7 @@
 import { and, asc, count, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { forGym, households, invoices, members, memberships, paymentMethods, writeAudit } from '@plaingym/db';
 import { AppError, canStaff, type Clock, type Translator } from '@plaingym/shared';
-import { dateSchema, extensionDashboardWidgetSchema, idSchema } from '@plaingym/shared/contracts';
+import { dateSchema, extensionDashboardWidgetSchema, idSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -19,7 +19,7 @@ export const sendAlertJob = 'billing.alerts.send';
 // Default queue backoff: 1s doubling to a 24h cap. These budgets cover >31 days and >36 hours.
 export const cardAlertMaxAttempts = 48;
 export const disputeAlertMaxAttempts = 18;
-export const terminalDisputeStatuses = ['won', 'lost', 'closed'] as const;
+export { terminalDisputeStatuses } from '@plaingym/shared/contracts';
 const cardPayload = z.strictObject({ kind: z.literal('card_expiry'), paymentMethodId: idSchema, cycle: dateSchema });
 const disputePayload = z.strictObject({ kind: z.literal('dispute'), invoiceId: idSchema, disputeId: z.string().min(1) });
 const payloadSchema = z.discriminatedUnion('kind', [cardPayload, disputePayload]);

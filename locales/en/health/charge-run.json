@@ -1,3 +1,9 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "disabled": "Automatic billing is paused.",
+  "never_run": "No charge run has been recorded.",
+  "running": "The daily charge run is in progress.",
+  "succeeded": "The last daily charge run completed.",
+  "failed": "The daily charge run needs attention.",
+  "stale": "The daily charge run is overdue or has stopped reporting."
 }

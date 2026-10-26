@@ -10,7 +10,7 @@ import { clock as defaultClock } from '../../../core/clock.js';
 import type { Uploads } from '../../../infra/storage/index.js';
 import { createAttendanceService } from '../../attendance/attendance.js';
 import { verifyHouseholdPin, type HouseholdPinSecret } from '../../members/pin.js';
-import { billingStanding } from '../../billing/kiosk-standing.js';
+import { createBillingStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';
 
 /** Sessions open for check-in this long before they start, and until they end. */
@@ -32,7 +32,7 @@ type MemberRow = { id: string; firstName: string; lastName: string; photoKey: st
 
 export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), billingStanding]);
+  const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope)]);
   const attendance = createAttendanceService({ scope, clock });
 
   /** The one household whose PIN matches among households with a member or household name matching the search. */

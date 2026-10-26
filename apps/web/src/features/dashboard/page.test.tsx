@@ -14,6 +14,8 @@ import { registration } from './registrations.js';
 
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn() } }));
+// Billing has its own request, permission, cache and rendering coverage in billing.test.tsx.
+vi.mock('./billing.widgets.js', () => ({ BillingDashboardPanel: () => null, billingWidgetViews: [] }));
 const generatedAt = '2026-10-22T12:00:00Z';
 const memberId = '01900000-0000-7000-8000-000000000010';
 const widgets: MatDashboardWidget[] = [

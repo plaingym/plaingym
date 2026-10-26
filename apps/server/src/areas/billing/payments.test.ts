@@ -81,6 +81,26 @@ function request(server: ReturnType<typeof app>, operation: Operation, f: Fixtur
 }
 
 describe('payment route permissions and tenant isolation', () => {
+  it('filters only open disputes before pagination and counting, preserving gym isolation', async () => {
+    const f = await fixture(), other = await fixture();
+    let number = 1000;
+    const issue = (disputeId: string | null, disputeStatus: string | null) => factory('invoices', f.gymId, {
+      householdId: f.home.id, status: 'paid', number: number++, dueOn: '2020-01-01', disputeId, disputeStatus,
+    });
+    const open = [await issue('dp_open', 'needs_response'), await issue('dp_unknown', null)];
+    for (const status of ['won', 'lost', 'closed', 'warning_closed']) await issue('dp_' + status, status);
+    await issue(null, null);
+    await db.forGym(other.gymId, tx => tx.update(invoices).set({ disputeId: 'dp_foreign', disputeStatus: 'needs_response' }).where(eq(invoices.id, other.paid.id)));
+    const page = await f.service.listInvoices(f.gymId, { dispute: 'open', limit: 1, offset: 0 });
+    expect(page.pagination.total).toBe(2); expect(page.data).toHaveLength(1);
+    const response = await app(f, staff(f, 'front_desk')).request(origin + '/api/billing/invoices?dispute=open');
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.data.map((row: { id: string }) => row.id).sort()).toEqual(open.map(row => row.id).sort());
+    expect(data.pagination.total).toBe(2);
+    expect((await app(f, staff(f, 'coach')).request(origin + '/api/billing/invoices?dispute=open')).status).toBe(403);
+    expect((await app(f, staff(f, 'owner')).request(origin + '/api/billing/invoices?dispute=false')).status).toBe(400);
+  });
   for (const operation of operations) {
     for (const role of ['owner', 'admin', 'coach', 'front_desk'] as const) it(`${operation}: ${role}`, async () => {
       const f = await fixture(), contract = contracts[operation], response = await request(app(f, staff(f, role)), operation, f);

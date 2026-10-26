@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, gte, inArray, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or } from 'drizzle-orm';
 import { allocateInvoiceNumber, forGym, households, invoices, invoiceLineItems, payments, refunds,
   paymentAttempts, chargeTypes, chargeTypeTaxRates, taxRates, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -128,7 +128,9 @@ export function createPaymentService(options: PaymentOptions = {}) {
         if (q.householdId) await loadHousehold(tx, q.householdId);
         const where = and(q.householdId ? eq(invoices.householdId, q.householdId) : undefined,
           q.kind ? eq(invoices.kind, q.kind) : undefined, q.status ? eq(invoices.status, q.status) : undefined,
-          q.dueFrom ? gte(invoices.dueOn, q.dueFrom) : undefined, q.dueThrough ? lte(invoices.dueOn, q.dueThrough) : undefined);
+          q.dueFrom ? gte(invoices.dueOn, q.dueFrom) : undefined, q.dueThrough ? lte(invoices.dueOn, q.dueThrough) : undefined,
+          q.dispute === 'open' ? and(isNotNull(invoices.disputeId), or(isNull(invoices.disputeStatus),
+            notInArray(invoices.disputeStatus, [...c.terminalDisputeStatuses]))) : undefined);
         const total = await tx.$count(invoices, where);
         const rows = await tx.select().from(invoices).where(where).orderBy(desc(invoices.createdAt), desc(invoices.id)).limit(q.limit).offset(q.offset);
         return { data: rows.map(presentInvoice), pagination: { limit: q.limit, offset: q.offset, total } };

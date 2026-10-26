@@ -1,3 +1,20 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Billing overview",
+  "mrr": "Monthly recurring revenue",
+  "past_due": "Past due",
+  "upcoming_charges": "Upcoming charges",
+  "disputes": "Open disputes",
+  "invoiceCount": "Invoices: {count}",
+  "chargeCount": "Charges: {count}",
+  "disputeCount": "Disputes: {count}",
+  "range": "{from} through {through}",
+  "help.mrr": "Active membership dues before discounts and tax. Annual dues are divided by 12.",
+  "help.past_due": "Past-due invoices and unpaid open invoices due before today.",
+  "help.upcoming_charges": "Open charges for the next 7 days in the gym's timezone. Unissued membership dues are estimates before discounts and tax; issued invoices use their final totals. Past-due invoices are excluded.",
+  "help.disputes": "Invoice totals for disputes that are still open.",
+  "refresh": "Refresh billing",
+  "loading": "Loading billing overview…",
+  "loadFailed": "Unable to load billing overview. Try again.",
+  "empty": "No billing widgets are available."
 }

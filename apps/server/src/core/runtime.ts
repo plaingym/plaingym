@@ -29,6 +29,7 @@ import { createMembersService } from '../areas/members/members.js';
 import { configureStaffProfiles } from '../areas/staff/profiles.routes.js';
 import { createStaffInvitationService, smtpMailer } from '../areas/staff/profiles.invitations.js';
 import { configureDashboard } from '../areas/dashboard/dashboard.routes.js';
+import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js';
 import { configureImportStep } from '../areas/setup/import-step.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
@@ -53,6 +54,8 @@ import { createUploadDownloadRoute } from './uploads-download.js';
 import { logError } from './log.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
+import { createStripeHealthProvider } from '../areas/health/stripe.js';
+import { createChargeRunHealthProvider, monitorChargeRunner } from '../areas/health/charge-run.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
 import { configureRanks } from '../areas/ranks/ranks.routes.js';
 import { createAttendanceQueries } from '../areas/attendance/attendance.js';
@@ -64,7 +67,7 @@ import { createExportRoutes } from '../areas/imports/export.routes.js';
 import { createExportJobs } from '../areas/imports/export.jobs.js';
 import { createImportRetention, createImportRetentionJobs } from '../areas/imports/retention.js';
 import { createPaymentsResolver } from '../areas/setup/stripe-step.js';
-import { createWebhookInbox } from '../areas/billing/webhooks/inbox.js';
+import { createWebhookHealthQuery, createWebhookInbox } from '../areas/billing/webhooks/inbox.js';
 import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.routes.js';
 import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
 import { configureWebhookReplay } from '../cli/replay.js';
@@ -163,10 +166,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     const configured = await smtpConfigured(gymId);
     return { password: passwordLogin(config, configured), magicLink: configured };
   });
-  const settings = createSettingsService(), t = createTranslator(locales.en ?? {});
+  const settings = createGymSettingsAccessor(), gymSettings = createSettingsService(), t = createTranslator(locales.en ?? {});
   // Member-facing mail goes through the gym's SMTP (or the demo outbox), with links on the gym's own origin.
   async function gymMail(gymId: string) {
-    const [origin, mail, details] = await Promise.all([gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId), settings.get(gymId)]);
+    const [origin, mail, details] = await Promise.all([gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId), gymSettings.get(gymId)]);
     if (!demo && !mail) throw new AppError('unavailable', 'Email is not configured for this gym');
     return { origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), t, gymName: details.name,
       memberEmailsEnabled: details.memberEmailsEnabled };
@@ -177,7 +180,6 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
-  configureHealthStatus({ env });
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
   const accounts = createAccountService(config);
   configureBillingAlerts(createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail }));
@@ -202,6 +204,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureImportStep({ imports: importPipeline, clock });
   // The inbox route and its dispatcher job; a gym without Stripe settings answers 503.
   const paymentsFor = createPaymentsResolver({ key, clock });
+  configureHealthStatus({ env, providers: [
+    createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
+    createChargeRunHealthProvider({ settings }),
+  ] });
   async function requirePayments(gymId: string) {
     const provider = await paymentsFor(gymId);
     if (!provider) throw new AppError('unavailable', 'Stripe is not configured for this gym');
@@ -212,17 +218,20 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureWebhookInboxJobs(inbox);
   // Webhook handlers apply payment outcomes through the one invoice transition service, whose effects
   // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
-  const billing = composeBillingWebhooks({ inbox, jobs: queue, settings: createGymSettingsAccessor(), paymentsFor, clock, prepare: gymMail,
+  const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail,
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
-  const runner = createChargeRunner({ settings: createGymSettingsAccessor(), transitions: billing.transitions,
+  const runner = createChargeRunner({ settings, transitions: billing.transitions,
     jobs: queue, payments: requirePayments, clock });
   billing.attachRetry(runner.retry);
-  configureChargeRunner(runner);
-  configureMemberships(createMembershipService({ clock, settings: createGymSettingsAccessor(), onAssigned: runner.onAssigned }),
-    { assigned: runner.collectAssigned });
+  // Only daily is monitored. Retry, assignment callbacks and staff collection keep the original runner.
+  configureChargeRunner(monitorChargeRunner(runner, { clock, settings }));
+  const memberships = createMembershipService({ clock, settings, onAssigned: runner.onAssigned });
+  configureMemberships(memberships, { assigned: runner.collectAssigned });
   const detachCard = async (gymId: string, id: string) => (await requirePayments(gymId)).detachPaymentMethod(id);
-  configurePayments(createPaymentService({ settings: createGymSettingsAccessor(), clock, jobs: queue, paymentsFor,
-    transitions: billing.transitions, runner, detachCard }));
+  const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
+    transitions: billing.transitions, runner, detachCard });
+  configurePayments(payments);
+  configureBillingDashboard({ settings, memberships, payments });
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
   configureLinkPages({ waivers,
     checkout: createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock }),

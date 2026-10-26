@@ -212,6 +212,16 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     await run('billing.runner.daily');
     const cycle = (await read()).find(invoice => invoice.kind === 'cycle')!;
     expect(cycle.status).toBe('past_due');
+    const billingDashboard = await runtime.app.request(sandbox.origin + '/api/dashboard/billing', { headers });
+    expect(billingDashboard.status).toBe(200);
+    expect((await billingDashboard.json()).data.widgets.map((widget: { id: string }) => widget.id).sort())
+      .toEqual(['disputes', 'mrr', 'past_due', 'upcoming_charges']);
+    const health = await runtime.app.request(sandbox.origin + '/api/health', { headers });
+    expect(health.status).toBe(200);
+    expect((await health.json()).data.tiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'stripe_webhooks', status: 'warning', details: expect.objectContaining({ failed: 0, pending: 0 }) }),
+      expect.objectContaining({ id: 'last_charge_run', status: 'healthy', details: expect.objectContaining({ result: 'succeeded', lastCompletedAt: testClock.now().toISOString() }) }),
+    ]));
     const retry = (await database.forGym(sandbox.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.transition.effect.created'))))
       .find(event => (event.after as { kind?: string; invoiceId?: string; retryDay?: number })?.kind === 'retry'
         && (event.after as { invoiceId: string }).invoiceId === cycle.id && (event.after as { retryDay: number }).retryDay === 3);

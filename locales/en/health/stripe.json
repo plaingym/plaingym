@@ -1,3 +1,8 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "missing": "Stripe is not configured.",
+  "failed": "Stripe webhook processing needs attention.",
+  "pending": "Stripe webhooks are waiting to be processed.",
+  "healthy": "Stripe webhooks are processing normally.",
+  "waiting": "Waiting for the first Stripe webhook."
 }

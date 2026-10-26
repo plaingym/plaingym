@@ -98,12 +98,14 @@ export const releaseInvoiceHoldContract = {
 } as const satisfies EndpointContract;
 export const invoiceDetailResponseSchema = z.strictObject({ data: invoiceDetailSchema });
 export const invoiceListResponseSchema = listResponseSchema(invoiceSchema);
+export const terminalDisputeStatuses = ['won', 'lost', 'closed', 'warning_closed'] as const;
 export const invoiceListQuerySchema = paginationSchema.extend({
   householdId: idSchema.optional(),
   kind: invoiceKindSchema.optional(),
   status: invoiceStatusSchema.optional(),
   dueFrom: dateSchema.optional(),
   dueThrough: dateSchema.optional(),
+  dispute: z.literal('open').optional().describe('Only invoices with a non-terminal dispute.'),
 }).refine((value) => !value.dueFrom || !value.dueThrough || value.dueThrough >= value.dueFrom,
   'The due-date range must be increasing.');
 
