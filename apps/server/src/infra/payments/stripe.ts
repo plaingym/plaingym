@@ -325,7 +325,7 @@ export class StripePayments implements Payments {
     catch (error) {
       if (absent(error)) return;
       if ((error as { statusCode?: number } | null)?.statusCode === 403)
-        throw new Error('Check the Stripe permission for Payment Methods');
+        throw new Error('Check the Stripe permission for Payment Methods', { cause: error });
       // A concurrent detach or a lost response can leave the operation already complete.
       let current: ObjectData;
       try { current = await this.#get(path); }
