@@ -54,14 +54,11 @@ revoked card. Changes retain ordinary payment-method audits.
 `afterCommit: gymId => effects.publish(gymId)`, the real membership lifecycle,
 `createTransitionNotifications` and `createTransitionEffects`. It registers the
 handlers and calls `configureTransitionEffects`. Its return value contains
-`transitions`, `effects`, and `attachRetry`.
+`transitions`, `effects`, the shared `notifications`, and `attachRetry`.
 
-`core/runtime.ts` creates the composition before the job worker starts. A
-consumer that schedules retries attaches its handler with
-`billing.attachRetry(handler)`, also before worker startup. Until one is
-attached, retry execution throws `Billing retry runner is not configured`; it
-never silently completes. Other billing consumers share the returned transition
-service.
+`core/runtime.ts` creates the composition and attaches `runner.retry` with
+`billing.attachRetry(runner.retry)` before the job worker starts. The runner and
+staff-payment service share the returned transitions; receipt jobs share its notifications.
 
 Supply the same payments resolver, Postgres jobs, gym settings, clock,
 `prepare(gymId)` for gym SMTP or demo outbox and canonical origin, and

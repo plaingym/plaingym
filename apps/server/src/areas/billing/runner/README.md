@@ -136,17 +136,17 @@ and records the processor's `succeededAt`, including after restore or a cancel/c
 race. Missing or invalid success times remain retryable; the clock never supplies
 a replacement payment date.
 
-Runtime composition is intentionally not installed here. Integration must:
+`core/runtime.ts` composes billing before starting the job worker:
 
-1. Use the webhook composition's shared transition service and effect worker,
-   by keeping the result of `composeBillingWebhooks` in `core/runtime.ts`.
-   Build the runner from `billing.transitions`, then call
+1. It keeps the result of `composeBillingWebhooks` and shares its transition
+   service and effect worker. It builds the runner from `billing.transitions`, then calls
    `billing.attachRetry(runner.retry)`; the composition has no `retry` option.
-2. Construct this runner with that service, `jobs: queue`, and the gym-scoped payments/settings
-   resolvers; the payments resolver must throw when Stripe is not configured.
-   Pass `runner.onAssigned` to the configured membership service, and call
-   `runner.collectAssigned(gymId, householdId)` from the assign route after commit.
-3. Call `configureChargeRunner(runner)` before starting workers; the webhook
+2. The runner receives that service, `jobs: queue`, and gym-scoped payments/settings
+   resolvers; the payments resolver throws when Stripe is not configured.
+   The membership service calls `runner.onAssigned` inside assignment, and the assign
+   route calls `runner.collectAssigned(gymId, householdId)` after commit. Collection
+   errors are logged; assignment still succeeds and the daily sweep recovers collection.
+3. It calls `configureChargeRunner(runner)` before starting workers; the webhook
    composition already configures transition effects. The billing barrel includes:
    `billing.runner.daily` (09:00 local), `billing.runner.reconcile` (hourly at :17),
    `billing.runner.retry` (`{ invoiceId }`), and `billing.runner.restore`
@@ -154,10 +154,8 @@ Runtime composition is intentionally not installed here. Integration must:
    do not independently schedule another set of retries.
    The daily and reconciliation jobs throw `Charge runner is not configured`
    for an enabled gym if composition was omitted; disabled gyms may remain inert.
-4. Present the restore report and overdue holds through the authorized operations
-   UI; owner confirmation to resume billing is a separate operation. Runtime
-   composition tests belong with this wiring: assignment through collection to
-   paid, and decline through the effect job to `runner.retry`.
+4. Staff release overdue holds on the invoice page. Restore reconciliation returns
+   an operations report; owner confirmation to resume billing is a separate operation.
 
 The PostgreSQL suite covers reservation visibility, replay, concurrent runs,
 recorded synthetic Stripe adapter fixtures, customer adoption, catch-up, local
@@ -165,7 +163,7 @@ dates, leap-day anniversaries, assignment invoices, cross-gym isolation, lost
 responses, both cancel/confirm race winners, delayed creation, retry windows and
 Checkout exclusion, transition job composition, and restore refunds/disputes.
 The service composition test uses `composeBillingWebhooks` and `attachRetry` with
-the real membership, transition, and runner services; the runtime route wiring
-still needs its own integration test. To re-record the local synthetic adapter
+the real membership, transition, and runner services. `core/runtime.test.ts` covers
+assignment through the API and the configured retry callback. To re-record the local synthetic adapter
 tapes, set `RECORD_RUNNER_FIXTURES=1` when running `runner.test.ts`. Ordinary runs
 strictly replay the tapes with no network fallback.

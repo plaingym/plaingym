@@ -79,7 +79,7 @@ provider idempotency preserves an existing setup within its retention window.
 
 ## Composition
 
-The public-area barrel already includes these routes. Before serving it, call
+The public-area barrel includes these routes. The runtime calls
 `configureLinkPages` with:
 
 - `waivers`: the configured waiver service, sharing uploads and clock;
@@ -87,7 +87,8 @@ The public-area barrel already includes these routes. Before serving it, call
   the same per-gym provider as the webhook inbox and a trusted canonical origin;
 - `receiptKey`: a stable secret of at least 32 bytes, derived from the install's
   encryption key with a distinct context, never generated per process;
-- optional translator, `localeFor(gymId)` resolver and asset readers. The context
+- the default translator and asset readers. An optional `localeFor(gymId)` resolver
+  is supported. The context
   and settings currently have no display-locale field; the resolver defaults to
   `en`. It controls the HTML language, date and money formatting on every page,
   including return and cleared pages, which also use the configured translator.
@@ -95,9 +96,9 @@ The public-area barrel already includes these routes. Before serving it, call
   server working directory once per process. Missing files log once and return
   an explicit 503; build the files and restart the server to retry.
 
-The build composition must call `buildLinkAssets` from `styles.build.mjs` after
-the web build, writing into `apps/web/dist` before copying public assets into
-the image. From the repository root:
+`pnpm build` calls `buildLinkAssets` from `styles.build.mjs` after the web build,
+writing into `apps/web/dist` before copying public assets into the image. The
+asset-only command from the repository root is:
 
 ```sh
 node apps/server/src/public/links/styles.build.mjs apps/web/dist
@@ -106,13 +107,10 @@ node apps/server/src/public/links/styles.build.mjs apps/web/dist
 This uses the pinned web Tailwind version and shared design tokens, plus the
 existing esbuild toolchain. Browser code is built separately, avoiding server
 transpiler helpers in the browser. Generated CSS and JavaScript are not committed.
-Neither runtime nor build composition is changed by this area.
-
-For `pnpm dev`, build into the server working directory first. From the repository
-root, using the pinned Node version:
+`pnpm dev` builds into the ignored `apps/server/public/` directory before starting
+the server and web watcher. From the repository root, using the pinned Node version:
 
 ```sh
-node apps/server/src/public/links/styles.build.mjs apps/server/public
 pnpm dev
 ```
 

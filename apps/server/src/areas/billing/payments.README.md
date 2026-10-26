@@ -71,7 +71,6 @@ runner and sharing the payments resolver
 and invoice transitions with the webhook composition. It also supplies
 `configurePaymentDelivery({ notifications, detachCard })` before starting jobs.
 Both routes and jobs already contribute through their existing area parts.
-The card-detach adapter operation and production wiring require integration-owner
-changes outside this area's ownership. Tests exercise the real area registrations
+The runtime delegates card detachment to the gym's payment adapter. Tests exercise the real area registrations
 through `createApp`, the real PostgreSQL transitions, and the receipt/detach jobs;
 the Stripe decline path also exercises synthetic Stripe API fixtures.
