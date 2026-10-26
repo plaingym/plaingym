@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { authUser, authSession, authAccount, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
+import { and, asc, eq, inArray } from 'drizzle-orm';
+import { authUser, authSession, authAccount, staffRoles, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { systemDatabase, scopedDatabase } from '@plaingym/db/client';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, type Clock, type StaffRole } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { passwordAdapter } from './password.js';
 import type { AuthConfig } from './config.js';
@@ -84,6 +84,13 @@ export function createAccountService(config: AuthConfig, database = systemDataba
         await tx.delete(authSession).where(eq(authSession.userId, userId));
         await writeAudit(tx, { gymId, actorKind: 'system', action: 'auth.sessions_revoked', targetType: 'user', targetId: userId, occurredAt: clock.now() });
       });
+    },
+    /** Login emails of the gym's staff holding one of these roles, e.g. for owner/admin notices. */
+    async staffEmails(gymId: string, roles: readonly StaffRole[]) {
+      assertNoTransaction('auth.staffEmails');
+      const rows = await forGym(gymId, (tx) => tx.select({ email: authUser.email }).from(staffRoles)
+        .innerJoin(authUser, eq(authUser.id, staffRoles.userId)).where(inArray(staffRoles.role, [...roles])).orderBy(asc(authUser.email)));
+      return rows.map((row) => row.email);
     },
     async hasPassword(userId: string) {
       const [account] = await database().select({ id: authAccount.id }).from(authAccount).where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')));

@@ -56,11 +56,12 @@ revoked card. Changes retain ordinary payment-method audits.
 handlers and calls `configureTransitionEffects`. Its return value contains
 `transitions`, `effects`, and `attachRetry`.
 
-Runtime creates the composition first, constructs its runner using the returned
-transitions, and then calls `billing.attachRetry(runner.retry)`, all before worker
-startup. Until attached, retry execution throws
-`Billing retry runner is not configured`; it never silently completes. Other
-billing consumers share the returned transition service.
+`core/runtime.ts` creates the composition before the job worker starts. A
+consumer that schedules retries attaches its handler with
+`billing.attachRetry(handler)`, also before worker startup. Until one is
+attached, retry execution throws `Billing retry runner is not configured`; it
+never silently completes. Other billing consumers share the returned transition
+service.
 
 Supply the same payments resolver, Postgres jobs, gym settings, clock,
 `prepare(gymId)` for gym SMTP or demo outbox and canonical origin, and
@@ -77,7 +78,7 @@ Use the existing `replay --gym` command for those events after wiring the handle
 the adapter's recorded intent tapes and `stripe.handlers.synthetic.json`.
 The latter records synthetic `StripeFixtures` API exchanges, not a live Stripe
 account. Strict replay has no network fallback. To regenerate it intentionally,
-set `RECORD_C22_FIXTURES=1` for this test file, then rerun without that variable.
+set `RECORD_HANDLER_FIXTURES=1` for this test file, then rerun without that variable.
 Every direct handler test rejects any call to the payment change feed. The
 composition test uses production `createApp`, real inbox route/job registrations,
 and a signed stale failure delivery that resolves to a current successful payment;

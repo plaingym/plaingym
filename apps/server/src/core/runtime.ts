@@ -65,6 +65,8 @@ import { createWebhookInbox } from '../areas/billing/webhooks/inbox.js';
 import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.routes.js';
 import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
 import { configureWebhookReplay } from '../cli/replay.js';
+import { composeBillingWebhooks } from '../areas/billing/webhooks/handlers/composition.js';
+import { createAccountService } from '../infra/auth/accounts.js';
 import type { Jobs } from '../infra/jobs/index.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -102,8 +104,8 @@ async function prepare(env: NodeJS.ProcessEnv) {
   return { key, mode, config, install, smtp };
 }
 /** Stripe events for each gym, verified by that gym's own Stripe settings; the CLI replays through the same inbox. */
-function webhookInbox(key: Buffer, jobs: Jobs) {
-  const inbox = createWebhookInbox({ paymentsFor: createPaymentsResolver({ key, clock }), jobs, gymSettings: createGymSettingsAccessor(), clock });
+function webhookInbox(paymentsFor: ReturnType<typeof createPaymentsResolver>, jobs: Jobs) {
+  const inbox = createWebhookInbox({ paymentsFor, jobs, gymSettings: createGymSettingsAccessor(), clock });
   configureWebhookReplay(inbox);
   return inbox;
 }
@@ -142,10 +144,15 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     return { password: passwordLogin(config, configured), magicLink: configured };
   });
   const settings = createSettingsService(), t = createTranslator(locales.en ?? {});
-  configureSignedLinkDelivery({ async prepare(gymId) {
-    const [details, origin, mail] = await Promise.all([settings.get(gymId), gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId)]);
+  // Member-facing mail goes through the gym's SMTP (or the demo outbox), with links on the gym's own origin.
+  async function gymMail(gymId: string) {
+    const [origin, mail] = await Promise.all([gymOrigin(gymId), demo ? Promise.resolve(null) : smtp!.config(gymId)]);
     if (!demo && !mail) throw new AppError('unavailable', 'Email is not configured for this gym');
-    return { gymId, gymName: details.name, origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), memberEmailsEnabled: details.memberEmailsEnabled, t };
+    return { origin, email: demo ? demo.emailFor(gymId) : new SmtpEmail(mail!), t };
+  }
+  configureSignedLinkDelivery({ async prepare(gymId) {
+    const [details, mail] = await Promise.all([settings.get(gymId), gymMail(gymId)]);
+    return { gymId, gymName: details.name, memberEmailsEnabled: details.memberEmailsEnabled, ...mail };
   } });
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
@@ -172,9 +179,15 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Setup step 8 finishes with a committed run from this pipeline.
   configureImportStep({ imports: importPipeline, clock });
   // The inbox route and its dispatcher job; a gym without Stripe settings answers 503.
-  const inbox = webhookInbox(key, queue);
+  const paymentsFor = createPaymentsResolver({ key, clock });
+  const inbox = webhookInbox(paymentsFor, queue);
   configureWebhookInboxRoutes(inbox);
   configureWebhookInboxJobs(inbox);
+  // Webhook handlers apply payment outcomes through the one invoice transition service, whose effects
+  // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
+  const accounts = createAccountService(config);
+  composeBillingWebhooks({ inbox, jobs: queue, settings: createGymSettingsAccessor(), paymentsFor, clock, prepare: gymMail,
+    staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
@@ -241,7 +254,7 @@ export async function runCommandLine(args: readonly string[], io: CommandIO, env
   if (args[0] === 'setup-link') return createSetupLinkCommand(env).run(args.slice(1), io);
   // Migrating needs only the maintenance role, as in the container entrypoint.
   if (args[0] === 'migrate') return runCli(args, io);
-  try { webhookInbox((await prepare(env)).key, new PostgresJobs({ clock })); }
+  try { webhookInbox(createPaymentsResolver({ key: (await prepare(env)).key, clock }), new PostgresJobs({ clock })); }
   catch (error) { io.stderr(error instanceof Error ? error.message : 'Startup failed'); return 1; }
   try { return await runCli(args, io); } finally { await closeDatabase(); }
 }
