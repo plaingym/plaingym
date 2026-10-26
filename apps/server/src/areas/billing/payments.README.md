@@ -45,8 +45,8 @@ admins; front desk may collect payments and remove a card.
 Removing a card first revokes it locally and clears its default flag, then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
 remain visible so staff can retry removal after an outage. No processor IDs leave
-the staff API. `detachCard(gymId, processorId)` is an injected operation pending the
-payments-adapter CCR; it must be idempotent, including an already detached card.
+the staff API. `detachCard(gymId, processorId)` delegates to the gym's
+`Payments.detachPaymentMethod`, idempotent for missing and already detached cards.
 Without that operation removal returns unavailable.
 The Jobs interface rejects enqueue inside a transaction and provides no
 transactional enqueue. If a crash or enqueue failure occurs after local revocation,

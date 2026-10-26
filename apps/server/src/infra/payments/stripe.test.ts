@@ -16,6 +16,7 @@ import { TestClock } from '../../core/clock.js';
 import type { Tape } from './recording.js';
 
 const gymId = '00000000-0000-7000-8000-000000000001';
+const detach = { owned: 'pm_4242', foreign: 'pm_foreign' };
 const charge = { amount: 100, currency: 'usd', customerId: 'cus_fixture', paymentMethodId: 'pm_4242',
   invoiceId: 'invoice_fixture', attemptId: '1', idempotencyKey: 'invoice_fixture:1:create' };
 const checkout = { mode: 'payment' as const, amount: 100, currency: 'usd', customerId: 'cus_fixture',
@@ -35,14 +36,20 @@ it('serializes GET filters into the URL because SDK rawRequest only accepts POST
 });
 fullPaymentsContract('FakePayments', async (card = '4242') => {
   const payments = new FakePayments(gymId);
+  payments.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid' });
+  payments.seedCustomer({ id: 'cus_foreign', email: 'foreign@example.invalid', gymId: 'other-gym' });
+  for (const [id, customerId] of [[detach.owned, 'cus_fixture'], [detach.foreign, 'cus_foreign']] as const)
+    payments.recordPaymentMethod({ id, customerId, last4: '4242', expiresMonth: 12, expiresYear: 2030 });
   payments.respondNextConfirmation(card === '0341' ? 'declined' : card === '3184' ? 'authentication_required' : 'succeeded');
-  return { payments, charge, checkout };
+  return { payments, charge, checkout, detach };
 });
 function fixture(card: Card = '4242') {
   const transport = new StripeFixtures(gymId), recorder = new FixtureRecorder(gymId);
+  transport.objects.set('cus_foreign', { id: 'cus_foreign', object: 'customer', metadata: { gym_id: 'other-gym' } });
+  transport.objects.set(detach.foreign, { id: detach.foreign, object: 'payment_method', customer: 'cus_foreign', metadata: {} });
   const payments = new StripePayments(gymId, { transport: recordingTransport(transport, recorder), webhookSecret: 'fixture-signing-secret',
     clock: new TestClock('2026-10-23T12:00:00Z') });
-  return { payments, charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, transport, recorder, since: new Date('2026-10-23T00:00:00Z') };
+  return { payments, charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, transport, recorder, since: new Date('2026-10-23T00:00:00Z') };
 }
 const recordings = new Map<string, FixtureRecorder>();
 const recordName = 'StripePayments with synthetic API fixtures', replayName = 'StripePayments with recorded API replay';
@@ -60,7 +67,7 @@ if (process.env.PAYMENTS_WRITE_SYNTHETIC_FIXTURES === '1') {
     const tape = stored.tapes[caseName()];
     if (!tape) throw new Error('No recorded scenario: ' + caseName());
     return { payments: new StripePayments(gymId, { transport: replayTransport(tape, gymId), webhookSecret: 'fixture-signing-secret', clock: new TestClock('2026-10-23T12:00:00Z') }),
-      charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, since: new Date('2026-10-23T00:00:00Z') };
+      charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, since: new Date('2026-10-23T00:00:00Z') };
   });
 }
 
@@ -298,6 +305,24 @@ it('adopts an imported customer once, so charges and email matching accept it, a
   await expect(payments.adoptCustomer('cus_missing')).rejects.toThrow();
   await expect(payments.adoptCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
 });
+it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as const)('handles detach %s without hiding a failed removal', async outcome => {
+  const { payments, transport } = fixture();
+  const request = transport.request.bind(transport);
+  vi.spyOn(transport, 'request').mockImplementation(async input => {
+    if (!input.path.endsWith('/detach')) return request(input);
+    if (outcome === 'concurrent' || outcome === 'lost_response') {
+      await request(input);
+      throw Object.assign(new Error('Detach response unavailable'), { statusCode: outcome === 'concurrent' ? 400 : 500 });
+    }
+    if (outcome === 'missing') throw Object.assign(new Error('Missing'), { code: 'resource_missing', statusCode: 400 });
+    throw Object.assign(new Error('Detach failed'), { statusCode: outcome === 'permission' ? 403 : 500 });
+  });
+  const removal = payments.detachPaymentMethod('pm_4242');
+  if (outcome === 'permission') await expect(removal).rejects.toThrow('Check the Stripe permission for Payment Methods');
+  else if (outcome === 'failure') await expect(removal).rejects.toThrow('Detach failed');
+  else await expect(removal).resolves.toBeUndefined();
+  expect(transport.requests.filter(input => input.path.endsWith('/detach'))).toHaveLength(['concurrent', 'lost_response'].includes(outcome) ? 1 : 0);
+});
 it('blocks all provider operations inside a database transaction before any request', async () => {
   const { payments, transport } = fixture();
   await runInTransaction(async () => {
@@ -307,7 +332,7 @@ it('blocks all provider operations inside a database transaction before any requ
       () => payments.listRefunds('pi_fixture'),
       () => payments.refund({ chargeId: 'pi_fixture', amount: 1, idempotencyKey: 'refund' }), () => payments.createCheckout(checkout),
       () => payments.expireCheckout('cs_fixture'), () => payments.findCustomerByEmail('payer@example.invalid'),
-      () => payments.adoptCustomer('cus_fixture'), () => payments.parseWebhook(new Uint8Array(), '')];
+      () => payments.adoptCustomer('cus_fixture'), () => payments.detachPaymentMethod('pm_4242'), () => payments.parseWebhook(new Uint8Array(), '')];
     for (const call of calls) await expect(call()).rejects.toThrow('transaction');
   });
   expect(transport.requests).toEqual([]);
@@ -320,13 +345,14 @@ if (process.env.STRIPE_CONTRACT_MODE === 'test-api') {
   if (!apiKey || !/^rk_test_[A-Za-z0-9]+$/.test(apiKey)) throw new Error('Provide STRIPE_TEST_RESTRICTED_KEY (rk_test_ only)');
   const fixturesPath = process.env.STRIPE_CONTRACT_FIXTURES;
   if (!fixturesPath) throw new Error('Provide STRIPE_CONTRACT_FIXTURES; see infra/payments/README.md');
-  const fixtures = JSON.parse(await readFile(fixturesPath, 'utf8')) as { gymId: string; customerId: string; methods: Record<Card, string> };
+  const fixtures = JSON.parse(await readFile(fixturesPath, 'utf8')) as { gymId: string; customerId: string; methods: Record<Card, string>; detach: { owned: string; foreign: string } };
+  if (!fixtures.detach?.owned || !fixtures.detach.foreign) throw new Error('Provide dedicated owned and foreign detach fixtures');
   const recordings: FixtureRecorder[] = [];
   fullPaymentsContract('Stripe test API', async (card = '4242') => {
     const run = randomUUID(), recorder = new FixtureRecorder(fixtures.gymId); recordings.push(recorder);
     const payments = new StripePayments(fixtures.gymId, { transport: recordingTransport(stripeTransport(apiKey, { testOnly: true }), recorder), webhookSecret: 'unused' });
     return { payments, charge: { ...charge, customerId: fixtures.customerId, paymentMethodId: fixtures.methods[card], invoiceId: run, idempotencyKey: run + ':1:create' },
-      checkout: { ...checkout, customerId: fixtures.customerId, idempotencyKey: run + ':checkout' } };
+      checkout: { ...checkout, customerId: fixtures.customerId, idempotencyKey: run + ':checkout' }, detach: fixtures.detach };
   });
   it('checks the full restricted-key profile against the test API', () => stripeProvisioner(stripeTransport(apiKey, { testOnly: true })).validate());
   it('registers a tagged test endpoint at the pinned API version', async () => {

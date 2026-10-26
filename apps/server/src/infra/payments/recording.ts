@@ -11,7 +11,7 @@ export interface Exchange {
 }
 export interface Tape { version: 1; gymId: string; exchanges: Exchange[] }
 const paymentMethods = new Set<string>(['createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject',
-  'listChangesSince', 'listRefunds', 'refund', 'createCheckout', 'expireCheckout', 'findCustomerByEmail', 'adoptCustomer', 'parseWebhook']);
+  'listChangesSince', 'listRefunds', 'refund', 'createCheckout', 'expireCheckout', 'findCustomerByEmail', 'adoptCustomer', 'detachPaymentMethod', 'parseWebhook']);
 /** Fixtures contain synthetic test-account data only. Credentials never enter the transport. */
 export function redact(value: unknown): unknown {
   if (typeof value === 'string') return value.replace(/(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+|whsec_[A-Za-z0-9]+/g, '[redacted]');

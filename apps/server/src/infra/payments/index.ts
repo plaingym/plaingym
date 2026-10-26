@@ -147,6 +147,8 @@ export interface Payments {
    * staff-provided IDs, never on IDs taken from untrusted input.
    */
   adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
+  /** Detach a gym-owned card; missing and already detached methods succeed. */
+  detachPaymentMethod(processorId: string): Promise<void>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
 }
 
@@ -213,9 +215,10 @@ export class FakePayments implements Payments {
   readonly #checkoutRequests = new Map<string, CheckoutRequest>();
   readonly #refunds = new Map<string, Refund>();
   readonly #methods = new Map<string, PaymentMethod>();
+  readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
-  readonly #customers: { id: string; email: string }[] = [];
+  readonly #customers: { id: string; email: string; gymId: string }[] = [];
   readonly #changes: ChangeRecord[] = [];
   readonly #idempotency = new Map<string, IdempotentRecord>();
   readonly #uncertain = new Set<string>();
@@ -238,8 +241,8 @@ export class FakePayments implements Payments {
     if (uncertain) this.#uncertain.add(id);
     else this.#uncertain.delete(id);
   }
-  seedCustomer(customer: { id: string; email: string }): void {
-    this.#customers.push({ ...customer });
+  seedCustomer(customer: { id: string; email: string; gymId?: string }): void {
+    this.#customers.push({ ...customer, gymId: customer.gymId ?? this.gymId });
   }
   recordPaymentMethod(method: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date }): void {
     this.#methods.set(method.id, structuredClone({ ...method, createdAt: method.createdAt ?? this.#methods.get(method.id)?.createdAt ?? this.clock.now() }));
@@ -282,6 +285,7 @@ export class FakePayments implements Payments {
   }
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge');
+    if (this.#detached.has(request.paymentMethodId)) throw new Error('Payment method is detached');
     money(request.amount, request.currency);
     const result = this.#once(
       'create',
@@ -394,6 +398,7 @@ export class FakePayments implements Payments {
         if (this.#setups.has(id)) value = { kind: 'setup', object: this.#setups.get(id)! };
         break;
       case 'payment_method':
+        if (this.#detached.has(id)) return { status: 'unknown', reference };
         if (this.#methods.has(id)) value = { kind: 'payment_method', object: this.#methods.get(id)! };
         break;
       case 'refund':
@@ -584,7 +589,8 @@ export class FakePayments implements Payments {
   async findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]> {
     assertNoTransaction('payments.findCustomerByEmail');
     return structuredClone(
-      this.#customers.filter((customer) => customer.email.toLowerCase() === email.toLowerCase()),
+      this.#customers.filter((customer) => customer.gymId === this.gymId && customer.email.toLowerCase() === email.toLowerCase())
+        .map(({ id, email }) => ({ id, email })),
     );
   }
   /** Seeded customers belong to this gym; unknown IDs fail like a missing Stripe customer. */
@@ -592,7 +598,16 @@ export class FakePayments implements Payments {
     assertNoTransaction('payments.adoptCustomer');
     const customer = this.#customers.find((item) => item.id === customerId);
     if (!customer) throw new Error('No such customer');
+    if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
     return { id: customer.id, email: customer.email };
+  }
+  async detachPaymentMethod(processorId: string): Promise<void> {
+    assertNoTransaction('payments.detachPaymentMethod');
+    if (!/^[A-Za-z0-9_]+$/.test(processorId)) throw new Error('Invalid processor ID');
+    const method = this.#methods.get(processorId);
+    if (!method || this.#detached.has(processorId)) return;
+    await this.adoptCustomer(method.customerId);
+    this.#detached.add(processorId);
   }
   signWebhook(body: Uint8Array): string {
     return createHmac('sha256', this.webhookSecret).update(body).digest('hex');

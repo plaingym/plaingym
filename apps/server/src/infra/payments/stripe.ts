@@ -13,7 +13,7 @@ import { PaymentWebhookError } from './webhook-error.js';
 export const STRIPE_API_VERSION = '2026-09-30.endive' as const;
 export const STRIPE_PERMISSIONS = [
   ['Customers', 'Write'], ['Payment Intents', 'Write'], ['Checkout Sessions', 'Write'],
-  ['Setup Intents', 'Read'], ['Payment Methods', 'Read'], ['Charges and Refunds', 'Write'], ['Webhook Endpoints', 'Write'],
+  ['Setup Intents', 'Read'], ['Payment Methods', 'Write'], ['Charges and Refunds', 'Write'], ['Webhook Endpoints', 'Write'],
   ['Events', 'Read'], ['Disputes', 'Read'],
 ] as const;
 export const STRIPE_EVENTS = ['payment_intent.created', 'payment_intent.succeeded', 'payment_intent.payment_failed',
@@ -307,6 +307,31 @@ export class StripePayments implements Payments {
       }
     }
     return value;
+  }
+  async detachPaymentMethod(processorId: string): Promise<void> {
+    assertNoTransaction('payments.detachPaymentMethod');
+    const path = this.#path('payment_methods', processorId);
+    const absent = (error: unknown) => {
+      const value = error as { code?: string; statusCode?: number } | null;
+      return value?.code === 'resource_missing' && [400, 404].includes(value.statusCode ?? 0);
+    };
+    let method: ObjectData;
+    try { method = await this.#get(path); }
+    catch (error) { if (absent(error)) return; throw error; }
+    if (data(method.metadata ?? {}).gym_id) this.#metadata(method);
+    if (!method.customer) return;
+    await this.#ownedCustomer(id(method.customer));
+    try { await this.#post(path + '/detach', {}); }
+    catch (error) {
+      if (absent(error)) return;
+      if ((error as { statusCode?: number } | null)?.statusCode === 403)
+        throw new Error('Check the Stripe permission for Payment Methods');
+      // A concurrent detach or a lost response can leave the operation already complete.
+      let current: ObjectData;
+      try { current = await this.#get(path); }
+      catch (readError) { if (absent(readError)) return; throw error; }
+      if (current.customer) throw error;
+    }
   }
   async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
     assertNoTransaction('payments.adoptCustomer');

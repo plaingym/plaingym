@@ -71,6 +71,10 @@ export class StripeFixtures implements PaymentTransport {
       const object = this.objects.get(objectId);
       if (!object) throw Object.assign(new Error('No such object'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
       if (input.method === 'GET') return object;
+      if (resource === 'payment_methods' && action === 'detach') {
+        if (!object.customer) throw Object.assign(new Error('Already detached'), { type: 'StripeInvalidRequestError', statusCode: 400 });
+        object.customer = null; return object;
+      }
       if (!action && resource === 'customers') {
         object.metadata = { ...object.metadata as ObjectData, ...params.metadata as ObjectData }; return object;
       }

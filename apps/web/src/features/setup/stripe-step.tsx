@@ -36,7 +36,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
       <h3 className="font-semibold">{label('permissions')}</h3>
       <dl className="space-y-2 rounded-md border p-3 text-sm">
         {permissions.map((resource) => <div key={resource} className="flex min-w-0 flex-wrap justify-between gap-x-4 gap-y-1">
-          <dt className="break-words">{label(resource)}</dt><dd className="font-medium">{label(['setupIntents', 'methods', 'events', 'disputes'].includes(resource) ? 'read' : 'write')}</dd>
+          <dt className="break-words">{label(resource)}</dt><dd className="font-medium">{label(['setupIntents', 'events', 'disputes'].includes(resource) ? 'read' : 'write')}</dd>
         </div>)}
       </dl><p className="text-sm">{label('other')}</p>
       {failure && <Alert>{label(failure)}</Alert>}

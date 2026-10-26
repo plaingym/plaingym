@@ -13,6 +13,7 @@ export const permissionProbes: readonly { resource: string; request: ProviderReq
   { resource: 'Checkout Sessions', request: { method: 'POST', path: '/v1/checkout/sessions/cs_PlainGymPermissionProbe/expire', params: {} } },
   { resource: 'Setup Intents', request: { method: 'GET', path: '/v1/setup_intents', params: { limit: 1 } } },
   { resource: 'Payment Methods', request: { method: 'GET', path: '/v1/payment_methods', params: { type: 'card', limit: 1 } } },
+  { resource: 'Payment Methods', request: { method: 'POST', path: '/v1/payment_methods/pm_PlainGymPermissionProbe/detach', params: {} } },
   { resource: 'Charges and Refunds', request: { method: 'GET', path: '/v1/charges', params: { limit: 1 } } },
   { resource: 'Charges and Refunds', request: { method: 'GET', path: '/v1/refunds', params: { limit: 1 } } },
   { resource: 'Charges and Refunds', request: { method: 'POST', path: '/v1/refunds', params: { payment_intent: 'pi_PlainGymPermissionProbe', amount: 1 } } },

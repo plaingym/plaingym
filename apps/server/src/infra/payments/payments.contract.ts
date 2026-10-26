@@ -5,6 +5,7 @@ import type { Payments, CreateCharge, CheckoutRequest } from './index.js';
 export type Card = '4242' | '0341' | '3155' | '3184';
 export interface ContractHarness {
   payments: Payments; charge: CreateCharge; checkout: CheckoutRequest;
+  detach: { owned: string; foreign: string };
   since?: Date;
   completeCheckout?: (id: string) => void;
 }
@@ -12,6 +13,14 @@ export interface ContractHarness {
 export function fullPaymentsContract(name: string, create: (card?: Card) => Promise<ContractHarness>) {
   paymentsContract(name, create);
   describe(name + ' extended', () => {
+    it('detaches a card idempotently, accepts unknown IDs, and refuses another gym', async () => {
+      const { payments, detach } = await create();
+      await expect(payments.detachPaymentMethod(detach.foreign)).rejects.toThrow();
+      await expect(payments.detachPaymentMethod(detach.owned)).resolves.toBeUndefined();
+      await expect(payments.detachPaymentMethod(detach.owned)).resolves.toBeUndefined();
+      await expect(payments.detachPaymentMethod('pm_missing')).resolves.toBeUndefined();
+      expect(await payments.readPaymentObject({ kind: 'payment_method', id: detach.owned })).toEqual({ status: 'unknown', reference: { kind: 'payment_method', id: detach.owned } });
+    });
     it.each([['4242', 'succeeded'], ['0341', 'failed'], ['3155', 'succeeded'], ['3184', 'action_required']] as const)(
       'normalizes card %s after the setup fixture', async (card, status) => {
         const { payments, charge } = await create(card), intent = await payments.createCharge(charge);

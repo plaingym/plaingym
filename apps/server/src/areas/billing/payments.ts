@@ -27,7 +27,7 @@ export interface PaymentOptions {
   paymentsFor?: (gymId: string) => Promise<Payments | null>;
   jobs?: Jobs;
   runner?: Pick<ChargeRunner, 'charge'>;
-  /** TODO(CCR): promote detach to Payments, implement in Stripe and its contract fake. */
+  /** The runtime delegates to the gym's Payments.detachPaymentMethod outside the transaction. */
   detachCard?: (gymId: string, processorId: string) => Promise<void>;
 }
 export const presentInvoice = (r: typeof invoices.$inferSelect) => c.invoiceSchema.parse({

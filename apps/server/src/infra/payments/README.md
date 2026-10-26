@@ -102,6 +102,14 @@ that subscription separately to receive automatic card updates.
 
 ## Offline contracts and recording
 
+`detachPaymentMethod(id)` checks the attached customer's gym before calling
+[Stripe's detach endpoint](https://docs.stripe.com/api/payment_methods/detach).
+Missing and already detached methods succeed; a concurrent detach or lost response
+is confirmed by reading the method again. Permission and provider failures remain
+retryable. Payment Methods **Write** is required and probed during setup. Existing
+keys without it report `Check the Stripe permission for Payment Methods`; local
+card revocation remains in place while the queued detach job retries.
+
 Run from the repository root with the pinned Node version:
 
 ```powershell
@@ -183,7 +191,7 @@ permission table in `STRIPE_PERMISSIONS`:
 | Payment Intents | Write |
 | Checkout Sessions | Write |
 | Setup Intents | Read |
-| Payment Methods | Read |
+| Payment Methods | Write |
 | Charges and Refunds | Write |
 | Webhook Endpoints | Write |
 | Events | Read |
@@ -193,6 +201,10 @@ permission table in `STRIPE_PERMISSIONS`:
 Prepare a test Customer tagged with the contract gym ID and four attached saved
 PaymentMethods. Use test card 4242 (success), 0341 (saved-card decline), 3155 (finish its
 on-session Checkout/SCA setup first), and 3184 (off-session still needs SCA).
+Also provide `detach: { "owned": "pm_disposable", "foreign": "pm_other_gym" }`
+in the fixture JSON: a separate disposable method attached to this gym's customer
+and one attached to a customer tagged with another gym. The owned method is detached
+permanently; never reuse one of the four charge fixtures for it.
 Store only the IDs, never card numbers or keys, in a local ignored JSON file
 outside tracked paths (for example, the parent workspace's ignored `scratch/`):
 
