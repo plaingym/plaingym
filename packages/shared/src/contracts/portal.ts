@@ -10,6 +10,7 @@ import {
 import {
   waiverPdfResponseSchema, waiverSignatureListResponseSchema, waiverSignatureParamsSchema,
   waiverSignatureResponseSchema, waiverSignRequestSchema, waiverTemplateSchema,
+  waiverUploadRequestSchema, waiverUploadResponseSchema,
 } from './waivers.js';
 
 export const portalMemberParamsSchema = z.strictObject({ memberId: idSchema });
@@ -181,6 +182,16 @@ export const portalSignedLinkContracts = {
   onboarding: { method: 'get', path: '/api/links/onboarding', permission: { kind: 'signed_link', purpose: 'onboarding' }, response: z.strictObject({ data: portalSignedLinkDataSchema.options[3] }) },
   onboardWaiver: { method: 'post', path: '/api/links/onboarding/waivers', permission: { kind: 'signed_link', purpose: 'onboarding' }, body: waiverSignRequestSchema, response: waiverSignatureResponseSchema },
   onboardCard: { method: 'post', path: '/api/links/onboarding/checkout', permission: { kind: 'signed_link', purpose: 'onboarding' }, response: portalCheckoutResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
+
+/** Additive signed-link actions. A browser receipt binds Checkout completion to its link. */
+export const signedLinkCardUnavailableSchema = z.strictObject({ cardSetupUnavailable: z.literal(true) });
+export const signedLinkActionContracts = {
+  uploadWaiver: { method: 'post', path: '/api/links/sign-waiver/signature-images', permission: { kind: 'signed_link', purpose: 'sign_waiver' }, body: waiverUploadRequestSchema.omit({ memberId: true }), response: waiverUploadResponseSchema },
+  uploadOnboarding: { method: 'post', path: '/api/links/onboarding/signature-images', permission: { kind: 'signed_link', purpose: 'onboarding' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
+  completeInvoice: { method: 'post', path: '/api/links/pay-invoice/complete', permission: { kind: 'signed_link', purpose: 'pay_invoice' }, response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
+  completeCard: { method: 'post', path: '/api/links/update-card/complete', permission: { kind: 'signed_link', purpose: 'update_card' }, response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
+  completeOnboarding: { method: 'post', path: '/api/links/onboarding/complete', permission: { kind: 'signed_link', purpose: 'onboarding' }, response: z.strictObject({ data: z.strictObject({ completed: z.boolean() }) }) },
 } as const satisfies Record<string, EndpointContract>;
 
 export type PortalContext = z.infer<typeof portalContextSchema>;

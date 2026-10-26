@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@napi-rs/canvas": "1.0.13",
+    "@tailwindcss/node": "4.3.3",
     "@types/fontkit": "2.0.9",
     "@types/nodemailer": "8.0.2",
     "@types/pdfkit": "0.17.7",

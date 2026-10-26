@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, count, isNull } from 'drizzle-orm';
-import { forGym, members, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
+import { and, asc, desc, eq, count, inArray, isNull } from 'drizzle-orm';
+import { forGym, members, signedLinks, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
@@ -16,6 +16,17 @@ import { renderWaiver, validateTemplatePdf } from './pdf.js';
 export interface WaiverOptions {
   scope?: typeof forGym; clock?: Clock; uploadsFor: (gymId: string) => Promise<Uploads>;
   render?: typeof renderWaiver;
+}
+/** Shared signed-link completion rule, matching the household current-template projection. */
+export async function signedLinkWaiversComplete(tx: Transaction, memberIds: string[]): Promise<boolean> {
+  if (!memberIds.length) return true;
+  // Select the latest version before excluding retired families; never revive an older version.
+  const templates = await tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
+    .orderBy(waiverTemplates.name, desc(waiverTemplates.version));
+  const signatures = await tx.select({ memberId: waiverSignatures.memberId, templateId: waiverSignatures.templateId })
+    .from(waiverSignatures).where(inArray(waiverSignatures.memberId, memberIds));
+  return memberIds.every(id => templates.filter(t => !t.retiredAt)
+    .every(t => signatures.some(s => s.memberId === id && s.templateId === t.id)));
 }
 const template = (r: typeof waiverTemplates.$inferSelect): c.WaiverTemplate => ({ id: r.id, name: r.name, kind: c.waiverKindSchema.parse(r.kind),
   version: r.version, body: r.body, retiredAt: r.retiredAt?.toISOString() ?? null, createdAt: r.createdAt.toISOString() });
@@ -58,6 +69,18 @@ export function createWaiversService(options: WaiverOptions) {
     return bytes;
   }
   const service = {
+    /** Complete an already-signed member link on first open, using the same locked rule as signing. */
+    async completeSignedLink(gymId: string, linkId: string, memberId: string): Promise<boolean> {
+      return linkedService(gymId, linkId, memberId, true).completeOnOpen();
+    },
+    /** Each underlying transaction rechecks the credential under the revocation lock.
+     * Rendering and uploads still happen between short transactions in the existing service. */
+    async uploadSignedLink(gymId: string, linkId: string, memberId: string, bytes: Uint8Array): Promise<{ signatureImageKey: string; signatureImageHash: string }> {
+      return linkedService(gymId, linkId, memberId).uploadSignature({ gymId, actor: { kind: 'system' } }, memberId, bytes);
+    },
+    async signSignedLink(gymId: string, linkId: string, input: c.WaiverSignRequest, signing: { timezone: string; ipAddress: string }): Promise<c.WaiverSignature> {
+      return linkedService(gymId, linkId, input.memberId, true).sign({ gymId, actor: { kind: 'system' } }, input, signing);
+    },
     async listTemplates(gymId: string, input: unknown = {}) {
       const q = c.waiverTemplateListQuerySchema.parse(input);
       return scope(gymId, async tx => {
@@ -191,6 +214,33 @@ export function createWaiversService(options: WaiverOptions) {
       return { data: { url, expiresAt: new Date(clock.now().getTime() + 300_000).toISOString() } };
     },
   };
+  function linkedService(gymId: string, linkId: string, memberId: string, completing = false) {
+    const completedOnOpen = { completed: false };
+    const guarded: typeof forGym = (requestedGym, fn) => scope(requestedGym, async tx => {
+      if (requestedGym !== gymId) notFound();
+      const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)).for('update');
+      if (!link || link.gymId !== gymId || link.usedAt || link.revokedAt || link.expiresAt <= clock.now()
+        || !['sign_waiver', 'onboarding'].includes(link.purpose)
+        || (link.purpose === 'sign_waiver' && link.memberId !== memberId)) notFound();
+      const [m] = await tx.select().from(members).where(and(eq(members.id, memberId), eq(members.householdId, link.householdId))).for('update');
+      if (!m || m.anonymizedAt) notFound();
+      const result = await fn(tx);
+      // The last persisted current signature and consumption commit atomically under the link lock.
+      // Onboarding is completed separately, after both the card and all waivers are confirmed.
+      if (completing && link.purpose === 'sign_waiver' && result && typeof result === 'object'
+        && (Object.is(result, completedOnOpen) || 'snapshotHash' in result || ('kind' in result && result.kind === 'existing'))
+        && await signedLinkWaiversComplete(tx, [memberId])) {
+        await tx.update(signedLinks).set({ usedAt: clock.now() }).where(eq(signedLinks.id, linkId));
+        await writeAudit(tx, { gymId, actorKind: 'system', action: 'signed_link.used', targetType: 'signed_link', targetId: linkId,
+          before: null, after: null, occurredAt: clock.now() });
+        if (Object.is(result, completedOnOpen)) completedOnOpen.completed = true;
+      }
+      return result;
+    });
+    return { ...createWaiversService({ ...options, scope: guarded, clock }),
+      completeOnOpen: async (): Promise<boolean> => (await guarded(gymId, async () => completedOnOpen)).completed,
+    };
+  }
   return service;
 }
 export type WaiversService = ReturnType<typeof createWaiversService>;
