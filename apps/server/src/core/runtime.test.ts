@@ -9,7 +9,7 @@ import { and, eq } from 'drizzle-orm';
 import { auditEvents, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, memberships, paymentAttempts, paymentMethods, programs, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
+import { floodLimit, poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
 import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
@@ -55,6 +55,11 @@ it('sizes the app pool from DATABASE_POOL_MAX within the connection budget', () 
   expect(poolSize({})).toBe(8);
   expect(poolSize({ DATABASE_POOL_MAX: '4' })).toBe(4);
   for (const value of ['0', '-1', '1.5', 'many', '101']) expect(() => poolSize({ DATABASE_POOL_MAX: value })).toThrow('DATABASE_POOL_MAX');
+});
+it('reads the flood limit from RATE_LIMIT_PER_MINUTE, leaving the default when unset', () => {
+  expect(floodLimit({})).toBeUndefined();
+  expect(floodLimit({ RATE_LIMIT_PER_MINUTE: '20000' })).toBe(20_000);
+  for (const value of ['', '0', '-1', '1.5', 'many', '100001']) expect(() => floodLimit({ RATE_LIMIT_PER_MINUTE: value })).toThrow('RATE_LIMIT_PER_MINUTE');
 });
 it('migrates through the maintenance role from the command line, without the app settings', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };

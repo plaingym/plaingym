@@ -21,6 +21,9 @@ x-app-env: &app-env
   SETUP_TOKEN: ${E2E_SETUP_TOKEN:?required}
   UPLOADS_DIR: /var/lib/plaingym/uploads
   BACKUP_STAGING_DIR: /var/lib/plaingym/staging
+  # Every browser and API request reaches the app from Caddy's one address; the default
+  # 300 per minute would make the specs wait for fresh windows (unit tests cover the limiter).
+  RATE_LIMIT_PER_MINUTE: '20000'
 services:
   postgres: *postgres
   demo-postgres: *postgres

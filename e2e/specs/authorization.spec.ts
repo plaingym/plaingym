@@ -43,8 +43,6 @@ test('every route enforces all staff roles, anonymous access and device boundari
   ];
   const results: { route: string; role: string; status: number }[] = [];
   for (const { role, client } of probes) for (const entry of inventory) {
-    // Exercise the production limiter without flooding its 300/minute bucket.
-    await new Promise((resolve) => setTimeout(resolve, 230));
     const operation = install.document.paths[entry.path][entry.method.toLowerCase()];
     const url = new URL(entry.path.replace(/\{[^}]+\}/g, missingId), gymOrigin);
     for (const parameter of operation.parameters ?? [])

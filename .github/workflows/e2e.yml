@@ -44,7 +44,10 @@ jobs:
         with:
           node-version: 24.22.1
       - run: pnpm --dir e2e install --frozen-lockfile
-      - run: pnpm --dir e2e exec playwright install --with-deps chromium
+      # The runner image already has Chromium's system libraries; --with-deps would add an apt-get
+      # download (fonts, xvfb) that can stall for many minutes on a slow package mirror.
+      - run: pnpm --dir e2e exec playwright install chromium
+        timeout-minutes: 5
       - run: pnpm --dir e2e check-types
       # Builds committed HEAD into the production image, starts the Compose stack, runs every spec, and
       # removes its containers and volumes afterwards, also on failure.

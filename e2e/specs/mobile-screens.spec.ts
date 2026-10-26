@@ -70,11 +70,7 @@ async function dialogLayout(page: Page, name: string, phone: boolean) {
   else expect(box.width).toBeLessThan(viewport.width - 100);
 }
 
-// Every request from the browser and the API helper shares one client address, so each test (about 140 requests)
-// starts in a fresh window of the app's 300-per-minute flood limit, and leaves the next spec a fresh one.
-const rateWindow = () => new Promise((resolve) => setTimeout(resolve, 61_000));
-test.beforeEach(async () => { test.setTimeout(330_000); await rateWindow(); });
-test.afterAll(async () => { await rateWindow(); });
+test.beforeEach(() => { test.setTimeout(270_000); });
 
 for (const { name: size, viewport, hasTouch } of viewports) {
   const phone = size === 'phone', last = phone ? 'Phone' : 'Desktop';

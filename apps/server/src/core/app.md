@@ -73,3 +73,6 @@ The public origin is `PUBLIC_ORIGIN`, or `https://` plus `GYM_HOSTNAME`, in
 single mode; in multi mode it is the hostname the tenant resolver matched.
 `TRUST_PROXY=true` (set in Compose, where only Caddy reaches the app) makes the
 last `X-Forwarded-For` entry the client address for rate limits and login.
+`RATE_LIMIT_PER_MINUTE` (an integer from 1 to 100,000) replaces the flood limit's
+default of 300 requests per minute per gym and client address; route limiters and
+the auth limiter keep their own limits.

@@ -18,8 +18,11 @@ pnpm --dir e2e test
 
 CI runs this suite in the **End-to-end** workflow on every integration branch, nightly,
 and on demand, keeping `coverage/` (the report, and traces of failed tests) as an artifact for
-seven days. On Windows use `pnpm.cmd` if PowerShell blocks unsigned command shims. Set
-`E2E_BROWSER_CHANNEL=msedge` to use an installed Edge instead of bundled Chromium.
+seven days. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
+installs only the browser (`playwright install chromium`), skipping the `apt-get` step of
+`--with-deps`, which can stall for many minutes on a slow package mirror. On Windows use
+`pnpm.cmd` if PowerShell blocks unsigned command shims. Set `E2E_BROWSER_CHANNEL=msedge` to
+use an installed Edge instead of bundled Chromium.
 
 The runner archives **committed HEAD** and builds it with `deploy/Dockerfile`.
 Commit application fixes before running. `E2E_IMAGE=<tag-or-digest>` reuses an
@@ -72,8 +75,6 @@ The checks cover:
   exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
   and Tokyo gym time with a Honolulu browser, verify stored instants and local display, and reject
   the New York spring daylight-saving gap. A coach's direct Settings URL has an explanatory empty state.
-  Its two tests each start
-  in a fresh window of the app's flood limit, so they add about three minutes of waiting.
 * Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
 * Login errors and a successful password sign-in; the demo entry button creating
@@ -94,9 +95,11 @@ management contracts are absent from the running application and are not in
 this inventory. The QR check-in contract is also absent until its implementation
 exists. Billing dashboard stubs are outside this mat suite.
 
-The permission sweep deliberately stays below the production rate limit. A full
-run takes several minutes. Failed runs retain screenshots, traces, the HTML
-report and container logs in `e2e/coverage/` (ignored by Git and lint). Open the
+Every browser and API request reaches the app from Caddy's one address, so the
+stack sets `RATE_LIMIT_PER_MINUTE=20000` instead of the default 300; the limiter
+itself is covered by unit tests. A full run takes a few minutes. Failed runs
+retain screenshots, traces, the HTML report and container logs in `e2e/coverage/`
+(ignored by Git and lint). Open the
 report with `pnpm --dir e2e exec playwright show-report coverage/report`.
 
 Test dependencies have their own lockfile and do not change the application's

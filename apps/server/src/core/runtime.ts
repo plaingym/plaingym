@@ -102,6 +102,13 @@ export function poolSize(env: NodeJS.ProcessEnv): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new Error('DATABASE_POOL_MAX must be an integer from 1 to 100');
   return value;
 }
+/** The app's flood limit per gym and client address each minute: `RATE_LIMIT_PER_MINUTE`, else the limiter's default. */
+export function floodLimit(env: NodeJS.ProcessEnv): number | undefined {
+  if (env.RATE_LIMIT_PER_MINUTE === undefined) return undefined;
+  const value = Number(env.RATE_LIMIT_PER_MINUTE);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 100_000) throw new Error('RATE_LIMIT_PER_MINUTE must be an integer from 1 to 100000');
+  return value;
+}
 /** Shared setup for the server and the database-backed CLI commands. */
 async function prepare(env: NodeJS.ProcessEnv) {
   const demo = demoBootCheck(env);
@@ -131,6 +138,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const { key, mode, config: initialConfig, install, smtp } = await prepare(env);
   // Caddy is the only peer that can reach the app in the Compose deployment.
   const trustedProxy = env.TRUST_PROXY === 'true' ? () => true : undefined;
+  const limit = floodLimit(env);
   const originFor = (context: Context<RequestEnvironment>): string => {
     if (mode === 'single') return install!;
     // In multi mode the tenant resolver has already matched this hostname to the gym.
@@ -233,7 +241,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
     } }) }),
     origin: originFor, ...(install ? { installOrigin: install } : {}),
-    ...(trustedProxy ? { rateLimit: { trustedProxy } } : {}), ...(gate ? { restoreGate: gate.middleware() } : {}),
+    rateLimit: { ...(trustedProxy ? { trustedProxy } : {}), ...(limit ? { limit } : {}) }, ...(gate ? { restoreGate: gate.middleware() } : {}),
     ...(env.SOURCE_URL ? { sourceUrl: env.SOURCE_URL } : {}),
     ...(env.SETUP_TOKEN ? { setupToken: env.SETUP_TOKEN } : {}), ...(demo ? { skipSetup: demo.skipSetup } : {}),
   });
