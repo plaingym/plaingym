@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, inArray, isNull, lt, lte } from 'drizzle-orm';
-import { forGym, invoices, memberships, paymentAttempts, uuidv7 } from '@plaingym/db';
+import { forGym, households, invoices, memberships, paymentAttempts, paymentMethods, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { addDays, localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -13,6 +13,8 @@ import { logError } from '../../../core/log.js';
 import { assignmentInvoices, audit, generateCycle, system } from './store.js';
 import { createReconciliation } from './reconciliation.js';
 import { eligibility, isAssignmentInvoice, skipped, type ChargeMode, type Skipped } from './eligibility.js';
+import { releaseActionNeeded, releaseCheckout } from './releases.js';
+export { releaseActionNeeded, releaseCheckout } from './releases.js';
 
 export type ChargeOptions = { mode?: 'automatic' | 'retry' } | { mode: 'staff'; context: MutationContext };
 export type ChargeResult = Skipped | { status: 'succeeded' | 'failed' | 'action_required' | 'pending' | 'unknown' | 'settled_zero' };
@@ -68,21 +70,14 @@ export function createChargeRunner(options: RunnerOptions) {
     const provider = await options.payments(gymId);
     if (latest?.status === 'requires_action') {
       if (!latest.paymentIntentId) throw new Error('Action-needed attempt has no PaymentIntent ID');
-      const outcome = await provider.cancelCharge(latest.paymentIntentId);
-      if (!await reconciliation.apply(gymId, outcome, context)) throw new Error('Action-needed intent remains unresolved');
-      if (outcome.status === 'succeeded') return skipped('not_payable');
-      if (outcome.status !== 'failed' || outcome.code !== 'canceled') throw new Error('Action-needed intent was not cancelled');
+      if (await releaseActionNeeded(gymId, latest.paymentIntentId, provider, reconciliation, context) === 'paid') return skipped('not_payable');
     }
     if (invoice.checkoutSessionId) {
-      const expired = await provider.expireCheckout(invoice.checkoutSessionId);
-      if (expired.status !== 'expired') {
-        await reconciliation.checkout(gymId, invoice.checkoutSessionId, provider);
-        const refreshed = await scope(gymId, async tx => (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)))[0]);
-        if (refreshed && ['paid', 'partially_refunded', 'refunded'].includes(refreshed.status)) return skipped('not_payable');
-        throw new Error('Checkout must be reconciled before charging');
-      }
+      const released = await releaseCheckout(gymId, invoiceId, invoice.checkoutSessionId, provider, reconciliation, scope, context);
+      if (released === 'paid') return skipped('not_payable');
+      if (released === 'changed') return skipped('checkout_changed');
     }
-    const reservation = await reserve(context, invoiceId, mode, invoice.checkoutSessionId);
+    const reservation = await reserve(context, invoiceId, mode, null);
     if (reservation.status === 'skipped') return reservation;
     const { attempt } = reservation;
     // Adoption is idempotent and refuses a stored customer belonging to another gym.
@@ -102,12 +97,22 @@ export function createChargeRunner(options: RunnerOptions) {
     });
     if (!saved) {
       // A reconciler invalidated this reservation. This worker must NEVER confirm it.
-      await provider.cancelCharge(intent.id);
+      const current = await scope(gymId, async tx => (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, attempt.id)))[0]);
+      if (current?.paymentIntentId !== intent.id) await provider.cancelCharge(intent.id);
       return skipped('reservation_lost');
     }
-    if (!(await options.settings.get(gymId)).billingEnabled) {
+    const stillEligible = await scope(gymId, async tx => {
+      const row = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)))[0];
+      if (!row || !['open', 'past_due'].includes(row.status) || row.checkoutSessionId || row.needsReview) return false;
+      const home = (await tx.select().from(households).where(eq(households.id, row.householdId)))[0];
+      const card = (await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
+        eq(paymentMethods.householdId, row.householdId), eq(paymentMethods.processorId, attempt.savedPaymentMethod), isNull(paymentMethods.revokedAt))))[0];
+      return home?.stripeCustomerId === attempt.stripeCustomerId && !!card;
+    });
+    const enabled = (await options.settings.get(gymId)).billingEnabled;
+    if (!stillEligible || !enabled) {
       await reconciliation.apply(gymId, await provider.cancelCharge(intent.id), context);
-      return skipped('billing_disabled');
+      return skipped(enabled ? 'collection_changed' : 'billing_disabled');
     }
     const outcome = await provider.confirmCharge(intent.id, { idempotencyKey: `${key}:confirm` });
     const applied = await reconciliation.apply(gymId, outcome, context);

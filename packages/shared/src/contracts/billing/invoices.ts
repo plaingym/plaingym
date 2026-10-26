@@ -6,6 +6,7 @@ import {
   moneySchema, paginationSchema, taxRateMillionthsSchema,
 } from '../common.js';
 import { paymentSchema, refundSchema } from './payments.js';
+import type { EndpointContract } from '../definition.js';
 
 export { invoiceKindSchema } from '../states.js';
 export { invoiceStatusSchema } from '../states.js';
@@ -88,6 +89,13 @@ export const invoiceDetailSchema = z.strictObject({
   }
 });
 export const invoiceResponseSchema = z.strictObject({ data: invoiceSchema });
+/** Staff confirmation clears a review hold without collecting money. */
+export const releaseInvoiceHoldContract = {
+  method: 'post', path: '/api/billing/invoices/{invoiceId}/release-hold',
+  permission: { kind: 'staff', capability: 'refunds.create' },
+  params: z.strictObject({ invoiceId: idSchema }), body: z.strictObject({}),
+  response: invoiceResponseSchema, successStatus: 200,
+} as const satisfies EndpointContract;
 export const invoiceDetailResponseSchema = z.strictObject({ data: invoiceDetailSchema });
 export const invoiceListResponseSchema = listResponseSchema(invoiceSchema);
 export const invoiceListQuerySchema = paginationSchema.extend({

@@ -8,7 +8,7 @@ import type { RunnerOptions } from './index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 
 export interface ReconciliationIssue { kind: string; id: string; reason: string; }
-type Options = RunnerOptions & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
+type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
 export function createReconciliation(options: Options) {
   const { scope, clock } = options;
   const staleAfterMs = options.staleAfterMs ?? 15 * 60_000;
@@ -64,16 +64,22 @@ export function createReconciliation(options: Options) {
     { ...outcome, metadata: { ...outcome.metadata, invoiceId: linked.invoice.id } });
     return true;
   }
-  async function checkout(gymId: string, id: string, provider: Payments) {
+  async function checkout(gymId: string, id: string, provider: Payments, context: MutationContext = system(gymId)) {
     const found = await provider.readPaymentObject({ kind: 'checkout', id });
     if (found.status !== 'found' || found.value.kind !== 'checkout') return false;
     const session = found.value.object;
     if (session.metadata.gymId !== gymId || session.mode !== 'payment') return false;
     const invoice = await scope(gymId, async tx => (await tx.select().from(invoices).where(eq(invoices.checkoutSessionId, id)))[0]);
     if (!invoice || session.metadata.invoiceId !== invoice.id) return false;
-    if (session.status === 'expired') return true;
+    if (session.status === 'expired') return scope(gymId, async tx => {
+      const current = (await tx.select().from(invoices).where(eq(invoices.id, invoice.id)).for('update'))[0];
+      if (!current || current.checkoutSessionId !== id) return false;
+      await tx.update(invoices).set({ checkoutSessionId: null }).where(eq(invoices.id, current.id));
+      await audit(tx, context, clock, 'billing.runner.checkout_released', 'invoice', current.id, { checkoutSessionId: null, expiredSessionId: id });
+      return true;
+    });
     if (session.status !== 'complete') return false;
-    return apply(gymId, await provider.findCharge({ kind: 'checkout', id }, { includeSuccessTime: true }));
+    return apply(gymId, await provider.findCharge({ kind: 'checkout', id }, { includeSuccessTime: true }), context);
   }
   async function object(gymId: string, value: PaymentObject, provider: Payments): Promise<boolean> {
     if (value.kind === 'charge') {

@@ -28,8 +28,10 @@ the held invoice to the conflicting cycle and records the period.
 
 Periods over seven days old are issued with `needsReview`, and an existing open
 cycle invoice that ages beyond seven days is held on the next daily run. Staff
-confirmation must clear that flag in an authorized, audited operation and invoke
-`charge` directly; merely rerunning the daily catch-up sweep does not confirm it.
+confirmation uses the staff invoice `release-hold` action (owners/admins), then a
+normal collection action. Recording cash/check also confirms a held invoice and
+audits the payment that cleared it. Merely rerunning the daily catch-up sweep does
+not confirm it.
 Zero-value invoices settle through `InvoiceTransitions.settleZero`. They require
 no saved card, attempt, provider resolution, customer adoption or Checkout calls.
 Billing enablement and review holds still apply. Settlement records no payment
@@ -52,7 +54,7 @@ The default mode is automatic; the retry callback selects `{ mode: 'retry' }`.
 Skip reasons include `billing_disabled`, `not_payable`, `needs_review`,
 `pending_attempt`, `no_saved_card`, `already_attempted`, `outside_retry_window`,
 `not_auto_collectable`, `not_due`, `checkout_changed`, `reservation_lost`, and
-`action_required`. A read-only eligibility check runs before resolving the
+`action_required`, and `collection_changed`. A read-only eligibility check runs before resolving the
 provider or touching Checkout; reservation repeats the same checks under the
 invoice lock. A skip is observable and is not a collection error.
 
@@ -60,7 +62,16 @@ Each charge commits immutable amount, currency, customer and saved-method fields
 before adopting the stored customer or creating an unconfirmed PaymentIntent.
 Keys are `<invoiceId>:<attemptNumber>:create` and `:confirm`. The intent ID is saved
 only if the attempt is still pending, unresolved and has no ID. A worker losing
-that compare-and-set cancels its intent and never confirms it. All terminal
+that compare-and-set never confirms it, and cancels only when the attempt does
+not already hold the same intent ID. Before confirming a saved ID, the runner
+rechecks invoice state, Checkout, review hold, the household customer, saved-card
+ownership/revocation and billing enablement. A changed collection is cancelled
+and its result reconciled.
+
+`releaseActionNeeded` and `releaseCheckout` are shared with staff cash/check
+collection. Provider calls run outside transactions and all results use
+reconciliation and the transitions. Expired Checkout references are cleared under
+the invoice lock with an audit, without waiting for a webhook. All terminal
 provider results use `applyChargeOutcome` with the provider's `latestChargeId`.
 The runner does not set invoice processing, paid or failed states itself.
 

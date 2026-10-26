@@ -8,7 +8,7 @@ import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 export type ChargeMode = 'automatic' | 'retry' | 'staff';
 export type SkipReason = 'billing_disabled' | 'not_payable' | 'needs_review' | 'pending_attempt' | 'no_saved_card'
   | 'already_attempted' | 'outside_retry_window' | 'not_auto_collectable' | 'not_due' | 'checkout_changed'
-  | 'reservation_lost' | 'action_required';
+  | 'reservation_lost' | 'action_required' | 'collection_changed';
 export const skipped = (reason: SkipReason) => ({ status: 'skipped' as const, reason });
 export type Skipped = ReturnType<typeof skipped>;
 export async function isAssignmentInvoice(tx: Transaction, invoiceId: string) {

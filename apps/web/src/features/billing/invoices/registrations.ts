@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../../lib/registries.js';
+import { InvoiceTab } from './page.js';
 
 export const registration: WebRegistration = {
   adminNav: [
@@ -7,7 +8,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.billing.invoices',
       labelKey: 'billing/payments:title',
       permission: { kind: 'staff', capability: 'billing.read' },
-      enabled: false,
+      enabled: true,
       href: '/admin/billing/invoices',
     },
   ],
@@ -16,8 +17,8 @@ export const registration: WebRegistration = {
       id: 'memberTabs.invoices',
       labelKey: 'billing/payments:title',
       permission: { kind: 'staff', capability: 'billing.read' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: InvoiceTab,
     },
   ],
 };

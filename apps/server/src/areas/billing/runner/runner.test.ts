@@ -251,6 +251,34 @@ describe('charge runner with PostgreSQL', () => {
 });
 
 describe('runner review regression cases with PostgreSQL', () => {
+  it.each(['revoked', 'customer_changed'] as const)('cancels without confirming when eligibility changes after create: %s', async change => {
+    const f = await fixture(), bill = await invoice(f), create = f.provider.createCharge.bind(f.provider);
+    vi.spyOn(f.provider, 'createCharge').mockImplementationOnce(async request => {
+      const intent = await create(request);
+      await db.forGym(f.gymId, async tx => {
+        if (change === 'revoked') await tx.update(paymentMethods).set({ revokedAt: f.clock.now(), isDefault: false }).where(eq(paymentMethods.householdId, f.home.id));
+        else await tx.update(households).set({ stripeCustomerId: 'cus_changed' }).where(eq(households.id, f.home.id));
+      });
+      return intent;
+    });
+    const confirm = vi.spyOn(f.provider, 'confirmCharge'), cancel = vi.spyOn(f.provider, 'cancelCharge');
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'collection_changed' });
+    expect(confirm).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledTimes(1);
+    const rows = await f.read(); expect(rows.payments).toHaveLength(0);
+    expect(rows.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'intent_canceled' });
+  });
+  it('does not cancel an intent already saved by another caller after losing compare-and-set', async () => {
+    const f = await fixture(), bill = await invoice(f), create = f.provider.createCharge.bind(f.provider);
+    vi.spyOn(f.provider, 'createCharge').mockImplementationOnce(async request => {
+      const intent = await create(request);
+      await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ paymentIntentId: intent.id }).where(eq(paymentAttempts.id, request.attemptId!)));
+      return intent;
+    });
+    const cancel = vi.spyOn(f.provider, 'cancelCharge'), confirm = vi.spyOn(f.provider, 'confirmCharge');
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'reservation_lost' });
+    expect(cancel).not.toHaveBeenCalled(); expect(confirm).not.toHaveBeenCalled();
+    expect((await f.read()).attempts[0]).toMatchObject({ status: 'pending', resolvedAt: null });
+  });
   it('zero settlement respects enablement and review holds, and never touches an attached Checkout', async () => {
     const f = await fixture({ enabled: false }), bill = await invoice(f);
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents: 0, needsReview: true, checkoutSessionId: 'cs_not_touched' })
