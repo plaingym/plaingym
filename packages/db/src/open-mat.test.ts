@@ -5,38 +5,34 @@ import { openConnection } from './client.js';
 import { migrateDatabase } from './migrate.js';
 import { attendances } from './schema/index.js';
 import { uuidv7 } from './id.js';
-import { createFactories } from './testing/factories.js';
-import { useTestDatabase } from './testing/database.js';
+import { useUpgradeTestDatabase } from './testing/database-upgrade.js';
 
-const database = useTestDatabase();
-const factory = createFactories(database);
+const database = useUpgradeTestDatabase('0002_rank_colors');
 
 it('upgrades attendance in place, marking earlier session-less live visits as open mat', async () => {
-  const gymId = uuidv7();
-  await factory('gyms', gymId);
-  const member = await factory('members', gymId), session = await factory('classSessions', gymId);
+  const gymId = uuidv7(), householdId = uuidv7(), memberId = uuidv7(), sessionId = uuidv7();
   const visits = [
-    await factory('attendances', gymId, { memberId: member.id, sessionId: session.id }),
-    await factory('attendances', gymId, { memberId: member.id }),
-    await factory('attendances', gymId, { memberId: member.id, source: 'kiosk' }),
-    await factory('attendances', gymId, { memberId: member.id, source: 'import', sourceKey: 'legacy:1' }),
+    { id: uuidv7(), sessionId, source: 'coach', sourceKey: null },
+    { id: uuidv7(), sessionId: null, source: 'coach', sourceKey: null },
+    { id: uuidv7(), sessionId: null, source: 'kiosk', sourceKey: null },
+    { id: uuidv7(), sessionId: null, source: 'import', sourceKey: 'legacy:1' },
   ];
   const maintenance = openConnection(database.maintenanceUrl, 1);
   try {
-    // Recreate the previous schema only inside this disposable test database, retaining its rows. Later migrations are undone first.
-    await maintenance.sql`drop index audit_events_gym_action_target_idx`;
-    await maintenance.sql`alter table payment_methods drop column processor_created_at`;
-    await maintenance.sql`alter table memberships drop column anniversary_on`;
-    await maintenance.sql`drop table import_chunks, import_runs, export_runs`;
-    await maintenance.sql`alter table class_sessions drop constraint class_sessions_occurrence_key`;
-    await maintenance.sql`alter table class_sessions drop column occurrence_starts_at`;
-    for (const table of ['attendances', 'class_sessions', 'class_templates'])
-      await maintenance.sql`alter table ${maintenance.sql(table)} drop column kind`;
-    await maintenance.sql`alter table gyms drop column open_mat_counts_as_class`;
-    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 6)`;
+    await maintenance.sql`insert into gyms (id, name, slug) values (${gymId}, 'Test Gym', ${gymId})`;
+    await maintenance.sql`insert into households (id, gym_id, name) values (${householdId}, ${gymId}, 'Test Household')`;
+    await maintenance.sql`insert into members (id, gym_id, household_id, first_name, last_name)
+      values (${memberId}, ${gymId}, ${householdId}, 'Test', 'Member')`;
+    await maintenance.sql`insert into class_sessions (id, gym_id, name, starts_at, ends_at)
+      values (${sessionId}, ${gymId}, 'Test Class', '2026-01-15T12:00:00Z', '2026-01-15T13:00:00Z')`;
+    for (const visit of visits) {
+      await maintenance.sql`insert into attendances (id, gym_id, member_id, session_id, occurred_at, source, source_key)
+        values (${visit.id}, ${gymId}, ${memberId}, ${visit.sessionId}, '2026-01-15T12:00:00Z', ${visit.source}, ${visit.sourceKey})`;
+    }
   } finally { await maintenance.close(); }
 
   await migrateDatabase(database.maintenanceUrl);
   const rows = await database.forGym(gymId, (tx) => tx.select({ id: attendances.id, kind: attendances.kind }).from(attendances).orderBy(asc(attendances.id)));
-  expect(rows).toEqual(visits.map((visit, index) => ({ id: visit.id, kind: index === 1 || index === 2 ? 'open_mat' : 'class' })));
+  expect(rows).toEqual(visits.map((visit, index) => ({ id: visit.id, kind: index === 1 || index === 2 ? 'open_mat' : 'class' }))
+    .sort((a, b) => a.id.localeCompare(b.id)));
 });

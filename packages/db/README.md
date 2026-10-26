@@ -20,12 +20,31 @@ Migration `0007_payment_method_processor_created_at.sql` adds nullable
 `payment_methods.processor_created_at` for processor ordering of saved cards.
 Migration `0008_audit_action_target.sql` adds `audit_events_gym_action_target_idx`
 on `(gym_id, action, target_id)` for transition/outbox lookups; no data is rewritten.
-Migration tests that recreate an earlier schema undo every later migration first.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 Run generation from this package with `pnpm exec drizzle-kit generate --name <name>`.
 Commit the generated SQL and metadata together. Add an SPDX SQL comment to generated
 SQL files. Never edit a table definition directly in a migration.
+
+## Writing an upgrade test
+
+Call `useUpgradeTestDatabase('0001_schema_v1')` from `src/testing/database-upgrade.ts`
+once at module scope, naming the journal tag the test starts from. It creates a fresh
+disposable database from `template0` and runs the real Drizzle migrations through
+that tag (inclusive), with their original SQL and journal metadata. It removes its
+temporary migration folder and cleans up the database after the test file.
+Unlike an install of the starting release, this pre-upgrade database has not run
+`applySecurity` (forced RLS and column-level revokes); `migrateDatabase` applies it
+after the upgrade.
+
+Seed historical rows with plain SQL through `openConnection(database.maintenanceUrl)`;
+current-schema factories can reference columns that did not exist then. Close the
+seed connection in `finally`, call `migrateDatabase(database.maintenanceUrl)` to
+apply all remaining migrations and current security checks, then assert the result
+through `database.forGym`. Check every historical field and the migration's new
+fields with `toMatchObject` so unrelated future columns need no fixture changes.
+Only the starting tag belongs in the test: do not add down SQL, journal deletions,
+or a count of later migrations. Appending a migration requires no helper changes.
 
 ## Startup and security
 

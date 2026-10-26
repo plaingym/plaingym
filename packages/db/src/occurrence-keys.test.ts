@@ -5,34 +5,34 @@ import { openConnection } from './client.js';
 import { migrateDatabase } from './migrate.js';
 import { classSessions } from './schema/index.js';
 import { uuidv7 } from './id.js';
-import { createFactories } from './testing/factories.js';
-import { useTestDatabase } from './testing/database.js';
+import { useUpgradeTestDatabase } from './testing/database-upgrade.js';
 
-const database = useTestDatabase();
-const factory = createFactories(database);
+const database = useUpgradeTestDatabase('0003_open_mat');
 
 it('upgrades class sessions in place, keying generated sessions by their start and leaving one-off sessions unkeyed', async () => {
-  const gymId = uuidv7();
-  await factory('gyms', gymId);
-  const template = await factory('classTemplates', gymId);
+  const gymId = uuidv7(), templateId = uuidv7();
+  const defaults = {
+    gymId, name: 'Test Class', createdAt: new Date('2026-01-15T12:00:00Z'),
+    kind: 'class', coachId: null, capacity: null, notes: null, status: 'scheduled', revision: 1,
+  };
   const sessions = [
-    await factory('classSessions', gymId, { templateId: template.id }),
-    await factory('classSessions', gymId, { templateId: template.id, startsAt: new Date('2026-01-22T12:00:00Z'), endsAt: new Date('2026-01-22T13:00:00Z') }),
-    await factory('classSessions', gymId),
+    { ...defaults, id: uuidv7(), templateId, startsAt: new Date('2026-01-15T12:00:00Z'), endsAt: new Date('2026-01-15T13:00:00Z') },
+    { ...defaults, id: uuidv7(), templateId, startsAt: new Date('2026-01-22T12:00:00Z'), endsAt: new Date('2026-01-22T13:00:00Z') },
+    { ...defaults, id: uuidv7(), templateId: null, startsAt: new Date('2026-01-15T12:00:00Z'), endsAt: new Date('2026-01-15T13:00:00Z') },
   ];
   const maintenance = openConnection(database.maintenanceUrl, 1);
   try {
-    // Recreate the previous schema only inside this disposable test database, retaining its rows. Later migrations are undone first.
-    await maintenance.sql`drop index audit_events_gym_action_target_idx`;
-    await maintenance.sql`alter table payment_methods drop column processor_created_at`;
-    await maintenance.sql`alter table memberships drop column anniversary_on`;
-    await maintenance.sql`drop table import_chunks, import_runs, export_runs`;
-    await maintenance.sql`alter table class_sessions drop constraint class_sessions_occurrence_key`;
-    await maintenance.sql`alter table class_sessions drop column occurrence_starts_at`;
-    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 5)`;
+    await maintenance.sql`insert into gyms (id, name, slug) values (${gymId}, 'Test Gym', ${gymId})`;
+    await maintenance.sql`insert into class_templates (id, gym_id, name, weekday, local_start_time, duration_minutes)
+      values (${templateId}, ${gymId}, 'Test Class', 1, '18:00', 60)`;
+    for (const session of sessions) {
+      await maintenance.sql`insert into class_sessions (id, gym_id, template_id, name, created_at, starts_at, ends_at)
+        values (${session.id}, ${gymId}, ${session.templateId}, ${session.name}, ${session.createdAt.toISOString()}, ${session.startsAt.toISOString()}, ${session.endsAt.toISOString()})`;
+    }
   } finally { await maintenance.close(); }
 
   await migrateDatabase(database.maintenanceUrl);
   const rows = await database.forGym(gymId, (tx) => tx.select().from(classSessions).orderBy(asc(classSessions.id)));
-  expect(rows).toEqual(sessions.map((session) => ({ ...session, occurrenceStartsAt: session.templateId ? session.startsAt : null })));
+  expect(rows).toMatchObject(sessions.map((session) => ({ ...session, occurrenceStartsAt: session.templateId ? session.startsAt : null }))
+    .sort((a, b) => a.id.localeCompare(b.id)));
 });

@@ -16,6 +16,12 @@ async function restrictDatabase(connection: Connection, name: string) {
   await sql`revoke all on database ${sql(name)} from public`;
   await sql`grant connect on database ${sql(name)} to app`;
 }
+export async function preparePublicSchema(sql: Connection['sql']) {
+  await sql`alter schema public owner to maintenance`;
+  await sql`revoke all on schema public from public`;
+  await sql`grant usage on schema public to app`;
+  await sql`alter default privileges for role maintenance in schema public grant select, insert, update, delete on tables to app`;
+}
 export async function prepareTemplate(urls: Omit<TestDatabaseConfig, 'template'>) {
   const template = 'plaingym_template_' + randomUUID().replaceAll('-', '');
   const admin = openConnection(databaseUrl(urls.adminUrl, 'postgres'), 1);
@@ -26,10 +32,7 @@ export async function prepareTemplate(urls: Omit<TestDatabaseConfig, 'template'>
     await restrictDatabase(admin, template);
     const maintenance = openConnection(databaseUrl(urls.maintenanceUrl, template), 1);
     try {
-      await maintenance.sql`alter schema public owner to maintenance`;
-      await maintenance.sql`revoke all on schema public from public`;
-      await maintenance.sql`grant usage on schema public to app`;
-      await maintenance.sql`alter default privileges for role maintenance in schema public grant select, insert, update, delete on tables to app`;
+      await preparePublicSchema(maintenance.sql);
     } finally { await maintenance.close(); }
     await migrateDatabase(databaseUrl(urls.maintenanceUrl, template));
     const check = openConnection(databaseUrl(urls.appUrl, template), 1);
