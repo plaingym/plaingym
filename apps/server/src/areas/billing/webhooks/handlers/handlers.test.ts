@@ -401,7 +401,7 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     const f = await fixture('one_off');
     await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ paymentIntentId: 'pi_runner' }).where(eq(paymentAttempts.id, f.attempt.id)));
     const location = new URL('./stripe.handlers.synthetic.json', import.meta.url);
-    const recording = process.env.RECORD_C22_FIXTURES === '1', recorder = new FixtureRecorder(f.gymId);
+    const recording = process.env.RECORD_HANDLER_FIXTURES === '1', recorder = new FixtureRecorder(f.gymId);
     const bind = (value: string) => value.replaceAll('00000000-0000-7000-8000-000000000001', f.gymId)
       .replaceAll('00000000-0000-7000-8000-000000000002', f.invoice.id).replaceAll('00000000-0000-7000-8000-000000000003', f.attempt.id);
     const replay = recording ? undefined : replayTransport(JSON.parse(bind(await readFile(location, 'utf8'))) as Tape, f.gymId);
