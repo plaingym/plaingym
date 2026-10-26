@@ -2,6 +2,7 @@
 import type { Id, IsoInstant, Money } from '@plaingym/shared/contracts';
 import { moneySchema } from '@plaingym/shared/contracts';
 import { conflict, instant, notFound, requireMoney, scopedKey } from './common.js';
+import { clock as defaultClock, type Clock } from '../clock.js';
 import type { MutationContext } from './common.js';
 
 export interface InvoiceSnapshot extends Money {
@@ -56,6 +57,7 @@ export interface InvoiceTransitionResult {
  * not enter dunning. Terminal paid/refunded/void invoices cannot be reopened.
  */
 export interface InvoiceTransitions {
+  settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult>;
   cardSucceeded(context: MutationContext, request: CardSuccess): Promise<InvoiceTransitionResult>;
   cardFailed(context: MutationContext, request: CardFailure): Promise<InvoiceTransitionResult>;
   manualPayment(context: MutationContext, request: ManualPayment): Promise<InvoiceTransitionResult>;
@@ -91,7 +93,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   readonly #refunds = new Map<string, StoredRefund>();
   readonly #processorRefunds = new Map<string, string>();
   readonly #effects: InvoiceEffect[] = [];
-  constructor(invoices: readonly InvoiceFixture[] = [], attempts: readonly InvoiceAttemptFixture[] = []) {
+  constructor(invoices: readonly InvoiceFixture[] = [], attempts: readonly InvoiceAttemptFixture[] = [], private readonly clock: Clock = defaultClock) {
     invoices.forEach(({ gymId, invoice }) => this.#invoices.set(scopedKey(gymId, invoice.id), structuredClone(invoice)));
     attempts.forEach((attempt) => this.seedAttempt(attempt));
   }
@@ -199,6 +201,20 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   }
   async manualPayment(context: MutationContext, request: ManualPayment): Promise<InvoiceTransitionResult> {
     return this.#recordPayment(context, request, request.method);
+  }
+  async settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult> {
+    const invoice = this.#invoice(context.gymId, request.invoiceId);
+    if (invoice.amountCents !== 0) conflict('Invoice is not zero value');
+    if (invoice.status === 'void') conflict('Void invoice cannot be settled');
+    if (terminal.has(invoice.status)) return this.#result('ignored', invoice);
+    if (!['open', 'past_due'].includes(invoice.status)) conflict('Invoice is not payable');
+    if ([...this.#payments.entries()].some(([key, payment]) => key === scopedKey(context.gymId, payment.id)
+      && payment.invoiceId === invoice.id && payment.accepted))
+      conflict('Invoice already has an accepted payment');
+    const next: InvoiceSnapshot = { ...invoice, status: 'paid', paidAt: this.clock.now().toISOString() };
+    this.#invoices.set(scopedKey(context.gymId, invoice.id), next);
+    this.#effect(context.gymId, invoice.id, 'activate_memberships');
+    return this.#result('applied', next);
   }
   async refund(context: MutationContext, request: RefundTransition): Promise<InvoiceTransitionResult> {
     const invoice = this.#invoice(context.gymId, request.invoiceId);

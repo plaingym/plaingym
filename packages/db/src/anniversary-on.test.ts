@@ -21,9 +21,10 @@ it('adds a nullable anniversary without changing existing membership dates or da
   const maintenance = openConnection(database.maintenanceUrl, 1);
   try {
     // Recreate the previous schema in this disposable database, retaining all membership rows.
+    await maintenance.sql`drop index audit_events_gym_action_target_idx`;
     await maintenance.sql`alter table payment_methods drop column processor_created_at`;
     await maintenance.sql`alter table memberships drop column anniversary_on`;
-    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 2)`;
+    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 3)`;
   } finally { await maintenance.close(); }
 
   await migrateDatabase(database.maintenanceUrl);

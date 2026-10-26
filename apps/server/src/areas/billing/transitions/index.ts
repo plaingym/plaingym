@@ -84,6 +84,23 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
   const service: InvoiceTransitions = {
     cardSucceeded: pay,
     manualPayment: pay,
+    async settleZero(context, request) {
+      idSchema.parse(request.invoiceId);
+      return scope(context.gymId, async tx => {
+        const invoice = await lockInvoice(tx, request.invoiceId);
+        if (invoice.amountCents !== 0) conflict('Invoice is not zero value');
+        if (invoice.status === 'void') conflict('Void invoice cannot be settled');
+        if (terminal(invoice)) return result('ignored', invoice);
+        if (!['open', 'past_due'].includes(invoice.status)) conflict('Invoice is not payable');
+        const existing = await tx.select().from(payments).where(eq(payments.invoiceId, invoice.id));
+        for (const payment of existing) if (await accepted(tx, payment.id)) conflict('Invoice already has an accepted payment');
+        const paid = { ...invoice, status: 'paid', paidAt: clock.now() };
+        await tx.update(invoices).set({ status: paid.status, paidAt: paid.paidAt }).where(eq(invoices.id, invoice.id));
+        await audit(tx, context, clock, 'billing.invoice.settled_zero', 'invoice', invoice.id, snapshot(paid), snapshot(invoice));
+        await effect(tx, context, clock, { kind: 'activate_memberships', invoiceId: invoice.id });
+        return result('applied', paid);
+      });
+    },
     async cardFailed(context: MutationContext, request: CardFailure) {
       idSchema.parse(request.attemptId);
       if (!['failed', 'requires_action', 'canceled'].includes(request.outcome)) conflict('Invalid payment outcome');
@@ -174,6 +191,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     return value;
   }
   return {
+    settleZero: (context, request) => published(context, service.settleZero(context, request)),
     cardSucceeded: (context, request) => published(context, service.cardSucceeded(context, request)),
     manualPayment: (context, request) => published(context, service.manualPayment(context, request)),
     cardFailed: (context, request) => published(context, service.cardFailed(context, request)),

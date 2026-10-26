@@ -8,6 +8,18 @@ a conflict. Payment timestamps can differ between a runner result and a webhook;
 the first accepted timestamp is retained. A missing attempt ID on a Checkout or
 webhook does not bypass a stored intent cancellation.
 
+`settleZero(context, { invoiceId })` settles an open or past-due zero-value invoice
+under its invoice lock, provided it has no accepted payments. It sets `paid` and
+`paidAt`, audits `billing.invoice.settled_zero`, and queues the same membership
+activation effect as a payment. It creates no payment row and no receipt email.
+Replay and concurrent settlement are ignored after the first commit; non-zero,
+draft, void and processing invoices are refused. The in-memory fake implements
+the same transition and accepts an optional clock as its third constructor argument.
+The runner checks billing enablement and review holds before calling it, without
+resolving a payment provider, checking a saved card, reserving an attempt or
+touching Checkout. Thus free plans and full family discounts can activate pending
+memberships through the ordinary effect job.
+
 Failures update attempt diagnostics, but cannot reopen paid, refunded or void
 invoices, or change the invoice for an older attempt. Authentication-needed
 attempts ignore generic failure snapshots. `applyChargeOutcome` accepts the
@@ -25,7 +37,9 @@ An explicit `accepted` marker in the payment audit distinguishes an excess card
 payment from the invoice's settlement. Legacy payments without that marker count
 as accepted. These are local `TODO(CCR)` workarounds for a dedicated effect table
 and payment attribution field; no frozen schema, infrastructure or interface is
-changed. Audit retention must preserve these records until that migration exists.
+changed by the outbox implementation. The action/target audit index accelerates
+these lookups; it does not replace the audit-row outbox. Audit retention must
+preserve these records until the dedicated storage migration exists.
 
 `createTransitionEffects` takes Jobs, gym settings, the same transition service,
 MembershipLifecycle, a per-gym Payments resolver, notifications and a retry
@@ -40,7 +54,7 @@ the existing billing job barrel.
 The production publisher is inert until `configureTransitionEffects(effects)` is
 called. No HTTP route is added by this service.
 
-Activation uses MembershipLifecycle after committing the payment. It activates
+Activation uses MembershipLifecycle after committing a payment or zero-value settlement. It activates
 pending/trial memberships on membership line items, and skips active, frozen and
 cancelled memberships; a sign-up fee alone does not end a trial. Revision checks
 protect concurrent membership edits. Replaying a partially completed activation
@@ -52,9 +66,21 @@ that schedule. Each failure of the latest attempt sends one dunning email, so a
 member gets up to three. Dunning for an older attempt is suppressed. Retry jobs recheck
 unpaid state and billing enablement; the injected runner must also check these
 when reserving the attempt and expire/reconcile open Checkout sessions before
-charging. Paid invoices suppress queued dunning/retries. The last unpaid retry
+charging. A completed Checkout reconciled to paid is a skip, not a failed retry.
+The runner also cancels an older action-needed intent before reserving another
+attempt and applies the cancellation result; if the old intent succeeded, it
+settles the invoice instead of creating another charge. Paid invoices suppress queued dunning/retries. The last unpaid retry
 leaves the invoice past due. One-off failures return the invoice to open and
 never enqueue dunning or retries.
+
+Runner collection is explicit for staff one-offs. Daily collection includes only
+cycles and assignment one-offs; the assignment route invokes `collectAssigned`
+after commit for immediate proration/fee collection. Staff may deliberately
+retry a declined one-off through the runner's user-attributed charge option.
+Provider failures remain pending for reconciliation; skips carry reason codes,
+and daily failures retain their invoice ID and message. Dispute reconciliation
+matches webhook rules (reject a different dispute, preserve won/lost, audit
+`billing.invoice.disputed` before/after); it does not change payment state here.
 
 An additional card payment reserves its full duplicate refund and queues a staff
 notice. The worker reconciles existing refunds before calling Payments.refund,

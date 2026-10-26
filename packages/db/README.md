@@ -16,6 +16,10 @@ Migration `0005_import_run_state.sql` adds the gym-owned `import_runs`, `import_
 and `export_runs` tables that hold import and export progress. Migration
 `0006_membership_anniversary.sql` adds nullable `memberships.anniversary_on`, the
 original anniversary of an annual membership; existing rows keep null.
+Migration `0007_payment_method_processor_created_at.sql` adds nullable
+`payment_methods.processor_created_at` for processor ordering of saved cards.
+Migration `0008_audit_action_target.sql` adds `audit_events_gym_action_target_idx`
+on `(gym_id, action, target_id)` for transition/outbox lookups; no data is rewritten.
 Migration tests that recreate an earlier schema undo every later migration first.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 

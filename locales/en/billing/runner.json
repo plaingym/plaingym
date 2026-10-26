@@ -1,3 +1,5 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "familyDiscount": "Family discount",
+  "signupFee": "{plan} sign-up fee"
 }

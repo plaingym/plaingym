@@ -11,6 +11,7 @@ export const auditEvents = pgTable('audit_events', {
   action: text('action').notNull(), targetType: text('target_type').notNull(), targetId: uuid('target_id').notNull(),
   before: jsonb('before'), after: jsonb('after'), occurredAt: instant('occurred_at').notNull(),
 }, (t) => [...scoped('audit_events', t), index('audit_events_gym_time_idx').on(t.gymId, t.occurredAt),
+  index('audit_events_gym_action_target_idx').on(t.gymId, t.action, t.targetId),
   ref('audit_events_device_fk', t.gymId, t.actorDeviceId, kioskDevices),
   choice('audit_events_actor_check', t.actorKind, ['user', 'system', 'device']),
   check('audit_events_actor_reference_check', sql`(${t.actorKind} = 'user' and ${t.actorUserId} is not null and ${t.actorDeviceId} is null)

@@ -24,6 +24,7 @@ it('upgrades attendance in place, marking earlier session-less live visits as op
   const maintenance = openConnection(database.maintenanceUrl, 1);
   try {
     // Recreate the previous schema only inside this disposable test database, retaining its rows. Later migrations are undone first.
+    await maintenance.sql`drop index audit_events_gym_action_target_idx`;
     await maintenance.sql`alter table payment_methods drop column processor_created_at`;
     await maintenance.sql`alter table memberships drop column anniversary_on`;
     await maintenance.sql`drop table import_chunks, import_runs, export_runs`;
@@ -32,7 +33,7 @@ it('upgrades attendance in place, marking earlier session-less live visits as op
     for (const table of ['attendances', 'class_sessions', 'class_templates'])
       await maintenance.sql`alter table ${maintenance.sql(table)} drop column kind`;
     await maintenance.sql`alter table gyms drop column open_mat_counts_as_class`;
-    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 5)`;
+    await maintenance.sql`delete from drizzle.__drizzle_migrations where id in (select id from drizzle.__drizzle_migrations order by created_at desc limit 6)`;
   } finally { await maintenance.close(); }
 
   await migrateDatabase(database.maintenanceUrl);
