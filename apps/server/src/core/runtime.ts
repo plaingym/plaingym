@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { dirname } from 'node:path';
+import { hkdfSync } from 'node:crypto';
 import type { Context } from 'hono';
 import { connectionBudget, initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { AppError, createTranslator } from '@plaingym/shared';
@@ -33,6 +34,8 @@ import { configureGoLive } from '../areas/settings/go-live.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
 import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { configureWaivers } from '../areas/waivers/waivers.routes.js';
+import { configureLinkPages } from '../public/links/links.routes.js';
+import { createSignedLinkCheckout } from '../areas/billing/signed-link-checkout.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
@@ -184,7 +187,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   // Signature images and rendered waiver PDFs use the gym's file storage.
-  configureWaivers({ uploadsFor: uploads.forGym, clock });
+  const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
@@ -213,6 +216,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configurePayments(createPaymentService({ settings: createGymSettingsAccessor(), clock, jobs: queue, paymentsFor,
     transitions: billing.transitions, runner, detachCard }));
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
+  configureLinkPages({ waivers,
+    checkout: createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock }),
+    receiptKey: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32)) });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],

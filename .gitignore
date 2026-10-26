@@ -11,6 +11,7 @@ node_modules/
 .pnpm-store/
 
 # Production Build Outputs
+apps/server/public/
 dist/
 build/
 out/

@@ -123,6 +123,12 @@ try {
   const cli = spawnSync('docker', [...prefix, 'exec', '-T', 'app', 'gym-app', 'unknown-command'], { encoding: 'utf8', env });
   assert.equal(cli.status, 2);
   assert.match(cli.stderr, /Unknown command/);
+  // Signed-link routes require a gym; keep first-boot assertions above on the empty install.
+  sql("INSERT INTO gyms (id, name, slug) VALUES ('" + randomUUID() + "', 'Image smoke gym', 'image-smoke')");
+  const linkScript = await get(https, httpsPort, ca, '/l/client.js', 'text/javascript');
+  assert.equal(linkScript.status, 200);
+  assert.match(linkScript.headers['content-type'], /javascript/);
+  assert.ok(linkScript.body.length > 0);
   // Reuse initialized volumes: the role bootstrap must not run a second time.
   compose(['restart', 'postgres', 'app']);
   compose(['up', '-d', '--wait', '--wait-timeout', '90']);
