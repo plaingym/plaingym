@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isDeepStrictEqual } from 'node:util';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import type { Payments } from './index.js';
+import { CustomerCreationInProgress, type Payments } from './index.js';
 
 export interface Exchange {
   operation: string;
@@ -10,7 +10,7 @@ export interface Exchange {
   error?: { type: string; code?: string; statusCode?: number; payment_intent?: unknown };
 }
 export interface Tape { version: 1; gymId: string; exchanges: Exchange[] }
-const paymentMethods = new Set<string>(['createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject',
+const paymentMethods = new Set<string>(['createCustomer', 'createCharge', 'confirmCharge', 'cancelCharge', 'findCharge', 'readPaymentObject',
   'listChangesSince', 'listRefunds', 'refund', 'createCheckout', 'expireCheckout', 'findCustomerByEmail', 'adoptCustomer', 'detachPaymentMethod', 'parseWebhook']);
 /** Fixtures contain synthetic test-account data only. Credentials never enter the transport. */
 export function redact(value: unknown): unknown {
@@ -45,7 +45,7 @@ export class FixtureRecorder {
       const record = error as Exchange['error'];
       const raw = error && typeof error === 'object' && 'raw' in error ? error.raw as Record<string, unknown> : undefined;
       const intent = record?.payment_intent ?? raw?.payment_intent;
-      exchange.error = { type: record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
+      exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
         ...(record?.statusCode ? { statusCode: record.statusCode } : {}),
         ...(intent ? { payment_intent: redact(intent) } : {}) };
       throw error;
@@ -70,7 +70,8 @@ export class Replay {
     const exchange = this.tape.exchanges[this.#position++];
     if (!exchange || exchange.operation !== operation || !isDeepStrictEqual(exchange.input, redact(input)))
       throw new Error('Fixture request mismatch at exchange ' + this.#position + ': ' + operation);
-    if (exchange.error) throw Object.assign(new Error(exchange.error.type), hydrate(exchange.error));
+    if (exchange.error) throw Object.assign(exchange.error.type === 'CustomerCreationInProgress'
+      ? new CustomerCreationInProgress() : new Error(exchange.error.type), hydrate(exchange.error));
     return hydrate(structuredClone(exchange.output)) as T;
   }
   assertConsumed(): void {

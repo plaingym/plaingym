@@ -5,22 +5,28 @@ import type { Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { Payments, CheckoutSession } from '../../infra/payments/index.js';
 import { clock as defaultClock } from '../../core/clock.js';
+import { describeError } from '../../core/log.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
+import { createCustomersService, CustomerUnavailable } from './customers.js';
+import { isAssignmentInvoice } from './assignment-invoices.js';
 
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
 export class CustomerNotLinked extends AppError {
-  constructor() { super('unavailable', 'Card setup is not available yet'); }
+  constructor(cause?: unknown) { super('unavailable', 'Card setup is not available yet'); this.cause = cause; }
 }
 export interface SignedCheckoutOptions {
   scope?: typeof forGym;
   clock?: Clock;
   paymentsFor(gymId: string): Promise<Payments>;
+  log?: (line: string) => void;
   /** Trusted configured origin, never the request Host. */
   originFor(gymId: string): Promise<string>;
 }
 export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const log = options.log ?? console.error;
+  const customers = createCustomersService({ scope, clock, paymentsFor: options.paymentsFor });
   async function locked(tx: Transaction, gymId: string, linkId: string) {
     const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)).for('update');
     if (!link || link.gymId !== gymId || link.revokedAt || link.usedAt || link.expiresAt <= clock.now()
@@ -45,11 +51,11 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const returnUrl = new URL('/l/return', origin).href;
     const prepared = await scope(gymId, async tx => {
       const { link, household } = await locked(tx, gymId, linkId);
-      if (!household.stripeCustomerId) throw new CustomerNotLinked();
-      if (link.purpose !== 'pay_invoice') return { link, customerId: household.stripeCustomerId, invoice: null };
+      if (link.purpose !== 'pay_invoice') return { link, customerId: household.stripeCustomerId, invoice: null, savesCard: true };
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId))).for('update');
       if (!invoice) missing();
       await payable(tx, invoice);
+      const savesCard = invoice.kind === 'cycle' || await isAssignmentInvoice(tx, invoice.id);
       // Reserve before the provider call. A lost response retries the exact key/parameters,
       // only inside the provider's 24-hour idempotency window. Never blindly retry later.
       if (!invoice.checkoutSessionId && (!invoice.checkoutExpiresAt || invoice.checkoutExpiresAt <= clock.now())) {
@@ -61,9 +67,20 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         await tx.update(invoices).set({ checkoutExpiresAt: invoice.checkoutExpiresAt }).where(eq(invoices.id, invoice.id));
         await audit(tx, gymId, replacing ? 'billing.checkout.reservation_renewed' : 'billing.checkout.reserved', linkId);
       }
-      return { link, customerId: household.stripeCustomerId, invoice };
+      return { link, customerId: household.stripeCustomerId, invoice, savesCard };
     });
-    const provider = await options.paymentsFor(gymId);
+    let customerId: string, provider: Payments;
+    try {
+      customerId = prepared.customerId ?? await customers.ensureCustomer(gymId, prepared.link.householdId);
+      try { provider = await options.paymentsFor(gymId); }
+      catch (error) { throw new CustomerUnavailable('stripe_not_configured', error); }
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'not_found') throw error;
+      log(JSON.stringify({ event: 'billing.customer.unavailable', gymId, householdId: prepared.link.householdId,
+        purpose: prepared.link.purpose, reason: error instanceof CustomerUnavailable ? error.reason : error instanceof Error ? error.name : typeof error,
+        error: describeError(error) }));
+      throw new CustomerNotLinked(error);
+    }
     let session: CheckoutSession;
     if (prepared.invoice?.checkoutSessionId) {
       const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.invoice.checkoutSessionId });
@@ -88,19 +105,20 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     } else {
       const invoice = prepared.invoice;
       session = await provider.createCheckout({
-        mode: invoice ? 'payment' : 'setup', customerId: prepared.customerId,
+        mode: invoice ? 'payment' : 'setup', customerId,
         ...(invoice ? { invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase() } : {}),
-        successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: !invoice,
+        successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: prepared.invoice ? prepared.savesCard : true,
         idempotencyKey: invoice ? `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}` : `signed-link:${linkId}:setup`,
       });
     }
-    if (session.metadata.gymId !== gymId || session.customerId !== prepared.customerId
+    if (session.metadata.gymId !== gymId || session.customerId !== customerId
       || session.mode !== (prepared.invoice ? 'payment' : 'setup')
+      || session.savesCard !== (prepared.invoice ? prepared.savesCard : true)
       || (prepared.invoice && session.metadata.invoiceId !== prepared.invoice.id)) unavailable();
     try {
       await scope(gymId, async tx => {
         const { link, household } = await locked(tx, gymId, linkId);
-        if (household.stripeCustomerId !== prepared.customerId) missing();
+        if (household.stripeCustomerId !== customerId) missing();
         if (prepared.invoice) {
           const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, prepared.invoice.id), eq(invoices.householdId, link.householdId))).for('update');
           if (!invoice || !['open', 'past_due'].includes(invoice.status)

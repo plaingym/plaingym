@@ -13,6 +13,20 @@ export interface ContractHarness {
 export function fullPaymentsContract(name: string, create: (card?: Card) => Promise<ContractHarness>) {
   paymentsContract(name, create);
   describe(name + ' extended', () => {
+    it('creates one owned customer per key and rejects changed details', async () => {
+      const { payments, charge, checkout } = await create();
+      const request = { email: 'new-payer@example.invalid', name: 'New Household', householdId: charge.invoiceId,
+        idempotencyKey: charge.idempotencyKey + ':customer' };
+      const customer = await payments.createCustomer(request);
+      expect(customer).toEqual({ id: expect.stringMatching(/^cus_/), email: request.email });
+      expect(await payments.createCustomer(request)).toEqual(customer);
+      await expect(payments.createCustomer({ ...request, name: 'Changed Household' })).rejects.toThrow();
+      expect(await payments.findCustomerByEmail(request.email)).toContainEqual(customer);
+      expect(await payments.adoptCustomer(customer.id)).toEqual(customer);
+      expect(await payments.createCheckout({ mode: 'setup', customerId: customer.id,
+        successUrl: checkout.successUrl, cancelUrl: checkout.cancelUrl, saveForOffSession: true,
+        idempotencyKey: request.idempotencyKey + ':setup' })).toMatchObject({ customerId: customer.id, mode: 'setup' });
+    });
     it('detaches a card idempotently, accepts unknown IDs, and refuses another gym', async () => {
       const { payments, detach } = await create();
       await expect(payments.detachPaymentMethod(detach.foreign)).rejects.toThrow();

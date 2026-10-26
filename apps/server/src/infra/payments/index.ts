@@ -35,6 +35,19 @@ export interface CreateCharge {
   readonly attemptId: string;
   readonly idempotencyKey: string;
 }
+export interface CreateCustomer {
+  readonly email: string;
+  readonly name: string;
+  readonly householdId: string;
+  readonly idempotencyKey: string;
+}
+/** Only an in-flight request using the same key can be retried automatically. */
+export class CustomerCreationInProgress extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Customer creation is in progress', options);
+    this.name = 'CustomerCreationInProgress';
+  }
+}
 interface CheckoutOptions {
   readonly mode: 'payment' | 'setup';
   readonly amount?: number;
@@ -121,6 +134,8 @@ export interface PaymentEvent {
   readonly objectKind: PaymentObjectReference['kind'];
 }
 export interface Payments {
+  /** Creates a customer owned by this gym and household; callers persist the key before calling. */
+  createCustomer(request: CreateCustomer): Promise<{ id: string; email: string }>;
   createCharge(request: CreateCharge): Promise<{ id: string }>;
   confirmCharge(id: string, options: { idempotencyKey: string }): Promise<ChargeOutcome>;
   cancelCharge(id: string): Promise<ChargeOutcome>;
@@ -218,13 +233,15 @@ export class FakePayments implements Payments {
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
-  readonly #customers: { id: string; email: string; gymId: string }[] = [];
+  readonly #customers: { id: string; email: string; gymId: string; name?: string; householdId?: string }[] = [];
   readonly #changes: ChangeRecord[] = [];
   readonly #idempotency = new Map<string, IdempotentRecord>();
   readonly #uncertain = new Set<string>();
   #confirmation: Confirmation | { error: unknown } = 'succeeded';
-  #loseResponse: 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund' | undefined;
+  #loseResponse: 'createCustomer' | 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund' | undefined;
   #nextId = 0;
+  readonly #customerCreationsInFlight = new Set<string>();
+  #nextCustomerCreation: Promise<void> | undefined;
   constructor(
     readonly gymId: string,
     readonly clock: Clock = systemClock,
@@ -234,7 +251,9 @@ export class FakePayments implements Payments {
   respondNextConfirmation(result: Confirmation | { error: unknown }): void {
     this.#confirmation = result;
   }
-  loseNextResponse(operation: 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund'): void {
+  /** Hold one create request so simultaneous uses of its key see the provider's conflict. */
+  holdNextCustomerCreation(until: Promise<void>): void { this.#nextCustomerCreation = until; }
+  loseNextResponse(operation: 'createCustomer' | 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund'): void {
     this.#loseResponse = operation;
   }
   setUncertain(id: string, uncertain = true): void {
@@ -276,12 +295,31 @@ export class FakePayments implements Payments {
     });
     return structuredClone(result);
   }
-  #reply<T>(operation: 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund', result: T): T {
+  #reply<T>(operation: 'createCustomer' | 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund', result: T): T {
     if (this.#loseResponse === operation) {
       this.#loseResponse = undefined;
       throw new Error('Provider response lost; reconcile by ID');
     }
     return result;
+  }
+  async createCustomer(request: CreateCustomer): Promise<{ id: string; email: string }> {
+    assertNoTransaction('payments.createCustomer');
+    if (!request.email?.trim() || !request.name.trim() || !request.householdId) throw new Error('Customer details are required');
+    if (this.#customerCreationsInFlight.has(request.idempotencyKey)) throw new CustomerCreationInProgress();
+    const until = this.#nextCustomerCreation;
+    this.#nextCustomerCreation = undefined;
+    this.#customerCreationsInFlight.add(request.idempotencyKey);
+    try {
+      if (until) await until;
+      const result = this.#once('customer', request.idempotencyKey,
+        JSON.stringify([request.email, request.name, request.householdId]), () => {
+          const customer = { id: this.#id('cus'), email: request.email, name: request.name,
+            gymId: this.gymId, householdId: request.householdId };
+          this.#customers.push(customer);
+          return { id: customer.id, email: customer.email };
+        });
+      return this.#reply('createCustomer', result);
+    } finally { this.#customerCreationsInFlight.delete(request.idempotencyKey); }
   }
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge');

@@ -872,6 +872,223 @@
         }
       ]
     },
+    "extended > creates one owned customer per key and rejects changed details": {
+      "version": 1,
+      "gymId": "00000000-0000-7000-8000-000000000001",
+      "exchanges": [
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/customers",
+            "params": {
+              "email": "new-payer@example.invalid",
+              "name": "New Household",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "household_id": "invoice_fixture"
+              }
+            },
+            "idempotencyKey": "invoice_fixture:1:create:customer"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": "new-payer@example.invalid",
+            "name": "New Household",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/customers",
+            "params": {
+              "email": "new-payer@example.invalid",
+              "name": "New Household",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "household_id": "invoice_fixture"
+              }
+            },
+            "idempotencyKey": "invoice_fixture:1:create:customer"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": "new-payer@example.invalid",
+            "name": "New Household",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/customers",
+            "params": {
+              "email": "new-payer@example.invalid",
+              "name": "Changed Household",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "household_id": "invoice_fixture"
+              }
+            },
+            "idempotencyKey": "invoice_fixture:1:create:customer"
+          },
+          "error": {
+            "type": "StripeIdempotencyError"
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers",
+            "params": {
+              "email": "new-payer@example.invalid",
+              "limit": 100
+            }
+          },
+          "output": {
+            "data": [
+              {
+                "id": "cus_1",
+                "created": 1792756800,
+                "livemode": false,
+                "object": "customer",
+                "email": "new-payer@example.invalid",
+                "name": "New Household",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "household_id": "invoice_fixture"
+                }
+              }
+            ],
+            "has_more": false
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_1"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": "new-payer@example.invalid",
+            "name": "New Household",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_1"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": "new-payer@example.invalid",
+            "name": "New Household",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/checkout/sessions",
+            "params": {
+              "mode": "setup",
+              "customer": "cus_1",
+              "success_url": "https://gym.invalid/success",
+              "cancel_url": "https://gym.invalid/cancel",
+              "allowed_payment_method_types": [
+                "card"
+              ],
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              },
+              "setup_intent_data": {
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001"
+                }
+              }
+            },
+            "idempotencyKey": "invoice_fixture:1:create:customer:setup"
+          },
+          "output": {
+            "id": "cs_3",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "checkout.session",
+            "mode": "setup",
+            "customer": "cus_1",
+            "success_url": "https://gym.invalid/success",
+            "cancel_url": "https://gym.invalid/cancel",
+            "allowed_payment_method_types": [
+              "card"
+            ],
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            },
+            "setup_intent_data": {
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
+            "status": "open",
+            "url": "https://checkout.invalid/fixture",
+            "setup_intent": "seti_2"
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/setup_intents/seti_2"
+          },
+          "output": {
+            "id": "seti_2",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "setup_intent",
+            "customer": "cus_1",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            },
+            "status": "requires_payment_method",
+            "payment_method": null,
+            "amount": 100,
+            "currency": "usd"
+          }
+        }
+      ]
+    },
     "extended > detaches a card idempotently, accepts unknown IDs, and refuses another gym": {
       "version": 1,
       "gymId": "00000000-0000-7000-8000-000000000001",

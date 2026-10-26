@@ -41,10 +41,20 @@ cleanup remains necessary; this page does not delete potentially signed images.
 
 `createSignedLinkCheckout` lives in `areas/billing/signed-link-checkout.ts`.
 It locks/rechecks the link before reading the stored household customer. Both
-payment and setup mode require that customer ID; neither uses customer-email
-mode. A missing customer produces a translated contact-the-gym state.
-First-time customer creation/linking needs an implementation before these
-households can collect cards.
+payment and setup mode use that customer ID; neither uses customer-email mode.
+If no customer is linked, the customers service resolves the configured provider,
+reserves creation under the household lock, and creates and links a gym-tagged
+customer outside the transaction. Existing/imported IDs stay unchanged. Missing
+payer details, configuration failures and unresolved creation keep the translated
+contact-the-gym state and emit a diagnostic log with identifiers and a reason.
+See `areas/billing/customers.README.md` for reservation safety and staff recovery.
+
+Pay links save a card for off-session use only for cycle invoices or assignment
+invoices (nonempty lines containing only membership, sign-up fee, discount and
+tax), matching the daily runner's shared rule. Other one-off pay links do not save
+the card or change the household's default. Card and onboarding links use setup
+mode and keep saving cards. The returned or reused Checkout session must match
+the expected card-saving policy.
 
 Invoice Checkout reserves its idempotency window in `checkout_expires_at`, then
 calls the payment provider outside the transaction. The returned session ID is

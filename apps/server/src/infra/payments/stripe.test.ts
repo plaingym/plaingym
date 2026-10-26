@@ -4,8 +4,8 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { FakePayments } from './index.js';
-import { FixtureRecorder } from './recording.js';
+import { CustomerCreationInProgress, FakePayments } from './index.js';
+import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
 import { StripeFixtures } from './stripe-fixtures.js';
@@ -81,8 +81,35 @@ it('replays a serialized transport recording through the actual Stripe adapter',
   expect(await replay.confirmCharge(first.id, { idempotencyKey: 'confirm' })).toEqual(confirmed);
   transport.assertConsumed();
 });
+it('records and replays customer creation and typed in-flight conflicts at the Payments interface', async () => {
+  const fake = new FakePayments(gymId), recorder = new FixtureRecorder(gymId), payments = recorder.wrap(fake);
+  const request = { email: 'payer@example.invalid', name: 'Household', householdId: 'household_fixture', idempotencyKey: 'customer_fixture' };
+  let release!: () => void;
+  fake.holdNextCustomerCreation(new Promise<void>(resolve => { release = resolve; }));
+  const first = payments.createCustomer(request);
+  await expect(payments.createCustomer(request)).rejects.toBeInstanceOf(CustomerCreationInProgress);
+  release();
+  const customer = await first;
+  expect(recorder.tape.exchanges.map(e => e.operation)).toEqual(['createCustomer', 'createCustomer']);
+  const replay = replayPayments(JSON.parse(JSON.stringify(recorder.tape)), gymId);
+  expect(await replay.createCustomer(request)).toEqual(customer);
+  await expect(replay.createCustomer(request)).rejects.toBeInstanceOf(CustomerCreationInProgress);
+});
+it.each([
+  [409, 'idempotency_key_in_use', true], [409, undefined, false],
+  [400, 'idempotency_key_in_use', false], [400, 'parameter_invalid_empty', false], [400, 'idempotency_error', false],
+] as const)('normalizes only an in-flight customer conflict (%s, %s)', async (statusCode, code, retryable) => {
+  const { payments, transport } = fixture();
+  const error = Object.assign(new Error('Provider failure'), { statusCode, code, type: 'StripeInvalidRequestError' });
+  vi.spyOn(transport, 'request').mockRejectedValueOnce(error);
+  const result = payments.createCustomer({ email: 'payer@example.invalid', name: 'Household', householdId: 'household_fixture', idempotencyKey: 'customer_fixture' });
+  if (retryable) await expect(result).rejects.toMatchObject({ name: 'CustomerCreationInProgress', cause: error });
+  else await expect(result).rejects.toBe(error);
+});
 it('tags all explicitly created objects and sends Endive parameters', async () => {
   const { payments, transport } = fixture();
+  const customer = await payments.createCustomer({ email: 'new@example.invalid', name: 'New Household', householdId: 'household_fixture', idempotencyKey: 'customer_fixture' });
+  expect(transport.objects.get(customer.id)?.metadata).toEqual({ gym_id: gymId, household_id: 'household_fixture' });
   await payments.createCheckout(checkout);
   await payments.createCheckout({ ...checkout, mode: 'setup', idempotencyKey: 'setup' });
   const intent = await payments.createCharge(charge);
@@ -326,7 +353,8 @@ it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as c
 it('blocks all provider operations inside a database transaction before any request', async () => {
   const { payments, transport } = fixture();
   await runInTransaction(async () => {
-    const calls = [() => payments.createCharge(charge), () => payments.confirmCharge('pi_fixture', { idempotencyKey: 'confirm' }),
+    const calls = [() => payments.createCustomer({ email: 'payer@example.invalid', name: 'Household', householdId: 'household_fixture', idempotencyKey: 'customer' }),
+      () => payments.createCharge(charge), () => payments.confirmCharge('pi_fixture', { idempotencyKey: 'confirm' }),
       () => payments.cancelCharge('pi_fixture'), () => payments.findCharge({ kind: 'charge', id: 'pi_fixture' }),
       () => payments.readPaymentObject({ kind: 'setup', id: 'seti_fixture' }), () => payments.listChangesSince(new Date()),
       () => payments.listRefunds('pi_fixture'),

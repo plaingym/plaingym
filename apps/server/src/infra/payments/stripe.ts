@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { normalizeChargeOutcome, type Payments, type CreateCharge, type CheckoutRequest,
+import { CustomerCreationInProgress, normalizeChargeOutcome, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund } from './index.js';
@@ -115,6 +115,26 @@ export class StripePayments implements Payments {
   }
   async #ownedCustomer(customerId: string): Promise<void> {
     this.#metadata(await this.#get(this.#path('customers', customerId)));
+  }
+  async createCustomer(request: CreateCustomer): Promise<{ id: string; email: string }> {
+    assertNoTransaction('payments.createCustomer'); key(request.idempotencyKey);
+    if (!request.email?.trim() || !request.name.trim() || !request.householdId) throw new Error('Customer details are required');
+    let customer: ObjectData;
+    try {
+      customer = await this.#post('/v1/customers', { email: request.email, name: request.name,
+        metadata: { gym_id: this.gymId, household_id: request.householdId } }, request.idempotencyKey);
+    } catch (error) {
+      // Parameter mismatches and generic 409s are not proof of an in-flight create.
+      if (error && typeof error === 'object' && 'statusCode' in error && error.statusCode === 409
+        && 'code' in error && error.code === 'idempotency_key_in_use')
+        throw new CustomerCreationInProgress({ cause: error });
+      throw error;
+    }
+    this.#metadata(customer);
+    if (customer.deleted === true || !/^cus_[A-Za-z0-9_]+$/.test(id(customer.id))
+      || data(customer.metadata).household_id !== request.householdId || customer.email !== request.email)
+      throw new Error('Invalid created customer');
+    return { id: id(customer.id), email: request.email };
   }
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge'); money(request.amount, request.currency); key(request.idempotencyKey);
