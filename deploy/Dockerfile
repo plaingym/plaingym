@@ -13,7 +13,7 @@ FROM ${NODE_IMAGE} AS runtime
 COPY deploy/pgdg.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
 COPY deploy/apt-runtime-pins.txt /tmp/apt-runtime-pins.txt
 RUN apt-get update \
- && apt-get install --yes --no-install-recommends ca-certificates=20250419~deb12u2 openssl=3.0.22-1~deb12u1 libssl3=3.0.22-1~deb12u1 \
+ && apt-get install --yes --no-install-recommends ca-certificates=20250419~deb12u2 openssl=3.0.22-1~deb12u2 libssl3=3.0.22-1~deb12u2 \
  && printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main\n' > /etc/apt/sources.list.d/pgdg.list \
  && apt-get update \
  && sed '/^#/d' /tmp/apt-runtime-pins.txt | xargs --no-run-if-empty apt-get install --yes --no-install-recommends \
