@@ -66,6 +66,10 @@ import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.rou
 import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
 import { configureWebhookReplay } from '../cli/replay.js';
 import { composeBillingWebhooks } from '../areas/billing/webhooks/handlers/composition.js';
+import { createChargeRunner } from '../areas/billing/runner/index.js';
+import { configureChargeRunner } from '../areas/billing/runner/runner.jobs.js';
+import { createMembershipService } from '../areas/billing/memberships.js';
+import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createBillingAlerts, createDisputeAlertProvider } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
@@ -184,13 +188,24 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureImportStep({ imports: importPipeline, clock });
   // The inbox route and its dispatcher job; a gym without Stripe settings answers 503.
   const paymentsFor = createPaymentsResolver({ key, clock });
+  async function requirePayments(gymId: string) {
+    const provider = await paymentsFor(gymId);
+    if (!provider) throw new AppError('unavailable', 'Stripe is not configured for this gym');
+    return provider;
+  }
   const inbox = webhookInbox(paymentsFor, queue);
   configureWebhookInboxRoutes(inbox);
   configureWebhookInboxJobs(inbox);
   // Webhook handlers apply payment outcomes through the one invoice transition service, whose effects
   // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
-  composeBillingWebhooks({ inbox, jobs: queue, settings: createGymSettingsAccessor(), paymentsFor, clock, prepare: gymMail,
+  const billing = composeBillingWebhooks({ inbox, jobs: queue, settings: createGymSettingsAccessor(), paymentsFor, clock, prepare: gymMail,
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
+  const runner = createChargeRunner({ settings: createGymSettingsAccessor(), transitions: billing.transitions,
+    jobs: queue, payments: requirePayments, clock });
+  billing.attachRetry(runner.retry);
+  configureChargeRunner(runner);
+  configureMemberships(createMembershipService({ clock, settings: createGymSettingsAccessor(), onAssigned: runner.onAssigned }),
+    { assigned: runner.collectAssigned });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
