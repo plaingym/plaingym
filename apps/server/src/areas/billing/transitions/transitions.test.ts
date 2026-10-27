@@ -114,7 +114,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.drain();
     expect(f.email.messages).toHaveLength(1); expect(stateEvents(await f.read())).toHaveLength(1);
     const retryJobs = f.jobs.jobs.filter(job => job.runAt > f.clock.now());
-    expect(retryJobs.map(job => job.runAt.toISOString())).toEqual(['2028-03-13T16:00:00.000Z', '2028-03-17T16:00:00.000Z']);
+    expect(retryJobs.map(job => job.runAt.toISOString()).sort()).toEqual(['2028-03-13T16:00:00.000Z', '2028-03-17T16:00:00.000Z']);
     const tokens = [...f.email.messages[0]!.text.matchAll(/https:\/\/gym.example.invalid\/l\/([\w-]+)/g)].map(m => m[1]!);
     expect(tokens).toHaveLength(2);
     const links = createSignedLinksService(f.options);

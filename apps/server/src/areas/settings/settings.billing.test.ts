@@ -114,7 +114,7 @@ describe('billing retry rules through real PostgreSQL and application compositio
     const f = await fixture(), first = await f.invoice(), failure = await f.failure(first.id);
     await f.transitions.cardFailed(f.context, failure); await f.drain();
     const originalJobs = f.jobs.jobs.filter(job => job.status === 'queued');
-    expect(originalJobs.map(job => job.runAt.toISOString())).toEqual(['2028-03-13T16:00:00.000Z', '2028-03-17T16:00:00.000Z']);
+    expect(originalJobs.map(job => job.runAt.toISOString()).sort()).toEqual(['2028-03-13T16:00:00.000Z', '2028-03-17T16:00:00.000Z']);
     await f.save([1, 4, 14, 28]);
     f.clock.set('2028-03-13T16:00:00Z'); await f.drain();
     await f.transitions.cardFailed(f.context, await f.failure(first.id, 2)); await f.drain();
@@ -131,9 +131,9 @@ describe('billing retry rules through real PostgreSQL and application compositio
     expect(f.email.messages).toHaveLength(3); // one for each distinct failed attempt, including the retry
     const retryEffects = events.filter(row => row.action === effectCreated && (row.after as { kind: string }).kind === 'retry');
     const chosen = retryEffects.filter(row => (row.after as { invoiceId: string }).invoiceId === second.id);
-    expect(chosen.map(row => (row.after as { retryDay: number }).retryDay)).toEqual([1, 4, 14, 28]);
+    expect(chosen.map(row => (row.after as { retryDay: number }).retryDay).sort((a, b) => a - b)).toEqual([1, 4, 14, 28]);
     expect(f.jobs.jobs.filter(job => chosen.some(row => row.targetId === (job.payload as { effectId: string }).effectId))
-      .map(job => job.runAt.toISOString())).toEqual(['2028-03-14T16:00:00.000Z', '2028-03-17T16:00:00.000Z', '2028-03-27T16:00:00.000Z', '2028-04-10T16:00:00.000Z']);
+      .map(job => job.runAt.toISOString()).sort()).toEqual(['2028-03-14T16:00:00.000Z', '2028-03-17T16:00:00.000Z', '2028-03-27T16:00:00.000Z', '2028-04-10T16:00:00.000Z']);
   });
   it('snapshots before publishing, even if settings change before effects are queued', async () => {
     const f = await fixture(), invoice = await f.invoice();
@@ -141,7 +141,8 @@ describe('billing retry rules through real PostgreSQL and application compositio
     await f.transitions.cardFailed(f.context, await f.failure(invoice.id));
     await f.save([]);
     await f.drain();
-    expect(f.jobs.jobs.filter(job => job.status === 'queued').map(job => job.runAt.toISOString()))
+    // Effects in one transition share a millisecond, so their audit IDs (and queue order) are unordered.
+    expect(f.jobs.jobs.filter(job => job.status === 'queued').map(job => job.runAt.toISOString()).sort())
       .toEqual(['2028-03-11T16:00:00.000Z', '2028-04-07T16:00:00.000Z']);
     expect(f.email.messages).toHaveLength(1);
   });
