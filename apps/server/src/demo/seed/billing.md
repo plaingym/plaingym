@@ -25,7 +25,8 @@ O'Neill and Owen Murphy have declining cards and past-due invoices. Their first
 failure uses the existing default day-3/7 retry schedule. Annual renewals and the
 next monthly dates remain in the future. Trial/prospect households have no invoice.
 
-The existing go-live service enables billing for collection and restores its
+The existing go-live service enables billing for collection, confirming any
+memberships an interrupted run left past due, and restores its
 original value in `finally`. It leaves the member-email switch alone. The seed
 sends no email or job itself: transitions record their usual auditable effects,
 which the runtime publisher can deliver through the demo outbox and job queue.

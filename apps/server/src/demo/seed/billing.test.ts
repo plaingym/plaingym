@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { auditEvents, emailOutbox, gyms, households, invoiceLineItems, invoices, memberships,
-  paymentAttempts, paymentMethods, payments, plans, uuidv7 } from '@plaingym/db';
+  members, paymentAttempts, paymentMethods, payments, plans, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { localDate } from '@plaingym/shared/time';
@@ -159,6 +159,20 @@ describe('demo billing seed', { timeout: 60_000 }, () => {
     expect(rows.gym.billingEnabled).toBe(false);
   });
 
+  it('confirms memberships already past due when it switches billing on, then restores the switch', async () => {
+    const f = await fixture();
+    // An interrupted run can leave an assigned membership whose first period was never generated.
+    const [member] = await db.forGym(f.gymId, tx => tx.select().from(members).orderBy(members.id).limit(1));
+    const plan = await factory('plans', f.gymId, { name: 'Interrupted plan', currency: 'CAD' });
+    const overdue = await factory('memberships', f.gymId, { householdId: member!.householdId, memberId: member!.id, planId: plan.id,
+      status: 'active', currency: 'CAD', nextDueOn: '2026-10-01' });
+    await f.seed.run(f.context);
+    const rows = await snapshot(f.gymId);
+    const confirmed = rows.audit.filter(row => row.action === 'settings.go_live.past_due_dates_confirmed');
+    expect(confirmed).toHaveLength(1);
+    expect((confirmed[0]!.after as { memberships: { id: string }[] }).memberships.map(row => row.id)).toEqual([overdue.id]);
+    expect(rows.gym.billingEnabled).toBe(false);
+  });
   it('restores a disabled billing switch recorded before an interrupted seed process', async () => {
     const f = await fixture();
     await factory('auditEvents', f.gymId, { action: 'billing.seed.started', targetType: 'gym', targetId: f.gymId,

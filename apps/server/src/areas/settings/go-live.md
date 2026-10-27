@@ -16,6 +16,9 @@ trial and pending memberships need a linked customer and an unrevoked default ca
 every current, non-retired waiver/agreement family. An older signed version does
 not satisfy the current version, and a retired latest version never revives an old
 template. With no applicable memberships or waivers those checks are not applicable.
+Payment configuration comes from the runtime's payments resolver
+(`paymentsConfigured`), so demo sandboxes on the shared test account count as
+configured; without it, the gym's stored Stripe settings decide.
 
 Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by
 default: a processed event and no pending/failed events are ready. It never reads

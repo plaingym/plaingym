@@ -64,13 +64,16 @@ async function reconciliation(tx: Transaction) {
 
 export function createGoLiveService(options: {
   scope?: typeof forGym; clock?: Clock; smtpConfigured: (gymId: string) => Promise<boolean>; webhooks?: WebhookHealthQuery;
+  /** The runtime's payments resolver; defaults to the gym's stored Stripe settings (demo sandboxes share an install account). */
+  paymentsConfigured?: (gymId: string) => Promise<boolean>;
   restoreCheck?: typeof rerunRestoreReconciliation;
 }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const webhooks = options.webhooks ?? createWebhookHealthQuery(scope);
   async function checklist(gymId: string): Promise<Checklist> {
     // These accessors open their own short transactions, so run outside our scope.
-    const [smtp, webhook] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId)]);
+    const [smtp, webhook, payments] = await Promise.all([options.smtpConfigured(gymId), webhooks.get(gymId),
+      options.paymentsConfigured?.(gymId)]);
     return scope(gymId, async (tx) => {
       const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));
       if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
@@ -88,22 +91,23 @@ export function createGoLiveService(options: {
       const today = localDate(clock.now(), gym.timezone), thisMonth = today.slice(0, 7);
       const pastDueMemberships = await pastDue(tx, today);
       const setup = (gym.settings as { setup?: { completed?: boolean } }).setup;
+      const stripe = payments ?? Boolean(gym.stripeConfigured);
       const result = goLiveChecklistResponseSchema.shape.data.parse({ revision: gym.revision, ...switches(gym), pastDueMemberships,
         restoreReconciliation: recovery.detail, items: [
         item('gym_details', ready(!setup || setup.completed)),
         item('members_imported', ready(member)),
         item('schedule_ready', ready(template)),
-        item('stripe_ready', ready(gym.stripeConfigured)),
-        item('cards_collected', !gym.stripeConfigured || !billable.length ? 'not_applicable'
+        item('stripe_ready', ready(stripe)),
+        item('cards_collected', !stripe || !billable.length ? 'not_applicable'
           : ready(billable.every(home => home.customerId && cards.some(card => card.householdId === home.householdId
             && (!card.expiryYear || !card.expiryMonth || `${card.expiryYear}-${String(card.expiryMonth).padStart(2, '0')}` >= thisMonth))))),
         item('waivers_signed', !people.length || !currentWaivers.some(w => !w.retiredAt) ? 'not_applicable'
           : ready(await signedLinkWaiversComplete(tx, people.map(p => p.id)))),
         item('smtp_ready', ready(smtp)),
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
-        item('webhook_ready', !gym.stripeConfigured ? 'not_applicable'
+        item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),
-        item('reconciliation_complete', !gym.stripeConfigured && !recovery.applicable ? 'not_applicable' : ready(recovery.ready)),
+        item('reconciliation_complete', !stripe && !recovery.applicable ? 'not_applicable' : ready(recovery.ready)),
         item('past_due_dates', ready(!pastDueMemberships.length)),
       ] });
       return { ...result, pastDueMemberships };

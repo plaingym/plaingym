@@ -193,7 +193,6 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
-  configureGoLive({ clock, smtpConfigured });
   // Household PINs use the gym's random key; member photos use the gym's file storage.
   const gymKey = createGymKeyResolver({ key });
   configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
@@ -206,6 +205,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureImportStep({ imports: importPipeline, clock });
   // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
   const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
+  configureGoLive({ clock, smtpConfigured, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
   configureHealthStatus({ env, providers: [
     createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
     createChargeRunHealthProvider({ settings }),

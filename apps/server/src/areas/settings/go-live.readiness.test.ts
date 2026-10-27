@@ -112,6 +112,18 @@ describe('go-live billing readiness', () => {
     await factory('stripeEvents', f.gymId, { error: 'test' });
     expect(status(await f.service.checklist(f.gymId), 'webhook_ready')).toBe('needs_attention');
   });
+  it('lets the runtime payments resolver decide Stripe readiness, as for demo sandboxes on the shared account', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ stripeConfig: null }).where(eq(gyms.id, f.gymId)));
+    expect(status(await f.service.checklist(f.gymId), 'stripe_ready')).toBe('needs_attention');
+    expect(status(await f.service.checklist(f.gymId), 'webhook_ready')).toBe('not_applicable');
+    const shared = createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true, paymentsConfigured: async () => true });
+    expect(status(await shared.checklist(f.gymId), 'stripe_ready')).toBe('ready');
+    expect(status(await shared.checklist(f.gymId), 'webhook_ready')).toBe('needs_attention');
+    const unresolved = createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true, paymentsConfigured: async () => false });
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ stripeConfig: 'opaque-encrypted-configuration' }).where(eq(gyms.id, f.gymId)));
+    expect(status(await unresolved.checklist(f.gymId), 'stripe_ready')).toBe('needs_attention');
+  });
   it('exposes the list and confirms billing through createApp with the production route registrations', async () => {
     const f = await fixture(), owner = await factory('authUser', f.gymId); await f.makeMembership({ nextDueOn: '2026-10-24' });
     configureGoLive({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true });

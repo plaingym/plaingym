@@ -66,7 +66,9 @@ export function billingSeed(options: {
     const switches = createGoLiveService({ scope, clock, smtpConfigured: async () => false });
     const initial = await switches.checklist(gymId);
     // Use the existing switch API; restore the original switch even if a provider call fails.
-    if (!initial.billingEnabled) await switches.update(actor, { revision: initial.revision, billingEnabled: true });
+    // A rerun after a partial failure can find seeded memberships still due in the past; confirm exactly those.
+    if (!initial.billingEnabled) await switches.update(actor, { revision: initial.revision, billingEnabled: true,
+      confirmedPastDueDates: initial.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) });
     try {
       for (const home of demoHouseholds) {
         const household = (await people.listHouseholds(gymId, { ...page, search: home.name })).data

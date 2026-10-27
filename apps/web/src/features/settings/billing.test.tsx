@@ -5,7 +5,6 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { GymSettings } from '@plaingym/shared/contracts';
 import { BillingSettings } from './billing.js';
-import { registration } from './billing.registrations.js';
 import { createRegistries } from '../../lib/registries.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
@@ -19,7 +18,7 @@ afterEach(cleanup);
 
 describe('billing retry settings', () => {
   it('registers a section for settings managers through the web composition extension point', () => {
-    const section = createRegistries([registration]).settingsSections.all().find(section => section.id === 'settingsSections.settings.billing');
+    const section = createRegistries().settingsSections.all().find(section => section.id === 'settingsSections.settings.billing');
     expect(section).toMatchObject({ enabled: true, permission: { kind: 'staff', capability: 'settings.manage' }, component: BillingSettings });
   });
   it('loads the schedule and explains its anchor, preserved invoices and email limit', async () => {
