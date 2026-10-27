@@ -42,6 +42,8 @@ processes and concurrent requests. Failed or unfinished allocations occupy a slo
 until deletion. Their temporary reservation marker lets expiry recover a crash
 between audited gym reservation and seeding. Creation is limited to three requests
 per client address per hour, per process; login to 20 per minute per gym/address.
+The login's internal magic-link sign-in uses the same 20-per-minute rule instead of
+the ordinary sign-in limit of five.
 Untrusted forwarded headers do not change the bucket. Use the trusted-proxy options
 when Caddy is the sole peer. Configure the same cap on every app process.
 

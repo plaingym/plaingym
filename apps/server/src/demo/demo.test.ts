@@ -117,6 +117,12 @@ describe('demo boundaries and sandbox lifecycle', () => {
       expect(await auth.bind({ gymId: b.gymId, origin: b.origin, clientIp: '192.0.2.50' }).getSession(request)).toBeNull();
     }
   });
+  it('allows as many one-click logins from one address as the login route does, beyond the ordinary sign-in limit', async () => {
+    const f = fixture(), sandbox = await f.service.create(), ip = '192.0.2.77';
+    // The ordinary magic-link limit is five per minute, and its window restarts on every request.
+    for (let attempt = 0; attempt < 8; attempt++)
+      expect((await f.service.login(sandbox.gymId, attempt % 2 ? 'coach' : 'owner', ip)).status, 'login ' + (attempt + 1)).toBe(303);
+  });
   it('returns 404 on creation and one-click login outside demo mode, before validation', async () => {
     const { app } = appFor(disabledRoutes, infraContractGyms.a, 'anonymous');
     expect((await post(app, '/api/demo/sandboxes')).status).toBe(404);

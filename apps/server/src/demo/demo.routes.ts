@@ -9,10 +9,11 @@ import { createTenantResolver, type TenancyMode } from '../core/tenancy.js';
 import { demoContracts } from '@plaingym/shared/contracts';
 import { createOutboxQuery } from './outbox.js';
 import type { DemoService } from './service.js';
+import { demoLoginRateLimit } from './identities.js';
 
 export function createDemoRoutes(service: DemoService, options: { installOrigin: string; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery> }) {
   const limiter = rateLimit({ ...options.clientIp, limit: 3, windowMs: 60 * 60 * 1000 });
-  const loginLimiter = rateLimit({ ...options.clientIp, limit: 20, windowMs: 60_000 });
+  const loginLimiter = rateLimit({ ...options.clientIp, limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
   const guard = csrf(options.installOrigin), outbox = options.outbox ?? createOutboxQuery();
   const modeGuard: MiddlewareHandler<RequestEnvironment> = async (_c, next) => { if (options.enabled === false) throw new AppError('not_found', 'Not found'); await next(); };
   const { create, status, login, outbox: list, message, entry } = demoContracts;

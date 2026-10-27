@@ -9,6 +9,8 @@ import type { DemoRole } from '@plaingym/shared/contracts';
 import { requireDemo, type DemoConfig } from './config.js';
 
 export const demoEmail = (gymId: string, role: DemoRole) => `${role}.${gymId}@example.invalid`;
+/** One-click logins per client address; the login route enforces it, and the internal sign-in uses the same rule. */
+export const demoLoginRateLimit = { window: 60, max: 20 } as const;
 export function createDemoIdentities(options: {
   config: DemoConfig; authConfig: AuthConfig; clock: Clock;
   accounts?: Pick<ReturnType<typeof createAccountService>, 'provisionUser' | 'findUserByEmail'>;
@@ -45,7 +47,10 @@ export function createDemoIdentities(options: {
     if (!permitted) throw new AppError('not_found', 'Not found');
     // A new auth binding captures only this request's link; no transport or shared token buffer.
     let link: string | undefined;
-    const auth = (options.authFactory ?? createAuthService)({ config: options.authConfig, sendMagicLink: async (input) => { link = input.url; } })
+    // The sign-in limiter restarts its window on every request, so its stricter default would refuse
+    // one-click logins that the login route already allows.
+    const auth = (options.authFactory ?? createAuthService)({ config: options.authConfig, rateLimit: demoLoginRateLimit,
+      sendMagicLink: async (input) => { link = input.url; } })
       .bind({ gymId, origin, clientIp, smtpConfigured: true });
     await auth.sendLoginLink(demoEmail(gymId, role));
     if (!link) throw new AppError('unavailable', 'Demo login unavailable');
