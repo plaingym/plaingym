@@ -11,6 +11,32 @@ wildcard DNS/TLS), and optionally `DEMO_MAX_SANDBOXES` (1–1000, default 50).
 `demoBootCheck` rejects live Stripe keys in the environment; `verifyDemoStoredKeys`
 also decrypts and checks existing gym Stripe configuration before startup.
 
+Optional billing uses `DEMO_STRIPE_TEST_KEY` (`sk_test_…` or `rk_test_…`) and
+`DEMO_STRIPE_WEBHOOK_SECRET` (`whsec_…`) from the install environment. A configured
+key requires the signing secret; live keys and other key formats refuse startup.
+Without the key, creation succeeds and logs `Demo billing seed skipped` with the
+missing variable name. Payments and the Stripe health tile report unconfigured.
+Webhook requests pass through to the tenant route, which returns 503
+(`Payments are not set up for this gym`) for a sandbox without the shared key.
+
+Configure one Stripe test-account endpoint at
+`https://<DEMO_DOMAIN>/webhooks/stripe`, subscribed to the events in
+[`webhookEvents`](../infra/payments/setup.ts). Its signing secret is shared by
+all sandboxes. Body limits and the restore gate run before this install route;
+tenant and session middleware run afterwards. Only active, ready, unexpired
+sandboxes are destinations. `gym_id` metadata selects a candidate; the provider
+verifies the signature and ownership. Unknown, expired and unrelated events are
+acknowledged and discarded when the shared key is configured, including when no
+active sandboxes remain. Untagged refunds and disputes resolve their parent
+through gym-scoped providers.
+
+The install credential is resolved directly for both seeding and normal sandbox
+payments; it is never copied into gym rows. This avoids duplicating a shared
+secret in every disposable sandbox and keeps key rotation at install scope.
+Customers, saved cards, collection and staff payment actions use that same test
+account with each sandbox's gym ID. Billing seed effects use the existing runtime
+publisher for receipt/dunning and default day-3/7 retry jobs.
+
 The cap uses unique `sandbox-1` through `sandbox-N` slugs, so it holds across app
 processes and concurrent requests. Failed or unfinished allocations occupy a slot
 until deletion. Their temporary reservation marker lets expiry recover a crash
@@ -88,5 +114,7 @@ Runtime and shared composition use these exports:
   The notice links to `/admin/outbox`; the shell enables its navigation entry
   only after the sandbox status check succeeds.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
-  `runSeeds(context)` applies the foundation followed by the registered area seeds.
+  `runSeeds(context)` applies foundation, members, billing, waivers and mat seeds.
+  Both sandbox creation and the seed CLI use this composition. Billing receives
+  the same scope and clock as the other seeds and a shared test-account provider.
   Each step owns its short transactions and must support retries.

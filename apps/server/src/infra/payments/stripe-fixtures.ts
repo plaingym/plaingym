@@ -7,8 +7,10 @@ export class StripeFixtures implements PaymentTransport {
   readonly requests: ProviderRequest[] = [];
   readonly #keys = new Map<string, { request: ProviderRequest; result: ObjectData }>();
   readonly #changes: ObjectData[] = [];
-  #nextId = 0;
-  constructor(readonly gymId: string, readonly now = 1792756800) {
+  #nextId: number;
+  /** `firstId` keeps a second fixture's generated IDs clear of objects an earlier fixture stored for the same gym. */
+  constructor(readonly gymId: string, readonly now = 1792756800, firstId = 0) {
+    this.#nextId = firstId;
     this.objects.set('cus_fixture', { id: 'cus_fixture', object: 'customer', email: 'payer@example.invalid', metadata: { gym_id: gymId } });
     for (const card of ['4242', '0341', '3155', '3184']) this.objects.set('pm_' + card, {
       id: 'pm_' + card, object: 'payment_method', created: now, customer: 'cus_fixture', card: { last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },

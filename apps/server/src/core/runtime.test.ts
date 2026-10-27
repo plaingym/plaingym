@@ -13,7 +13,6 @@ import { floodLimit, poolSize, startRuntime, runCommandLine, type Runtime } from
 import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
-import { encryptSecret, parseEncryptionKey } from './secrets.js';
 import { s3Server } from '../infra/storage/s3-server.test-helper.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import type { JobHandler } from '../infra/jobs/index.js';
@@ -25,6 +24,7 @@ import { setLogSink } from './log.js';
 const database = useTestDatabase();
 const factory = createFactories(database), handlers = new Map<string, JobHandler>();
 const origin = 'https://demo.example.test';
+const demoStripeEnv = { DEMO_STRIPE_TEST_KEY: 'rk_test_runtime', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_runtime' };
 let runtime: Runtime, directory: string;
 let storage: Awaited<ReturnType<typeof s3Server>>;
 let sandbox: { gymId: string; origin: string; kioskToken: string };
@@ -38,6 +38,10 @@ const env = () => ({ DATABASE_URL: database.appUrl, APP_ENCRYPTION_KEY: 'ab'.rep
 const post = (path: string, body: unknown, base = origin, extra: Record<string, string> = {}) => runtime.app.request(base + path, {
   method: 'POST', headers: { host: new URL(base).host, origin: base, 'content-type': 'application/json', ...extra }, body: JSON.stringify(body),
 });
+async function restartRuntime(overrides: NodeJS.ProcessEnv = {}) {
+  await runtime.stop();
+  runtime = await startRuntime({ ...env(), ...overrides });
+}
 beforeAll(async () => {
   // Keep production registrations and database jobs; drive their handlers explicitly without polling races.
   const handle = PostgresJobs.prototype.handle;
@@ -165,6 +169,11 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
   const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
   const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
   const headers = { host: new URL(sandbox.origin).host, cookie };
+  // Create the isolation fixture without billing seed data, as in the initial sandbox.
+  const created = await post('/api/demo/sandboxes', {});
+  expect(created.status).toBe(201);
+  const otherOrigin = (await created.json()).data.origin as string;
+  const [gym] = await database.forGym(sandbox.gymId, tx => tx.select().from(gyms).where(eq(gyms.id, sandbox.gymId)));
   const testClock = new TestClock('2028-03-01T12:00:00Z');
   const now = vi.spyOn(clock, 'now').mockImplementation(() => testClock.now());
   const transport = new StripeFixtures(sandbox.gymId, Math.floor(testClock.now().getTime() / 1000));
@@ -176,9 +185,11 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     return handler!(payload, { gymId: sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
   };
   try {
-    const config = { apiKey: 'rk_test_runtime', endpointId: 'we_runtime', webhookSecret: 'whsec_runtime', mode: 'test' };
+    await restartRuntime(demoStripeEnv);
     await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ timezone: 'UTC', billingEnabled: true, memberEmailsEnabled: true,
-      stripeConfig: encryptSecret(parseEncryptionKey('ab'.repeat(32)), 'stripe_config', JSON.stringify(config)) }).where(eq(gyms.id, sandbox.gymId)));
+      // Keep this sandbox active while the fixed billing clock advances through day three.
+      settings: { ...gym!.settings as Record<string, unknown>, demo: { sandbox: true, ready: true, expiresAt: '2028-03-05T12:00:00Z' } },
+    }).where(eq(gyms.id, sandbox.gymId)));
     const home = await factory('households', sandbox.gymId, { email: 'runtime.payer@example.invalid', stripeCustomerId: 'cus_fixture' });
     const member = await factory('members', sandbox.gymId, { householdId: home.id });
     const plan = await factory('plans', sandbox.gymId, { amountCents: 10000, signupFeeCents: 2500 });
@@ -256,9 +267,8 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     expect(dashboard.status).toBe(200);
     expect((await dashboard.json()).data.widgets).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'billing.disputes', count: 1 })]));
     // Another gym's authenticated staff can neither list nor read these invoices.
-    const created = await post('/api/demo/sandboxes', {});
-    expect(created.status).toBe(201);
-    const otherOrigin = (await created.json()).data.origin as string;
+    // Return to the real clock so the other sandbox's 24-hour login remains valid.
+    now.mockRestore();
     const otherLogin = await post('/api/demo/login', { role: 'owner' }, otherOrigin);
     expect(otherLogin.status).toBe(200);
     const otherCookie = otherLogin.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
@@ -268,8 +278,9 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     expect((await otherInvoices.json()).data).toEqual([]);
     expect((await runtime.app.request(otherOrigin + '/api/billing/invoices/' + cycle.id, { headers: otherHeaders })).status).toBe(404);
   } finally {
-    await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ stripeConfig: null, billingEnabled: false }).where(eq(gyms.id, sandbox.gymId)));
+    await database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ settings: gym!.settings, billingEnabled: false }).where(eq(gyms.id, sandbox.gymId)));
     setLogSink(previousLog); now.mockRestore(); provider.mockRestore();
+    await restartRuntime();
   }
 });
 it('serves friendly missing links and a present browser asset through the runtime', async () => {
@@ -292,35 +303,61 @@ it('stores a signed Stripe event for its gym and queues its dispatch through the
     const body = JSON.stringify({ id, object: 'event', type: 'payment_intent.succeeded', livemode: false,
       data: { object: { id: 'pi_runtime', object: 'payment_intent', metadata: { gym_id: sandbox.gymId } } } });
     const timestamp = Math.floor(Date.now() / 1000);
-    const signature = `t=${timestamp},v1=${createHmac('sha256', 'whsec_runtime').update(`${timestamp}.${body}`).digest('hex')}`;
+    const signature = `t=${timestamp},v1=${createHmac('sha256', demoStripeEnv.DEMO_STRIPE_WEBHOOK_SECRET).update(`${timestamp}.${body}`).digest('hex')}`;
     // A browser cookie on the request must not trip the origin check that guards cookie-authenticated writes.
     return runtime.app.request(sandbox.origin + '/webhooks/stripe', { method: 'POST', body,
       headers: { host: new URL(sandbox.origin).host, 'stripe-signature': signature, 'content-type': 'application/json', cookie: 'unrelated=1' } });
   };
-  // The sandbox has no Stripe settings yet.
+  // This runtime has no install-level shared key.
   const unconfigured = await delivery('evt_runtime');
   expect(unconfigured.status).toBe(503);
   expect(await unconfigured.text()).toContain('Payments are not set up for this gym');
-  const config = { apiKey: 'rk_test_runtime', endpointId: 'we_runtime', webhookSecret: 'whsec_runtime', mode: 'test' };
-  await database.forGym(sandbox.gymId, (tx) => tx.update(gyms).set({
-    stripeConfig: encryptSecret(parseEncryptionKey('ab'.repeat(32)), 'stripe_config', JSON.stringify(config)) }).where(eq(gyms.id, sandbox.gymId)));
-  expect((await delivery('evt_runtime')).status).toBe(200);
-  expect((await delivery('evt_runtime')).status).toBe(200);
-  const stored = await database.forGym(sandbox.gymId, (tx) => tx.select().from(stripeEvents));
-  expect(stored).toMatchObject([{ eventId: 'evt_runtime', gymId: sandbox.gymId, type: 'payment_intent.succeeded' }]);
-  expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(1);
+  const provider = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(new StripeFixtures(sandbox.gymId));
+  try {
+    await restartRuntime(demoStripeEnv);
+    expect((await delivery('evt_runtime')).status).toBe(200);
+    expect((await delivery('evt_runtime')).status).toBe(200);
+    const stored = await database.forGym(sandbox.gymId, (tx) => tx.select().from(stripeEvents));
+    expect(stored).toMatchObject([{ eventId: 'evt_runtime', gymId: sandbox.gymId, type: 'payment_intent.succeeded' }]);
+    expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(1);
+  } finally { provider.mockRestore(); await restartRuntime(); }
 });
 it('registers seed and webhook replay in the real CLI', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
+  const cliEnv = { ...env(), ...demoStripeEnv };
+  // Earlier tests stored this sandbox's fixture payment intents; start past their IDs.
+  const transport = new StripeFixtures(sandbox.gymId, undefined, 1000);
+  const request = transport.request.bind(transport);
+  // StripeFixtures covers billing; add only the named test-token operations used by demo seeding.
+  vi.spyOn(transport, 'request').mockImplementation(async input => {
+    if (input.method === 'POST' && input.path === '/v1/payment_methods') {
+      const params = input.params!, card = params.card as { token: string };
+      expect(['tok_visa', 'tok_chargeCustomerFail']).toContain(card.token);
+      const last4 = card.token === 'tok_visa' ? '4242' : '0341';
+      const method = { id: 'pm_' + String((params.metadata as { household_id: string }).household_id).replaceAll('-', '') + last4,
+        object: 'payment_method', customer: null, metadata: params.metadata, livemode: false,
+        created: transport.now, card: { last4, exp_month: 12, exp_year: 2030 } };
+      transport.objects.set(method.id, method);
+      return method;
+    }
+    if (input.method === 'POST' && /^\/v1\/payment_methods\/pm_[A-Za-z0-9]+\/attach$/.test(input.path)) {
+      const method = transport.objects.get(input.path.split('/')[3]!)!;
+      method.customer = input.params!.customer;
+      return method;
+    }
+    return request(input);
+  });
+  const provider = vi.spyOn(stripeAdapter, 'stripeTransport').mockReturnValue(transport);
   await runtime.stop();
   // A real CLI process reads these settings from its environment as well as
   // passing them into runtime preparation. Seed storage now uses them too.
-  for (const [name, value] of Object.entries(env())) vi.stubEnv(name, value);
+  for (const [name, value] of Object.entries(cliEnv)) vi.stubEnv(name, value);
   try {
-    expect(await runCommandLine(['seed', sandbox.gymId], io, env())).toBe(0);
+    expect(await runCommandLine(['seed', sandbox.gymId], io, cliEnv)).toBe(0);
     expect(io.stdout).toHaveBeenCalledWith('Seed complete');
-    expect(await runCommandLine(['replay', '--gym', sandbox.gymId, 'evt_runtime'], io, env())).toBe(0);
+    expect(await runCommandLine(['replay', '--gym', sandbox.gymId, 'evt_runtime'], io, cliEnv)).toBe(0);
     expect(io.stdout).toHaveBeenCalledWith(expect.stringMatching(/^Webhook replay queued: /));
     expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(2);
-  } finally { vi.unstubAllEnvs(); }
+    expect((await database.forGym(sandbox.gymId, tx => tx.select().from(gyms)))[0]!.stripeConfig).toBeNull();
+  } finally { vi.unstubAllEnvs(); provider.mockRestore(); }
 });

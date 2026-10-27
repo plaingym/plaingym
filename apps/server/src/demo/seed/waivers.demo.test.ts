@@ -39,7 +39,7 @@ it('fully seeds a demo sandbox, serves its PDFs, blocks visitor images and runs 
     const identities = createDemoIdentities({ config, authConfig: authentication, clock, scope: db.forGym,
       accounts: createAccountService(authentication, () => db.system.db), authFactory: options => createAuthService({ ...options, database: () => db.system.db }) });
     const steps = createSeeds({ scope: db.forGym, clock, uploadsFor: uploads.forSeed, pinSecret: null });
-    expect(steps.map(step => step.id).slice(0, 4)).toEqual(['foundation', 'members', 'waivers', 'mat']);
+    expect(steps.map(step => step.id).slice(0, 5)).toEqual(['foundation', 'members', 'billing', 'waivers', 'mat']);
     const demo = createDemoService({ config, key, clock, scope: db.forGym, system: db.forSystem, identities,
       seed: context => runSeeds(context, steps),
       deletion: createGymDeleteService({ clock, scope: db.forGym, system: db.forSystem, removeUploads: uploads.removeGym }) });

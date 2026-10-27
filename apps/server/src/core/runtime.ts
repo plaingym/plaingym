@@ -49,6 +49,8 @@ import { configureAuthCli } from '../cli/auth.js';
 import { runCli, type CommandIO } from '../cli/index.js';
 import { demoBootCheck } from '../demo/config.js';
 import { createDemoRuntime } from '../demo/runtime.js';
+import { createDemoPayments } from '../demo/payments.js';
+import { demoWebhookMiddleware } from '../demo/webhook.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { createUploadDownloadRoute } from './uploads-download.js';
 import { logError } from './log.js';
@@ -67,7 +69,7 @@ import { createExportRoutes } from '../areas/imports/export.routes.js';
 import { createExportJobs } from '../areas/imports/export.jobs.js';
 import { createImportRetention, createImportRetentionJobs } from '../areas/imports/retention.js';
 import { createPaymentsResolver } from '../areas/setup/stripe-step.js';
-import { createWebhookHealthQuery, createWebhookInbox } from '../areas/billing/webhooks/inbox.js';
+import { createWebhookHealthQuery, createWebhookInbox, type PaymentsResolver } from '../areas/billing/webhooks/inbox.js';
 import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.routes.js';
 import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
 import { configureWebhookReplay } from '../cli/replay.js';
@@ -126,7 +128,7 @@ async function prepare(env: NodeJS.ProcessEnv) {
   return { key, mode, config, install, smtp };
 }
 /** Stripe events for each gym, verified by that gym's own Stripe settings; the CLI replays through the same inbox. */
-function webhookInbox(paymentsFor: ReturnType<typeof createPaymentsResolver>, jobs: Jobs) {
+function webhookInbox(paymentsFor: PaymentsResolver, jobs: Jobs) {
   const inbox = createWebhookInbox({ paymentsFor, jobs, gymSettings: createGymSettingsAccessor(), clock });
   configureWebhookReplay(inbox);
   return inbox;
@@ -202,8 +204,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
   configureImportStep({ imports: importPipeline, clock });
-  // The inbox route and its dispatcher job; a gym without Stripe settings answers 503.
-  const paymentsFor = createPaymentsResolver({ key, clock });
+  // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
+  const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
   configureHealthStatus({ env, providers: [
     createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
     createChargeRunHealthProvider({ settings }),
@@ -250,7 +252,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
     } }) }),
     origin: originFor, ...(install ? { installOrigin: install } : {}),
-    rateLimit: { ...(trustedProxy ? { trustedProxy } : {}), ...(limit ? { limit } : {}) }, ...(gate ? { restoreGate: gate.middleware() } : {}),
+    rateLimit: { ...(trustedProxy ? { trustedProxy } : {}), ...(limit ? { limit } : {}) },
+    ...(demo ? { restoreGate: demoWebhookMiddleware({ configured: Boolean(env.DEMO_STRIPE_TEST_KEY), inbox, demoGyms: demo.payments.demoGyms,
+      ...(gate ? { restoreGate: gate.middleware() } : {}) }) } : gate ? { restoreGate: gate.middleware() } : {}),
     ...(env.SOURCE_URL ? { sourceUrl: env.SOURCE_URL } : {}),
     ...(env.SETUP_TOKEN ? { setupToken: env.SETUP_TOKEN } : {}), ...(demo ? { skipSetup: demo.skipSetup } : {}),
   });
@@ -302,7 +306,11 @@ export async function runCommandLine(args: readonly string[], io: CommandIO, env
   if (args[0] === 'setup-link') return createSetupLinkCommand(env).run(args.slice(1), io);
   // Migrating needs only the maintenance role, as in the container entrypoint.
   if (args[0] === 'migrate') return runCli(args, io);
-  try { webhookInbox(createPaymentsResolver({ key: (await prepare(env)).key, clock }), new PostgresJobs({ clock })); }
+  try {
+    const { key } = await prepare(env), demo = demoBootCheck(env);
+    const paymentsFor = demo.enabled ? createDemoPayments({ config: demo, clock }).paymentsFor : createPaymentsResolver({ key, clock });
+    webhookInbox(paymentsFor, new PostgresJobs({ clock }));
+  }
   catch (error) { io.stderr(error instanceof Error ? error.message : 'Startup failed'); return 1; }
   try { return await runCli(args, io); } finally { await closeDatabase(); }
 }

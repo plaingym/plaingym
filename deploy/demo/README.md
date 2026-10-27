@@ -34,6 +34,17 @@ web interface. Email stays in its outbox, uploads are disabled, and it expires
 after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
 use a full member name and PIN `2468`.
 
+Optional billing credentials are listed in [the environment template](.env.example).
+Add `DEMO_STRIPE_TEST_KEY` and `DEMO_STRIPE_WEBHOOK_SECRET` to the installation's
+root-only `.env`, then recreate the app with its two Compose files. Use a secret
+or restricted **test** key and the signing secret for one test-account endpoint
+at `https://<GYM_HOSTNAME>/webhooks/stripe`; subscribe to
+[`webhookEvents`](../../apps/server/src/infra/payments/setup.ts). Never use a live
+key. The installer does not prompt for these optional values. With no key,
+sandboxes still work, log the skipped billing seed, and show billing as
+unconfigured. See the [demo mode guide](../../apps/server/src/demo/README.md)
+for dispatch and credential handling.
+
 Re-paste the same command to verify/recover the installation. It preserves all
 secrets, data and the installed app pin, refreshes deploy files from the verified
 bundle, and skips host setup on subsequent runs. The same bundle leaves files
