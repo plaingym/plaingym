@@ -9,7 +9,7 @@ import { createTransitionEffects, type TransitionEffectOptions } from '../../tra
 import { createTransitionNotifications } from '../../transitions/notifications.js';
 import { configureTransitionEffects } from '../../transitions/transitions.jobs.js';
 import type { PaymentsResolver, WebhookInbox } from '../inbox.js';
-import { registerBillingWebhookHandlers } from './index.js';
+import { registerBillingWebhookHandlers, type HandlerOptions } from './index.js';
 
 /** Call once before registering/starting the job worker. Share transitions with other billing consumers. */
 export function composeBillingWebhooks(options: {
@@ -19,6 +19,7 @@ export function composeBillingWebhooks(options: {
   paymentsFor: PaymentsResolver;
   scope?: typeof forGym;
   clock?: Clock;
+  afterCheckoutRecorded?: NonNullable<HandlerOptions['afterCheckoutRecorded']>;
   prepare: Parameters<typeof createTransitionNotifications>[0]['prepare'];
   staffRecipients: Parameters<typeof createTransitionNotifications>[0]['staffRecipients'];
 }) {

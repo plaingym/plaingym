@@ -11,7 +11,10 @@ The two-minute reset runs only on these pages: it cannot run while the tablet is
 on Stripe's hosted Checkout page. Staff must clear an abandoned Stripe screen.
 
 Every API request resolves the bearer token into the existing signed-link
-principal. Its declared purpose permission runs before validation. Reads use
+principal. The runtime sends `/api/links/*` through normal session loading;
+the link routes resolve their own bearer, and kiosk device tokens grant no link
+access. Cookie-bearing browser requests keep the normal same-origin CSRF checks.
+Its declared purpose permission runs before validation. Reads use
 `forHousehold` with the verified link ID and the request clock. The narrow shared
 projections exclude contacts, medical data and unrelated invoices or members;
 requests cannot add resource selectors. A used credential displays only the
@@ -66,8 +69,11 @@ retention. After that, an invoice with no stored session ID receives an audited
 new reservation and key under its lock. The previous URL was never disclosed:
 responses are saved before returning or expired on failed adoption. Late responses
 cannot overwrite a newer reservation. The old key is never reused. A stored
-session is replaced only after the provider confirms it expired. Network or
-revocation errors never authorize a wider resource.
+session is replaced only after the provider confirms it expired. When another
+pay link opens an invoice's open, link-tagged session, the service expires it,
+re-reads it and renews under the invoice lock. If payment wins that race, starting
+returns a conflict. Untagged sessions remain shared. Network or revocation errors
+never authorize a wider resource.
 
 Starting Checkout does not use the link. The browser receives an authenticated,
 HTTP-only return receipt containing the session and link IDs. The provider sees
@@ -79,13 +85,33 @@ readable in the cookie. Old plaintext receipts are rejected; restart Checkout
 to obtain an encrypted receipt. It does not grant
 any account access. A browser return merely triggers a completion check.
 
-The existing `checkout.session.completed` handler remains the payment/card
-writer. Invoice completion checks its paid state, and card completion requires
-both a successful provider setup and the method stored by that handler.
-Onboarding additionally checks current signatures. Only then does a locked,
-audited transaction use the link. A canceled or abandoned Checkout leaves the
-link active. A lost browser receipt can be recovered by starting Checkout again;
-provider idempotency preserves an existing setup within its retention window.
+**Webhook-only completion:** Checkout and its setup/payment intent carry `linkId`.
+The existing Checkout-start audits target that immutable link ID and store
+`{ sessionId }`. After the payment/card writer commits, webhook dispatch awaits
+the same `complete` check used by browser return, before marking the event
+processed. Setup/payment-intent events find their Checkout only through this
+persisted association. Completion never infers a link from a customer, email,
+card timestamp or the rotating bearer token. A successful payment intent whose
+correctly associated Checkout is still open records the payment without failing
+the event; the session-completed event finishes the link. Gym/link mismatches and
+missing associations still fail dispatch. Older events without link metadata
+retain their existing payment/card behavior. Their browser returns use the
+original checks: a paid, partially refunded or refunded invoice, or a completed
+setup for the gym and household customer with an unrevoked recorded card.
+Onboarding still requires its current waivers. Tagged sessions always require
+the exact link and persisted start association.
+
+Invoice completion requires the matching session and paid invoice; card
+completion requires the matching setup session and recorded method. Onboarding
+additionally checks current signatures and stays pending until those are signed.
+Only then does a locked, audited transaction use the link. Replay and concurrent
+browser return succeed without a second consumption; revoked and expired links
+remain refused. Closing the tab after successful Checkout still completes the
+link. A different pay link for the same invoice stays pending when that payment
+arrives. Canceled or unfinished Checkout leaves it active. Browser return continues
+to check the same results and can finish onboarding after signing. A lost browser
+receipt can be recovered by starting Checkout again; provider idempotency
+preserves an existing setup within its retention window.
 
 ## Composition
 

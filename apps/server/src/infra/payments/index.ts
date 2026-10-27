@@ -7,6 +7,7 @@ import { clock as systemClock } from '../../core/clock.js';
 export type ChargeReference = { kind: 'charge' | 'checkout'; id: string };
 export interface PaymentMetadata {
   readonly gymId: string;
+  readonly linkId?: string;
   readonly invoiceId?: string;
   readonly attemptId?: string;
 }
@@ -50,6 +51,7 @@ export class CustomerCreationInProgress extends Error {
 }
 interface CheckoutOptions {
   readonly mode: 'payment' | 'setup';
+  readonly linkId?: string;
   readonly amount?: number;
   readonly currency?: string;
   readonly invoiceId?: string;
@@ -466,6 +468,7 @@ export class FakePayments implements Payments {
         request.successUrl,
         request.cancelUrl,
         request.saveForOffSession,
+        request.linkId,
       ]),
       () => {
         const id = this.#id('cs');
@@ -478,7 +481,8 @@ export class FakePayments implements Payments {
           savesCard: request.mode === 'setup' || request.saveForOffSession,
           url: `https://checkout.invalid/${id}`,
           status: 'open',
-          metadata: { gymId: this.gymId, ...(request.invoiceId ? { invoiceId: request.invoiceId } : {}) },
+          metadata: { gymId: this.gymId, ...(request.invoiceId ? { invoiceId: request.invoiceId } : {}),
+            ...(request.linkId ? { linkId: request.linkId } : {}) },
         };
         this.#checkouts.set(id, session);
         this.#checkoutRequests.set(id, structuredClone(request));

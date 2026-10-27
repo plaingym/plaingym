@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, isNull, or } from 'drizzle-orm';
-import { forGym, households, invoices, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../../../core/clock.js';
 import type { InvoiceTransitions } from '../../../../core/interfaces/invoice-transitions.js';
-import type { ChargeOutcome, Payments, PaymentObjectReference, Refund } from '../../../../infra/payments/index.js';
+import type { ChargeOutcome, CheckoutSession, PaymentMetadata, Payments, PaymentObjectReference, Refund } from '../../../../infra/payments/index.js';
 import type { WebhookHandler, WebhookInbox } from '../inbox.js';
 import { applyChargeOutcome } from '../../transitions/outcomes.js';
 import { audit, lockInvoice } from '../../transitions/store.js';
@@ -19,6 +19,7 @@ export const billingWebhookTypes = [
 ] as const;
 export interface HandlerOptions {
   transitions: InvoiceTransitions;
+  afterCheckoutRecorded?(gymId: string, linkId: string, sessionId: string): Promise<void>;
   scope?: typeof forGym;
   clock?: Clock;
 }
@@ -39,6 +40,35 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   const cards = createCardHandlers({ scope, clock });
+  async function afterCheckoutRecorded(gymId: string, provider: Payments, metadata: PaymentMetadata,
+    reference: PaymentObjectReference, checkout?: CheckoutSession) {
+    const linkId = metadata.linkId;
+    if (!linkId || !options.afterCheckoutRecorded) return; // Checkouts issued without link metadata retain their existing behavior.
+    if (metadata.gymId !== gymId) throw new Error('Checkout link gym mismatch');
+    // Only the exact link's persisted Checkout-start association may locate a session.
+    const starts = await scope(gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+      eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId),
+      or(eq(auditEvents.action, 'billing.checkout.started'), eq(auditEvents.action, 'billing.card_setup.started')))));
+    const ids = new Set(starts.flatMap(({ after }) => after !== null && typeof after === 'object'
+      && 'sessionId' in after && typeof after.sessionId === 'string' ? [after.sessionId] : []));
+    for (const id of ids) {
+      if (checkout && id !== checkout.id) continue;
+      const current = checkout ? { kind: 'checkout' as const, object: checkout } : await readCurrent(provider, { kind: 'checkout', id });
+      if (current.kind !== 'checkout') throw new Error('Checkout link session is unresolved');
+      const session = current.object;
+      if ((reference.kind === 'setup' && session.setupId !== reference.id)
+        || (reference.kind === 'charge' && session.chargeId !== reference.id)) continue;
+      if (session.metadata.gymId !== gymId || session.metadata.linkId !== linkId)
+        throw new Error('Checkout link session mismatch');
+      // A successful intent can be visible before Checkout's terminal state. Its
+      // session-completed event performs link completion after that state catches up.
+      if (reference.kind === 'charge' && session.status !== 'complete') return;
+      if (session.status !== 'complete') throw new Error('Checkout link session mismatch');
+      await options.afterCheckoutRecorded(gymId, linkId, session.id);
+      return;
+    }
+    throw new Error('Checkout link association is unresolved');
+  }
   async function match(gymId: string, outcome: ChargeOutcome) {
     if (outcome.status === 'unknown') throw new Error('Webhook PaymentIntent is unresolved');
     if (outcome.metadata.gymId !== gymId) throw new Error('Webhook payment gym mismatch');
@@ -118,8 +148,11 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         if (refreshed.kind !== 'refund' || refreshed.object.chargeId !== event.objectId) throw new Error('Refund parent mismatch');
         await applyRefund(gymId, provider, refreshed.object);
       }
-    } else if (current.kind === 'charge') await applyIntent(gymId, current.object);
-    else if (current.kind === 'refund') await applyRefund(gymId, provider, current.object);
+    } else if (current.kind === 'charge') {
+      await applyIntent(gymId, current.object);
+      if (current.object.status === 'succeeded')
+        await afterCheckoutRecorded(gymId, provider, current.object.metadata, { kind: 'charge', id: current.object.id });
+    } else if (current.kind === 'refund') await applyRefund(gymId, provider, current.object);
     else if (current.kind === 'dispute') {
       const dispute = current.object;
       const outcome = await provider.findCharge({ kind: 'charge', id: dispute.chargeId });
@@ -155,8 +188,12 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         if (!session.setupId) throw new Error('Completed Checkout setup is unresolved');
         await cards.setup(gymId, provider, session.setupId);
       }
-    } else if (current.kind === 'setup') await cards.setup(gymId, provider, current.object.id);
-    else if (current.kind === 'payment_method') await cards.update(gymId, current.object);
+      await afterCheckoutRecorded(gymId, provider, session.metadata, { kind: 'checkout', id: session.id }, session);
+    } else if (current.kind === 'setup') {
+      await cards.setup(gymId, provider, current.object.id);
+      if (current.object.status === 'succeeded')
+        await afterCheckoutRecorded(gymId, provider, current.object.metadata, { kind: 'setup', id: current.object.id });
+    } else if (current.kind === 'payment_method') await cards.update(gymId, current.object);
   };
   for (const type of billingWebhookTypes) inbox.register(type, handle);
 }

@@ -41,7 +41,7 @@ fullPaymentsContract('FakePayments', async (card = '4242') => {
   for (const [id, customerId] of [[detach.owned, 'cus_fixture'], [detach.foreign, 'cus_foreign']] as const)
     payments.recordPaymentMethod({ id, customerId, last4: '4242', expiresMonth: 12, expiresYear: 2030 });
   payments.respondNextConfirmation(card === '0341' ? 'declined' : card === '3184' ? 'authentication_required' : 'succeeded');
-  return { payments, charge, checkout, detach };
+  return { payments, charge, checkout, detach, completeCheckout: (id: string) => { payments.completeCheckout(id); } };
 });
 function fixture(card: Card = '4242') {
   const transport = new StripeFixtures(gymId), recorder = new FixtureRecorder(gymId);
@@ -49,7 +49,8 @@ function fixture(card: Card = '4242') {
   transport.objects.set(detach.foreign, { id: detach.foreign, object: 'payment_method', customer: 'cus_foreign', metadata: {} });
   const payments = new StripePayments(gymId, { transport: recordingTransport(transport, recorder), webhookSecret: 'fixture-signing-secret',
     clock: new TestClock('2026-10-23T12:00:00Z') });
-  return { payments, charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, transport, recorder, since: new Date('2026-10-23T00:00:00Z') };
+  return { payments, charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, transport, recorder,
+    completeCheckout: (id: string) => transport.completeCheckout(id), since: new Date('2026-10-23T00:00:00Z') };
 }
 const recordings = new Map<string, FixtureRecorder>();
 const recordName = 'StripePayments with synthetic API fixtures', replayName = 'StripePayments with recorded API replay';

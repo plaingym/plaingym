@@ -101,7 +101,8 @@ export class StripePayments implements Payments {
       throw new NotForGym(metadata.gym_id ? 'Payment object belongs to another gym' : 'Payment object has no gym metadata');
     }
     return { gymId: this.gymId, ...(typeof metadata.invoice_id === 'string' ? { invoiceId: metadata.invoice_id } : {}),
-      ...(typeof metadata.attempt_id === 'string' ? { attemptId: metadata.attempt_id } : {}) };
+      ...(typeof metadata.attempt_id === 'string' ? { attemptId: metadata.attempt_id } : {}),
+      ...(typeof metadata.link_id === 'string' ? { linkId: metadata.link_id } : {}) };
   }
   #intent(object: ObjectData, error?: unknown): ChargeOutcome {
     return normalizeChargeOutcome({ id: id(object.id), amount: Number(object.amount), currency: String(object.currency),
@@ -227,7 +228,8 @@ export class StripePayments implements Payments {
         email: request.customerEmail!, metadata: { gym_id: this.gymId },
       }, request.idempotencyKey + ':customer')).id);
     }
-    const metadata = { gym_id: this.gymId, ...(request.invoiceId ? { invoice_id: request.invoiceId } : {}) };
+    const metadata = { gym_id: this.gymId, ...(request.invoiceId ? { invoice_id: request.invoiceId } : {}),
+      ...(request.linkId ? { link_id: request.linkId } : {}) };
     const params: ObjectData = { mode: request.mode, customer, success_url: request.successUrl, cancel_url: request.cancelUrl,
       allowed_payment_method_types: ['card'], metadata,
       ...(request.mode === 'payment' ? { payment_intent_data: { metadata,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, isNull } from 'drizzle-orm';
-import { forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { Payments, CheckoutSession } from '../../infra/payments/index.js';
@@ -32,17 +32,17 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
   async function checkBilling(gymId: string, payment: boolean) {
     if (payment && !(await settings.get(gymId)).billingEnabled) unavailable();
   }
-  async function locked(tx: Transaction, gymId: string, linkId: string) {
+  async function locked(tx: Transaction, gymId: string, linkId: string, completing = false) {
     const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)).for('update');
-    if (!link || link.gymId !== gymId || link.revokedAt || link.usedAt || link.expiresAt <= clock.now()
+    if (!link || link.gymId !== gymId || link.revokedAt || (!completing && link.usedAt) || link.expiresAt <= clock.now()
       || !['pay_invoice', 'update_card', 'onboarding'].includes(link.purpose)) missing();
     const [household] = await tx.select().from(households).where(eq(households.id, link.householdId));
     if (!household) missing();
     return { link, household };
   }
-  const audit = (tx: Transaction, gymId: string, action: string, id: string) => writeAudit(tx, {
+  const audit = (tx: Transaction, gymId: string, action: string, id: string, after: { sessionId: string } | null = null) => writeAudit(tx, {
     gymId, actorKind: 'system', action, targetType: 'signed_link', targetId: id,
-    before: null, after: null, occurredAt: clock.now(),
+    before: null, after, occurredAt: clock.now(),
   });
   async function payable(tx: Transaction, invoice: typeof invoices.$inferSelect) {
     const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
@@ -95,6 +95,16 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.invoice.checkoutSessionId });
       if (found.status !== 'found' || found.value.kind !== 'checkout') unavailable();
       session = found.value.object;
+      if (session.status === 'open' && session.metadata.linkId && session.metadata.linkId !== linkId && !renewed) {
+        if (session.metadata.gymId !== gymId || session.customerId !== customerId || session.mode !== 'payment'
+          || session.metadata.invoiceId !== prepared.invoice.id || session.savesCard !== prepared.savesCard) unavailable();
+        // Another link may take over only after provider-confirmed expiry. Payment can win
+        // the expire race; re-read and keep the completed session for reconciliation.
+        await provider.expireCheckout(session.id);
+        const refreshed = await provider.readPaymentObject({ kind: 'checkout', id: session.id });
+        if (refreshed.status !== 'found' || refreshed.value.kind !== 'checkout') unavailable();
+        session = refreshed.value.object;
+      }
       // Only a provider-confirmed expiry permits replacement. Unknown or completed sessions
       // retain their stored ID for reconciliation and delayed webhook delivery.
       if (session.status === 'expired' && !renewed) {
@@ -114,13 +124,13 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     } else {
       const invoice = prepared.invoice;
       session = await provider.createCheckout({
-        mode: invoice ? 'payment' : 'setup', customerId,
+        mode: invoice ? 'payment' : 'setup', customerId, linkId,
         ...(invoice ? { invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase() } : {}),
         successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: prepared.invoice ? prepared.savesCard : true,
         idempotencyKey: invoice ? `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}` : `signed-link:${linkId}:setup`,
       });
     }
-    if (session.metadata.gymId !== gymId || session.customerId !== customerId
+    if (session.metadata.gymId !== gymId || (session.metadata.linkId && session.metadata.linkId !== linkId) || session.customerId !== customerId
       || session.mode !== (prepared.invoice ? 'payment' : 'setup')
       || session.savesCard !== (prepared.invoice ? prepared.savesCard : true)
       || (prepared.invoice && session.metadata.invoiceId !== prepared.invoice.id)) unavailable();
@@ -137,9 +147,9 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           await payable(tx, invoice);
           if (!invoice.checkoutSessionId) {
             await tx.update(invoices).set({ checkoutSessionId: session.id }).where(eq(invoices.id, invoice.id));
-            await audit(tx, gymId, 'billing.checkout.started', linkId);
+            await audit(tx, gymId, 'billing.checkout.started', linkId, { sessionId: session.id });
           }
-        } else await audit(tx, gymId, 'billing.card_setup.started', linkId);
+        } else await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id });
       });
     } catch (error) {
       await provider.expireCheckout(session.id).catch(() => undefined);
@@ -148,7 +158,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(),
       prepared.invoice?.checkoutExpiresAt?.getTime() ?? clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
   }
-  /** sessionId is taken only from the server-authenticated browser receipt.
+  /** Called by an authenticated browser receipt or the webhook's persisted link/session association.
    * Stripe completion alone is insufficient: wait for the existing webhook handler's writes. */
   async function complete(gymId: string, linkId: string, sessionId: string | null) {
     let session: CheckoutSession | null = null;
@@ -158,13 +168,27 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       if (found.status === 'found' && found.value.kind === 'checkout') session = found.value.object;
     }
     return scope(gymId, async tx => {
-      const { link, household } = await locked(tx, gymId, linkId);
+      const { link, household } = await locked(tx, gymId, linkId, true);
+      if (link.usedAt) return true;
+      if (!session) return false;
+      const tagged = session.metadata.linkId !== undefined;
+      if (tagged) {
+        if (session.status !== 'complete' || session.metadata.gymId !== gymId
+          || session.metadata.linkId !== linkId || session.customerId !== household.stripeCustomerId) return false;
+        const starts = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+          eq(auditEvents.gymId, gymId), eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId),
+          eq(auditEvents.action, link.purpose === 'pay_invoice' ? 'billing.checkout.started' : 'billing.card_setup.started')));
+        if (!starts.some(({ after }) => after !== null && typeof after === 'object'
+          && 'sessionId' in after && after.sessionId === session.id)) return false;
+      }
+      // Untagged Checkouts retain the browser-return checks used when they were issued.
       if (link.purpose === 'pay_invoice') {
         const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
         if (!invoice) missing();
+        if (tagged && (session.mode !== 'payment' || session.metadata.invoiceId !== invoice.id || invoice.checkoutSessionId !== session.id)) return false;
         if (!['paid', 'partially_refunded', 'refunded'].includes(invoice.status)) return false;
       } else {
-        if (!session || session.status !== 'complete' || session.mode !== 'setup' || session.metadata.gymId !== gymId
+        if (session.status !== 'complete' || session.mode !== 'setup' || session.metadata.gymId !== gymId
           || session.customerId !== household.stripeCustomerId || !session.paymentMethodId) return false;
         const [card] = await tx.select().from(paymentMethods).where(and(eq(paymentMethods.householdId, link.householdId),
           eq(paymentMethods.processorId, session.paymentMethodId), isNull(paymentMethods.revokedAt)));

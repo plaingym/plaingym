@@ -13,6 +13,25 @@ export interface ContractHarness {
 export function fullPaymentsContract(name: string, create: (card?: Card) => Promise<ContractHarness>) {
   paymentsContract(name, create);
   describe(name + ' extended', () => {
+    it.each(['payment', 'setup'] as const)('preserves the signed link ID on %s Checkout and its intent', async mode => {
+      const { payments, checkout, charge, completeCheckout } = await create();
+      const linkId = charge.invoiceId;
+      const request = { ...checkout, mode, linkId };
+      const session = await payments.createCheckout(request);
+      expect(session.metadata).toMatchObject({ linkId });
+      expect(await payments.createCheckout(request)).toEqual(session);
+      await expect(payments.createCheckout({ ...request, linkId: 'another-link' })).rejects.toThrow();
+      completeCheckout?.(session.id);
+      const found = await payments.readPaymentObject({ kind: 'checkout', id: session.id });
+      expect(found).toMatchObject({ status: 'found', value: { kind: 'checkout', object: { metadata: { linkId } } } });
+      if (found.status !== 'found' || found.value.kind !== 'checkout') throw new Error('Checkout missing');
+      const completed = found.value.object;
+      const intentId = mode === 'payment' ? completed.chargeId : completed.setupId;
+      // A real Checkout may create its intent only after the customer submits the hosted page.
+      if (!intentId) { expect(completed.status).toBe('open'); return; }
+      const reference = { kind: mode === 'payment' ? 'charge' as const : 'setup' as const, id: intentId };
+      expect(await payments.readPaymentObject(reference)).toMatchObject({ status: 'found', value: { object: { metadata: { linkId } } } });
+    });
     it('creates one owned customer per key and rejects changed details', async () => {
       const { payments, charge, checkout } = await create();
       const request = { email: 'new-payer@example.invalid', name: 'New Household', householdId: charge.invoiceId,

@@ -223,7 +223,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureWebhookInboxJobs(inbox);
   // Webhook handlers apply payment outcomes through the one invoice transition service, whose effects
   // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
+  const checkout = createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock });
   const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail,
+    async afterCheckoutRecorded(gymId, linkId, sessionId) {
+      try { await checkout.complete(gymId, linkId, sessionId); }
+      // Revoked/expired links refuse completion without retrying an already-recorded card or payment.
+      catch (error) { if (!(error instanceof AppError && error.code === 'not_found')) throw error; }
+    },
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
   const runner = createChargeRunner({ settings, transitions: billing.transitions,
     jobs: queue, payments: requirePayments, clock });
@@ -239,7 +245,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureBillingDashboard({ settings, memberships, payments });
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
   configureLinkPages({ waivers,
-    checkout: createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock }),
+    checkout,
     receiptKey: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32)) });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
@@ -248,12 +254,15 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),
       ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
         ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };
+  const session = sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {
+    const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
+    return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
+  } });
+  const kioskSession = createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session });
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
-    session: createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session: sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {
-      const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
-      return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
-    } }) }),
+    // Signed-link routes resolve their own bearer after normal session loading.
+    session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
     origin: originFor, ...(install ? { installOrigin: install } : {}),
     rateLimit: { ...(trustedProxy ? { trustedProxy } : {}), ...(limit ? { limit } : {}) },
     ...(demo ? { restoreGate: demoWebhookMiddleware({ configured: Boolean(env.DEMO_STRIPE_TEST_KEY), inbox, demoGyms: demo.payments.demoGyms,

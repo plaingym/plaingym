@@ -11,6 +11,8 @@ PIN lookup and name/PIN submission share independent per-device and per-client-a
 
 The check-in handlers themselves are supplied by their own kiosk parts. Middleware tests use contract-shaped handlers until those implementations are available.
 
+The production runtime delegates `/api/links/*` to normal session loading so signed-link routes resolve their own bearer; every other path keeps this wrapper's device-token restrictions.
+
 The production runtime mounts this wrapper ahead of session loading. Activity
 updates `last_seen_at` at most once per minute using a conditional write; routine
 authenticated requests do not add audit rows. Registration and revocation remain audited.
