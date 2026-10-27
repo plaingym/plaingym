@@ -282,6 +282,16 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     await run('billing.payments.detach', { paymentMethodId: card.id });
     expect(transport.requests.filter(input => input.path.endsWith('/detach'))).toHaveLength(1);
     expect(await database.forGym(sandbox.gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, card.id), eq(auditEvents.action, 'billing.card.revoked'))))).toHaveLength(1);
+    // Erasing a household's last member revokes its card and detaches it through the runtime's queue and provider.
+    const erased = await factory('households', sandbox.gymId, { email: 'erased.payer@example.invalid' });
+    const leaving = await factory('members', sandbox.gymId, { householdId: erased.id });
+    const erasedCard = await factory('paymentMethods', sandbox.gymId, { householdId: erased.id, processorId: 'pm_3155', isDefault: true });
+    const erasure = await post(`/api/members/${leaving.id}/anonymize`, { revision: leaving.revision }, sandbox.origin, { cookie });
+    expect(erasure.status, await erasure.clone().text()).toBe(200);
+    const detachJobs = await database.forGym(sandbox.gymId, tx => tx.select().from(jobs).where(eq(jobs.name, 'billing.payments.detach')));
+    expect(detachJobs.map(job => (job.payload as { value: { paymentMethodId: string } }).value.paymentMethodId)).toContain(erasedCard.id);
+    expect(transport.requests.filter(input => input.path.endsWith('/payment_methods/pm_3155/detach'))).toHaveLength(1);
+    expect((await database.forGym(sandbox.gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.id, erasedCard.id))))[0]!.revokedAt).not.toBeNull();
     // Alerts use the real configured mail resolver and dashboard provider.
     await database.forGym(sandbox.gymId, tx => tx.update(invoices).set({ disputeId: 'dp_runtime', disputeStatus: 'open' }).where(eq(invoices.id, cycle.id)));
     await run('billing.alerts.card_expiry'); await run('billing.alerts.disputes');

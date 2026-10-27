@@ -196,9 +196,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
-  // Household PINs use the gym's random key; member photos use the gym's file storage.
   const gymKey = createGymKeyResolver({ key });
-  configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   // Signature images and rendered waiver PDFs use the gym's file storage.
   const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
@@ -241,6 +239,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const memberships = createMembershipService({ clock, settings, onAssigned: runner.onAssigned });
   configureMemberships(memberships, { assigned: runner.collectAssigned });
   const detachCard = async (gymId: string, id: string) => (await requirePayments(gymId)).detachPaymentMethod(id);
+  // Household PINs use the gym's random key; member photos use the gym's file storage. Erasure
+  // detaches a household's revoked cards through the same callback and durable job as card removal.
+  configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue });
   const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
     transitions: billing.transitions, runner, detachCard });
   configurePayments(payments);
