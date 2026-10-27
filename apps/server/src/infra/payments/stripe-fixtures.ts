@@ -13,7 +13,7 @@ export class StripeFixtures implements PaymentTransport {
     this.#nextId = firstId;
     this.objects.set('cus_fixture', { id: 'cus_fixture', object: 'customer', email: 'payer@example.invalid', metadata: { gym_id: gymId } });
     for (const card of ['4242', '0341', '3155', '3184']) this.objects.set('pm_' + card, {
-      id: 'pm_' + card, object: 'payment_method', created: now, customer: 'cus_fixture', card: { last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
+      id: 'pm_' + card, object: 'payment_method', created: now, customer: 'cus_fixture', card: { brand: 'visa', last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
     });
   }
   completeCheckout(sessionId: string): void {

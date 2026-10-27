@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -63,6 +63,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       if (!invoice) missing();
       await payable(tx, invoice);
       const savesCard = invoice.kind === 'cycle' || await isAssignmentInvoice(tx, invoice.id);
+      const replaying = !invoice.checkoutSessionId && !!invoice.checkoutExpiresAt && invoice.checkoutExpiresAt > clock.now();
       // Reserve before the provider call. A lost response retries the exact key/parameters,
       // only inside the provider's 24-hour idempotency window. Never blindly retry later.
       if (!invoice.checkoutSessionId && (!invoice.checkoutExpiresAt || invoice.checkoutExpiresAt <= clock.now())) {
@@ -74,7 +75,13 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         await tx.update(invoices).set({ checkoutExpiresAt: invoice.checkoutExpiresAt }).where(eq(invoices.id, invoice.id));
         await audit(tx, gymId, replacing ? 'billing.checkout.reservation_renewed' : 'billing.checkout.reserved', linkId);
       }
-      return { link, customerId: household.stripeCustomerId, invoice, savesCard };
+      const [reservation] = !invoice.checkoutSessionId ? await tx.select({ linkId: auditEvents.targetId }).from(auditEvents)
+        .innerJoin(signedLinks, eq(signedLinks.id, auditEvents.targetId)).where(and(
+          eq(auditEvents.targetType, 'signed_link'), eq(signedLinks.invoiceId, invoice.id),
+          eq(signedLinks.householdId, link.householdId),
+          inArray(auditEvents.action, ['billing.checkout.reserved', 'billing.checkout.reservation_renewed'])))
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1) : [];
+      return { link, customerId: household.stripeCustomerId, invoice, savesCard, reservationLinkId: reservation?.linkId, replaying };
     });
     await checkBilling(gymId, !!prepared.invoice);
     let customerId: string, provider: Payments;
@@ -117,6 +124,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
             checkoutExpiresAt: new Date(Math.max(clock.now().getTime() + 23 * 60 * 60 * 1000, (invoice.checkoutExpiresAt?.getTime() ?? 0) + 1)),
           }).where(eq(invoices.id, invoice.id));
           await audit(tx, gymId, 'billing.checkout.expired', linkId);
+          await audit(tx, gymId, 'billing.checkout.reservation_renewed', linkId);
         });
         return start(gymId, linkId, true);
       }
@@ -124,13 +132,14 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     } else {
       const invoice = prepared.invoice;
       session = await provider.createCheckout({
-        mode: invoice ? 'payment' : 'setup', customerId, linkId,
+        mode: invoice ? 'payment' : 'setup', customerId, linkId: prepared.reservationLinkId ?? linkId,
         ...(invoice ? { invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase() } : {}),
         successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: prepared.invoice ? prepared.savesCard : true,
         idempotencyKey: invoice ? `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}` : `signed-link:${linkId}:setup`,
       });
     }
-    if (session.metadata.gymId !== gymId || (session.metadata.linkId && session.metadata.linkId !== linkId) || session.customerId !== customerId
+    const sessionLinkId = prepared.invoice?.checkoutSessionId ? linkId : prepared.reservationLinkId ?? linkId;
+    if (session.metadata.gymId !== gymId || (session.metadata.linkId && session.metadata.linkId !== sessionLinkId) || session.customerId !== customerId
       || session.mode !== (prepared.invoice ? 'payment' : 'setup')
       || session.savesCard !== (prepared.invoice ? prepared.savesCard : true)
       || (prepared.invoice && session.metadata.invoiceId !== prepared.invoice.id)) unavailable();
@@ -147,7 +156,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           await payable(tx, invoice);
           if (!invoice.checkoutSessionId) {
             await tx.update(invoices).set({ checkoutSessionId: session.id }).where(eq(invoices.id, invoice.id));
-            await audit(tx, gymId, 'billing.checkout.started', linkId, { sessionId: session.id });
+            await audit(tx, gymId, 'billing.checkout.started', sessionLinkId, { sessionId: session.id });
           }
         } else await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id });
       });
@@ -155,6 +164,10 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       await provider.expireCheckout(session.id).catch(() => undefined);
       throw error;
     }
+    // Persist the replayed session before handing it over. The existing path confirms
+    // expiry before renewing the invoice-wide key, and retains completed sessions.
+    if (sessionLinkId !== linkId || session.status === 'expired' || prepared.replaying) return start(gymId, linkId, renewed);
+    if (session.status !== 'open') throw new AppError('conflict', 'Checkout is no longer open');
     return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(),
       prepared.invoice?.checkoutExpiresAt?.getTime() ?? clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
   }

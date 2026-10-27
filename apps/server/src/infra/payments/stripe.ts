@@ -218,16 +218,9 @@ export class StripePayments implements Payments {
     assertNoTransaction('payments.createCheckout'); key(request.idempotencyKey);
     if (request.mode === 'payment') money(request.amount, request.currency);
     for (const url of [request.successUrl, request.cancelUrl]) if (new URL(url).protocol !== 'https:') throw new Error('Checkout return URLs require HTTPS');
-    let customer = request.customerId;
-    if (customer) await this.#ownedCustomer(customer);
-    else {
-      const matches = await this.findCustomerByEmail(request.customerEmail!);
-      if (matches.length > 1) throw new Error('Ambiguous payer email');
-      customer = matches[0]?.id;
-      if (!customer) customer = id((await this.#post('/v1/customers', {
-        email: request.customerEmail!, metadata: { gym_id: this.gymId },
-      }, request.idempotencyKey + ':customer')).id);
-    }
+    const customer = request.customerId;
+    if (!customer) throw new Error('Customer ID is required');
+    await this.#ownedCustomer(customer);
     const metadata = { gym_id: this.gymId, ...(request.invoiceId ? { invoice_id: request.invoiceId } : {}),
       ...(request.linkId ? { link_id: request.linkId } : {}) };
     const params: ObjectData = { mode: request.mode, customer, success_url: request.successUrl, cancel_url: request.cancelUrl,
@@ -325,6 +318,7 @@ export class StripePayments implements Payments {
         await this.#ownedCustomer(id(object.customer));
         const card = data(object.card);
         value = { kind: 'payment_method', object: { id: id(object.id), createdAt: timestamp(object.created), customerId: id(object.customer), last4: String(card.last4),
+          ...(typeof card.brand === 'string' ? { brand: card.brand } : {}),
           expiresMonth: Number(card.exp_month), expiresYear: Number(card.exp_year) } }; break;
       }
     }

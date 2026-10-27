@@ -292,6 +292,7 @@
         "created": 1793102400,
         "customer": "cus_fixture",
         "card": {
+          "brand": "visa",
           "last4": "3155",
           "exp_month": 12,
           "exp_year": 2030

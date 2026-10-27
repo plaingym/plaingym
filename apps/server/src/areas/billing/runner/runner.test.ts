@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
+import '@hono/zod-openapi';
 import { readFile, writeFile } from 'node:fs/promises';
 import { and, asc, eq } from 'drizzle-orm';
 import { allocateInvoiceNumber, auditEvents, households, invoiceLineItems, invoices, memberships, paymentAttempts, paymentMethods, payments, refunds, uuidv7 } from '@plaingym/db';
@@ -26,6 +27,10 @@ import { createRunnerJobs } from './runner.jobs.js';
 import { createWebhookInbox } from '../webhooks/inbox.js';
 import { composeBillingWebhooks } from '../webhooks/handlers/composition.js';
 import { setLogSink } from '../../../core/log.js';
+import { createMembersService } from '../../members/members.js';
+import { createMembershipRoutes } from '../memberships.routes.js';
+import { createApp } from '../../../app.js';
+import { authorize } from '../../staff/auth.permissions.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(options: { now?: string; dueOn?: string; interval?: string; anniversaryOn?: string | null;
@@ -72,6 +77,33 @@ async function checkout(f: Fixture, invoiceId: string) {
 }
 
 describe('charge runner with PostgreSQL', () => {
+  it('holds erased household invoices through collection and dunning, and permits staff review without a saved card', async () => {
+    const f = await fixture(), other = await fixture();
+    const bill = await invoice(f);
+    const number = await db.forGym(f.gymId, tx => allocateInvoiceNumber(tx, f.gymId));
+    const pastDue = await factory('invoices', f.gymId, { householdId: f.home.id, number, kind: 'cycle', status: 'past_due',
+      dueOn: '2028-02-01', periodStartsOn: '2028-02-01', periodEndsOn: '2028-03-01' });
+    await factory('auditEvents', f.gymId, { action: 'billing.invoice.dunning_started', targetType: 'invoice', targetId: pastDue.id,
+      occurredAt: new Date(f.clock.now().getTime() - 3 * 86400000), after: { retryDays: [3, 7] } });
+    const create = vi.spyOn(f.provider, 'createCharge');
+    const members = createMembersService({ scope: db.forGym, clock: f.clock });
+    await members.eraseMember({ gymId: f.gymId, actor: { kind: 'system' } }, f.member.id, { revision: 1 });
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 0, errors: [] });
+    for (const invoiceId of [bill.id, pastDue.id]) expect(await f.runner.charge(f.gymId, invoiceId, { mode: 'retry' }))
+      .toEqual({ status: 'skipped', reason: 'needs_review' });
+    await f.runner.retry(pastDue.id, f.context);
+    expect(create).not.toHaveBeenCalled();
+    const owner = await factory('authUser', f.gymId);
+    const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: owner.id } };
+    const service = createPaymentService({ ...f.serviceOptions, transitions: f.transitions, runner: f.runner });
+    expect(await service.getInvoice(f.gymId, bill.id)).toMatchObject({ invoice: { id: bill.id, needsReview: true } });
+    await expect(service.releaseHold({ ...context, gymId: other.gymId }, bill.id)).rejects.toMatchObject({ code: 'not_found' });
+    for (const invoiceId of [bill.id, pastDue.id]) await service.releaseHold(context, invoiceId);
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'no_saved_card' });
+    expect(await f.runner.charge(f.gymId, pastDue.id, { mode: 'retry' })).toEqual({ status: 'skipped', reason: 'no_saved_card' });
+    expect((await f.read()).attempts).toEqual([]);
+    expect((await other.read()).invoices).toEqual([]);
+  });
   it.each([
     ['4242', 'direct'], ['0341', 'direct'], ['3184', 'direct'], ['4242', 'pending'], ['4242', 'restore'],
   ])('replays recorded Stripe card %s through %s collection and reconciliation', async (card, mode) => {
@@ -163,7 +195,26 @@ describe('charge runner with PostgreSQL', () => {
     vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValue(new Error('Customer belongs to another gym'));
     const create = vi.spyOn(f.provider, 'createCharge');
     expect((await f.runner.daily(f.gymId)).errors).toHaveLength(1);
-    expect(create).not.toHaveBeenCalled(); expect((await f.read()).attempts[0]!.status).toBe('pending');
+    expect(create).not.toHaveBeenCalled(); expect((await f.read()).attempts[0]).toMatchObject({ status: 'failed', declineCode: 'create_abandoned', resolvedAt: f.clock.now() });
+  });
+  it.each(['disabled', 'settings_failure'] as const)('abandons the unstarted reservation after %s and permits an immediate retry', async failure => {
+    const f = await fixture(), bill = await invoice(f);
+    const adopt = f.provider.adoptCustomer.bind(f.provider);
+    const settings = vi.spyOn(f.settings, 'get');
+    vi.spyOn(f.provider, 'adoptCustomer').mockImplementationOnce(async id => {
+      const result = await adopt(id);
+      if (failure === 'disabled') await f.enable(false);
+      else settings.mockRejectedValueOnce(new Error('Settings unavailable'));
+      return result;
+    });
+    const create = vi.spyOn(f.provider, 'createCharge');
+    if (failure === 'disabled') expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'billing_disabled' });
+    else await expect(f.runner.charge(f.gymId, bill.id)).rejects.toThrow('Settings unavailable');
+    expect(create).not.toHaveBeenCalled();
+    expect((await f.read()).attempts[0]).toMatchObject({ status: 'failed', declineCode: 'create_abandoned', paymentIntentId: null, resolvedAt: f.clock.now() });
+    await f.enable(true);
+    expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'succeeded' });
+    expect((await f.read()).attempts.map(row => row.status)).toEqual(['failed', 'succeeded']);
   });
   it('serializes concurrent daily runs, consolidates same-date memberships and keeps independent dates separate', async () => {
     const f = await fixture();
@@ -521,16 +572,43 @@ describe('runner review regression cases with PostgreSQL', () => {
     expect(rows.audits.some(row => row.action === 'billing.invoice.dunning_started')).toBe(false);
     await expect(f.runner.charge(f.gymId, bill.id, { ...request, context: { ...request.context, gymId: uuidv7() } })).rejects.toThrow('actor');
   });
-  it('retains and logs a collection failure message while continuing other invoices', async () => {
+  it('keeps identifiers and safe error details while continuing other invoices', async () => {
     const f = await fixture(); await assign(f);
-    vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValueOnce(new Error('Customer cannot be adopted'));
+    vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValueOnce(Object.assign(new Error('private payer@example.test params: secret'), { code: 'ECONNRESET' }));
     const logs: string[] = [], prior = setLogSink(line => logs.push(line));
     try {
       const result = await f.runner.collectAssigned(f.gymId, f.home.id);
-      expect(result.errors).toHaveLength(1); expect(result.errors[0]!.message).toBe('Customer cannot be adopted');
-      expect(logs.map(line => JSON.parse(line) as { message?: string })).toContainEqual(expect.objectContaining({ message: 'Customer cannot be adopted' }));
+      expect(result.errors).toEqual([{ invoiceId: expect.any(String) }]);
+      expect(logs.map(line => JSON.parse(line) as object)).toContainEqual(expect.objectContaining({
+        invoiceId: result.errors[0]!.invoiceId, error: expect.objectContaining({ name: 'Error', code: 'ECONNRESET' }),
+      }));
+      expect(JSON.stringify({ logs, result })).not.toMatch(/payer@example|params: secret|private/);
+      expect(JSON.parse(logs[0]!)).not.toHaveProperty('message');
       expect((await f.read()).payments).toHaveLength(1);
     } finally { setLogSink(prior); }
+  });
+  it('logs the invoice ID when assigned collection fails after the assignment route commits', async () => {
+    const f = await fixture({ dueOn: '2028-04-01' }), user = await factory('authUser', f.gymId);
+    const member = await factory('members', f.gymId, { householdId: f.home.id });
+    const lifecycle = createMembershipService({ ...f.serviceOptions, onAssigned: f.runner.onAssigned });
+    vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValueOnce(new Error('Private payer failure'));
+    const app = createApp({ clock: f.clock, skipSetup: true, authorize,
+      contributions: { routes: createMembershipRoutes(lifecycle, { assigned: f.runner.collectAssigned }) },
+      resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+      session: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), principal: { kind: 'staff', gymId: f.gymId, userId: user.id, roles: ['owner'] } }); await next(); },
+    });
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try {
+      const response = await app.request('https://gym.invalid/api/billing/memberships', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ householdId: f.home.id, memberId: member.id, planId: f.plan.id, startsOn: '2028-03-01', nextDueOn: '2028-04-01', firstPeriod: 'prorate_now' }) });
+      expect(response.status).toBe(201);
+      const [invoice] = (await f.read()).invoices;
+      expect(invoice).toBeDefined();
+      expect(logs.map(line => JSON.parse(line) as object)).toContainEqual(expect.objectContaining({
+        event: 'billing.collect_assigned', gymId: f.gymId, invoiceId: invoice!.id,
+      }));
+      expect(logs.join('\n')).not.toContain('Private payer failure');
+    } finally { setLogSink(previous); }
   });
   it.each(['billing.runner.daily', 'billing.runner.reconcile'])('fails loudly for enabled gyms when %s is not configured', async id => {
     const enabled = await fixture(), disabled = await fixture({ enabled: false });

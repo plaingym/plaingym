@@ -115,6 +115,47 @@ describe('signed-link audit regressions with real PostgreSQL', () => {
         invoiceId: f.invoice.id, expiresAt: f.created.link.expiresAt });
       return Object.assign(f, { b });
     }
+    it.each(['second', 'completed', 'same', 'same-completed'] as const)('recovers a lost Checkout response for the %s link path', async path => {
+      const f = await payFixture(), done = stripe ? await tapeFor(f, 'lost-' + path, [f.b.link.id]) : async () => {};
+      const create = f.provider.createCheckout.bind(f.provider);
+      let lost: CheckoutSession | undefined;
+      const calls = vi.spyOn(f.provider, 'createCheckout').mockImplementationOnce(async request => {
+        lost = await create(request);
+        throw new Error('Lost Checkout response');
+      });
+      await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toThrow('Lost Checkout response');
+      expect(lost).toBeDefined();
+      const saved = () => db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, f.invoice.id)));
+      expect((await saved())[0]!.checkoutSessionId).toBeNull();
+      if (path === 'completed' || path === 'same-completed') await f.finish(lost!.id);
+      if (path === 'completed' || path === 'same-completed') {
+        await expect(f.checkout.start(f.gymId, path === 'completed' ? f.b.link.id : f.linkId)).rejects.toMatchObject({ code: 'conflict' });
+        expect((await saved())[0]!.checkoutSessionId).toBe(lost!.id);
+        expect(calls).toHaveBeenCalledTimes(2);
+      } else {
+        const replacement = await f.checkout.start(f.gymId, path === 'same' ? f.linkId : f.b.link.id);
+        expect(replacement.session.metadata.linkId).toBe(path === 'same' ? f.linkId : f.b.link.id);
+        expect(replacement.session.id === lost!.id).toBe(path === 'same');
+        expect(await f.provider.readPaymentObject({ kind: 'checkout', id: lost!.id }))
+          .toMatchObject({ value: { object: { status: path === 'same' ? 'open' : 'expired' } } });
+        if (path === 'second') {
+          expect(calls.mock.calls[2]![0].idempotencyKey).not.toBe(calls.mock.calls[0]![0].idempotencyKey);
+          expect(calls.mock.calls[2]![0].idempotencyKey).not.toContain(f.b.link.id);
+        }
+      }
+      expect(calls.mock.calls[1]![0]).toEqual(calls.mock.calls[0]![0]);
+      await done();
+    });
+    it('does not replay Checkout for another gym or a link pointing outside its household', async () => {
+      const f = await payFixture(), otherGym = uuidv7();
+      await factory('gyms', otherGym);
+      const other = await factory('households', f.gymId);
+      const create = vi.spyOn(f.provider, 'createCheckout');
+      await expect(f.checkout.start(otherGym, f.linkId)).rejects.toMatchObject({ code: 'not_found' });
+      await expect(f.links.create(f.context, { householdId: other.id, purpose: 'pay_invoice', invoiceId: f.invoice.id,
+        expiresAt: f.created.link.expiresAt })).rejects.toMatchObject({ code: 'not_found' });
+      expect(create).not.toHaveBeenCalled();
+    });
     it('expires the abandoned link session and completes only the replacement link from its webhook', async () => {
       const f = await payFixture(), done = stripe ? await tapeFor(f, 'handover', [f.b.link.id]) : async () => {};
       const a = await f.checkout.start(f.gymId, f.linkId), b = await f.checkout.start(f.gymId, f.b.link.id);

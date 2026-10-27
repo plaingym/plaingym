@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
-  invoices, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  invoices, paymentMethods, classBookings, classSessions, staffProfiles, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -95,7 +95,7 @@ export function createMembersService(options: MembersOptions = {}) {
     async anonymizeMember(context: MutationContext, id: string, input: c.AnonymizeMemberRequest) {
       return (await service.eraseMember(context, id, input)).member;
     },
-    /** Anonymizes the member and returns the storage keys it released, for the caller to mark deleted after commit. */
+    /** Returns released storage keys and revoked cards for cleanup after the erasure commits. */
     async eraseMember(context: MutationContext, id: string, input: c.AnonymizeMemberRequest) {
       const { revision } = c.anonymizeMemberRequestSchema.parse(input);
       return scope(context.gymId, async (tx) => {
@@ -107,6 +107,17 @@ export function createMembersService(options: MembersOptions = {}) {
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
           .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
         await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
+        const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
+          .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted'])))
+          .orderBy(asc(classBookings.sessionId));
+        for (const session of sessions) {
+          await tx.select({ id: classSessions.id }).from(classSessions).where(eq(classSessions.id, session.id)).for('update');
+          const cancelled = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: now })
+            .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, id),
+              inArray(classBookings.status, ['booked', 'waitlisted']))).returning({ id: classBookings.id });
+          for (const booking of cancelled) await audit(tx, context, 'booking.cancelled', 'class_booking', booking.id);
+        }
+        await tx.update(staffProfiles).set({ memberId: null }).where(eq(staffProfiles.memberId, id));
         // An erased member is never billed again: their memberships end with the erasure, in the same transaction.
         const open = await tx.select({ id: memberships.id, revision: memberships.revision }).from(memberships)
           .where(and(eq(memberships.memberId, id), ne(memberships.status, 'cancelled'))).for('update');
@@ -125,15 +136,23 @@ export function createMembersService(options: MembersOptions = {}) {
         const last = remaining.length === 0;
         const homeGuard = revisionGuard(households.revision, home.revision);
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
-          ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {} } : {}) }).where(eq(households.id, home.id));
+          ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
+        const revokedCards: { id: string; processorId: string }[] = [];
         if (last) {
+          revokedCards.push(...await tx.update(paymentMethods).set({ revokedAt: now, isDefault: false })
+            .where(and(eq(paymentMethods.householdId, home.id), isNull(paymentMethods.revokedAt)))
+            .returning({ id: paymentMethods.id, processorId: paymentMethods.processorId }));
+          for (const card of revokedCards) await audit(tx, context, 'billing.card.revoked', 'payment_method', card.id);
+          const held = await tx.update(invoices).set({ needsReview: true }).where(and(eq(invoices.householdId, home.id),
+            inArray(invoices.status, ['open', 'past_due']), eq(invoices.needsReview, false))).returning({ id: invoices.id });
+          for (const invoice of held) await audit(tx, context, 'billing.invoice.held', 'invoice', invoice.id);
           await tx.delete(householdUsers).where(eq(householdUsers.householdId, home.id));
           await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.householdId, home.id), isNull(signedLinks.revokedAt)));
         }
         await audit(tx, context, 'member.anonymized', 'member', id);
         if (waivers.length) await audit(tx, context, 'member.waivers.deleted', 'member', id);
         await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id);
-        return { member: member(row), files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
+        return { member: member(row), revokedCards, files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
       });
     },
     async listHouseholds(gymId: string, input: c.HouseholdListQuery) {

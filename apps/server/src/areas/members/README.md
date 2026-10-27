@@ -20,6 +20,13 @@ transaction, so an erased member is never billed again), and clears the househol
 PIN. When the household
 has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.
+Erasure cancels booked and waitlisted class places under each session's row lock,
+clears their waitlist positions without renumbering others, and unlinks staff
+profiles from the erased member. For a household's last member it also revokes
+active cards, clears the local Stripe customer ID and holds open and past-due
+invoices for review. `eraseMember` returns `files` and `revokedCards` for storage
+cleanup and provider detachment after commit. The route accepts the billing
+detach callback and retry queue through `configureMembers`.
 Unused households can be deleted; referenced households return a conflict.
 
 `hashHouseholdPin` and `verifyHouseholdPin` take the per-gym secret, gym ID,

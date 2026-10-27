@@ -60,11 +60,7 @@ interface CheckoutOptions {
   readonly saveForOffSession: boolean;
   readonly idempotencyKey: string;
 }
-export type CheckoutRequest = CheckoutOptions &
-  (
-    | { readonly customerId: string; readonly customerEmail?: never }
-    | { readonly customerEmail: string; readonly customerId?: never }
-  );
+export type CheckoutRequest = CheckoutOptions & { readonly customerId: string };
 export interface CheckoutSession {
   readonly id: string;
   readonly mode: 'payment' | 'setup';
@@ -95,6 +91,7 @@ export interface Dispute {
 }
 export interface PaymentMethod {
   readonly id: string;
+  readonly brand?: string;
   readonly createdAt: Date;
   readonly customerId: string;
   readonly last4: string;
@@ -453,15 +450,13 @@ export class FakePayments implements Payments {
   async createCheckout(request: CheckoutRequest): Promise<CheckoutSession> {
     assertNoTransaction('payments.createCheckout');
     if (request.mode === 'payment') money(request.amount ?? 0, request.currency ?? '');
-    if (Boolean(request.customerId) === Boolean(request.customerEmail))
-      throw new Error('Supply one customer ID or email');
+    if (!request.customerId) throw new Error('Customer ID is required');
     const result = this.#once(
       'checkout',
       request.idempotencyKey,
       JSON.stringify([
         request.mode,
         request.customerId,
-        request.customerEmail,
         request.amount,
         request.currency,
         request.invoiceId,
@@ -472,8 +467,7 @@ export class FakePayments implements Payments {
       ]),
       () => {
         const id = this.#id('cs');
-        const customerId = request.customerId ?? this.#id('cus');
-        if (request.customerEmail) this.seedCustomer({ id: customerId, email: request.customerEmail });
+        const customerId = request.customerId;
         const session: CheckoutSession = {
           id,
           customerId,
@@ -504,6 +498,7 @@ export class FakePayments implements Payments {
       id: paymentMethodId,
       customerId: session.customerId,
       last4: '4242',
+      brand: 'visa',
       expiresMonth: 12,
       expiresYear: this.clock.now().getUTCFullYear() + 3,
     });

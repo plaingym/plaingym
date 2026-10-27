@@ -39,7 +39,7 @@ fullPaymentsContract('FakePayments', async (card = '4242') => {
   payments.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid' });
   payments.seedCustomer({ id: 'cus_foreign', email: 'foreign@example.invalid', gymId: 'other-gym' });
   for (const [id, customerId] of [[detach.owned, 'cus_fixture'], [detach.foreign, 'cus_foreign']] as const)
-    payments.recordPaymentMethod({ id, customerId, last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+    payments.recordPaymentMethod({ id, customerId, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
   payments.respondNextConfirmation(card === '0341' ? 'declined' : card === '3184' ? 'authentication_required' : 'succeeded');
   return { payments, charge, checkout, detach, completeCheckout: (id: string) => { payments.completeCheckout(id); } };
 });

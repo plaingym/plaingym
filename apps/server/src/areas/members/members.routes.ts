@@ -8,6 +8,8 @@ import type { RequestContext } from '../../core/context.js';
 import { createMembersService, type MembersService } from './members.js';
 import { createMemberPhotoService, type MemberUploads } from './photos.js';
 import type { HouseholdPinSecret } from './pin.js';
+import type { Jobs } from '../../infra/jobs/index.js';
+import { detachJob } from '../billing/payments.mutations.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -27,17 +29,18 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
   });
 }
 
-type Composition = { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined };
+type ErasureOptions = { detachCard?: (gymId: string, processorId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
+type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
 /** Runtime supplies the gym key for household PINs and file storage for photos before serving requests. */
-export function configureMembers(options: { pinSecret: HouseholdPinSecret; uploadsFor: MemberUploads; clock?: Clock }) {
+export function configureMembers(options: ErasureOptions & { pinSecret: HouseholdPinSecret; uploadsFor: MemberUploads; clock?: Clock }) {
   const service = createMembersService({ pinSecret: options.pinSecret, ...(options.clock ? { clock: options.clock } : {}) });
-  configured = { service, photos: createMemberPhotoService(service, options.uploadsFor) };
+  configured = { ...options, service, photos: createMemberPhotoService(service, options.uploadsFor) };
 }
 /** Tests pass a service; otherwise routes use the runtime composition, and without one, photos and
  * nonempty PINs fail closed. */
-export function createMembersRoutes(service?: MembersService, uploadsFor?: MemberUploads) {
-  const fixed: Composition | undefined = service ? { service, photos: uploadsFor ? createMemberPhotoService(service, uploadsFor) : undefined } : undefined;
+export function createMembersRoutes(service?: MembersService, uploadsFor?: MemberUploads, erasure: ErasureOptions = {}) {
+  const fixed: Composition | undefined = service ? { ...erasure, service, ...(uploadsFor ? { uploadsFor } : {}), photos: uploadsFor ? createMemberPhotoService(service, uploadsFor) : undefined } : undefined;
   const fallback: Composition = { service: createMembersService(), photos: undefined };
   const current = () => fixed ?? configured ?? fallback;
   const contracts = c.membersContracts;
@@ -50,8 +53,24 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       return { data: photos ? await photos.update(mutation(ctx), p.memberId!, input) : await service.updateMember(mutation(ctx), p.memberId!, input) };
     }),
     jsonRoute(contracts.anonymizeMember, async (ctx, p, _q, b) => {
-      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, photos } = current();
-      return { data: photos ? await photos.anonymize(mutation(ctx), p.memberId!, revision) : await service.anonymizeMember(mutation(ctx), p.memberId!, { revision }) };
+      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, jobs } = current();
+      const { member, files, revokedCards } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
+      // Queue every detach before attempting it, so an outage leaves durable retries.
+      for (const card of revokedCards) if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: card.id }, {
+        gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `detach:${card.id}`, maxAttempts: 12,
+      });
+      const cleanup = await Promise.allSettled([
+        ...revokedCards.map(async card => {
+          if (!detachCard) throw new AppError('unavailable', 'Card removal is not configured');
+          await detachCard(ctx.gym.gymId, card.processorId);
+        }),
+        ...files.map(async key => {
+          if (!uploadsFor) throw new AppError('unavailable', 'Photo storage is not configured');
+          await (await uploadsFor(ctx.gym.gymId)).markDeleted(key);
+        }),
+      ]);
+      for (const result of cleanup) if (result.status === 'rejected') throw result.reason;
+      return { data: member };
     }),
     jsonRoute(contracts.getMedicalNotes, async (ctx, p) => ({ data: await current().service.getMedicalNotes(ctx.gym.gymId, p.memberId!) })),
     jsonRoute(contracts.updateMedicalNotes, async (ctx, p, _q, b) => ({ data: await current().service.updateMedicalNotes(mutation(ctx), p.memberId!, c.updateMemberMedicalNotesRequestSchema.parse(b)) })),

@@ -40,7 +40,7 @@ it('routes all browser link actions and webhook completion through startRuntime 
     handlers.set(name, handler); register.call(this, name, handler);
   });
   const worker = vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
-  const directory = await mkdtemp(join(tmpdir(), 'plaingym-r8-'));
+  const directory = await mkdtemp(join(tmpdir(), 'plaingym-checkout-runtime-'));
   let runtime: Awaited<ReturnType<typeof startRuntime>> | undefined;
   try {
     const origin = 'https://gym.example.test', secret = 'synthetic-runtime-secret';

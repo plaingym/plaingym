@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq, inArray } from 'drizzle-orm';
-import { members, memberRanks, memberships, waiverSignatures, households, invoices, invoiceLineItems, attendances, householdUsers, signedLinks, auditEvents, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { members, memberRanks, memberships, waiverSignatures, households, invoices, invoiceLineItems, attendances, householdUsers, signedLinks, auditEvents, paymentMethods, classBookings, classSessions, staffProfiles, allocateInvoiceNumber, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -13,6 +13,8 @@ import { createMemberPhotoJobs } from './members.jobs.js';
 import { createMemberPhotoService } from './photos.js';
 import { hashHouseholdPin, verifyHouseholdPin } from './pin.js';
 import { FakeUploads } from '../../infra/storage/index.js';
+import { FakePayments } from '../../infra/payments/index.js';
+import { FakeJobs } from '../../infra/jobs/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
@@ -211,6 +213,79 @@ describe('members and households', () => {
     await service.anonymizeMember(context(), person.id, { revision: 1 });
     expect(await service.getHousehold(gymA, home.id)).toMatchObject({ name: home.name });
     expect(await service.getMember(gymA, sibling.id)).toMatchObject({ firstName: sibling.firstName });
+  });
+  it.each([false, true])('revokes billing only when erasing the last member (another member: %s)', async another => {
+    const { home, person } = await routeFixture(gymA);
+    const customerId = 'cus_erase_' + home.id;
+    await database.forGym(gymA, tx => tx.update(households).set({ stripeCustomerId: customerId }).where(eq(households.id, home.id)));
+    if (another) await factory('members', gymA, { householdId: home.id });
+    const card = await factory('paymentMethods', gymA, { householdId: home.id, isDefault: true });
+    const revoked = await factory('paymentMethods', gymA, { householdId: home.id, revokedAt: new Date('2026-01-01Z') });
+    const bill = async (householdId: string, status: string) => factory('invoices', gymA, { householdId, status,
+      number: await database.forGym(gymA, tx => allocateInvoiceNumber(tx, gymA)) });
+    const bills = await Promise.all(['open', 'past_due', 'paid', 'void'].map(status => bill(home.id, status)));
+    const other = await routeFixture(gymA), otherCard = await factory('paymentMethods', gymA, { householdId: other.home.id, isDefault: true });
+    const otherBill = await bill(other.home.id, 'open');
+    const foreign = await routeFixture(gymB), foreignCard = await factory('paymentMethods', gymB, { householdId: foreign.home.id, isDefault: true });
+    await expect(service.eraseMember(context(gymB), person.id, { revision: 1 })).rejects.toMatchObject({ code: 'not_found' });
+    const erased = await service.eraseMember(context(), person.id, { revision: 1 });
+    expect(erased.revokedCards).toEqual(another ? [] : [{ id: card.id, processorId: card.processorId }]);
+    const state = await database.forGym(gymA, async tx => ({
+      home: (await tx.select().from(households).where(eq(households.id, home.id)))[0]!,
+      cards: await tx.select().from(paymentMethods).where(inArray(paymentMethods.id, [card.id, revoked.id, otherCard.id])),
+      bills: await tx.select().from(invoices).where(inArray(invoices.id, [...bills.map(bill => bill.id), otherBill.id])),
+    }));
+    expect(state.home.stripeCustomerId).toBe(another ? customerId : null);
+    expect(state.cards.find(row => row.id === card.id)).toMatchObject({ revokedAt: another ? null : clock.now(), isDefault: another });
+    expect(state.cards).toEqual(expect.arrayContaining([revoked, otherCard]));
+    for (const bill of bills) expect(state.bills.find(row => row.id === bill.id)!.needsReview).toBe(!another && ['open', 'past_due'].includes(bill.status));
+    expect(state.bills).toContainEqual(otherBill);
+    expect(await database.forGym(gymB, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.id, foreignCard.id)))).toEqual([foreignCard]);
+  });
+  it('cancels booked and waitlisted places under their session locks and clears only the erased staff link', async () => {
+    const { person } = await routeFixture(gymA), other = await routeFixture(gymA);
+    const sessions = await Promise.all([factory('classSessions', gymA), factory('classSessions', gymA)]);
+    const bookings = await Promise.all(sessions.map((session, index) => factory('classBookings', gymA, { sessionId: session.id, memberId: person.id,
+      bookedBy: userId, status: index ? 'waitlisted' : 'booked', waitlistPosition: index ? 1 : null })));
+    const waiting = await factory('classBookings', gymA, { sessionId: sessions[1]!.id, memberId: other.person.id, bookedBy: userId, status: 'waitlisted', waitlistPosition: 2 });
+    const profile = await factory('staffProfiles', gymA, { memberId: person.id });
+    const otherProfile = await factory('staffProfiles', gymA, { memberId: other.person.id });
+    // Serialize a concurrent capacity writer with erasure using the same session lock.
+    await Promise.all([
+      service.eraseMember(context(), person.id, { revision: 1 }),
+      database.forGym(gymA, async tx => { await tx.select().from(classSessions).where(eq(classSessions.id, sessions[0]!.id)).for('update'); }),
+    ]);
+    const state = await database.forGym(gymA, async tx => ({
+      bookings: await tx.select().from(classBookings).where(inArray(classBookings.id, [...bookings.map(row => row.id), waiting.id])),
+      staff: await tx.select().from(staffProfiles).where(inArray(staffProfiles.id, [profile.id, otherProfile.id])),
+    }));
+    for (const booking of bookings) expect(state.bookings.find(row => row.id === booking.id)).toMatchObject({ status: 'cancelled', waitlistPosition: null, cancelledAt: clock.now() });
+    expect(state.bookings).toContainEqual(waiting);
+    expect(state.staff.find(row => row.id === profile.id)!.memberId).toBeNull();
+    expect(state.staff).toContainEqual(otherProfile);
+  });
+  it.each([false, true])('detaches all revoked cards after commit and queues retries (provider fails: %s)', async failure => {
+    const { home, person } = await routeFixture(gymA);
+    const cards = await Promise.all([1, 2].map(() => factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_erase_' + uuidv7().replaceAll('-', '') })));
+    const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
+    payments.seedCustomer({ id: 'cus_erasure', email: 'payer@example.test' });
+    for (const card of cards) payments.recordPaymentMethod({ id: card.processorId, customerId: 'cus_erasure', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+    const detachCard = vi.fn(async (gymId: string, processorId: string) => {
+      expect(gymId).toBe(gymA);
+      expect((await service.getMember(gymId, person.id)).anonymizedAt).not.toBeNull();
+      expect((await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)))).every(card => card.revokedAt)).toBe(true);
+      if (failure && processorId === cards[0]!.processorId) throw new Error('Provider unavailable');
+      await payments.detachPaymentMethod(processorId);
+    });
+    const app = new OpenAPIHono<RequestEnvironment>();
+    app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', gymId: gymA, userId, roles: ['owner'] }, gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'erase', clock }); await next(); });
+    const errors: unknown[] = [];
+    app.onError((error, ctx) => { errors.push(error); return errorHandler(error, ctx); });
+    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, jobs }) }).mount(app, authorize, new Set());
+    expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status, String(errors[0])).toBe(failure ? 500 : 200);
+    expect(detachCard).toHaveBeenCalledTimes(2);
+    expect(jobs.jobs).toHaveLength(2);
+    expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id }))));
   });
   it('cancels the erased member\'s memberships in the same transaction and leaves the household\'s others billable', async () => {
     const { home, person } = await routeFixture(gymA);

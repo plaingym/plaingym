@@ -45,6 +45,14 @@ async function until(predicate: () => Promise<boolean>) {
 jobsContract('Postgres Jobs contract', async () => queue());
 
 describe('Postgres enqueue and execution', () => {
+  it('stores only error names and codes, without private messages or query parameters', async () => {
+    const q = queue();
+    q.handle('private-failure', async () => { throw Object.assign(new Error('Failed query: private\nparams: payer@example.test, secret'), { code: '23505' }); });
+    const { jobId } = await q.enqueue('private-failure', {}, { ...options, maxAttempts: 1 });
+    await q.runNext();
+    expect((await row(jobId)).lastError).toBe('{"name":"Error","code":"23505"}');
+    expect(await database.forGym(gymB, tx => tx.select().from(jobs).where(eq(jobs.id, jobId)))).toEqual([]);
+  });
   it('deduplicates concurrent requests, isolates names, and snapshots payload/timezone', async () => {
     const q = queue();
     const results = await Promise.all(Array.from({ length: 12 }, () => q.enqueue('email', { to: 'member' },
@@ -101,7 +109,7 @@ describe('Postgres enqueue and execution', () => {
     clock.advance(1000); await q.runNext();
     expect((await row(jobId)).runAt).toEqual(new Date('2026-01-01T00:00:03Z'));
     clock.advance(2000); await q.runNext();
-    expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 3, lastError: 'provider unavailable', lockToken: null });
+    expect(await row(jobId)).toMatchObject({ status: 'failed', attempts: 3, lastError: '{"name":"Error"}', lockToken: null });
     clock.advance(100_000); expect(await q.runNext()).toBe(false);
     expect(attempts).toEqual([1, 2, 3]);
   });

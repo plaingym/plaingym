@@ -18,7 +18,7 @@ export { releaseActionNeeded, releaseCheckout } from './releases.js';
 
 export type ChargeOptions = { mode?: 'automatic' | 'retry' } | { mode: 'staff'; context: MutationContext };
 export type ChargeResult = Skipped | { status: 'succeeded' | 'failed' | 'action_required' | 'pending' | 'unknown' | 'settled_zero' };
-export interface CollectionError { invoiceId: string; message: string; }
+export interface CollectionError { invoiceId: string; }
 
 export interface RunnerOptions {
   scope?: typeof forGym;
@@ -80,9 +80,20 @@ export function createChargeRunner(options: RunnerOptions) {
     const reservation = await reserve(context, invoiceId, mode, null);
     if (reservation.status === 'skipped') return reservation;
     const { attempt } = reservation;
-    // Adoption is idempotent and refuses a stored customer belonging to another gym.
-    await provider.adoptCustomer(attempt.stripeCustomerId);
-    if (!(await options.settings.get(gymId)).billingEnabled) return skipped('billing_disabled');
+    let createStarted = false;
+    try {
+      // Adoption is idempotent and refuses a stored customer belonging to another gym.
+      await provider.adoptCustomer(attempt.stripeCustomerId);
+      if (!(await options.settings.get(gymId)).billingEnabled) return skipped('billing_disabled');
+      createStarted = true;
+    } finally {
+      if (!createStarted) await scope(gymId, async tx => {
+        const changed = await tx.update(paymentAttempts).set({ status: 'failed', declineCode: 'create_abandoned', resolvedAt: clock.now() })
+          .where(and(eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
+            isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
+        if (changed.length) await audit(tx, context, clock, 'billing.runner.create_abandoned', 'payment_attempt', attempt.id, { invoiceId });
+      });
+    }
     const key = `${invoiceId}:${attempt.attemptNumber}`;
     const intent = await provider.createCharge({ amount: attempt.amountCents, currency: attempt.currency.toLowerCase(),
       customerId: attempt.stripeCustomerId, paymentMethodId: attempt.savedPaymentMethod,
@@ -126,9 +137,8 @@ export function createChargeRunner(options: RunnerOptions) {
     for (const invoice of due) {
       try { if ((await charge(gymId, invoice.id)).status !== 'skipped') attempted++; }
       catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push({ invoiceId: invoice.id, message });
-        logError('billing.runner.charge_failed', { gymId, invoiceId: invoice.id, message }, error);
+        errors.push({ invoiceId: invoice.id });
+        logError('billing.runner.charge_failed', { gymId, invoiceId: invoice.id }, error);
       }
     }
     return { attempted, errors };
@@ -165,13 +175,9 @@ export function createChargeRunner(options: RunnerOptions) {
         needsOverdueReview(tx))).returning();
       if (changed.length) await audit(tx, system(gymId), clock, 'billing.runner.overdue_held', 'invoice', bill.id, { needsReview: true });
     });
-    const due = await scope(gymId, async tx => {
-      const rows = await tx.select({ id: invoices.id, kind: invoices.kind }).from(invoices).where(and(eq(invoices.status, 'open'),
-        eq(invoices.needsReview, false), lte(invoices.dueOn, today))).orderBy(asc(invoices.dueOn), asc(invoices.id));
-      const eligible = [];
-      for (const row of rows) if (row.kind === 'cycle' || await isAssignmentInvoice(tx, row.id)) eligible.push(row);
-      return eligible;
-    });
+    const due = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.status, 'open'),
+      eq(invoices.needsReview, false), lte(invoices.dueOn, today), or(eq(invoices.kind, 'cycle'), assignmentInvoiceCondition(tx))))
+      .orderBy(asc(invoices.dueOn), asc(invoices.id)));
     return { generatedPeriods, ...await collect(gymId, due) };
   }
   async function deferPendingRetry(invoiceId: string, context: JobContext) {

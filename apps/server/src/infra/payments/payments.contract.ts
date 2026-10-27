@@ -13,6 +13,15 @@ export interface ContractHarness {
 export function fullPaymentsContract(name: string, create: (card?: Card) => Promise<ContractHarness>) {
   paymentsContract(name, create);
   describe(name + ' extended', () => {
+    it('reads the card brand from an owned payment method', async () => {
+      const { payments, detach } = await create();
+      expect(await payments.readPaymentObject({ kind: 'payment_method', id: detach.owned }))
+        .toMatchObject({ status: 'found', value: { kind: 'payment_method', object: { brand: 'visa' } } });
+    });
+    it('requires a customer ID for Checkout without creating a customer from email', async () => {
+      const { payments, checkout } = await create();
+      await expect(payments.createCheckout({ ...checkout, customerId: undefined } as unknown as CheckoutRequest)).rejects.toThrow();
+    });
     it.each(['payment', 'setup'] as const)('preserves the signed link ID on %s Checkout and its intent', async mode => {
       const { payments, checkout, charge, completeCheckout } = await create();
       const linkId = charge.invoiceId;

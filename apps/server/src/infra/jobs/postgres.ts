@@ -9,6 +9,7 @@ import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js
 import type { Id } from '@plaingym/shared/contracts';
 import { instantSchema, idSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
+import { describeError } from '../../core/log.js';
 import type { Jobs, JobOptions, JobHandler, JobContext } from './index.js';
 import { cronOccurrences, occurrenceKey, validateCron } from './cron.js';
 
@@ -181,7 +182,7 @@ export class PostgresJobs implements Jobs {
       await tx.update(jobs).set({
         status: failed ? (row.attempts >= row.maxAttempts ? 'failed' : 'pending') : 'succeeded',
         ...(failed ? { runAt: new Date(now.getTime() + backoff) } : {}),
-        lastError: failed ? (failure instanceof Error ? failure.message : 'Job handler failed').slice(0, 2000) : null,
+        lastError: failed ? (({ name, code }) => JSON.stringify({ name, code }))(describeError(failure)) : null,
         lockedUntil: null, lockToken: null,
       }).where(and(eq(jobs.id, row.id), eq(jobs.status, 'running'), eq(jobs.lockToken, row.lockToken!),
         sql`${jobs.lockedUntil} > ${now.toISOString()}`));

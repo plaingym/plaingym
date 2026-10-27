@@ -31,6 +31,9 @@ does not require an attached card. `PaymentMethod.createdAt` comes from the
 provider's `created` timestamp; the fake captures its clock when the method is
 first recorded and preserves it across updates. Consumers store that time to
 order defaults independently of webhook arrival or event retention.
+Payment methods also carry an optional card `brand`; new locally collected cards
+store it, while existing rows keep their stored value. Checkout requires a
+`customerId` and never creates a customer from an email address.
 
 `findCharge(reference, { includeSuccessTime: true })` adds `succeededAt` to a
 successful outcome by retrieving the latest Charge and reading its `created`

@@ -32,6 +32,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -113,6 +114,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -871,6 +873,54 @@
           }
         }
       ]
+    },
+    "extended > reads the card brand from an owned payment method": {
+      "version": 1,
+      "gymId": "00000000-0000-7000-8000-000000000001",
+      "exchanges": [
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/payment_methods/pm_4242"
+          },
+          "output": {
+            "id": "pm_4242",
+            "object": "payment_method",
+            "created": 1792756800,
+            "customer": "cus_fixture",
+            "card": {
+              "brand": "visa",
+              "last4": "4242",
+              "exp_month": 12,
+              "exp_year": 2030
+            },
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_fixture"
+          },
+          "output": {
+            "id": "cus_fixture",
+            "object": "customer",
+            "email": "payer@example.invalid",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        }
+      ]
+    },
+    "extended > requires a customer ID for Checkout without creating a customer from email": {
+      "version": 1,
+      "gymId": "00000000-0000-7000-8000-000000000001",
+      "exchanges": []
     },
     "extended > preserves the signed link ID on payment Checkout and its intent": {
       "version": 1,
@@ -1894,6 +1944,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -1931,6 +1982,7 @@
             "created": 1792756800,
             "customer": null,
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -1952,6 +2004,7 @@
             "created": 1792756800,
             "customer": null,
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -1985,6 +2038,7 @@
             "created": 1792756800,
             "customer": null,
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -2027,6 +2081,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -2204,6 +2259,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "0341",
               "exp_month": 12,
               "exp_year": 2030
@@ -2390,6 +2446,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "3155",
               "exp_month": 12,
               "exp_year": 2030
@@ -2567,6 +2624,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "3184",
               "exp_month": 12,
               "exp_year": 2030
@@ -2753,6 +2811,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -2834,6 +2893,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -2903,6 +2963,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -3075,6 +3136,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -3701,6 +3763,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -3843,6 +3906,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -4393,6 +4457,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030
@@ -4899,6 +4964,7 @@
             "created": 1792756800,
             "customer": "cus_fixture",
             "card": {
+              "brand": "visa",
               "last4": "4242",
               "exp_month": 12,
               "exp_year": 2030

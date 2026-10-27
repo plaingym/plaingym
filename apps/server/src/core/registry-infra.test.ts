@@ -356,9 +356,10 @@ describe('fake payment outcomes', () => {
   });
   it('supports a new customer and re-fetches setup/payment-method objects without trusting event payloads', async () => {
     const payments = new FakePayments('gym');
+    const customer = await payments.createCustomer({ email: 'parent@example.test', name: 'Parent', householdId: 'household', idempotencyKey: 'customer' });
     const session = await payments.createCheckout({
       mode: 'setup',
-      customerEmail: 'parent@example.test',
+      customerId: customer.id,
       successUrl: 'https://gym.invalid/ok',
       cancelUrl: 'https://gym.invalid/cancel',
       saveForOffSession: true,

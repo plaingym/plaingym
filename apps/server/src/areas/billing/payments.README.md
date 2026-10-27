@@ -56,11 +56,26 @@ transactional enqueue. If a crash or enqueue failure occurs after local revocati
 staff can use "Retry card removal" on the retained revoked card; that queues the
 same deduplicated detach job again before the immediate provider call.
 
+Erasing a household's last member revokes its active cards, clears its local
+Stripe customer ID, and holds open and past-due invoices for staff review in the
+erasure transaction. Other household members keep their cards and invoices.
+The erasure route queues the same detach jobs and attempts all card detaches
+after commit; `configureMembers` accepts the shared `jobs` and `detachCard`
+dependencies. Erasure retains accounting history and does not modify the Stripe
+Customer itself.
+
 Pay links use the existing signed-link creation/send contracts, with purpose
 `pay_invoice`, household ID, invoice ID, and a seven-day expiry. Creation can show
 a link to copy; sending uses the configured gym mail delivery. No Checkout session
 identifier is substituted for a signed-link identifier. Redemption belongs to the
 signed-link public pages.
+
+Checkout reservations use an invoice-wide idempotency key so an invoice has at
+most one open session. If a response is lost, another link finds the reserving
+link in the reservation audits and replays its exact Checkout request. The
+session is saved, then provider-confirmed expiry permits a new reservation and
+key for the requesting link. Completed sessions stay attached for reconciliation;
+reopening the original link replays its own request.
 
 Receipt view uses the invoice's stored lines, payments, and refunds. Resend queues
 `billing.payments.receipt`; `createPaymentJobs` delegates delivery to the shared

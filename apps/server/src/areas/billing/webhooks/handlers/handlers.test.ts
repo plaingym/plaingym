@@ -146,6 +146,7 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     f.transport.objects.set('ch_checkout', { id: 'ch_checkout', object: 'charge', payment_intent: intent.id, created: f.transport.now });
     const success = vi.spyOn(f.composed.transitions, 'cardSucceeded');
     await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
+    expect((await f.read()).methods[0]!.brand).toBe('visa');
     await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
     await f.run('payment_intent.succeeded', { kind: 'charge', id: String(intent.id) });
     expect(success.mock.calls[0]![1]).not.toHaveProperty('attemptId');
@@ -165,6 +166,14 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     const rows = await f.read(); expect(rows.methods).toHaveLength(1); expect(rows.methods[0]!.expiryYear).toBe(2035);
     expect(rows.audits.filter(a => a.action === 'billing.payment_method.updated')).toHaveLength(2);
     expect(rows.payments).toHaveLength(0);
+  });
+  it('keeps existing null card brands when a later webhook refreshes expiry', async () => {
+    const f = await fixture(); setup(f);
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_new' });
+    await db.forGym(f.gymId, tx => tx.update(paymentMethods).set({ brand: null }));
+    const method = f.transport.objects.get('pm_3155')!; (method.card as ObjectData).exp_year = 2035;
+    await f.run('payment_method.updated', { kind: 'payment_method', id: 'pm_3155' });
+    expect((await f.read()).methods[0]).toMatchObject({ brand: null, expiryYear: 2035 });
   });
   it('keeps the newer collected card on reverse delivery, replay, and concurrent collection', async () => {
     const f = await fixture(); setup(f, 'seti_old', 'pm_4242'); setup(f);

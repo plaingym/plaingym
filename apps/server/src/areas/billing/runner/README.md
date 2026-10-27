@@ -7,7 +7,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 
 | Entry point | Behavior |
 | --- | --- |
-| `daily(gymId)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, plus each failed invoice's ID and error message; errors are also logged. |
+| `daily(gymId)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, plus each failed invoice's ID. Logs contain identifiers and safe error classifications, without raw error messages. |
 | `charge(gymId, invoiceId, options?)` | Collect an eligible issued invoice. Returns an outcome object, or `{ status: 'skipped', reason }`. Provider errors propagate and leave any committed reservation for reconciliation. |
 | `collectAssigned(gymId, householdId)` | Immediately collect that household's open, unattempted assignment one-offs after the assignment transaction commits. Returns collection counts and errors; never call it from `onAssigned`. |
 | `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the invoice's saved retry windows at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
@@ -35,6 +35,8 @@ The overdue query selects only cycle and assignment invoices and excludes releas
 invoices using the gym/action/target audit index. Recording cash/check also
 confirms a held invoice and audits the payment that cleared it. Merely rerunning
 the daily catch-up sweep does not confirm it.
+The daily due query filters cycle and assignment invoices in SQL with the same
+assignment predicate as the overdue query.
 Zero-value invoices settle through `InvoiceTransitions.settleZero`. They require
 no saved card, attempt, provider resolution, customer adoption or Checkout calls.
 Billing enablement and review holds still apply. Settlement records no payment
@@ -63,7 +65,11 @@ invoice lock. A skip is observable and is not a collection error.
 
 Each charge commits immutable amount, currency, customer and saved-method fields
 before adopting the stored customer or creating an unconfirmed PaymentIntent.
-Keys are `<invoiceId>:<attemptNumber>:create` and `:confirm`. The intent ID is saved
+Keys are `<invoiceId>:<attemptNumber>:create` and `:confirm`. An exit before
+`createCharge`, including failed customer adoption or billing being disabled,
+immediately marks the unstarted attempt `failed` with `create_abandoned`.
+Once create starts, an unknown result stays pending for reconciliation.
+The intent ID is saved
 only if the attempt is still pending, unresolved and has no ID. A worker losing
 that compare-and-set never confirms it, and cancels only when the attempt does
 not already hold the same intent ID. Before confirming a saved ID, the runner

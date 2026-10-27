@@ -34,7 +34,7 @@ export function createCardHandlers(options: { scope: typeof forGym; clock: Clock
         || existing.expiryYear !== details.expiryYear || existing.isDefault !== isDefault
         || existing.processorCreatedAt?.getTime() !== method.createdAt.getTime();
       if (!existing) await tx.insert(paymentMethods).values({ id: rowId, gymId, householdId: household.id,
-        processorId: method.id, ...details, isDefault, createdAt: clock.now() });
+        processorId: method.id, brand: method.brand ?? null, ...details, isDefault, createdAt: clock.now() });
       else if (changed) await tx.update(paymentMethods).set({ ...details, isDefault }).where(eq(paymentMethods.id, rowId));
       if (changed) await audit(tx, system(gymId), clock, 'billing.payment_method.updated', 'payment_method', rowId,
         { ...details, isDefault });
