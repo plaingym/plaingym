@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
+import { and, desc, eq } from 'drizzle-orm';
+import { auditEvents, gyms, writeAudit } from '@plaingym/db';
+// Restore infrastructure uses its dedicated maintenance connection, including in the standalone CLI.
+// eslint-disable-next-line no-restricted-imports
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { decrypt } from '../../infra/age/index.js';
@@ -15,6 +20,34 @@ import { manifestSchema, publicReferences, readReferences, snapshotPrefix, valid
 import type { Manifest } from './backups.format.js';
 import { verifyFile } from './backups.js';
 import { RestoreGate } from './restore.gate.js';
+import { PostgresJobs } from '../../infra/jobs/postgres.js';
+
+/** Durable, idempotent publication before the restore journal can become complete. */
+export async function enqueueRestoreReconciliation(database: PostgresMaintenance, snapshotAt: string, clock: Clock) {
+  const connection = openConnection(database.url, 1);
+  try {
+    const scope = scopedDatabase(connection.db);
+    const queue = new PostgresJobs({ database: scope, clock });
+    for (const gymId of await database.gymIds()) {
+      const request = await scope.forGym(gymId, async tx => {
+        const [gym] = await tx.select({ timezone: gyms.timezone }).from(gyms).where(eq(gyms.id, gymId));
+        // Maintenance bypasses RLS, so each query explicitly keeps the gym boundary.
+        const [restore] = await tx.select({ id: auditEvents.id }).from(auditEvents)
+          .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'restore.completed')))
+          .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
+        if (!gym || !restore) throw new Error('Restored gym receipt is missing');
+        const [published] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+          eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'billing.runner.restore_requested'), eq(auditEvents.targetId, restore.id))).limit(1);
+        if (!published) await writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_requested',
+          targetType: 'restore', targetId: restore.id, after: { snapshotAt }, occurredAt: clock.now() });
+        return { restoreId: restore.id, snapshotAt, timezone: gym.timezone };
+      });
+      await queue.enqueue('billing.runner.restore', { restoreId: request.restoreId, snapshotAt }, {
+        gymId, timezone: request.timezone, idempotencyKey: `restore:${request.restoreId}`,
+      });
+    }
+  } finally { await connection.close(); }
+}
 
 const phaseSchema = z.enum(['verified', 'database_restored', 'migrated', 'rekeyed', 'moving_old', 'moving_new', 'uploads_switched', 'complete']);
 const stateSchema = z.strictObject({
@@ -35,7 +68,7 @@ export interface RestoreOptions {
   readonly uploadsStore?: (gymId: string) => Promise<S3Uploads>;
   readonly gate: RestoreGate;
   /** Tests can simulate power loss at each durable transition. */
-  readonly checkpoint?: (phase: RestorePhase | 'old_uploads_renamed' | 'new_uploads_renamed' | 'secret_field') => void;
+  readonly checkpoint?: (phase: RestorePhase | 'old_uploads_renamed' | 'new_uploads_renamed' | 'secret_field' | 'billing_reconciliation_queued') => void;
 }
 export class RestoreService {
   constructor(readonly options: RestoreOptions) {
@@ -194,7 +227,11 @@ export class RestoreService {
       } else if (!await exists(current)) throw new Error('Restored uploads tree missing');
       await save('uploads_switched');
     }
-    if (state.phase === 'uploads_switched') await save('complete');
+    if (state.phase === 'uploads_switched') {
+      await enqueueRestoreReconciliation(o.database, manifest.startedAt, o.clock);
+      o.checkpoint?.('billing_reconciliation_queued');
+      await save('complete');
+    }
     if (state.phase === 'complete') {
       await rm(previous, { recursive: true, force: true });
       await rm(staging, { recursive: true, force: true });

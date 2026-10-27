@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, inArray, isNull, lte, or } from 'drizzle-orm';
-import { households, invoices, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
+import { and, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
+import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
 import { audit, system } from './store.js';
@@ -165,67 +165,84 @@ export function createReconciliation(options: Options) {
     return { inspected: attempts.length, issues };
   }
   /** Never enables billing. The owner must review the report and explicitly resume it. */
-  async function postRestore(gymId: string, snapshotAt: Date) {
+  async function postRestore(gymId: string, snapshotAt: Date, restoreId?: string) {
     if (!Number.isFinite(snapshotAt.getTime()) || snapshotAt > clock.now()) throw new Error('Invalid snapshot time');
     if ((await options.settings.get(gymId)).billingEnabled) throw new Error('Pause billing before restore reconciliation');
-    const provider = await options.payments(gymId);
-    const issues: ReconciliationIssue[] = [];
-    const references = await scope(gymId, async tx => {
-      const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
-        .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
-      const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
-        .where(inArray(invoices.status, ['open', 'past_due']));
-      const disputes = await tx.select({ disputeId: invoices.disputeId }).from(invoices).where(eq(invoices.disputeStatus, 'open'));
-      const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
-      return [
-        ...attempts.flatMap(row => row.paymentIntentId ? [{ kind: 'charge' as const, id: row.paymentIntentId }] : []),
-        ...checkouts.flatMap(row => row.checkoutSessionId ? [{ kind: 'checkout' as const, id: row.checkoutSessionId }] : []),
-        ...disputes.flatMap(row => row.disputeId ? [{ kind: 'dispute' as const, id: row.disputeId }] : []),
-        ...returns.flatMap(row => row.processorId ? [{ kind: 'refund' as const, id: row.processorId }] : []),
-      ];
-    });
-    async function refresh(ref: PaymentObjectReference) {
-      try {
-        if (ref.kind === 'charge') {
-          const outcome = await provider.findCharge({ kind: 'charge', id: ref.id }, { includeSuccessTime: true });
-          if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
+    const latestRestore = await scope(gymId, async tx => (await tx.select({ id: auditEvents.id }).from(auditEvents)
+      .where(eq(auditEvents.action, 'restore.completed')).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1))[0]);
+    // A delayed job for an earlier restore must never clear the current restore's gate.
+    if (restoreId && latestRestore?.id !== restoreId) return { inspected: 0, readyForOwnerReview: false, issues: [] };
+    restoreId ??= latestRestore?.id;
+    const check = await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system',
+      action: 'billing.runner.restore_check_started', targetType: restoreId ? 'restore' : 'gym', targetId: restoreId ?? gymId,
+      after: { snapshotAt: snapshotAt.toISOString() }, occurredAt: clock.now() }));
+    try {
+      const provider = await options.payments(gymId);
+      const issues: ReconciliationIssue[] = [];
+      const references = await scope(gymId, async tx => {
+        const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
+          .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
+        const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
+          .where(inArray(invoices.status, ['open', 'past_due']));
+        const disputes = await tx.select({ disputeId: invoices.disputeId }).from(invoices).where(eq(invoices.disputeStatus, 'open'));
+        const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
+        return [
+          ...attempts.flatMap(row => row.paymentIntentId ? [{ kind: 'charge' as const, id: row.paymentIntentId }] : []),
+          ...checkouts.flatMap(row => row.checkoutSessionId ? [{ kind: 'checkout' as const, id: row.checkoutSessionId }] : []),
+          ...disputes.flatMap(row => row.disputeId ? [{ kind: 'dispute' as const, id: row.disputeId }] : []),
+          ...returns.flatMap(row => row.processorId ? [{ kind: 'refund' as const, id: row.processorId }] : []),
+        ];
+      });
+      async function refresh(ref: PaymentObjectReference) {
+        try {
+          if (ref.kind === 'charge') {
+            const outcome = await provider.findCharge({ kind: 'charge', id: ref.id }, { includeSuccessTime: true });
+            if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
+              issues.push({ ...ref, reason: 'manual_resolution_required' });
+            return;
+          }
+          const read = await provider.readPaymentObject(ref);
+          if (read.status !== 'found' || !await object(gymId, read.value, provider))
             issues.push({ ...ref, reason: 'manual_resolution_required' });
-          return;
-        }
-        const read = await provider.readPaymentObject(ref);
-        if (read.status !== 'found' || !await object(gymId, read.value, provider))
-          issues.push({ ...ref, reason: 'manual_resolution_required' });
-      } catch { issues.push({ ...ref, reason: 'provider_or_transition_error' }); }
-    }
-    for (const ref of references) await refresh(ref);
-    // The adapter enumerates events plus creation-time lists (including refunds/disputes), with pinned-version re-fetches.
-    // List BEFORE invalidating no-ID reservations: the snapshot may precede their successful intent-ID commit.
-    const since = new Date(snapshotAt.getTime() - 5 * 60_000);
-    let cursor: string | undefined;
-    const cursors = new Set<string>();
-    let inspected = references.length;
-    do {
-      const page = await provider.listChangesSince(since, cursor ? { cursor } : {});
-      for (const change of page.changes) {
-        const id = change.kind === 'charge' && change.object.status === 'unknown' ? change.object.reference.id : 'id' in change.object ? change.object.id : '';
-        await refresh({ kind: change.kind, id });
-        inspected++;
+        } catch { issues.push({ ...ref, reason: 'provider_or_transition_error' }); }
       }
-      cursor = page.nextCursor ?? undefined;
-      if (cursor && cursors.has(cursor)) throw new Error('Repeated reconciliation cursor');
-      if (cursor) cursors.add(cursor);
-    } while (cursor);
-    const pendingResult = await pending(gymId);
-    issues.push(...pendingResult.issues);
-    const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
-      .where(eq(paymentAttempts.status, 'pending')));
-    issues.push(...remaining.map(row => ({ kind: 'attempt', id: row.id, reason: 'unresolved' })));
-    const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
-    issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
-    const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
-    await scope(gymId, tx => audit(tx, system(gymId), clock, 'billing.runner.restore_checked', 'gym', gymId,
-      { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique }));
-    return { inspected, readyForOwnerReview: unique.length === 0, issues: unique };
+      for (const ref of references) await refresh(ref);
+      // The adapter enumerates events plus creation-time lists (including refunds/disputes), with pinned-version re-fetches.
+      // List BEFORE invalidating no-ID reservations: the snapshot may precede their successful intent-ID commit.
+      const since = new Date(snapshotAt.getTime() - 5 * 60_000);
+      let cursor: string | undefined;
+      const cursors = new Set<string>();
+      let inspected = references.length;
+      do {
+        const page = await provider.listChangesSince(since, cursor ? { cursor } : {});
+        for (const change of page.changes) {
+          const id = change.kind === 'charge' && change.object.status === 'unknown' ? change.object.reference.id : 'id' in change.object ? change.object.id : '';
+          await refresh({ kind: change.kind, id });
+          inspected++;
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && cursors.has(cursor)) throw new Error('Repeated reconciliation cursor');
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      const pendingResult = await pending(gymId);
+      issues.push(...pendingResult.issues);
+      const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
+        .where(eq(paymentAttempts.status, 'pending')));
+      issues.push(...remaining.map(row => ({ kind: 'attempt', id: row.id, reason: 'unresolved' })));
+      const pendingRefunds = await scope(gymId, tx => tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')));
+      issues.push(...pendingRefunds.map(row => ({ kind: 'refund', id: row.id, reason: 'unresolved' })));
+      const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
+        targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
+        after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique } }));
+      return { inspected, readyForOwnerReview: unique.length === 0, issues: unique };
+    } catch (error) {
+      await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
+        targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
+        after: { snapshotAt: snapshotAt.toISOString(), inspected: 0, unresolved: 1,
+          issues: [{ kind: 'provider', reason: 'provider_or_transition_error' }] } }));
+      throw error;
+    }
   }
   return { apply, checkout, pending, postRestore };
 }

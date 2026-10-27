@@ -53,7 +53,7 @@ describe('go-live switches and checklist', () => {
     const a = await service.checklist(gymA), b = await service.checklist(gymB);
     expect(status(a)).toEqual({ gym_details: 'ready', members_imported: 'ready', schedule_ready: 'ready', stripe_ready: 'ready',
       cards_collected: 'not_applicable', waivers_signed: 'not_applicable', smtp_ready: 'ready', backup_ready: 'ready',
-      webhook_ready: 'not_applicable', reconciliation_complete: 'not_applicable' });
+      webhook_ready: 'needs_attention', reconciliation_complete: 'ready', past_due_dates: 'ready' });
     // Gym B has an unfinished wizard, only an erased member, and nothing configured; gym A's rows never count.
     expect(status(b)).toMatchObject({ gym_details: 'needs_attention', members_imported: 'needs_attention', schedule_ready: 'needs_attention',
       stripe_ready: 'needs_attention', smtp_ready: 'needs_attention', backup_ready: 'needs_attention' });
@@ -68,6 +68,8 @@ describe('go-live switches and checklist', () => {
     expect(read.status).toBe(allowed ? 200 : 403);
     if (allowed) expect(goLiveChecklistResponseSchema.safeParse(await read.json()).success).toBe(true);
     expect((await patch(app, {})).status).toBe(allowed ? 400 : 403);
+    expect((await app.request('/api/settings/go-live/reconciliation', { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(allowed ? 400 : 403);
     const { revision, memberEmailsEnabled } = await service.checklist(gymA);
     const changed = await patch(app, { revision, memberEmailsEnabled: !memberEmailsEnabled });
     expect(changed.status).toBe(allowed ? 200 : 403);
@@ -77,6 +79,8 @@ describe('go-live switches and checklist', () => {
     const app = server('owner', gymB, gymA), before = await service.checklist(gymB);
     expect((await app.request('/api/settings/go-live')).status).toBe(403);
     expect((await patch(app, { revision: before.revision, billingEnabled: true })).status).toBe(403);
+    expect((await app.request('/api/settings/go-live/reconciliation', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ revision: before.revision, restoreId: uuidv7() }) })).status).toBe(403);
     expect(await service.checklist(gymB)).toEqual(before);
     const own = await server('owner', gymB).request('/api/settings/go-live');
     expect(goLiveChecklistResponseSchema.parse(await own.json()).data).toEqual(before);

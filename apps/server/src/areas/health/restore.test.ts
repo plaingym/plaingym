@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import '@hono/zod-openapi';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { authAccount, backupRuns, encryptedFields, gyms, uuidv7 } from '@plaingym/db';
+import { auditEvents, authAccount, backupRuns, encryptedFields, gyms, paymentAttempts, refunds, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { cloneDatabase, useTestDatabase } from '@plaingym/db/testing/database';
 // Test-only maintenance connection builds the pre-migration restore fixture.
@@ -25,6 +26,15 @@ import { RestoreService } from './restore.js';
 import { RestoreGate } from './restore.gate.js';
 import { inventory } from './backups.retention.js';
 import { protectedName, snapshotPrefix } from './backups.format.js';
+import { FakePayments } from '../../infra/payments/index.js';
+import { createChargeRunner } from '../billing/runner/index.js';
+import { configureChargeRunner, createRunnerJobs } from '../billing/runner/runner.jobs.js';
+import { createInvoiceTransitions } from '../billing/transitions/index.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createGoLiveService, configureGoLive } from '../settings/go-live.js';
+import { createApp } from '../../app.js';
+import { areaContributions } from '../../core/registry-areas.js';
+import { authorize } from '../staff/auth.permissions.js';
 
 const source = useTestDatabase(), target = useTestDatabase();
 const factories = createFactories(source);
@@ -92,6 +102,139 @@ beforeEach(async () => {
 afterEach(async () => {
   client?.destroy(); await server?.close();
   if (root) await rm(root, { recursive: true, force: true });
+});
+
+describe('restored billing through production restore, jobs and go-live routes', () => {
+  async function billing() {
+    const provider = new FakePayments(gymId, clock), queue = new PostgresJobs({ database: target, clock });
+    const settings = createGymSettingsAccessor({ scope: target.forGym, clock });
+    const runner = createChargeRunner({ scope: target.forGym, clock, settings, jobs: queue,
+      transitions: createInvoiceTransitions({ scope: target.forGym, clock }),
+      payments: async id => id === gymId ? provider : new FakePayments(id, clock) });
+    configureChargeRunner(runner);
+    for (const job of createRunnerJobs(() => runner, settings)) queue.handle(job.id, job.handler);
+    const options = { scope: target.forGym, clock, smtpConfigured: async () => true };
+    configureGoLive(options);
+    const service = createGoLiveService(options), context = { gymId, actor: { kind: 'system' as const } };
+    const owner = await createFactories(target)('authUser', gymId), origin = 'https://gym.example.test';
+    const app = createApp({ clock, skipSetup: true, origin, authorize, contributions: areaContributions,
+      resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+      session: async (c, next) => { c.set('context', { ...c.get('context'), principal: { kind: 'staff', gymId, userId: owner.id, roles: ['owner'] } }); await next(); },
+    });
+    const request = (path: string, method: string, body: unknown) => app.request(origin + path, {
+      method, headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const read = () => service.checklist(gymId);
+    const enable = async () => request('/api/settings/go-live', 'PATCH', { revision: (await read()).revision, billingEnabled: true });
+    const rerun = async () => { const data = await read(); return request('/api/settings/go-live/reconciliation', 'POST', {
+      revision: data.revision, restoreId: data.restoreReconciliation!.restoreId,
+    }); };
+    return { provider, runner, queue, service, context, read, enable, rerun, request };
+  }
+  it('restores, automatically reconciles the manifest time, then allows an explicit billing enable', async () => {
+    const snapshot = await backup().snapshot(); await restore().restore(snapshot.id, identity);
+    const f = await billing(), list = vi.spyOn(f.provider, 'listChangesSince');
+    expect((await f.read()).restoreReconciliation).toMatchObject({ snapshotAt: clock.now().toISOString(), checkedAt: null });
+    expect((await f.enable()).status).toBe(409);
+    expect(await f.queue.runNext()).toBe(true);
+    expect(list).toHaveBeenCalledWith(new Date(clock.now().getTime() - 300_000), {});
+    expect((await f.read()).restoreReconciliation).toMatchObject({ unresolved: 0, inspected: 0 });
+    expect((await f.read()).billingEnabled).toBe(false);
+    const make = createFactories(target);
+    const refund = await make('refunds', gymId, { status: 'pending' });
+    expect((await f.enable()).status).toBe(409);
+    await target.forGym(gymId, tx => tx.update(refunds).set({ status: 'succeeded' }).where(eq(refunds.id, refund.id)));
+    const attempt = await make('paymentAttempts', gymId, { status: 'pending' });
+    expect((await f.enable()).status).toBe(409);
+    await target.forGym(gymId, tx => tx.update(paymentAttempts).set({ status: 'failed', resolvedAt: clock.now() }).where(eq(paymentAttempts.id, attempt.id)));
+    expect((await f.enable()).status).toBe(200);
+    expect((await f.rerun()).status).toBe(409); // Rechecking requires paused billing.
+  });
+  it('publishes and runs a check for every restored gym', async () => {
+    const otherGym = uuidv7(); await factories('gyms', otherGym, { billingEnabled: true });
+    try {
+      const snapshot = await backup().snapshot(); await restore().restore(snapshot.id, identity);
+      const f = await billing();
+      expect(await f.queue.runNext()).toBe(true); expect(await f.queue.runNext()).toBe(true);
+      expect(await f.queue.runNext()).toBe(false);
+      for (const id of [gymId, otherGym]) {
+        const data = await f.service.checklist(id);
+        expect(data).toMatchObject({ billingEnabled: false, restoreReconciliation: { unresolved: 0 } });
+      }
+      const other = (await f.service.checklist(otherGym)).restoreReconciliation!;
+      expect((await f.request('/api/settings/go-live/reconciliation', 'POST', {
+        revision: (await f.read()).revision, restoreId: other.restoreId,
+      })).status).toBe(404);
+      expect((await f.request('/api/settings/go-live/reconciliation', 'POST', {
+        revision: 999, restoreId: (await f.read()).restoreReconciliation!.restoreId,
+      })).status).toBe(409);
+    } finally { await source.forSystem(tx => tx.delete(gyms).where(eq(gyms.id, otherGym))); }
+  });
+  it('keeps unresolved payments blocked, then reruns the production check after resolution', async () => {
+    const snapshot = await backup().snapshot(); await restore().restore(snapshot.id, identity);
+    const f = await billing(), invoiceId = uuidv7(), attemptId = uuidv7();
+    const charge = await f.provider.createCharge({ amount: 10000, currency: 'usd', customerId: 'cus_test', paymentMethodId: 'pm_test',
+      invoiceId, attemptId, idempotencyKey: 'unmatched-restore' });
+    await f.provider.confirmCharge(charge.id, { idempotencyKey: 'unmatched-restore:confirm' });
+    await f.queue.runNext();
+    expect((await f.read()).restoreReconciliation!.unresolved).toBeGreaterThan(0);
+    expect((await f.enable()).status).toBe(409);
+    const make = createFactories(target), household = await make('households', gymId, { stripeCustomerId: 'cus_test' });
+    await make('invoices', gymId, { id: invoiceId, householdId: household.id, status: 'open', number: 1, currency: 'USD', amountCents: 10000 });
+    await make('paymentAttempts', gymId, { id: attemptId, invoiceId,
+      status: 'pending', paymentIntentId: charge.id, currency: 'USD', createdAt: clock.now() });
+    expect((await f.rerun()).status).toBe(200);
+    expect((await f.read()).restoreReconciliation).toMatchObject({ unresolved: 0 });
+    expect((await f.read()).billingEnabled).toBe(false);
+    expect((await f.enable()).status).toBe(200);
+    const audits = await target.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.go_live.reconciliation_requested')));
+    expect(audits).toHaveLength(1); expect(audits[0]!.actorKind).toBe('user');
+  });
+  it('invalidates old results on a newer restore and ignores delayed old jobs', async () => {
+    const snapshot = await backup().snapshot(); await restore().restore(snapshot.id, identity);
+    const f = await billing(); await f.queue.runNext();
+    const old = (await f.read()).restoreReconciliation!;
+    // Snapshot a reconciled install so the second restore actually contains the earlier success.
+    const next = await backup({ database: targetMaintenance, scope: target, appEncryptionKey: currentKey }).snapshot();
+    await restore().restore(next.id, identity);
+    const current = (await f.read()).restoreReconciliation!;
+    expect(current.restoreId).not.toBe(old.restoreId); expect(current.checkedAt).toBeNull();
+    expect((await f.enable()).status).toBe(409);
+    await f.runner.postRestore(gymId, new Date(old.snapshotAt!), old.restoreId);
+    expect((await f.read()).restoreReconciliation!.checkedAt).toBeNull();
+    await f.queue.runNext();
+    expect((await f.enable()).status).toBe(200);
+  });
+  it('blocks on the newest failed or interrupted check and permits a later rerun', async () => {
+    const snapshot = await backup().snapshot(); await restore().restore(snapshot.id, identity);
+    const f = await billing(); await f.queue.runNext();
+    const list = vi.spyOn(f.provider, 'listChangesSince').mockRejectedValueOnce(new Error('Provider unavailable'));
+    expect((await f.rerun()).status).toBe(503);
+    expect((await f.read()).restoreReconciliation!.unresolved).toBe(1);
+    expect((await f.enable()).status).toBe(409);
+    list.mockRestore();
+    expect((await f.rerun()).status).toBe(200);
+    expect((await f.enable()).status).toBe(200);
+  });
+  it('keeps a newer failed check blocked when an earlier in-flight check later succeeds', async () => {
+    const snapshot = await backup().snapshot(); await restore().restore(snapshot.id, identity);
+    const f = await billing(); await f.queue.runNext();
+    let entered!: () => void, release!: (value: Awaited<ReturnType<FakePayments['listChangesSince']>>) => void;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const list = vi.spyOn(f.provider, 'listChangesSince').mockImplementationOnce(async () => {
+      entered(); return new Promise(resolve => { release = resolve; });
+    }).mockRejectedValueOnce(new Error('Provider unavailable'));
+    const running = f.rerun();
+    try {
+      await began;
+      expect((await f.enable()).status).toBe(409);
+      expect((await f.rerun()).status).toBe(503);
+    } finally { release({ changes: [], nextCursor: null }); await running; list.mockRestore(); }
+    expect((await f.read()).restoreReconciliation!.unresolved).toBe(1);
+    expect((await f.enable()).status).toBe(409);
+    expect((await f.rerun()).status).toBe(200);
+    expect((await f.enable()).status).toBe(200);
+  });
 });
 
 describe('install snapshot and restore with real Postgres and S3', () => {
@@ -259,7 +402,7 @@ describe('install snapshot and restore with real Postgres and S3', () => {
       expect(await new RestoreGate(join(root, 'target')).isClosed()).toBe(false);
     });
 
-  it.each(['database_restored', 'secret_field', 'rekeyed', 'old_uploads_renamed', 'new_uploads_renamed'] as const)(
+  it.each(['database_restored', 'secret_field', 'rekeyed', 'old_uploads_renamed', 'new_uploads_renamed', 'billing_reconciliation_queued'] as const)(
     'resumes after interruption at %s', async (stop) => {
       const snapshot = await backup().snapshot();
       let interrupted = false;
@@ -272,6 +415,10 @@ describe('install snapshot and restore with real Postgres and S3', () => {
       expect(gym.billingEnabled).toBe(false);
       await restore().resume(); // Complete journals are harmless on every subsequent boot.
       expect(await new RestoreGate(join(root, 'target')).isClosed()).toBe(false);
+      const queue = new PostgresJobs({ database: target, clock }), queued = vi.fn(async () => {});
+      queue.handle('billing.runner.restore', queued);
+      expect(await queue.runNext()).toBe(true); expect(await queue.runNext()).toBe(false);
+      expect(queued).toHaveBeenCalledOnce();
     });
 
   it('reuses immutable upload blobs and protects them across retention and tombstone sweeping', async () => {

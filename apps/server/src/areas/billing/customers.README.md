@@ -60,6 +60,10 @@ Payment Checkout saves the card only for cycle invoices and assignment invoices
 the runner's shared predicate. Other one-off payments do not save a card or change
 the household's default. Card and onboarding links use setup mode and save cards.
 Returned and reused sessions must match the expected card-saving policy.
+Payment Checkout refuses paused billing before customer creation or reserving a
+session, and rechecks before provider Checkout and returning new or reused URLs.
+Card and onboarding setup, including lazy customer creation, remain available
+while billing is paused.
 The existing `checkout.session.completed` webhook handler persists the card and
 records the payment; the next daily charge run uses that stored card explicitly.
 No additional runtime registration is required: the existing

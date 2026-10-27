@@ -251,7 +251,8 @@ describe('new household billing through production route registrations', () => {
     const f = await fixture('update_card'), error = new Error('Failed query with payer@example.invalid');
     let calls = 0;
     const checkout = createSignedLinkCheckout({ clock: f.clock, paymentsFor: f.paymentsFor, originFor: async () => origin,
-      log: f.log, scope: (gymId, fn) => { if (++calls === 2) throw error; return db.forGym(gymId, fn); } });
+      // Call 1 reads the billing switch, call 2 prepares the link; fail the customer reservation.
+      log: f.log, scope: (gymId, fn) => { if (++calls === 3) throw error; return db.forGym(gymId, fn); } });
     await expect(checkout.start(f.gymId, f.link.link.id)).rejects.toBeInstanceOf(CustomerNotLinked);
     expect(JSON.parse(f.log.mock.calls[0]![0])).toMatchObject({ reason: 'Error', gymId: f.gymId, householdId: f.householdId });
     expect(f.log.mock.calls[0]![0]).not.toContain('payer@example');

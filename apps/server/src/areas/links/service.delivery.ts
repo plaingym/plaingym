@@ -7,6 +7,7 @@ import type { SignedLinkRecord } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Email } from '../../infra/email/index.js';
 import { renderSignedLink } from '../../emails/links/service.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 
 export interface PreparedSignedLinkDelivery {
   readonly gymId: string;
@@ -55,6 +56,8 @@ export async function deliverSignedLink(input: {
   });
   const url = new URL(`/l/${token}`, delivery.origin).href;
   const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose }, delivery.t);
+  if (!(await createGymSettingsAccessor({ scope }).get(context.gymId)).memberEmailsEnabled)
+    throw new AppError('unavailable', 'Member email is disabled');
   const result = await delivery.email.sendEmail({ to: recipient, ...content });
   if (result.status !== 'sent') throw new AppError('unavailable', 'Signed link email was suppressed');
 }

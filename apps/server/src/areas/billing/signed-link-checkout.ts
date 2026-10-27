@@ -9,6 +9,7 @@ import { describeError } from '../../core/log.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { createCustomersService, CustomerUnavailable } from './customers.js';
 import { isAssignmentInvoice } from './assignment-invoices.js';
+import { createGymSettingsAccessor } from '../settings/settings.js';
 
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
@@ -27,6 +28,10 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const log = options.log ?? console.error;
   const customers = createCustomersService({ scope, clock, paymentsFor: options.paymentsFor });
+  const settings = createGymSettingsAccessor({ scope, clock });
+  async function checkBilling(gymId: string, payment: boolean) {
+    if (payment && !(await settings.get(gymId)).billingEnabled) unavailable();
+  }
   async function locked(tx: Transaction, gymId: string, linkId: string) {
     const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)).for('update');
     if (!link || link.gymId !== gymId || link.revokedAt || link.usedAt || link.expiresAt <= clock.now()
@@ -49,9 +54,11 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const origin = new URL(await options.originFor(gymId));
     if (origin.protocol !== 'https:' || origin.username || origin.password) unavailable();
     const returnUrl = new URL('/l/return', origin).href;
+    const billingEnabled = (await settings.get(gymId)).billingEnabled;
     const prepared = await scope(gymId, async tx => {
       const { link, household } = await locked(tx, gymId, linkId);
       if (link.purpose !== 'pay_invoice') return { link, customerId: household.stripeCustomerId, invoice: null, savesCard: true };
+      if (!billingEnabled) unavailable();
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId))).for('update');
       if (!invoice) missing();
       await payable(tx, invoice);
@@ -69,6 +76,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       }
       return { link, customerId: household.stripeCustomerId, invoice, savesCard };
     });
+    await checkBilling(gymId, !!prepared.invoice);
     let customerId: string, provider: Payments;
     try {
       customerId = prepared.customerId ?? await customers.ensureCustomer(gymId, prepared.link.householdId);
@@ -82,6 +90,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       throw new CustomerNotLinked(error);
     }
     let session: CheckoutSession;
+    await checkBilling(gymId, !!prepared.invoice);
     if (prepared.invoice?.checkoutSessionId) {
       const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.invoice.checkoutSessionId });
       if (found.status !== 'found' || found.value.kind !== 'checkout') unavailable();
@@ -116,6 +125,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       || session.savesCard !== (prepared.invoice ? prepared.savesCard : true)
       || (prepared.invoice && session.metadata.invoiceId !== prepared.invoice.id)) unavailable();
     try {
+      await checkBilling(gymId, !!prepared.invoice);
       await scope(gymId, async tx => {
         const { link, household } = await locked(tx, gymId, linkId);
         if (household.stripeCustomerId !== customerId) missing();

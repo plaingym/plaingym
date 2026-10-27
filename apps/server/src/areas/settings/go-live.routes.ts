@@ -10,7 +10,7 @@ const t = createTranslator(locales.en ?? {});
 /** Tests pass a service; otherwise routes use the runtime composition. */
 export function createGoLiveRoutes(service?: GoLiveService): RouteRegistration[] {
   const current = () => service ?? goLiveService();
-  const { goLiveChecklist: get, updateGoLive: update } = settingsContracts;
+  const { goLiveChecklist: get, updateGoLive: update, rerunGoLiveReconciliation: rerun } = settingsContracts;
   return [
     route({ ...get, responses: { 200: { description: 'Go-live switches and checklist', content: { 'application/json': { schema: get.response } } } } },
       async (c) => c.json({ data: await current().checklist(c.get('context').gym.gymId) }, 200)),
@@ -21,6 +21,16 @@ export function createGoLiveRoutes(service?: GoLiveService): RouteRegistration[]
       const context = c.get('context');
       if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', t('settings/go-live:notFound'));
       const data = await current().update({ gymId: context.gym.gymId, actor: { kind: 'user', userId: context.principal.userId } }, c.req.valid('json'));
+      return c.json({ data }, 200);
+    }),
+    route({ ...rerun,
+      request: { body: { required: true, content: { 'application/json': { schema: rerun.body } } } },
+      responses: { 200: { description: 'Latest restore reconciliation and checklist', content: { 'application/json': { schema: rerun.response } } } },
+    }, async c => {
+      const context = c.get('context');
+      if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', t('settings/go-live:notFound'));
+      const data = await current().rerunReconciliation({ gymId: context.gym.gymId,
+        actor: { kind: 'user', userId: context.principal.userId } }, c.req.valid('json'));
       return c.json({ data }, 200);
     }),
   ];

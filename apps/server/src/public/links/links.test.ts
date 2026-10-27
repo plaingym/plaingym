@@ -27,7 +27,7 @@ import type { Principal } from '../../core/context.js';
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true) {
   const clock = new TestClock('2026-10-25T12:00:00Z'), gymId = uuidv7();
-  await factory('gyms', gymId);
+  await factory('gyms', gymId, { billingEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: customer ? 'cus_' + gymId : null });
   const member = await factory('members', gymId, { householdId: household.id, firstName: 'Target', dateOfBirth: '2020-01-01' });
   const sibling = await factory('members', gymId, { householdId: household.id, firstName: 'Sibling' });

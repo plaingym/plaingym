@@ -49,15 +49,24 @@ export const updateBookingRulesRequestSchema = bookingRulesSchema.partial().exte
 export const updateBillingRulesRequestSchema = billingRulesSchema.extend({ revision: revisionSchema });
 /** The service returns conflict if any billing record already references the currency. */
 export const updateGymCurrencyRequestSchema = z.strictObject({ revision: revisionSchema, currency: currencySchema });
-export const updateGoLiveRequestSchema = goLiveSwitchesSchema.partial().extend({ revision: revisionSchema })
-  .refine((value) => Object.keys(value).length > 1, 'Supply at least one change');
+/** A confirmation binds the reviewed dates to the membership revisions the owner saw. */
+export const goLivePastDueDateSchema = z.strictObject({ id: idSchema, revision: revisionSchema, nextDueOn: z.iso.date() });
+export const updateGoLiveRequestSchema = goLiveSwitchesSchema.partial().extend({
+  revision: revisionSchema, confirmedPastDueDates: z.array(goLivePastDueDateSchema).optional(),
+}).refine((value) => value.billingEnabled !== undefined || value.memberEmailsEnabled !== undefined, 'Supply at least one change');
 export const goLiveChecklistItemSchema = z.strictObject({
-  id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'smtp_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete']),
+  id: z.enum(['gym_details', 'members_imported', 'schedule_ready', 'stripe_ready', 'cards_collected', 'waivers_signed', 'smtp_ready', 'backup_ready', 'webhook_ready', 'reconciliation_complete', 'past_due_dates']),
   status: z.enum(['ready', 'needs_attention', 'not_applicable']), message: z.string(),
 });
 export const goLiveChecklistResponseSchema = z.strictObject({ data: z.strictObject({
   revision: revisionSchema, ...goLiveSwitchesSchema.shape, items: z.array(goLiveChecklistItemSchema),
+  pastDueMemberships: z.array(goLivePastDueDateSchema.extend({ memberId: idSchema, memberName: z.string(), planName: z.string() })).optional(),
+  restoreReconciliation: z.strictObject({
+    restoreId: idSchema, snapshotAt: instantSchema.nullable(), checkedAt: instantSchema.nullable(),
+    inspected: z.int32().nonnegative().nullable(), unresolved: z.int32().nonnegative().nullable(),
+  }).nullable().optional(),
 }) });
+export const rerunGoLiveReconciliationRequestSchema = z.strictObject({ revision: revisionSchema, restoreId: idSchema });
 export const gymSettingsResponseSchema = z.strictObject({ data: gymSettingsSchema });
 export const deleteGymRequestSchema = z.strictObject({ revision: revisionSchema, confirmation: z.literal('DELETE') });
 export const deleteGymResponseSchema = z.strictObject({ data: z.strictObject({ deleted: z.literal(true) }) });
@@ -77,6 +86,8 @@ export const settingsContracts = {
     body: updateGoLiveRequestSchema, response: goLiveChecklistResponseSchema },
   goLiveChecklist: { method: 'get', path: '/api/settings/go-live', permission: goLive,
     response: goLiveChecklistResponseSchema },
+  rerunGoLiveReconciliation: { method: 'post', path: '/api/settings/go-live/reconciliation', permission: goLive,
+    body: rerunGoLiveReconciliationRequestSchema, response: goLiveChecklistResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type GymSettings = z.infer<typeof gymSettingsSchema>;

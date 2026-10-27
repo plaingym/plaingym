@@ -89,6 +89,15 @@ files are published, stored ones kept, and deletions marked after the snapshot
 cleared, so a sweep never removes a file the restored database references. Both
 steps are idempotent and repeat from the start after a restart.
 
+Before marking the journal complete, restore queues one `billing.runner.restore`
+job per restored gym with the manifest's snapshot time and that gym's new
+`restore.completed` audit ID. Publication uses a dedicated maintenance connection
+and the production Postgres queue, including in the standalone maintenance CLI.
+The restore audit ID is the idempotency key: an interruption after enqueue and
+before journal completion reuses the existing job. The worker runs after admission
+reopens. It never enables billing. The go-live page displays the latest check and
+lets a manager rerun it after resolving issues, then explicitly enable billing.
+
 A restart resumes without needing to retain the age private identity.
 Before the rekey receipt it repeats reset/restore/migrate/rekey from verified
 staging; after that receipt it resumes the recorded uploads switch. Completed

@@ -156,14 +156,20 @@ a replacement payment date.
    composition already configures transition effects. The billing barrel includes:
    `billing.runner.daily` (09:00 local), `billing.runner.reconcile` (hourly at :17),
    `billing.runner.retry` (`{ invoiceId }`), and `billing.runner.restore`
-   (`{ snapshotAt }`). The normal retry path is the transition effect job callback;
+   (`{ snapshotAt, restoreId }`; legacy jobs may omit `restoreId`). Restore queues
+   one durable job per gym/restore before completing its journal. The normal retry path is the transition effect job callback;
    do not independently schedule another set of retries.
    The daily and reconciliation jobs throw `Charge runner is not configured`
    for an enabled gym if composition was omitted; disabled gyms may remain inert.
 4. Staff release overdue holds on the invoice page, confirming collection on the
    next daily run unless they charge or record a payment first. Released invoices
    are never held again. Restore reconciliation returns an operations report;
-   owner confirmation to resume billing is a separate operation.
+   owner confirmation to resume billing is a separate operation. Each started
+   restore check targets its restore audit; its result targets that check's audit.
+   Only the newest check for the newest restore can clear the go-live gate.
+   Provider failures persist an unresolved report. Managers can rerun via go-live
+   while billing is paused, using `rerunRestoreReconciliation`, which resolves the
+   same configured runner as the worker. Rerunning never enables billing.
 
 The PostgreSQL suite covers reservation visibility, replay, concurrent runs,
 recorded synthetic Stripe adapter fixtures, customer adoption, catch-up, local

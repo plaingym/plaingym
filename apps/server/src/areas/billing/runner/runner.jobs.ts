@@ -7,6 +7,11 @@ import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.
 
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
+/** Used by go-live's explicit rerun; resolves the same runner configured for the worker. */
+export async function rerunRestoreReconciliation(gymId: string, snapshotAt: Date, restoreId: string) {
+  if (!configured) throw new Error('Charge runner is not configured');
+  return configured.postRestore(gymId, snapshotAt, restoreId);
+}
 export function createRunnerJobs(read: () => ChargeRunner | undefined = () => configured,
   settings: GymSettingsAccessor = gymSettingsAccessor): readonly JobRegistration[] {
   const required = () => { const runner = read(); if (!runner) throw new Error('Charge runner is not configured'); return runner; };
@@ -29,7 +34,8 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     } },
     { id: 'billing.runner.restore', async handler(payload, context) {
       const result = await required().postRestore(context.gymId,
-        new Date(instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt)));
+        new Date(instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt)),
+        idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId));
       if (!result.readyForOwnerReview) throw new Error('Restore reconciliation requires manual resolution');
     } },
   ];

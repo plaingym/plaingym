@@ -68,6 +68,10 @@ export function createTransitionNotifications(options: {
       const subject = t(`billing/transitions:${kind}Subject`, values), text = t(`billing/transitions:${kind}Body`, values);
       for (const to of new Set(recipients)) {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
+        if (kind !== 'duplicate' && !(await options.settings.get(gymId)).memberEmailsEnabled) {
+          for (const linkId of minted) await links.revoke({ gymId, actor: { kind: 'system' } }, linkId);
+          return;
+        }
         const sent: EmailResult = await prepared.email.sendEmail({ to, subject, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
         if (sent.status === 'suppressed' && kind === 'duplicate') throw new Error('Staff notice was suppressed');
         if (sent.status === 'suppressed' && minted.length) throw new Error('Dunning email was suppressed');

@@ -31,4 +31,7 @@ shared email layout. The URL is `/l/<token>` on the configured origin. Matching
 members' opt-out and deliverability flags are checked; waiver sends also honor the
 target member's flags. No member address is substituted for a missing household
 address. Transport failures and suppressed sends revoke the undisclosed credential
-and return a generic unavailable error. The email transport runs outside transactions.
+and return a generic unavailable error. Delivery reloads the persisted member-email
+switch immediately before sending, after asynchronous preparation and rendering;
+the prepared value cannot authorize a send after the switch is turned off.
+The email transport runs outside transactions.

@@ -103,7 +103,10 @@ successful refunds advance accepted payments to partial/full refund only.
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices. Runtime must supply a gym SMTP resolver (or demo
 outbox), trusted canonical origin and staff recipients. Household email respects
-the gym's email switch and matching member opt-outs/deliverability. Tokens are
+the gym's email switch and matching member opt-outs/deliverability. Receipts and
+dunning recheck the persisted switch immediately before each send, after preparing
+the transport and links. Suppression revokes undisclosed dunning links. Staff
+notices remain exempt from the member-email switch. Tokens are
 never persisted in effect/audit payloads; failed deliveries revoke their links.
 Messages live in `locales/en/billing/transitions.json`; a supplied translator
 falls back to the English catalog for missing keys.

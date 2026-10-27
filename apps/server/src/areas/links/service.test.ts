@@ -42,7 +42,7 @@ const sending = createSignedLinksService({ scope: database.forGym, clock, delive
   async prepare(gymId) { expect(isInTransaction()).toBe(false); return { ...delivery, gymId }; },
 } });
 beforeAll(async () => {
-  await factory('gyms', gymA); await factory('gyms', gymB);
+  await factory('gyms', gymA, { memberEmailsEnabled: true }); await factory('gyms', gymB);
   householdA = (await factory('households', gymA, { email: 'payer@example.test' })).id;
   householdOther = (await factory('households', gymA)).id;
   householdB = (await factory('households', gymB)).id;
