@@ -40,6 +40,7 @@ import { createSignedLinkCheckout } from '../areas/billing/signed-link-checkout.
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
+import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { backupsConfigured, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
@@ -215,6 +216,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     if (!provider) throw new AppError('unavailable', 'Stripe is not configured for this gym');
     return provider;
   }
+  configureCampaigns(createCampaignsService({ jobs: queue, clock, paymentsFor: requirePayments,
+    delivery: { prepare: async gymId => ({ gymId, ...await gymMail(gymId) }) } }));
   const inbox = webhookInbox(paymentsFor, queue);
   configureWebhookInboxRoutes(inbox);
   configureWebhookInboxJobs(inbox);

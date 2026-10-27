@@ -25,7 +25,7 @@ const database = useTestDatabase();
 const factory = createFactories(database), handlers = new Map<string, JobHandler>();
 const origin = 'https://demo.example.test';
 const demoStripeEnv = { DEMO_STRIPE_TEST_KEY: 'rk_test_runtime', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_runtime' };
-let runtime: Runtime, directory: string;
+let runtime: Runtime, directory: string, ownerCookie: string;
 let storage: Awaited<ReturnType<typeof s3Server>>;
 let sandbox: { gymId: string; origin: string; kioskToken: string };
 const env = () => ({ DATABASE_URL: database.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32), AUTH_SECRET: 'runtime-secret-with-at-least-32-characters',
@@ -107,6 +107,7 @@ it('routes real login and signed-link email into the outbox without SMTP', async
   const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
   expect(login.status).toBe(200);
   const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+  ownerCookie = cookie;
   expect((await runtime.app.request(sandbox.origin + '/api/auth/bootstrap', { headers: { host: new URL(sandbox.origin).host, cookie } })).status).toBe(200);
   expect((await post('/api/auth/sign-in/magic-link', { email: `owner.${sandbox.gymId}@example.invalid`, callbackURL: '/admin' }, sandbox.origin)).status).toBe(200);
   const [household] = await database.forGym(sandbox.gymId, (tx) => tx.select().from(householdUsers));
@@ -118,6 +119,27 @@ it('routes real login and signed-link email into the outbox without SMTP', async
   expect(messages).toHaveLength(2);
   expect(messages.some((message) => message.text.includes(sandbox.origin + '/l/'))).toBe(true);
   expect(send).not.toHaveBeenCalled();
+});
+it('publishes, sends and scans campaigns through the runtime composition', async () => {
+  const household = await factory('households', sandbox.gymId, { email: 'campaign@example.test', stripeCustomerId: 'cus_campaign_runtime' });
+  const response = await post('/api/link-campaigns', { name: 'Collect cards', purpose: 'update_card',
+    recipients: [{ householdId: household.id }], reminderSchedule: [], expiresAt: new Date(clock.now().getTime() + 86400000).toISOString(),
+  }, sandbox.origin, { cookie: ownerCookie });
+  expect(response.status).toBe(200);
+  const run = async (name: string, payload: unknown) => {
+    const handler = handlers.get(name); expect(handler, name).toBeDefined();
+    await handler!(payload, { gymId: sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
+  };
+  for (const name of ['links.campaigns.publish', 'links.campaigns.send']) {
+    const queued = await database.forGym(sandbox.gymId, tx => tx.select().from(jobs).where(eq(jobs.name, name)));
+    expect(queued).toHaveLength(1);
+    await run(name, (queued[0]!.payload as { value: unknown }).value);
+  }
+  await run('links.campaigns.scan', {});
+  const messages = await database.forGym(sandbox.gymId, tx => tx.select().from(emailOutbox));
+  expect(messages.filter(message => message.recipient === household.email)).toEqual([
+    expect.objectContaining({ text: expect.stringContaining(sandbox.origin + '/l/') }),
+  ]);
 });
 it('serves rank and import routes through the runtime composition', async () => {
   const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
