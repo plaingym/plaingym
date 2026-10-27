@@ -197,7 +197,13 @@ export function createCampaignsService(options: CampaignsOptions) {
         const [campaign] = await scope(gymId, tx => tx.select().from(linkCampaigns).where(eq(linkCampaigns.id, work.campaignId)));
         if (!campaign || occurrenceAt(campaign, clock.now(), gym.timezone) !== work.occurrence) return;
       }
-      if (row.purpose !== 'sign_waiver') await matchCampaignCustomer({ scope, clock, paymentsFor: options.paymentsFor }, gymId, row.householdId);
+      if (row.purpose !== 'sign_waiver') {
+        try { await matchCampaignCustomer({ scope, clock, paymentsFor: options.paymentsFor }, gymId, row.householdId); }
+        catch {
+          await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.customer_match_failed',
+            targetType: 'signed_link', targetId: row.id, after: { campaignId: work.campaignId, occurrence: work.occurrence }, occurredAt: clock.now() }));
+        }
+      }
       await deliverCampaignLink({ scope, clock, delivery: options.delivery }, gymId, work.campaignId, work.linkId, work.occurrence);
     },
   };

@@ -419,6 +419,28 @@ describe('campaign sends and reminders', () => {
 });
 
 describe('campaign customer matching', () => {
+  it.each(['paymentsFor', 'findCustomerByEmail'] as const)('sends onboarding once and audits when %s fails', async source => {
+    const f = await fixture(), c = await f.campaign('onboarding');
+    const lookup = vi.spyOn(f.provider, 'findCustomerByEmail');
+    if (source === 'paymentsFor') f.paymentsFor.mockRejectedValue(new AppError('unavailable', 'Stripe is not configured'));
+    else lookup.mockRejectedValue(new Error('Lookup failed for payer@example.test / cus_private'));
+    await f.drain();
+    const send = f.jobs.jobs.find(job => job.name === campaignSendJob)!;
+    expect(send).toMatchObject({ status: 'completed', attempt: 1 });
+    expect(f.email.messages).toHaveLength(1);
+    expect(f.email.messages[0]!.to).toBe(f.household.email);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))[0]!.stripeCustomerId).toBeNull();
+    await f.service.send(send.payload, f.gymId);
+    expect(f.email.messages).toHaveLength(1);
+    expect(f.paymentsFor).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledTimes(source === 'paymentsFor' ? 0 : 1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_match_failed')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ targetType: 'signed_link', targetId: c.link.id,
+      after: { campaignId: c.campaign.id, occurrence: 'initial' } });
+    expect(audits[0]!.after).toEqual({ campaignId: c.campaign.id, occurrence: 'initial' });
+    expect(JSON.stringify(audits)).not.toMatch(/payer@example|cus_private/);
+  });
   it('uses only gym-tagged exact email matches and retains the household revision', async () => {
     const f = await fixture(), c = await f.campaign();
     f.provider.seedCustomer({ id: 'cus_ours', email: 'PAYER@example.test' });
