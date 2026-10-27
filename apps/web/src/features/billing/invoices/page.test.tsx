@@ -3,6 +3,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ShellServicesContext } from '../../../app/context.js';
+import { createShellServices } from '../../../app/services.js';
+import type { ShellBootstrap } from '@plaingym/shared/contracts';
+import { canStaff } from '@plaingym/shared';
 import { InvoiceList } from './page.js';
 import { InvoiceDetails } from './detail.js';
 import { createInvoiceClient } from './api.js';
@@ -35,7 +39,7 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
     }
     if (url.pathname === '/api/billing/charge-types') return Response.json(page([]));
     if (url.pathname === '/api/billing/tax-rates') return Response.json(page([]));
-    if (url.pathname === '/api/settings') return Response.json({ data: settings });
+    if (url.pathname === '/api/settings') return Response.json({}, { status: 403 });
     if (url.pathname === '/api/links/send') return Response.json({ data: {
       id: id(9), createdAt, householdId: home, campaignId: null, purpose: 'pay_invoice', invoiceId: invoice.id, memberId: null,
       expiresAt: '2026-11-01T12:00:00Z', usedAt: null, revokedAt: null, createdBy: id(10),
@@ -44,8 +48,9 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
   });
   return { fetcher, client: createInvoiceClient(fetcher), detail };
 }
+const bootstrap: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: settings.timezone, currency: 'USD', enabledModules: [] }, session: { userId: id(10), roles: ['front_desk'], member: false }, login: { password: true, magicLink: false } };
 function start(view: React.ReactNode) {
-  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>{view}</QueryClientProvider>);
+  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
 describe('invoice and household payment UI', () => {
@@ -95,7 +100,9 @@ describe('invoice and household payment UI', () => {
     const sent = f.fetcher.mock.calls.find(([path]) => String(path) === '/api/links/send');
     expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ purpose: 'pay_invoice', invoiceId: invoice.id, householdId: home });
   });
-  it('opens a one-off custom charge dialog with exact cents and the current household', async () => {
+  it('lets front desk create a one-off custom invoice from bootstrap without settings access', async () => {
+    expect(canStaff(bootstrap.session!.roles, 'payments.record')).toBe(true);
+    expect(canStaff(bootstrap.session!.roles, 'settings.manage')).toBe(false);
     const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} client={f.client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
@@ -105,7 +112,8 @@ describe('invoice and household payment UI', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add one-off charge' }));
     await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/one-off'))).toBe(true));
     const sent = f.fetcher.mock.calls.find(([path]) => String(path).endsWith('/one-off'));
-    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ source: 'custom', householdId: home, amountCents: 1029 });
+    expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ source: 'custom', householdId: home, amountCents: 1029, currency: 'USD' });
+    expect(f.fetcher.mock.calls.some(([path]) => String(path) === '/api/settings')).toBe(false);
   });
   it('shows a real error state and retries a failed invoice read', async () => {
     const f = transport(); f.fetcher.mockResolvedValueOnce(Response.json({}, { status: 500 }));

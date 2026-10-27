@@ -74,14 +74,14 @@ export function createAccountService(config: AuthConfig, database = systemDataba
         await input.authorize(tx);
         await tx.insert(authAccount).values({ userId: user.id, accountId: user.id, providerId: 'credential', password: hash, createdAt: input.clock.now(), updatedAt: input.clock.now() })
           .onConflictDoUpdate({ target: [authAccount.providerId, authAccount.accountId], set: { password: hash, updatedAt: input.clock.now() } });
-        await tx.delete(authSession).where(eq(authSession.userId, user.id));
+        await tx.delete(authSession).where(and(eq(authSession.gymId, input.gymId), eq(authSession.userId, user.id)));
         await writeAudit(tx, { gymId: input.gymId, actorKind: input.actorUserId ? 'user' : 'system', actorUserId: input.actorUserId,
           action: 'auth.password_reset', targetType: 'user', targetId: user.id, occurredAt: input.clock.now() });
       });
     },
     async revokeAllSessions(gymId: string, userId: string, clock: Clock) {
       await forGym(gymId, async (tx) => {
-        await tx.delete(authSession).where(eq(authSession.userId, userId));
+        await tx.delete(authSession).where(and(eq(authSession.gymId, gymId), eq(authSession.userId, userId)));
         await writeAudit(tx, { gymId, actorKind: 'system', action: 'auth.sessions_revoked', targetType: 'user', targetId: userId, occurredAt: clock.now() });
       });
     },

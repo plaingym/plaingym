@@ -85,6 +85,7 @@ import { configurePaymentDelivery } from '../areas/billing/payments.jobs.js';
 import { createBillingAlerts, createDisputeAlertProvider } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
+import { configureStaffAuth } from '../areas/staff/auth.routes.js';
 import type { Jobs } from '../infra/jobs/index.js';
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -185,6 +186,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
   const accounts = createAccountService(config);
+  configureStaffAuth({ accounts, config, smtpConfigured });
   configureBillingAlerts(createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail }));
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   const attendance = createAttendanceQueries({ clock });

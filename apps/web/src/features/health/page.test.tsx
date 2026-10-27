@@ -14,7 +14,7 @@ vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn() } }));
 const checkedAt = '2026-10-22T12:00:00Z';
 const tiles = (): HealthTile[] => healthTileIds.map((id) => ({ id, status: 'not_configured', details: null, checkedAt: null, message: 'Not set up' }));
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = 'gym-a') {
-  const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', enabledModules: [] }, session: { userId: 'owner', roles, member: false }, login: { password: true, magicLink: false } };
+  const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: 'owner', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
 }
 function start() {

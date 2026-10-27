@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
-import { idSchema } from './common.js';
+import { currencySchema, idSchema } from './common.js';
+import { gymTimezoneSchema } from './settings.js';
 import { staffRoleNameSchema } from './staff.js';
 import type { EndpointContract } from './definition.js';
 
@@ -11,7 +12,7 @@ export const shellSessionSchema = z.strictObject({
   member: z.boolean(),
 });
 export const shellBootstrapSchema = z.strictObject({
-  gym: z.strictObject({ id: idSchema, name: z.string().min(1), enabledModules: z.array(z.string().min(1)).readonly() }),
+  gym: z.strictObject({ id: idSchema, name: z.string().min(1), timezone: gymTimezoneSchema, currency: currencySchema, enabledModules: z.array(z.string().min(1)).readonly() }),
   session: shellSessionSchema.nullable(),
   login: z.strictObject({ password: z.boolean(), magicLink: z.boolean() }),
 });

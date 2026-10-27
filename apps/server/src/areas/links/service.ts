@@ -79,10 +79,11 @@ export function createSignedLinksService(options: {
         ));
         if (!invoice) missing();
       } else if (request.purpose === 'sign_waiver') {
-        const [member] = await tx.select({ id: members.id }).from(members).where(and(
+        const [member] = await tx.select({ id: members.id, anonymizedAt: members.anonymizedAt }).from(members).where(and(
           eq(members.gymId, context.gymId), eq(members.householdId, request.householdId), eq(members.id, request.memberId),
-        ));
+        )).for('update');
         if (!member) missing();
+        if (member.anonymizedAt !== null) throw new AppError('conflict', 'Member personal data has been erased');
       }
       if (request.campaignId) {
         const [campaign] = await tx.select({ purpose: linkCampaigns.purpose }).from(linkCampaigns).where(and(

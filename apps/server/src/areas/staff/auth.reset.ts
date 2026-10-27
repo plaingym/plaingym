@@ -2,8 +2,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { staffRoles, householdUsers, type Transaction } from '@plaingym/db';
 import { AppError, type Clock, type StaffRole } from '@plaingym/shared';
-import { createAccountService, type AccountService } from '../../infra/auth/accounts.js';
-import { authConfig } from '../../infra/auth/config.js';
+import type { AccountService } from '../../infra/auth/accounts.js';
 
 const rank: Record<StaffRole, number> = { owner: 4, admin: 3, coach: 2, front_desk: 1 };
 /** Re-read both staff and household links inside the reset transaction; never trust request role claims. */
@@ -18,7 +17,7 @@ export async function assertCanResetPassword(tx: Transaction, input: { gymId: st
   const targetRank = target ? rank[target.role as StaffRole] ?? 4 : 0;
   if (target?.role === 'owner' || targetRank >= actorRank || (actor.role === 'front_desk' && target)) throw new AppError('forbidden', 'Protected account');
 }
-export async function resetStaffPassword(input: { gymId: string; actorUserId: string; targetUserId: string; newPassword: string; clock: Clock }, accounts: AccountService = createAccountService(authConfig())) {
+export async function resetStaffPassword(input: { gymId: string; actorUserId: string; targetUserId: string; newPassword: string; clock: Clock }, accounts: AccountService) {
   await accounts.resetPassword({ ...input, userId: input.targetUserId, authorize: (tx) => assertCanResetPassword(tx, input) });
 }
 /** The local owner recovery path is limited to a current owner in this single gym. */

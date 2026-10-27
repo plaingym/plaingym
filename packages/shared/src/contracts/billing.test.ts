@@ -9,7 +9,7 @@ import type {
 import {
   AppError, errorResponse, billingContracts,
   activateMembershipRequestSchema, assignMembershipRequestSchema,
-  billingCatalogListQuerySchema, billingCheckoutResultSchema, billingInvoiceParamsSchema, billingUpcomingQuerySchema,
+  billingCatalogListQuerySchema, billingCheckoutResultSchema, billingEmptyRequestSchema, billingInvoiceParamsSchema, billingUpcomingQuerySchema,
   cancelMembershipRequestSchema, cardSetupCheckoutResponseSchema,
   chargeTypeResponseSchema, createChargeTypeRequestSchema, createOneOffInvoiceRequestSchema,
   createPlanRequestSchema, createRefundRequestSchema, createTaxRateRequestSchema,
@@ -230,7 +230,7 @@ describe('masked cards, payments, refunds, and Checkout', () => {
     expect(cardSetupCheckoutResponseSchema.parse({ data: { ...session, mode: 'setup', householdId: ids.household } }).data.mode).toBe('setup');
     expect(billingCheckoutResultSchema.safeParse({ ...session, url: 'http://checkout.example/session' }).success).toBe(false);
     expect(billingCheckoutResultSchema.safeParse({ ...session, url: 'javascript:alert(1)' }).success).toBe(false);
-    expect(billingContracts.createInvoiceCheckout.body.safeParse({ successUrl: 'https://attacker.example' }).success).toBe(false);
+    expect(billingEmptyRequestSchema.safeParse({ successUrl: 'https://attacker.example' }).success).toBe(false);
     expect(cardSetupCheckoutResponseSchema.safeParse({ data: { ...session, mode: 'payment', householdId: ids.household } }).success).toBe(false);
   });
 });
@@ -249,6 +249,10 @@ describe('billing query and overview contracts', () => {
 });
 
 describe('billing endpoint permissions', () => {
+  it('lists the served review-hold endpoint and omits unmounted endpoints', () => {
+    expect(billingContracts.releaseInvoiceHold.path).toBe('/api/billing/invoices/{invoiceId}/release-hold');
+    for (const name of ['createInvoiceCheckout', 'createCardSetupCheckout', 'upcomingCharges', 'listDisputes']) expect(billingContracts).not.toHaveProperty(name);
+  });
   it('declares unique method/path pairs, validated UUID parameters and schema responses', () => {
     const endpoints: readonly BillingEndpointContract[] = Object.values(billingContracts);
     expect(new Set(endpoints.map((item) => `${item.method} ${item.path}`)).size).toBe(endpoints.length);
@@ -265,7 +269,7 @@ describe('billing endpoint permissions', () => {
   const managerOnly = new Set([
     'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'createChargeType', 'updateChargeType',
     'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership',
-    'cancelMembership', 'createRefund',
+    'cancelMembership', 'createRefund', 'releaseInvoiceHold',
   ]);
   it.each(Object.entries(billingContracts))('covers allowed and denied staff roles for %s', (name, endpoint) => {
     for (const role of staffRoles) {

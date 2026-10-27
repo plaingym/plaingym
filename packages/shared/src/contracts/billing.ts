@@ -16,19 +16,15 @@ import {
 } from './billing/memberships.js';
 import {
   createOneOffInvoiceRequestSchema, invoiceDetailResponseSchema, invoiceListQuerySchema,
-  invoiceListResponseSchema, invoiceResponseSchema,
+  invoiceListResponseSchema, invoiceResponseSchema, releaseInvoiceHoldContract,
 } from './billing/invoices.js';
 import {
   billingEmptyRequestSchema, billingPaymentListQuerySchema, billingPaymentMethodListQuerySchema,
-  billingRefundListQuerySchema, cardSetupCheckoutResponseSchema, chargeInvoiceResponseSchema,
-  createRefundRequestSchema, invoiceCheckoutResponseSchema, paymentListResponseSchema,
+  billingRefundListQuerySchema, chargeInvoiceResponseSchema,
+  createRefundRequestSchema, paymentListResponseSchema,
   paymentMethodListResponseSchema, paymentMethodResponseSchema, paymentResponseSchema,
   recordManualPaymentRequestSchema, refundListResponseSchema, refundResponseSchema, resendReceiptResponseSchema,
 } from './billing/payments.js';
-import {
-  billingDisputeListQuerySchema, billingDisputeListResponseSchema,
-  billingUpcomingQuerySchema, billingUpcomingResponseSchema,
-} from './billing/overview.js';
 
 export * from './billing/catalog.js';
 export * from './billing/memberships.js';
@@ -62,6 +58,7 @@ const collect = { kind: 'staff', capability: 'payments.record' } as const;
  * area contracts; these endpoints all require the named staff capability.
  */
 export const billingContracts = {
+  releaseInvoiceHold: releaseInvoiceHoldContract,
   listTaxRates: { method: 'get', path: '/api/billing/tax-rates', permission: read,
     query: billingTaxRateListQuerySchema, response: taxRateListResponseSchema, successStatus: 200 },
   getTaxRate: { method: 'get', path: '/api/billing/tax-rates/{taxRateId}', permission: read,
@@ -112,9 +109,6 @@ export const billingContracts = {
     params: billingInvoiceParamsSchema, body: billingEmptyRequestSchema, response: chargeInvoiceResponseSchema, successStatus: 200 },
   recordManualPayment: { method: 'post', path: '/api/billing/invoices/{invoiceId}/payments', permission: collect,
     params: billingInvoiceParamsSchema, body: recordManualPaymentRequestSchema, response: paymentResponseSchema, successStatus: 201 },
-  createInvoiceCheckout: { method: 'post', path: '/api/billing/invoices/{invoiceId}/checkout',
-    permission: { kind: 'staff', capability: 'links.send' }, params: billingInvoiceParamsSchema,
-    body: billingEmptyRequestSchema, response: invoiceCheckoutResponseSchema, successStatus: 201 },
   resendReceipt: { method: 'post', path: '/api/billing/invoices/{invoiceId}/receipt', permission: collect,
     params: billingInvoiceParamsSchema, body: billingEmptyRequestSchema, response: resendReceiptResponseSchema, successStatus: 200 },
   listPaymentMethods: { method: 'get', path: '/api/billing/households/{householdId}/payment-methods', permission: read,
@@ -126,9 +120,6 @@ export const billingContracts = {
   revokePaymentMethod: { method: 'post', path: '/api/billing/households/{householdId}/payment-methods/{paymentMethodId}/revoke',
     permission: collect, params: billingPaymentMethodParamsSchema, body: billingEmptyRequestSchema,
     response: paymentMethodResponseSchema, successStatus: 200 },
-  createCardSetupCheckout: { method: 'post', path: '/api/billing/households/{householdId}/checkout',
-    permission: { kind: 'staff', capability: 'links.send' }, params: billingHouseholdParamsSchema,
-    body: billingEmptyRequestSchema, response: cardSetupCheckoutResponseSchema, successStatus: 201 },
   listPayments: { method: 'get', path: '/api/billing/payments', permission: read,
     query: billingPaymentListQuerySchema, response: paymentListResponseSchema, successStatus: 200 },
   listRefunds: { method: 'get', path: '/api/billing/refunds', permission: read,
@@ -136,10 +127,6 @@ export const billingContracts = {
   createRefund: { method: 'post', path: '/api/billing/payments/{paymentId}/refunds',
     permission: { kind: 'staff', capability: 'refunds.create' }, params: billingPaymentParamsSchema,
     body: createRefundRequestSchema, response: refundResponseSchema, successStatus: 201 },
-  upcomingCharges: { method: 'get', path: '/api/billing/upcoming', permission: read,
-    query: billingUpcomingQuerySchema, response: billingUpcomingResponseSchema, successStatus: 200 },
-  listDisputes: { method: 'get', path: '/api/billing/disputes', permission: read,
-    query: billingDisputeListQuerySchema, response: billingDisputeListResponseSchema, successStatus: 200 },
 } as const satisfies Record<string, BillingEndpointContract>;
 
 export type BillingEndpoint = keyof typeof billingContracts;

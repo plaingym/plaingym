@@ -134,6 +134,18 @@ describe('attendance service with PostgreSQL', () => {
     await expect(service.record({ ...f.context, actor: { kind: 'user', userId: uuidv7() } }, f.input)).rejects.toThrow();
     expect(await snapshot(f.gymId)).toEqual({ rows: [], audits: [] });
   });
+  it('refuses erased members for session, open-mat and imported check-ins without writing data', async () => {
+    const f = await fixture(), erased = await factory('members', f.gymId, { anonymizedAt: clock.now() });
+    const foreign = await fixture(), foreignErased = await factory('members', foreign.gymId, { anonymizedAt: clock.now() });
+    const server = app(f);
+    for (const sessionId of [f.session.id, null]) {
+      expect((await post(server, { ...f.input, memberId: erased.id, sessionId })).status).toBe(409);
+      expect((await post(server, { ...f.input, memberId: foreignErased.id, sessionId })).status).toBe(404);
+    }
+    await expect(service.record(f.context, { ...f.input, memberId: erased.id, sessionId: null }, { source: 'import', sourceKey: 'erased:1' }))
+      .rejects.toMatchObject({ code: 'conflict' });
+    expect(await snapshot(f.gymId)).toEqual({ rows: [], audits: [] });
+  });
   it('audits trusted kiosk check-ins as the device, with no staff identity', async () => {
     const f = await fixture(), device = await factory('kioskDevices', f.gymId);
     await service.record({ gymId: f.gymId, actor: { kind: 'device', deviceId: device.id } }, f.input, { source: 'kiosk' });

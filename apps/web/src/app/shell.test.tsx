@@ -21,7 +21,7 @@ vi.hoisted(() => {
 });
 
 const anonymous: ShellBootstrap = {
-  gym: { id: 'gym-a', name: 'Training Academy', enabledModules: [] }, session: null,
+  gym: { id: 'gym-a', name: 'Training Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: null,
   login: { password: true, magicLink: true },
 };
 function services(state: ShellBootstrap = anonymous): ShellServices {

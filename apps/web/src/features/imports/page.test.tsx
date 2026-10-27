@@ -14,7 +14,7 @@ vi.mock('../../lib/api.js', () => ({ createJsonTransport: () => request }));
 const id = '00000000-0000-7000-8000-000000000001', runId = '00000000-0000-7000-8000-000000000002';
 const createdAt = '2026-10-22T12:00:00Z';
 function bootstrap(roles: StaffRole[] = ['owner']) {
-  const data: ShellBootstrap = { gym: { id, name: 'Academy', enabledModules: [] }, session: { userId: id, roles, member: false }, login: { password: true, magicLink: false } };
+  const data: ShellBootstrap = { gym: { id, name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
 }
 const clients: QueryClient[] = [];

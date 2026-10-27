@@ -172,8 +172,11 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       let kind: ClassKind = origin.kind ?? (origin.source === 'import' ? 'class' : 'open_mat');
       return scope(context.gymId, async (tx) => {
         const gymId = context.gymId, now = clock.now();
-        await requireReferences(tx, gymId, { memberId: value.memberId,
-          ...(value.programId ? { programId: value.programId } : {}) });
+        const [member] = await tx.select({ anonymizedAt: members.anonymizedAt }).from(members)
+          .where(and(eq(members.gymId, gymId), eq(members.id, value.memberId))).for('update');
+        if (!member) missing();
+        if (member.anonymizedAt !== null) throw new AppError('conflict', 'Member personal data has been erased');
+        await requireReferences(tx, gymId, { ...(value.programId ? { programId: value.programId } : {}) });
         if (value.sessionId) {
           // Serialize with cancellation/deletion. Uniqueness, not elapsed time, deduplicates check-ins.
           const [session] = await tx.select().from(classSessions).where(and(

@@ -47,7 +47,7 @@ describe('API transport', () => {
 });
 describe('shell projections', () => {
   it('loads the shared bootstrap contract and rejects malformed server access', async () => {
-    const bootstrap = { gym: { id: '00000000-0000-7000-8000-000000000001', name: 'Gym', enabledModules: [] }, session: null, login: { password: true, magicLink: false } };
+    const bootstrap = { gym: { id: '00000000-0000-7000-8000-000000000001', name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: null, login: { password: true, magicLink: false } };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: bootstrap })).mockResolvedValueOnce(Response.json({ data: { ...bootstrap, session: { roles: ['owner'] } } }));
     const signal = new AbortController().signal;
     expect(await createBootstrapLoader(fetcher)(signal)).toEqual(bootstrap);

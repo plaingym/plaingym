@@ -22,7 +22,7 @@ const homeId = '019ab4f0-0000-7000-8000-000000000001', memberId = '019ab4f0-0000
 const member: Member = { id: memberId, householdId: homeId, firstName: 'Alex', lastName: 'Smith', email: null, phone: null, photoKey: null,
   dateOfBirth: null, status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-22T12:00:00Z' };
 function bootstrap(roles: readonly StaffRole[]) {
-  const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', enabledModules: [] }, session: { userId: memberId, roles, member: false }, login: { password: true, magicLink: false } };
+  const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: memberId, roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], initialData: data, queryFn: async () => data }).getCurrentResult());
 }
 function view(component: ReactNode) {

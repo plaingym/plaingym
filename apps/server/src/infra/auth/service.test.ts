@@ -20,7 +20,7 @@ import { TestClock } from '../../core/clock.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
 import { assertCanResetPassword, resetStaffPassword } from '../../areas/staff/auth.reset.js';
-import { routes } from '../../areas/staff/auth.routes.js';
+import { createStaffAuthRoutes } from '../../areas/staff/auth.routes.js';
 import { createAuthCommands } from '../../cli/auth.js';
 
 const database = useTestDatabase();
@@ -208,7 +208,7 @@ function routeApp(f: Awaited<ReturnType<typeof fixture>>) {
     await next();
   });
   app.use('*', sessionMiddleware({ auth: f.service, resolve: (context) => ({ gymId: context.get('context').gym.gymId, origin: new URL(context.req.url).origin === f.otherOrigin ? f.otherOrigin : f.origin, clientIp: f.clientIp }) }));
-  for (const route of routes) route.mount(app, authorize);
+  for (const route of createStaffAuthRoutes({ config, accounts: createAccountService(config, () => database.system.db), smtpConfigured: async () => false })) route.mount(app, authorize);
   app.get('/me', authorize({ kind: 'staff', capability: 'members.read' }), (context) => context.json(context.get('context').principal));
   return app;
 }
@@ -259,14 +259,14 @@ describe('session middleware and atomic protected-account resets', () => {
       }
     }
   });
-  it('resets a lower-role password, ends all sessions, and audits without secret data', async () => {
+  it('resets a lower-role password, ends this gym sessions, and audits without secret data', async () => {
     const f = await fixture(), actor = await factory('authUser', f.gymId);
     await factory('staffRoles', f.gymId, { userId: actor.id, role: 'admin' });
     await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'coach' });
     const a = await f.signIn(), b = await f.signIn(f.b, f.otherOrigin);
-    await resetStaffPassword({ gymId: f.gymId, actorUserId: actor.id, targetUserId: f.user.id, newPassword: 'replacement-password', clock: testClock });
+    await resetStaffPassword({ gymId: f.gymId, actorUserId: actor.id, targetUserId: f.user.id, newPassword: 'replacement-password', clock: testClock }, createAccountService(config, () => database.system.db));
     expect(await f.a.getSession(f.request('/get-session', undefined, cookies(a)))).toBeNull();
-    expect(await f.b.getSession(f.request('/get-session', undefined, cookies(b), f.otherOrigin))).toBeNull();
+    expect(await f.b.getSession(f.request('/get-session', undefined, cookies(b), f.otherOrigin))).toEqual({ userId: f.user.id });
     expect((await f.signIn()).status).toBe(401);
     expect((await f.a.handler(f.request('/sign-in/email', { email: f.user.email, password: 'replacement-password' }))).status).toBe(200);
     const audits = await database.forGym(f.gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.user.id)));
@@ -278,7 +278,7 @@ describe('session middleware and atomic protected-account resets', () => {
     await factory('staffRoles', f.gymId, { userId: actor.id, role: 'admin' });
     await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'owner' });
     const cookie = cookies(await f.signIn());
-    await expect(resetStaffPassword({ gymId: f.gymId, actorUserId: actor.id, targetUserId: f.user.id, newPassword: 'replacement-password', clock: testClock })).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(resetStaffPassword({ gymId: f.gymId, actorUserId: actor.id, targetUserId: f.user.id, newPassword: 'replacement-password', clock: testClock }, createAccountService(config, () => database.system.db))).rejects.toMatchObject({ code: 'forbidden' });
     expect(await f.a.getSession(f.request('/get-session', undefined, cookie))).toEqual({ userId: f.user.id });
     const [account] = await database.system.db.select().from(authAccount).where(eq(authAccount.userId, f.user.id)); expect(account?.password).toBe(initialHash);
   });

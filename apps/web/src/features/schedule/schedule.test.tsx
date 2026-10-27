@@ -18,7 +18,7 @@ const options = { timezone: 'America/New_York', programs: [{ id: programId, name
 const session: ClassSession = { id, name: 'Evening class', startsAt: '2026-03-02T23:00:00Z', endsAt: '2026-03-03T00:00:00Z',
   templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: '<script>Keep plain</script>', kind: 'class', programIds: [programId], tagIds: [], revision: 4, createdAt: '2026-03-01T00:00:00Z' };
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = id) {
-  const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', enabledModules: [] }, session: { userId: id, roles, member: !roles.length }, login: { password: true, magicLink: false } };
+  const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, roles, member: !roles.length }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
 }
 beforeEach(() => {

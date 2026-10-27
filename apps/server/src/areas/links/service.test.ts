@@ -86,6 +86,19 @@ async function active(purpose: SignedLinkPurposeName): Promise<SignedLinkPrincip
 const householdScope = (link: SignedLinkPrincipal) => ({ kind: 'signed_link' as const, gymId: link.gymId, linkId: link.linkId, now: clock.now() });
 
 describe('signed link creation and metadata', () => {
+  it('refuses waiver links for erased members without exposing foreign members or writing a link or audit', async () => {
+    const household = await factory('households', gymA);
+    const erased = await factory('members', gymA, { householdId: household.id, anonymizedAt: clock.now() });
+    const foreign = await factory('members', gymB, { anonymizedAt: clock.now() });
+    const other = await factory('members', gymA, { anonymizedAt: clock.now() });
+    const before = await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }));
+    for (const [memberId, status] of [[erased.id, 409], [foreign.id, 404], [other.id, 404]] as const) {
+      const input = { ...request('sign_waiver'), householdId: household.id, memberId };
+      expect((await post(server(), '/api/links', input)).status).toBe(status);
+      expect((await post(server(), '/api/links/send', input)).status).toBe(status);
+    }
+    expect(await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }))).toEqual(before);
+  });
   it.each(['onboarding', 'update_card', 'pay_invoice', 'sign_waiver'] as const)('creates a scoped %s credential with only a SHA-256 digest stored', async (purpose) => {
     const result = await service.create(mutation, request(purpose));
     expect(createSignedLinkResponseSchema.safeParse({ data: result }).success).toBe(true);

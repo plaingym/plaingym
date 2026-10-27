@@ -25,7 +25,7 @@ const widgets: MatDashboardWidget[] = [
   { id: 'promotion_ready', titleKey: 'dashboard/dashboard:widget.promotion_ready', status: 'ready', count: 0, members: [] },
 ];
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = 'gym-a') {
-  const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', enabledModules: [] }, session: { userId: 'user', roles, member: false }, login: { password: true, magicLink: false } };
+  const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: 'user', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
 }
 function start() {

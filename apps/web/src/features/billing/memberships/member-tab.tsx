@@ -20,13 +20,16 @@ type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | '
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; now?: Date;
 }) {
+  const bootstrap = useBootstrap();
   const cache = useQueryClient(), key = ['billing', gymId, 'memberships'];
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const rows = useQuery({ queryKey: [...key, memberId], queryFn: () => client.memberships({ memberId }) });
+  const plans = useQuery({ queryKey: ['billing', gymId, 'plans'], queryFn: () => client.plans(),
+    enabled: !!bootstrap.data?.session && canStaff(bootstrap.data.session.roles, 'billing.read') });
   const setup = useQuery({ queryKey: [...key, memberId, 'assignment'], enabled: manage, queryFn: async () => {
-    const [plans, member, settings] = await Promise.all([client.plans(), client.member(memberId), client.settings()]);
+    const member = await client.member(memberId);
     const [household, billing] = await Promise.all([client.memberships({ householdId: member.householdId }), client.householdBilling(member.householdId)]);
-    return { plans, member, settings, household, billingDay: billing.billingDay };
+    return { member, household, billingDay: billing.billingDay };
   } });
   async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string) {
     setBusy(true); setMessage('');
@@ -43,13 +46,15 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     {rows.isPending && <p role="status">{text('loading')}</p>}
     {rows.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}
-    <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={setup.data?.plans ?? []} manage={manage} busy={busy} mutate={mutate}/>)}</ul>
+    {plans.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
+    <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} manage={manage} busy={busy} mutate={mutate}/>)}</ul>
     {manage && <>
-      {setup.isPending && <p role="status">{text('loading')}</p>}
+      {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
+      {bootstrap.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
       {setup.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void setup.refetch()}>{text('retry')}</Button></Alert>}
-      {setup.data && <AssignmentForm key={memberId} plans={setup.data.plans.filter(plan => plan.active)}
+      {setup.data && plans.data && bootstrap.data && <AssignmentForm key={memberId} plans={plans.data.filter(plan => plan.active)}
         householdId={setup.data.member.householdId} memberId={memberId} busy={busy} assign={data => mutate('assignMembership', data)}
-        today={localDate(now ?? new Date(), setup.data.settings.timezone)}
+        today={localDate(now ?? new Date(), bootstrap.data.gym.timezone)}
         billingDate={startsOn => householdBillingDate(startsOn, setup.data.household, setup.data.billingDay)}/>
       }
     </>}

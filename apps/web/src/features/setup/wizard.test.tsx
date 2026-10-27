@@ -13,7 +13,7 @@ import { createSetupClient } from './api.js';
 import { createRegistries, type ExtensionView } from '../../lib/registries.js';
 
 const services: ShellServices = {
-  loadBootstrap: vi.fn(async () => ({ gym: { id: 'gym', name: 'Academy', enabledModules: [] }, session: { userId: 'owner', roles: ['owner'] as const, member: false }, login: { password: true, magicLink: false } })),
+  loadBootstrap: vi.fn(async () => ({ gym: { id: 'gym', name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: 'owner', roles: ['owner'] as const, member: false }, login: { password: true, magicLink: false } })),
   signInWithPassword: vi.fn(async () => {}), requestMagicLink: vi.fn(async () => {}), signOut: vi.fn(async () => {}),
 };
 function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) => i), registries = createRegistries()) {

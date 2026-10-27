@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { GymSettings, Member, Plan, TaxRate, Membership } from '@plaingym/shared/contracts';
+import { ShellServicesContext } from '../../../app/context.js';
+import { createShellServices } from '../../../app/services.js';
 import { ApiError } from '../../../lib/api.js';
 import { CatalogWorkspace } from './page.js';
 import { MembershipPanel } from '../memberships/member-tab.js';
@@ -26,7 +28,7 @@ function client() {
 }
 function start(view: React.ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={queryClient}>{view}</QueryClientProvider>);
+  return render(<QueryClientProvider client={queryClient}><ShellServicesContext.Provider value={createShellServices(async () => ({ gym: { id: id(1), name: 'Gym', timezone: settings.timezone, currency: settings.currency, enabledModules: [] }, session: { userId: id(9), roles: ['admin'], member: false }, login: { password: true, magicLink: false } }))}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
 describe('catalog and member billing screens', () => {
