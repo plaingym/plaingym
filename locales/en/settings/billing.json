@@ -1,0 +1,15 @@
+{
+  "title": "Billing retry schedule",
+  "retryDays": "Retry days",
+  "formatHelp": "Enter up to 4 whole days from 1 to 28, separated by commas, in increasing order (for example, 3, 7). Leave blank for no automatic retries.",
+  "invalidRetryDays": "Use up to 4 different whole days from 1 to 28 in increasing order, or leave blank.",
+  "scheduleHelp": "Retries count from the invoice’s first failed payment and run at 09:00 in the gym’s timezone. Changes apply at the next first failure. Invoices already in dunning keep their original schedule and queued retries.",
+  "emailsHelp": "Every failed attempt sends one dunning email when member emails are enabled, up to 5 emails with 4 retries. With no automatic retries, the first failure sends one email and the invoice stays past due.",
+  "emailCount": "Maximum dunning emails from the first failure and automatic retries: {count}.",
+  "save": "Save retry schedule",
+  "reload": "Reload saved schedule",
+  "saved": "Retry schedule saved.",
+  "conflict": "Settings changed elsewhere. Reload the saved schedule and review your changes before saving again.",
+  "error": "The request failed. Please try again.",
+  "loading": "Loading billing settings…"
+}

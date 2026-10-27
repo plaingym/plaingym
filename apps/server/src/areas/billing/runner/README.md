@@ -10,7 +10,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `daily(gymId)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, plus each failed invoice's ID and error message; errors are also logged. |
 | `charge(gymId, invoiceId, options?)` | Collect an eligible issued invoice. Returns an outcome object, or `{ status: 'skipped', reason }`. Provider errors propagate and leave any committed reservation for reconciliation. |
 | `collectAssigned(gymId, householdId)` | Immediately collect that household's open, unattempted assignment one-offs after the assignment transaction commits. Returns collection counts and errors; never call it from `onAssigned`. |
-| `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the day 3/day 7 window at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
+| `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the invoice's saved retry windows at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
 | `reconcile(gymId)` | Reconcile stale pending attempts by ID. Returns unresolved references. Works while billing is disabled. |
 | `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview` and unresolved references; record the report in an immutable audit event. Never enable billing. |
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
@@ -90,10 +90,13 @@ reconciliation reads the provider and cancels stale pending work; Stripe's
 cancel/confirm serialization decides the outcome. Unknown results remain pending
 and block new attempts, including after the provider's idempotency window expires.
 
-Retries read the transitions' existing `billing.invoice.dunning_started` anchor.
+Retries read the anchor and saved `retryDays` from `billing.invoice.dunning_started`.
+The gym chooses 0 to 4 increasing days from 1 to 28, defaulting to `[3, 7]`.
+Only legacy audits without saved days fall back to `[3, 7]`; an empty schedule
+never permits an automatic retry. Later settings edits do not change an invoice's windows.
 The invoice lock and non-abandoned attempt creation times consume each retry window once. If
-day 3 and day 7 jobs both arrive late, only the latest due window is charged.
-Failure never resets the anchor, and there is no day 14 attempt. Other Checkout
+several retry jobs arrive late, only the latest due window is charged.
+Failure never resets the anchor. Other Checkout
 creators must honor pending attempts under the same invoice lock. A changed
 Checkout ID fails the reservation check. Completed or uncertain expiry forces
 reconciliation; if it reveals a paid invoice, the caller gets a `not_payable`

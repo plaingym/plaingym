@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
-import { forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit } from '@plaingym/db';
+import { forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateGymCurrencyRequestSchema,
-  type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateGymCurrencyRequest } from '@plaingym/shared/contracts';
+import { billingRulesSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
+  type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest } from '@plaingym/shared/contracts';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -14,10 +14,17 @@ const projection = {
   bookingWindowDays: gyms.bookingWindowDays, cancellationCutoffMinutes: gyms.cancellationCutoffMinutes,
   openMatCountsAsClass: gyms.openMatCountsAsClass,
   billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled,
+  retryDays: gyms.retryDays,
   revision: gyms.revision, createdAt: gyms.createdAt, updatedAt: gyms.updatedAt,
 };
 type Row = { createdAt: Date; updatedAt: Date } & Record<string, unknown>;
 const present = (row: Row) => gymSettingsSchema.parse({ ...row, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
+/** Read within the invoice's first-failure transaction without nesting gym scopes. */
+export async function readBillingRules(tx: Transaction, gymId: string) {
+  const [row] = await tx.select({ retryDays: gyms.retryDays }).from(gyms).where(eq(gyms.id, gymId));
+  if (!row) throw new AppError('not_found', 'Gym not found');
+  return billingRulesSchema.parse(row);
+}
 export function createSettingsService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {
@@ -28,8 +35,9 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
         return present(row);
       });
     },
-    async update(context: MutationContext, kind: 'general' | 'booking' | 'currency', input: UpdateGymSettingsRequest | UpdateBookingRulesRequest | UpdateGymCurrencyRequest) {
-      const schema = kind === 'general' ? updateGymSettingsRequestSchema : kind === 'booking' ? updateBookingRulesRequestSchema : updateGymCurrencyRequestSchema;
+    async update(context: MutationContext, kind: 'general' | 'booking' | 'billing' | 'currency', input: UpdateGymSettingsRequest | UpdateBookingRulesRequest | UpdateBillingRulesRequest | UpdateGymCurrencyRequest) {
+      const schema = kind === 'general' ? updateGymSettingsRequestSchema : kind === 'booking' ? updateBookingRulesRequestSchema
+        : kind === 'billing' ? updateBillingRulesRequestSchema : updateGymCurrencyRequestSchema;
       const { revision, ...changes } = schema.parse(input);
       try {
         return await scope(context.gymId, async (tx) => {

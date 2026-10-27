@@ -2,6 +2,7 @@
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { auditEvents, households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
+import { billingRulesSchema } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
@@ -39,7 +40,10 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
       eq(auditEvents.targetId, invoiceId))))[0];
     if (!anchor) return skipped('outside_retry_window');
     const firstDate = localDate(anchor.occurredAt, gym.timezone);
-    const deadlines = [3, 7].map(day => zonedInstant(addDays(firstDate, day), '09:00', gym.timezone, { gap: 'shift' })!);
+    // Legacy invoices have no saved days; an explicitly empty schedule must stay empty.
+    const saved = (anchor.after as { retryDays?: unknown } | null)?.retryDays;
+    const retryDays = billingRulesSchema.shape.retryDays.parse(saved === undefined ? [3, 7] : saved);
+    const deadlines = retryDays.map(day => zonedInstant(addDays(firstDate, day), '09:00', gym.timezone, { gap: 'shift' })!);
     const deadline = deadlines.filter(date => date <= clock.now()).at(-1);
     if (!deadline || attempts.some(row => row.createdAt >= deadline && row.declineCode !== 'create_abandoned'))
       return skipped('outside_retry_window');

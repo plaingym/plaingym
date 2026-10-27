@@ -7,6 +7,7 @@ import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
 import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { logError } from '../../../core/log.js';
+import { readBillingRules } from '../../settings/settings.js';
 import { accepted, audit, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal, type InvoiceRow } from './store.js';
 
 export interface TransitionOptions {
@@ -127,9 +128,10 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           await effect(tx, context, clock, { kind: 'dunning', invoiceId: invoice.id, attemptId: row.id });
           // One retry schedule per invoice, anchored to its first failure rather than reset on every attempt.
           if (!await recorded(tx, 'billing.invoice.dunning_started', invoice.id)) {
-            await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { attemptId: row.id });
+            const { retryDays } = await readBillingRules(tx, context.gymId);
+            await audit(tx, context, clock, 'billing.invoice.dunning_started', 'invoice', invoice.id, { attemptId: row.id, retryDays });
             // Effects convert these local calendar days to instants using the gym timezone.
-            for (const day of [3, 7]) await effect(tx, context, clock,
+            for (const day of retryDays) await effect(tx, context, clock,
               { kind: 'retry', invoiceId: invoice.id, retryDay: day });
           }
         }

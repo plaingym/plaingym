@@ -16,6 +16,7 @@ export const gyms = pgTable('gyms', {
   backupRetentionBytes: bigint('backup_retention_bytes', { mode: 'bigint' }),
   currency: text('currency').notNull().default('USD'),
   billingEnabled: boolean('billing_enabled').notNull().default(false),
+  retryDays: integer('retry_days').array().notNull().default([3, 7]),
   memberEmailsEnabled: boolean('member_emails_enabled').notNull().default(false),
   bookingWindowDays: integer('booking_window_days').notNull().default(14),
   cancellationCutoffMinutes: integer('cancellation_cutoff_minutes').notNull().default(60),
@@ -28,6 +29,13 @@ export const gyms = pgTable('gyms', {
   unique('gyms_id_currency_key').on(t.id, t.currency),
   check('gyms_currency_check', sql`${t.currency} ~ '^[A-Z]{3}$'`),
   check('gyms_revision_check', sql`${t.revision} > 0`),
+  check('gyms_retry_days_check', sql`cardinality(${t.retryDays}) = 0 or (
+    array_ndims(${t.retryDays}) = 1 and array_lower(${t.retryDays}, 1) = 1
+    and cardinality(${t.retryDays}) between 1 and 4 and array_position(${t.retryDays}, null) is null
+    and 1 <= all(${t.retryDays}) and 28 >= all(${t.retryDays})
+    and (cardinality(${t.retryDays}) < 2 or ${t.retryDays}[1] < ${t.retryDays}[2])
+    and (cardinality(${t.retryDays}) < 3 or ${t.retryDays}[2] < ${t.retryDays}[3])
+    and (cardinality(${t.retryDays}) < 4 or ${t.retryDays}[3] < ${t.retryDays}[4]))`),
   check('gyms_status_check', sql`${t.status} in ('active', 'suspended')`),
   ...systemAccess('gyms', 'gym-config', t.id),
   check('gyms_limits_check', sql`${t.bookingWindowDays} >= 0 and ${t.cancellationCutoffMinutes} >= 0 and (${t.backupRetentionBytes} is null or ${t.backupRetentionBytes} >= 0)`),

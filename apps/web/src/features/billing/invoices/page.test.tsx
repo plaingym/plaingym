@@ -16,7 +16,7 @@ const invoice: Invoice = { id: id(3), createdAt, householdId: home, kind: 'one_o
 const payment: Payment = { id: id(4), createdAt, invoiceId: invoice.id, amountCents: 2500, currency: 'USD', method: 'cash', reference: null, paidAt: createdAt };
 const card: MaskedPaymentMethod = { id: id(5), createdAt, householdId: home, brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true, revokedAt: null };
 const settings: GymSettings = { id: gymId, name: 'Gym', slug: 'gym', currency: 'USD', timezone: 'America/Vancouver', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
-  bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: true, memberEmailsEnabled: true, revision: 1, createdAt, updatedAt: createdAt };
+  bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: true, memberEmailsEnabled: true, retryDays: [3, 7], revision: 1, createdAt, updatedAt: createdAt };
 const desk = { record: true, refund: false, links: true }, admin = { ...desk, refund: true };
 function transport(initial: Partial<InvoiceDetail> = {}) {
   const detail: InvoiceDetail = { invoice, lineItems: [{ id: id(7), createdAt, householdId: home, invoiceId: invoice.id, kind: 'charge', description: 'Drop-in',

@@ -57,10 +57,10 @@ describe('settings service and routes', () => {
   it.each(staffRoles)('checks all settings endpoints for %s before validation', async (role) => {
     const app = server(role), allowed = role === 'owner' || role === 'admin';
     expect((await app.request('/api/settings')).status).toBe(allowed ? 200 : 403);
-    for (const path of ['/api/settings', '/api/settings/booking', '/api/settings/currency']) {
+    for (const path of ['/api/settings', '/api/settings/booking', '/api/settings/billing', '/api/settings/currency']) {
       expect((await patch(app, path, {})).status).toBe(allowed ? 400 : 403);
       const revision = (await service.get(gymA)).revision;
-      const body = path.endsWith('booking') ? { revision, bookingWindowDays: 30 } : path.endsWith('currency') ? { revision, currency: 'USD' } : { revision, name: 'Gym A' };
+      const body = path.endsWith('booking') ? { revision, bookingWindowDays: 30 } : path.endsWith('billing') ? { revision, retryDays: [3, 7] } : path.endsWith('currency') ? { revision, currency: 'USD' } : { revision, name: 'Gym A' };
       const result = await patch(app, path, body); expect(result.status).toBe(allowed ? 200 : 403);
       if (allowed) expect(gymSettingsResponseSchema.safeParse(await result.json()).success).toBe(true);
     }
@@ -68,7 +68,7 @@ describe('settings service and routes', () => {
   it('returns 404 for a different gym principal on every endpoint and leaves that gym untouched', async () => {
     const app = server('owner', gymB, gymA), before = await service.get(gymB);
     expect((await app.request('/api/settings')).status).toBe(404);
-    for (const path of ['/api/settings', '/api/settings/booking', '/api/settings/currency'])
+    for (const path of ['/api/settings', '/api/settings/booking', '/api/settings/billing', '/api/settings/currency'])
       expect((await patch(app, path, { revision: before.revision, name: 'Forged' })).status).toBe(404);
     expect(await service.get(gymB)).toEqual(before);
   });

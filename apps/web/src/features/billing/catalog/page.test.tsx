@@ -15,7 +15,7 @@ const id = (n: number) => '019a0af0-9c00-7000-8000-' + String(n).padStart(12, '0
 const plan: Plan = { id: id(2), createdAt, name: 'Unlimited', currency: 'CAD', amountCents: 9999, interval: 'monthly', signupFeeCents: 2500, trialDays: 0, commitmentMonths: 6, active: true, revision: 3, taxRateIds: [id(3)] };
 const tax: TaxRate = { id: id(3), createdAt, name: 'Sales tax', rateMillionths: 99_750, inclusive: false, active: true, revision: 1 };
 const settings: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', currency: 'CAD', timezone: 'America/Vancouver', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
-  bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, revision: 1, createdAt, updatedAt: createdAt };
+  bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], revision: 1, createdAt, updatedAt: createdAt };
 const member: Member = { id: id(4), createdAt, householdId: id(5), firstName: 'Ada', lastName: 'Student', email: null, phone: null, photoKey: null, dateOfBirth: null,
   status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1 };
 const membership: Membership = { id: id(6), createdAt, memberId: member.id, householdId: member.householdId, planId: plan.id, status: 'active', currency: 'CAD', amountCents: 9999,
