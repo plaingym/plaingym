@@ -32,7 +32,12 @@ cleanup() {
     docker image rm "plaingym:v$version-demo-$test_id" >/dev/null 2>&1 || true
   done
   docker image rm "plaingym-caddy:v2.11.7-refresh-$test_id" >/dev/null 2>&1 || true
-  rm -rf -- "$ROOT"
+  # Keep the install directory and container logs when the run fails.
+  if [ "$result" -eq 0 ]; then
+    rm -rf -- "$ROOT"
+  else
+    printf 'FAIL: evidence and container logs kept in %s\n' "$ROOT" >&2
+  fi
   exit "$result"
 }
 trap cleanup EXIT
