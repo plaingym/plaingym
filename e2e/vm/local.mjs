@@ -49,10 +49,10 @@ const env = { ...savedEnvironment, ...process.env, VM_SEEDS: directory.replaceAl
   VM_S3_USER: previous?.s3.accessKeyId ?? 'qa' + randomBytes(8).toString('hex'), VM_S3_PASSWORD: previous?.s3.secretAccessKey ?? randomBytes(24).toString('hex') };
 const sourceSsh = Number(env.VM_SOURCE_SSH_PORT ?? 2241), restoreSsh = Number(env.VM_RESTORE_SSH_PORT ?? 2242);
 const sourceHttps = Number(env.VM_SOURCE_HTTPS_PORT ?? 443), restoreHttps = Number(env.VM_RESTORE_HTTPS_PORT ?? 443);
-const project = process.argv[3] ?? 'plaingym-a25-' + randomBytes(4).toString('hex');
+const project = process.argv[3] ?? 'plaingym-vm-' + randomBytes(4).toString('hex');
 if (previous?.project && previous.project !== project) throw new Error('The retained disks belong to a different fixture project');
 const compose = ['compose', '-p', project, '-f', resolve(here, 'compose.local.yaml')];
-await command('docker',['volume','create',env.VM_CACHE_VOLUME ?? 'plaingym-a25-cloud-images']);
+await command('docker',['volume','create',env.VM_CACHE_VOLUME ?? 'plaingym-vm-cloud-images']);
 await command('docker', [...compose, 'up', '-d', '--build'], { env });
 await command('docker', [...compose, 'exec', '-T', 's3', 'python', '-c',
   "import boto3,time; time.sleep(2); boto3.client('s3', endpoint_url='http://127.0.0.1:9000', aws_access_key_id='qa', aws_secret_access_key='qa', region_name='us-east-1').create_bucket(Bucket='qa-backups')"], { env });
@@ -95,5 +95,5 @@ const config = previous ?? { localFixture: true, localGateway: gateway, source: 
 await writeFile(resolve(directory, 'config.json'), JSON.stringify(config, null, 2), { mode: 0o600 });
 await writeFile(resolve(directory, 'compose.env'), ['VM_SEEDS=' + env.VM_SEEDS, 'VM_S3_USER=' + env.VM_S3_USER, 'VM_S3_PASSWORD=' + env.VM_S3_PASSWORD,
   'VM_SOURCE_SSH_PORT=' + sourceSsh, 'VM_RESTORE_SSH_PORT=' + restoreSsh, 'VM_SOURCE_HTTPS_PORT=' + sourceHttps, 'VM_RESTORE_HTTPS_PORT=' + restoreHttps,
-  'VM_CACHE_VOLUME=' + (env.VM_CACHE_VOLUME ?? 'plaingym-a25-cloud-images'), ''].join('\n'), { mode: 0o600 });
+  'VM_CACHE_VOLUME=' + (env.VM_CACHE_VOLUME ?? 'plaingym-vm-cloud-images'), ''].join('\n'), { mode: 0o600 });
 console.log('Local VM config: ' + resolve(directory, 'config.json') + '\nCompose project: ' + project + '\nAfter local QA, take this project down with --volumes; its shared cloud-image cache is external.');

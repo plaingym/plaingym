@@ -18,7 +18,7 @@ export function createWebhookInboxRoutes(inbox: Pick<WebhookInbox, 'receive'>, o
   demoGyms?: () => Promise<readonly { gymId: string }[]>;
 } = {}): readonly RouteRegistration[] {
   return [route({
-    // TODO(CCR): promote this raw-body install/tenant endpoint to the shared HTTP contracts.
+    // TODO: promote this raw-body install/tenant endpoint to the shared HTTP contracts.
     method: 'post', path: '/webhooks/stripe', permission: { kind: 'public' },
     responses: {
       200: { description: 'Stored, duplicate, or unrelated event', content: { 'application/json': { schema: z.object({ received: z.literal(true) }) } } },

@@ -24,9 +24,9 @@ The SMTP check validates configuration rather than attempting a send. It uses
 `SmtpResolver.source(gymId)` to report gym versus install configuration.
 Last test time remains unknown because the resolver does not provide it.
 
-TODO(CCR): `JobStatsQuery` has no oldest failure timestamp; return null rather than the
-pending-job timestamp. Disk details hold the volume with least free space; the message
-reports both uploads and staging. TODO(CCR): allow separate volume details. Disk warning
+TODO: add an oldest failure timestamp to `JobStatsQuery`; the response uses null rather
+than the pending-job timestamp. Disk details hold the volume with least free space; the
+message reports both uploads and staging. TODO: allow separate volume details. Disk warning
 means less than 10% or 1 GiB available; error means less than the backup reserve (128 MiB).
 Running version uses `APP_VERSION`, falling back to the current package version.
 The image sets `APP_VERSION` from its `VERSION` build argument.

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: End-to-end
-# The production image behind Caddy with two installs (single-gym and demo): the M2.7 flows, the
+# The production image behind Caddy with two installs (single-gym and demo): the staff workflows,
 # permission sweep, demo isolation, phone layouts, and signed downloads (e2e/README.md).
 on:
   push:

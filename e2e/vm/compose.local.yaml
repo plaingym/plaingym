@@ -21,7 +21,7 @@ services:
       MOTO_PORT: '9000'
 volumes:
   cache:
-    name: ${VM_CACHE_VOLUME:-plaingym-a25-cloud-images}
+    name: ${VM_CACHE_VOLUME:-plaingym-vm-cloud-images}
     external: true
   source:
   restore:

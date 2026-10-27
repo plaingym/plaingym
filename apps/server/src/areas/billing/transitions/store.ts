@@ -49,6 +49,6 @@ export async function accepted(tx: Transaction, paymentId: string): Promise<bool
   return (event?.after as { accepted?: boolean } | undefined)?.accepted !== false;
 }
 export async function effect(tx: Transaction, context: MutationContext, clock: Clock, work: TransitionEffect) {
-  // TODO(CCR): replace the append-only audit outbox with a dedicated effect table.
+  // TODO: replace the append-only audit outbox with a dedicated effect table.
   await audit(tx, context, clock, effectCreated, 'invoice_effect', uuidv7(), work);
 }

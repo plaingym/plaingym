@@ -105,6 +105,6 @@ runner owns catch-up review, billing-enabled checks, and issue/payment state.
 
 No runtime mounting is needed for these pure functions. Consumers import this
 directory's `index.ts`; existing empty route/job registrations remain unchanged.
-The local calendar adapter has `TODO(CCR)` markers for moving anchored month/year
-stepping and calendar-day differences into the shared time module. It currently
-uses only that module's validated calendar dates and `addDays` operations.
+The local calendar adapter uses the shared time module's validated calendar dates
+and `addDays` operations. TODO: move anchored month/year stepping and calendar-day
+differences into that module.

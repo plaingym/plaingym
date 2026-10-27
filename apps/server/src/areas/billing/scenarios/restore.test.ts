@@ -17,14 +17,14 @@ import { workflowFixture } from './workflow-fixture.js';
 const db = useTestDatabase();
 // Real pg_dump/pg_restore, with disposable, named clients and no host PostgreSQL prerequisite.
 const dockerTools: ToolRunner = (tool, env) => ({ command: 'docker', args: ['run', '--rm', '-i',
-  '--name', `plaingym-c35b-${tool}-${randomBytes(6).toString('hex')}`, '--cpus', '1',
+  '--name', `plaingym-billing-restore-${tool}-${randomBytes(6).toString('hex')}`, '--cpus', '1',
   ...(process.platform === 'linux' ? ['--network', 'host'] : []), '-e', 'PGHOST', '-e', 'PGPORT', '-e', 'PGDATABASE',
   '-e', 'PGUSER', '-e', 'PGPASSWORD', '-e', 'PGCONNECT_TIMEOUT',
   'postgres:18@sha256:1267c7e692de235fda2a50dbcdbcbca4672ea6a0298576a6bd9d07cafc319b32',
   'timeout', '60', 'nice', '-n', '10', tool], env: { ...env, PGHOST: process.platform === 'linux' ? '127.0.0.1' : 'host.docker.internal' } });
 
 it('restores an older encrypted backup and reconciles subsequent charge, refund and dispute while billing remains off', async () => {
-  const f = await workflowFixture(db), root = await mkdtemp(join(tmpdir(), 'plaingym-c35b-'));
+  const f = await workflowFixture(db), root = await mkdtemp(join(tmpdir(), 'plaingym-billing-restore-'));
   const database = new PostgresMaintenance(db.maintenanceUrl, dockerTools), store = new FakeBackupObjectStore(f.clock);
   const identity = await generateIdentity(), key = randomBytes(32);
   const backup = new BackupService({ database, store, clock: f.clock, scope: db,

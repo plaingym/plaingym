@@ -12,7 +12,7 @@ export function billingDay(value: number): number {
   return value;
 }
 
-// TODO(CCR): move anchored calendar stepping and day differences into shared/time.
+// TODO: move anchored calendar stepping and day differences into shared/time.
 // All calendar operations use its addDays; no instant or elapsed-hour arithmetic.
 function monthStart(date: IsoDate): IsoDate {
   return addDays(date, 1 - Number(date.slice(8)));

@@ -18,7 +18,7 @@ export function createUploadDownloadRoute(options: {
   readonly uploadsFor: (gymId: string) => Promise<Uploads>;
   readonly origin: (context: Context<RequestEnvironment>) => string;
 }): RouteRegistration {
-  // TODO(CCR): promote this install route into the shared contracts (T6).
+  // TODO: promote this install route into the shared contracts.
   return route({ method: 'get', path: uploadDownloadPath, permission: { kind: 'public' },
     responses: { 200: { description: 'Signed file download', content: { 'application/octet-stream': { schema: z.string().openapi({ format: 'binary' }) } } } },
   }, async (c) => {

@@ -12,7 +12,7 @@ export function importActor(context: RequestContext): MutationContext {
     throw new AppError('not_found', t('imports/pipeline:notFound'));
   return { gymId: context.gym.gymId, actor: { kind: 'user', userId: context.principal.userId } };
 }
-// TODO(CCR): put this documentation on the shared upload schema. zod-to-openapi has no
+// TODO: put this documentation on the shared upload schema. zod-to-openapi has no
 // representation for z.file(); the cloned field keeps its validation.
 const uploadBody = importsContracts.upload.body.extend({
   file: importsContracts.upload.body.shape.file.openapi({ type: 'string', format: 'binary' }),

@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # PlainGym
 
-An AGPL-3.0-only gym application with first-boot setup, administration and kiosk
-shells, and encrypted backups. See [the install guide](deploy/README.md).
+An AGPL-3.0-only gym application with members and households, ranks and promotions,
+class scheduling and kiosk attendance, imports and exports, waivers, signed links
+and campaigns, Stripe billing, and encrypted backups.
+See [the install guide](deploy/README.md).
 
 ## Local development
 

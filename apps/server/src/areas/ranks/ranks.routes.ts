@@ -11,7 +11,7 @@ import { createPromotionCriteria } from './criteria.js';
 import { createRanksService } from './ranks.service.js';
 
 type RanksService = ReturnType<typeof createRanksService>;
-// TODO(CCR): put this documentation on the shared config schema. z.json's recursive
+// TODO: put this documentation on the shared config schema. z.json's recursive
 // union otherwise overflows zod-to-openapi. The cloned schema keeps its validation.
 const documentedCriteria = z.array(promotionCriterionSchema.extend({
   config: promotionCriterionSchema.shape.config.openapi({ type: 'object', additionalProperties: {} }),

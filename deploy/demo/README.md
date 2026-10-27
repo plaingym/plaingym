@@ -68,7 +68,7 @@ certificate is intentionally not accepted as public deployment success.
 For a published app image, one command on the server is sufficient:
 
 ```sh
-sudo /opt/plaingym-demo/update.sh ghcr.io/plaingym/plaingym:v0.2.1
+sudo /opt/plaingym-demo/update.sh ghcr.io/plaingym/app:v0.2.1
 ```
 
 For another unpublished build, use the same bootstrap command with the **new**

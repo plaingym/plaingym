@@ -7,34 +7,39 @@ SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 export PYTHONDONTWRITEBYTECODE=1
 cd "$SOURCE"
 python3 -m unittest -v test_config.py test_bootstrap.py test_snapshots.py
-grep -qx 'export DEBIAN_FRONTEND=noninteractive' ../install.sh
+grep -q 'export DEBIAN_FRONTEND=noninteractive' ../host.sh
 # shellcheck disable=SC2016
-grep -qx 'install -d -m 0700 "$ROOT"' ../install.sh
+grep -q 'install -d -m 0700 "$ROOT"' ../install.sh
 test_id=$(python3 -c 'import secrets; print(secrets.token_hex(5))')
 export COMPOSE_PROJECT_NAME="plaingym-demo-test-$test_id"
 export HTTP_PORT=127.0.0.1:0 HTTPS_PORT=127.0.0.1:0
 export APP_IMAGE="${DEMO_TEST_APP_IMAGE:-plaingym:e2e}"
 export CADDY_IMAGE="${DEMO_TEST_CADDY_IMAGE:-plaingym-caddy:v2.11.7-cf0.2.4}"
-# Versioned aliases permit the same code to prove update/publication and rollback.
-docker tag "$APP_IMAGE" "plaingym:v0.0.0-demo-$test_id"
-export APP_IMAGE="plaingym:v0.0.0-demo-$test_id"
 # Linux filesystem permissions must be real even when the checkout is on NTFS.
 ROOT=$(mktemp -d "/tmp/$COMPOSE_PROJECT_NAME.XXXXXXXX")
 s3_name="$COMPOSE_PROJECT_NAME-s3"
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
-  if [ -f "$ROOT/.env" ]; then
+  if [ -f "$ROOT/.env" ] && [ -f "$ROOT/lib.sh" ]; then
     # shellcheck source=/dev/null
     . "$ROOT/lib.sh"
     compose logs --no-color > "$ROOT/containers.log" 2>&1 || true
     compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
-  docker rm -f "$s3_name" >/dev/null 2>&1 || true
+  docker rm -fv "$s3_name" >/dev/null 2>&1 || true
+  for version in 0.0.0 0.0.99 0.0.1 0.0.2 0.0.3; do
+    docker image rm "plaingym:v$version-demo-$test_id" >/dev/null 2>&1 || true
+  done
+  docker image rm "plaingym-caddy:v2.11.7-refresh-$test_id" >/dev/null 2>&1 || true
+  rm -rf -- "$ROOT"
   exit "$result"
 }
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
+# Versioned aliases permit the same code to prove update/publication and rollback.
+docker tag "$APP_IMAGE" "plaingym:v0.0.0-demo-$test_id"
+export APP_IMAGE="plaingym:v0.0.0-demo-$test_id"
 docker run -d --name "$s3_name" --publish 127.0.0.1::5000 \
   motoserver/moto:5.1.4@sha256:32d7805d8bd4c81db789c4fff2c36f96a8837cbd8e7a3853116b6516b9490dde >/dev/null
 s3_port=$(docker port "$s3_name" 5000 | head -n 1 | sed 's/.*://')
@@ -129,4 +134,4 @@ for snapshot in $before_failure; do [ -f "$snapshot" ]; done
 [ "$(find "$ROOT/snapshots" -name 'pre-update-*.dump' -type f | wc -l)" -eq 3 ]
 compose exec -T app node /app/deploy/healthcheck.mjs
 python3 "$SOURCE/test-client.py" preserved
-printf 'PASS: install, unchanged rerun, verified deploy refresh, plaintext private snapshots, default/custom retention, preserved sandbox and failed-update rollback. Evidence: %s\n' "$ROOT"
+printf 'PASS: install, unchanged rerun, verified deploy refresh, plaintext private snapshots, default/custom retention, preserved sandbox and failed-update rollback.\n'

@@ -263,7 +263,8 @@ describe('campaign sends and reminders', () => {
     await Promise.all([f.service.remindCampaign(f.context, c.campaign.id), f.service.remindCampaign(f.context, c.campaign.id)]); await f.drain();
     expect(f.email.messages).toHaveLength(2);
   });
-  it('rejects campaign requests beyond the local limits until the shared contract CCR lands', async () => {
+  // TODO: enforce these campaign request limits in the shared contract.
+  it('rejects campaign requests beyond the local limits', async () => {
     const f = await fixture();
     for (const override of [
       { reminderSchedule: [2147483647] }, { reminderSchedule: Array.from({ length: 11 }, (_, i) => i + 1) },
@@ -398,7 +399,8 @@ describe('campaign sends and reminders', () => {
     await f.service.send({ campaignId: c.campaign.id, linkId: c.link.id, occurrence: 'initial' }, f.gymId);
     expect(f.email.sendEmail).toHaveBeenCalledTimes(1);
   });
-  it('treats unclassified refused connections as ambiguous until the Email acceptance CCR lands', async () => {
+  // TODO: expose delivery acceptance classification through the email interface.
+  it('treats refused connections without delivery acceptance classification as ambiguous', async () => {
     const f = await fixture(), c = await f.campaign();
     f.email.respondNext(Object.assign(new Error('Connection refused'), { code: 'ECONNREFUSED' }));
     const send = vi.spyOn(f.email, 'sendEmail'); await f.drain();
@@ -464,7 +466,7 @@ describe('campaign customer matching', () => {
     const [row] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
     expect(row!.stripeCustomerId).toBe(kind === 'existing' ? 'cus_keep' : null);
   });
-  it('cannot match another gym household and does not overwrite a concurrent R6 creation or changed email', async () => {
+  it('cannot match another gym household and does not overwrite concurrent customer creation or a changed email', async () => {
     const f = await fixture(), b = await fixture();
     await matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, b.household.id);
     expect(f.paymentsFor).not.toHaveBeenCalled();

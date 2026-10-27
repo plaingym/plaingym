@@ -85,7 +85,7 @@ export function createCampaignsService(options: CampaignsOptions) {
     },
     async create(context: MutationContext, input: CreateLinkCampaignRequest) {
       const request = createLinkCampaignRequestSchema.parse(input);
-      // TODO(CCR): mirror these bounds in the shared campaign contract, which is integration-owned.
+      // TODO: mirror these bounds in the shared campaign contract.
       if (request.name.length > 120 || request.recipients.length > 2000 || request.reminderSchedule.length > 10
         || request.reminderSchedule.some(day => day > 365)
         || new Date(request.expiresAt).getTime() > clock.now().getTime() + 90 * 86400000)

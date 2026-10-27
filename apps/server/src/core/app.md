@@ -50,8 +50,8 @@ repository, and is passed through Docker and Compose. Footers can use `/source`
 or load `/api/source` to follow a runtime override. Existing SPA footers use
 their build-time URL until connected to this endpoint.
 
-The install endpoint schemas are local `TODO(CCR)` declarations because the
-shared contracts are frozen and currently omit these endpoints. All four
+The install endpoint schemas are declared locally. TODO: move these declarations
+into the shared contracts, which currently omit these endpoints. All four
 endpoints explicitly declare public access with the same `route` helper used
 by area routes, and appear in the generated OpenAPI document.
 

@@ -35,9 +35,8 @@ commit together. Work is written as append-only `billing.transition.effect.*`
 audit records because the frozen Jobs interface cannot enqueue in a transaction.
 An explicit `accepted` marker in the payment audit distinguishes an excess card
 payment from the invoice's settlement. Legacy payments without that marker count
-as accepted. These are local `TODO(CCR)` workarounds for a dedicated effect table
-and payment attribution field; no frozen schema, infrastructure or interface is
-changed by the outbox implementation. The action/target audit index accelerates
+as accepted. TODO: replace these audit records with a dedicated effect table
+and payment attribution field. The action/target audit index accelerates
 these lookups; it does not replace the audit-row outbox. Audit retention must
 preserve these records until the dedicated storage migration exists.
 

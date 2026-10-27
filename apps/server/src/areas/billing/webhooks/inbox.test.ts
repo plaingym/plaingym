@@ -172,7 +172,7 @@ it('returns a clear 503 when the payments resolver has no Stripe settings', asyn
   expect(response.status).toBe(503); expect(await response.text()).toContain('Payments are not set up for this gym');
   expect(await rows()).toEqual([]);
 });
-it('keeps untagged-object lookup failures retryable before insertion (T35)', async () => {
+it('keeps untagged-object lookup failures retryable before insertion', async () => {
   const transport = new StripeFixtures(gymA); vi.spyOn(transport, 'request').mockRejectedValue(new Error('Stripe outage'));
   const delivery = stripeDelivery(gymA, 'evt_lookup', { id: 'pi_fixture', object: 'payment_intent', metadata: {} });
   expect((await request(server(stripe(transport)), delivery.body, delivery.signature)).status).toBe(500);

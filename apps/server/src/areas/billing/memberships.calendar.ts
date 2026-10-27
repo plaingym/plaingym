@@ -3,7 +3,7 @@ import { addDays, isCalendarDate } from '@plaingym/shared/time';
 import { dateSchema } from '@plaingym/shared/contracts';
 import { nextBillingDate } from './invoicing/calendar.js';
 
-/** TODO(CCR): promote clamped month arithmetic to shared/time. No instants or offsets here. */
+/** TODO: promote clamped month arithmetic to shared/time. No instants or offsets here. */
 export function addCalendarMonths(date: string, months: number, anchor = Number(date.slice(8))) {
   dateSchema.parse(date);
   if (!Number.isSafeInteger(months) || !Number.isInteger(anchor) || anchor < 1 || anchor > 31) throw new Error('Invalid calendar interval');

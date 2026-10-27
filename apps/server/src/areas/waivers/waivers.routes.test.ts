@@ -88,7 +88,7 @@ describe('waiver route authorization', () => {
     expect(signatures.data.map(r => r.id)).toEqual([f.signature.id]);
   });
   it('composes the real registrations and follows a signed local PDF download with the snapshot hash', async () => {
-    const f = await fixture(), root = await mkdtemp(join(tmpdir(), 'plaingym-c14-')), origin = 'https://gym.example.test';
+    const f = await fixture(), root = await mkdtemp(join(tmpdir(), 'plaingym-waivers-')), origin = 'https://gym.example.test';
     try {
       const uploads = new LocalUploads({ root, gymId: f.gymId, signingKey: new Uint8Array(32).fill(3), clock, downloadUrl: origin + '/api/uploads/download' });
       const uploadsFor = async () => uploads;

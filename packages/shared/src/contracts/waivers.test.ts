@@ -25,7 +25,7 @@ describe('waiver version and signature contracts', () => {
       expect(waiverRetireTemplateRequestSchema.safeParse({ expectedVersion }).success).toBe(false);
     }
     expect(waiverRetireTemplateRequestSchema.parse({ expectedVersion: 2 })).toEqual({ expectedVersion: 2 });
-    // No fictional revision column is exposed while the schema CCR is open.
+    // TODO: add a template revision column before exposing it in the contract.
     expect(waiverTemplateSchema.safeParse({ ...template, revision: 1 }).success).toBe(false);
     expect(waiverTemplateSchema.parse({ ...template, retiredAt: now }).retiredAt).toBe(now);
   });

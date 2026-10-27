@@ -299,7 +299,7 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     expect(await read()).toHaveProperty('count', 1);
     provider.recordDispute({ id: disputeId, chargeId: intent.id, status: terminal, amount: invoice.amountCents });
     await inbox.replay(f.gymId, eventId); await drain(f.queue);
-    // CCR: the frozen provider/registry cannot omit a zero-count widget yet.
+    // TODO: allow the provider and registry to omit a zero-count widget.
     expect(await read()).toHaveProperty('count', 0);
     await restarted.alerts.disputes(f.gymId); await drain(restarted.queue);
     expect(f.email.messages).toHaveLength(1);

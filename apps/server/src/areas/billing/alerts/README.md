@@ -54,11 +54,11 @@ The runtime adds `createDisputeAlertProvider()` to `configureDashboard`'s additi
 Its `billing.disputes` extension uses the existing count renderer and requires
 `billing.read`. It derives its count directly from invoices, including unresolved
 statuses and excluding `won`, `lost`, and `closed`. The unresolved count clears
-immediately, without a cleanup job or additional persistence. The frozen provider
-requires a widget and the registry always renders it: hiding the zero-count card
-needs a CCR for an optional provider result. No new HTTP routes are added. The
+immediately, without a cleanup job or additional persistence. The provider
+requires a widget and the registry always renders it. TODO: allow an optional
+provider result to hide the zero-count card. No new HTTP routes are added. The
 dispute email links to `/admin/billing/invoices/<invoiceId>` on the gym's configured origin.
 
 The household recipient/opt-out logic also exists in signed-link delivery and
-transition notifications. A shared-helper CCR is needed to consolidate the three
-callers without changing their ownership boundaries.
+transition notifications. TODO: consolidate the three callers with a shared
+recipient helper.

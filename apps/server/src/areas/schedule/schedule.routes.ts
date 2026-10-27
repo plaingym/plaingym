@@ -14,7 +14,7 @@ function mutation(c: Context<RequestEnvironment>) {
 }
 const response = <S extends z.ZodType>(schema: S) => ({ 200: { description: 'Schedule', content: { 'application/json': { schema } } } });
 const body = <S extends z.ZodType>(schema: S) => ({ required: true as const, content: { 'application/json': { schema } } });
-// TODO(CCR): move the calendar picker response into the shared schedule contracts.
+// TODO: move the calendar picker response into the shared schedule contracts.
 export const scheduleOptionsSchema = z.strictObject({ data: z.strictObject({
   timezone: z.string(), programs: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),
   coaches: z.array(z.strictObject({ id: z.uuid(), name: z.string() })),

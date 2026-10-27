@@ -13,7 +13,7 @@ export function sourceUrl(value = process.env.SOURCE_URL ?? defaultSourceUrl): s
 
 /** Public install metadata remains available even before a gym is configured. */
 export function mountSourceLink(app: OpenAPIHono<RequestEnvironment>, url: string, authorize: PermissionMiddleware): void {
-  // TODO(CCR): promote the public install contracts into shared contracts.
+  // TODO: promote the public install contracts into shared contracts.
   route({ method: 'get', path: '/api/source', permission: { kind: 'public' },
     responses: { 200: { description: 'Running source URL', content: { 'application/json': { schema: z.object({ data: z.object({ url: z.url() }) }) } } } },
   }, (context) => {

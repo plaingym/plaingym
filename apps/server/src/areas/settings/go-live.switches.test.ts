@@ -51,7 +51,7 @@ describe('go-live switch enforcement across entry paths', () => {
       ? { mode, context: { gymId: f.gymId, actor: { kind: 'user', userId: owner.id } } } : { mode })).toEqual({ status: 'skipped', reason: 'billing_disabled' });
     expect(create).not.toHaveBeenCalled(); expect(confirm).not.toHaveBeenCalled();
   });
-  it.each(['update_card', 'onboarding'] as const)('allows R6 customer creation and %s card setup with billing off, without charging', async purpose => {
+  it.each(['update_card', 'onboarding'] as const)('allows customer creation and %s card setup with billing off, without charging', async purpose => {
     const f = await fixture(), link = await f.link(purpose);
     const create = vi.spyOn(f.provider, 'createCustomer'), charge = vi.spyOn(f.provider, 'createCharge');
     const result = await f.checkout.start(f.gymId, link.link.id);
@@ -60,7 +60,7 @@ describe('go-live switch enforcement across entry paths', () => {
     const [saved] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
     expect(saved!.stripeCustomerId).toBe(result.session.customerId);
   });
-  it.each(['cycle', 'assignment', 'one_off'] as const)('paused billing must refuse %s payment Checkout before R6 creates a customer or saves a card', async kind => {
+  it.each(['cycle', 'assignment', 'one_off'] as const)('paused billing must refuse %s payment Checkout before creating a customer or saving a card', async kind => {
     const f = await fixture(kind), link = await f.link('pay_invoice');
     const customer = vi.spyOn(f.provider, 'createCustomer'), checkout = vi.spyOn(f.provider, 'createCheckout');
     await expect(f.checkout.start(f.gymId, link.link.id)).rejects.toMatchObject({ code: 'unavailable' });

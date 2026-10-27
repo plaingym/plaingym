@@ -19,7 +19,7 @@ export async function matchCampaignCustomer(options: {
     await scope(gymId, async tx => {
       const [current] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!current || current.stripeCustomerId || current.email !== before.email) return;
-      // R6 reserves under this same household lock. Never race an already-started creation.
+      // Customer creation reserves under this same household lock. Never race an already-started creation.
       const [reservation] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
         eq(auditEvents.targetId, householdId), eq(auditEvents.action, 'billing.customer.creation_reserved'))).limit(1);
       if (reservation) return;

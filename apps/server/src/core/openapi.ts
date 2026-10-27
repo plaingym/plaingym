@@ -4,7 +4,7 @@ import type { RequestEnvironment } from './context.js';
 import { route, type PermissionMiddleware } from './registry.js';
 
 export function mountOpenApi(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware): void {
-  // TODO(CCR): promote the public document contract into shared contracts.
+  // TODO: promote the public document contract into shared contracts.
   const documentSchema = z.custom<ReturnType<typeof app.getOpenAPIDocument>>()
     .openapi({ type: 'object', description: 'OpenAPI 3.0 document' });
   route({ method: 'get', path: '/api/openapi.json', permission: { kind: 'public' },

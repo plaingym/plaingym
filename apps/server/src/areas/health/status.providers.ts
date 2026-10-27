@@ -24,7 +24,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const stats = await jobs.get(context.gymId);
       return { id: 'failed_jobs', status: stats.failed ? 'error' : 'healthy', checkedAt: context.clock.now().toISOString(),
         message: statusMessage(stats.failed ? 'jobsFailed' : 'jobsHealthy', { failed: stats.failed }),
-        // TODO(CCR): JobStatsQuery exposes oldestPendingAt, but no oldestFailureAt. Never substitute pending time.
+        // TODO: add oldestFailureAt to JobStatsQuery. Never substitute oldestPendingAt.
         details: { failed: stats.failed, pending: stats.pending, running: stats.running, oldestFailureAt: null } };
     }),
     healthProvider('smtp', async (context) => {
@@ -43,7 +43,7 @@ export function createStatusProviders(options: StatusOptions = {}) {
       }));
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
       const low = (volume: typeof volumes[number]) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
-      // TODO(CCR): the contract has one volume. Details carry the volume with least available space;
+      // TODO: expose separate volumes in the contract. Details carry the volume with least available space;
       // the message includes both configured directories, without exposing filesystem paths.
       const details = [...volumes].sort((a, b) => a.availableBytes - b.availableBytes)[0]!;
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,

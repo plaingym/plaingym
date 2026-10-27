@@ -35,7 +35,7 @@ sessions with revision increments and audits, retaining attendance and mappings.
 Referenced tags cannot be deleted.
 
 The local `GET /api/schedule/options` response projects the gym timezone and
-program/coach IDs and names for schedule readers (`TODO(CCR)`: shared contract).
+program/coach IDs and names for schedule readers (TODO: move the response into the shared contract).
 All other endpoints use the frozen schedule contracts.
 
 The existing area route/job barrels load `schedule.routes.ts` and
