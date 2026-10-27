@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
+import { logError } from '../../core/log.js';
 import type { RequestContext } from '../../core/context.js';
 import { createMembersService, type MembersService } from './members.js';
 import { createMemberPhotoService, type MemberUploads } from './photos.js';
@@ -62,7 +63,12 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       const cleanup = await Promise.allSettled([
         ...revokedCards.map(async card => {
           if (!detachCard) throw new AppError('unavailable', 'Card removal is not configured');
-          await detachCard(ctx.gym.gymId, card.processorId);
+          try { await detachCard(ctx.gym.gymId, card.processorId); }
+          catch (error) {
+            // The erasure has committed and the queued job retries the detach; without a queue, report it.
+            if (!jobs) throw error;
+            logError('members.erasure.detach_failed', { gymId: ctx.gym.gymId, memberId: p.memberId!, paymentMethodId: card.id });
+          }
         }),
         ...files.map(async key => {
           if (!uploadsFor) throw new AppError('unavailable', 'Photo storage is not configured');

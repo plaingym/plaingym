@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
   invoices, paymentMethods, classBookings, classSessions, staffProfiles, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -107,11 +107,15 @@ export function createMembersService(options: MembersOptions = {}) {
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
           .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
         await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
+        // Only upcoming places are freed; bookings for sessions that have started stay as history.
         const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
-          .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted'])))
+          .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
+          .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
           .orderBy(asc(classBookings.sessionId));
         for (const session of sessions) {
-          await tx.select({ id: classSessions.id }).from(classSessions).where(eq(classSessions.id, session.id)).for('update');
+          const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
+            .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
+          if (!upcoming) continue;
           const cancelled = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: now })
             .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, id),
               inArray(classBookings.status, ['booked', 'waitlisted']))).returning({ id: classBookings.id });

@@ -18,6 +18,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
+import { setLogSink } from '../../core/log.js';
 import { errorHandler, respondError } from '../../core/errors.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 
@@ -242,11 +243,14 @@ describe('members and households', () => {
     expect(state.bills).toContainEqual(otherBill);
     expect(await database.forGym(gymB, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.id, foreignCard.id)))).toEqual([foreignCard]);
   });
-  it('cancels booked and waitlisted places under their session locks and clears only the erased staff link', async () => {
+  it('cancels upcoming booked and waitlisted places under their session locks, keeps past bookings, and clears only the erased staff link', async () => {
     const { person } = await routeFixture(gymA), other = await routeFixture(gymA);
-    const sessions = await Promise.all([factory('classSessions', gymA), factory('classSessions', gymA)]);
+    const upcoming = { startsAt: new Date('2026-11-01T18:00:00Z'), endsAt: new Date('2026-11-01T19:00:00Z') };
+    const sessions = await Promise.all([factory('classSessions', gymA, upcoming), factory('classSessions', gymA, upcoming)]);
     const bookings = await Promise.all(sessions.map((session, index) => factory('classBookings', gymA, { sessionId: session.id, memberId: person.id,
       bookedBy: userId, status: index ? 'waitlisted' : 'booked', waitlistPosition: index ? 1 : null })));
+    // A session that has started (the factory default is in January) keeps its booking as history.
+    const past = await factory('classBookings', gymA, { sessionId: (await factory('classSessions', gymA)).id, memberId: person.id, bookedBy: userId, status: 'booked' });
     const waiting = await factory('classBookings', gymA, { sessionId: sessions[1]!.id, memberId: other.person.id, bookedBy: userId, status: 'waitlisted', waitlistPosition: 2 });
     const profile = await factory('staffProfiles', gymA, { memberId: person.id });
     const otherProfile = await factory('staffProfiles', gymA, { memberId: other.person.id });
@@ -256,15 +260,18 @@ describe('members and households', () => {
       database.forGym(gymA, async tx => { await tx.select().from(classSessions).where(eq(classSessions.id, sessions[0]!.id)).for('update'); }),
     ]);
     const state = await database.forGym(gymA, async tx => ({
-      bookings: await tx.select().from(classBookings).where(inArray(classBookings.id, [...bookings.map(row => row.id), waiting.id])),
+      bookings: await tx.select().from(classBookings).where(inArray(classBookings.id, [...bookings.map(row => row.id), waiting.id, past.id])),
       staff: await tx.select().from(staffProfiles).where(inArray(staffProfiles.id, [profile.id, otherProfile.id])),
     }));
     for (const booking of bookings) expect(state.bookings.find(row => row.id === booking.id)).toMatchObject({ status: 'cancelled', waitlistPosition: null, cancelledAt: clock.now() });
     expect(state.bookings).toContainEqual(waiting);
+    expect(state.bookings).toContainEqual(past);
     expect(state.staff.find(row => row.id === profile.id)!.memberId).toBeNull();
     expect(state.staff).toContainEqual(otherProfile);
   });
-  it.each([false, true])('detaches all revoked cards after commit and queues retries (provider fails: %s)', async failure => {
+  it.each([
+    { failure: false, queued: true }, { failure: true, queued: true }, { failure: true, queued: false },
+  ])('detaches all revoked cards after commit and reports only failures without a retry (%o)', async ({ failure, queued }) => {
     const { home, person } = await routeFixture(gymA);
     const cards = await Promise.all([1, 2].map(() => factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_erase_' + uuidv7().replaceAll('-', '') })));
     const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
@@ -281,11 +288,19 @@ describe('members and households', () => {
     app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', gymId: gymA, userId, roles: ['owner'] }, gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'erase', clock }); await next(); });
     const errors: unknown[] = [];
     app.onError((error, ctx) => { errors.push(error); return errorHandler(error, ctx); });
-    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, jobs }) }).mount(app, authorize, new Set());
-    expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status, String(errors[0])).toBe(failure ? 500 : 200);
+    createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, { detachCard, ...(queued ? { jobs } : {}) }) }).mount(app, authorize, new Set());
+    const logs: unknown[] = [], previousLog = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    try {
+      // The erasure has committed; a queued retry makes a provider outage a logged warning, not a failed request.
+      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status, String(errors[0])).toBe(failure && !queued ? 500 : 200);
+    } finally { setLogSink(previousLog); }
     expect(detachCard).toHaveBeenCalledTimes(2);
-    expect(jobs.jobs).toHaveLength(2);
-    expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id }))));
+    expect(jobs.jobs).toHaveLength(queued ? 2 : 0);
+    if (queued) expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id }))));
+    expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.detach_failed')).toEqual(failure && queued ? [expect.objectContaining({ event: 'members.erasure.detach_failed', gymId: gymA, memberId: person.id, paymentMethodId: cards[0]!.id })] : []);
+    expect(JSON.stringify(logs)).not.toContain('Provider unavailable');
+    const stored = await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)));
+    expect(stored.every(card => card.revokedAt && !card.isDefault)).toBe(true);
   });
   it('cancels the erased member\'s memberships in the same transaction and leaves the household\'s others billable', async () => {
     const { home, person } = await routeFixture(gymA);

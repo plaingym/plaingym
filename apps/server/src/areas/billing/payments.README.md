@@ -59,10 +59,11 @@ same deduplicated detach job again before the immediate provider call.
 Erasing a household's last member revokes its active cards, clears its local
 Stripe customer ID, and holds open and past-due invoices for staff review in the
 erasure transaction. Other household members keep their cards and invoices.
-The erasure route queues the same detach jobs and attempts all card detaches
-after commit; `configureMembers` accepts the shared `jobs` and `detachCard`
-dependencies. Erasure retains accounting history and does not modify the Stripe
-Customer itself.
+After commit, the erasure route queues the same detach jobs and attempts every
+card detach; the runtime passes the shared `jobs` and `detachCard` to
+`configureMembers`. A failed attempt is logged and left to the queued job, so the
+erasure response still succeeds. Erasure retains accounting history and does not
+modify the Stripe Customer itself.
 
 Pay links use the existing signed-link creation/send contracts, with purpose
 `pay_invoice`, household ID, invoice ID, and a seven-day expiry. Creation can show
