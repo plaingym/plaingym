@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
       id: 'adminNav.campaigns',
       labelKey: 'links/campaigns:title',
       permission: { kind: 'staff', capability: 'links.send' },
-      enabled: false,
+      enabled: true,
       href: '/admin/campaigns',
     },
   ],

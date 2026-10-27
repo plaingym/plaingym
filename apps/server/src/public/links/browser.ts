@@ -8,7 +8,8 @@ export function linkBrowser() {
   const feedback = document.getElementById('feedback')!;
   const message = (key: string) => document.querySelector<HTMLElement>('[data-message="' + key + '"]')?.textContent ?? '';
   const say = (key: string) => { feedback.textContent = message(key); };
-  const clear = () => { document.body.replaceChildren(); location.replace('/l/cleared'); };
+  let activePage = true;
+  const clear = () => { activePage = false; document.body.replaceChildren(); location.replace('/l/cleared'); };
   if (tablet && document.body.dataset.state === 'alreadyDone') { clear(); return; }
   let timeout: ReturnType<typeof setTimeout>;
   function touch() { clearTimeout(timeout); if (tablet) timeout = setTimeout(clear, 120_000); }
@@ -16,13 +17,13 @@ export function linkBrowser() {
   touch();
   document.querySelector('[data-exit]')?.addEventListener('click', event => { event.preventDefault(); clear(); });
   window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-  window.addEventListener('pagehide', () => { if (tablet) document.body.replaceChildren(); });
+  window.addEventListener('pagehide', () => { activePage = false; if (tablet) document.body.replaceChildren(); });
   async function call(path: string, body?: unknown) {
     const response = await fetch(base + path, { method: 'POST', credentials: 'same-origin', cache: 'no-store',
       headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'x-link-tablet': String(tablet) },
       body: JSON.stringify(body ?? {}) });
     if (response.status === 404 || response.status === 410) { location.reload(); throw new Error('unavailable'); }
-    if (!response.ok) {
+    if (!response.ok || (path === '/complete' && response.status !== 200)) {
       // The customer state is explicit and contains no processor identifiers.
       const result = await response.json().catch(() => ({})) as { cardSetupUnavailable?: boolean };
       say(result.cardSetupUnavailable ? 'customerMissing' : response.status === 409 ? 'conflict' : 'failed');
@@ -30,11 +31,11 @@ export function linkBrowser() {
     }
     return response.json() as Promise<{ data: Record<string, unknown> }>;
   }
-  async function busy(element: HTMLButtonElement, run: () => Promise<void>) {
+  async function busy(element: HTMLButtonElement, run: () => Promise<void>, status = 'busy') {
     element.disabled = true;
-    say('busy');
+    say(status);
     try { await run(); }
-    catch { if (feedback.textContent === message('busy')) say('failed'); }
+    catch { if (activePage && feedback.textContent === message(status)) say('failed'); }
     finally { element.disabled = false; }
   }
   function done() {
@@ -50,7 +51,19 @@ export function linkBrowser() {
     const result = await call('/complete'); if (result.data.completed) done(); else say('incomplete');
   }); });
   // Returning from Stripe never asserts success. It asks the server whether webhook processing finished.
-  if (new URL(location.href).searchParams.has('returned')) complete?.click();
+  if (complete && ['pay_invoice', 'update_card', 'onboarding'].includes(purpose)
+    && new URL(location.href).searchParams.get('returned') === '1') {
+    void busy(complete, async () => {
+      for (let attempt = 0; attempt <= 5; attempt++) {
+        if (attempt) await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+        if (!activePage) return;
+        const result = await call('/complete');
+        if (!activePage) return;
+        if (result.data.completed) { done(); return; }
+      }
+      say('incomplete');
+    }, 'confirming');
+  }
   document.querySelectorAll<HTMLFormElement>('[data-waiver]').forEach(form => {
     const canvas = form.querySelector('canvas')!, ctx = canvas.getContext('2d')!;
     const file = form.querySelector<HTMLInputElement>('[name="image"]')!;

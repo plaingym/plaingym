@@ -11,7 +11,7 @@ import { validateSignatureImage } from '../../../areas/waivers/snapshot.js';
 
 const output = resolve('coverage/signed-links/browser');
 // Optional browser tooling is installed separately in e2e; normal type checks need no browser install.
-const { chromium } = await import(new URL('../../../../../../e2e/node_modules/@playwright/test/index.mjs', import.meta.url).href);
+const { chromium, expect } = await import(new URL('../../../../../../e2e/node_modules/@playwright/test/index.mjs', import.meta.url).href);
 await mkdir(output, { recursive: true });
 await buildLinkAssets(output);
 const css = await readFile(resolve(output, 'links.css'), 'utf8');
@@ -28,6 +28,7 @@ const fixtures: Record<string, PortalSignedLinkData> = {
   onboarding: { purpose: 'onboarding', members: [member], templates, signatures: [], paymentMethods: [] },
 };
 const errors: string[] = [];
+let returnMode: 'none' | 'late' | 'never' = 'none', returnAttempts = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/l/styles.css') { res.setHeader('content-type', 'text/css'); res.end(css); return; }
@@ -46,6 +47,10 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify({ data: { signatureImageKey: 'fixture.png', signatureImageHash: 'fixture' } })); return;
     }
     if (url.pathname.endsWith('/complete')) {
+      if (returnMode !== 'none') {
+        returnAttempts++;
+        res.end(JSON.stringify({ data: { completed: returnMode === 'late' && returnAttempts > 1 } })); return;
+      }
       res.end(JSON.stringify({ data: { completed: data.signatures.length === templates.length } })); return;
     }
     data.signatures.push({ id: input.templateId!, memberId: member.id, templateId: input.templateId!, signedAt: now.toISOString(),
@@ -126,11 +131,30 @@ try {
     if (data.signatures.length !== 2) throw new Error('Missing persisted fixture signatures');
   }
   await page.clock.install();
+  for (const mode of ['late', 'never'] as const) {
+    returnMode = mode; returnAttempts = 0;
+    await page.goto(origin + '/l/update_card?tablet=1&returned=1');
+    await expect.poll(() => returnAttempts).toBe(1);
+    await expect(page.locator('#feedback')).toHaveText(messages.confirming);
+    if (mode === 'late') {
+      await page.clock.runFor(1000); await page.waitForURL('**/l/cleared');
+      expect(returnAttempts).toBe(2);
+    } else {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await page.clock.runFor(attempt * 1000);
+        await expect.poll(() => returnAttempts).toBe(attempt + 1);
+        if (attempt < 5) await expect(page.locator('#feedback')).toHaveText(messages.confirming);
+      }
+      await expect(page.locator('#feedback')).toHaveText(messages.incomplete);
+      await expect(page.locator('[data-complete]')).toBeEnabled();
+    }
+  }
+  returnMode = 'none';
   await page.goto(origin + '/l/onboarding?tablet=1');
   await page.clock.fastForward(121_000);
   await page.waitForURL('**/l/cleared');
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log('Passed: four screens at 360 px and desktop, 44 px controls, signature drawing, two-template waiver/onboarding flows at both widths, tablet clear and inactivity reset.');
+  console.log('Passed: four screens at 360 px and desktop, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
 } finally {
   await browser.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

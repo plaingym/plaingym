@@ -83,5 +83,5 @@ export function linkPage({ data, state, tablet = false, now, timezone, locale = 
         data && data.purpose !== 'sign_waiver' ? h('button', { type: 'button', class: button, 'data-complete': true }, text('checkCompletion')) : null,
         data ? h('noscript', null, text('javascript')) : null,
         h('footer', { class: 'block' }, h('a', { href: '/source', rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('source')))),
-      ...['failed', 'conflict', 'customerMissing', 'busy', 'signatureRequired', 'incomplete', 'done', 'doneBody'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
+      ...['failed', 'conflict', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
 }

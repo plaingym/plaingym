@@ -48,6 +48,7 @@
   "sign": "Sign this document",
   "signed": "Signed",
   "checkCompletion": "Check completion",
+  "confirming": "Confirming your card or payment…",
   "incomplete": "Complete the card step and any unsigned documents, then check again. Card confirmation may take a moment.",
   "done": "You're all set",
   "doneBody": "Thank you. Your details have been received.",
