@@ -68,7 +68,9 @@ services:
   caddy:
     image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
     ports: ['127.0.0.1:443:443']
-    volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../dev/https/Caddyfile:/etc/caddy/demo.Caddyfile:ro
     depends_on:
       app: {condition: service_healthy}
       demo: {condition: service_healthy}

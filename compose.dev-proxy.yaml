@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Separate from the database stack: stopping the proxy preserves its local CA.
+services:
+  caddy:
+    image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
+    ports: ['127.0.0.1:443:443']
+    environment:
+      DEMO_UPSTREAM: host.docker.internal:5173
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./dev/https/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    tmpfs: [/config]
+    healthcheck:
+      test: [CMD-SHELL, 'test -s /data/caddy/pki/authorities/local/root.crt']
+      interval: 1s
+      timeout: 2s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: '10m', max-file: '3'}
+volumes:
+  caddy-data:
+    name: plaingym-dev-proxy-caddy-data

@@ -35,7 +35,7 @@ applies migrations as the `maintenance` role (`MAINTENANCE_DATABASE_URL`); run
 On Windows use `pnpm.cmd` if PowerShell blocks `pnpm.ps1`. The server is at
 `http://127.0.0.1:3000/healthz`, Vite at `http://127.0.0.1:5173`, and Mailpit at
 `http://127.0.0.1:8025` with the example ports. Vite proxies `/healthz` to the
-server's `PORT`. SMTP capture is on port 1025. All published ports bind to loopback.
+server's `PORT`. SMTP capture is on port 1025. Docker's published ports bind to loopback.
 
 On first boot, print the private setup link in another terminal and open it:
 
@@ -47,6 +47,75 @@ The token is required to create the first owner or restore a backup. Backups
 can be deferred with **Set up later**. Use `pnpm seed <gym-uuid>` to apply sample content.
 `pnpm cli <command>` runs any server command with the root `.env`, as `gym-app <command>`
 does in a deployed container.
+
+### Sandbox demo over local HTTPS
+
+The demo redirects to `https://<random>.demo.localhost/admin`, so it needs HTTPS
+on port **443** alongside `pnpm dev`. In your root `.env`, set:
+
+```dotenv
+TENANCY=multi
+DEMO_MODE=true
+DEMO_DOMAIN=demo.localhost
+PUBLIC_ORIGIN=https://demo.localhost
+AUTH_PASSWORD_LOGIN=off
+```
+
+Also configure the `UPLOADS_S3_*` values from `.env.example`: demo seeds require
+working S3-compatible storage even though visitor uploads are disabled. The
+optional Stripe test billing settings are described in the [demo guide](apps/server/src/demo/README.md).
+Start the database with `pnpm dev:up`, then run `pnpm dev`. In another terminal:
+
+```sh
+pnpm dev:proxy:up
+pnpm dev:proxy:trust
+```
+
+Trust the CA once per machine/user, then **fully quit and restart Chrome** (or
+your Chromium browser). Open **https://demo.localhost/demo** and click **Try the
+demo**. Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
+secure cookies and Vite's HMR websocket then use the same origin on port 443.
+No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.
+
+`compose.dev-proxy.yaml` runs a pinned Caddy image, sharing its demo TLS/routing
+configuration with the browser tests. It forwards to `host.docker.internal:5173`.
+Docker Desktop can reach Vite's default loopback listener. If the proxy returns
+502 on native Linux, set `VITE_HOST=0.0.0.0` in `.env` and restart `pnpm dev`;
+this exposes the dev listener on other host interfaces, so use a trusted network.
+Vite already accepts `.localhost` hosts and detects the proxied WSS port;
+no `allowedHosts: true` or `hmr.clientPort` override is needed.
+If Vite reports a port other than 5173, free 5173 and restart it.
+
+The trust script exports **only the public root certificate** from
+`/data/caddy/pki/authorities/local/root.crt` to the ignored
+`data/dev-proxy/root.crt`, then installs it for the current user:
+
+* **Windows:** `certutil -addstore -user Root data/dev-proxy/root.crt`.
+* **macOS:** `security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db data/dev-proxy/root.crt`.
+* **Linux (Chrome/Chromium):** install your distribution's NSS `certutil` tool
+  (`libnss3-tools` on Debian/Ubuntu). The script initializes the user's NSS DB if
+  needed and imports with `certutil -d sql:<db> -A -t 'C,,' -n <nickname> -i data/dev-proxy/root.crt`.
+  It uses `~/.pki/nssdb` if that directory exists, otherwise
+  `~/.local/share/pki/nssdb`, following [Chromium's trust-store rules](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/docs/linux/cert_management.md).
+
+For tools such as curl, `pnpm dev:proxy:trust --export` just exports the root;
+use `curl --cacert data/dev-proxy/root.crt https://demo.localhost/demo`.
+
+`pnpm dev:proxy:stop` removes the proxy container and network, keeping the named
+volume **`plaingym-dev-proxy-caddy-data`**. The CA survives restarts and worktree
+changes. This proxy is shared locally: only one instance can bind port 443.
+If 443 is already in use, stop the other proxy/service or this proxy before
+running browser tests. Changing the port alone does not fix demo redirects,
+which deliberately use the standard HTTPS port.
+
+To remove trust, keep the exported certificate and run `pnpm dev:proxy:untrust`
+(the container can be stopped). This deletes that CA by fingerprint on Windows
+(`certutil -delstore -user Root <SHA1>`) and macOS
+(`security delete-certificate -t -Z <SHA1> ~/Library/Keychains/login.keychain-db`),
+or by its fingerprint-based nickname in Linux NSS (`certutil -d sql:<db> -D -n <nickname>`).
+Restart Chrome again. To discard the CA entirely, stop the proxy and run
+`docker volume rm plaingym-dev-proxy-caddy-data`; the next start creates a new
+CA that must be trusted again.
 
 `pnpm build` creates `apps/server/dist/server.mjs` with its adjacent `assets/`
 and `apps/web/dist/`. Run the server with `pnpm --filter @plaingym/server start`

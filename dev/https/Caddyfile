@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+{
+  admin off
+  auto_https disable_redirects
+}
+https://demo.localhost, https://*.demo.localhost {
+  tls internal
+  reverse_proxy {$DEMO_UPSTREAM:demo:3000}
+}

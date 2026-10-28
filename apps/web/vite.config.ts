@@ -28,7 +28,8 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
     ],
     server: {
-      host: '127.0.0.1',
+      // Native Linux Docker may need VITE_HOST=0.0.0.0 to reach the host dev server.
+      host: env.VITE_HOST || '127.0.0.1',
       // Keep the browser's Host: the auth handler only serves the gym's own host (PUBLIC_ORIGIN).
       proxy: Object.fromEntries(['/healthz', '/api', '/source'].map((path) => [path, { target: `http://127.0.0.1:${env.PORT || '3000'}`, changeOrigin: false }])),
     },
