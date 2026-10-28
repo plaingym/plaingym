@@ -2,9 +2,34 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { Dialog, useDialogOperation } from './dialog.js';
+import { useRef } from 'react';
+import { Dialog, useDialogOperation, useDialogSaved } from './dialog.js';
 
 afterEach(cleanup);
+it('does not report fields from a finished or discarded subview as unsaved', () => {
+  const close = vi.fn();
+  const view = render(<Dialog title="Session" closeLabel="Close" onClose={close}><input aria-label="Date" /></Dialog>);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Changed date' } });
+  view.rerender(<Dialog title="Session" closeLabel="Close" onClose={close}><p>Session saved</p></Dialog>);
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alert')).toBeNull();
+});
+function Forms() {
+  const saved = useDialogSaved(), first = useRef<HTMLFormElement>(null), second = useRef<HTMLFormElement>(null);
+  return <><form ref={first}><input aria-label="First draft" /><button type="button" onClick={() => saved(first.current!)}>Save first</button></form>
+    <form ref={second}><input aria-label="Second draft" /><button type="button" onClick={() => saved(second.current!)}>Save second</button></form></>;
+}
+it('clears a successful form save while preserving another form\'s unsaved fields', () => {
+  const close = vi.fn(); render(<Dialog title="Session" closeLabel="Close" onClose={close}><Forms /></Dialog>);
+  fireEvent.change(screen.getByLabelText('First draft'), { target: { value: 'First' } });
+  fireEvent.change(screen.getByLabelText('Second draft'), { target: { value: 'Second' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save first' })); fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  expect(close).not.toHaveBeenCalled(); expect(screen.getByRole('alert')).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect((screen.getByLabelText('Second draft') as HTMLInputElement).value).toBe('Second');
+  fireEvent.click(screen.getByRole('button', { name: 'Save second' })); fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+  expect(close).toHaveBeenCalledOnce(); expect(screen.queryByRole('alert')).toBeNull();
+});
 function backdrop() {
   const dialog = screen.getByRole('dialog');
   vi.spyOn(dialog, 'getBoundingClientRect').mockReturnValue({ left: 100, right: 500, top: 100, bottom: 500 } as DOMRect);

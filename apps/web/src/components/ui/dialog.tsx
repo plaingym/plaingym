@@ -5,10 +5,10 @@ import { cn } from '../../lib/utils.js';
 import { Button } from './button.js';
 import { CloseIcon } from './icons.js';
 const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefined>(undefined);
-const DraftContext = createContext<Dispatch<SetStateAction<boolean>> | undefined>(undefined);
+const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
 export function useDialogSaved() {
-  const setDirty = useContext(DraftContext);
-  return () => setDirty?.(false);
+  const saved = useContext(DraftContext);
+  return (form?: HTMLFormElement) => saved?.(form);
 }
 /** Keep the containing dialog open while an embedded payment or save is running. */
 export function useDialogOperation(busy: boolean) {
@@ -19,11 +19,19 @@ export function useDialogOperation(busy: boolean) {
 export function Dialog({ title, description, closeLabel, onClose, size = 'default', className, children, dismissible = true, unsavedChanges = false }:
   { title: ReactNode; description?: ReactNode; closeLabel: string; onClose: () => void; size?: 'default' | 'wide'; className?: string; children: ReactNode; dismissible?: boolean; unsavedChanges?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null), titleId = useId(), descriptionId = useId();
-  const [busy, setBusy] = useState(0), [dirty, setDirty] = useState(false), [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(0), [confirm, setConfirm] = useState(false);
+  const dirty = useRef(new Set<HTMLElement>());
+  function saved(form?: HTMLFormElement) {
+    if (!form) dirty.current.clear();
+    else for (const field of dirty.current) if (form.contains(field)) dirty.current.delete(field);
+    if (!dirty.current.size) setConfirm(false);
+  }
   const keep = useRef<HTMLButtonElement>(null), dismissOrigin = useRef<HTMLElement | null>(null), startedOutside = useRef(false);
   function requestClose() {
     if (!dismissible || busy) return;
-    if (dirty || unsavedChanges) { dismissOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setConfirm(true); }
+    // Saved or discarded subviews unmount their fields. They no longer contain a draft.
+    for (const field of dirty.current) if (!ref.current?.contains(field)) dirty.current.delete(field);
+    if (dirty.current.size || unsavedChanges) { dismissOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setConfirm(true); }
     else onClose();
   }
   useEffect(() => { if (confirm) keep.current?.focus(); }, [confirm]);
@@ -45,7 +53,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     onCancel={(event) => { event.preventDefault(); if (confirm) { setConfirm(false); dismissOrigin.current?.focus(); } else requestClose(); }}
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onClick={event => { if (event.target === event.currentTarget && startedOutside.current && outside(event.clientX, event.clientY)) requestClose(); startedOutside.current = false; }}
-    onChangeCapture={() => setDirty(true)}
+    onChangeCapture={event => { if (event.target instanceof HTMLElement) dirty.current.add(event.target); }}
     className={cn('m-0 h-dvh max-h-none w-full max-w-none border-0 bg-background p-0 text-foreground backdrop:bg-foreground/40',
       'sm:m-auto sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%-2rem)] sm:rounded-xl sm:border sm:border-border sm:shadow-xl',
       size === 'wide' ? 'sm:max-w-4xl' : 'sm:max-w-2xl', className)}>
@@ -64,7 +72,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
             <Button variant="destructive" disabled={!dismissible || busy > 0} onClick={onClose}>{t('shell/shell:discard')}</Button>
           </div>
         </div>}
-        <OperationContext.Provider value={setBusy}><DraftContext.Provider value={setDirty}>{children}</DraftContext.Provider></OperationContext.Provider>
+        <OperationContext.Provider value={setBusy}><DraftContext.Provider value={saved}>{children}</DraftContext.Provider></OperationContext.Provider>
       </div>
     </div>
   </dialog>;

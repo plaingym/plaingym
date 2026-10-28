@@ -10,7 +10,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField, Select, Textarea } from '../../components/ui/select.js';
 import { Badge } from '../../components/ui/table.js';
-import { useDialogOperation } from '../../components/ui/dialog.js';
+import { useDialogOperation, useDialogSaved } from '../../components/ui/dialog.js';
 import { calendarDate, calendarInstant, localTime } from './calendar.js';
 
 export const text = (key: string) => t('schedule/schedule:' + key);
@@ -41,10 +41,11 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     tags?: readonly ClassTag[]; siblings?: readonly ClassSession[] }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
   useDialogOperation(busy);
+  const markSaved = useDialogSaved();
   const manage = canStaff(roles, 'schedule.manage'), notes = canStaff(roles, 'class_notes.manage');
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
-    const form = event ? new FormData(event.currentTarget) : null;
+    const formElement = event?.currentTarget, form = formElement ? new FormData(formElement) : null;
     const id = session.id, revision = session.revision;
     setBusy(true); setNotice('');
     try {
@@ -53,7 +54,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         : kind === 'coach' ? await api.POST('/api/schedule/sessions/{id}/coach', { params, body: { revision, coachId: String(form?.get('coachId') ?? '') || null } })
         : kind === 'capacity' ? await api.PATCH('/api/schedule/sessions/{id}/capacity', { params, body: { revision, capacity: form?.get('capacity') ? Number(form.get('capacity')) : null } })
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
-      check(result.response); onSaved(classSessionResponseSchema.parse(result.data).data); setNotice(text('saved'));
+      check(result.response); if (formElement) markSaved(formElement);
+      onSaved(classSessionResponseSchema.parse(result.data).data); setNotice(text('saved'));
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
   const when = new Intl.DateTimeFormat(undefined, { timeZone: options.timezone, dateStyle: 'full' }).format(new Date(session.startsAt));

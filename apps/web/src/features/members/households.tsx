@@ -8,6 +8,7 @@ import { Label } from '../../components/ui/label.js';
 import { CheckboxField } from '../../components/ui/select.js';
 import { LoadingState } from '../../components/ui/states.js';
 import { Autocomplete } from '../../components/ui/autocomplete.js';
+import { useDialogSaved } from '../../components/ui/dialog.js';
 import { memberRequest } from './api.js';
 import { Field, Panel, ErrorMessage, text, useDraft, useMemberSave } from './common.js';
 
@@ -27,10 +28,12 @@ export function HouseholdsManager({ gymId }: { gymId: string }) {
 }
 
 export function HouseholdForm({ household, onSaved }: { household?: c.Household; onSaved?: (household: c.Household) => void }) {
+  const markSaved = useDialogSaved();
   const draft = useDraft({ name: household?.name ?? '', email: household?.email ?? '', phone: household?.phone ?? '', address: household?.address ?? ({} as c.HouseholdAddress) });
   const state = useMemberSave(), { values, set } = draft, address = values.address;
-  function submit(event: FormEvent) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const formElement = event.currentTarget;
     void state.save(async () => {
       // Only edited fields are sent, so a PIN or billing save in between never reverts them.
       const changed = household ? draft.changes() : values;
@@ -41,7 +44,7 @@ export function HouseholdForm({ household, onSaved }: { household?: c.Household;
       const saved = household ? await memberRequest(c.householdResponseSchema, `/api/households/${household.id}`, 'PATCH', c.updateHouseholdRequestSchema.parse({ ...input, revision: household.revision }))
         : await memberRequest(c.householdResponseSchema, '/api/households', 'POST', c.createHouseholdRequestSchema.parse(input));
       onSaved?.(saved.data);
-    }, draft.reset);
+    }, () => { draft.reset(); markSaved(formElement); });
   }
   return <form onSubmit={submit} className="space-y-3"><ErrorMessage error={state.error}/>
     <Field name="householdName" value={values.name} onChange={(value) => set('name', value)} required/><Field name="email" type="email" value={values.email} onChange={(value) => set('email', value)}/><Field name="phone" value={values.phone} onChange={(value) => set('phone', value)}/>

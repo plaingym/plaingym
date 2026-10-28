@@ -65,6 +65,10 @@ invoice actions opened another dialog; they now use integrated views. The demo
 guide and outbox preview are separate top-level views, and other dialogs already
 contain their forms or steps. Busy saves/payments block dismissal; changed form
 inputs require explicit discard confirmation before dismissal.
+Fields from a finished or discarded subview stop counting as drafts when the
+subview unmounts. A form that stays mounted calls `useDialogSaved()(formElement)`
+after a successful save, clearing only that form's draft markers and preserving
+edits in other forms in the same dialog.
 | `MenuIcon`, `CloseIcon`, `UserIcon`, … | Small inline icons, decorative unless labelled |
 
 **Tokens.** Colors are design tokens in `src/app/styles.css` (`bg-primary`,
