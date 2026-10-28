@@ -32,7 +32,7 @@ test('login at phone, tablet and desktop widths supports errors and password sig
 
 test('demo entry creates a gym, phone role controls and guide work, full-name kiosk check-in fits every size', async ({ page }, info) => {
   test.setTimeout(180_000);
-  await page.goto('https://demo.localhost/demo');
+  await page.goto('https://demo.localhost/');
   for (const size of sizes) {
     await page.setViewportSize(size);
     await expect(page.getByRole('button', { name: 'Try the demo', exact: true })).toBeVisible();

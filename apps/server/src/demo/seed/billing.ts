@@ -15,7 +15,8 @@ import { createMembersService } from '../../areas/members/members.js';
 import { createGoLiveService } from '../../areas/settings/go-live.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import type { SeedStep } from './index.js';
-import { demoHouseholds, householdEmail, memberKey, settableClock } from './members.js';
+import { demoHouseholds, householdEmail, inBatches, memberKey, settableClock } from './members.js';
+import type { Household } from '@plaingym/shared/contracts';
 import type { BillingSeedProvider } from './billing-payments.js';
 
 const page = { limit: 100, offset: 0 } as const;
@@ -70,11 +71,15 @@ export function billingSeed(options: {
     if (!initial.billingEnabled) await switches.update(actor, { revision: initial.revision, billingEnabled: true,
       confirmedPastDueDates: initial.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) });
     try {
-      for (const home of demoHouseholds) {
+      const prepared = new Map<string, Household>();
+      // Overlap independent customer/card requests, bounded to three households.
+      // Drain all in-flight work before restoring billing or letting provisioning roll back.
+      // Invoice history and collection still run in order on the seed's calendar.
+      await inBatches(demoHouseholds, async home => {
         const household = (await people.listHouseholds(gymId, { ...page, search: home.name })).data
           .find(row => row.name === home.name && row.email === householdEmail(home));
         if (!household) throw new Error('Run the members seed before the billing seed');
-        if ((await scope(gymId, tx => recorded(tx, completed, household.id))).length) continue;
+        if ((await scope(gymId, tx => recorded(tx, completed, household.id))).length) return;
         const customerId = await customers.ensureCustomer(gymId, household.id);
         const saved = await scope(gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, household.id)));
         if (!saved.length) {
@@ -89,6 +94,11 @@ export function billingSeed(options: {
           const methodId = await provider.seedCard(customerId, household.id, pastDueHouseholds.some(slug => slug === home.slug));
           await cards.collect(gymId, provider.payments, customerId, methodId);
         }
+        prepared.set(home.slug, household);
+      }, 3);
+      for (const home of demoHouseholds) {
+        const household = prepared.get(home.slug);
+        if (!household) continue;
         const billing = await people.getHouseholdBilling(gymId, household.id);
         if (billing.billingDay !== billingDay) await people.updateHouseholdBilling(actor, household.id,
           { familyDiscountBasisPoints: billing.familyDiscountBasisPoints, billingDay, revision: billing.revision });

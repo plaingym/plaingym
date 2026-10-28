@@ -95,7 +95,7 @@ export function StaffManagement({ roles: actorRoles, passwordEnabled, services =
       {profiles && profiles.pagination.total > 25 && <div className="flex justify-between gap-3"><Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 25))}>{label('previous')}</Button>
         <Button variant="outline" disabled={busy || offset + 25 >= profiles.pagination.total} onClick={() => setOffset(offset + 25)}>{label('next')}</Button></div>}
     </PageSection>
-    {(creating || editing) && <Dialog title={label(creating ? 'addProfile' : 'editProfile')} description={editing?.displayName} closeLabel={label('closeDialog')} onClose={closeEditor}>
+    {(creating || editing) && <Dialog title={label(creating ? 'addProfile' : 'editProfile')} description={editing?.displayName} closeLabel={label('closeDialog')} dismissible={!busy} onClose={closeEditor}>
       <form key={editing?.id ?? 'new'} className="space-y-4" onSubmit={(event) => submit(event, async (data, form) => {
         const photoInput = form.elements.namedItem('photo');
         const file = photoInput instanceof HTMLInputElement ? photoInput.files?.[0] : undefined;

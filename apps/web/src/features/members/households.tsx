@@ -5,8 +5,9 @@ import * as c from '@plaingym/shared/contracts';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
-import { CheckboxField, Select } from '../../components/ui/select.js';
+import { CheckboxField } from '../../components/ui/select.js';
 import { LoadingState } from '../../components/ui/states.js';
+import { Autocomplete } from '../../components/ui/autocomplete.js';
 import { memberRequest } from './api.js';
 import { Field, Panel, ErrorMessage, text, useDraft, useMemberSave } from './common.js';
 
@@ -15,11 +16,13 @@ export function HouseholdsManager({ gymId }: { gymId: string }) {
   const query = useQuery({ queryKey: ['members', gymId, 'household-manager', search, offset], queryFn: ({ signal }) => memberRequest(c.householdListResponseSchema,
     '/api/households?' + new URLSearchParams({ limit: '50', offset: String(offset), ...(search ? { search } : {}) }), 'GET', undefined, signal) });
   return <div className="space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6">
-    <div className="grid gap-3 sm:grid-cols-2"><Field name="searchHouseholds" type="search" value={search} onChange={(value) => { setSearch(value); setOffset(0); }}/>
-      <Label className="grid gap-2">{text('household')}<Select value={selected} onChange={(event) => setSelected(event.target.value)}><option value="">{text('createHousehold')}</option>{query.data?.data.map((home) => <option key={home.id} value={home.id}>{home.name}</option>)}</Select></Label></div>
+    <Autocomplete label={text('searchHouseholds')} query={search} value={selected} onQueryChange={value => { setSearch(value); setOffset(0); }} onChange={setSelected}
+      options={(query.data?.data ?? []).map(home => ({ id: home.id, label: home.name }))} loading={query.isPending} />
+    {selected && <Button variant="outline" onClick={() => { setSelected(''); setSearch(''); }}>{text('createHousehold')}</Button>}
     <ErrorMessage error={query.error}/>
     {(offset > 0 || (query.data?.pagination.total ?? 0) > 50) && <div className="flex justify-between gap-2"><Button variant="outline" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button><Button variant="outline" disabled={!query.data || offset + 50 >= query.data.pagination.total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button></div>}
-    {selected ? <HouseholdDetails key={selected} gymId={gymId} householdId={selected} onDeleted={() => setSelected('')}/> : <HouseholdForm onSaved={(home) => setSelected(home.id)}/>}
+    {selected ? <HouseholdDetails key={selected} gymId={gymId} householdId={selected} onDeleted={() => { setSelected(''); setSearch(''); }}/>
+      : <HouseholdForm onSaved={(home) => { setSelected(home.id); setSearch(home.name); }}/>}
   </div>;
 }
 

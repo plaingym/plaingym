@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { InvoiceDetail, MaskedPaymentMethod, Payment } from '@plaingym/shared/contracts';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, decimalAmount, decimalUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
-import { Dialog } from '../../../components/ui/dialog.js';
+import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
+import { t } from '../../../lib/i18n.js';
 import { Label } from '../../../components/ui/label.js';
 import { Input } from '../../../components/ui/input.js';
 import { Select } from '../../../components/ui/select.js';
@@ -22,14 +23,20 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const cache = useQueryClient(), key = ['billing', gymId, 'invoice', invoiceId];
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOffset, setCardOffset] = useState(0);
+  const actionTitle = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
+  const [draft, setDraft] = useState(false), [discard, setDiscard] = useState(false), keep = useRef<HTMLButtonElement>(null);
+  const markSaved = useDialogSaved();
+  useDialogOperation(busy);
+  useEffect(() => { if (action) heading.current?.focus(); else if (trigger.current?.isConnected) trigger.current.focus(); }, [action]);
+  useEffect(() => { if (discard) keep.current?.focus(); }, [discard]);
   const detail = useQuery({ queryKey: key, queryFn: () => client.invoice(invoiceId) });
   const homeId = detail.data?.invoice.householdId;
   const household = useQuery({ queryKey: ['billing', gymId, 'household', homeId], queryFn: () => client.household(homeId!), enabled: !!homeId });
   const cards = useQuery({ queryKey: ['billing', gymId, 'cards', homeId, cardOffset], queryFn: () => client.cards(homeId!, cardOffset), enabled: !!homeId });
   const allCards = useQuery({ queryKey: ['billing', gymId, 'activeCards', homeId], queryFn: () => client.activeDefaultCard(homeId!), enabled: !!homeId });
-  function open(next: Action) { setError(''); setMessage(''); setUrl(''); setAction(next); }
+  function open(next: Action) { trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setError(''); setMessage(''); setUrl(''); setDraft(false); setDiscard(false); setAction(next); }
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (!detail.data || !action) return;
+    event.preventDefault(); if (!detail.data || !action || busy) return;
     const form = new FormData(event.currentTarget), invoice = detail.data.invoice;
     setBusy(true); setError(''); setMessage('');
     try {
@@ -54,6 +61,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         else setMessage(text('linkSent'));
       }
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });
+      markSaved(); setDraft(false);
       if (action.kind !== 'link') setAction(null);
     } catch (error) { setError(invoiceError(error)); await cache.invalidateQueries({ queryKey: key }); } finally { setBusy(false); }
   }
@@ -62,6 +70,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const data = detail.data, invoice = data.invoice, collectible = ['open', 'past_due'].includes(invoice.status);
   return <div className="min-w-0 space-y-6">
     {message && <Alert role="status">{message}</Alert>}
+    <div hidden={!!action} className="space-y-6">
     <PageSection title={household.data?.name ?? text('household')}>
       <dl className="grid min-w-0 gap-3 sm:grid-cols-2">
         <div><dt>{text('number')}</dt><dd>{invoice.number ?? text('draft')}</dd></div>
@@ -104,8 +113,15 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       </StackedItem>)}</StackedList>
       {cards.data && cards.data.pagination.total > 25 && <div className="flex gap-2"><Button variant="outline" disabled={!cardOffset} onClick={() => setCardOffset(v => v - 25)}>{text('previous')}</Button><Button variant="outline" disabled={cardOffset + 25 >= cards.data.pagination.total} onClick={() => setCardOffset(v => v + 25)}>{text('next')}</Button></div>}
     </PageSection>
-    {action && <Dialog title={text(action.kind === 'cash' ? 'recordCash' : action.kind)} closeLabel={text('close')} onClose={() => { if (!busy) setAction(null); }}>
-      {action.kind === 'viewReceipt' ? <Receipt data={data}/> : <form onSubmit={event => void submit(event)} className="space-y-4">
+    </div>
+    {action && <section aria-labelledby={actionTitle} className="space-y-4">
+      <Button variant="outline" disabled={busy} onClick={() => { if (draft) setDiscard(true); else setAction(null); }}>{text('backToInvoice')}</Button>
+      <h3 id={actionTitle} ref={heading} tabIndex={-1} className="text-lg font-semibold">{text(action.kind === 'cash' ? 'recordCash' : action.kind)}</h3>
+      {discard && <Alert><p>{t('shell/shell:discardHelp')}</p><div className="mt-3 flex flex-wrap gap-2">
+        <Button ref={keep} disabled={busy} onClick={() => { setDiscard(false); heading.current?.focus(); }}>{t('shell/shell:keepEditing')}</Button>
+        <Button variant="destructive" disabled={busy} onClick={() => { markSaved(); setDiscard(false); setDraft(false); setAction(null); }}>{t('shell/shell:discard')}</Button>
+      </div></Alert>}
+      {action.kind === 'viewReceipt' ? <Receipt data={data}/> : <form onSubmit={event => void submit(event)} onChangeCapture={() => setDraft(true)} className="space-y-4">
         {error && <Alert role="alert">{error}</Alert>}
         <fieldset disabled={busy} className="space-y-4">
           {action.kind !== 'releaseHold' && <p>{action.kind === 'refund' && text('remainingRefundable') + ': '}{money(action.kind === 'refund' ? refundable(data, action.payment) : invoice.amountCents, invoice.currency)}</p>}
@@ -126,7 +142,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
             : <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'saving' : 'confirm')}</Button>}
         </fieldset>
       </form>}
-    </Dialog>}
+    </section>}
   </div>;
 }
 function refundable(data: InvoiceDetail, payment: Payment) {

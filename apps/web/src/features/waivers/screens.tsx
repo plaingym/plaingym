@@ -53,7 +53,7 @@ function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | '
     try { await client.call('retireTemplate', { expectedVersion: row.version }, { templateId: row.id }); await saved(); }
     catch (error) { setError(errorText(error, 'saveError')); } finally { setBusy(false); }
   }
-  return <Dialog title={text(row === 'new' ? 'create' : 'edit')} closeLabel={text('close')} onClose={() => { if (!busy) close(); }} size="wide">
+  return <Dialog title={text(row === 'new' ? 'create' : 'edit')} closeLabel={text('close')} dismissible={!busy} onClose={close} size="wide">
     <form className="space-y-4" onSubmit={event => void save(event)}>
       <p>{text('versionNote')}</p>{error && <Alert role="alert">{error}</Alert>}
       <div><Label htmlFor="waiver-name">{text('name')}</Label><Input id="waiver-name" name="name" required maxLength={200} readOnly={row !== 'new'} defaultValue={row === 'new' ? '' : row.name} /></div>
@@ -121,6 +121,7 @@ function Pager({ offset, total, setOffset }: { offset: number; total: number; se
 function Signing({ template, memberId, client, close, saved }: { template: WaiverTemplate; memberId: string; client: WaiversClient; close: () => void; saved: () => Promise<void> }) {
   const canvas = useRef<HTMLCanvasElement>(null), drawing = useRef(false), hasInk = useRef(false);
   const uploaded = useRef<{ signatureImageKey: string; signatureImageHash: string } | null>(null);
+  const [signatureChanged, setSignatureChanged] = useState(false);
   const [guardian, setGuardian] = useState(false), [typed, setTyped] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget); setBusy(true); setError(null);
@@ -135,7 +136,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
       await saved();
     } catch (error) { setError(errorText(error, 'signError')); } finally { setBusy(false); }
   }
-  return <Dialog title={text('reviewSign')} closeLabel={text('close')} onClose={() => { if (!busy) close(); }} size="wide">
+  return <Dialog title={text('reviewSign')} closeLabel={text('close')} dismissible={!busy} unsavedChanges={signatureChanged} onClose={close} size="wide">
     <form className="space-y-4" onSubmit={event => void submit(event)}>
       <h3 className="break-words font-semibold">{template.name} · {text('version')} {template.version}</h3>
       <div className="whitespace-pre-wrap break-words rounded-lg border border-border p-3" dir="auto">{template.body}</div>
@@ -151,7 +152,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
         onPointerDown={e => { if (typed || busy) return; const c = canvas.current!, box = c.getBoundingClientRect(), ctx = c.getContext('2d')!;
           c.setPointerCapture(e.pointerId); ctx.beginPath(); ctx.lineWidth = 3; ctx.moveTo((e.clientX - box.left) * 600 / box.width, (e.clientY - box.top) * 180 / box.height); drawing.current = true; uploaded.current = null; }}
         onPointerMove={e => { if (!drawing.current) return; const c = canvas.current!, box = c.getBoundingClientRect(), ctx = c.getContext('2d')!;
-          ctx.lineTo((e.clientX - box.left) * 600 / box.width, (e.clientY - box.top) * 180 / box.height); ctx.stroke(); hasInk.current = true; }}
+          ctx.lineTo((e.clientX - box.left) * 600 / box.width, (e.clientY - box.top) * 180 / box.height); ctx.stroke(); hasInk.current = true; setSignatureChanged(true); }}
         onPointerUp={() => { drawing.current = false; }} onPointerCancel={() => { drawing.current = false; }} />
       <Button type="button" variant="outline" disabled={busy} onClick={() => { canvas.current?.getContext('2d')?.clearRect(0, 0, 600, 180); hasInk.current = false; uploaded.current = null; }}>{text('clear')}</Button>
       <CheckboxField label={text('consent')} required />

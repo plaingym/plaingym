@@ -9,11 +9,32 @@ const fetcher = vi.fn();
 const route = vi.hoisted(() => ({ pathname: '/admin' }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => route.pathname }));
 vi.stubGlobal('fetch', fetcher);
-const { DemoShell, DemoKioskHint, useDemoSandbox } = await import('./notice.js');
+const { DemoShell, DemoKioskHint, TryDemoButton, useDemoSandbox } = await import('./notice.js');
 const { readToken } = await import('../kiosk/api.js');
 beforeEach(() => { fetcher.mockReset(); localStorage.clear(); route.pathname = '/admin'; window.history.replaceState(null, '', '/admin'); });
 afterEach(() => { cleanup(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
 afterAll(() => vi.unstubAllGlobals());
+it('announces creation immediately, prevents repeat activation, and navigates only after success', async () => {
+  let finish!: (response: Response) => void;
+  fetcher.mockReturnValue(new Promise<Response>(resolve => { finish = resolve; }));
+  const navigate = vi.fn(); render(<TryDemoButton navigate={navigate} />);
+  const button = screen.getByRole('button'); button.focus(); fireEvent.click(button); fireEvent.click(button);
+  expect(button.getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByRole('status').textContent).toContain('Preparing sample members');
+  expect(document.activeElement).toBe(button); expect(fetcher).toHaveBeenCalledTimes(1); expect(navigate).not.toHaveBeenCalled();
+  await act(async () => { finish(Response.json({ data: { gymId: '019a0000-0000-7000-8000-000000000001', origin: 'https://sample.demo.localhost',
+    expiresAt: '2026-11-01T00:00:00.000Z', kioskToken: 'device-token-for-success-test' } })); });
+  expect(navigate).toHaveBeenCalledOnce(); const destination = new URL(navigate.mock.calls[0]![0] as string);
+  expect(destination.origin).toBe('https://sample.demo.localhost'); expect(destination.pathname).toBe('/admin');
+});
+it.each([500, 429])('offers a focused retry and useful feedback after HTTP %s', async status => {
+  fetcher.mockResolvedValue(Response.json({}, { status })); render(<TryDemoButton />);
+  fireEvent.click(screen.getByRole('button'));
+  expect((await screen.findByRole('alert')).textContent).toContain(status === 429 ? 'capacity' : 'payment and storage');
+  const retry = screen.getByRole('button', { name: 'Retry creating demo' }); expect(document.activeElement).toBe(retry);
+  expect(retry.getAttribute('aria-disabled')).toBe('false'); fireEvent.click(retry);
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+});
 function Consumer() {
   return <p>{useDemoSandbox() ? 'Sandbox consumer' : 'Ordinary consumer'}</p>;
 }

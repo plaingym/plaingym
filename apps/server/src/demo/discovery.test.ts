@@ -109,6 +109,12 @@ describe('demo runtime discovery', () => {
     expect(response.status).toBe(200);
     expect(demoEntryResponse.parse(await response.json())).toEqual({ data: { mode: 'entry' } });
   });
+  it('redirects only the demo entry root before tenant resolution', async () => {
+    const response = await get(demoOrigin, '/');
+    expect(response.status).toBe(302); expect(response.headers.get('location')).toBe('/demo');
+    expect((await get('https://unknown.example.test', '/')).status).toBe(404);
+    expect((await get('https://ready.demo.example.test', '/')).headers.get('location')).not.toBe('/demo');
+  });
 
   it.each([
     { name: 'ready', ready: true, expiresAt, status: 'active', expected: 200 },

@@ -10,6 +10,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { CheckboxField, Select, Textarea } from '../../components/ui/select.js';
 import { Badge } from '../../components/ui/table.js';
+import { useDialogOperation } from '../../components/ui/dialog.js';
 import { calendarDate, calendarInstant, localTime } from './calendar.js';
 
 export const text = (key: string) => t('schedule/schedule:' + key);
@@ -39,6 +40,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   { session: ClassSession; options: ScheduleOptions; roles: readonly StaffRole[]; enabledModules: readonly string[]; onSaved: (session: ClassSession) => void;
     tags?: readonly ClassTag[]; siblings?: readonly ClassSession[] }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
+  useDialogOperation(busy);
   const manage = canStaff(roles, 'schedule.manage'), notes = canStaff(roles, 'class_notes.manage');
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
@@ -90,6 +92,7 @@ export function SessionForm({ session, options, tags, siblings, onSaved, onCance
   { session: ClassSession; options: ScheduleOptions; tags: readonly ClassTag[]; siblings: readonly ClassSession[];
     onSaved: (session: ClassSession) => void; onCancel: () => void }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState('');
+  useDialogOperation(busy);
   const zone = options.timezone, start = new Date(session.startsAt);
   const duration = Math.max(1, Math.round((Date.parse(session.endsAt) - Date.parse(session.startsAt)) / 60_000));
   async function save(event: FormEvent<HTMLFormElement>) {

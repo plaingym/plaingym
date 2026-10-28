@@ -106,6 +106,7 @@ export function GoLiveSettings() {
         <PastDueList memberships={checklist.pastDueMemberships}/>
       </div>}
       {confirmBilling && <Dialog title={label('confirmTitle')} description={label('pastDueHelp')} closeLabel={label('close')}
+        dismissible={!busy}
         onClose={() => { if (!busy) { setConfirmBilling(false); setConfirmed(false); } }}>
         <div className="space-y-4">
           <PastDueList memberships={checklist.pastDueMemberships}/>

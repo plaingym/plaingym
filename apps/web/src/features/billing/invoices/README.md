@@ -2,13 +2,15 @@
 # Invoice screens
 
 The invoice page and detail route use the shared page/state components. Lists and
-line items use stacked rows; editors, confirmations, and receipts use the shared
-`Dialog`. No new shared components are needed.
+line items use stacked rows. One-off editors use the shared `Dialog` and searchable
+household `Autocomplete`. Receipt, cash/check, saved-card confirmation, refund,
+pay-link, review-hold and card-management views stay inside invoice details,
+with a back control and focus restored to the action that opened the view.
 
 The registered member profile tab resolves the member's household and requests
 that household's invoices. Cache keys include gym, household/member, filters and
 pagination. A created one-off invoice opens its detail so staff can choose cash or
-check, the saved card, or a signed pay link. Currency comes from gym settings;
+check, the saved card, or a signed pay link. Currency comes from the bootstrap gym summary;
 decimal input converts to integer cents without floating-point rounding.
 
 Collection controls use `payments.record`, pay links use `links.send`, and refund

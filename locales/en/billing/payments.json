@@ -5,6 +5,7 @@
   "create": "Add one-off charge",
   "close": "Close",
   "searchHousehold": "Search households",
+  "backToInvoice": "Back to invoice",
   "household": "Household",
   "chooseHousehold": "Choose a household",
   "householdSearchHelp": "Showing up to 25 matches. Search by household name to narrow the list.",

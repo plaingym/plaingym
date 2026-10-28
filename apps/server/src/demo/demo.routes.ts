@@ -32,6 +32,14 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) throw new AppError('not_found', 'Not found');
     await next();
   };
+  const discovery = route({ ...entry, middleware: [discoveryHost], responses: { 200: { description: 'Demo discovery', content: { 'application/json': { schema: entry.response } } } } },
+    async (c) => {
+      c.header('cache-control', 'no-store');
+      if (options.enabled === false) return c.json({ data: { mode: 'disabled' as const } }, 200);
+      if (isInstallHost(c.req.header('host') ?? new URL(c.req.url).host))
+        return c.json({ data: { mode: 'entry' as const } }, 200);
+      return c.json({ data: { mode: 'sandbox' as const, ...await service.status(c.get('context').gym.gymId) } }, 200);
+    });
   return [
     route({ ...create, middleware: [modeGuard, installHost, guard, limiter],
       responses: { 201: { description: 'Created', content: { 'application/json': { schema: create.response } } } },
@@ -55,14 +63,16 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     route({ ...message, request: { params: message.params },
       responses: { 200: { description: 'Message', content: { 'application/json': { schema: message.response } } } },
     }, async (c) => { const gymId = c.get('context').gym.gymId; await service.status(gymId); c.header('cache-control', 'no-store'); return c.json({ data: await outbox.get(gymId, c.req.valid('param').id) }, 200); }),
-    route({ ...entry, middleware: [discoveryHost], responses: { 200: { description: 'Demo discovery', content: { 'application/json': { schema: entry.response } } } } },
-      async (c) => {
-        c.header('cache-control', 'no-store');
-        if (options.enabled === false) return c.json({ data: { mode: 'disabled' as const } }, 200);
-        if (isInstallHost(c.req.header('host') ?? new URL(c.req.url).host))
-          return c.json({ data: { mode: 'entry' as const } }, 200);
-        return c.json({ data: { mode: 'sandbox' as const, ...await service.status(c.get('context').gym.gymId) } }, 200);
-      }),
+    { ...discovery, mount(app: Parameters<RouteRegistration['mount']>[0], authorize: Parameters<RouteRegistration['mount']>[1]) {
+      // Discovery mounts before tenant resolution: the entry host has no gym.
+      // Keep ordinary gym roots available to their public website routes.
+      if (options.enabled !== false) app.get('/', async (c, next) => {
+        if (!isInstallHost(c.req.header('host') ?? new URL(c.req.url).host)) return next();
+        await authorize({ kind: 'public' })(c, async () => { c.res = c.redirect('/demo', 302); });
+        return c.res;
+      });
+      discovery.mount(app, authorize);
+    } },
   ];
 }
 let configured: ReturnType<typeof createDemoRoutes> | undefined;

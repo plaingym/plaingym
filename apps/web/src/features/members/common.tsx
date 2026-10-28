@@ -7,6 +7,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { Badge } from '../../components/ui/table.js';
 import { t } from '../../lib/i18n.js';
 import { ApiError } from '../../lib/api.js';
+import { useDialogOperation } from '../../components/ui/dialog.js';
 export const text = (key: string) => t('members/members:' + key);
 export function Field({ name, value, onChange, type = 'text', required = false }: { name: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean }) {
   return <Label className="grid gap-2">{text(name)}<Input type={type} value={value} required={required} onChange={(event) => onChange(event.target.value)}/></Label>;
@@ -16,6 +17,7 @@ export function ErrorMessage({ error }: { error: unknown }) {
 }
 export function useMemberSave() {
   const client = useQueryClient(), [error, setError] = useState<unknown>(), [busy, setBusy] = useState(false);
+  useDialogOperation(busy);
   return { error, busy, async save(action: () => Promise<unknown>, done?: () => void) {
     setBusy(true); setError(undefined);
     try { await action(); await client.invalidateQueries({ queryKey: ['members'] }); done?.(); }

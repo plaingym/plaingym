@@ -7,6 +7,7 @@ import { invoiceError, type InvoiceClient } from './api.js';
 import { text, decimalUnits, money } from './format.js';
 import { Button } from '../../../components/ui/button.js';
 import { Dialog } from '../../../components/ui/dialog.js';
+import { Autocomplete } from '../../../components/ui/autocomplete.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Select, CheckboxField } from '../../../components/ui/select.js';
@@ -25,7 +26,7 @@ export function OneOffEditor({ gymId, householdId, client, close, created }: {
   } });
   const homes = useQuery({ queryKey: ['billing', gymId, 'household-search', search], queryFn: () => client.households(search), enabled: !householdId });
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (!setup.data || !gym) return;
+    event.preventDefault(); if (!setup.data || !gym || !chosen || busy) return;
     const form = new FormData(event.currentTarget); setBusy(true); setError('');
     try {
       const body = source === 'charge_type' ? { source, householdId: chosen, dueOn: form.get('dueOn'), chargeTypeId: form.get('chargeTypeId') }
@@ -34,18 +35,16 @@ export function OneOffEditor({ gymId, householdId, client, close, created }: {
       const result = await client.call('createOneOffInvoice', body); created(result.data.id);
     } catch (error) { setError(invoiceError(error)); } finally { setBusy(false); }
   }
-  return <Dialog title={text('create')} closeLabel={text('close')} onClose={() => { if (!busy) close(); }}>
+  return <Dialog title={text('create')} closeLabel={text('close')} dismissible={!busy} onClose={close}>
     {(setup.isPending || bootstrap.isPending) && <LoadingState/>}{setup.isError && <ErrorState onRetry={() => void setup.refetch()}/>}
     {bootstrap.isError && <ErrorState onRetry={() => void bootstrap.refetch()}/>}
     {error && <Alert role="alert">{error}</Alert>}
     {setup.data && gym && <form className="space-y-4" onSubmit={event => void submit(event)}>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
         {!householdId && <>
-          <Label className="block">{text('searchHousehold')}<Input value={search} onChange={event => { setSearch(event.target.value); setChosen(''); }}/></Label>
+          <Autocomplete label={text('searchHousehold')} query={search} value={chosen} onQueryChange={setSearch} onChange={setChosen}
+            options={(homes.data?.data ?? []).map(home => ({ id: home.id, label: home.name }))} loading={homes.isPending} required />
           {homes.isPending && <LoadingState/>}{homes.isError && <ErrorState onRetry={() => void homes.refetch()}/>}
-          <Label className="block">{text('household')}<Select required value={chosen} onChange={event => setChosen(event.target.value)}>
-            <option value="">{text('chooseHousehold')}</option>{homes.data?.data.map(home => <option key={home.id} value={home.id}>{home.name}</option>)}
-          </Select></Label>
           <p className="text-sm text-muted-foreground">{text('householdSearchHelp')}</p>
         </>}
         <Label className="block">{text('source')}<Select value={source} onChange={event => setSource(event.target.value)}><option value="charge_type">{text('chargeType')}</option><option value="custom">{text('custom')}</option></Select></Label>

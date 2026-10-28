@@ -9,6 +9,10 @@ let sink: Sink = (line) => { process.stderr.write(line + '\n'); };
 /** Tests capture log lines; returns the previous sink. */
 export function setLogSink(next: Sink): Sink { const previous = sink; sink = next; return previous; }
 
+export function logInfo(event: string, fields: LogFields): void {
+  sink(JSON.stringify({ time: new Date().toISOString(), level: 'info', event, ...fields }));
+}
+
 export function logError(event: string, fields: LogFields, error?: unknown): void {
   sink(JSON.stringify({ time: new Date().toISOString(), level: 'error', event, ...fields,
     ...(error === undefined ? {} : { error: describeError(error) }) }));

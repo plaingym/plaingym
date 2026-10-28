@@ -40,6 +40,7 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
     if (url.pathname === '/api/billing/charge-types') return Response.json(page([]));
     if (url.pathname === '/api/billing/tax-rates') return Response.json(page([]));
     if (url.pathname === '/api/settings') return Response.json({}, { status: 403 });
+    if (url.pathname === '/api/households') return Response.json(page([{ id: home, name: 'Rivera household', email: null, phone: null, address: {}, revision: 1, createdAt }]));
     if (url.pathname === '/api/links/send') return Response.json({ data: {
       id: id(9), createdAt, householdId: home, campaignId: null, purpose: 'pay_invoice', invoiceId: invoice.id, memberId: null,
       expiresAt: '2026-11-01T12:00:00Z', usedAt: null, revokedAt: null, createdBy: id(10),
@@ -54,6 +55,40 @@ function start(view: React.ReactNode) {
 }
 afterEach(cleanup);
 describe('invoice and household payment UI', () => {
+  it('selects the household in one searchable control and submits that household on a one-off invoice', async () => {
+    const f = transport(); start(<InvoiceList gymId={gymId} access={desk} client={f.client} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
+    const dialog = screen.getByRole('dialog'), combo = await within(dialog).findByRole('combobox', { name: 'Search households' });
+    fireEvent.change(combo, { target: { value: 'Rivera' } }); fireEvent.focus(combo);
+    await within(dialog).findByRole('option', { name: 'Rivera household' }); fireEvent.keyDown(combo, { key: 'Enter' });
+    expect((combo as HTMLInputElement).value).toBe('Rivera household');
+    expect(within(dialog).queryByRole('combobox', { name: 'Household' })).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText('Charge source'), { target: { value: 'custom' } });
+    fireEvent.change(within(dialog).getByLabelText('Description'), { target: { value: 'Equipment' } });
+    fireEvent.change(within(dialog).getByLabelText('Amount (USD)'), { target: { value: '10.29' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add one-off charge' }));
+    await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/one-off'))).toBe(true));
+    const sent = f.fetcher.mock.calls.find(([path]) => String(path).endsWith('/one-off'));
+    expect(JSON.parse(String(sent?.[1]?.body)).householdId).toBe(home);
+  });
+  it('keeps receipt and payment steps inside the invoice dialog, restores focus and preserves charge errors', async () => {
+    const f = transport({ invoice: { ...invoice, status: 'paid', paidAt: createdAt }, payments: [payment] });
+    start(<InvoiceList gymId={gymId} access={admin} client={f.client} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'View invoice 42' }));
+    const receipt = await screen.findByRole('button', { name: 'View receipt' }); receipt.focus(); fireEvent.click(receipt);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1); expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'View receipt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to invoice' })); expect(document.activeElement).toBe(receipt);
+    fireEvent.click(screen.getByRole('button', { name: 'Refund' })); expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' })); expect(await screen.findByRole('alert')).toBeDefined();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '10.29' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to invoice' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('10.29');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to invoice' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+    expect(screen.getAllByRole('dialog')).toHaveLength(1); expect(screen.queryByRole('region')).toBeNull();
+  });
   it('registers the invoice navigation and member profile tab', () => {
     expect(registration.adminNav?.[0]).toMatchObject({ enabled: true, href: '/admin/billing/invoices' });
     expect(registration.memberTabs?.[0]).toMatchObject({ enabled: true });
@@ -70,12 +105,12 @@ describe('invoice and household payment UI', () => {
   it('lets front desk record a check and does not offer a refund', async () => {
     const f = transport(); start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Record cash or check' }));
-    const dialog = screen.getByRole('dialog');
+    const dialog = screen.getByRole('region');
     expect(within(dialog).getByRole('heading', { name: 'Record cash or check' })).toBeDefined();
     fireEvent.change(within(dialog).getByLabelText('Payment method'), { target: { value: 'check' } });
     fireEvent.change(within(dialog).getByLabelText('Reference (optional)'), { target: { value: 'Check 204' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('region')).toBeNull());
     const sent = f.fetcher.mock.calls.find(([path]) => String(path).endsWith('/payments'));
     expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ method: 'check', reference: 'Check 204', amountCents: 2500, currency: 'USD' });
     expect(screen.queryByRole('button', { name: 'Refund' })).toBeNull();
@@ -85,7 +120,7 @@ describe('invoice and household payment UI', () => {
     const f = transport({ invoice: { ...invoice, status: 'paid', paidAt: createdAt }, payments: [payment] });
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Refund' }));
-    const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Amount'), { target: { value: '10.29' } });
+    const dialog = screen.getByRole('region'); fireEvent.change(within(dialog).getByLabelText('Amount'), { target: { value: '10.29' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
     expect(await within(dialog).findByRole('alert')).toBeDefined();
     expect((within(dialog).getByLabelText('Amount') as HTMLInputElement).value).toBe('10.29');
@@ -95,7 +130,7 @@ describe('invoice and household payment UI', () => {
   it('uses the signed-link service to email a link bound to this invoice and household', async () => {
     const f = transport(); start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Send or share pay link' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     await screen.findByText('Pay link sent to the household.');
     const sent = f.fetcher.mock.calls.find(([path]) => String(path) === '/api/links/send');
     expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ purpose: 'pay_invoice', invoiceId: invoice.id, householdId: home });
@@ -144,7 +179,7 @@ describe('invoice and household payment UI', () => {
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
     const charge = await screen.findByRole('button', { name: 'Charge saved card' });
     await waitFor(() => expect((charge as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(charge);
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     expect((await screen.findByRole('alert')).textContent).toBe(message);
     expect(screen.queryByText('Server-only message')).toBeNull();
   });
@@ -156,7 +191,7 @@ describe('invoice and household payment UI', () => {
     if (!access.refund) { expect(release).toBeNull(); return; }
     fireEvent.click(release!);
     expect(screen.getByText('Confirm collection of this overdue invoice. The next billing run will charge the saved card unless you charge it now or record a payment first.')).toBeDefined();
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     await screen.findByText('Review hold released. The next billing run will charge the saved card unless you charge it now or record a payment first.');
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Release review hold' })).toBeNull());
     expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/charge'))).toBe(false);
@@ -180,7 +215,7 @@ describe('invoice and household payment UI', () => {
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
     fireEvent.click(await screen.findByRole('button', { name: 'Refund' }));
     expect(screen.getByText('Remaining refundable amount: $17.00')).toBeDefined();
-    expect((within(screen.getByRole('dialog')).getByLabelText('Amount') as HTMLInputElement).value).toBe('17.00');
+    expect((within(screen.getByRole('region')).getByLabelText('Amount') as HTMLInputElement).value).toBe('17.00');
   });
   it('shows a pending provider result as still being resolved', async () => {
     const f = transport(), original = f.fetcher.getMockImplementation()!;
@@ -190,7 +225,7 @@ describe('invoice and household payment UI', () => {
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={desk} client={f.client}/>);
     const charge = await screen.findByRole('button', { name: 'Charge saved card' });
     await waitFor(() => expect((charge as HTMLButtonElement).disabled).toBe(false)); fireEvent.click(charge);
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm' }));
+    fireEvent.click(within(screen.getByRole('region')).getByRole('button', { name: 'Confirm' }));
     await screen.findByText('The card payment is still being resolved. Check back shortly.');
   });
 });

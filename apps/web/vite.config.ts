@@ -4,6 +4,7 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { developmentProxy } from './dev-proxy.js';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../..', '');
@@ -31,7 +32,7 @@ export default defineConfig(({ mode }) => {
       // Native Linux Docker may need VITE_HOST=0.0.0.0 to reach the host dev server.
       host: env.VITE_HOST || '127.0.0.1',
       // Keep the browser's Host: the auth handler only serves the gym's own host (PUBLIC_ORIGIN).
-      proxy: Object.fromEntries(['/healthz', '/api', '/source'].map((path) => [path, { target: `http://127.0.0.1:${env.PORT || '3000'}`, changeOrigin: false }])),
+      proxy: developmentProxy(env.PORT || '3000'),
     },
     define: {
       __SOURCE_URL__: JSON.stringify(sourceUrl),

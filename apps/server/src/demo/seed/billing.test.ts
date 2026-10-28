@@ -65,6 +65,21 @@ async function snapshot(gymId: string) {
 }
 
 describe('demo billing seed', { timeout: 60_000 }, () => {
+  it('overlaps at most three card preparations and waits for all preparations before charging', async () => {
+    const f = await fixture(), original = f.gateway.seedCard.getMockImplementation()!;
+    let release!: () => void, active = 0, maximum = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.gateway.seedCard.mockImplementation(async (...args) => {
+      active++; maximum = Math.max(maximum, active);
+      try { await gate; return await original(...args); } finally { active--; }
+    });
+    const run = f.seed.run(f.context);
+    await vi.waitFor(() => expect(active).toBe(3));
+    expect((await snapshot(f.gymId)).attempts).toHaveLength(0);
+    release(); await run;
+    expect(maximum).toBe(3); expect(active).toBe(0);
+    expect((await snapshot(f.gymId)).gym.billingEnabled).toBe(false);
+  });
   it('creates plans, family invoices, paid history and two past-due households using real billing services', async () => {
     const f = await fixture(); await f.seed.run(f.context);
     const rows = await snapshot(f.gymId), today = localDate(f.clock.now(), f.context.timezone);
@@ -185,9 +200,11 @@ describe('demo billing seed', { timeout: 60_000 }, () => {
   it('refuses an uncertain card creation after the provider idempotency window', async () => {
     const f = await fixture(); f.gateway.seedCard.mockRejectedValueOnce(new Error('Unknown provider outcome'));
     await expect(f.seed.run(f.context)).rejects.toThrow(/Unknown provider/);
+    const uncertainHousehold = f.gateway.seedCard.mock.calls[0]![1];
+    const callsBeforeRetry = f.gateway.seedCard.mock.calls.filter(call => call[1] === uncertainHousehold).length;
     f.clock.advance(24 * 60 * 60 * 1000);
     await expect(f.seed.run(f.context)).rejects.toThrow(/idempotency window/);
-    expect(f.gateway.seedCard).toHaveBeenCalledTimes(1);
+    expect(f.gateway.seedCard.mock.calls.filter(call => call[1] === uncertainHousehold)).toHaveLength(callsBeforeRetry);
     expect((await snapshot(f.gymId)).gym.billingEnabled).toBe(false);
   });
 

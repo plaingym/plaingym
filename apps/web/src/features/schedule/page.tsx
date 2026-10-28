@@ -131,7 +131,7 @@ function ScheduleContent({ gymId, roles, enabledModules }: { gymId: string | und
       </Dialog>}
       {manage && <>
         {editor && <ClassEditor key={typeof editor === 'string' ? editor : editor.id} {...(typeof editor === 'object' ? { template: editor } : {})} standalone={editor === 'session'} options={options} tags={tags} onSaved={reload} onClose={() => setEditor(undefined)}/>}
-        {removing && <Dialog title={text('deleteTemplate')} description={removing.name} closeLabel={text('closeDialog')} onClose={() => setRemoving(undefined)}>
+        {removing && <Dialog title={text('deleteTemplate')} description={removing.name} closeLabel={text('closeDialog')} dismissible={!busy} onClose={() => setRemoving(undefined)}>
           <p>{text('deleteTemplateConfirm')}</p>
           <div className="mt-6 flex flex-col gap-2 sm:flex-row">
             <Button variant="destructive" disabled={busy} onClick={() => void run(() => api.DELETE('/api/schedule/templates/{id}', { params: { path: { id: removing.id } }, body: { revision: removing.revision } })).then(() => setRemoving(undefined))}>{text('delete')}</Button>

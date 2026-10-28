@@ -14,6 +14,10 @@ test tokens through the payments transport: `tok_visa` and
 `tok_chargeCustomerFail` ([Stripe testing](https://docs.stripe.com/testing)).
 The existing card handler saves the resulting processor ID and display fields;
 the seed never stores a card number. Provider calls run outside transactions.
+Customer and card preparation overlaps up to three households at a time. All
+preparations finish before invoice generation and collection, which retain the
+seed calendar and ordering. A failure drains in-flight preparations before the
+billing switch is restored and sandbox rollback starts.
 
 The seed adds three plans (adult monthly, youth monthly, annual), 21 memberships
 with active/trial/pending/frozen/cancelled examples, and customers and cards for

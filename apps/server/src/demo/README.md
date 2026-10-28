@@ -1,6 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Demo mode
 
+The demo entry host's root opens `/demo`; the development SPA also supplies its
+root landing. Creation announces pending work immediately, prevents duplicate
+activation and offers explicit retry feedback. Structured `demo.seed_started`,
+`demo.seed_completed` and `demo.seed_completed_all` logs report step and total
+durations in milliseconds. Failures retain the step, safe error classification
+and elapsed duration; no credentials or signed-link tokens enter these logs.
+
 The demo service creates a separate gym per visitor with a random hostname, seeded
 content packs, owner/coach/student identities, and one kiosk device. It never calls
 `gyms create` or sends a bootstrap email. The API returns the kiosk token once;

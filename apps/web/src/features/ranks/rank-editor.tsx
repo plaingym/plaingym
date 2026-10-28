@@ -35,7 +35,8 @@ export function RankEditor({ rank, rankSystemId, nextPosition, busy, save, cance
     [rows[index], rows[other]] = [rows[other]!, rows[index]!]; setSubRanks(rows);
   }
   const title = text(rank ? 'editRank' : 'addRank');
-  return <Dialog title={title} description={rank?.name} closeLabel={text('closeDialog')} onClose={cancel}>
+  return <Dialog title={title} description={rank?.name} closeLabel={text('closeDialog')} dismissible={!busy}
+    unsavedChanges={JSON.stringify(subRanks) !== JSON.stringify(rank?.subRanks ?? [])} onClose={cancel}>
     <form onSubmit={(event) => void submit(event)} className="space-y-6" aria-label={title}>
       {message && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{message}</p>}
       <fieldset disabled={busy} className="min-w-0 space-y-6">

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { demoEntryResponse, sandboxResponse } from '@plaingym/shared/contracts';
@@ -8,7 +8,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { LoadingState } from '../../components/ui/states.js';
 import { saveToken } from '../kiosk/api.js';
-import { createJsonTransport } from '../../lib/api.js';
+import { ApiError, createJsonTransport } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 const request = createJsonTransport();
 type DemoDiscovery = ReturnType<typeof demoEntryResponse.parse>['data'];
@@ -117,16 +117,27 @@ export function DemoNotice() {
     </Dialog>}
   </aside>;
 }
-export function TryDemoButton() {
-  const [pending, setPending] = useState(false), [error, setError] = useState(false);
+export function TryDemoButton({ navigate = (url: string) => window.location.assign(url) }: { navigate?: (url: string) => void } = {}) {
+  const [pending, setPending] = useState(false), [error, setError] = useState('');
+  const active = useRef(false), button = useRef<HTMLButtonElement>(null);
   async function start() {
-    setPending(true); setError(false);
+    if (active.current) return;
+    active.current = true;
+    setPending(true); setError('');
     try {
       const { data } = sandboxResponse.parse(await request('/api/demo/sandboxes', {}));
       const destination = new URL('/admin', data.origin);
       destination.hash = new URLSearchParams({ kioskToken: data.kioskToken }).toString();
-      window.location.assign(destination.href);
-    } catch { setError(true); setPending(false); }
+      navigate(destination.href);
+    } catch (error) {
+      setError(t(error instanceof ApiError && error.status === 429 ? 'demo/demo:capacityError' : 'demo/demo:creationError'));
+      active.current = false; setPending(false);
+      button.current?.focus();
+    }
   }
-  return <div className="space-y-2 sm:shrink-0"><Button type="button" className="w-full" disabled={pending} onClick={() => { void start(); }}>{t(pending ? 'demo/demo:starting' : 'demo/demo:try')}</Button>{error && <Alert>{t('demo/demo:error')}</Alert>}</div>;
+  return <div className="space-y-2 sm:max-w-sm"><Button ref={button} type="button" className="w-full" aria-disabled={pending} onClick={() => { void start(); }}>{t(pending ? 'demo/demo:starting' : error ? 'demo/demo:retryCreation' : 'demo/demo:try')}</Button>
+    <div role="status" aria-live="polite" aria-atomic="true">{pending && <div className="flex items-start gap-2 rounded-lg border border-border bg-background p-3 text-sm">
+      <span aria-hidden="true" className="mt-0.5 size-5 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent motion-reduce:animate-none" />
+      <p>{t('demo/demo:creationProgress')}</p>
+    </div>}</div>{error && <Alert>{error}</Alert>}</div>;
 }

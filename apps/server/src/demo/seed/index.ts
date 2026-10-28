@@ -2,7 +2,7 @@
 import { forGym } from '@plaingym/db';
 import type { GymContext } from '../../core/context.js';
 import { clock as defaultClock } from '../../core/clock.js';
-import { logError } from '../../core/log.js';
+import { logError, logInfo } from '../../core/log.js';
 import { foundationSeed } from './foundation.js';
 import { matSeed } from './mat.js';
 import { membersSeed } from './members.js';
@@ -41,16 +41,23 @@ export async function runSeeds(context: GymContext, steps?: readonly SeedStep[],
     const uploads = options.uploadsFor ? undefined : createRuntimeUploads(env, parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), async () => 'http://localhost');
     const { billingPaymentsFor, ...seedOptions } = options;
     try { await runSeeds(context, createSeeds({ ...seedOptions, uploadsFor: options.uploadsFor ?? uploads!.forSeed,
-      ...(config.stripe ? { billingPaymentsFor: billingPaymentsFor ?? payments.forSeed } : {}) })); }
+      ...(config.stripe ? { billingPaymentsFor: billingPaymentsFor ?? payments.forSeed } : {}) }), options); }
     finally { uploads?.close(); }
     return;
   }
   if (new Set(steps.map((step) => step.id)).size !== steps.length) throw new Error('Duplicate seed step');
+  const started = performance.now();
+  const report = (event: string, fields: Record<string, string | number>) => options.log
+    ? options.log(JSON.stringify({ level: 'info', event, gymId: context.gymId, ...fields }))
+    : logInfo(event, { gymId: context.gymId, ...fields });
   for (const step of steps) {
-    try { await step.run(context); }
+    const stepStarted = performance.now();
+    report('demo.seed_started', { step: step.id });
+    try { await step.run(context); report('demo.seed_completed', { step: step.id, elapsedMs: Math.round(performance.now() - stepStarted) }); }
     catch (error) {
-      logError('demo.seed_failed', { gymId: context.gymId, step: step.id }, error);
+      logError('demo.seed_failed', { gymId: context.gymId, step: step.id, elapsedMs: Math.round(performance.now() - stepStarted) }, error);
       throw error;
     }
   }
+  report('demo.seed_completed_all', { elapsedMs: Math.round(performance.now() - started) });
 }

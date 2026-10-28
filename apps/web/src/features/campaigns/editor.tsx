@@ -51,7 +51,7 @@ export function CampaignEditor({ households, timezone, save, close, loadNeedsCar
     try { await save(input); } catch (error) { setError(text(error instanceof ApiError && error.code === 'invalid_request' ? 'limits' : 'saveError')); }
     finally { setBusy(false); }
   }
-  return <Dialog title={text('create')} closeLabel={text('close')} onClose={() => { if (!busy) close(); }}>
+  return <Dialog title={text('create')} closeLabel={text('close')} dismissible={!busy} onClose={close}>
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
         <div><Label htmlFor="campaign-name">{text('name')}</Label><Input id="campaign-name" maxLength={120} value={name} onChange={e => setName(e.target.value)} required /></div>

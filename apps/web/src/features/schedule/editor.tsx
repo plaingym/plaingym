@@ -36,7 +36,7 @@ export function ClassEditor({ template, options, tags, onSaved, onClose, standal
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
   const title = text(standalone ? 'newSession' : template ? 'editTemplate' : 'newTemplate');
-  return <Dialog title={title} closeLabel={text('closeDialog')} onClose={onClose}>
+  return <Dialog title={title} closeLabel={text('closeDialog')} dismissible={!busy} onClose={onClose}>
     <form onSubmit={(event) => void save(event)} className="space-y-4" aria-label={title}>
       {notice && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">{notice}</p>}
       <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">

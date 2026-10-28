@@ -9,6 +9,7 @@ import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Dialog } from '../../components/ui/dialog.js';
+import { Autocomplete } from '../../components/ui/autocomplete.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Page, PageHeader, PageSection } from '../../components/ui/page.js';
@@ -89,12 +90,11 @@ function AddMember({ gymId, onCreated }: { gymId: string; onCreated: (member: c.
     '/api/households?limit=100' + (homeSearch ? '&search=' + encodeURIComponent(homeSearch) : ''), 'GET', undefined, signal) });
   return <div className="space-y-6">
     <fieldset className="space-y-3"><legend className="font-semibold">{text('step.household')}</legend>
-      <Field name="searchHouseholds" type="search" value={homeSearch} onChange={setHomeSearch}/>
-      <Label className="grid gap-2">{text('household')}<Select value={householdId} onChange={(event) => setHousehold(event.target.value)}>
-        <option value="">{text('chooseHousehold')}</option>{homes.data?.data.map((home) => <option key={home.id} value={home.id}>{home.name}</option>)}</Select></Label>
+      <Autocomplete label={text('searchHouseholds')} query={homeSearch} value={householdId} onQueryChange={setHomeSearch} onChange={setHousehold}
+        options={(homes.data?.data ?? []).map(home => ({ id: home.id, label: home.name }))} loading={homes.isPending} />
       <ErrorMessage error={homes.error}/>
       <details className="rounded-xl border border-border"><summary className="flex min-h-11 cursor-pointer items-center px-4 text-sm font-medium">{text('createHousehold')}</summary>
-        <div className="border-t border-border p-4"><HouseholdForm onSaved={(home) => setHousehold(home.id)}/></div></details>
+        <div className="border-t border-border p-4"><HouseholdForm onSaved={(home) => { setHomeSearch(home.name); setHousehold(home.id); }}/></div></details>
     </fieldset>
     {householdId ? <fieldset className="space-y-3 border-t border-border pt-6"><legend className="font-semibold">{text('step.member')}</legend>
       <MemberForm householdId={householdId} onSaved={onCreated}/></fieldset>

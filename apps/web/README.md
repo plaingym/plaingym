@@ -52,8 +52,19 @@ API:
 | `LoadingState`, `EmptyState`, `ErrorState` | Loading, empty and failed states |
 | `Card`, `Alert`, `Badge` | Grouped content, inline messages, status labels (`tone`: `default`, `success`, `warning`, `destructive`, `muted`) |
 | `Input`, `Select`, `Textarea`, `CheckboxField`, `Label` | Form controls |
+| `Autocomplete` | One searchable selection input; keyboard arrows, Enter and Escape, selected label, loading/empty feedback; suggestions flow within scrollable dialogs |
 | `TableContainer`, `StackedList`, `StackedItem` | Wide tables and their phone layout |
-| `Dialog` | A modal open while mounted: full screen on phones, a centered panel from `sm` (`size="wide"` for more room); Escape and the close button call `onClose`, and focus returns to the opener |
+| `Dialog` | A modal open while mounted: full screen on phones, a centered panel from `sm` (`size="wide"` for more room); Escape, the backdrop and close button request dismissal, with inline confirmation for changed inputs; focus returns to the opener. Use `dismissible={false}` or `useDialogOperation` during operations. |
+
+Keep subviews inside the existing dialog. Reviewed flows: invoice receipt,
+cash/check, saved-card charge, refund, pay link, card removal/default and review
+hold; one-off invoice creation; member/household creation; schedule session edit
+and panels, class edit/delete; rank and staff edit; waiver templates/signing;
+campaign creation; go-live confirmation; demo guide and outbox preview. Only
+invoice actions opened another dialog; they now use integrated views. The demo
+guide and outbox preview are separate top-level views, and other dialogs already
+contain their forms or steps. Busy saves/payments block dismissal; changed form
+inputs require explicit discard confirmation before dismissal.
 | `MenuIcon`, `CloseIcon`, `UserIcon`, … | Small inline icons, decorative unless labelled |
 
 **Tokens.** Colors are design tokens in `src/app/styles.css` (`bg-primary`,
