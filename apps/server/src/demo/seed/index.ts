@@ -2,6 +2,7 @@
 import { forGym } from '@plaingym/db';
 import type { GymContext } from '../../core/context.js';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 import { foundationSeed } from './foundation.js';
 import { matSeed } from './mat.js';
 import { membersSeed } from './members.js';
@@ -45,5 +46,11 @@ export async function runSeeds(context: GymContext, steps?: readonly SeedStep[],
     return;
   }
   if (new Set(steps.map((step) => step.id)).size !== steps.length) throw new Error('Duplicate seed step');
-  for (const step of steps) await step.run(context);
+  for (const step of steps) {
+    try { await step.run(context); }
+    catch (error) {
+      logError('demo.seed_failed', { gymId: context.gymId, step: step.id }, error);
+      throw error;
+    }
+  }
 }

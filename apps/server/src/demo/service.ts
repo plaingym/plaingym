@@ -6,6 +6,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { reserveGym } from '../core/tenancy-bootstrap.js';
 import type { GymContext } from '../core/context.js';
+import { logError } from '../core/log.js';
 import type { GymDeleteService } from '../areas/settings/gym-delete.js';
 import { requireDemo, sandboxSettings, type DemoConfig } from './config.js';
 import type { DemoRole } from '@plaingym/shared/contracts';
@@ -61,7 +62,15 @@ export function createDemoService(options: {
         });
         return { gymId, origin: `https://${hostname}`, expiresAt, kioskToken };
       } catch (error) {
-        await options.deletion.remove(gymId, 1);
+        logError('demo.provisioning_failed', { gymId }, error);
+        try {
+          // Seed services can revise the gym (for example, the billing switches).
+          const [gym] = await scope(gymId, tx => tx.select({ revision: gyms.revision }).from(gyms).where(eq(gyms.id, gymId)));
+          if (gym) await options.deletion.remove(gymId, gym.revision);
+        } catch (cleanupError) {
+          // Keep the original failure; suspended/unfinished sandboxes remain eligible for expiry cleanup.
+          logError('demo.cleanup_failed', { gymId }, cleanupError);
+        }
         throw error;
       }
     },

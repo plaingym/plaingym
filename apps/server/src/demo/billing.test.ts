@@ -2,12 +2,13 @@
 import { createHmac } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, gyms, households, invoices, paymentMethods, uuidv7 } from '@plaingym/db';
+import { auditEvents, gymDomains, gyms, households, invoices, kioskDevices, paymentMethods, staffRoles, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../core/clock.js';
 import { createApp } from '../core/app.js';
 import { parseEncryptionKey } from '../core/secrets.js';
+import { setLogSink } from '../core/log.js';
 import { FakePayments, type CreateCharge } from '../infra/payments/index.js';
 import { StripePayments } from '../infra/payments/stripe.js';
 import { FakeUploads } from '../infra/storage/index.js';
@@ -29,6 +30,8 @@ import { createDemoIdentities } from './identities.js';
 import { createSeedCommand } from './seed-cli.js';
 import { runSeeds } from './seed/index.js';
 import type { BillingSeedProvider } from './seed/billing-payments.js';
+import { demoEmail } from './identities.js';
+import { createDemoRoutes } from './demo.routes.js';
 
 const db = useTestDatabase(), factory = createFactories(db), secret = 'whsec_SYNTHETIC';
 const baseEnv = { DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: 'demo.example.test',
@@ -73,10 +76,91 @@ function fixture(configured: boolean) {
       return uploads.get(gymId)!;
     } };
   const seed: typeof runSeeds = (context, steps) => runSeeds(context, steps, seedOptions);
-  const service = createDemoService({ config, key: parseEncryptionKey(env.APP_ENCRYPTION_KEY), clock, scope, system: db.forSystem, identities, seed,
-    deletion: createGymDeleteService({ clock, scope, system: db.forSystem, removeUploads: async () => {} }) });
-  return { service, seed, clock, config, payments, provider, gateways, log };
+  const removeUploads = vi.fn(async (_gymId: string) => {});
+  const deletion = createGymDeleteService({ clock, scope, system: db.forSystem, removeUploads });
+  const service = createDemoService({ config, key: parseEncryptionKey(env.APP_ENCRYPTION_KEY), clock, scope, system: db.forSystem, identities, seed, deletion });
+  return { service, seed, clock, config, payments, provider, gateways, log, deletion, removeUploads, authentication };
 }
+
+it.each([false, true])('preserves a billing seed failure after switch revisions change, even if upload cleanup fails (%s)', async cleanupFails => {
+  const f = fixture(true), failure = Object.assign(new Error('provider credential=PRIVATE_SEED_SECRET'), { code: 'permission_denied' });
+  const cleanupFailure = Object.assign(new Error('storage credential=PRIVATE_STORAGE_SECRET'), { code: 'AccessDenied' });
+  const entries: string[] = [], previous = setLogSink(line => entries.push(line));
+  const original = f.provider.getMockImplementation()!;
+  const remove = vi.spyOn(f.deletion, 'remove');
+  let failedGymId = '';
+  f.provider.mockImplementation(async gymId => {
+    failedGymId = gymId;
+    const gateway = await original(gymId);
+    vi.spyOn(gateway, 'seedCard').mockRejectedValue(failure);
+    return gateway;
+  });
+  if (cleanupFails) f.removeUploads.mockRejectedValueOnce(cleanupFailure);
+  try {
+    const unrelated = uuidv7(); await factory('gyms', unrelated, { revision: 7 });
+    await expect(f.service.create()).rejects.toBe(failure);
+    // The real billing seed toggles billing on and back off before failing: revision 1 -> 3.
+    expect(remove).toHaveBeenCalledExactlyOnceWith(failedGymId, 3);
+    expect(f.removeUploads).toHaveBeenCalledExactlyOnceWith(failedGymId);
+    expect(await db.forGym(unrelated, tx => tx.select().from(gyms))).toMatchObject([{ revision: 7, status: 'active' }]);
+    const rows = await db.forGym(failedGymId, async tx => ({
+      gyms: await tx.select().from(gyms), households: await tx.select().from(households),
+      roles: await tx.select().from(staffRoles), devices: await tx.select().from(kioskDevices),
+    }));
+    if (cleanupFails) {
+      expect(rows.gyms).toMatchObject([{ status: 'suspended', revision: 4, billingEnabled: false, settings: { demo: { ready: false } } }]);
+      await expect(f.service.status(failedGymId)).rejects.toMatchObject({ code: 'not_found' });
+      expect(entries.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
+        event: 'demo.cleanup_failed', gymId: failedGymId, error: expect.objectContaining({ code: 'AccessDenied' }),
+      }));
+      // Expiration uses the surviving revision and can retry the normal deletion path.
+      f.clock.advance(24 * 60 * 60 * 1000);
+      await f.service.expire(failedGymId);
+    } else {
+      expect(rows).toEqual({ gyms: [], households: [], roles: [], devices: [] });
+      expect(entries.map(line => JSON.parse(line)).some(entry => entry.event === 'demo.cleanup_failed')).toBe(false);
+    }
+    expect(await db.forGym(failedGymId, tx => tx.select().from(gyms))).toEqual([]);
+    expect(await db.forGym(failedGymId, tx => tx.select().from(households))).toEqual([]);
+    expect(await db.forSystem(tx => tx.select().from(gymDomains).where(eq(gymDomains.gymId, failedGymId)))).toEqual([]);
+    const accounts = createAccountService(f.authentication, () => db.system.db);
+    for (const role of ['owner', 'coach', 'student'] as const)
+      expect(await accounts.findUserByEmail(demoEmail(failedGymId, role))).toBeNull();
+    const logs = entries.map(line => JSON.parse(line));
+    expect(logs).toContainEqual(expect.objectContaining({ event: 'demo.seed_failed', gymId: failedGymId, step: 'billing',
+      error: expect.objectContaining({ code: 'permission_denied' }) }));
+    expect(logs).toContainEqual(expect.objectContaining({ event: 'demo.provisioning_failed', gymId: failedGymId,
+      error: expect.objectContaining({ code: 'permission_denied' }) }));
+    for (const secret of ['PRIVATE_SEED_SECRET', 'PRIVATE_STORAGE_SECRET']) expect(entries.join('\n')).not.toContain(secret);
+  } finally { setLogSink(previous); }
+});
+
+it('returns a safe provisioning error with its request ID instead of a rollback conflict on the demo entry route', async () => {
+  const f = fixture(true), original = f.provider.getMockImplementation()!;
+  f.provider.mockImplementation(async gymId => {
+    const gateway = await original(gymId);
+    vi.spyOn(gateway, 'seedCard').mockRejectedValue(Object.assign(new Error('PRIVATE_STRIPE_CREDENTIAL'), { code: 'more_permissions_required' }));
+    return gateway;
+  });
+  f.removeUploads.mockRejectedValueOnce(new Error('PRIVATE_STORAGE_CREDENTIAL'));
+  const entries: string[] = [], previous = setLogSink(line => entries.push(line));
+  const tenant = vi.fn(async () => { throw new Error('Install request reached tenant middleware'); });
+  const app = createApp({ resolveGym: tenant, session: tenant, authorize: () => tenant, clock: f.clock,
+    installOrigin: 'https://demo.example.test', contributions: { routes: createDemoRoutes(f.service, { installOrigin: 'https://demo.example.test' }) } });
+  try {
+    const response = await app.request('https://demo.example.test/api/demo/sandboxes', { method: 'POST',
+      headers: { host: 'demo.example.test', origin: 'https://demo.example.test', 'content-type': 'application/json' }, body: '{}' });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: 'internal', message: 'An unexpected error occurred.' }, requestId: response.headers.get('x-request-id') });
+    expect(entries.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({ event: 'http.unhandled',
+      requestId: response.headers.get('x-request-id'), error: expect.objectContaining({ code: 'more_permissions_required' }) }));
+    expect(entries.join('\n')).not.toContain('PRIVATE_');
+    expect(tenant).not.toHaveBeenCalled();
+    const gymId = f.provider.mock.calls[0]![0];
+    f.clock.advance(24 * 60 * 60 * 1000);
+    await f.service.expire(gymId);
+  } finally { setLogSink(previous); }
+});
 
 it('creates a sandbox through the composed seeds with paid/past-due invoices, cards and day-3/7 retry jobs', async () => {
   const f = fixture(true), { gymId } = await f.service.create();

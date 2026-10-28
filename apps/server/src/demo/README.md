@@ -47,6 +47,14 @@ the ordinary sign-in limit of five.
 Untrusted forwarded headers do not change the bucket. Use the trusted-proxy options
 when Caddy is the sole peer. Configure the same cap on every app process.
 
+Provisioning failures roll back using the gym's current revision, since seed steps
+can change it. If upload deletion fails, the gym stays suspended for expiry to retry.
+The original provisioning error is preserved even if rollback also fails. Structured
+`demo.seed_failed` logs identify the gym and seed step; `demo.provisioning_failed`
+and `demo.cleanup_failed` distinguish the original failure from rollback failures.
+Error details use the server's sanitized logger. Unexpected HTTP failures return a
+generic 500 with the request ID, also recorded by `http.unhandled`.
+
 `OutboxEmail` implements `Email` with no SMTP dependency. It records text and HTML,
 never delivers to an external mailbox, and rejects calls inside transactions.
 The outbox is owner/admin-only, uses cursor pagination, and scopes detail IDs to
