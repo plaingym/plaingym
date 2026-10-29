@@ -5,7 +5,7 @@ import { demoSignaturePng } from './waivers-image.js';
 import { createMembersService } from '../../areas/members/members.js';
 import { createWaiversService, type WaiverOptions } from '../../areas/waivers/waivers.js';
 
-/** Inject a seed-only Uploads provider: request-facing demo uploads stay disabled. */
+/** The trusted seed provider does not consume the visitor signature-image allowance. */
 export function waiversSeed(options: WaiverOptions): SeedStep {
   return { id: 'waivers', async run(context) {
     const service = createWaiversService(options), members = createMembersService({ ...(options.scope ? { scope: options.scope } : {}), ...(options.clock ? { clock: options.clock } : {}) });

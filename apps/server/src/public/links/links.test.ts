@@ -19,13 +19,14 @@ import { registerBillingWebhookHandlers } from '../../areas/billing/webhooks/han
 import type { WebhookHandler } from '../../areas/billing/webhooks/inbox.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
+import { demoUploads } from '../../demo/uploads.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureLinkPages } from './links.routes.js';
 import { cachedLinkAsset } from './assets.js';
 import type { Principal } from '../../core/context.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
-async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true) {
+async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true, demo = false) {
   const clock = new TestClock('2026-10-25T12:00:00Z'), gymId = uuidv7();
   await factory('gyms', gymId, { billingEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: customer ? 'cus_' + gymId : null });
@@ -42,7 +43,7 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
     ...(kind === 'pay_invoice' ? { purpose: kind, invoiceId: invoice.id } : kind === 'sign_waiver' ? { purpose: kind, memberId: member.id } : { purpose: kind }) });
   const link = await create();
   const provider = new FakePayments(gymId, clock), uploads = new FakeUploads(gymId, clock);
-  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads });
+  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => demo ? demoUploads(uploads) : uploads });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => provider, originFor: async () => 'https://gym.example.test' });
   const service = configureLinkPages({ scope: db.forHousehold, waivers, checkout, links, receiptKey: new Uint8Array(32).fill(7), stylesheet: async () => '' });
   const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true, authorize,
@@ -68,6 +69,34 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
   return { gymId, clock, household, member, sibling, other, invoice, invoiceB, template, links, link, create, provider, uploads, waivers, checkout, service, app, request, path, mutation, completeAtStripe };
 }
 describe('signed-link pages through production registrations', () => {
+  it.each(['sign_waiver', 'onboarding'] as const)('demo %s uploads and signs its current waivers and reaches completion', async purpose => {
+    const f = await fixture(purpose, true, true);
+    let cookie = '';
+    if (purpose === 'onboarding') {
+      const started = await f.request(f.path + '/checkout', 'POST'); expect(started.status).toBe(200);
+      cookie = started.headers.get('set-cookie')!.split(';')[0]!;
+      const session = await f.checkout.start(f.gymId, f.link.link.id);
+      await f.completeAtStripe(session.session.id);
+      expect(await (await f.request(f.path + '/complete', 'POST', {}, cookie)).json()).toEqual({ data: { completed: false } });
+    }
+    expect((await f.request(f.path + '/signature-images', 'POST', { memberId: f.other.id, pngBase64: demoSignaturePng().toString('base64') })).status)
+      .toBe(purpose === 'onboarding' ? 404 : 400);
+    for (const person of purpose === 'onboarding' ? [f.member, f.sibling] : [f.member]) {
+      const member = purpose === 'onboarding' ? { memberId: person.id } : {};
+      const uploaded = await f.request(f.path + '/signature-images', 'POST', { ...member, pngBase64: demoSignaturePng().toString('base64') }, cookie);
+      expect(uploaded.status).toBe(200);
+      const image = actions.uploadWaiver.response.parse(await uploaded.json()).data;
+      const signed = await f.request(f.path + (purpose === 'onboarding' ? '/waivers' : ''), 'POST', { ...member, ...image,
+        templateId: f.template.id, templateVersion: 1, consent: true, signer: { kind: 'guardian', name: 'Test Payer', relationship: 'Parent' } }, cookie);
+      expect(signed.status).toBe(200);
+      expect((await f.uploads.head(image.signatureImageKey))?.contentType).toBe('image/png');
+      if (purpose === 'onboarding') expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('active');
+    }
+    if (purpose === 'onboarding') expect(await (await f.request(f.path + '/complete', 'POST', {}, cookie)).json()).toEqual({ data: { completed: true } });
+    expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('used');
+    const page = await f.app().request('https://gym.example.test/l/' + f.link.token);
+    expect(page.status).toBe(200); expect(await page.text()).toContain('Already done');
+  });
   async function signatureInput(f: Awaited<ReturnType<typeof fixture>>, template = f.template) {
     const response = await f.request(f.path + '/signature-images', 'POST', { pngBase64: demoSignaturePng().toString('base64') });
     expect(response.status).toBe(200);

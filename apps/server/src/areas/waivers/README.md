@@ -38,6 +38,15 @@ a short transaction. Storage and rendering occur outside transactions. Retrying
 the same image and signing details returns the original signature; reusing that
 image with different details conflicts.
 
+Demo signing admits validated signature PNGs through a dedicated waiver operation;
+general visitor uploads remain disabled. Before storage, each upload reserves an
+audited admission under the gym row lock. A sandbox allows 64 signature-image
+admissions over its lifetime (at most 16 MiB of PNG data), shared across members
+and app processes. Invalid or unauthorized requests consume none; failed or
+abandoned writes retain their admission until sandbox deletion. This keeps retries
+and concurrent requests bounded without holding a transaction open over storage.
+Normal installs have no demo admission cap.
+
 Downloads expire after five minutes. Rendered PDFs are tombstoned immediately
 for the normal deferred storage sweep, so generated copies do not accumulate
 indefinitely. Existing signed URLs remain usable until expiry. Signature images
@@ -46,7 +55,7 @@ uploads are not yet swept by this area; cleanup should retain referenced images.
 
 Demo downloads reuse one immutable PDF keyed by the signature image, keeping the
 same JSON response and five-minute signed URLs. The demo upload wrapper refuses
-all ordinary puts; only its waiver cache can create that copy. Concurrent requests
+all ordinary puts; its waiver cache can create that copy. Concurrent requests
 share a render, and later requests (including after a restart) only read storage.
 If the cached PDF upload failed and left no stored copy, each download falls back
 to a fresh copy marked deleted right away. This costs up to about seven storage

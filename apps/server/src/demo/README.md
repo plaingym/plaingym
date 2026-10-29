@@ -120,6 +120,14 @@ and credentials via `UPLOADS_S3_ACCESS_KEY_ID` / `UPLOADS_S3_SECRET_ACCESS_KEY`
 (or the provider's normal credential chain). Use a dedicated uploads bucket,
 separate from backups. The runtime wraps every uploads adapter with `demoUploads`.
 
+Waiver signing accepts only validated PNG signatures through its dedicated,
+member-authorized path. Each sandbox has 64 audited signature-image admissions,
+reserved before storage under a database row lock, shared by all members and app
+processes. Failed writes retain their admission. The 256 KiB / 1200×600 PNG checks
+bound each image; generic photo/file uploads remain disabled. Signatures use the
+normal immutable snapshot, digest, PDF and erasure behavior. Onboarding completes
+after both the saved card and every current household waiver are confirmed.
+
 `gym-app seed <gym-uuid>` and `pnpm seed <gym-uuid>` run the registered seed steps.
 Demo and gym-deletion HTTP contracts live in `@plaingym/shared/contracts`.
 

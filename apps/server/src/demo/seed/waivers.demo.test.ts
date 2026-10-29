@@ -27,7 +27,7 @@ import { createApp } from '../../app.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
 const db = useTestDatabase();
-it('fully seeds a demo sandbox, serves its PDFs, blocks visitor images and runs the real seed CLI', async () => {
+it('fully seeds a demo sandbox, serves PDFs, permits bounded waiver images and blocks general uploads', async () => {
   const s3 = await s3Server(), key = parseEncryptionKey('cd'.repeat(32)), clock = new TestClock('2026-10-24T12:00:00Z');
   const env = { DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: 'demo.example.test', APP_ENCRYPTION_KEY: 'cd'.repeat(32),
     AUTH_SECRET: 'demo-waivers-test-secret-with-more-than-32-characters', AUTH_PASSWORD_LOGIN: 'off',
@@ -62,10 +62,12 @@ it('fully seeds a demo sandbox, serves its PDFs, blocks visitor images and runs 
       const content = await (await (await task.promise).getPage(1)).getTextContent();
       expect(content.items.flatMap(item => 'str' in item ? [item.str] : []).join(' ')).toContain(copy.snapshotHash);
     } finally { await task.destroy(); }
-    const denied = await app.request(sandbox.origin + '/api/waivers/signature-images', { method: 'POST',
+    const uploaded = await app.request(sandbox.origin + '/api/waivers/signature-images', { method: 'POST',
       headers: { 'content-type': 'application/json', origin: sandbox.origin },
       body: JSON.stringify({ memberId: copy.memberId, pngBase64: Buffer.from(demoSignaturePng()).toString('base64') }) });
-    expect(denied.status).toBe(403); expect(await denied.json()).toMatchObject({ error: { message: 'Uploads are disabled in the demo' } });
+    expect(uploaded.status).toBe(200);
+    const image = waiverContracts.uploadSignature.response.parse(await uploaded.json()).data;
+    expect((await (await uploads.forGym(gymId)).head(image.signatureImageKey))?.contentType).toBe('image/png');
     const guarded = await uploads.forGym(gymId), pdf = `${gymId}/waivers/${copy.memberId}/pdf/${uuidv7()}.pdf`;
     for (const [path, type] of [[pdf, 'image/png'], [pdf.replace('.pdf', '.png'), 'application/pdf'],
       [pdf.replace('/pdf/', '/signatures/'), 'application/pdf'], [pdf.replace(/\/[^/]+\.pdf$/, '/arbitrary.pdf'), 'application/pdf']]) {

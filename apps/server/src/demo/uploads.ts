@@ -2,6 +2,7 @@
 import { AppError } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { Uploads } from '../infra/storage/index.js';
+import { validateSignatureImage } from '../areas/waivers/snapshot.js';
 
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const imageKey = new RegExp(`^(${uuid}/waivers/${uuid})/signatures/(${uuid})\\.png$`);
@@ -11,12 +12,19 @@ function pdfKey(key: string): string | undefined {
   return match ? `${match[1]}/pdf/${match[2]}.pdf` : undefined;
 }
 
-/** Demo-only cache; the shared Uploads interface continues to refuse all visitor puts. */
+/** Narrow waiver operations; the shared Uploads interface refuses general visitor puts. */
 export class DemoUploads implements Uploads {
   constructor(private readonly source: Uploads) {}
   async put(): ReturnType<Uploads['put']> {
     assertNoTransaction('storage.put');
     throw new AppError('forbidden', 'Uploads are disabled in the demo');
+  }
+  /** The waiver service authorizes the member and reserves a persistent demo admission first. */
+  async waiverSignature(key: string, bytes: Uint8Array): ReturnType<Uploads['put']> {
+    assertNoTransaction('storage.put');
+    if (!imageKey.test(key)) throw new AppError('not_found', 'Resource not found');
+    validateSignatureImage(bytes);
+    return this.source.put(key, bytes, 'image/png');
   }
   get: Uploads['get'] = key => this.source.get(key);
   head: Uploads['head'] = key => this.source.head(key);

@@ -10,6 +10,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { notFound, conflict } from '../../core/interfaces/common.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { DemoUploads } from '../../demo/uploads.js';
+import { reserveDemoSignature } from '../../demo/waiver-signatures.js';
 import { digest, invalid, needsGuardian, readSnapshot, serializeSnapshot, validateSignatureImage } from './snapshot.js';
 import { renderWaiver, validateTemplatePdf } from './pdf.js';
 
@@ -130,7 +131,10 @@ export function createWaiversService(options: WaiverOptions) {
       validateSignatureImage(bytes);
       await scope(ctx.gymId, tx => member(tx, memberId));
       const uploads = await options.uploadsFor(ctx.gymId), key = `${ctx.gymId}/waivers/${memberId}/signatures/${uuidv7(clock.now().getTime())}.png`;
-      await uploads.put(key, bytes, 'image/png');
+      if (uploads instanceof DemoUploads) {
+        await reserveDemoSignature(scope, ctx, memberId, clock.now());
+        await uploads.waiverSignature(key, bytes);
+      } else await uploads.put(key, bytes, 'image/png');
       try { await scope(ctx.gymId, async tx => { await member(tx, memberId); await audit(tx, ctx, 'waiver.signature_image.uploaded', memberId); }); }
       catch (error) { await uploads.markDeleted(key); throw error; }
       return { signatureImageKey: key, signatureImageHash: digest(bytes) };

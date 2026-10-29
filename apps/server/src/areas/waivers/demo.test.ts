@@ -82,6 +82,23 @@ async function fixture(demo = true) {
   return { s3, clock, uploads, service, render, gyms, app, async close() { uploads.close(); await s3.close(); } };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+it('stores a validated visitor signature through the demo runtime wrapper and serves its signed waiver PDF', async () => {
+  const f = await fixture();
+  try {
+    const gym = f.gyms[0]!, member = await factory('members', gym.gymId, { dateOfBirth: '1990-01-01' });
+    const image = await f.service.uploadSignature(gym.ctx, member.id, demoSignaturePng());
+    const uploads = await f.uploads.forGym(gym.gymId);
+    expect((await uploads.head(image.signatureImageKey))?.contentType).toBe('image/png');
+    const signed = await f.service.sign(gym.ctx, { memberId: member.id, templateId: gym.signature.templateId, templateVersion: 1,
+      signer: { kind: 'self', name: 'Demo Visitor' }, ...image, consent: true }, { timezone: 'UTC', ipAddress: '192.0.2.1' });
+    const download = await link(await pdfRequest(f, { ...gym, member, signature: signed }));
+    const pdf = await fetch(download.url);
+    expect(pdf.status).toBe(200);
+    expect(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString()).toBe('%PDF');
+    await expect(uploads.put(`${gym.gymId}/members/${member.id}/photo.png`, demoSignaturePng(), 'image/png'))
+      .rejects.toMatchObject({ code: 'forbidden' });
+  } finally { await f.close(); }
+});
 const pdfRequest = (f: Fixture, gym = f.gyms[0]!, ip = '192.0.2.1') => f.app.request(`${gym.origin}/api/waivers/signatures/${gym.signature.id}/pdf`, { headers: { 'test-ip': ip } });
 async function link(response: Response) {
   expect(response.status, await response.clone().text()).toBe(200);

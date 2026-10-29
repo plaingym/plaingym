@@ -54,7 +54,7 @@ This project is a 100% open-source (AGPL-3.0-only), vendor-neutral, all-in-one g
 * Releases are semver-tagged, multi-arch Docker images with a signed release manifest. Installs never track `latest`. Compose sets Docker log rotation.
 * **Patch releases (x.y.Z) must not contain migrations**; installs apply them automatically each night with rollback. CI enforces this.
 * The app must never require Docker socket access.
-* **Demo mode** (`DEMO_MODE=true`, with `TENANCY=multi`) lets visitors create sandbox gyms seeded with sample data, deleted after 24 hours. It sends no email (an in-app outbox instead), disables visitor uploads, and refuses to start with live Stripe keys. The seed's waiver images and bounded waiver PDFs are stored in S3. Sandbox creation and one-click logins exist only in demo mode.
+* **Demo mode** (`DEMO_MODE=true`, with `TENANCY=multi`) lets visitors create sandbox gyms seeded with sample data, deleted after 24 hours. It sends no email (an in-app outbox instead), disables general visitor uploads, and refuses to start with live Stripe keys. Validated waiver signatures have a bounded, audited upload path; signature images and bounded waiver PDFs are stored in S3. Sandbox creation and one-click logins exist only in demo mode.
 
 ### Vendor Modules
 Third-party services are only ever accessed through these internal modules. Never import a vendor SDK elsewhere:
