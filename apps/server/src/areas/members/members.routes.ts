@@ -10,6 +10,7 @@ import { createMembersService, type MembersService } from './members.js';
 import { createMemberPhotoService, type MemberUploads } from './photos.js';
 import type { HouseholdPinSecret } from './pin.js';
 import type { Jobs } from '../../infra/jobs/index.js';
+import { promoteWaitlist } from '../bookings/bookings.js';
 import { detachJob } from '../billing/payments.mutations.js';
 
 function mutation(context: RequestContext) {
@@ -30,7 +31,7 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
   });
 }
 
-type ErasureOptions = { detachCard?: (gymId: string, processorId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
+type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
 /** Runtime supplies the gym key for household PINs and file storage for photos before serving requests. */
@@ -55,7 +56,9 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
     }),
     jsonRoute(contracts.anonymizeMember, async (ctx, p, _q, b) => {
       const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, jobs } = current();
-      const { member, files, revokedCards } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
+      const { member, files, revokedCards, freedSessionIds } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
+      for (const sessionId of freedSessionIds) await promoteWaitlist(ctx.gym.gymId, sessionId,
+        current().clock ? { clock: current().clock! } : {});
       // Queue every detach before attempting it, so an outage leaves durable retries.
       for (const card of revokedCards) if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: card.id }, {
         gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `detach:${card.id}`, maxAttempts: 12,

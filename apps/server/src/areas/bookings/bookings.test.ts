@@ -123,7 +123,8 @@ describe('booking transactions', () => {
   it('exports promotion for each session freed by erasure and does not book an erased member again', async () => {
     const f = await fixture(), booked = await f.book(), waiting = await f.book(f.other.id);
     const memberService = createMembersService(f.options);
-    await memberService.eraseMember(f.actor, f.member.id, { revision: f.member.revision });
+    const erased = await memberService.eraseMember(f.actor, f.member.id, { revision: f.member.revision });
+    expect(erased.freedSessionIds).toEqual([f.session.id]);
     const before = (await f.service.list(f.gymId, page)).data;
     expect(before.find(row => row.id === booked.id)?.status).toBe('cancelled');
     // This is the after-commit call the erasure route will make for each freed session.

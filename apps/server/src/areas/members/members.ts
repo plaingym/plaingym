@@ -112,6 +112,7 @@ export function createMembersService(options: MembersOptions = {}) {
           .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
           .where(and(eq(classBookings.memberId, id), inArray(classBookings.status, ['booked', 'waitlisted']), gt(classSessions.startsAt, now)))
           .orderBy(asc(classBookings.sessionId));
+        const freedSessionIds: string[] = [];
         for (const session of sessions) {
           const [upcoming] = await tx.select({ id: classSessions.id }).from(classSessions)
             .where(and(eq(classSessions.id, session.id), gt(classSessions.startsAt, now))).for('update');
@@ -119,6 +120,7 @@ export function createMembersService(options: MembersOptions = {}) {
           const cancelled = await tx.update(classBookings).set({ status: 'cancelled', waitlistPosition: null, cancelledAt: now })
             .where(and(eq(classBookings.sessionId, session.id), eq(classBookings.memberId, id),
               inArray(classBookings.status, ['booked', 'waitlisted']))).returning({ id: classBookings.id });
+          if (cancelled.length) freedSessionIds.push(session.id);
           for (const booking of cancelled) await audit(tx, context, 'booking.cancelled', 'class_booking', booking.id);
         }
         await tx.update(staffProfiles).set({ memberId: null }).where(eq(staffProfiles.memberId, id));
@@ -156,7 +158,7 @@ export function createMembersService(options: MembersOptions = {}) {
         await audit(tx, context, 'member.anonymized', 'member', id);
         if (waivers.length) await audit(tx, context, 'member.waivers.deleted', 'member', id);
         await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id);
-        return { member: member(row), revokedCards, files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
+        return { member: member(row), freedSessionIds, revokedCards, files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
       });
     },
     async listHouseholds(gymId: string, input: c.HouseholdListQuery) {

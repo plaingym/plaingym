@@ -1,4 +1,14 @@
 [
+  {"method": "GET", "path": "/api/bookings", "permission": {"kind": "staff", "capability": "bookings.manage"}},
+  {"method": "POST", "path": "/api/bookings", "permission": {"kind": "staff", "capability": "bookings.manage"}},
+  {"method": "POST", "path": "/api/bookings/{id}/cancel", "permission": {"kind": "staff", "capability": "bookings.manage"}},
+  {"method": "GET", "path": "/api/bookings/sessions/{sessionId}/roster", "permission": {"kind": "staff", "capability": "bookings.manage"}},
+  {"method": "GET", "path": "/api/portal/bookings", "permission": {"kind": "member", "capability": "bookings.self"}},
+  {"method": "POST", "path": "/api/portal/bookings", "permission": {"kind": "member", "capability": "bookings.self"}},
+  {"method": "POST", "path": "/api/portal/bookings/{id}/cancel", "permission": {"kind": "member", "capability": "bookings.self"}},
+  {"method": "GET", "path": "/api/portal/members/{memberId}/bookings", "permission": {"kind": "member", "capability": "bookings.household"}},
+  {"method": "POST", "path": "/api/portal/members/{memberId}/bookings", "permission": {"kind": "member", "capability": "bookings.household"}},
+  {"method": "POST", "path": "/api/portal/members/{memberId}/bookings/{id}/cancel", "permission": {"kind": "member", "capability": "bookings.household"}},
   {
     "method": "GET",
     "path": "/api/households/{householdId}/users",

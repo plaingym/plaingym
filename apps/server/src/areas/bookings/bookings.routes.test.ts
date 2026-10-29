@@ -16,6 +16,8 @@ import { areaContributions } from '../../core/registry-areas.js';
 import { FakeMemberHouseholdContext } from '../../core/interfaces/member-household.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createPortalAuthorization } from '../portal/auth.permissions.js';
+import { createMembersService } from '../members/members.js';
+import { createMembersRoutes } from '../members/members.routes.js';
 import { createBookingService } from './bookings.js';
 import { createBookingRoutes } from './bookings.routes.js';
 import { createPortalBookingService } from '../portal/bookings.js';
@@ -50,7 +52,7 @@ function app(f: Fixture, principal: Principal, fake = false, production = false)
   const households = fake ? f.fake : createMemberHouseholdContext(db.forGym);
   const portal = createPortalBookingService({ households, householdScope: db.forHousehold, bookings: service });
   return createApp({ clock, skipSetup: true, origin: 'http://localhost',
-    contributions: production ? areaContributions : { routes: [...createBookingRoutes(service), ...createPortalBookingRoutes(portal)] },
+    contributions: production ? areaContributions : { routes: [...createMembersRoutes(createMembersService({ scope: db.forGym, clock }), undefined, { clock }), ...createBookingRoutes(service), ...createPortalBookingRoutes(portal)] },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
     authorize: createPortalAuthorization(households),
@@ -61,6 +63,19 @@ const post = (server: ReturnType<typeof app>, path: string, body?: unknown) => s
 const book = (f: Fixture, memberId = f.member.id) => service.book(f.actor, { memberId, sessionId: f.session.id, allowWaitlist: true });
 
 describe('booking route permissions and production composition', () => {
+  it('promotes the waiting member after erasure commits through the member route', async () => {
+    const f = await fixture(), server = app(f, staffPrincipal(f));
+    const erased = await book(f);
+    for (let n = 0; n < 4; n++) await book(f, (await factory('members', f.gymId)).id);
+    const waiting = await book(f, f.outsider.id);
+    expect(waiting.status).toBe('waitlisted');
+    const response = await post(server, `/api/members/${f.member.id}/anonymize`, { revision: f.member.revision });
+    expect(response.status).toBe(200);
+    const rows = (await service.list(f.gymId, { limit: 50, offset: 0 })).data;
+    expect(rows.find(row => row.id === erased.id)?.status).toBe('cancelled');
+    expect(rows.find(row => row.id === waiting.id)?.status).toBe('booked');
+    expect(await service.promote(f.gymId, f.session.id)).toEqual([]);
+  });
   it.each(staffRoles)('allows %s on all four staff booking endpoints', async role => {
     const f = await fixture(), server = app(f, staffPrincipal(f, role));
     const created = await post(server, '/api/bookings', { memberId: f.member.id, sessionId: f.session.id });
