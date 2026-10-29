@@ -7,6 +7,7 @@ import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 import { createSettingsService } from '../../areas/settings/settings.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
@@ -33,6 +34,13 @@ export function createPublicPagesService(options: PublicPagesOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? createSettingsService({ scope, clock });
   const mutation = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
+  async function notifyStaff(gymId: string, intake: Parameters<PublicPagesOptions['notifyStaff']>[1], requestId?: string) {
+    try { await options.notifyStaff(gymId, intake); }
+    catch (error) {
+      // Intake is already committed. Transport failure must not invite duplicate submissions.
+      logError('public.intake.notification_failed', { gymId, kind: intake.kind, requestId: requestId ?? null }, error);
+    }
+  }
   function applicant(input: c.PublicTrialRequest, timezone: string) {
     if (input.member.dateOfBirth > localDate(clock.now(), timezone)
       || [input.member.firstName, input.member.lastName, input.contact.name].some(s => s.length > 200)
@@ -89,10 +97,10 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       const stream = await uploads.get(key); if (!stream) return missing();
       return { stream, contentType: info.contentType };
     },
-    async trial(gymId: string, body: unknown, timezone: string) {
+    async trial(gymId: string, body: unknown, timezone: string, requestId?: string) {
       const input = c.publicTrialRequestSchema.parse(body); applicant(input, timezone);
       const id = await intake(gymId, input, 'public.trial.received');
-      await options.notifyStaff(gymId, { kind: 'trial', memberId: id, contact: input.contact, member: input.member });
+      await notifyStaff(gymId, { kind: 'trial', memberId: id, contact: input.contact, member: input.member }, requestId);
       return received();
     },
     async admit(gymId: string, body: unknown, timezone: string) {
@@ -108,7 +116,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       }
       return { data };
     },
-    async dropIn(gymId: string, body: unknown, timezone: string, ipAddress: string) {
+    async dropIn(gymId: string, body: unknown, timezone: string, ipAddress: string, requestId?: string) {
       const input = c.publicDropInRequestSchema.parse(body); applicant(input, timezone);
       await current(gymId, input.waivers);
       const id = input.waivers[0]!.signatureImageKey.split('/')[2];
@@ -137,7 +145,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         await audit(tx, gymId, 'public.drop_in.received', id);
         return true;
       });
-      if (changed) await options.notifyStaff(gymId, { kind: 'drop-in', memberId: id, contact: input.contact, member: input.member });
+      if (changed) await notifyStaff(gymId, { kind: 'drop-in', memberId: id, contact: input.contact, member: input.member }, requestId);
       return received();
     },
   };

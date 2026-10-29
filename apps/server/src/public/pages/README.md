@@ -10,6 +10,10 @@ These core
 registrations work with every optional module disabled. Unconfigured services fail
 closed. The public plan and join routes are separate contributions.
 
+An ordinary install without SMTP skips staff mail while still recording intake.
+Notification failures are logged with the request ID and safe error metadata;
+visitors still receive the same successful response after their record commits.
+
 `publicLayout` is the Hono JSX shell for core pages. It escapes gym and document
 text, uses `t()`, keeps `/source`, and serves only same-origin assets under a strict
 CSP. CSS reuses the existing signed-link Tailwind asset, with validated gym color

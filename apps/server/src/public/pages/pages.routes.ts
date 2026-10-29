@@ -40,10 +40,10 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     route({ ...contracts.waivers, request: { query: paginationSchema }, responses: json(contracts.waivers.response) }, async ctx =>
       ctx.json(await options().service.templates(ctx.get('context').gym.gymId, ctx.req.valid('query')), 200)),
     route({ ...contracts.trial, middleware: [budget, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.trial.body } } } }, responses: json(contracts.trial.response) }, async ctx => {
-      const context = ctx.get('context'); return ctx.json(await options().service.trial(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone), 200);
+      const context = ctx.get('context'); return ctx.json(await options().service.trial(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.requestId), 200);
     }),
     route({ ...contracts.dropIn, middleware: [budget, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.dropIn.body } } } }, responses: json(contracts.dropIn.response) }, async ctx => {
-      const context = ctx.get('context'); return ctx.json(await options().service.dropIn(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.clientIp ?? 'unknown'), 200);
+      const context = ctx.get('context'); return ctx.json(await options().service.dropIn(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.clientIp ?? 'unknown', context.requestId), 200);
     }),
     route({ method: 'post', path: '/drop-in/signatures', permission: { kind: 'public' }, middleware: [admissionBudget, bounded],
       request: { body: { required: true, content: { 'application/json': { schema: admissionSchema } } } },
@@ -83,7 +83,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
       const value = (name: string) => String(fields.get(name) ?? '');
       const input = publicTrialRequestSchema.parse({ contact: { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) },
         member: { firstName: value('firstName'), lastName: value('lastName'), dateOfBirth: value('dateOfBirth') }, honeypot: value('honeypot') });
-      if (kind === 'trial') await config.service.trial(context.gym.gymId, input, context.gym.timezone);
+      if (kind === 'trial') await config.service.trial(context.gym.gymId, input, context.gym.timezone, context.requestId);
       else {
         const templates = await config.service.required(context.gym.gymId);
         const signatures = await Promise.all(templates.map(async (_template, i) => {
@@ -94,7 +94,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
         const images = await config.service.admit(context.gym.gymId, { ...input, signatures }, context.gym.timezone);
         await config.service.dropIn(context.gym.gymId, { ...input, waivers: images.data.map((image, i) => ({ ...image,
           signer: value(`waiver-${i}-kind`) === 'guardian' ? { kind: 'guardian', name: value(`waiver-${i}-name`), relationship: value(`waiver-${i}-relationship`) }
-            : { kind: 'self', name: value(`waiver-${i}-name`) }, consent: true })) }, context.gym.timezone, context.clientIp ?? 'unknown');
+            : { kind: 'self', name: value(`waiver-${i}-name`) }, consent: true })) }, context.gym.timezone, context.clientIp ?? 'unknown', context.requestId);
       }
       return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'received' }), 200);
     }));

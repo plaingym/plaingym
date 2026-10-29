@@ -21,7 +21,7 @@ const boundaries = {
   'infra/auth/delivery.ts': 'security: requested login links are exempt',
   'areas/staff/profiles.invitations.ts': 'staff invitations are exempt',
   'areas/members/household-users.invitations.ts': 'staff-initiated portal invitations use the gym SMTP mailer outside the transaction',
-  'public/pages/notifications.ts': 'exempt only when runtime prepare returns staff addresses; visitor confirmations require memberEmailsEnabled',
+  'public/pages/notifications.ts': 'staff-only owner/admin runtime recipients are exempt; visitor confirmations require memberEmailsEnabled',
   'demo/runtime.ts': 'security: sandbox login links use the demo outbox',
 };
 
@@ -46,6 +46,7 @@ const emailPaths = [
   ['card expiry and queued delivery', 'areas/billing/alerts/alerts.test.ts', 'revokes an undisclosed link after suppression'],
   ['staff/security mail and owner disputes', 'infra/email/member.test.ts', 'keeps staff/security mail available'],
   ['public intake notices with staff-only runtime recipients', 'public/pages/pages.test.ts', 'keeps new, existing and enrolled emails indistinguishable without editing existing households'],
+  ['runtime public intake staff recipients', 'core/runtime.public-pages.test.ts', 'sends public intake notices only to owner/admin staff even with member emails disabled'],
 ] as const;
 
 describe('go-live switch test inventory', () => {

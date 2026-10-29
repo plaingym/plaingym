@@ -42,6 +42,8 @@ import { configureQrCheckin } from '../areas/kiosk/qr.routes.js';
 import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { configureWaivers } from '../areas/waivers/waivers.routes.js';
 import { configureLinkPages } from '../public/links/links.routes.js';
+import { configurePublicPages } from '../public/pages/pages.routes.js';
+import { createPublicStaffNotifier } from '../public/pages/notifications.js';
 import { createBookingDelivery } from '../areas/bookings/bookings.delivery.js';
 import { configureBookingJobs } from '../areas/bookings/bookings.jobs.js';
 import { configureBookingRoutes } from '../areas/bookings/bookings.routes.js';
@@ -220,6 +222,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureQrCheckin({ codes: createCheckinCodeService({ gymKey, clock }), uploadsFor: uploads.forGym, clock });
   // Signature images and rendered waiver PDFs use the gym's file storage.
   const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
+  const notifyStaff = createPublicStaffNotifier(async gymId => {
+    // Ordinary installs can accept intake before SMTP is configured; demos use the outbox.
+    if (!demo && !await smtpConfigured(gymId)) return null;
+    const [mail, recipients] = await Promise.all([gymMail(gymId), accounts.staffEmails(gymId, ['owner', 'admin'])]);
+    return { ...mail, recipients };
+  });
+  configurePublicPages({ clock, waivers, uploadsFor: uploads.forGym, notifyStaff });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
