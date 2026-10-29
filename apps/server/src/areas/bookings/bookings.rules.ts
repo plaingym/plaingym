@@ -22,9 +22,18 @@ export function assertBookable(session: SessionRow, settings: GymSettings, now: 
   if (session.capacity === null) bookingConflict('noReservation');
   if (now < bookingOpensAt(session.startsAt, settings)) bookingConflict('windowClosed');
 }
+/** The last instant a place can be cancelled, and so the last instant the waitlist is promoted. */
+export function cancellationCutoffAt(session: Pick<SessionRow, 'startsAt'>, settings: Pick<GymSettings, 'cancellationCutoffMinutes'>): Date {
+  return new Date(session.startsAt.getTime() - settings.cancellationCutoffMinutes * 60_000);
+}
 /** Cancellation at the exact cutoff is allowed. Promotion uses the same comparison, so every promoted place can be cancelled. */
 export function cutoffPassed(session: Pick<SessionRow, 'startsAt'>, settings: Pick<GymSettings, 'cancellationCutoffMinutes'>, now: Date) {
-  return now.getTime() > session.startsAt.getTime() - settings.cancellationCutoffMinutes * 60_000;
+  return now.getTime() > cancellationCutoffAt(session, settings).getTime();
+}
+/** Places a new booking can take now. A pending waitlist holds every freed place, so a newcomer never jumps it. */
+export function openPlaces(capacity: number, active: readonly Pick<BookingRow, 'status'>[]) {
+  if (active.some(row => row.status === 'waitlisted')) return 0;
+  return Math.max(0, capacity - active.filter(row => row.status === 'booked').length);
 }
 export function assertCancellable(session: SessionRow, settings: GymSettings, now: Date) {
   if (cutoffPassed(session, settings, now)) bookingConflict('cutoffPassed');

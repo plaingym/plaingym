@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../../lib/registries.js';
+import { PortalCheckinView } from './page.js';
 
 export const registration: WebRegistration = {
   portalNav: [
@@ -7,7 +8,7 @@ export const registration: WebRegistration = {
       id: 'portalNav.checkin',
       labelKey: 'portal/checkin:title',
       permission: { kind: 'member', capability: 'checkin.manage' },
-      enabled: false,
+      enabled: true,
       href: '/portal/checkin',
     },
   ],
@@ -16,8 +17,8 @@ export const registration: WebRegistration = {
       id: 'portalPages.checkin',
       labelKey: 'portal/checkin:title',
       permission: { kind: 'member', capability: 'checkin.manage' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: PortalCheckinView,
     },
   ],
 };

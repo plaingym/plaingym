@@ -1,3 +1,21 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Check-in code",
+  "description": "Show this code to the kiosk camera to check in.",
+  "member": "Code for",
+  "codeFor": "Check-in code for {name}",
+  "codeImage": "QR check-in code for {name}",
+  "loading": "Loading the check-in code…",
+  "help": "Turn up your screen brightness if the kiosk doesn't read the code.",
+  "inactive": "There is no active check-in code. Create one to check in with the kiosk camera.",
+  "create": "Create a code",
+  "regenerate": "Replace this code",
+  "confirmTitle": "Replace the check-in code?",
+  "confirmBody": "The current code stops working straight away, including any printed or saved copy. Use this if the code was shared or a device was lost.",
+  "confirm": "Replace code",
+  "keep": "Keep the current code",
+  "saving": "Replacing…",
+  "error": "We couldn't load the check-in code. Please try again.",
+  "unavailable": "Check-in codes aren't available right now. Please ask the front desk.",
+  "conflict": "The code changed on another device. The latest code is shown; try again if you still want to replace it."
 }

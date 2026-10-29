@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, gt, isNull, lte } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 import {
   forGym, programs, rankSystems, ranks, memberRanks, members, staffProfiles,
   uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError,
@@ -19,6 +19,16 @@ import { notFound, conflict } from '../../core/interfaces/common.js';
 import type { PromotionCriteria } from './criteria.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import type { AttendanceScope } from '../../core/interfaces/attendance.js';
+import { canReceive, nextPromotion, nextSubRank, promotionOrder } from './progression.js';
+
+type PromotionRow = typeof memberRanks.$inferSelect;
+/** The fields of a promotion the rank ordering needs; notes and the promoting coach are never read. */
+export type PromotionHistoryEntry = Pick<PromotionRow, 'id' | 'memberId' | 'programId' | 'rankId' | 'subRank' | 'promotedAt' | 'createdAt'>;
+const ranked = (row: { promotion: PromotionHistoryEntry; position: number }) => ({
+  id: row.promotion.id, memberId: row.promotion.memberId, rankId: row.promotion.rankId, subRank: row.promotion.subRank,
+  promotedAt: row.promotion.promotedAt, createdAt: row.promotion.createdAt, position: row.position,
+});
 
 const present = <T extends { createdAt: Date }>(row: T) => ({ ...row, createdAt: row.createdAt.toISOString() });
 const presentPromotion = (row: typeof memberRanks.$inferSelect) => promotionSchema.parse({
@@ -74,10 +84,11 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
     if (!program.active) conflict('The program is inactive');
     if (input.subRank > rank.subRanks.length) conflict('Sub-rank is outside the rank definition');
     if (Date.parse(input.promotedAt) > clock.now().getTime()) conflict('A promotion cannot be in the future');
-    const [previous] = await tx.select({ promotion: memberRanks, position: ranks.position }).from(memberRanks)
+    // The member row lock above serializes this read; one member's history in one program is small.
+    const [previous] = (await tx.select({ promotion: memberRanks, position: ranks.position }).from(memberRanks)
       .innerJoin(ranks, eq(memberRanks.rankId, ranks.id))
-      .where(and(eq(memberRanks.memberId, input.memberId), eq(memberRanks.programId, input.programId)))
-      .orderBy(desc(memberRanks.promotedAt), desc(ranks.position), desc(memberRanks.subRank), desc(memberRanks.createdAt), desc(memberRanks.id)).limit(1);
+      .where(and(eq(memberRanks.memberId, input.memberId), eq(memberRanks.programId, input.programId))))
+      .sort((a, b) => promotionOrder(ranked(a), ranked(b)));
     if (previous && (Date.parse(input.promotedAt) < previous.promotion.promotedAt.getTime()
       || rank.position < previous.position
       || (input.rankId === previous.promotion.rankId && input.subRank <= previous.promotion.subRank)))
@@ -196,10 +207,9 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
           const [program] = await tx.select({ id: programs.id }).from(programs).where(eq(programs.id, query.programId));
           if (!program) notFound();
         }
-        return page((await tx.select({ promotion: memberRanks }).from(memberRanks).innerJoin(ranks, eq(memberRanks.rankId, ranks.id)).where(and(eq(memberRanks.memberId, query.memberId),
-          query.programId ? eq(memberRanks.programId, query.programId) : undefined))
-          .orderBy(desc(memberRanks.promotedAt), desc(ranks.position), desc(memberRanks.subRank), desc(memberRanks.createdAt), desc(memberRanks.id)))
-          .map(({ promotion }) => presentPromotion(promotion)), query);
+        return page((await tx.select({ promotion: memberRanks, position: ranks.position }).from(memberRanks).innerJoin(ranks, eq(memberRanks.rankId, ranks.id)).where(and(eq(memberRanks.memberId, query.memberId),
+          query.programId ? eq(memberRanks.programId, query.programId) : undefined)))
+          .sort((a, b) => promotionOrder(ranked(a), ranked(b))).map(({ promotion }) => presentPromotion(promotion)), query);
       });
     },
     async promote(context: MutationContext, input: unknown) {
@@ -232,29 +242,24 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
           .orderBy(asc(members.id));
         const history = await tx.select({ promotion: memberRanks, position: ranks.position }).from(memberRanks)
           .innerJoin(ranks, eq(memberRanks.rankId, ranks.id))
-          .where(and(eq(memberRanks.programId, query.programId), lte(memberRanks.promotedAt, now)))
-          .orderBy(desc(memberRanks.promotedAt), desc(ranks.position), desc(memberRanks.subRank), desc(memberRanks.createdAt), desc(memberRanks.id));
-        return { program, rank, roster, history };
+          .where(and(eq(memberRanks.programId, query.programId), lte(memberRanks.promotedAt, now)));
+        return { program, rank, roster, history: history.map(ranked).sort(promotionOrder) };
       });
       // Providers can call other services. Never evaluate them inside the snapshot transaction.
       const results: PromotionEligibility[] = [];
       if (!snapshot.program.active) return page(results, query);
       const latest = new Map<string, (typeof snapshot.history)[number]>();
-      for (const entry of snapshot.history) if (!latest.has(entry.promotion.memberId)) latest.set(entry.promotion.memberId, entry);
-      const candidates = snapshot.roster.filter((member) => {
-        const previous = latest.get(member.id);
-        return !previous || !(previous.position > snapshot.rank.position
-          || (previous.promotion.rankId === snapshot.rank.id && previous.promotion.subRank >= snapshot.rank.subRanks.length));
-      });
+      for (const entry of snapshot.history) if (!latest.has(entry.memberId)) latest.set(entry.memberId, entry);
+      const candidates = snapshot.roster.filter((member) => canReceive(latest.get(member.id), snapshot.rank));
       // An unfiltered page's total is known without evaluating criteria. Ready-only
       // pages must evaluate every candidate before filtering and paginating.
       const selected = query.readyOnly ? candidates : candidates.slice(query.offset, query.offset + query.limit);
       for (const member of selected) {
         const previous = latest.get(member.id);
-        const subRank = previous?.promotion.rankId === snapshot.rank.id ? previous.promotion.subRank + 1 : 0;
+        const subRank = nextSubRank(previous, snapshot.rank);
         const evaluated = await criteria.evaluate({ attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
           programId: snapshot.program.id, rankId: snapshot.rank.id,
-          promotedAt: (previous?.promotion.promotedAt ?? member.createdAt).toISOString(), dateOfBirth: member.dateOfBirth, timezone,
+          promotedAt: (previous?.promotedAt ?? member.createdAt).toISOString(), dateOfBirth: member.dateOfBirth, timezone,
           clock: { now: () => new Date(now) } }, snapshot.rank.criteria, enabledModules);
         const eligible = evaluated.every((item) => item.met);
         if (query.readyOnly && !eligible) continue;
@@ -265,5 +270,50 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       return query.readyOnly ? page(results, query)
         : { data: results, pagination: { limit: query.limit, offset: query.offset, total: candidates.length } };
     },
+    /**
+     * One member's next step in each program they hold a rank in, using the same ordering and criteria as eligibility.
+     * The caller supplies the history and birth date from its own scope (the portal reads them through forHousehold);
+     * this reads only the referenced programs and ranks, and criteria count attendance in the caller's scope.
+     */
+    async memberProgress<T extends PromotionHistoryEntry>(gymId: string, input: { memberId: string; dateOfBirth: string | null; history: readonly T[]; attendanceScope: AttendanceScope },
+      enabledModules: ReadonlySet<string> = new Set()) {
+      const now = clock.now(), all = input.history.filter((row) => row.memberId === input.memberId);
+      const history = all.filter((row) => row.promotedAt <= now), programIds = [...new Set(history.map((row) => row.programId))];
+      if (!all.length) return { history: [], programs: [], ranks: [], criteria: [] };
+      const { timezone } = await settings.get(gymId);
+      const snapshot = await scope(gymId, async (tx) => {
+        const programRows = programIds.length
+          ? await tx.select().from(programs).where(inArray(programs.id, programIds)).orderBy(asc(programs.name), asc(programs.id)) : [];
+        const systemIds = programRows.flatMap((program) => program.rankSystemId ? [program.rankSystemId] : []);
+        const rankRows = await tx.select().from(ranks).where(or(inArray(ranks.id, [...new Set(all.map((row) => row.rankId))]),
+          systemIds.length ? inArray(ranks.rankSystemId, systemIds) : undefined));
+        return { programRows, rankRows: rankRows.map((row) => rankSchema.parse(present(row))) };
+      });
+      const rankById = new Map(snapshot.rankRows.map((rank) => [rank.id, rank]));
+      const order = (row: PromotionHistoryEntry) => ranked({ promotion: row, position: rankById.get(row.rankId)!.position });
+      const referenced = new Set<string>(all.map((row) => row.rankId)), result = [], evaluatedCriteria = [];
+      for (const program of snapshot.programRows) {
+        const own = history.filter((row) => row.programId === program.id);
+        const latest = own.map(order).sort(promotionOrder)[0]!;
+        // Inactive programs and programs without a rank system offer no promotion, as in eligibility.
+        const target = program.active && program.rankSystemId
+          ? nextPromotion(latest, snapshot.rankRows.filter((rank) => rank.rankSystemId === program.rankSystemId)) : null;
+        result.push({ id: program.id, name: program.name, current: { rankId: latest.rankId, subRank: latest.subRank },
+          next: target ? { rankId: target.rank.id, subRank: target.subRank } : null });
+        if (!target) continue;
+        referenced.add(target.rank.id);
+        // Providers can call other services. Never evaluate them inside the snapshot transaction.
+        const evaluated = await criteria.evaluate({ attendanceScope: input.attendanceScope, gymId, memberId: input.memberId,
+          programId: program.id, rankId: target.rank.id, promotedAt: latest.promotedAt.toISOString(), dateOfBirth: input.dateOfBirth,
+          timezone, clock: { now: () => new Date(now) } }, target.rank.criteria, enabledModules);
+        evaluatedCriteria.push(...evaluated.map((item) => ({ programId: program.id, rankId: target.rank.id, criterionId: item.providerId,
+          labelKey: item.labelKey, current: item.current, required: item.target, eligible: item.met })));
+      }
+      // History in the same order that picks each program's current rank, latest first.
+      const ordered = all.map((row) => ({ row, key: order(row) })).sort((a, b) => promotionOrder(a.key, b.key)).map(({ row }) => row);
+      return { history: ordered, programs: result, criteria: evaluatedCriteria,
+        ranks: snapshot.rankRows.filter((rank) => referenced.has(rank.id)).map(({ id, name, color, subRanks }) => ({ id, name, color, subRanks })) };
+    },
   };
 }
+export type RanksService = ReturnType<typeof createRanksService>;

@@ -22,6 +22,21 @@ time before their first promotion. Each sub-rank promotion resets those counters
 Staff may record a coach's promotion decision independently of eligibility targets.
 History records both the rank and program's shared rank system.
 
+`progression.ts` holds the one rank-system ordering every reader uses: the latest
+promotion (`promotionOrder`: promotion time, then rank position, sub-rank, creation
+time and ID), whether a member can still receive a rank (`canReceive`), the sub-rank
+it would award (`nextSubRank`) and the next step (`nextPromotion`, the current rank's
+next sub-rank first). Eligibility, the promotion check, the promotion list and
+`memberProgress` all sort promotions in application code with `promotionOrder`; none
+orders them in SQL. The promotion check reads the member's history in that program
+after locking the member row, then sorts it.
+
+`memberProgress` applies the ordering to one member's history, supplied by the caller
+from its own scope. It returns each program's current rank, the next step and the
+history from that same ordering, so they can't disagree, and evaluates the next step's
+criteria in the caller's attendance scope. Inactive programs and the top rank have no
+next step. It covers the programs the member already holds a rank in.
+
 Every promotion locks its member and checks the current history in the same
 transaction as the history row and audit. Bulk requests preflight gym references
 and then commit one member at a time. If a later member fails, earlier promotions

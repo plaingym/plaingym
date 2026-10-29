@@ -1,3 +1,27 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Progress",
+  "description": "Ranks, progress toward the next rank and attendance history.",
+  "member": "Progress for",
+  "loading": "Loading progress…",
+  "error": "We couldn't load progress. Please try again.",
+  "ranks": "Ranks",
+  "noRanks": "No ranks yet",
+  "noRanksHelp": "Ranks appear here after a coach records a promotion.",
+  "current": "Current: {rank}",
+  "noCurrent": "No rank yet in this program.",
+  "next": "Next: {rank}",
+  "withSubRank": "{rank}, {subRank}",
+  "unknownRank": "Rank",
+  "program": "Program",
+  "ready": "Requirements met",
+  "coachDecides": "Your coach decides when you are ready.",
+  "noNext": "No further rank in this program.",
+  "history": "Promotion history",
+  "attendance": "Attendance",
+  "attendanceTotal": "Visits: {count}",
+  "noAttendance": "No attendance recorded yet",
+  "class": "Class",
+  "openMat": "Open mat",
+  "more": "Show more"
 }

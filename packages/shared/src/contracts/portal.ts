@@ -13,6 +13,8 @@ import {
   waiverSignatureResponseSchema, waiverSignRequestSchema, waiverTemplateSchema,
   waiverUploadRequestSchema, waiverUploadResponseSchema,
 } from './waivers.js';
+import { memberBookingSchema } from './bookings.js';
+import { rankSchema } from './ranks.js';
 
 export const portalMemberParamsSchema = z.strictObject({ memberId: idSchema });
 export const portalInvoiceParamsSchema = z.strictObject({ invoiceId: idSchema });
@@ -91,6 +93,38 @@ export const portalCheckinCodeResponseSchema = z.strictObject({ data: z.strictOb
 }) });
 export const portalRegenerateCheckinRequestSchema = z.strictObject({ revision: revisionSchema });
 
+// Schedule, check-in and progress projections. Booking times come from the booking engine's
+// rules; placesLeft is a count only. Bookings are the active places of members this login may see.
+export const portalScheduleSessionSchema = portalSessionSchema.safeExtend({
+  bookingOpensAt: instantSchema, cancelBefore: instantSchema,
+  placesLeft: z.int32().nonnegative().nullable(),
+  bookings: z.array(memberBookingSchema).refine((rows) => rows.every((row) => row.status !== 'cancelled'), 'Only active bookings are listed'),
+});
+export const portalScheduleSessionsResponseSchema = listResponseSchema(portalScheduleSessionSchema);
+/** The members this login may book for: the payer's household, or an adult member alone. */
+export const portalScheduleMemberSchema = z.strictObject({ id: idSchema, name: z.string().min(1) });
+export const portalScheduleMembersResponseSchema = z.strictObject({ data: z.array(portalScheduleMemberSchema) });
+/** No active code (never issued, or revoked) reads as null; regeneration always returns a code. */
+export const portalCheckinCodeStateResponseSchema = z.strictObject({
+  data: portalCheckinCodeResponseSchema.shape.data.extend({ code: z.string().min(1).nullable() }),
+});
+/** Gym configuration referenced by one member's history and next targets. current is the member's latest rank
+ * in the program, chosen by the same ordering as next (null without a rank); next is null at the top rank. */
+const portalRankStepSchema = z.strictObject({ rankId: idSchema, subRank: z.int32().nonnegative() });
+export const portalProgressProgramSchema = z.strictObject({
+  id: idSchema, name: z.string().min(1), current: portalRankStepSchema.nullable(), next: portalRankStepSchema.nullable(),
+});
+export const portalProgressRankSchema = rankSchema.pick({ id: true, name: true, color: true, subRanks: true });
+export const portalMemberProgressResponseSchema = z.strictObject({
+  data: portalProgressResponseSchema.shape.data.extend({ programs: z.array(portalProgressProgramSchema), ranks: z.array(portalProgressRankSchema) }),
+});
+export const portalScheduleContracts = {
+  members: { method: 'get', path: '/api/portal/schedule/members', permission: { kind: 'member', capability: 'bookings.self' }, response: portalScheduleMembersResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
+export type PortalScheduleSession = z.infer<typeof portalScheduleSessionSchema>;
+export type PortalScheduleMember = z.infer<typeof portalScheduleMemberSchema>;
+export type PortalMemberProgress = z.infer<typeof portalMemberProgressResponseSchema>['data'];
+
 export const portalInvoiceSchema = z.strictObject({
   id: idSchema, number: z.int32().positive(), kind: invoiceKindSchema,
   status: invoiceStatusSchema.exclude(['draft']),
@@ -149,11 +183,11 @@ export const portalContracts = {
   updateMember: { method: 'patch', path: '/api/portal/members/{memberId}', permission: { kind: 'member', capability: 'household.manage' }, params: portalMemberParamsSchema, body: portalMemberUpdateRequestSchema, response: portalMemberResponseSchema },
   household: { method: 'get', path: '/api/portal/household', permission: { kind: 'member', capability: 'household.read' }, response: portalHouseholdResponseSchema },
   updateHousehold: { method: 'patch', path: '/api/portal/household', permission: { kind: 'member', capability: 'household.manage' }, body: portalHouseholdUpdateRequestSchema, response: portalHouseholdResponseSchema },
-  schedule: { method: 'get', path: '/api/portal/schedule', permission: { kind: 'member', capability: 'bookings.self' }, query: portalScheduleQuerySchema, response: portalScheduleResponseSchema },
+  schedule: { method: 'get', path: '/api/portal/schedule', permission: { kind: 'member', capability: 'bookings.self' }, query: portalScheduleQuerySchema, response: portalScheduleSessionsResponseSchema },
   memberships: { method: 'get', path: '/api/portal/members/{memberId}/memberships', permission: { kind: 'member', capability: 'profile.read' }, params: portalMemberParamsSchema, query: paginationSchema, response: portalMembershipListResponseSchema },
   attendance: { method: 'get', path: '/api/portal/members/{memberId}/attendance', permission: { kind: 'member', capability: 'attendance.read' }, params: portalMemberParamsSchema, query: portalAttendanceQuerySchema, response: portalAttendanceResponseSchema },
-  progress: { method: 'get', path: '/api/portal/members/{memberId}/progress', permission: { kind: 'member', capability: 'progress.read' }, params: portalMemberParamsSchema, response: portalProgressResponseSchema },
-  checkinCode: { method: 'get', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, response: portalCheckinCodeResponseSchema },
+  progress: { method: 'get', path: '/api/portal/members/{memberId}/progress', permission: { kind: 'member', capability: 'progress.read' }, params: portalMemberParamsSchema, response: portalMemberProgressResponseSchema },
+  checkinCode: { method: 'get', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, response: portalCheckinCodeStateResponseSchema },
   regenerateCheckin: { method: 'post', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, body: portalRegenerateCheckinRequestSchema, response: portalCheckinCodeResponseSchema },
   invoices: { method: 'get', path: '/api/portal/invoices', permission: { kind: 'member', capability: 'billing.manage' }, query: portalInvoiceListQuerySchema, response: portalInvoiceListResponseSchema },
   invoice: { method: 'get', path: '/api/portal/invoices/{invoiceId}', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalInvoiceResponseSchema },

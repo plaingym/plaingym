@@ -38,6 +38,12 @@ job). A capacity change after the cutoff is saved without confirming anyone. A
 freed place stays open for walk-ins, whom staff check in; a new booking still
 joins the end of a non-empty waitlist rather than jumping it.
 
+Readers share the same rules: `cancellationCutoffAt` is the instant `cutoffPassed`
+compares against, and `openPlaces` counts the places a new booking can take now
+(none while anyone is waiting). The service's `openPlaces(gymId, sessionIds)` returns
+those counts for reservable sessions without exposing who holds a place; the portal
+schedule shows them beside each class.
+
 The booking window opens at midnight in the gym's timezone, the configured
 number of calendar days before the class date. Zero days means the class date.
 The cutoff is elapsed minutes before the start; cancellation at the exact

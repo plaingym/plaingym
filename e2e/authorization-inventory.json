@@ -9,6 +9,12 @@
   {"method": "GET", "path": "/api/portal/members/{memberId}/bookings", "permission": {"kind": "member", "capability": "bookings.household"}},
   {"method": "POST", "path": "/api/portal/members/{memberId}/bookings", "permission": {"kind": "member", "capability": "bookings.household"}},
   {"method": "POST", "path": "/api/portal/members/{memberId}/bookings/{id}/cancel", "permission": {"kind": "member", "capability": "bookings.household"}},
+  {"method": "GET", "path": "/api/portal/schedule", "permission": {"kind": "member", "capability": "bookings.self"}},
+  {"method": "GET", "path": "/api/portal/schedule/members", "permission": {"kind": "member", "capability": "bookings.self"}},
+  {"method": "GET", "path": "/api/portal/members/{memberId}/checkin-code", "permission": {"kind": "member", "capability": "checkin.manage"}},
+  {"method": "POST", "path": "/api/portal/members/{memberId}/checkin-code", "permission": {"kind": "member", "capability": "checkin.manage"}},
+  {"method": "GET", "path": "/api/portal/members/{memberId}/progress", "permission": {"kind": "member", "capability": "progress.read"}},
+  {"method": "GET", "path": "/api/portal/members/{memberId}/attendance", "permission": {"kind": "member", "capability": "attendance.read"}},
   {
     "method": "GET",
     "path": "/api/households/{householdId}/users",

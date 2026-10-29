@@ -9,7 +9,7 @@ import { notFound, type MutationContext } from '../../core/interfaces/common.js'
 import type { PortalIdentity } from '../../core/interfaces/member-household.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
-import { activeBookings, assertBookable, assertCancellable, bookingAudit, bookingConflict, reconcileSessionBookings,
+import { activeBookings, assertBookable, assertCancellable, bookingAudit, bookingConflict, openPlaces, reconcileSessionBookings,
   type BookingRow } from './bookings.rules.js';
 
 export interface BookingOptions { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; }
@@ -68,10 +68,9 @@ export function createBookingService(options: BookingOptions = {}) {
         const existing = active.find(row => row.memberId === value.memberId);
         if (existing) return bookingView(tx, existing);
         assertBookable(session, gym, clock.now());
-        const booked = active.filter(row => row.status === 'booked').length;
         const waiting = active.filter(row => row.status === 'waitlisted');
         // A newcomer never jumps an existing queue while its promotion job is pending.
-        const waitlisted = booked >= session.capacity! || waiting.length > 0;
+        const waitlisted = openPlaces(session.capacity!, active) === 0;
         if (waitlisted && !value.allowWaitlist) bookingConflict('full');
         const position = waitlisted ? Math.max(0, ...waiting.map(row => row.waitlistPosition!)) + 1 : null;
         if (position !== null && position > 2_147_483_647) bookingConflict('full');
@@ -132,6 +131,17 @@ export function createBookingService(options: BookingOptions = {}) {
             occurredAt: attendance.occurredAt.toISOString(), createdAt: attendance.createdAt.toISOString() }) : null };
         }));
         return { data, pagination: { ...page, total: ids.length } };
+      });
+    },
+    /** Counts only: open places for each reservable session, never who holds them. Sessions without capacity are omitted. */
+    async openPlaces(gymId: string, sessionIds: readonly string[]) {
+      if (!sessionIds.length) return new Map<string, number>();
+      return scope(gymId, async tx => {
+        const sessions = await tx.select({ id: classSessions.id, capacity: classSessions.capacity }).from(classSessions).where(inArray(classSessions.id, [...sessionIds]));
+        const rows = await tx.select({ sessionId: classBookings.sessionId, status: classBookings.status }).from(classBookings)
+          .where(and(inArray(classBookings.sessionId, [...sessionIds]), ne(classBookings.status, 'cancelled')));
+        return new Map(sessions.filter(session => session.capacity !== null)
+          .map(session => [session.id, openPlaces(session.capacity!, rows.filter(row => row.sessionId === session.id))]));
       });
     },
     promote: (gymId: string, sessionId: string) => promoteWaitlist(gymId, sessionId, { scope, clock, settings }),

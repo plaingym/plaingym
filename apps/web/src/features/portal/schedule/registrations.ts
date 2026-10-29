@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../../lib/registries.js';
+import { PortalScheduleView } from './page.js';
 
 export const registration: WebRegistration = {
   portalNav: [
@@ -7,7 +8,7 @@ export const registration: WebRegistration = {
       id: 'portalNav.schedule',
       labelKey: 'portal/schedule:title',
       permission: { kind: 'member', capability: 'bookings.self' },
-      enabled: false,
+      enabled: true,
       href: '/portal/schedule',
     },
   ],
@@ -16,8 +17,8 @@ export const registration: WebRegistration = {
       id: 'portalPages.schedule',
       labelKey: 'portal/schedule:title',
       permission: { kind: 'member', capability: 'bookings.self' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: PortalScheduleView,
     },
   ],
 };
