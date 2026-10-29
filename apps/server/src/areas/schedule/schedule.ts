@@ -9,6 +9,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import { localDate, occurrences } from './schedule.time.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { reconcileSessionBookings } from '../bookings/bookings.rules.js';
 
 function missing(): never { throw new AppError('not_found', 'Schedule record not found'); }
 const conflict = (): never => { throw new AppError('conflict', 'The schedule record is in use'); };
@@ -234,6 +235,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         const before = await sessionView(tx, row); await relationships(tx, value);
         const guard = revisionGuard(classSessions.revision, revision);
         const afterRow = assertRevised(await tx.update(classSessions).set({ ...fields, startsAt: new Date(fields.startsAt), endsAt: new Date(fields.endsAt), occurrenceStartsAt, revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
+        await reconcileSessionBookings(tx, afterRow, context, clock.now());
         await mappings(tx, 'session', context.gymId, id, { programIds, tagIds }, clock.now()); const after = await sessionView(tx, afterRow);
         await audit(tx, context, 'session.updated', id, before, after); return after;
       }));
@@ -248,6 +250,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         if ('coachId' in value && typeof value.coachId === 'string' && !(await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(eq(staffProfiles.id, value.coachId))).length) missing();
         const guard = revisionGuard(classSessions.revision, revision);
         const afterRow = assertRevised(await tx.update(classSessions).set({ ...value, ...(kind === 'cancel' ? { status: 'cancelled' } : {}), revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
+        if (kind === 'capacity') await reconcileSessionBookings(tx, afterRow, context, clock.now());
         const after = await sessionView(tx, afterRow); await audit(tx, context, 'session.' + kind, id, before, after); return after;
       }));
     },

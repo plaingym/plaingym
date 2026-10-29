@@ -9,6 +9,7 @@ const source = (file: string) => readFileSync(resolve(root, 'apps/server/src', f
 
 /** Each production boundary is deliberately classified. New outbound call sites require review. */
 const boundaries = {
+  'areas/bookings/bookings.delivery.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery',
   'areas/billing/runner/index.ts': 'billingEnabled: before reservation, create and confirm',
   'areas/billing/signed-link-checkout.ts': 'billingEnabled before payment preparation and delivery; setup is allowed while paused',
   'areas/billing/customers.ts': 'customer creation is preparatory, allowed while billing is paused',
