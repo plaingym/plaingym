@@ -94,8 +94,7 @@ export function SignWaiver({ template, member, minor, endpoints, close, saved }:
       else if (!hasInk.current) { setError(text('signatureRequired')); return; }
       uploaded.current ??= (await portalCall(endpoints.upload, { memberId: member.id, pngBase64: node.toDataURL('image/png').split(',')[1] })).data;
       await portalCall(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
-        signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer },
-        ...(template.kind === 'agreement' && data.get('commitment') ? { commitmentEndsOn: String(data.get('commitment')) } : {}) });
+        signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer } });
       await saved();
     } catch (failure) { setError(text(conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }
   }
@@ -109,7 +108,6 @@ export function SignWaiver({ template, member, minor, endpoints, close, saved }:
       {minor && <p>{text('guardianNote')}</p>}
       <div><Label htmlFor="signer">{text(minor ? 'guardianName' : 'signer')}</Label><Input id="signer" name="signer" required maxLength={200} autoComplete="name" onChange={reset} /></div>
       {minor && <div><Label htmlFor="relationship">{text('relationship')}</Label><Input id="relationship" name="relationship" required maxLength={100} onChange={reset} /></div>}
-      {template.kind === 'agreement' && <div><Label htmlFor="commitment">{text('commitment')}</Label><Input type="date" id="commitment" name="commitment" /></div>}
       <CheckboxField label={text('typed')} checked={typed} onChange={event => { setTyped(event.target.checked); hasInk.current = false; reset(); }} />
       {!typed && <><p id="draw-help">{text('draw')}</p>
         <canvas ref={canvas} width={600} height={180} aria-label={text('draw')} aria-describedby="draw-help" className="h-36 w-full touch-none rounded-lg border border-border bg-white"

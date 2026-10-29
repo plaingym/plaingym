@@ -76,7 +76,9 @@ signature for them returns 403. The waiver service's own guardian rule is
 unchanged: a member with no recorded date of birth signs as a guardian, even from
 their own login. Each lists pending documents (the latest version of each
 family that is not retired and not yet signed by that member) and signed copies,
-uploads a signature image, signs, and returns a signed PDF link.
+uploads a signature image, signs, and returns a signed PDF link. Members never
+set an agreement's commitment end date: a portal signature that carries one is
+refused with 400, and staff record the term when they sign for a member.
 
 Signed lists and pending documents read whole signature rows through
 `forHousehold`, whose waiver query has no narrower projection. Uploads and

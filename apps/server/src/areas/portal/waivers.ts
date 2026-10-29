@@ -70,6 +70,8 @@ export function createPortalWaiverService(options: {
     /** Signing stays immutable: the waiver service validates the template, guardian rule and image and writes one snapshot. */
     async sign(identity: PortalIdentity, kind: PortalWaiverScope, input: WaiverSignRequest, signing: { timezone: string; ipAddress: string }) {
       const request = waiverSignRequestSchema.parse(input);
+      // The commitment term is the gym's to set; staff record it when they sign an agreement for a member.
+      if (request.commitmentEndsOn) throw new AppError('invalid_request', 'Members cannot set a commitment end date');
       await signer(identity, kind, request.memberId, signing.timezone);
       return options.waivers().sign(actor(identity), request, signing);
     },

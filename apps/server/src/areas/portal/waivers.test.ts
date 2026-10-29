@@ -92,6 +92,17 @@ describe('portal waiver routes', () => {
     expect((await send(server, 'GET', `/api/portal/waivers?memberId=${f.child.id}`)).status).toBe(404);
     expect((await send(server, 'GET', `/api/portal/waivers/${signature.id}/pdf`)).status).toBe(404);
   });
+  it('signs an agreement without letting the member set the commitment end date', async () => {
+    const f = await fixture(), server = app(f, adultPrincipal(f));
+    const upload = await send(server, 'POST', '/api/portal/waivers/signature-images', { memberId: f.adult.id, pngBase64: png });
+    const image = waiverUploadResponseSchema.parse(await upload.json()).data;
+    const body = { memberId: f.adult.id, templateId: f.agreement.id, templateVersion: 1, signer: { kind: 'self', name: 'Alex Rivera' }, consent: true, ...image };
+    expect((await send(server, 'POST', '/api/portal/waivers', { ...body, commitmentEndsOn: '2026-10-30' })).status).toBe(400);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(waiverSignatures))).toEqual([]);
+    const signed = await send(server, 'POST', '/api/portal/waivers', body);
+    expect(signed.status).toBe(200);
+    expect(JSON.parse(contracts.signWaiver.response.parse(await signed.json()).data.snapshot)).toMatchObject({ commitmentEndsOn: null });
+  });
   it('lets the payer sign for themselves but not as another adult', async () => {
     const f = await fixture(), server = app(f, payerPrincipal(f));
     expect((await sign(server, '/api/portal/household/waivers', f.payer.id, f.waiver.id, { kind: 'self', name: 'Pat Rivera' })).status).toBe(200);

@@ -20,7 +20,6 @@
   "guardianName": "Parent or guardian's full name",
   "signer": "Your full name",
   "relationship": "Relationship to the member",
-  "commitment": "Commitment end date (optional)",
   "typed": "Use my typed name as my signature",
   "draw": "Draw your signature in the box, or choose the typed-name option above.",
   "clear": "Clear signature",
