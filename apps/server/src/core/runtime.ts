@@ -43,11 +43,16 @@ import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { configureWaivers } from '../areas/waivers/waivers.routes.js';
 import { configureLinkPages } from '../public/links/links.routes.js';
 import { configurePublicPages } from '../public/pages/pages.routes.js';
+import { configureJoin } from '../public/pages/join.routes.js';
 import { createPublicStaffNotifier } from '../public/pages/notifications.js';
 import { createBookingDelivery } from '../areas/bookings/bookings.delivery.js';
 import { configureBookingJobs } from '../areas/bookings/bookings.jobs.js';
 import { configureBookingRoutes } from '../areas/bookings/bookings.routes.js';
 import { configurePortalBookingRoutes } from '../areas/portal/bookings.routes.js';
+import { configurePortalCheckin } from '../areas/portal/checkin.routes.js';
+import { configurePortalProgress } from '../areas/portal/progress.routes.js';
+import { configurePortalBilling } from '../areas/portal/billing.routes.js';
+import { configurePortalWaivers } from '../areas/portal/waivers.routes.js';
 import { createSignedLinkCheckout } from '../areas/billing/signed-link-checkout.js';
 import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
@@ -209,8 +214,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   const attendance = createAttendanceQueries({ clock });
   const criteria = configureRanks({ attendance, clock });
-  // The dashboard reads through the same services, with the ranks criteria registry and clock.
-  configureDashboard({ members: createMembersService({ clock }), ranks: createRanksService({ clock, criteria }), attendance }, [createDisputeAlertProvider()]);
+  const ranks = createRanksService({ clock, criteria });
+  // The dashboard and portal progress read through the same services, with the ranks criteria registry and clock.
+  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider()]);
+  configurePortalProgress({ ranks, attendance });
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
@@ -223,9 +230,12 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const gymKey = createGymKeyResolver({ key });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   configureCheckinCodes({ gymKey, clock });
-  configureQrCheckin({ codes: createCheckinCodeService({ gymKey, clock }), uploadsFor: uploads.forGym, clock });
+  const checkinCodes = createCheckinCodeService({ gymKey, clock });
+  configureQrCheckin({ codes: checkinCodes, uploadsFor: uploads.forGym, clock });
+  configurePortalCheckin(checkinCodes);
   // Signature images and rendered waiver PDFs use the gym's file storage.
   const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
+  configurePortalWaivers(waivers);
   const notifyStaff = createPublicStaffNotifier(async gymId => {
     // Ordinary installs can accept intake before SMTP is configured; demos use the outbox.
     if (!demo && !await smtpConfigured(gymId)) return null;
@@ -257,11 +267,17 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Webhook handlers apply payment outcomes through the one invoice transition service, whose effects
   // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
   const checkout = createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock });
+  // Join keeps its own membership service: the runtime's assignment callback would invoice sign-up fees separately.
+  const join = configureJoin({ clock, waivers, checkout, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)),
+    invitations: portalInvitations, accounts,
+    key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
   const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail,
     async afterCheckoutRecorded(gymId, linkId, sessionId) {
       try { await checkout.complete(gymId, linkId, sessionId); }
       // Revoked/expired links refuse completion without retrying an already-recorded card or payment.
       catch (error) { if (!(error instanceof AppError && error.code === 'not_found')) throw error; }
+      // A paid join activates its people and sends the portal sign-in link once.
+      await join.afterCheckout(gymId, linkId);
     },
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
   const runner = createChargeRunner({ settings, transitions: billing.transitions,
@@ -280,9 +296,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configurePayments(payments);
   configureBillingDashboard({ settings, memberships, payments });
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
-  configureLinkPages({ waivers, portalInvitations,
-    checkout,
-    receiptKey: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32)) });
+  // Portal billing seals its Checkout return into the signed-link receipt cookie, so both share one key.
+  const receiptKey = new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32));
+  configureLinkPages({ waivers, portalInvitations, checkout, receiptKey });
+  configurePortalBilling({ checkout, receiptKey, uploadsFor: uploads.forGym });
   const contributions = { ...areaContributions,
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],

@@ -852,5 +852,16 @@
   {"method":"GET","path":"/trial/received","permission":{"kind":"public"}},
   {"method":"POST","path":"/api/public/drop-in","permission":{"kind":"public"}},
   {"method":"POST","path":"/api/public/trial","permission":{"kind":"public"}},
-  {"method":"POST","path":"/drop-in/signatures","permission":{"kind":"public"}}
+  {"method":"POST","path":"/drop-in/signatures","permission":{"kind":"public"}},
+  {"method":"GET","path":"/api/public/plans","permission":{"kind":"public"}},
+  {"method":"POST","path":"/api/public/join","permission":{"kind":"public"}},
+  {"method":"POST","path":"/join/signatures","permission":{"kind":"public"}},
+  {"method":"GET","path":"/join","permission":{"kind":"public"}},
+  {"method":"POST","path":"/join","permission":{"kind":"public"}},
+  {"method":"GET","path":"/join/checkout","permission":{"kind":"public"}},
+  {"method":"GET","path":"/join/return","permission":{"kind":"public"}},
+  {"method":"GET","path":"/join/cancelled","permission":{"kind":"public"}},
+  {"method":"POST","path":"/join/sign-in","permission":{"kind":"public"}},
+  {"method":"POST","path":"/join/portal-login","permission":{"kind":"public"}},
+  {"method":"GET","path":"/join/client.js","permission":{"kind":"public"}}
 ]

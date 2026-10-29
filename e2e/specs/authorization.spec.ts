@@ -19,12 +19,13 @@ const matrix: Record<string, Role[]> = {
 };
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$))|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
   || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
-  || /^\/(?:api\/public\/(?:config|waivers|trial|drop-in)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?)$/.test(path);
+  || /^\/(?:api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
-// These four routes share ten attempts per gym/IP per fifteen minutes, before validation.
+// Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.
 // The sweep deliberately exhausts that production budget across roles; only these public
 // intake operations may answer 429. Never broaden this allowance to protected routes.
-const budgetedPublicIntake = new Set(['POST /api/public/trial', 'POST /api/public/drop-in', 'POST /trial', 'POST /drop-in']);
+const budgetedPublicIntake = new Set(['POST /api/public/trial', 'POST /api/public/drop-in', 'POST /trial', 'POST /drop-in',
+  'POST /api/public/join', 'POST /join']);
 
 test('the running route inventory matches the reviewed authorization sweep', async ({ install }, info) => {
   const actual = Object.entries(install.document.paths).flatMap(([path, methods]) =>
