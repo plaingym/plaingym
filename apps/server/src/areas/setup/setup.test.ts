@@ -33,9 +33,10 @@ const setupToken = 'private-setup-token-at-least-32-characters';
 const env = { AUTH_SECRET: 'setup-test-secret-with-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'auto' };
 const config = authConfig(env), sendTest = vi.fn(async () => { assertNoTransaction('setup test email'); });
 const ownerService = createOwnerService({ accounts: createAccountService(config), clock, async sendMagicLink() { throw new Error('Password bootstrap must not send a link'); } });
-const registered = vi.fn(async () => ({ endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' }));
+const registered = vi.fn(async () => ({ endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret', reused: false }));
 const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest,
-  stripeProvisioner: () => ({ async validate() { assertNoTransaction('setup Stripe validation'); }, register: registered }) });
+  stripeProvisioner: () => ({ async validate() { assertNoTransaction('setup Stripe validation'); }, register: registered,
+    async retire() { return { deleted: [], failures: [] }; }, async remove() { return false; }, async check() { return { status: 'current' as const }; } }) });
 const smtp = createSmtpResolver({ key, env, scope: database.forGym });
 const auth = createAuthService({ config, async sendMagicLink() {} });
 let directory: string;
@@ -126,7 +127,7 @@ describe('first-boot setup', () => {
     revision = (await service.status()).revision;
     const stripe = await call('/api/setup/stripe', 'PUT', { choice: 'configure', restrictedKey: 'rk_test_PrivateSetupKey', revision }, cookie);
     expect(await stripe.json()).toMatchObject({ data: { configured: true, mode: 'test', webhookRegistered: true } });
-    expect(registered).toHaveBeenCalledWith(gymId, origin, revision);
+    expect(registered).toHaveBeenCalledWith(gymId, origin, revision, undefined);
     const [configured] = await database.forSystem((tx) => tx.select().from(gyms));
     expect(JSON.parse(decryptSecret(key, 'stripe_config', configured!.stripeConfig!))).toEqual({ apiKey: 'rk_test_PrivateSetupKey',
       mode: 'test', endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' });

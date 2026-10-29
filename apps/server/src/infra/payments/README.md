@@ -93,15 +93,67 @@ parameters as a body only for POST. Read filters retain Stripe's bracket notatio
 for creation bounds and pagination.
 
 `stripeProvisioner` probes the complete restricted-key profile with reads and
-nonexistent-ID write probes; it never creates payments to test permissions. Webhook
-registration proves Webhook Endpoints Write and returns the endpoint-specific
-secret. Credentials and that secret are stored together, encrypted as `stripe_config`.
-Retries use a deterministic endpoint key. If saving loses the revision race, no
-credentials activate; an unreferenced endpoint can remain for operator review.
+nonexistent-ID write probes; it never creates payments or changes a real object to
+test permissions. The Webhook Endpoints write probe posts an update to the
+nonexistent endpoint `we_PlainGymPermissionProbe`, and a key without write access
+fails with `Check the Stripe permission for Webhook Endpoints`.
+
+## Webhook endpoint lifecycle
+
+Stripe returns an endpoint's signing secret only when it creates the endpoint.
+Credentials and the secret are stored together, encrypted as `stripe_config`, so
+the stored endpoint is kept whenever it still applies, and a new one is created
+only when it does not.
+
+- **Registration** (`register(gymId, origin, revision, previous?)`) reads the
+  stored endpoint with the key being saved. The endpoint is kept, with its stored
+  secret, when that key's account still has it, it carries this gym's `gym_id`
+  metadata, its URL is this install's `/webhooks/stripe`, and its API version is
+  the pinned one. A kept endpoint that lacks any event in `STRIPE_EVENTS` is
+  updated first. Otherwise a new endpoint is created with a deterministic key
+  (`gymId:webhook:revision`). Registration deletes nothing, so a save that loses the
+  revision race leaves the stored settings and their endpoint untouched; an
+  unreferenced new endpoint is deleted by the next successful save.
+- **Cleanup** (`retire(gymId, origin, keep)`) runs after the new settings are saved.
+  It deletes every other endpoint in the key's account whose `gym_id` metadata is
+  this gym and whose URL is this install's `/webhooks/stripe`, paging through the
+  whole list. Endpoints without this gym's `gym_id`, and this gym's endpoints at
+  other URLs, are never touched.
+- **Account change.** When the key moves to another account, the stored endpoint
+  is not visible to the new key, so a new endpoint is created. The old one is then
+  deleted with the old key (`remove(gymId, origin, endpointId)`), only if it still
+  carries this gym's `gym_id` and this install's URL. If the old key is refused,
+  the failure is logged through the redacting logger and the save still succeeds.
+  Skipping Stripe after it was configured removes the stored endpoint the same way.
+- **Events and API version** (`check(gymId, origin, stored)`) compares the stored
+  endpoint's `enabled_events` and `api_version` with `STRIPE_EVENTS` and
+  `STRIPE_API_VERSION`. Different events are updated in place. Stripe cannot change
+  an endpoint's API version, so an endpoint at another version is replaced: a new
+  endpoint (key `gymId:webhook:replace:<endpointId>:<version>`, so a retry returns the same
+  endpoint) whose secret the caller stores, followed by `retire`.
+- **A deleted endpoint** (for example, removed in the Stripe dashboard) is recreated
+  the same way, since the key can only be saved during setup. Only a 404
+  `resource_missing` on the stored ID counts as missing; an outage, permission or
+  authentication error is raised and retried at the next start, never treated as
+  missing. The new endpoint uses the key `gymId:webhook:recreate:<endpointId>`, so
+  repeated or concurrent runs create at most one. An endpoint that exists but is not
+  tagged for this gym, is at another URL or is in the other mode is reported as
+  `skipped` and left alone.
+
+`areas/setup/stripe-step.endpoints.ts` runs `check` for every gym with Stripe
+settings in the background after the server starts (`core/runtime.ts`), and the
+Stripe setup step applies the same event update when settings are saved. Replacing
+or recreating an endpoint compare-and-sets the stored settings and writes an audit
+event (`payments.webhook_endpoint_replaced` or `payments.webhook_endpoint_recreated`,
+with the before and after endpoint IDs), then retires the gym's other stale
+endpoints; if the settings changed meanwhile, the new endpoint is deleted unless
+the concurrent save stored it. Stripe being unreachable, or any error for one gym, is logged and never
+delays startup or the other gyms; the check runs again at the next start or save.
+Sandboxes use the shared test account and register no endpoint, so they skip it.
+
 New endpoints subscribe to `payment_method.automatically_updated` as well as
-`payment_method.updated`. Provisioning creates endpoints; it does not update
-`enabled_events` on an existing endpoint. Existing installations must update
-that subscription separately to receive automatic card updates.
+`payment_method.updated`. Endpoints created by earlier releases receive the current
+events at the next start or Stripe settings save.
 
 ## Offline contracts and recording
 
@@ -126,8 +178,13 @@ API responses, and the actual adapter with serialized strict replay. The committ
 4242, 0341 saved-card decline, 3155 after setup authentication, and 3184 renewal authentication, two-step
 charging, idempotency, cancellation, refunds, Checkout, and change pagination.
 Additional tests cover raw signatures, expiry races, metadata, parent matching,
-foreign gyms, permission failures, and transaction guards. Database authorization,
-encryption, audit and revision-race tests are in `areas/setup/stripe-step.test.ts`.
+foreign gyms, permission failures, and transaction guards. `webhook-endpoints.contract.ts`
+runs the endpoint lifecycle (reuse, event updates, cleanup that leaves foreign
+endpoints alone, recreating a deleted endpoint, removal) against `StripeFixtures` and, in the opt-in run, the Stripe
+test API; `setup.test.ts` adds API-version replacement, paging, refused deletes and the
+write probe. Database authorization, encryption, audit, revision-race, account-change and
+refused-old-key tests are in `areas/setup/stripe-step.test.ts`, and the startup check is
+tested in `areas/setup/stripe-step.endpoints.test.ts` and `core/runtime.stripe-endpoints.test.ts`.
 
 `FixtureRecorder` records either the public interface or the transport. It redacts
 keys, signing secrets, client secrets, card numbers, and CVC. Use only a synthetic
@@ -179,7 +236,7 @@ successful setup read, and `already_completed` expiry. `findCharge` returns
 A separate real reconciliation pass skipped an untagged customer/payment method
 and customerless PaymentIntent while retaining a tagged charge.
 
-**Unverified:** real HTTPS webhook delivery (deployment stage 2), actual inbox
+**Unverified:** the endpoint lifecycle scenarios and the Webhook Endpoints write probe (they are in the opt-in run but were added after it), real HTTPS webhook delivery (deployment stage 2), actual inbox
 integration, and a real dispute lifecycle. Offline signature/parent-resolution
 tests and real Disputes Read probes do not prove delivery or dispute transitions.
 No real transport recordings, credentials, or account IDs are committed;

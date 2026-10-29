@@ -11,6 +11,7 @@ import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js
 import { StripeFixtures } from './stripe-fixtures.js';
 import { fullPaymentsContract, type Card } from './payments.contract.js';
 import { stripeProvisioner, permissionProbes } from './setup.js';
+import { webhookEndpointContract } from './webhook-endpoints.contract.js';
 import { PaymentWebhookError } from './webhook-error.js';
 import { TestClock } from '../../core/clock.js';
 import type { Tape } from './recording.js';
@@ -391,6 +392,12 @@ if (process.env.STRIPE_CONTRACT_MODE === 'test-api') {
     expect(endpoint.endpointId).toMatch(/^we_/);
     expect(endpoint.webhookSecret).toMatch(/^whsec_/);
     console.log('Created test webhook endpoint: ' + endpoint.endpointId);
+  });
+  // Reuse, update, cleanup and removal run against a throwaway origin; every endpoint they create is deleted afterward.
+  webhookEndpointContract('Stripe test API', () => {
+    const recorder = new FixtureRecorder(fixtures.gymId); recordings.push(recorder);
+    return { transport: recordingTransport(stripeTransport(apiKey, { testOnly: true }), recorder), gymId: fixtures.gymId,
+      origin: 'https://r17-' + randomUUID() + '.invalid', base: Date.now() };
   });
   afterAll(async () => {
     if (process.env.STRIPE_RECORDING_OUTPUT) await writeFile(process.env.STRIPE_RECORDING_OUTPUT,

@@ -73,6 +73,14 @@ export class StripeFixtures implements PaymentTransport {
       const object = this.objects.get(objectId);
       if (!object) throw Object.assign(new Error('No such object'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
       if (input.method === 'GET') return object;
+      if (resource === 'webhook_endpoints' && !action) {
+        if (input.method === 'DELETE') { this.objects.delete(objectId!); return { id: objectId!, object: 'webhook_endpoint', deleted: true }; }
+        // Stripe fixes an endpoint's API version when it creates the endpoint.
+        if ('api_version' in params) throw Object.assign(new Error('Received unknown parameter: api_version'), { type: 'StripeInvalidRequestError', statusCode: 400 });
+        const { metadata, ...rest } = params;
+        Object.assign(object, rest, metadata ? { metadata: { ...object.metadata as ObjectData, ...metadata as ObjectData } } : {});
+        return object;
+      }
       if (resource === 'payment_methods' && action === 'detach') {
         if (!object.customer) throw Object.assign(new Error('Already detached'), { type: 'StripeInvalidRequestError', statusCode: 400 });
         object.customer = null; return object;

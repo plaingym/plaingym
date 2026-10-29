@@ -82,6 +82,7 @@ import { createExportRoutes } from '../areas/imports/export.routes.js';
 import { createExportJobs } from '../areas/imports/export.jobs.js';
 import { createImportRetention, createImportRetentionJobs } from '../areas/imports/retention.js';
 import { createPaymentsResolver } from '../areas/setup/stripe-step.js';
+import { createStripeEndpointCheck } from '../areas/setup/stripe-step.endpoints.js';
 import { createWebhookHealthQuery, createWebhookInbox, type PaymentsResolver } from '../areas/billing/webhooks/inbox.js';
 import { configureWebhookInboxRoutes } from '../areas/billing/webhooks/inbox.routes.js';
 import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.js';
@@ -342,10 +343,23 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const worker = startJobsWorker(queue, { onError: report,
     ...(gate ? { paused: () => gate.isClosed(), around: (execute: () => Promise<void>) => gate.activity(execute) } : {}) });
 
+  // Each gym's stored Stripe webhook endpoint is brought up to this release's events and API version. It runs in the
+  // background: a Stripe outage never delays startup, and the next start or Stripe settings save checks again. Sandboxes
+  // use the shared test account and register nothing.
+  let stopping = false, endpointCheck: Promise<void> | undefined;
+  if (!demo) {
+    const check = createStripeEndpointCheck({ key, clock, gyms: () => listGyms(), origin: gymOrigin, stopped: () => stopping });
+    endpointCheck = (async () => {
+      if (!gate) return check.run();
+      if (!await gate.isClosed()) await gate.activity(() => check.run());
+    })().catch(report);
+  }
+
   return { app, uploadsFor: uploads.forGym, async stop() {
+    stopping = true;
     if (backupTimer) clearInterval(backupTimer);
     if (demoTimer) clearInterval(demoTimer);
-    try { await worker.stop(); } finally { uploads.close(); await closeDatabase(); }
+    try { await worker.stop(); await endpointCheck; } finally { uploads.close(); await closeDatabase(); }
   } };
 }
 
