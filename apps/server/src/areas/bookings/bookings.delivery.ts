@@ -83,7 +83,7 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled || !await read()) return;
     const email = await options.mailer(gymId);
-    if (!email) throw new Error('Booking email is not configured');
+    if (!email) return;
     const row = await read();
     if (!row?.email) return;
     const details = await createSettingsService({ scope }).get(gymId);

@@ -87,6 +87,14 @@ describe('promotion jobs and notices', () => {
     expect(f.email.messages).toHaveLength(0);
     expect(await db.forGym(f.gymId, tx => tx.$count(classBookings, and(eq(classBookings.id, f.queued.id), eq(classBookings.status, 'waitlisted'))))).toBe(1);
   });
+  it('completes notices without SMTP while retaining the promoted place and no sent audit', async () => {
+    const f = await fixture();
+    const delivery = createBookingDelivery({ ...f.options, jobs: f.jobs, mailer: async () => null });
+    await delivery.promote(f.gymId, f.session.id);
+    await expect(delivery.send(f.gymId, f.queued.id)).resolves.toBeUndefined();
+    expect((await f.service.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === f.queued.id)?.status).toBe('booked');
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'booking.notice_sent')))).toBe(0);
+  });
   it('resolves an unconfigured gym mailer without using a global sender', async () => {
     const f = await fixture();
     const mailer = createBookingMailer({ scope: db.forGym, key: Buffer.alloc(32, 1), env: {} });
