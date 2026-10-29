@@ -15,7 +15,7 @@ const matrix: Record<string, Role[]> = {
   'staff.manage': managers, 'settings.manage': managers, 'promotions.manage': coaches,
   'bookings.manage': all, 'schedule.manage': coaches, 'class_notes.manage': all,
   'attendance.manage': all, 'data.export': managers, 'kiosk_devices.manage': managers,
-  'go_live.manage': managers, 'integrations.manage': ['owner'],
+  'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
 const inScope = (path: string) => /^\/api\/(members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
   || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path);

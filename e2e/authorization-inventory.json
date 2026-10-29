@@ -1,6 +1,36 @@
 [
   {
     "method": "GET",
+    "path": "/api/households/{householdId}/users",
+    "permission": { "kind": "staff", "capability": "portal_access.manage" }
+  },
+  {
+    "method": "POST",
+    "path": "/api/households/{householdId}/users",
+    "permission": { "kind": "staff", "capability": "portal_access.manage" }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/households/{householdId}/users/{householdUserId}",
+    "permission": { "kind": "staff", "capability": "portal_access.manage" }
+  },
+  {
+    "method": "GET",
+    "path": "/api/households/{householdId}/portal-logins",
+    "permission": { "kind": "staff", "capability": "portal_access.manage" }
+  },
+  {
+    "method": "POST",
+    "path": "/api/households/{householdId}/portal-invitations",
+    "permission": { "kind": "staff", "capability": "portal_access.manage" }
+  },
+  {
+    "method": "POST",
+    "path": "/api/households/{householdId}/users/{householdUserId}/password",
+    "permission": { "kind": "staff", "capability": "portal_access.manage" }
+  },
+  {
+    "method": "GET",
     "path": "/api/attendance/totals",
     "permission": {
       "kind": "staff",
