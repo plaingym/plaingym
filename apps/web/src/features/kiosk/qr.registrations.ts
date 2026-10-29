@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../lib/registries.js';
+import { CheckinCodeTab } from './qr.member-tab.js';
 
 export const registration: WebRegistration = {
   memberTabs: [
@@ -7,8 +8,8 @@ export const registration: WebRegistration = {
       id: 'memberTabs.checkin-code',
       labelKey: 'kiosk/qr:title',
       permission: { kind: 'staff', capability: 'members.manage' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: CheckinCodeTab,
     },
   ],
 };
