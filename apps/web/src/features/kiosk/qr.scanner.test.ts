@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import QRCode from 'qrcode';
+import { encode } from 'uqr';
 import { scanQrCamera } from './qr.scanner.js';
 
 const code = 'pgci1_' + 'a'.repeat(43), stopTrack = vi.fn(), play = vi.fn(async () => undefined);
@@ -24,11 +24,11 @@ it('uses the native QR detector, stops the stream after a valid code, and never 
   expect(fetcher).not.toHaveBeenCalled();
 });
 it('decodes an actual generated QR through jsQR when native detection is missing or fails', async () => {
-  const matrix = QRCode.create(code, { errorCorrectionLevel: 'M' }).modules, margin = 4, scale = 5;
+  const matrix = encode(code, { ecc: 'M', border: 0 }), margin = 4, scale = 5;
   const size = (matrix.size + margin * 2) * scale, pixels = new Uint8ClampedArray(size * size * 4).fill(255);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const row = Math.floor(y / scale) - margin, col = Math.floor(x / scale) - margin;
-    if (row >= 0 && col >= 0 && row < matrix.size && col < matrix.size && matrix.get(row, col)) {
+    if (row >= 0 && col >= 0 && row < matrix.size && col < matrix.size && matrix.data[row]![col]) {
       const index = (y * size + x) * 4; pixels[index] = pixels[index + 1] = pixels[index + 2] = 0;
     }
   }

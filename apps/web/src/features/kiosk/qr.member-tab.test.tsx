@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CheckinCodePanel } from './qr.member-tab.js';
 import { QrRequestError, staffCheckinCode } from './qr.api.js';
 vi.mock('./qr.api.js', async (original) => ({ ...await original<typeof import('./qr.api.js')>(), staffCheckinCode: vi.fn() }));
-vi.mock('qrcode', () => ({ default: { toDataURL: async () => 'data:image/png;base64,AAAA' } }));
 const initial = { memberId: 'member', version: 1, revision: 1, code: null };
 beforeEach(() => vi.mocked(staffCheckinCode).mockResolvedValue(initial));
 afterEach(() => { cleanup(); vi.resetAllMocks(); });

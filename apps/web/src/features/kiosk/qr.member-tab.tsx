@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import QRCode from 'qrcode';
+import { renderSVG } from 'uqr';
 import { t } from '../../lib/i18n.js';
 import { useBootstrap } from '../../app/context.js';
 import type { ExtensionViewProps } from '../../lib/registries.js';
@@ -19,8 +19,12 @@ export function CheckinCodePanel({ gymId, memberId }: { gymId: string; memberId:
   const locked = useRef(false), code = data.data?.code;
   useEffect(() => {
     let active = true; setImage(undefined);
-    if (code) void QRCode.toDataURL(code, { width: 256, margin: 4, errorCorrectionLevel: 'M' })
-      .then((url) => { if (active) setImage({ code, url }); }).catch(() => { if (active) setError('requestError'); });
+    if (code) {
+      try {
+        const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(renderSVG(code, { ecc: 'M', border: 4 }));
+        if (active) setImage({ code, url });
+      } catch { if (active) setError('requestError'); }
+    }
     return () => { active = false; };
   }, [code]);
   async function mutate() {
