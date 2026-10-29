@@ -328,6 +328,19 @@ describe('fake payment outcomes', () => {
       status: 'unknown',
     });
   });
+  it('lapses an open Checkout at its requested expiry and keeps the expiry in the idempotent request', async () => {
+    const clock = new TestClock(initial), payments = new FakePayments('gym', clock);
+    const expiresAt = new Date(clock.now().getTime() + 30 * 60_000), short = { ...checkout, idempotencyKey: 'short', expiresAt };
+    const session = await payments.createCheckout(short);
+    expect(await payments.createCheckout(short)).toEqual(session);
+    await expect(payments.createCheckout({ ...short, expiresAt: new Date(expiresAt.getTime() + 1000) })).rejects.toThrow('different parameters');
+    clock.set(expiresAt.toISOString());
+    expect(await payments.readPaymentObject({ kind: 'checkout', id: session.id })).toMatchObject({ value: { object: { status: 'expired' } } });
+    expect(() => payments.completeCheckout(session.id)).toThrow('expired');
+    const unbounded = await payments.createCheckout({ ...checkout, idempotencyKey: 'unbounded' });
+    clock.set(new Date(clock.now().getTime() + 86_400_000).toISOString());
+    expect(payments.completeCheckout(unbounded.id).status).toBe('complete');
+  });
   it('returns current objects for changes, includes refunds/disputes, and paginates beyond 30 days', async () => {
     const clock = new TestClock(initial);
     const payments = new FakePayments('gym', clock);

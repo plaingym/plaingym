@@ -33,7 +33,11 @@ first recorded and preserves it across updates. Consumers store that time to
 order defaults independently of webhook arrival or event retention.
 Payment methods also carry an optional card `brand`; new locally collected cards
 store it, while existing rows keep their stored value. Checkout requires a
-`customerId` and never creates a customer from an email address.
+`customerId` and never creates a customer from an email address. An optional
+`expiresAt` becomes the session's `expires_at` (Stripe accepts 30 minutes to 24
+hours after creation) and is part of the idempotent request; without it the
+provider default applies. The fake reports an open session as expired once its
+clock reaches that time.
 
 `findCharge(reference, { includeSuccessTime: true })` adds `succeededAt` to a
 successful outcome by retrieving the latest Charge and reading its `created`

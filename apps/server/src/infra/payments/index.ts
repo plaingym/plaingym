@@ -59,6 +59,8 @@ interface CheckoutOptions {
   readonly cancelUrl: string;
   readonly saveForOffSession: boolean;
   readonly idempotencyKey: string;
+  /** When an open session stops accepting payment (30 minutes to 24 hours after creation). Omitted: the provider default. */
+  readonly expiresAt?: Date;
 }
 export type CheckoutRequest = CheckoutOptions & { readonly customerId: string };
 export interface CheckoutSession {
@@ -277,6 +279,13 @@ export class FakePayments implements Payments {
   #record(kind: ChangeRecord['kind'], id: string): void {
     this.#changes.push({ kind, id, changedAt: this.clock.now() });
   }
+  /** An open session past its requested expiry reads as expired, as the provider reports it. */
+  #lapse(id: string): void {
+    const session = this.#checkouts.get(id), expiresAt = this.#checkoutRequests.get(id)?.expiresAt;
+    if (session?.status !== 'open' || !expiresAt || expiresAt > this.clock.now()) return;
+    this.#checkouts.set(id, { ...session, status: 'expired' });
+    this.#record('checkout', id);
+  }
   #once<T>(operation: string, key: string, fingerprint: string, run: () => T): T {
     if (!key) throw new Error('An idempotency key is required');
     // Provider idempotency keys share one namespace across endpoints.
@@ -429,6 +438,7 @@ export class FakePayments implements Payments {
         if (this.#charges.has(id)) value = { kind: 'charge', object: this.#charges.get(id)! };
         break;
       case 'checkout':
+        this.#lapse(id);
         if (this.#checkouts.has(id)) value = { kind: 'checkout', object: this.#checkouts.get(id)! };
         break;
       case 'setup':
@@ -464,6 +474,7 @@ export class FakePayments implements Payments {
         request.cancelUrl,
         request.saveForOffSession,
         request.linkId,
+        request.expiresAt?.toISOString(),
       ]),
       () => {
         const id = this.#id('cs');
@@ -487,6 +498,7 @@ export class FakePayments implements Payments {
     return this.#reply('createCheckout', result);
   }
   completeCheckout(id: string): CheckoutSession {
+    this.#lapse(id);
     const session = this.#checkouts.get(id);
     const request = this.#checkoutRequests.get(id);
     if (!session || !request) throw new Error('Unknown Checkout session');
@@ -538,6 +550,7 @@ export class FakePayments implements Payments {
   }
   async expireCheckout(id: string): Promise<CheckoutExpiry> {
     assertNoTransaction('payments.expireCheckout');
+    this.#lapse(id);
     const session = this.#checkouts.get(id);
     if (!session || this.#uncertain.has(id)) return { status: 'uncertain' };
     if (session.status === 'complete')

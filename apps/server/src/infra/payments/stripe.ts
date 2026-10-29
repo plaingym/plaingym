@@ -225,6 +225,7 @@ export class StripePayments implements Payments {
       ...(request.linkId ? { link_id: request.linkId } : {}) };
     const params: ObjectData = { mode: request.mode, customer, success_url: request.successUrl, cancel_url: request.cancelUrl,
       allowed_payment_method_types: ['card'], metadata,
+      ...(request.expiresAt ? { expires_at: Math.floor(request.expiresAt.getTime() / 1000) } : {}),
       ...(request.mode === 'payment' ? { payment_intent_data: { metadata,
         ...(request.saveForOffSession ? { setup_future_usage: 'off_session' } : {}) },
       line_items: [{ quantity: 1, price_data: { currency: request.currency!, unit_amount: request.amount!,

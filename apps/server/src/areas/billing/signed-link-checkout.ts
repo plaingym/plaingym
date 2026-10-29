@@ -17,6 +17,15 @@ function unavailable(): never { throw new AppError('unavailable', 'Checkout is n
 export class CustomerNotLinked extends AppError {
   constructor(cause?: unknown) { super('unavailable', 'Card setup is not available yet'); this.cause = cause; }
 }
+/** A payment flow with its own return pages and a short Checkout, such as /join. The paths are the flow's own
+ * constants, never request values. Without one, pay links return to /l/return and keep the 23-hour window. */
+export interface CheckoutReturn {
+  readonly successPath: string;
+  readonly cancelPath: string;
+  /** The reservation window and the session's provider expiry: 35 minutes to 23 hours. */
+  readonly lifetimeMs: number;
+}
+const returnPath = /^\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/;
 export interface SignedCheckoutOptions {
   scope?: typeof forGym;
   clock?: Clock;
@@ -130,10 +139,14 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     if (!['open', 'past_due'].includes(invoice.status) || invoice.amountCents <= 0 || invoice.needsReview || pending)
       throw new AppError('conflict', 'Invoice cannot be paid');
   }
-  async function start(gymId: string, linkId: string, renewed = false): Promise<{ session: CheckoutSession; expiresAt: string }> {
+  async function start(gymId: string, linkId: string, renewed = false, flow?: CheckoutReturn): Promise<{ session: CheckoutSession; expiresAt: string }> {
+    if (flow && (!returnPath.test(flow.successPath) || !returnPath.test(flow.cancelPath) || !Number.isSafeInteger(flow.lifetimeMs)
+      || flow.lifetimeMs < 35 * 60 * 1000 || flow.lifetimeMs > 23 * 60 * 60 * 1000)) unavailable();
     const origin = new URL(await options.originFor(gymId));
     if (origin.protocol !== 'https:' || origin.username || origin.password) unavailable();
     const returnUrl = new URL('/l/return', origin).href;
+    const successUrl = flow ? new URL(flow.successPath, origin).href : returnUrl, cancelUrl = flow ? new URL(flow.cancelPath, origin).href : returnUrl;
+    const windowMs = flow?.lifetimeMs ?? 23 * 60 * 60 * 1000;
     const billingEnabled = (await settings.get(gymId)).billingEnabled;
     const prepared = await scope(gymId, async tx => {
       const { link, household } = await locked(tx, gymId, linkId);
@@ -146,12 +159,14 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       const replaying = !invoice.checkoutSessionId && !!invoice.checkoutExpiresAt && invoice.checkoutExpiresAt > clock.now();
       // Reserve before the provider call. A lost response retries the exact key/parameters,
       // only inside the provider's 24-hour idempotency window. Never blindly retry later.
-      if (!invoice.checkoutSessionId && (!invoice.checkoutExpiresAt || invoice.checkoutExpiresAt <= clock.now())) {
+      // A flow's session expires with its reservation, which must leave the provider's 30-minute minimum.
+      const renewBy = clock.now().getTime() + (flow ? 31 * 60 * 1000 : 0);
+      if (!invoice.checkoutSessionId && (!invoice.checkoutExpiresAt || invoice.checkoutExpiresAt.getTime() <= renewBy)) {
         // With no stored ID, no URL was exposed: successful responses are persisted before
         // returning, or expired on failed adoption. Renew under the invoice lock with a new
         // key; never reuse the old key outside its retention window.
         const replacing = !!invoice.checkoutExpiresAt;
-        invoice.checkoutExpiresAt = new Date(clock.now().getTime() + 23 * 60 * 60 * 1000);
+        invoice.checkoutExpiresAt = new Date(clock.now().getTime() + windowMs);
         await tx.update(invoices).set({ checkoutExpiresAt: invoice.checkoutExpiresAt }).where(eq(invoices.id, invoice.id));
         await audit(tx, gymId, replacing ? 'billing.checkout.reservation_renewed' : 'billing.checkout.reserved', linkId);
       }
@@ -163,6 +178,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1) : [];
       return { link, customerId: household.stripeCustomerId, invoice, savesCard, reservationLinkId: reservation?.linkId, replaying };
     });
+    if (flow && !prepared.invoice) unavailable();
     await checkBilling(gymId, !!prepared.invoice);
     let customerId: string, provider: Payments;
     try {
@@ -202,12 +218,12 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           if (!invoice || invoice.checkoutSessionId !== session.id) throw new AppError('conflict', 'Invoice changed');
           await payable(tx, invoice);
           await tx.update(invoices).set({ checkoutSessionId: null,
-            checkoutExpiresAt: new Date(Math.max(clock.now().getTime() + 23 * 60 * 60 * 1000, (invoice.checkoutExpiresAt?.getTime() ?? 0) + 1)),
+            checkoutExpiresAt: new Date(Math.max(clock.now().getTime() + windowMs, (invoice.checkoutExpiresAt?.getTime() ?? 0) + 1)),
           }).where(eq(invoices.id, invoice.id));
           await audit(tx, gymId, 'billing.checkout.expired', linkId);
           await audit(tx, gymId, 'billing.checkout.reservation_renewed', linkId);
         });
-        return start(gymId, linkId, true);
+        return start(gymId, linkId, true, flow);
       }
       if (session.status !== 'open') throw new AppError('conflict', 'Checkout is no longer open');
     } else {
@@ -215,8 +231,11 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       session = await provider.createCheckout({
         mode: 'payment', customerId, linkId: prepared.reservationLinkId ?? linkId,
         invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase(),
-        successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: prepared.savesCard,
-        idempotencyKey: `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}`,
+        successUrl, cancelUrl, saveForOffSession: prepared.savesCard,
+        // A flow's return pages and expiry are part of its key, so no key is ever reused with other
+        // parameters; the reservation fixes the expiry, so a retried key repeats identical ones.
+        idempotencyKey: `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}` + (flow ? ':' + flow.successPath + ':' + flow.cancelPath : ''),
+        ...(flow ? { expiresAt: invoice.checkoutExpiresAt! } : {}),
       });
     }
     const sessionLinkId = prepared.invoice?.checkoutSessionId ? linkId : prepared.reservationLinkId ?? linkId;
@@ -245,7 +264,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     }
     // Persist the replayed session before handing it over. The existing path confirms
     // expiry before renewing the invoice-wide key, and retains completed sessions.
-    if (sessionLinkId !== linkId || session.status === 'expired' || prepared.replaying) return start(gymId, linkId, renewed);
+    if (sessionLinkId !== linkId || session.status === 'expired' || prepared.replaying) return start(gymId, linkId, renewed, flow);
     if (session.status !== 'open') throw new AppError('conflict', 'Checkout is no longer open');
     return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(),
       prepared.invoice?.checkoutExpiresAt?.getTime() ?? clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };

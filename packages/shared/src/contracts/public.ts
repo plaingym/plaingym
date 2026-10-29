@@ -51,9 +51,11 @@ export const publicJoinRequestSchema = z.strictObject({
   honeypot: z.literal(''),
 });
 // Identical status and shape for new, existing, and already-enrolled addresses.
-// Services send the appropriate continuation privately to the submitted address,
-// including the Checkout/portal flow for join. No existence-dependent redirect,
-// account IDs, login state, or Checkout URL is returned by an anonymous submission.
+// No existence-dependent redirect, account IDs, login state, or Checkout URL is
+// returned by an anonymous submission. Join always creates a new household; the
+// submitting browser continues to Checkout through an HttpOnly cookie holding only
+// a signed reference to that pending join, and the portal login is created after
+// payment only for an account that proves the submitted address.
 export const publicSubmissionResponseSchema = z.strictObject({ data: z.strictObject({ status: z.literal('received') }) });
 
 

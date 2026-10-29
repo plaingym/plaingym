@@ -125,6 +125,11 @@ it('tags all explicitly created objects and sends Endive parameters', async () =
   const payment = creates.find((input) => input.path === '/v1/checkout/sessions');
   expect(payment?.params?.payment_intent_data).toMatchObject({ metadata: { gym_id: gymId }, setup_future_usage: 'off_session' });
   expect(payment?.params).not.toHaveProperty('payment_method_types');
+  expect(payment?.params).not.toHaveProperty('expires_at');
+  const expiresAt = new Date(Date.UTC(2026, 9, 29, 13, 0, 0));
+  await payments.createCheckout({ ...checkout, idempotencyKey: 'short', expiresAt });
+  const short = transport.requests.filter((input) => input.path === '/v1/checkout/sessions').at(-1);
+  expect(short?.params?.expires_at).toBe(expiresAt.getTime() / 1000);
   expect(creates.find((input) => input.path === '/v1/webhook_endpoints')?.params?.api_version).toBe(STRIPE_API_VERSION);
   const enabled = creates.find((input) => input.path === '/v1/webhook_endpoints')?.params?.enabled_events;
   expect(enabled).toContain('payment_method.automatically_updated');

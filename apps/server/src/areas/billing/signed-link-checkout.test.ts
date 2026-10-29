@@ -620,3 +620,72 @@ describe('signed-link webhook completion with real PostgreSQL', () => {
     else replay!.assertConsumed();
   });
 });
+
+describe('fixed return flows with real PostgreSQL', () => {
+  const flow = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 60 * 60 * 1000 };
+  const saved = (f: Awaited<ReturnType<typeof fixture>>) => db.forGym(f.gymId, async tx => (await tx.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]!);
+  it('keeps pay links on /l/return, the provider default expiry and the 23-hour reservation without a flow', async () => {
+    const f = await fixture('pay_invoice'), create = vi.spyOn(f.fake, 'createCheckout');
+    const opened = await f.checkout.start(f.gymId, f.linkId);
+    expect(create.mock.calls[0]![0]).toMatchObject({ successUrl: origin + '/l/return', cancelUrl: origin + '/l/return' });
+    expect(create.mock.calls[0]![0]).not.toHaveProperty('expiresAt');
+    expect((await saved(f)).checkoutExpiresAt).toEqual(new Date('2026-10-28T11:00:00Z'));
+    expect(opened.expiresAt).toBe('2026-10-28T11:00:00.000Z');
+  });
+  it('returns to fixed same-origin pages with a short provider expiry, renews after it lapses and completes by webhook', async () => {
+    const f = await fixture('pay_invoice'), create = vi.spyOn(f.fake, 'createCheckout');
+    const opened = await f.checkout.start(f.gymId, f.linkId, false, flow);
+    expect(create.mock.calls[0]![0]).toMatchObject({ successUrl: origin + '/join/return', cancelUrl: origin + '/join/cancelled',
+      expiresAt: new Date('2026-10-27T13:00:00Z') });
+    expect(opened.expiresAt).toBe('2026-10-27T13:00:00.000Z');
+    expect((await f.checkout.start(f.gymId, f.linkId, false, flow)).session.id).toBe(opened.session.id);
+    f.clock.set('2026-10-27T13:00:00Z');
+    const renewed = await f.checkout.start(f.gymId, f.linkId, false, flow);
+    expect(renewed.session.id).not.toBe(opened.session.id);
+    expect(create.mock.calls.at(-1)![0]).toMatchObject({ expiresAt: new Date('2026-10-27T14:00:00Z') });
+    expect(() => f.fake.completeCheckout(opened.session.id)).toThrow('expired');
+    await f.dispatch(await f.deliver(f.fake.completeCheckout(renewed.session.id)));
+    expect(await f.used()).toHaveLength(1);
+    expect((await saved(f)).status).toBe('paid');
+  });
+  it('renews a reservation too short for the provider minimum and never reuses a key with other parameters', async () => {
+    const lost = async () => {
+      const f = await fixture('pay_invoice'), create = vi.spyOn(f.fake, 'createCheckout');
+      f.fake.loseNextResponse('createCheckout');
+      await expect(f.checkout.start(f.gymId, f.linkId, false, flow)).rejects.toThrow('Provider response lost');
+      expect((await saved(f)).checkoutSessionId).toBeNull();
+      return { f, create };
+    };
+    // Twenty-five minutes left: the flow renews rather than ask for an expiry under thirty minutes.
+    const short = await lost();
+    short.f.clock.set('2026-10-27T12:35:00Z');
+    const renewed = await short.f.checkout.start(short.f.gymId, short.f.linkId, false, flow);
+    expect(short.create.mock.calls.at(-1)![0]).toMatchObject({ expiresAt: new Date('2026-10-27T13:35:00Z') });
+    expect(short.create.mock.calls.at(-1)![0].idempotencyKey).not.toBe(short.create.mock.calls[0]![0].idempotencyKey);
+    expect(renewed.expiresAt).toBe('2026-10-27T13:35:00.000Z');
+    // A pay link replaying the flow's reservation uses its own key and keeps its own parameters.
+    const shared = await lost();
+    shared.f.clock.set('2026-10-27T12:10:00Z');
+    await shared.f.checkout.start(shared.f.gymId, shared.f.linkId);
+    expect(shared.create.mock.calls[1]![0]).toMatchObject({ successUrl: origin + '/l/return' });
+    expect(shared.create.mock.calls[1]![0]).not.toHaveProperty('expiresAt');
+    expect(shared.create.mock.calls[1]![0].idempotencyKey).toBe(shared.create.mock.calls[0]![0].idempotencyKey.split(':/join')[0]);
+  });
+  it.each([
+    ['an absolute success URL', { ...flow, successPath: 'https://evil.example/join' }],
+    ['a protocol-relative cancel path', { ...flow, cancelPath: '//evil.example/join' }],
+    ['a query string', { ...flow, successPath: '/join/return?next=https://evil.example' }],
+    ['a lifetime below the provider minimum', { ...flow, lifetimeMs: 30 * 60 * 1000 }],
+    ['a lifetime beyond the idempotency window', { ...flow, lifetimeMs: 24 * 60 * 60 * 1000 }],
+  ])('refuses %s before reserving or calling the provider', async (_name, invalid) => {
+    const f = await fixture('pay_invoice'), create = vi.spyOn(f.fake, 'createCheckout');
+    await expect(f.checkout.start(f.gymId, f.linkId, false, invalid)).rejects.toMatchObject({ code: 'unavailable' });
+    expect(create).not.toHaveBeenCalled();
+    expect((await saved(f)).checkoutExpiresAt).toBeNull();
+  });
+  it('refuses a flow for card links, which have no invoice to pay', async () => {
+    const f = await fixture('update_card'), create = vi.spyOn(f.fake, 'createCheckout');
+    await expect(f.checkout.start(f.gymId, f.linkId, false, flow)).rejects.toMatchObject({ code: 'unavailable' });
+    expect(create).not.toHaveBeenCalled();
+  });
+});
