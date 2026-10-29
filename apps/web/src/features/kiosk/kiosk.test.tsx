@@ -5,10 +5,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { KioskCheckinResult } from '@plaingym/shared/contracts';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
 import { playTone } from './feedback.js';
+import { qrCheckin } from './qr.api.js';
+import { scanQrCamera } from './qr.scanner.js';
 import { KioskApp } from './kiosk.js';
 
 vi.mock('./api.js', async (original) => ({ ...await original<typeof import('./api.js')>(),
   kioskApi: { lookup: vi.fn(), checkin: vi.fn() }, readToken: vi.fn(), saveToken: vi.fn(), forgetToken: vi.fn() }));
+vi.mock('./qr.api.js', () => ({ qrCheckin: vi.fn() }));
+vi.mock('./qr.scanner.js', () => ({ scanQrCamera: vi.fn() }));
 vi.mock('./feedback.js', () => ({ playTone: vi.fn() }));
 const parent = { id: '00000000-0000-7000-8000-000000000001', firstName: 'Dana', lastInitial: 'R', photoUrl: null };
 const child = { ...parent, id: '00000000-0000-7000-8000-000000000002', firstName: 'Kai' };
@@ -44,6 +48,20 @@ describe('kiosk check-in screen', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save and start check-in' }));
     expect(saveToken).toHaveBeenCalledWith('new-token');
     expect(screen.getByRole('heading', { name: 'Check in' })).toBeDefined();
+  });
+  it('mounts QR scanning on search, uses the device token and clears unauthorized devices', async () => {
+    const code = 'pgci1_' + 'a'.repeat(43);
+    vi.mocked(scanQrCamera).mockImplementation(async (_video, found) => { found(code); return { stop: vi.fn() }; });
+    vi.mocked(qrCheckin).mockResolvedValueOnce({ status: 'checked_in', member: parent });
+    render(<KioskApp/>);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
+    expect(qrCheckin).toHaveBeenCalledWith('device-token', code, undefined);
+    expect(await screen.findByText('Checked in')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    vi.mocked(qrCheckin).mockRejectedValueOnce(new KioskAuthError('revoked'));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
+    expect(forgetToken).toHaveBeenCalledOnce();
+    expect(await screen.findByLabelText('Device token')).toBeDefined();
   });
   it('accepts masked PINs from the touch keypad, including leading zeros', async () => {
     render(<KioskApp/>);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError } from '@plaingym/shared';
 import { route } from '../../core/registry.js';
-import { checkinCodeContracts as contracts } from './checkin-code.contracts.js';
+import { checkinCodeContracts as contracts } from '@plaingym/shared/contracts';
 import { createCheckinCodeService, type CheckinCodeOptions, type CheckinCodeService } from './checkin-code.js';
 
 let configured: CheckinCodeService | undefined;

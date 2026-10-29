@@ -36,6 +36,9 @@ import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js'
 import { configureImportStep } from '../areas/setup/import-step.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
+import { configureCheckinCodes } from '../areas/members/checkin-code.routes.js';
+import { createCheckinCodeService } from '../areas/members/checkin-code.js';
+import { configureQrCheckin } from '../areas/kiosk/qr.routes.js';
 import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { configureWaivers } from '../areas/waivers/waivers.routes.js';
 import { configureLinkPages } from '../public/links/links.routes.js';
@@ -213,6 +216,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configurePortalAccess({ service: portalInvitations, origin: originFor });
   const gymKey = createGymKeyResolver({ key });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
+  configureCheckinCodes({ gymKey, clock });
+  configureQrCheckin({ codes: createCheckinCodeService({ gymKey, clock }), uploadsFor: uploads.forGym, clock });
   // Signature images and rendered waiver PDFs use the gym's file storage.
   const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });

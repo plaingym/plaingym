@@ -7,6 +7,7 @@ import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
+import { QrCheckin } from './qr.js';
 import { playTone } from './feedback.js';
 import { DemoKioskHint } from '../demo/notice.js';
 
@@ -95,7 +96,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
     <DemoKioskHint />
-    {screen.kind === 'search' && <Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>}
+    {screen.kind === 'search' && <><QrCheckin token={token} onUnauthorized={onUnauthorized}/><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/></>}
     {screen.kind === 'select' && <Select screen={screen} busy={busy} onChange={setScreen} onSubmit={() => submit(screen)} onCancel={reset}/>}
     {screen.kind === 'results' && <Results screen={screen} busy={busy} onChoose={(memberId, sessionId) => choose(screen, memberId, sessionId)} onDone={reset}
       onMembers={() => setScreen({ kind: 'select', name: screen.name, pin: screen.pin, members: screen.members,

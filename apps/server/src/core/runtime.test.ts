@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs, stored webhooks and gym settings in real PostgreSQL.
-import { auditEvents, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, memberships, paymentAttempts, paymentMethods, programs, stripeEvents, uuidv7 } from '@plaingym/db';
+import { attendances, auditEvents, classBookings, classSessions, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, members, memberships, paymentAttempts, paymentMethods, programs, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { floodLimit, poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
@@ -381,6 +381,49 @@ it('stores a signed Stripe event for its gym and queues its dispatch through the
     expect(await database.forSystem((tx) => tx.select().from(jobs).where(eq(jobs.name, 'billing.webhooks.dispatch')))).toHaveLength(1);
   } finally { provider.mockRestore(); await restartRuntime(); }
 });
+it('issues, scans, replaces and revokes QR codes through the production runtime with real bookings', async () => {
+  // Marcus is active with the seeded waiver signed, so the real standing providers pass.
+  const [row] = await database.forGym(sandbox.gymId, tx => tx.select().from(members).where(eq(members.firstName, 'Marcus')));
+  expect(row).toBeDefined();
+  const member = row!;
+  const session = await factory('classSessions', sandbox.gymId, {
+    startsAt: new Date(clock.now().getTime() - 300_000), endsAt: new Date(clock.now().getTime() + 3_600_000),
+  });
+  await factory('classBookings', sandbox.gymId, { memberId: member.id, sessionId: session.id, status: 'booked' });
+  try {
+    const path = `/api/members/${member.id}/checkin-code`;
+    const issued = await post(path, { revision: member.revision }, sandbox.origin, { cookie: ownerCookie });
+    expect(issued.status, await issued.clone().text()).toBe(200);
+    const { data: first } = await issued.json();
+    expect(first.code).toMatch(/^pgci1_/);
+    const headers = { host: new URL(sandbox.origin).host, cookie: ownerCookie };
+    const read = await runtime.app.request(sandbox.origin + path, { headers });
+    expect(await read.json()).toEqual({ data: first });
+    const scan = (code: string) => post('/api/kiosk/checkin/qr', { code }, sandbox.origin,
+      { authorization: `Bearer ${sandbox.kioskToken}` });
+    const checked = await scan(first.code);
+    expect(checked.status).toBe(200);
+    expect(await checked.json()).toMatchObject({ data: { status: 'checked_in', member: { id: member.id } } });
+    expect(await database.forGym(sandbox.gymId, tx => tx.select().from(attendances).where(and(eq(attendances.memberId, member.id), eq(attendances.sessionId, session.id)))))
+      .toMatchObject([{ sessionId: session.id, source: 'kiosk' }]);
+    const replacement = await post(path, { revision: first.revision }, sandbox.origin, { cookie: ownerCookie });
+    const { data: second } = await replacement.json();
+    expect(second.code).not.toBe(first.code);
+    expect(await (await scan(first.code)).json()).toEqual({ data: { status: 'see_front_desk' } });
+    const revoked = await runtime.app.request(sandbox.origin + path, { method: 'DELETE',
+      headers: { ...headers, origin: sandbox.origin, 'content-type': 'application/json' }, body: JSON.stringify({ revision: second.revision }) });
+    expect(revoked.status).toBe(200);
+    expect(await revoked.json()).toMatchObject({ data: { code: null } });
+    expect(await (await scan(second.code)).json()).toEqual({ data: { status: 'see_front_desk' } });
+  } finally {
+    await database.forGym(sandbox.gymId, async tx => {
+      await tx.delete(attendances).where(eq(attendances.sessionId, session.id));
+      await tx.delete(classBookings).where(eq(classBookings.sessionId, session.id));
+      await tx.delete(classSessions).where(eq(classSessions.id, session.id));
+    });
+  }
+});
+
 it('registers seed and webhook replay in the real CLI', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
   const cliEnv = { ...env(), ...demoStripeEnv };
@@ -420,3 +463,4 @@ it('registers seed and webhook replay in the real CLI', async () => {
     expect((await database.forGym(sandbox.gymId, tx => tx.select().from(gyms)))[0]!.stripeConfig).toBeNull();
   } finally { vi.unstubAllEnvs(); provider.mockRestore(); }
 });
+

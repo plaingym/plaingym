@@ -117,7 +117,7 @@ describe('QR check-in and revocable member codes', () => {
     const foreignSession = await factory('classSessions', gymB, { startsAt: at(-5), endsAt: at(45) });
     await factory('classBookings', gymB, { memberId: foreign.id, sessionId: foreignSession.id, status: 'booked' });
     await factory('classBookings', gymA, { memberId: member.id, sessionId: first.id, status: 'booked' });
-    const waiting = await factory('classBookings', gymA, { memberId: member.id, sessionId: second.id, status: 'waitlisted' });
+    const waiting = await factory('classBookings', gymA, { memberId: member.id, sessionId: second.id, status: 'waitlisted', waitlistPosition: 1 });
     await factory('classBookings', gymA, { memberId: member.id, sessionId: unbooked.id, status: 'cancelled' });
     await factory('classBookings', gymA, { memberId: member.id, sessionId: ended.id, status: 'booked' });
     const response = await app().request('/api/kiosk/checkin/qr', { ...request(issued.code!), body: JSON.stringify({ code: issued.code }) });
@@ -126,7 +126,7 @@ describe('QR check-in and revocable member codes', () => {
     expect(await response.json()).toMatchObject({ data: { status: 'checked_in' } });
     expect(await qr.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'already_checked_in' });
     expect((await visits(member.id))[0]!.sessionId).toBe(first.id);
-    await db.forGym(gymA, (tx) => tx.update(classBookings).set({ status: 'booked' }).where(eq(classBookings.id, waiting.id)));
+    await db.forGym(gymA, (tx) => tx.update(classBookings).set({ status: 'booked', waitlistPosition: null }).where(eq(classBookings.id, waiting.id)));
     expect(await qr.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'select_session', sessions: [{ id: first.id }, { id: second.id }] });
     await db.forGym(gymA, (tx) => tx.update(classBookings).set({ status: 'cancelled' }).where(eq(classBookings.memberId, member.id)));
     const result = await qr.checkin(gymA, deviceId, { code: issued.code });
@@ -141,6 +141,8 @@ describe('QR check-in and revocable member codes', () => {
   });
   it('records every open-mat visit even when a class is booked', async () => {
     const member = await person(), issued = await issue(member);
+    const session = await factory('classSessions', gymA, { startsAt: clock.now(), endsAt: new Date(clock.now().getTime() + 3_600_000) });
+    await factory('classBookings', gymA, { memberId: member.id, sessionId: session.id, status: 'booked' });
     for (let i = 0; i < 2; i++) expect(await qr.checkin(gymA, deviceId, { code: issued.code, sessionId: null }))
       .toMatchObject({ status: 'checked_in' });
     expect(await visits(member.id)).toHaveLength(2);
