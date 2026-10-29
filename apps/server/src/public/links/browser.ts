@@ -54,8 +54,8 @@ export function linkBrowser() {
     const button = portalClaim.querySelector<HTMLButtonElement>('button')!;
     void busy(button, async () => {
       const fields = new FormData(portalClaim);
-      await call('/portal', { email: fields.get('email'), ...(fields.has('password') ? { password: fields.get('password') } : {}) });
-      portalClaim.reset(); portalClaim.hidden = true; say('portalReady');
+      const result = await call('/portal', { email: fields.get('email'), ...(fields.has('password') ? { password: fields.get('password') } : {}) });
+      portalClaim.reset(); portalClaim.hidden = true; say(result.data.status === 'email_sent' ? 'portalEmailSent' : 'portalReady');
     });
   });
   async function refreshOnboarding() {

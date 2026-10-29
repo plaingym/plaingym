@@ -7,6 +7,9 @@ import { rateLimit } from '../../core/rate-limit.js';
 import type { PortalInvitationService } from '../members/household-users.invitations.js';
 import { route } from '../../core/registry.js';
 import { createHouseholdUsersService } from '../members/household-users.js';
+import { createPortalHouseholdChoices } from '../members/household-users.context.js';
+import { createPortalSessionStore } from '../../infra/auth/portal-sessions.js';
+import { requestSession } from '../../infra/auth/middleware.js';
 import { notFound } from '../../core/interfaces/common.js';
 import type { RequestContext } from '../../core/context.js';
 
@@ -43,12 +46,40 @@ export function createPortalAccessRoutes(service = createHouseholdUsersService()
     }),
   ];
 }
+/** Public routes that need a signed-in, gym-bound session of any kind; never a household from the request. */
+function signedIn(context: RequestContext) {
+  const { principal, gym } = context;
+  if (principal.kind === 'member' && principal.scope.gymId === gym.gymId) return { userId: principal.userId, staff: false, householdId: principal.scope.householdId };
+  if (principal.kind === 'staff' && principal.gymId === gym.gymId) return { userId: principal.userId, staff: principal.roles.length > 0, householdId: null };
+  throw new AppError('unauthenticated', 'Sign in required');
+}
+/** The picker and header switcher. The choice is stored with the session; the principal loader rechecks it on every request. */
+export function createPortalHouseholdRoutes(options: { choices?: ReturnType<typeof createPortalHouseholdChoices>; sessions?: ReturnType<typeof createPortalSessionStore> } = {}) {
+  const choices = options.choices ?? createPortalHouseholdChoices(), sessions = options.sessions ?? createPortalSessionStore();
+  const list = portalAccessContracts.households, select = portalAccessContracts.selectHousehold;
+  return [
+    route({ ...list, responses: { 200: { description: 'Households this login may open', content: { 'application/json': { schema: list.response } } } } }, async ctx => {
+      const context = ctx.get('context'), user = signedIn(context);
+      ctx.header('Cache-Control', 'no-store'); ctx.header('Vary', 'Cookie');
+      return ctx.json({ data: { current: user.householdId, households: await choices.list(context.gym.gymId, user.userId) } }, 200);
+    }),
+    route({ ...select, middleware: rateLimit({ limit: 30 }), request: { body: { required: true, content: { 'application/json': { schema: select.body } } } }, responses: { 200: { description: 'Household chosen for this session', content: { 'application/json': { schema: select.response } } } } }, async ctx => {
+      const context = ctx.get('context'), user = signedIn(context), session = requestSession(ctx.req.raw);
+      // Staff identities keep their staff principal and never open a household.
+      if (user.staff) notFound();
+      if (!session || session.userId !== user.userId) throw new AppError('unauthenticated', 'Sign in required');
+      await sessions.select(context.gym.gymId, session, ctx.req.valid('json').householdId, context.clock);
+      ctx.header('Cache-Control', 'no-store');
+      return ctx.json({ data: null }, 200);
+    }),
+  ];
+}
 type InvitationOptions = { service: PortalInvitationService; origin(context: Context<RequestEnvironment>): string };
 let configured: InvitationOptions | undefined;
 export function configurePortalAccess(options: InvitationOptions) { configured = options; }
-export function createPortalInvitationRoutes(options?: InvitationOptions) {
+export function createPortalInvitationRoutes(options?: InvitationOptions, sessions = createPortalSessionStore()) {
   const current = () => options ?? configured ?? (() => { throw new AppError('unavailable', 'Portal invitations are not configured'); })();
-  const invite = portalAccessContracts.invite, claim = portalAccessContracts.claim, reset = portalAccessContracts.resetPassword;
+  const invite = portalAccessContracts.invite, claim = portalAccessContracts.claim, reset = portalAccessContracts.resetPassword, complete = portalAccessContracts.completeClaim;
   return [
     route({ ...reset, middleware: rateLimit({ limit: 10 }), request: { params: reset.params, body: { required: true, content: { 'application/json': { schema: reset.body } } } }, responses: { 200: { description: 'Portal password reset', content: { 'application/json': { schema: reset.response } } } } }, async ctx => {
       const identity = actor(ctx.get('context')), { clock } = ctx.get('context'), params = ctx.req.valid('param');
@@ -65,6 +96,14 @@ export function createPortalInvitationRoutes(options?: InvitationOptions) {
       ctx.header('Cache-Control', 'no-store');
       return ctx.json(await current().service.accept(gym.gymId, ctx.req.valid('json'), clock, gym.timezone), 200);
     }),
+    route({ ...complete, middleware: rateLimit({ limit: 10 }), request: { body: { required: true, content: { 'application/json': { schema: complete.body } } } }, responses: { 200: { description: 'Portal claim completed', content: { 'application/json': { schema: complete.response } } } } }, async ctx => {
+      const context = ctx.get('context'), user = signedIn(context), session = requestSession(ctx.req.raw);
+      const householdId = await current().service.completeClaim(context.gym.gymId, user.userId, ctx.req.valid('json'), context.clock, context.gym.timezone);
+      // Open the household just claimed; a failure here leaves the claim complete and the picker available.
+      if (session?.userId === user.userId) await sessions.select(context.gym.gymId, session, householdId, context.clock).catch(() => undefined);
+      ctx.header('Cache-Control', 'no-store');
+      return ctx.json({ data: null }, 200);
+    }),
   ];
 }
-export const routes = [...createPortalAccessRoutes(), ...createPortalInvitationRoutes()];
+export const routes = [...createPortalAccessRoutes(), ...createPortalInvitationRoutes(), ...createPortalHouseholdRoutes()];

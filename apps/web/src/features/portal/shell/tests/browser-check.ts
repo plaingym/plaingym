@@ -16,7 +16,9 @@ const gym = '00000000-0000-7000-8000-000000000001', household = '00000000-0000-7
 const bootstrap = { gym: { id: gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, roles: [], member: true }, login: { password: true, magicLink: false } };
 const person = { id: member, householdId: household, firstName: 'Alex', lastName: 'Example', email: 'alex@example.test', phone: null, photoKey: null, dateOfBirth: '1990-01-01', status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-28T12:00:00Z' };
 const login = { id: gym, householdId: household, userId, scope: 'member', memberId: member, createdAt: person.createdAt, email: person.email };
-let revoked = false;
+const second = '00000000-0000-7000-8000-000000000005';
+const choices = [{ householdId: household, name: 'A household with a long name that wraps on a phone', role: 'payer' }, { householdId: second, name: 'Second household', role: 'member' }];
+let revoked = false, current: string | null = null;
 const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QueryClient,QueryClientProvider} from '@tanstack/react-query'; import {ShellServicesContext} from './src/app/context.tsx'; import {PortalAccessTab} from './src/features/portal/access/tab.tsx'; const services={loadBootstrap:async()=>(${JSON.stringify({ ...bootstrap, session: { userId, roles: ['front_desk'], member: false } })})}; createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><ShellServicesContext.Provider value={services}><main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Alex Example</h1><PortalAccessTab memberId="${member}"/></main></ShellServicesContext.Provider></QueryClientProvider>);`, resolveDir: resolve('apps/web'), sourcefile: 'portal-access-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
 await writeFile(resolve(output, 'access.js'), bundle.outputFiles[0]!.text);
 const cssName = (await readdir(resolve(dist, 'assets'))).find(name => name.endsWith('.css'))!;
@@ -30,10 +32,16 @@ const server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     if (path === '/api/demo') { res.end(JSON.stringify({ data: { mode: 'disabled' } })); return; }
     if (path === '/api/auth/bootstrap') { res.end(JSON.stringify({ data: bootstrap })); return; }
-    if (path === '/api/portal/context') { res.end(JSON.stringify({ data: { role: 'payer', householdId: household, memberId: member } })); return; }
+    if (path === '/api/portal/households') { res.end(JSON.stringify({ data: { current, households: choices } })); return; }
+    if (path === '/api/portal/households/current') { let body = ''; for await (const chunk of req) body += chunk; current = (JSON.parse(body) as { householdId: string }).householdId; res.end(JSON.stringify({ data: null })); return; }
+    if (path === '/api/portal/context') {
+      if (!current) { res.statusCode = 404; res.end(JSON.stringify({ error: { code: 'not_found' } })); return; }
+      res.end(JSON.stringify({ data: current === household ? { role: 'payer', householdId: household, memberId: member } : { role: 'member', householdId: second, memberId: member } })); return;
+    }
+    if (path === '/api/portal/invitations/accept') { res.end(JSON.stringify({ data: { status: 'claimed' } })); return; }
     if (path === '/api/members/' + member) { res.end(JSON.stringify({ data: person })); return; }
     if (path.endsWith('/portal-logins')) { res.end(JSON.stringify({ data: revoked ? [] : [login], pagination: { limit: 20, offset: 0, total: revoked ? 0 : 1 } })); return; }
-    if (path.endsWith('/portal-invitations')) { res.end(JSON.stringify({ data: { delivery: 'print', login: { ...login, email: undefined }, invitationUrl: 'http://localhost/portal/claim#' + 'a'.repeat(64) } })); return; }
+    if (path.endsWith('/portal-invitations')) { res.end(JSON.stringify({ data: { delivery: 'print', invitation: { userId, scope: 'member', memberId: member, expiresAt: '2026-11-04T12:00:00.000Z' }, invitationUrl: 'http://localhost/portal/claim#' + 'a'.repeat(64) } })); return; }
     if (req.method === 'DELETE') revoked = true;
     res.end(JSON.stringify({ data: null })); return;
   }
@@ -57,7 +65,12 @@ try {
       expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations).toEqual([]);
       await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: true });
     };
-    await page.goto(origin + '/portal/'); await expect(page.getByRole('heading', { name: 'Welcome to your member portal' })).toBeVisible();
+    current = null; await page.goto(origin + '/portal/'); await expect(page.getByRole('heading', { name: 'Choose a household' })).toBeVisible();
+    await check('picker');
+    await page.getByRole('button', { name: /Second household/ }).click(); await expect(page.getByRole('heading', { name: 'Welcome to your member portal' })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Household' })).toHaveValue(second); await check('switcher');
+    await page.getByRole('combobox', { name: 'Household' }).selectOption(household); await expect(page.getByRole('combobox', { name: 'Household' })).toHaveValue(household);
+    expect(current).toBe(household);
     if (width === 360) { await page.getByRole('button', { name: 'Menu' }).click(); await expect(page.getByRole('navigation')).toBeVisible(); }
     await check('shell');
     await page.evaluate(() => navigator.serviceWorker.ready);
@@ -75,5 +88,5 @@ try {
     await page.getByRole('dialog').getByRole('button', { name: 'Reset password', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.getByRole('button', { name: 'Revoke access', exact: true }).click(); await page.getByRole('dialog').getByRole('button', { name: 'Revoke access', exact: true }).click(); await expect(page.getByText('No portal logins yet')).toBeVisible();
   }
-  expect(errors).toEqual([]); console.log('Passed: portal shell, claim, access, invite/print/reset/revoke at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
+  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
 } finally { await browser.close(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(profile, { recursive: true, force: true }); }

@@ -213,8 +213,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
+  // Passwordless claims prove the address with a login link that returns to the portal claim page.
   const portalInvitations = createPortalInvitationService({ config, smtpConfigured,
-    mailer: demo ? demo.emailFor : smtpMailer(smtp!) });
+    mailer: demo ? demo.emailFor : smtpMailer(smtp!),
+    loginLink: async ({ gymId, email, claim }) =>
+      auth.bind({ gymId, origin: await gymOrigin(gymId), clientIp: '127.0.0.1', smtpConfigured: true }).sendLoginLink(email, claim) });
   configurePortalAccess({ service: portalInvitations, origin: originFor });
   const gymKey = createGymKeyResolver({ key });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
@@ -287,7 +290,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
         ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };
   const session = sessionMiddleware({ auth, smtpConfigured,
-    principal: (userId, context) => createPortalPrincipalLoader()(context.get('context').gym.gymId, userId),
+    principal: (userId, context, bound) => createPortalPrincipalLoader()(context.get('context').gym.gymId, userId, bound),
     resolve: (context) => {
     const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
     return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };

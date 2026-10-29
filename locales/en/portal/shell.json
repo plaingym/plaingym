@@ -15,5 +15,15 @@
   "claim": "Accept invitation",
   "claimed": "Your portal login is ready. Sign in to continue.",
   "signIn": "Sign in",
-  "claimFailed": "This invitation could not be accepted. Check your password or ask your gym for a new invitation."
+  "claimFailed": "This invitation could not be accepted. Check your password or ask your gym for a new invitation.",
+  "claimEmailDescription": "Use the invitation given to you by your gym. We will email a sign-in link to the invited address to confirm it.",
+  "claimEmailSent": "Check your email. Open the sign-in link we sent to the invited address to finish setting up your portal login.",
+  "completeDescription": "Finishing your portal access.",
+  "completeFailed": "This sign-in link could not finish your portal access. It may have expired or already been used. Ask your gym for a new invitation.",
+  "household": "Household",
+  "chooseTitle": "Choose a household",
+  "chooseDescription": "Your login belongs to more than one household. Choose the one to open; you can switch at any time from the top of the portal.",
+  "chooseFailed": "We couldn’t open that household. Please try again.",
+  "rolePayer": "Account holder",
+  "roleMember": "Member"
 }

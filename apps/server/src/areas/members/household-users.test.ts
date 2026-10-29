@@ -87,7 +87,11 @@ describe('household login routes', () => {
     expect(await (await send(server, '/api/portal/context')).json()).toMatchObject({ data: { role: 'payer' } });
     await service.revoke({ gymId: gym, actor: { kind: 'system' } }, f.household.id, f.adult.id);
     expect((await send(server, '/api/portal/context')).status).toBe(404);
-    expect(await loader(gym, f.adult.userId)).toEqual({ kind: 'anonymous' });
+    // Still signed in, without access: a staff principal with no roles reaches neither surface.
+    const unlinked = await loader(gym, f.adult.userId);
+    expect(unlinked).toEqual({ kind: 'staff', gymId: gym, userId: f.adult.userId, roles: [] });
+    expect((await send(app(unlinked), '/api/portal/context')).status).toBe(404);
+    expect((await send(app(unlinked), `/api/households/${f.household.id}/users`)).status).toBe(403);
     expect((await db.forGym(gym, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.adult.id)))).at(-1)?.action).toBe('household_user.revoked');
   });
   it('keeps members, invoices, waivers and bookings inside forHousehold, including adult-only data', async () => {

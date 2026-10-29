@@ -93,3 +93,14 @@ it('clears a completed tablet and stops polling when a tablet leaves', async () 
   window.dispatchEvent(new Event('pagehide')); await vi.advanceTimersByTimeAsync(20000);
   expect(next.fetch).toHaveBeenCalledOnce(); expect(document.body.textContent).toBe('');
 });
+it.each([['email_sent', 'portalEmailSent'], ['claimed', 'portalReady']] as const)('reports a %s portal claim with its own message', async (status, key) => {
+  const f = fixture('onboarding'); f.location.href = 'https://gym.test/l/token';
+  document.querySelector('main')!.insertAdjacentHTML('beforeend', '<form data-portal-claim><input name="email" value="member@example.test"><button>Create portal access</button></form>'
+    + '<span hidden data-message="portalEmailSent">portalEmailSent</span><span hidden data-message="portalReady">portalReady</span>');
+  f.fetch.mockImplementation(async url => new Response(JSON.stringify(url.endsWith('/portal') ? { data: { status } } : { data: { completed: false } })));
+  linkBrowser(); await vi.advanceTimersByTimeAsync(0);
+  document.querySelector<HTMLFormElement>('[data-portal-claim]')!.requestSubmit(); await vi.advanceTimersByTimeAsync(0);
+  const claim = f.fetch.mock.calls.find(([url]) => url.endsWith('/portal'))!;
+  expect(JSON.parse(String(claim[1]!.body))).toEqual({ email: 'member@example.test' });
+  expect(f.feedback.textContent).toBe(key); expect(document.querySelector<HTMLFormElement>('[data-portal-claim]')!.hidden).toBe(true);
+});

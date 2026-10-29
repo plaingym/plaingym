@@ -7,6 +7,7 @@ import { isIP } from 'node:net';
 import { systemDatabase, validateUuid, type Database } from '@plaingym/db/client';
 import { authUser, authSession, authAccount, authVerification, authRateLimit } from '@plaingym/db';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { portalClaimCodeSchema } from '@plaingym/shared/contracts';
 import type { Auth, Session } from './index.js';
 import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
@@ -34,6 +35,23 @@ export interface AuthServiceOptions {
   readonly google?: GoogleAuthExtension;
   readonly rateLimit?: { window: number; max: number };
 }
+/** The only post-login destination besides the admin: completing a portal claim the user proved by email. */
+export const portalClaimCallbackPath = '/portal/claim';
+const validClaimCode = (code: string) => portalClaimCodeSchema.safeParse(code).success;
+function portalClaimCallback(value: string | null, origin: URL): string | null {
+  if (!value) return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  const keys = [...url.searchParams.keys()];
+  if (url.origin !== origin.origin || url.pathname !== portalClaimCallbackPath || url.hash || keys.length !== 1 || keys[0] !== 'claim') return null;
+  const code = url.searchParams.get('claim')!;
+  return validClaimCode(code) ? new URL(portalClaimCallbackPath + '?claim=' + code, origin).href : null;
+}
+/** A gym-bound session with the portal household it has chosen, if any. Never request input. */
+export interface BoundSession extends Session {
+  readonly sessionId: string;
+  readonly householdId: string | null;
+}
 export const authEndpoints = [
   'POST /sign-in/email', 'POST /sign-in/magic-link', 'GET /magic-link/verify', 'GET /get-session', 'POST /sign-out',
 ] as const;
@@ -58,7 +76,7 @@ export function createAuthService(options: AuthServiceOptions) {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
         }, transaction: true }),
         emailAndPassword: { enabled: passwordEnabled, disableSignUp: true, minPasswordLength: 12, maxPasswordLength: 128, password: passwordAdapter },
-        session: { additionalFields: { gymId: { type: 'string', required: true, input: false } }, cookieCache: { enabled: false } },
+        session: { additionalFields: { gymId: { type: 'string', required: true, input: false }, householdId: { type: 'string', required: false, input: false } }, cookieCache: { enabled: false } },
         account: { accountLinking: { enabled: true, trustedProviders: ['google'] } },
         ...(options.google ? { socialProviders: options.google.socialProviders } : {}),
         advanced: {
@@ -103,19 +121,24 @@ export function createAuthService(options: AuthServiceOptions) {
       };
       return {
         ...adapter,
-        /** Internal provisioning entry point; delivery always follows the owner commit. */
-        async sendLoginLink(email: string): Promise<void> {
+        /** Internal provisioning entry point; delivery always follows the owner commit.
+         * A portal claim code makes the link return to the claim page, which completes the claim for the signed-in user. */
+        async sendLoginLink(email: string, claimCode?: string): Promise<void> {
           assertNoTransaction('auth.sendLoginLink');
           if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
+          if (claimCode !== undefined && !validClaimCode(claimCode)) throw new Error('Invalid portal claim code');
+          const callbackURL = claimCode === undefined ? new URL('/login', origin).href : new URL(portalClaimCallbackPath + '?claim=' + claimCode, origin).href;
           await auth.api.signInMagicLink({
             headers: { origin: origin.origin, 'x-plaingym-client-ip': gym.clientIp },
-            body: { email: email.trim().toLowerCase(), callbackURL: new URL('/login', origin).href },
+            body: { email: email.trim().toLowerCase(), callbackURL },
           });
         },
-        async checkedSession(request: Request): Promise<Session | null> {
+        async checkedSession(request: Request): Promise<BoundSession | null> {
           const session = await readSession(request);
           if (session && session.session.gymId !== gym.gymId) throw new Error('session_gym_mismatch');
-          return session ? { userId: session.user.id } : null;
+          if (!session) return null;
+          const householdId = (session.session as { householdId?: unknown }).householdId;
+          return { userId: session.user.id, sessionId: session.session.id, householdId: typeof householdId === 'string' ? householdId : null };
         },
         async handler(request: Request): Promise<Response> {
           assertNoTransaction('auth.handler');
@@ -140,7 +163,9 @@ export function createAuthService(options: AuthServiceOptions) {
           // Reconstruct callbacks and origin from the resolved gym. Never propagate caller-supplied redirects.
           const safeUrl = new URL('/api/auth' + path, origin);
           if (path === '/magic-link/verify') safeUrl.searchParams.set('token', url.searchParams.get('token')!);
-          for (const name of ['callbackURL', 'newUserCallbackURL', 'errorCallbackURL']) if (path === '/magic-link/verify') safeUrl.searchParams.set(name, new URL(name === 'errorCallbackURL' ? '/login' : '/admin', origin).href);
+          // A portal claim callback is the only other allowed destination, rebuilt from its validated code.
+          const claim = path === '/magic-link/verify' ? portalClaimCallback(url.searchParams.get('callbackURL'), origin) : null;
+          for (const name of ['callbackURL', 'newUserCallbackURL', 'errorCallbackURL']) if (path === '/magic-link/verify') safeUrl.searchParams.set(name, name === 'errorCallbackURL' ? new URL('/login', origin).href : claim ?? new URL('/admin', origin).href);
           let body: string | undefined;
           if (request.method === 'POST') {
             let input: unknown;

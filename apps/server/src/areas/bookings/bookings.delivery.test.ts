@@ -60,6 +60,22 @@ describe('promotion jobs and notices', () => {
     await restarted.sweep(g.gymId); await drain(g.jobs);
     expect(g.email.messages).toHaveLength(1);
   });
+  it('the queued promotion and the recovery job stop at the cancellation cutoff', async () => {
+    const f = await fixture();
+    // The default cutoff is 60 minutes before the 18:00 UTC start.
+    f.clock.set('2026-10-30T17:00:00.001Z');
+    await f.delivery.request(f.gymId, f.session.id, f.booked.id);
+    await f.jobs.triggerSchedule('bookings.recover', [{ gymId: f.gymId, timezone: 'America/New_York' }], 'five-minute-late');
+    await drain(f.jobs);
+    expect(f.email.messages).toHaveLength(0);
+    expect((await f.service.list(f.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === f.queued.id)?.status).toBe('waitlisted');
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'booking.promoted')))).toBe(0);
+    const g = await fixture();
+    g.clock.set('2026-10-30T17:00:00Z');
+    await g.jobs.triggerSchedule('bookings.recover', [{ gymId: g.gymId, timezone: 'America/New_York' }], 'five-minute-boundary');
+    await drain(g.jobs);
+    expect((await g.service.list(g.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === g.queued.id)?.status).toBe('booked');
+  });
   it('retries failed SMTP delivery without re-promoting the booking', async () => {
     const f = await fixture(); f.email.respondNext(new Error('SMTP temporarily unavailable'));
     await f.delivery.promote(f.gymId, f.session.id); await drain(f.jobs);

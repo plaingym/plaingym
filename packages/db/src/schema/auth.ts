@@ -19,6 +19,8 @@ export const authSession = pgTable('auth_session', {
   userId: uuid('user_id').notNull().references(() => authUser.id, { onDelete: 'cascade' }),
   token: text('token').notNull(), expiresAt: instant('expires_at').notNull(),
   ipAddress: text('ip_address'), userAgent: text('user_agent'),
+  /** The portal household chosen for this session. Rechecked against the user's household links on every request. */
+  householdId: uuid('household_id'),
 }, (t) => [unique('auth_session_token_key').on(t.token), index('auth_session_gym_user_idx').on(t.gymId, t.userId),
   ...systemAccess('auth_session', 'gym', t.gymId)]).enableRLS();
 export const authAccount = pgTable('auth_account', {

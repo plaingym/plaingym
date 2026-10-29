@@ -65,5 +65,6 @@
   "portalPassword": "Password (12–128 characters; use your current password if you already have an account)",
   "portalClaim": "Create portal access",
   "portalReady": "Your portal access is ready. Sign in using this email after completing the remaining steps.",
+  "portalEmailSent": "Check your email. Open the sign-in link we sent before you finish the remaining steps here: it confirms the address and completes your portal access.",
   "portalSignIn": "Member portal"
 }

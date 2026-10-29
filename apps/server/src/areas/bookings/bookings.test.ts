@@ -158,6 +158,45 @@ describe('booking transactions', () => {
     const count = await db.forGym(f.gymId, tx => tx.$count(classBookings, and(eq(classBookings.sessionId, session.id), eq(classBookings.status, 'booked'))));
     expect(count).toBeLessThanOrEqual(session.capacity!);
   });
+  it('promotes at the exact cancellation cutoff, under the session lock, and freezes the waitlist a millisecond later', async () => {
+    const f = await fixture(), first = await f.book(), waiting = await f.book(f.other.id);
+    const third = await factory('members', f.gymId), last = await f.book(third.id);
+    // Cutoff is 60 minutes before the 18:00 start; cancelling at exactly 17:00 is allowed, so promotion is too.
+    f.clock.set('2026-10-30T17:00:00Z');
+    await f.service.cancel(f.actor, first.id);
+    const racing = await Promise.all([f.service.promote(f.gymId, f.session.id), f.service.promote(f.gymId, f.session.id)]);
+    expect(racing.flat().map(row => row.id)).toEqual([waiting.id]);
+    // The promoted member can still cancel at the same instant; the freed place is not refilled after the cutoff.
+    await f.service.cancel(f.actor, waiting.id);
+    f.clock.advance(1);
+    expect(await f.service.promote(f.gymId, f.session.id)).toEqual([]);
+    expect((await f.service.list(f.gymId, page)).data.find(row => row.id === last.id)).toMatchObject({ status: 'waitlisted' });
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'booking.promoted')))).toBe(1);
+  });
+  it.each(['increase', 'remove'] as const)('a capacity %s after the cutoff saves the capacity and keeps the waitlist frozen', async change => {
+    const f = await fixture(), schedule = createScheduleService(f.options);
+    await f.book(); const waiting = await f.book(f.other.id);
+    f.clock.set('2026-10-30T17:00:00.001Z');
+    expect((await schedule.changeSession(f.actor, f.session.id, 'capacity', { capacity: change === 'increase' ? 3 : null, revision: 1 })).revision).toBe(2);
+    expect((await f.service.list(f.gymId, page)).data.find(row => row.id === waiting.id)).toMatchObject({ status: 'waitlisted' });
+  });
+  it('reads the current cutoff under the lock, so raising it freezes promotion immediately', async () => {
+    const f = await fixture(), first = await f.book(), waiting = await f.book(f.other.id);
+    await f.service.cancel(f.actor, first.id);
+    const settings = createSettingsService(f.options);
+    await settings.update(f.actor, 'booking', { revision: (await settings.get(f.gymId)).revision, cancellationCutoffMinutes: 27 * 60 });
+    expect(await f.service.promote(f.gymId, f.session.id)).toEqual([]);
+    await settings.update(f.actor, 'booking', { revision: (await settings.get(f.gymId)).revision, cancellationCutoffMinutes: 0 });
+    expect((await f.service.promote(f.gymId, f.session.id)).map(row => row.id)).toEqual([waiting.id]);
+  });
+  it('erasure after the cutoff frees the place without promoting the waitlist', async () => {
+    const f = await fixture(); await f.book(); const waiting = await f.book(f.other.id);
+    f.clock.set('2026-10-30T17:30:00Z');
+    const erased = await createMembersService(f.options).eraseMember(f.actor, f.member.id, { revision: f.member.revision });
+    expect(erased.freedSessionIds).toEqual([f.session.id]);
+    expect(await promoteWaitlist(f.gymId, f.session.id, f.options)).toEqual([]);
+    expect((await f.service.list(f.gymId, page)).data.find(row => row.id === waiting.id)).toMatchObject({ status: 'waitlisted' });
+  });
   it('does not promote into a cancelled or started session', async () => {
     const f = await fixture(), first = await f.book(); await f.book(f.other.id); await f.service.cancel(f.actor, first.id);
     f.clock.set(f.session.startsAt); expect(await f.service.promote(f.gymId, f.session.id)).toEqual([]);

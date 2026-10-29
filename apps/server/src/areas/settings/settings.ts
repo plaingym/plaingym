@@ -25,6 +25,12 @@ export async function readBillingRules(tx: Transaction, gymId: string) {
   if (!row) throw new AppError('not_found', 'Gym not found');
   return billingRulesSchema.parse(row);
 }
+/** Read under a caller's session lock (waitlist promotion) without nesting gym scopes. */
+export async function readBookingRules(tx: Transaction, gymId: string) {
+  const [row] = await tx.select({ bookingWindowDays: gyms.bookingWindowDays, cancellationCutoffMinutes: gyms.cancellationCutoffMinutes }).from(gyms).where(eq(gyms.id, gymId));
+  if (!row) throw new AppError('not_found', 'Gym not found');
+  return row;
+}
 export function createSettingsService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {

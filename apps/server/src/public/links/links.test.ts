@@ -50,7 +50,7 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
   const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => demo ? demoUploads(uploads) : uploads });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => provider, originFor: async () => 'https://gym.example.test' });
   const config = authConfig({ AUTH_SECRET: 'onboarding-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false);
-  const portalInvitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold, smtpConfigured: async () => false, mailer: async () => null });
+  const portalInvitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold, smtpConfigured: async () => false, mailer: async () => null, loginLink: async () => undefined });
   const accounts = createAccountService(config, () => db.system.db);
   const service = configureLinkPages({ portalInvitations, scope: db.forHousehold, waivers, checkout, links, receiptKey: new Uint8Array(32).fill(7), stylesheet: async () => '' });
   const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true, authorize,

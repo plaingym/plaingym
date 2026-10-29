@@ -29,6 +29,15 @@ waitlist; new bookings are then unnecessary and rejected. A cancelled or started
 session never promotes. `promoteWaitlist(gymId, sessionId, options)` acquires the
 lock itself and is safe for after-commit callers, including member erasure.
 
+Promotion stops at the cancellation cutoff, so every place a member holds can
+still be cancelled. `reconcileSessionBookings` reads the gym's current cutoff
+under the session lock and applies the same comparison as cancellation:
+promotion at the exact cutoff is allowed, and after it the waitlist is frozen.
+This covers every path (cancellation, capacity changes, erasure and the recovery
+job). A capacity change after the cutoff is saved without confirming anyone. A
+freed place stays open for walk-ins, whom staff check in; a new booking still
+joins the end of a non-empty waitlist rather than jumping it.
+
 The booking window opens at midnight in the gym's timezone, the configured
 number of calendar days before the class date. Zero days means the class date.
 The cutoff is elapsed minutes before the start; cancellation at the exact
