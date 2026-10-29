@@ -53,5 +53,17 @@
   "done": "You're all set",
   "doneBody": "Thank you. Your details have been received.",
   "reload": "Reload page",
-  "javascript": "Please enable JavaScript to complete this page."
+  "javascript": "Please enable JavaScript to complete this page.",
+  "completedTitle": "You're all set",
+  "completed_onboarding": "Your card details and required documents have been saved. Thank you.",
+  "completed_update_card": "Your card has been saved. Thank you.",
+  "completed_pay_invoice": "Your payment has been confirmed. Thank you.",
+  "completed_sign_waiver": "Your signed document has been saved. Thank you.",
+  "portalTitle": "Set up your member portal",
+  "portalHelp": "Optional: create portal access before you finish your final step. This link closes when your card details and required documents are complete.",
+  "portalEmail": "Login email",
+  "portalPassword": "Password (12–128 characters; use your current password if you already have an account)",
+  "portalClaim": "Create portal access",
+  "portalReady": "Your portal access is ready. Sign in using this email after completing the remaining steps.",
+  "portalSignIn": "Member portal"
 }

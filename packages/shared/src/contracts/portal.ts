@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { memberStatusSchema, classSessionStatusSchema, membershipStatusSchema, billingIntervalSchema,
   attendanceSourceSchema, classKindSchema, invoiceKindSchema, invoiceStatusSchema } from './states.js';
 import type { EndpointContract } from './definition.js';
+import { householdParamsSchema, householdUserParamsSchema, householdUserSchema } from './members.js';
 import {
   amountCentsSchema, currencySchema, dateSchema, idSchema, instantSchema,
   listResponseSchema, paginationSchema, revisionSchema, taxRateMillionthsSchema,
@@ -214,3 +215,23 @@ export type PortalCheckoutResponse = z.infer<typeof portalCheckoutResponseSchema
 export type PortalSignedLinkData = z.infer<typeof portalSignedLinkDataSchema>;
 
 export type PortalReceiptResponse = z.infer<typeof portalReceiptResponseSchema>;
+
+const portalInviteFields = { email: z.email().max(254), delivery: z.enum(['email', 'print']) };
+export const portalInvitationRequestSchema = z.discriminatedUnion('scope', [
+  z.strictObject({ ...portalInviteFields, scope: z.literal('payer'), memberId: idSchema.nullable().optional() }),
+  z.strictObject({ ...portalInviteFields, scope: z.literal('member'), memberId: idSchema }),
+]);
+export const portalInvitationResponseSchema = z.strictObject({ data: z.discriminatedUnion('delivery', [
+  z.strictObject({ delivery: z.literal('email'), login: householdUserSchema }),
+  z.strictObject({ delivery: z.literal('print'), login: householdUserSchema, invitationUrl: z.url({ protocol: /^https?$/ }) }),
+]) });
+export const portalClaimRequestSchema = z.strictObject({ token: z.string().regex(/^[a-f0-9]{64}$/), password: z.string().min(12).max(128).optional() });
+export const portalOnboardingClaimRequestSchema = z.strictObject({ email: z.email().max(254), password: z.string().min(12).max(128).optional() });
+export const portalAccessContracts = {
+  logins: { method: 'get', path: '/api/households/{householdId}/portal-logins', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, query: paginationSchema, response: listResponseSchema(z.discriminatedUnion('scope', [householdUserSchema.options[0].extend({ email: z.email().optional() }), householdUserSchema.options[1].extend({ email: z.email().optional() })])) },
+  resetPassword: { method: 'post', path: '/api/households/{householdId}/users/{householdUserId}/password', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdUserParamsSchema, body: z.strictObject({ newPassword: z.string().min(12).max(128) }), response: z.strictObject({ data: z.null() }) },
+  invite: { method: 'post', path: '/api/households/{householdId}/portal-invitations', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, body: portalInvitationRequestSchema, response: portalInvitationResponseSchema },
+  claim: { method: 'post', path: '/api/portal/invitations/accept', permission: { kind: 'public' }, body: portalClaimRequestSchema, response: z.strictObject({ data: z.null() }) },
+  claimOnboarding: { method: 'post', path: '/api/links/onboarding/portal', permission: { kind: 'signed_link', purpose: 'onboarding' }, body: portalOnboardingClaimRequestSchema, response: z.strictObject({ data: z.null() }) },
+} as const satisfies Record<string, EndpointContract>;
+export type PortalInvitationRequest = z.infer<typeof portalInvitationRequestSchema>;

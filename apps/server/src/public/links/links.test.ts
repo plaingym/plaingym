@@ -24,6 +24,10 @@ import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureLinkPages } from './links.routes.js';
 import { cachedLinkAsset } from './assets.js';
 import type { Principal } from '../../core/context.js';
+import { createPortalInvitationService } from '../../areas/members/household-users.invitations.js';
+import { authConfig } from '../../infra/auth/config.js';
+import { createMemberHouseholdContext } from '../../areas/members/household-users.context.js';
+import { createAccountService } from '../../infra/auth/accounts.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true, demo = false) {
@@ -45,7 +49,10 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
   const provider = new FakePayments(gymId, clock), uploads = new FakeUploads(gymId, clock);
   const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => demo ? demoUploads(uploads) : uploads });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => provider, originFor: async () => 'https://gym.example.test' });
-  const service = configureLinkPages({ scope: db.forHousehold, waivers, checkout, links, receiptKey: new Uint8Array(32).fill(7), stylesheet: async () => '' });
+  const config = authConfig({ AUTH_SECRET: 'onboarding-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false);
+  const portalInvitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold, smtpConfigured: async () => false, mailer: async () => null });
+  const accounts = createAccountService(config, () => db.system.db);
+  const service = configureLinkPages({ portalInvitations, scope: db.forHousehold, waivers, checkout, links, receiptKey: new Uint8Array(32).fill(7), stylesheet: async () => '' });
   const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true, authorize,
     origin: 'https://gym.example.test', contributions: areaContributions,
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: resolvedGym, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
@@ -66,9 +73,23 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
     method, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', origin: 'https://gym.example.test', ...(cookie ? { cookie } : {}) },
     ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
   });
-  return { gymId, clock, household, member, sibling, other, invoice, invoiceB, template, links, link, create, provider, uploads, waivers, checkout, service, app, request, path, mutation, completeAtStripe };
+  return { gymId, clock, household, member, sibling, other, invoice, invoiceB, template, links, link, create, provider, uploads, waivers, checkout, service, app, request, path, mutation, completeAtStripe, accounts };
 }
 describe('signed-link pages through production registrations', () => {
+  it('claims onboarding access only for the verified household, rejecting cross-gym and forged household requests', async () => {
+    const f = await fixture('onboarding'), otherGym = uuidv7(); await factory('gyms', otherGym);
+    const path = '/api/links/onboarding/portal', body = { email: uuidv7() + '@example.test', password: 'onboarding-password-123' };
+    expect((await f.request(path, 'POST', body, '', f.link.token, f.app(otherGym))).status).toBe(404);
+    expect((await f.request(path, 'POST', { ...body, householdId: f.other.householdId })).status).toBe(400);
+    const wrongPurpose = await f.create('update_card');
+    expect((await f.request(path, 'POST', body, '', wrongPurpose.token)).status).toBe(403);
+    expect((await f.request(path, 'POST', body)).status).toBe(200);
+    const user = await f.accounts.findUserByEmail(body.email), households = createMemberHouseholdContext(db.forGym);
+    expect(await households.resolve({ gymId: f.gymId, householdId: f.household.id, userId: user!.id })).toMatchObject({ role: 'payer' });
+    await expect(households.resolve({ gymId: f.gymId, householdId: f.other.householdId, userId: user!.id })).rejects.toMatchObject({ code: 'not_found' });
+    await f.links.revoke(f.mutation, f.link.link.id);
+    expect((await f.request(path, 'POST', body)).status).toBe(404);
+  });
   it.each(['sign_waiver', 'onboarding'] as const)('demo %s uploads and signs its current waivers and reaches completion', async purpose => {
     const f = await fixture(purpose, true, true);
     let cookie = '';

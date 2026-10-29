@@ -10,6 +10,7 @@ const input = 'block min-h-11 w-full rounded-md border border-border bg-backgrou
 const panel = 'space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const h = jsx;
 export interface PageInput {
+  portalClaim?: { password: boolean } | undefined;
   data?: PortalSignedLinkData;
   state?: 'alreadyDone' | 'unavailable' | 'cleared';
   tablet?: boolean;
@@ -19,7 +20,7 @@ export interface PageInput {
   t: Translator;
 }
 /** Server-rendered Hono JSX; dynamic terms and names are escaped as text. */
-export function linkPage({ data, state, tablet = false, now, timezone, locale = 'en', t }: PageInput) {
+export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
   const title = text(state ?? data?.purpose ?? 'unavailable');
   const money = (value: number, currency: string) => new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value / 100);
@@ -79,9 +80,21 @@ export function linkPage({ data, state, tablet = false, now, timezone, locale = 
         tablet ? h('aside', { class: panel }, h('p', { class: 'font-semibold' }, text('tablet')), h('p', null, text('tabletHelp')),
           h('a', { class: button, href: '/l/cleared', 'data-exit': true }, text('clear'))) : null,
         notice ?? h('header', { class: 'space-y-2' }, h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, title), h('p', null, text('welcome'))),
-        h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }), invoice, card, waivers,
+        h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
+        data?.purpose === 'onboarding' && portalClaim ? h('section', { class: panel },
+          h('h2', { class: 'text-xl font-semibold' }, text('portalTitle')),
+          h('p', null, text('portalHelp')),
+          h('form', { 'data-portal-claim': true, class: 'space-y-4' },
+            h('label', { for: 'portal-email', class: 'block space-y-1' }, text('portalEmail'), h('input', { id: 'portal-email', name: 'email', type: 'email', required: true, maxlength: 254, autocomplete: 'username', class: input })),
+            portalClaim.password ? h('label', { for: 'portal-password', class: 'block space-y-1' }, text('portalPassword'), h('input', { id: 'portal-password', name: 'password', type: 'password', required: true, minlength: 12, maxlength: 128, autocomplete: 'new-password', class: input })) : null,
+            h('button', { type: 'submit', class: button }, text('portalClaim')))) : null,
+        invoice, card, waivers,
         data && data.purpose !== 'sign_waiver' ? h('button', { type: 'button', class: button, 'data-complete': true }, text('checkCompletion')) : null,
         data ? h('noscript', null, text('javascript')) : null,
         h('footer', { class: 'block' }, h('a', { href: '/source', rel: 'noreferrer', class: 'inline-flex min-h-11 items-center underline' }, text('source')))),
-      ...['failed', 'conflict', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
+      h('template', { id: 'completed-message' }, h('section', { class: panel, tabindex: -1 },
+        h('h1', { class: 'text-2xl font-bold' }, text('completedTitle')),
+        h('p', null, text('completed_' + (data?.purpose ?? 'onboarding'))),
+        h('a', { class: button, href: '/portal' }, text('portalSignIn')))),
+      ...['failed', 'conflict', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody', 'portalReady'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
 }

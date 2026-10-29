@@ -1,0 +1,19 @@
+{
+  "title": "Member portal",
+  "home": "Home",
+  "welcome": "Welcome to your member portal",
+  "description": "Use the menu to find the services available at your gym.",
+  "menu": "Menu",
+  "navigation": "Member navigation",
+  "signOut": "Sign out",
+  "source": "Source code",
+  "offline": "You are offline. Connect to the internet to use the member portal.",
+  "failed": "We couldn't load your portal. Please try again.",
+  "claimTitle": "Set up your portal login",
+  "claimDescription": "Use the invitation given to you by your gym. If you already have a password, enter your current password.",
+  "password": "Password (12–128 characters)",
+  "claim": "Accept invitation",
+  "claimed": "Your portal login is ready. Sign in to continue.",
+  "signIn": "Sign in",
+  "claimFailed": "This invitation could not be accepted. Check your password or ask your gym for a new invitation."
+}

@@ -62,7 +62,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/l/sign_waiver' && fixtures.sign_waiver?.purpose === 'sign_waiver' && fixtures.sign_waiver.signatures.length === templates.length) {
     res.end(linkPage({ state: 'alreadyDone', now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet') })); return;
   }
-  res.end(linkPage({ data: fixtures[url.pathname.split('/')[2] ?? ''] ?? fixtures.onboarding!, now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet') }));
+  res.end(linkPage({ data: fixtures[url.pathname.split('/')[2] ?? ''] ?? fixtures.onboarding!, now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet'), portalClaim: { password: true } }));
 });
 await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port');
@@ -122,11 +122,6 @@ try {
         await page.screenshot({ path: resolve(output, `${purpose}-second-document-${width}.png`), fullPage: true });
       }
     }
-    if (purpose === 'onboarding') {
-      await page.waitForLoadState('networkidle');
-      if (await page.locator('form[data-waiver]').count() !== 0) throw new Error('Onboarding did not retain both signatures');
-      await page.locator('[data-complete]').click();
-    }
     await page.waitForURL('**/l/cleared');
     if (data.signatures.length !== 2) throw new Error('Missing persisted fixture signatures');
   }
@@ -150,6 +145,30 @@ try {
     }
   }
   returnMode = 'none';
+  // Completion in this tab gets a confirmation; reopening the consumed link retains its used-link message.
+  for (const width of [360, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const purpose of ['onboarding', 'sign_waiver']) {
+      const data = fixtures[purpose]!; if (!('signatures' in data)) throw new Error('Missing fixture');
+      data.signatures = [];
+      await page.goto(origin + '/l/' + purpose + '?returned=1');
+      await expect(page).not.toHaveURL(/returned=1/);
+      for (let index = 0; index < 2; index++) {
+        const form = page.locator('form[data-waiver]').first();
+        await form.getByLabel('Full name of signer').fill('A parent');
+        await form.getByLabel('Relationship to member').fill('Parent');
+        const pad = form.locator('canvas'); await pad.scrollIntoViewIfNeeded();
+        const box = await pad.boundingBox(); if (!box) throw new Error('Missing signature canvas');
+        await page.mouse.move(box.x + 20, box.y + 40); await page.mouse.down();
+        await page.mouse.move(box.x + 180, box.y + 100, { steps: 12 }); await page.mouse.up();
+        await form.locator('[name="consent"]').check();
+        if (index === 0) await Promise.all([page.waitForEvent('load'), form.locator('[type="submit"]').click()]);
+        else { await form.locator('[type="submit"]').click(); await expect(page.getByRole('heading', { name: messages.completedTitle })).toBeVisible(); }
+      }
+      await page.screenshot({ path: resolve(output, `${purpose}-confirmation-${width}.png`), fullPage: true });
+      if (purpose === 'sign_waiver') { await page.reload(); await expect(page.getByRole('heading', { name: messages.alreadyDone })).toBeVisible(); }
+    }
+  }
   await page.goto(origin + '/l/onboarding?tablet=1');
   await page.clock.fastForward(121_000);
   await page.waitForURL('**/l/cleared');

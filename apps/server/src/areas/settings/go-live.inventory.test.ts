@@ -19,6 +19,7 @@ const boundaries = {
   'infra/email/smtp.ts': 'administrative SMTP test, delivery transport guarded by its member callers',
   'infra/auth/delivery.ts': 'security: requested login links are exempt',
   'areas/staff/profiles.invitations.ts': 'staff invitations are exempt',
+  'areas/members/household-users.invitations.ts': 'staff-initiated portal invitations use the gym SMTP mailer outside the transaction',
   'demo/runtime.ts': 'security: sandbox login links use the demo outbox',
 };
 

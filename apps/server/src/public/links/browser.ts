@@ -40,8 +40,24 @@ export function linkBrowser() {
   }
   function done() {
     if (tablet) return clear();
-    location.reload();
+    const template = document.querySelector<HTMLTemplateElement>('#completed-message');
+    const main = document.querySelector('main');
+    if (!template || !main) return;
+    const footer = main.querySelector('footer');
+    main.replaceChildren(template.content.cloneNode(true));
+    if (footer) main.append(footer);
+    main.querySelector<HTMLElement>('section')?.focus();
   }
+  const portalClaim = document.querySelector<HTMLFormElement>('[data-portal-claim]');
+  portalClaim?.addEventListener('submit', event => {
+    event.preventDefault();
+    const button = portalClaim.querySelector<HTMLButtonElement>('button')!;
+    void busy(button, async () => {
+      const fields = new FormData(portalClaim);
+      await call('/portal', { email: fields.get('email'), ...(fields.has('password') ? { password: fields.get('password') } : {}) });
+      portalClaim.reset(); portalClaim.hidden = true; say('portalReady');
+    });
+  });
   async function refreshOnboarding() {
     const response = await fetch(location.pathname, { credentials: 'same-origin', cache: 'no-store' });
     if (!response.ok) throw new Error('request failed');
@@ -67,8 +83,9 @@ export function linkBrowser() {
     else say('incomplete');
   }); });
   // Returning from Stripe asks the server to verify current processor and local state.
-  if (complete && ['pay_invoice', 'update_card', 'onboarding'].includes(purpose)
-    && new URL(location.href).searchParams.get('returned') === '1') {
+  const returnedUrl = new URL(location.href), returned = returnedUrl.searchParams.get('returned') === '1';
+  if (returned) { returnedUrl.searchParams.delete('returned'); history.replaceState(null, '', returnedUrl.pathname + returnedUrl.search + returnedUrl.hash); }
+  if (complete && ['pay_invoice', 'update_card', 'onboarding'].includes(purpose) && returned) {
     void busy(complete, async () => {
       for (let attempt = 0; attempt <= 5; attempt++) {
         if (attempt) await new Promise(resolve => setTimeout(resolve, attempt * 1000));
@@ -119,7 +136,17 @@ export function linkBrowser() {
         await call(purpose === 'onboarding' ? '/waivers' : '', { ...member, ...uploaded,
           templateId: form.dataset.template, templateVersion: Number(form.dataset.version), consent: true,
           signer: kind.value === 'guardian' ? { kind: 'guardian', name, relationship: relationship.value.trim() } : { kind: 'self', name } });
-        location.reload(); // Only the server's completed page may clear a member-signing tablet.
+        if (purpose === 'sign_waiver') {
+          // Opening the page checks every required template before consuming this link.
+          const response = await fetch(location.pathname, { credentials: 'same-origin', cache: 'no-store' });
+          if (!response.ok) throw new Error('request failed');
+          const updated = new DOMParser().parseFromString(await response.text(), 'text/html');
+          if (updated.body.dataset.state === 'alreadyDone') { done(); return; }
+          location.reload(); return;
+        }
+        const result = await call('/complete');
+        if (result.data.completed) { done(); return; }
+        location.reload();
       });
     });
   });

@@ -1,3 +1,27 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "title": "Portal access",
+  "description": "Invite a payer to manage the household, or give an adult access to their own profile. Member-only access requires a date of birth showing they are at least 18.",
+  "invitationEmail": "Your gym has invited you to its member portal. Open this private link to accept your invitation. It expires in seven days.",
+  "email": "Login email",
+  "scope": "Access",
+  "payer": "Whole household (payer)",
+  "member": "This member only",
+  "delivery": "Invitation delivery",
+  "emailDelivery": "Send email",
+  "printDelivery": "Print private link",
+  "invite": "Invite",
+  "sent": "Invitation sent.",
+  "print": "Print invitation",
+  "privateLink": "Private invitation link",
+  "revoke": "Revoke access",
+  "reset": "Reset password",
+  "password": "New password (12–128 characters)",
+  "saved": "Access updated.",
+  "empty": "No portal logins yet",
+  "failed": "We couldn't update portal access. Check the details and try again.",
+  "previous": "Previous",
+  "next": "Next",
+  "cancel": "Cancel",
+  "confirmRevoke": "Revoke this login's access to the household?",
+  "account": "Account"
 }

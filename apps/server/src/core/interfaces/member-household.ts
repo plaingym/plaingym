@@ -17,7 +17,7 @@ export interface PortalLoginFixture extends PortalIdentity {
   readonly role: 'payer' | 'member';
   readonly memberId: Id | null;
 }
-export interface PortalMemberFixture { readonly gymId: Id; readonly householdId: Id; readonly id: Id; }
+export interface PortalMemberFixture { readonly gymId: Id; readonly householdId: Id; readonly id: Id; readonly anonymizedAt?: Date | null; }
 export class FakeMemberHouseholdContext implements MemberHouseholdContext {
   #logins: PortalLoginFixture[] = [];
   readonly #members: readonly PortalMemberFixture[];
@@ -43,6 +43,7 @@ export class FakeMemberHouseholdContext implements MemberHouseholdContext {
     const login = this.#logins.find((item) => item.gymId === identity.gymId
       && item.userId === identity.userId && item.householdId === identity.householdId) ?? notFound();
     const visibleMemberIds = this.#members.filter((member) => member.gymId === login.gymId
+      && member.anonymizedAt == null
       && member.householdId === login.householdId && (login.role === 'payer' || member.id === login.memberId))
       .map((member) => member.id);
     const base = { gymId: login.gymId, householdId: login.householdId, userId: login.userId, visibleMemberIds };

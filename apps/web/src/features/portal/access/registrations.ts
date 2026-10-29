@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../../lib/registries.js';
+import { PortalAccessTab } from './tab.js';
 
 export const registration: WebRegistration = {
   memberTabs: [
@@ -7,8 +8,8 @@ export const registration: WebRegistration = {
       id: 'memberTabs.portal-access',
       labelKey: 'portal/access:title',
       permission: { kind: 'staff', capability: 'portal_access.manage' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: PortalAccessTab,
     },
   ],
 };

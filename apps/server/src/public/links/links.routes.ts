@@ -3,7 +3,9 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
-import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema } from '@plaingym/shared/contracts';
+import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema, portalAccessContracts } from '@plaingym/shared/contracts';
+import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
+import { rateLimit } from '../../core/rate-limit.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
@@ -18,6 +20,7 @@ const t = createTranslator({ 'public/links': messages });
 const receiptCookie = 'plaingym_link_checkout';
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
 interface PageRoutesOptions {
+  portalInvitations?: PortalInvitationService;
   service: LinkPageService;
   links: Pick<ReturnType<typeof createSignedLinksService>, 'resolve'>;
   receipts: ReturnType<typeof checkoutReceipts>;
@@ -28,9 +31,9 @@ interface PageRoutesOptions {
 }
 let configured: PageRoutesOptions | undefined;
 /** Runtime supplies real services, canonical payment origins and a stable receipt key. */
-export function configureLinkPages(options: LinkPageOptions & { receiptKey: Uint8Array; links?: PageRoutesOptions['links']; t?: Translator; localeFor?: PageRoutesOptions['localeFor']; stylesheet?: () => Promise<string>; browserScript?: () => Promise<string> }) {
+export function configureLinkPages(options: LinkPageOptions & { portalInvitations?: PortalInvitationService; receiptKey: Uint8Array; links?: PageRoutesOptions['links']; t?: Translator; localeFor?: PageRoutesOptions['localeFor']; stylesheet?: () => Promise<string>; browserScript?: () => Promise<string> }) {
   const service = createLinkPageService(options);
-  configured = { service, links: options.links ?? createSignedLinksService(), receipts: checkoutReceipts(options.receiptKey),
+  configured = { service, ...(options.portalInvitations ? { portalInvitations: options.portalInvitations } : {}), links: options.links ?? createSignedLinksService(), receipts: checkoutReceipts(options.receiptKey),
     ...(options.t ? { t: options.t } : {}), ...(options.localeFor ? { localeFor: options.localeFor } : {}), ...(options.stylesheet ? { stylesheet: options.stylesheet } : {}), ...(options.browserScript ? { browserScript: options.browserScript } : {}) };
   return service;
 }
@@ -39,6 +42,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
   async function presentation(c: Context<RequestEnvironment>) {
     const ctx = c.get('context'), config = options();
     return { now: ctx.clock.now(), timezone: ctx.gym.timezone, t: config.t ?? t,
+      portalClaim: config.portalInvitations ? { password: await config.portalInvitations.passwordRequired(ctx.gym.gymId) } : undefined,
       locale: await config.localeFor?.(ctx.gym.gymId) ?? 'en' };
   }
   const empty = z.strictObject({});
@@ -152,6 +156,12 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       return c.json({ data: { completed } }, 200);
     })));
   }
+  const claim = portalAccessContracts.claimOnboarding;
+  result.push(protect(route({ ...claim, middleware: rateLimit({ limit: 10 }), request: { query: empty, body: { required: true, content: { 'application/json': { schema: claim.body } } } }, responses: json(claim.response) }, async c => {
+    const ctx = c.get('context'), principal = linkPrincipal(ctx), service = options().portalInvitations;
+    if (!service) throw new AppError('unavailable', 'Portal invitations are not configured');
+    return c.json(await service.claimOnboarding(principal.gymId, principal.linkId, c.req.valid('json'), ctx.clock), 200);
+  })));
   return result;
 }
 export const routes = createLinkRoutes();

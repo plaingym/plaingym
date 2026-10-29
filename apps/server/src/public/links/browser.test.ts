@@ -8,8 +8,9 @@ function fixture(purpose = 'update_card', tablet = false) {
   vi.useFakeTimers();
   const location = { pathname: '/l/token', href: 'https://gym.test/l/token?returned=1', reload: vi.fn(), replace: vi.fn(), assign: vi.fn() };
   vi.stubGlobal('location', location);
+  vi.stubGlobal('history', { replaceState: vi.fn() });
   document.body.dataset.purpose = purpose; document.body.dataset.tablet = String(tablet);
-  document.body.innerHTML = '<p id="feedback"></p><button data-complete>Check again</button>'
+  document.body.innerHTML = '<main><p id="feedback"></p><button data-complete>Check again</button><footer>Source code</footer></main><template id="completed-message"><section tabindex="-1"><h1>You are all set</h1><p>Saved successfully</p></section></template>'
     + ['busy', 'confirming', 'incomplete', 'conflict', 'failed'].map(key => `<span hidden data-message="${key}">${key}</span>`).join('');
   const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ data: { completed: false } })));
   vi.stubGlobal('fetch', fetch);
@@ -22,7 +23,10 @@ it.each(['update_card', 'pay_invoice', 'onboarding'])('automatically completes %
   linkBrowser(); await vi.advanceTimersByTimeAsync(0);
   expect(f.feedback.textContent).toBe('confirming'); expect(f.button.disabled).toBe(true);
   await vi.advanceTimersByTimeAsync(1000);
-  expect(f.fetch).toHaveBeenCalledTimes(2); expect(f.location.reload).toHaveBeenCalledOnce();
+  expect(f.fetch).toHaveBeenCalledTimes(2); expect(f.location.reload).not.toHaveBeenCalled();
+  expect(document.querySelector('h1')?.textContent).toBe('You are all set');
+  expect(document.querySelector('footer')?.textContent).toBe('Source code');
+  expect(history.replaceState).toHaveBeenCalledWith(null, '', '/l/token');
   await vi.advanceTimersByTimeAsync(20000); expect(f.fetch).toHaveBeenCalledTimes(2);
 });
 it('shows incomplete only after five increasing waits and retains the manual button', async () => {
@@ -31,6 +35,18 @@ it('shows incomplete only after five increasing waits and retains the manual but
   await vi.advanceTimersByTimeAsync(1);
   expect(f.fetch).toHaveBeenCalledTimes(6); expect(f.feedback.textContent).toBe('incomplete'); expect(f.button.disabled).toBe(false);
   f.button.click(); await vi.advanceTimersByTimeAsync(0); expect(f.fetch).toHaveBeenCalledTimes(7);
+});
+it('confirms an onboarding return even with an unsubmitted portal claim form', async () => {
+  const f = fixture('onboarding');
+  document.querySelector('main')!.insertAdjacentHTML('beforeend', '<form data-portal-claim><input name="email"><button>Create portal access</button></form>');
+  f.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { completed: false } })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ data: { completed: true } })));
+  linkBrowser(); await vi.advanceTimersByTimeAsync(1000);
+  expect(f.fetch).toHaveBeenCalledTimes(2);
+  expect(f.fetch.mock.calls.every(([url]) => url.endsWith('/complete'))).toBe(true);
+  expect(document.querySelector('h1')?.textContent).toBe('You are all set');
+  expect(history.replaceState).toHaveBeenCalledWith(null, '', '/l/token');
+  await vi.advanceTimersByTimeAsync(20000); expect(f.fetch).toHaveBeenCalledTimes(2);
 });
 it.each((['return', 'manual'] as const).flatMap(mode => [false, true].map(tablet => [mode, tablet] as const)))(
   'refreshes only the saved card while preserving a waiver draft and its Checkout button (%s, tablet %s)', async (mode, tablet) => {

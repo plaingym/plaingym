@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createFileRoute, Outlet } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
+import { PortalShell } from '../../features/portal/shell/shell.js';
 
-export const Route = createFileRoute('/portal')({ component: Outlet });
+export const Route = createFileRoute('/portal')({ component: PortalShell });
