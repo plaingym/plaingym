@@ -39,7 +39,7 @@ clock and `GymSettingsAccessor`; calendar conversion uses the shared time module
 ## Promotion and mail
 
 `createBookingDelivery` provides the `bookings.promote` and `bookings.notice`
-handlers and a once-per-minute recovery scan. Cancellation queues promotion
+handlers and a recovery scan every five minutes. Cancellation queues promotion
 after committing. The scan also finds vacancies after a restart or erasure.
 Capacity edits promote in their locked transaction. Promotion audits are durable
 delivery work: a restart between promotion and enqueue is recovered by scanning

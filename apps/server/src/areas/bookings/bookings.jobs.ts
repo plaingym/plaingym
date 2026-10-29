@@ -9,7 +9,7 @@ export function createBookingJobs(read: () => BookingDelivery | undefined = () =
   return [
     { id: promotionJob, async handler(payload, context) { await delivery().promote(context.gymId, promotionPayload.parse(payload).sessionId); } },
     { id: noticeJob, async handler(payload, context) { await delivery().send(context.gymId, noticePayload.parse(payload).bookingId); } },
-    { id: 'bookings.recover', cron: '* * * * *', async handler(_payload, context) { await delivery().sweep(context.gymId); } },
+    { id: 'bookings.recover', cron: '*/5 * * * *', async handler(_payload, context) { await delivery().sweep(context.gymId); } },
   ];
 }
 export const jobs = createBookingJobs();

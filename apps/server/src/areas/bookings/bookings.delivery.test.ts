@@ -51,8 +51,9 @@ describe('promotion jobs and notices', () => {
   });
   it('recovers committed cancellations and promotions after a restart before enqueue', async () => {
     const f = await fixture();
+    expect(createBookingJobs().find(job => job.id === 'bookings.recover')?.cron).toBe('*/5 * * * *');
     // The periodic job recovers a cancellation for which no queue request was made.
-    await f.jobs.triggerSchedule('bookings.recover', [{ gymId: f.gymId, timezone: 'America/New_York' }], 'minute-1');
+    await f.jobs.triggerSchedule('bookings.recover', [{ gymId: f.gymId, timezone: 'America/New_York' }], 'five-minute-1');
     await drain(f.jobs); expect(f.email.messages).toHaveLength(1);
     const g = await fixture(); await g.service.promote(g.gymId, g.session.id);
     const restarted = createBookingDelivery({ ...g.options, jobs: g.jobs, mailer: async () => g.email });
