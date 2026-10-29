@@ -17,7 +17,7 @@ import { cachedLinkAsset } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
 
 const t = createTranslator({ 'public/links': messages });
-const receiptCookie = 'plaingym_link_checkout';
+export const receiptCookie = 'plaingym_link_checkout';
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
 interface PageRoutesOptions {
   portalInvitations?: PortalInvitationService;

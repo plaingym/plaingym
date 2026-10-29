@@ -26,7 +26,7 @@ describe('portal access and safe projections', () => {
     expect(portalContracts.receipt.response).not.toBe(portalContracts.waiverPdf.response);
   });
   it('declares the payer/adult access split for every endpoint', () => {
-    const payerOnly = new Set(['members', 'updateMember', 'household', 'updateHousehold', 'invoices', 'invoice', 'receipt', 'payInvoice', 'paymentMethods', 'updateCard', 'pendingHouseholdWaivers', 'signedHouseholdWaivers', 'signHouseholdWaiver', 'householdWaiverPdf']);
+    const payerOnly = new Set(['members', 'updateMember', 'household', 'updateHousehold', 'invoices', 'invoice', 'receipt', 'payInvoice', 'paymentMethods', 'updateCard', 'pendingHouseholdWaivers', 'signedHouseholdWaivers', 'signHouseholdWaiver', 'householdWaiverPdf', 'uploadHouseholdSignature']);
     const observedPayerOnly = new Set<string>();
     for (const [name, contract] of Object.entries(portalContracts)) {
       expect(isRoutePermission(contract.permission)).toBe(true);
@@ -43,6 +43,9 @@ describe('portal access and safe projections', () => {
   });
   it('includes emergency contacts but rejects staff-only or credential fields', () => {
     expect(portalMemberSchema.parse(member).emergencyContacts).toEqual(member.emergencyContacts);
+    // A contact saved without a relationship stays valid, as in the staff schema.
+    const unspecified = [{ name: 'Parent', relationship: null, phone: '555-0100' }];
+    expect(portalMemberSchema.parse({ ...member, emergencyContacts: unspecified }).emergencyContacts).toEqual(unspecified);
     for (const forbidden of ['medicalNotes', 'pinHash', 'checkinCodeHash', 'qrKey', 'emailDeliverable', 'userId']) {
       expect(portalMemberSchema.safeParse({ ...member, [forbidden]: 'secret' }).success, forbidden).toBe(false);
     }

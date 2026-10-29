@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { WebRegistration } from '../../../lib/registries.js';
+import { PortalWaivers } from './page.js';
 
 export const registration: WebRegistration = {
   portalNav: [
@@ -7,8 +8,9 @@ export const registration: WebRegistration = {
       id: 'portalNav.waivers',
       labelKey: 'portal/waivers:title',
       permission: { kind: 'member', capability: 'waivers.self' },
-      enabled: false,
+      enabled: true,
       href: '/portal/waivers',
+      order: 50,
     },
   ],
   portalPages: [
@@ -16,8 +18,8 @@ export const registration: WebRegistration = {
       id: 'portalPages.waivers',
       labelKey: 'portal/waivers:title',
       permission: { kind: 'member', capability: 'waivers.self' },
-      enabled: false,
-      component: () => null,
+      enabled: true,
+      component: PortalWaivers,
     },
   ],
 };

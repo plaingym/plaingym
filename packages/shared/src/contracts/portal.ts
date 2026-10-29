@@ -25,7 +25,8 @@ export const portalContextSchema = z.discriminatedUnion('role', [
 ]);
 export const portalContextResponseSchema = z.strictObject({ data: portalContextSchema });
 export const portalEmergencyContactSchema = z.strictObject({
-  name: z.string().trim().min(1), relationship: z.string().trim().min(1), phone: z.string().trim().min(1),
+  // Staff may leave the relationship empty, as in the staff emergency contact schema.
+  name: z.string().trim().min(1), relationship: z.string().nullable(), phone: z.string().trim().min(1),
   email: z.email().optional(),
 });
 export const portalMemberSchema = z.strictObject({
@@ -203,6 +204,9 @@ export const portalContracts = {
   signHouseholdWaiver: { method: 'post', path: '/api/portal/household/waivers', permission: { kind: 'member', capability: 'waivers.household' }, body: waiverSignRequestSchema, response: waiverSignatureResponseSchema },
   householdWaiverPdf: { method: 'get', path: '/api/portal/household/waivers/{signatureId}/pdf', permission: { kind: 'member', capability: 'waivers.household' }, params: waiverSignatureParamsSchema, response: waiverPdfResponseSchema },
   waiverPdf: { method: 'get', path: '/api/portal/waivers/{signatureId}/pdf', permission: { kind: 'member', capability: 'waivers.self' }, params: waiverSignatureParamsSchema, response: waiverPdfResponseSchema },
+  // Signing needs an uploaded signature image first, as for staff; the member must be in the route's scope.
+  uploadSignature: { method: 'post', path: '/api/portal/waivers/signature-images', permission: { kind: 'member', capability: 'waivers.self' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
+  uploadHouseholdSignature: { method: 'post', path: '/api/portal/household/waivers/signature-images', permission: { kind: 'member', capability: 'waivers.household' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 // A verified link principal supplies linkId and the resource; no body may choose

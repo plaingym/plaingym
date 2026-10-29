@@ -17,7 +17,7 @@ const matrix: Record<string, Role[]> = {
   'attendance.manage': all, 'data.export': managers, 'kiosk_devices.manage': managers,
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
-const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members\/[^/]+\/(?:bookings|checkin-code|progress|attendance)(?:\/|$))|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
+const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$))|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
   || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
   || /^\/(?:api\/public\/(?:config|waivers|trial|drop-in)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
@@ -87,11 +87,15 @@ test('a household login cannot reach staff routes', async ({ sandboxes }) => {
   expect(bootstrap.data.session).toMatchObject({ roles: [], member: true });
 });
 
-test('a household login reaches the portal booking, schedule, check-in and progress routes', async ({ sandboxes }) => {
+// The demo has no Stripe account, so starting card setup is unavailable there; nothing else may answer 503.
+const stripeCheckout = new Set(['POST /api/portal/payment-methods/checkout']);
+test('a payer household login reaches every portal route', async ({ sandboxes }) => {
+  // The demo student is its household's payer, so payer-only routes must answer too.
   const member = await demoClient(sandboxes[0], 'student');
   for (const entry of inventory.filter(item => item.permission.kind === 'member')) {
     const response = await member.request(entry.path.replace(/\{[^}]+\}/g, missingId), entry.method,
       entry.method === 'GET' ? undefined : 'invalid');
-    expect(/\{[^}]+\}/.test(entry.path) ? [200, 400, 403, 404] : [200, 400], `${key(entry)}: ${response.text}`).toContain(response.status);
+    const reached = /\{[^}]+\}/.test(entry.path) ? [200, 400, 403, 404] : [200, 400];
+    expect(stripeCheckout.has(key(entry)) ? [...reached, 503] : reached, `${key(entry)}: ${response.text}`).toContain(response.status);
   }
 });
