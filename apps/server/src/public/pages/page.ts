@@ -17,7 +17,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
       input.script ? h('script', { src: '/public/pages/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground' },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },
-        h('header', { class: 'space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo', alt: input.gym.name, width: 64, height: 64 }) : null,
+        h('header', { class: 'space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo/' + input.gym.revision, alt: input.gym.name, width: 64, height: 64 }) : null,
           h('p', { class: 'break-words font-semibold' }, input.gym.name), h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, input.title)),
         input.content,
         h('footer', { class: 'flex flex-wrap gap-3' },

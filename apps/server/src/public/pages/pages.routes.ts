@@ -59,8 +59,9 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     route({ method: 'get', path: '/public/pages/theme.css', permission: { kind: 'public' }, responses: { 200: { description: 'Gym colors' } } }, async ctx => {
       ctx.header('Content-Type', 'text/css; charset=utf-8'); return ctx.body(themeCss((await options().service.config(ctx.get('context').gym.gymId)).data.gym.primaryColor));
     }),
-    route({ method: 'get', path: '/public/pages/logo', permission: { kind: 'public' }, responses: { 200: { description: 'Gym logo' } } }, async ctx => {
-      const logo = await options().service.logo(ctx.get('context').gym.gymId);
+    route({ method: 'get', path: '/public/pages/logo/{revision}', permission: { kind: 'public' },
+      request: { params: z.object({ revision: z.string().regex(/^[1-9]\d*$/) }) }, responses: { 200: { description: 'Gym logo' } } }, async ctx => {
+      const logo = await options().service.logo(ctx.get('context').gym.gymId, ctx.req.valid('param').revision);
       ctx.header('Content-Type', logo.contentType); return ctx.body(logo.stream);
     }),
   ];
@@ -79,24 +80,33 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     }
     // Native forms work without JavaScript; drop-ins can select a PNG instead of drawing.
     result.push(route({ method: 'post', path: '/' + kind, permission: { kind: 'public' }, middleware: [budget, bounded], responses: pages }, async ctx => {
-      const context = ctx.get('context'), config = options(), fields = await ctx.req.raw.formData();
-      const value = (name: string) => String(fields.get(name) ?? '');
-      const input = publicTrialRequestSchema.parse({ contact: { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) },
-        member: { firstName: value('firstName'), lastName: value('lastName'), dateOfBirth: value('dateOfBirth') }, honeypot: value('honeypot') });
-      if (kind === 'trial') await config.service.trial(context.gym.gymId, input, context.gym.timezone, context.requestId);
-      else {
-        const templates = await config.service.required(context.gym.gymId);
-        const signatures = await Promise.all(templates.map(async (_template, i) => {
-          const file = fields.get(`waiver-${i}-image`);
-          if (!(file instanceof File) || !file.size || file.size > 256 * 1024 || value(`waiver-${i}-consent`) !== 'on') throw new AppError('invalid_request', 'Signature and consent required');
-          return { templateId: value(`waiver-${i}-template`), templateVersion: Number(value(`waiver-${i}-version`)), pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64') };
-        }));
-        const images = await config.service.admit(context.gym.gymId, { ...input, signatures }, context.gym.timezone);
-        await config.service.dropIn(context.gym.gymId, { ...input, waivers: images.data.map((image, i) => ({ ...image,
-          signer: value(`waiver-${i}-kind`) === 'guardian' ? { kind: 'guardian', name: value(`waiver-${i}-name`), relationship: value(`waiver-${i}-relationship`) }
-            : { kind: 'self', name: value(`waiver-${i}-name`) }, consent: true })) }, context.gym.timezone, context.clientIp ?? 'unknown', context.requestId);
+      const context = ctx.get('context'), config = options();
+      try {
+        const contentType = ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
+        if (contentType !== 'application/x-www-form-urlencoded' && contentType !== 'multipart/form-data')
+          throw new AppError('invalid_request', 'Expected a form submission');
+        const fields = await ctx.req.raw.formData().catch(() => { throw new AppError('invalid_request', 'Invalid form submission'); });
+        const value = (name: string) => String(fields.get(name) ?? '');
+        const input = publicTrialRequestSchema.parse({ contact: { name: value('contactName'), email: value('email'), ...(value('phone') ? { phone: value('phone') } : {}) },
+          member: { firstName: value('firstName'), lastName: value('lastName'), dateOfBirth: value('dateOfBirth') }, honeypot: value('honeypot') });
+        if (kind === 'trial') await config.service.trial(context.gym.gymId, input, context.gym.timezone, context.requestId);
+        else {
+          const templates = await config.service.required(context.gym.gymId);
+          const signatures = await Promise.all(templates.map(async (_template, i) => {
+            const file = fields.get(`waiver-${i}-image`);
+            if (!(file instanceof File) || !file.size || file.size > 256 * 1024 || value(`waiver-${i}-consent`) !== 'on') throw new AppError('invalid_request', 'Signature and consent required');
+            return { templateId: value(`waiver-${i}-template`), templateVersion: Number(value(`waiver-${i}-version`)), pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64') };
+          }));
+          const images = await config.service.admit(context.gym.gymId, { ...input, signatures }, context.gym.timezone);
+          await config.service.dropIn(context.gym.gymId, { ...input, waivers: images.data.map((image, i) => ({ ...image,
+            signer: value(`waiver-${i}-kind`) === 'guardian' ? { kind: 'guardian', name: value(`waiver-${i}-name`), relationship: value(`waiver-${i}-relationship`) }
+              : { kind: 'self', name: value(`waiver-${i}-name`) }, consent: true })) }, context.gym.timezone, context.clientIp ?? 'unknown', context.requestId);
+        }
+        return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'received' }), 200);
+      } catch (error) {
+        if (!(error instanceof z.ZodError) && !(error instanceof AppError && error.code === 'invalid_request')) throw error;
+        return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'failed' }), 400);
       }
-      return ctx.html(intakePage({ ...(await config.service.config(context.gym.gymId)).data, kind, t: config.t ?? translator, state: 'received' }), 200);
     }));
   }
   return result.map(protect);

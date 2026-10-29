@@ -84,8 +84,10 @@ describe('core public pages through the production registrations', () => {
       const response = await other.request(origin + path), text = await response.text();
       expect(response.status).toBe(200); expect(text).not.toContain('North'); expect(text).not.toContain(f.template.id); expect(text).not.toContain('#ffff00');
     }
-    expect((await other.request(origin + '/public/pages/logo')).status).toBe(404);
-    expect((await f.server.request(origin + '/public/pages/logo')).headers.get('content-type')).toBe('image/png');
+    expect((await other.request(origin + '/public/pages/logo/1')).status).toBe(404);
+    expect((await f.server.request(origin + '/public/pages/logo/1')).headers.get('content-type')).toBe('image/png');
+    expect((await f.server.request(origin + '/public/pages/logo/2')).status).toBe(404);
+    expect(await (await f.server.request(origin + '/trial')).text()).toContain('src="/public/pages/logo/1"');
     const config = await (await f.server.request(origin + '/api/public/config')).json();
     expect(publicContracts.config.response.parse(config).data.dropInFee).toEqual({ amountCents: 2500, currency: 'CAD' });
     const page = await (await f.server.request(origin + '/api/public/waivers?limit=1&offset=1')).json();
@@ -213,6 +215,19 @@ describe('core public pages through the production registrations', () => {
     expect(dropIn.status).toBe(200); expect(await dropIn.text()).toContain('Request received');
     expect((await f.rows()).members.filter(m => m.status === 'visitor')).toHaveLength(1);
   });
+  it.each(['/trial', '/drop-in'])('renders an HTML 400 for non-form, unparseable and invalid bodies on %s', async path => {
+    const f = await fixture(), before = await f.rows();
+    for (const [contentType, payload] of [['application/json', '{}'], ['text/plain', 'invalid'],
+      ['multipart/form-data', 'no boundary'], ['application/x-www-form-urlencoded', 'firstName=Incomplete']]) {
+      const response = await f.server.request(origin + path, { method: 'POST', headers: { origin, 'content-type': contentType! }, body: payload! });
+      expect(response.status).toBe(400);
+      expect(response.headers.get('content-type')).toContain('text/html');
+      const html = await response.text();
+      expect(html).toContain('North &lt;Gym&gt;'); expect(html).toContain('href="/source"');
+      expect(html).not.toContain('Request received');
+    }
+    expect((await f.rows()).members).toHaveLength(before.members.length); expect(f.mail.messages).toHaveLength(0);
+  });
   it('renders a useful contact state when no waivers or fee are configured', async () => {
     const f = await fixture();
     await db.forGym(f.otherGym, tx => tx.delete(waiverSignatures));
@@ -226,10 +241,10 @@ describe('core public pages through the production registrations', () => {
     const f = await fixture();
     const settings = createSettingsService({ scope: db.forGym, clock: f.clock });
     await settings.update({ gymId: f.otherGym, actor: { kind: 'system' } }, 'general', { revision: 1, branding: { logoKey: f.gymId + '/logo.png' } });
-    expect((await f.app(f.otherGym).request(origin + '/public/pages/logo')).status).toBe(404);
+    expect((await f.app(f.otherGym).request(origin + '/public/pages/logo/2')).status).toBe(404);
     await f.uploads.get(f.gymId)!.put(f.gymId + '/logo.svg', new TextEncoder().encode('<svg/>'), 'image/svg+xml');
     await settings.update({ gymId: f.gymId, actor: { kind: 'system' } }, 'general', { revision: 1, branding: { logoKey: f.gymId + '/logo.svg' } });
-    expect((await f.server.request(origin + '/public/pages/logo')).status).toBe(404);
+    expect((await f.server.request(origin + '/public/pages/logo/2')).status).toBe(404);
   });
   it('rejects cross-origin mutations through the production CSRF guard', async () => {
     const f = await fixture();

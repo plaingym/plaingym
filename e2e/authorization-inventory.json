@@ -809,5 +809,20 @@
       "kind": "kiosk",
       "capability": "checkin"
     }
-  }
+  },
+  {"method":"GET","path":"/api/public/config","permission":{"kind":"public"}},
+  {"method":"GET","path":"/api/public/waivers","permission":{"kind":"public"}},
+  {"method":"GET","path":"/drop-in","permission":{"kind":"public"}},
+  {"method":"POST","path":"/drop-in","permission":{"kind":"public"}},
+  {"method":"GET","path":"/drop-in/received","permission":{"kind":"public"}},
+  {"method":"GET","path":"/public/pages/client.js","permission":{"kind":"public"}},
+  {"method":"GET","path":"/public/pages/logo/{revision}","permission":{"kind":"public"}},
+  {"method":"GET","path":"/public/pages/styles.css","permission":{"kind":"public"}},
+  {"method":"GET","path":"/public/pages/theme.css","permission":{"kind":"public"}},
+  {"method":"GET","path":"/trial","permission":{"kind":"public"}},
+  {"method":"POST","path":"/trial","permission":{"kind":"public"}},
+  {"method":"GET","path":"/trial/received","permission":{"kind":"public"}},
+  {"method":"POST","path":"/api/public/drop-in","permission":{"kind":"public"}},
+  {"method":"POST","path":"/api/public/trial","permission":{"kind":"public"}},
+  {"method":"POST","path":"/drop-in/signatures","permission":{"kind":"public"}}
 ]

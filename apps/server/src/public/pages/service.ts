@@ -89,8 +89,9 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null },
       dropInFee: await options.dropInFeeFor?.(gymId) ?? null } });
     },
-    async logo(gymId: string) {
-      const key = (await settings.get(gymId)).branding.logoKey;
+    async logo(gymId: string, revision: string) {
+      const gym = await settings.get(gymId), key = gym.branding.logoKey;
+      if (revision !== String(gym.revision)) return missing();
       if (!key || !key.startsWith(gymId + '/') || !options.uploadsFor) return missing();
       const uploads = await options.uploadsFor(gymId), info = await uploads.head(key);
       if (!info || info.deletedAt || info.size > 2_000_000 || !['image/png', 'image/jpeg', 'image/webp'].includes(info.contentType)) return missing();

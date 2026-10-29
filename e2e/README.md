@@ -95,6 +95,12 @@ management contracts are absent from the running application and are not in
 this inventory. The QR check-in contract is also absent until its implementation
 exists. Billing dashboard stubs are outside this mat suite.
 
+The core public trial/drop-in pages and assets are included, with logo revisions
+as path parameters. Only the four explicitly listed public intake submissions
+may answer 429 when the sweep exhausts their shared production budget; validation
+still runs after the limiter. The snapshot additions come from the running
+application's OpenAPI document.
+
 Every browser and API request reaches the app from Caddy's one address, so the
 stack sets `RATE_LIMIT_PER_MINUTE=20000` instead of the default 300; the limiter
 itself is covered by unit tests. A full run takes a few minutes. Failed runs

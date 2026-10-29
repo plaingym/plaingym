@@ -18,8 +18,13 @@ const matrix: Record<string, Role[]> = {
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|members\/[^/]+\/bookings(?:\/|$))|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
-  || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path);
+  || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
+  || /^\/(?:api\/public\/(?:config|waivers|trial|drop-in)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
+// These four routes share ten attempts per gym/IP per fifteen minutes, before validation.
+// The sweep deliberately exhausts that production budget across roles; only these public
+// intake operations may answer 429. Never broaden this allowance to protected routes.
+const budgetedPublicIntake = new Set(['POST /api/public/trial', 'POST /api/public/drop-in', 'POST /trial', 'POST /drop-in']);
 
 test('the running route inventory matches the reviewed authorization sweep', async ({ install }, info) => {
   const actual = Object.entries(install.document.paths).flatMap(([path, methods]) =>
@@ -57,6 +62,7 @@ test('every route enforces all staff roles, anonymous access and device boundari
     const allowed = permissions.every((permission) => permission.kind === 'public'
       || (permission.kind === 'staff' && all.includes(role as Role) && matrix[permission.capability!].includes(role as Role))
       || (permission.kind === 'kiosk' && role === 'device'));
+    if (response.status === 429 && entry.permission.kind === 'public' && budgetedPublicIntake.has(key(entry))) continue;
     // A device token is accepted on check-in endpoints only: tenant routes, public ones included, answer it with
     // 404. Public install routes (the content-pack catalog, setup, demo) run before tenancy and answer it like anyone.
     if (role === 'device' && entry.permission.kind === 'public') expect([200, 400, 404, 409], detail).toContain(response.status);
