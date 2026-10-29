@@ -64,6 +64,7 @@ test('every route enforces all staff roles, anonymous access and device boundari
     // A missing ID makes 404 the right answer only where the path has one; on a collection route a 404 is a
     // missing mount or a wrong denial, never an allowed response.
     else if (allowed) expect(/\{[^}]+\}/.test(entry.path) ? [200, 400, 404, 409] : [200, 400, 409], detail).toContain(response.status);
+    else if (entry.permission.kind === 'member') expect(response.status, detail).toBe(404);
     else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
