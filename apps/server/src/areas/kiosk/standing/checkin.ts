@@ -1,25 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
-import { classBookings, classSessions, forGym, households, members } from '@plaingym/db';
+import { and, asc, eq, ilike, isNotNull, isNull, or } from 'drizzle-orm';
+import { forGym, households, members } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import {
   kioskLookupRequestSchema, kioskNamePinCheckinRequestSchema,
-  type KioskCheckinResult, type KioskLookupResponse, type KioskMemberIdentity, type KioskSessionChoice, type KioskStanding,
+  type KioskCheckinResult, type KioskLookupResponse, type KioskStanding,
 } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { Uploads } from '../../../infra/storage/index.js';
-import { createAttendanceService } from '../../attendance/attendance.js';
+import { createKioskCheckinHelpers, type KioskMemberRow } from '../checkin.js';
 import { verifyHouseholdPin, type HouseholdPinSecret } from '../../members/pin.js';
 import { createBillingStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';
 
-/** Sessions open for check-in this long before they start, and until they end. */
-export const checkinOpensBeforeMs = 60 * 60_000;
+export { checkinOpensBeforeMs } from '../checkin.js';
 /** Bounds the PIN comparisons one search can trigger; more matching households need the front desk. */
 const maxCandidateHouseholds = 25;
-const photoUrlSeconds = 300;
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 export interface KioskCheckinOptions {
   scope?: typeof forGym; clock?: Clock; standing?: StandingChecks;
@@ -28,12 +25,10 @@ export interface KioskCheckinOptions {
   /** Photo storage for short-lived photo links; without it, identities carry no photo. */
   uploadsFor?: (gymId: string) => Promise<Uploads>;
 }
-type MemberRow = { id: string; firstName: string; lastName: string; photoKey: string | null };
-
 export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope)]);
-  const attendance = createAttendanceService({ scope, clock });
+  const { identities, currentSessions, bookedSessions, record } = createKioskCheckinHelpers({ ...options, scope, clock });
 
   /** The one household whose PIN matches among households with a member or household name matching the search. */
   async function findHousehold(gymId: string, name: string, pin: string): Promise<string | null> {
@@ -52,46 +47,10 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
     // Two households sharing a name and PIN can't be told apart: never guess.
     return matches.length === 1 ? matches[0]!.id : null;
   }
-  async function householdMembers(gymId: string, householdId: string): Promise<MemberRow[]> {
+  async function householdMembers(gymId: string, householdId: string): Promise<KioskMemberRow[]> {
     return scope(gymId, (tx) => tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName, photoKey: members.photoKey })
       .from(members).where(and(eq(members.householdId, householdId), isNull(members.anonymizedAt)))
       .orderBy(asc(members.firstName), asc(members.id)));
-  }
-  /** First name, last initial and a short-lived photo link: nothing else reaches the shared screen. */
-  async function identities(gymId: string, rows: readonly MemberRow[]): Promise<Map<string, KioskMemberIdentity>> {
-    const uploads = options.uploadsFor && rows.some((row) => row.photoKey) ? await options.uploadsFor(gymId).catch(() => undefined) : undefined;
-    const result = new Map<string, KioskMemberIdentity>();
-    for (const row of rows) {
-      const photoUrl = uploads && row.photoKey ? await uploads.signedUrl(row.photoKey, photoUrlSeconds).catch(() => null) : null;
-      const lastInitial = segmenter.segment(row.lastName.trim()).containing(0)?.segment ?? '?';
-      result.set(row.id, { id: row.id, firstName: row.firstName, lastInitial, photoUrl });
-    }
-    return result;
-  }
-  async function currentSessions(gymId: string): Promise<KioskSessionChoice[]> {
-    const now = clock.now();
-    const rows = await scope(gymId, (tx) => tx.select({ id: classSessions.id, name: classSessions.name, startsAt: classSessions.startsAt, endsAt: classSessions.endsAt })
-      .from(classSessions).where(and(eq(classSessions.status, 'scheduled'), lte(classSessions.startsAt, new Date(now.getTime() + checkinOpensBeforeMs)), gt(classSessions.endsAt, now)))
-      .orderBy(asc(classSessions.startsAt), asc(classSessions.id)));
-    return rows.map((row) => ({ ...row, startsAt: row.startsAt.toISOString(), endsAt: row.endsAt.toISOString() }));
-  }
-  async function bookedSessions(gymId: string, memberIds: readonly string[], sessionIds: readonly string[]) {
-    if (!memberIds.length || !sessionIds.length) return [];
-    return scope(gymId, (tx) => tx.select({ memberId: classBookings.memberId, sessionId: classBookings.sessionId }).from(classBookings)
-      .where(and(eq(classBookings.status, 'booked'), inArray(classBookings.memberId, [...memberIds]), inArray(classBookings.sessionId, [...sessionIds]))));
-  }
-  async function record(gymId: string, deviceId: string, member: KioskMemberIdentity, sessionId: string | null): Promise<KioskCheckinResult> {
-    try {
-      // Open mat is never deduplicated; a session check-in reports an earlier one instead of recording again.
-      // References can disappear after selection; the lookup must stay inside the neutral error boundary too.
-      if (sessionId && (await attendance.list(gymId, { memberId: member.id, sessionId, limit: 1, offset: 0 })).pagination.total)
-        return { status: 'already_checked_in', member };
-      await attendance.record({ gymId, actor: { kind: 'device', deviceId } }, { memberId: member.id, sessionId, programId: null }, { source: 'kiosk' });
-    } catch (error) {
-      if (error instanceof AppError && (error.code === 'conflict' || error.code === 'not_found')) return { status: 'see_front_desk' };
-      throw error;
-    }
-    return { status: 'checked_in', member };
   }
 
   return {

@@ -3,7 +3,7 @@ import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { attendances, auditEvents, members, uuidv7 } from '@plaingym/db';
+import { attendances, auditEvents, classBookings, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { kioskCheckinResponseSchema } from '@plaingym/shared/contracts';
@@ -106,24 +106,44 @@ describe('QR check-in and revocable member codes', () => {
     const [event] = await db.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, visit!.id)));
     expect(event).toMatchObject({ actorKind: 'device', actorDeviceId: deviceId });
   });
-  it('auto-selects exactly one booked current session, prompts on ambiguity and ignores foreign/ineligible booking IDs', async () => {
+  it('uses real booked current sessions, ignoring waitlisted, cancelled, ended and foreign bookings', async () => {
     const member = await person(), issued = await issue(member);
     const at = (minutes: number) => new Date(clock.now().getTime() + minutes * 60_000);
     const first = await factory('classSessions', gymA, { startsAt: at(-5), endsAt: at(45) });
     const second = await factory('classSessions', gymA, { startsAt: at(10), endsAt: at(60) });
-    let bookings = [first.id];
-    const booked = createQrCheckin({ scope: db.forGym, clock, codes, bookedSessions: async (gym, id, ids) => {
-      expect(gym).toBe(gymA); expect(id).toBe(member.id); expect(ids).toContain(first.id); return bookings;
-    } });
-    expect(await booked.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'checked_in' });
-    expect(await booked.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'already_checked_in' });
+    const unbooked = await factory('classSessions', gymA, { startsAt: at(15), endsAt: at(65) });
+    const ended = await factory('classSessions', gymA, { startsAt: at(-65), endsAt: at(-5) });
+    const foreign = await person(gymB);
+    const foreignSession = await factory('classSessions', gymB, { startsAt: at(-5), endsAt: at(45) });
+    await factory('classBookings', gymB, { memberId: foreign.id, sessionId: foreignSession.id, status: 'booked' });
+    await factory('classBookings', gymA, { memberId: member.id, sessionId: first.id, status: 'booked' });
+    const waiting = await factory('classBookings', gymA, { memberId: member.id, sessionId: second.id, status: 'waitlisted' });
+    await factory('classBookings', gymA, { memberId: member.id, sessionId: unbooked.id, status: 'cancelled' });
+    await factory('classBookings', gymA, { memberId: member.id, sessionId: ended.id, status: 'booked' });
+    const response = await app().request('/api/kiosk/checkin/qr', { ...request(issued.code!), body: JSON.stringify({ code: issued.code }) });
+    // JSON omits an undefined session, so the production route must select the booking itself.
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ data: { status: 'checked_in' } });
+    expect(await qr.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'already_checked_in' });
     expect((await visits(member.id))[0]!.sessionId).toBe(first.id);
-    bookings = [first.id, second.id];
-    expect(await booked.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'select_session', sessions: [{ id: first.id }, { id: second.id }] });
-    bookings = [uuidv7()];
-    expect(await booked.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'select_session' });
-    expect(await booked.checkin(gymA, deviceId, { code: issued.code, sessionId: uuidv7() })).toMatchObject({ status: 'select_session' });
+    await db.forGym(gymA, (tx) => tx.update(classBookings).set({ status: 'booked' }).where(eq(classBookings.id, waiting.id)));
+    expect(await qr.checkin(gymA, deviceId, { code: issued.code })).toMatchObject({ status: 'select_session', sessions: [{ id: first.id }, { id: second.id }] });
+    await db.forGym(gymA, (tx) => tx.update(classBookings).set({ status: 'cancelled' }).where(eq(classBookings.memberId, member.id)));
+    const result = await qr.checkin(gymA, deviceId, { code: issued.code });
+    expect(result.status).toBe('select_session');
+    if (result.status === 'select_session') {
+      expect(result.sessions.map(session => session.id)).toEqual(expect.arrayContaining([first.id, second.id, unbooked.id]));
+      expect(result.sessions.map(session => session.id)).not.toContain(ended.id);
+      expect(result.sessions.map(session => session.id)).not.toContain(foreignSession.id);
+    }
+    expect(await qr.checkin(gymA, deviceId, { code: issued.code, sessionId: uuidv7() })).toMatchObject({ status: 'select_session' });
     expect(await visits(member.id)).toHaveLength(1);
+  });
+  it('records every open-mat visit even when a class is booked', async () => {
+    const member = await person(), issued = await issue(member);
+    for (let i = 0; i < 2; i++) expect(await qr.checkin(gymA, deviceId, { code: issued.code, sessionId: null }))
+      .toMatchObject({ status: 'checked_in' });
+    expect(await visits(member.id)).toHaveLength(2);
   });
   it('keeps inactive/erased members, waiver and billing failures neutral and private', async () => {
     const member = await person(), issued = await issue(member);
