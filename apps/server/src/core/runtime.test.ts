@@ -141,6 +141,33 @@ it('publishes, sends and scans campaigns through the runtime composition', async
     expect.objectContaining({ text: expect.stringContaining(sandbox.origin + '/l/') }),
   ]);
 });
+it('separates real member and staff sessions through the runtime composition', async () => {
+  const login = await post('/api/demo/login', { role: 'student' }, sandbox.origin);
+  expect(login.status).toBe(200);
+  const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+  const headers = { host: new URL(sandbox.origin).host, cookie };
+  const context = await runtime.app.request(sandbox.origin + '/api/portal/context', { headers });
+  expect(context.status).toBe(200);
+  expect(await context.json()).toMatchObject({ data: { role: 'payer', householdId: expect.any(String) } });
+  for (const path of ['/api/staff/profiles', '/api/settings/go-live', '/api/dashboard']) {
+    expect((await runtime.app.request(sandbox.origin + path, { headers })).status, path).toBe(403);
+  }
+  expect((await runtime.app.request(sandbox.origin + '/api/portal/context', {
+    headers: { ...headers, cookie: ownerCookie },
+  })).status).toBe(404);
+});
+it('delivers portal invitations to the demo outbox on the canonical gym origin', async () => {
+  const send = vi.spyOn(SmtpEmail.prototype, 'sendEmail').mockRejectedValue(new Error('SMTP must not run'));
+  const home = await factory('households', sandbox.gymId), email = 'portal.invite@example.invalid';
+  const response = await post(`/api/households/${home.id}/portal-invitations`, {
+    email, scope: 'payer', delivery: 'email',
+  }, sandbox.origin, { cookie: ownerCookie });
+  expect(response.status).toBe(200);
+  const messages = await database.forGym(sandbox.gymId, tx => tx.select().from(emailOutbox).where(eq(emailOutbox.recipient, email)));
+  expect(messages).toHaveLength(1);
+  expect(messages[0]!.text).toContain(sandbox.origin + '/portal/claim#');
+  expect(send).not.toHaveBeenCalled();
+});
 it('serves rank and import routes through the runtime composition', async () => {
   const login = await post('/api/demo/login', { role: 'owner' }, sandbox.origin);
   const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');

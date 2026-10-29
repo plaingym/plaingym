@@ -20,7 +20,10 @@ import { createAuthEmailSender } from '../infra/auth/delivery.js';
 import { sessionMiddleware } from '../infra/auth/middleware.js';
 import { SmtpEmail } from '../infra/email/index.js';
 import { PostgresJobs, startJobsWorker } from '../infra/jobs/postgres.js';
-import { authorize } from '../areas/staff/auth.permissions.js';
+import { createPortalAuthorization } from '../areas/portal/auth.permissions.js';
+import { configurePortalAccess } from '../areas/portal/access.routes.js';
+import { createPortalPrincipalLoader } from '../areas/members/household-users.context.js';
+import { createPortalInvitationService } from '../areas/members/household-users.invitations.js';
 import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
 import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
@@ -196,6 +199,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
     mailer: demo ? demo.emailFor : smtpMailer(smtp!) }), uploadsFor: uploads.forGym, origin: originFor });
+  const portalInvitations = createPortalInvitationService({ config, smtpConfigured,
+    mailer: demo ? demo.emailFor : smtpMailer(smtp!) });
+  configurePortalAccess({ service: portalInvitations, origin: originFor });
   const gymKey = createGymKeyResolver({ key });
   configureKiosk({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock });
   // Signature images and rendered waiver PDFs use the gym's file storage.
@@ -247,7 +253,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configurePayments(payments);
   configureBillingDashboard({ settings, memberships, payments });
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
-  configureLinkPages({ waivers,
+  configureLinkPages({ waivers, portalInvitations,
     checkout,
     receiptKey: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32)) });
   const contributions = { ...areaContributions,
@@ -257,13 +263,15 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),
       ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
         ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };
-  const session = sessionMiddleware({ auth, smtpConfigured, resolve: (context) => {
+  const session = sessionMiddleware({ auth, smtpConfigured,
+    principal: (userId, context) => createPortalPrincipalLoader()(context.get('context').gym.gymId, userId),
+    resolve: (context) => {
     const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
     return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
   } });
   const kioskSession = createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session });
   const app = createApp({
-    contributions, clock, resolveGym: createTenantResolver({ mode }), authorize,
+    contributions, clock, resolveGym: createTenantResolver({ mode }), authorize: createPortalAuthorization(),
     // Signed-link routes resolve their own bearer after normal session loading.
     session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
     origin: originFor, ...(install ? { installOrigin: install } : {}),
