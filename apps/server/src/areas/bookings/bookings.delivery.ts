@@ -7,7 +7,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { MemberEmail, SmtpEmail, type Email } from '../../infra/email/index.js';
 import type { Jobs } from '../../infra/jobs/index.js';
 import { createSmtpResolver } from '../settings/smtp.js';
-import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { renderBookingPromotion } from '../../emails/bookings/bookings.js';
 import { promoteWaitlist, type BookingOptions } from './bookings.js';
 
@@ -86,7 +86,8 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     if (!email) throw new Error('Booking email is not configured');
     const row = await read();
     if (!row?.email) return;
-    const message = await renderBookingPromotion({ name: row.session.name, startsAt: row.session.startsAt, timezone: gym.timezone });
+    const details = await createSettingsService({ scope }).get(gymId);
+    const message = await renderBookingPromotion({ gymName: details.name, name: row.session.name, startsAt: row.session.startsAt, timezone: gym.timezone });
     const sender = new MemberEmail({ gymId, memberId: row.memberId, email, settings, forGym: scope });
     const result = await sender.sendEmail({ to: row.email, ...message });
     if (result.status !== 'sent') return;

@@ -18,7 +18,7 @@ import { createBookingJobs } from './bookings.jobs.js';
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
   const gymId = uuidv7(), clock = new TestClock('2026-10-29T16:00:00Z');
-  await factory('gyms', gymId, { bookingWindowDays: 7, timezone: 'America/New_York', memberEmailsEnabled: true });
+  await factory('gyms', gymId, { name: 'Cedar Martial Arts', bookingWindowDays: 7, timezone: 'America/New_York', memberEmailsEnabled: true });
   const user = await factory('authUser', gymId), first = await factory('members', gymId), waiting = await factory('members', gymId, { email: 'waiting@example.invalid' });
   const session = await factory('classSessions', gymId, { name: 'Practice <with partners>', capacity: 1, startsAt: new Date('2026-10-30T18:00:00Z'), endsAt: new Date('2026-10-30T19:00:00Z') });
   const options = { scope: db.forGym, clock }, service = createBookingService(options), email = new FakeEmail(), jobs = new FakeJobs(clock);
@@ -44,6 +44,8 @@ describe('promotion jobs and notices', () => {
     expect(f.email.messages[0]).toMatchObject({ to: 'waiting@example.invalid', subject: 'Your place in Practice <with partners> is confirmed' });
     expect(f.email.messages[0]!.html).toContain('&lt;with partners&gt;');
     expect(f.email.messages[0]!.text).toContain('2:00 PM');
+    expect(f.email.messages[0]!.html).toContain('Cedar Martial Arts');
+    expect(f.email.messages[0]!.text).toContain('Cedar Martial Arts');
     expect(f.jobs.jobs.filter(row => row.name === noticeJob)).toHaveLength(1);
     expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'booking.promoted')))).toBe(1);
   });
