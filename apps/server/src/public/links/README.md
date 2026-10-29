@@ -74,7 +74,9 @@ idempotent card writer used by webhooks. Revoked cards remain revoked and late
 webhooks remain safe. Invoice payment completion still waits for its accounting
 writes. An onboarding return refreshes the page after its bounded checks even
 when waivers remain, so the saved card becomes visible without completing the
-unfinished onboarding or clearing a signing tablet.
+unfinished onboarding or clearing a signing tablet. Only the server-rendered
+card status is updated in place; waiver inputs, signature canvases and the
+existing Checkout button remain intact during automatic or manual checks.
 
 Invoice Checkout reserves its idempotency window in `checkout_expires_at`, then
 calls the payment provider outside the transaction. The returned session ID is

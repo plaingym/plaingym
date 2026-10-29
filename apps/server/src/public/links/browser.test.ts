@@ -6,12 +6,12 @@ import { linkBrowser } from './browser.js';
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 function fixture(purpose = 'update_card', tablet = false) {
   vi.useFakeTimers();
-  const location = { pathname: '/l/token', href: 'https://gym.test/l/token?returned=1', reload: vi.fn(), replace: vi.fn() };
+  const location = { pathname: '/l/token', href: 'https://gym.test/l/token?returned=1', reload: vi.fn(), replace: vi.fn(), assign: vi.fn() };
   vi.stubGlobal('location', location);
   document.body.dataset.purpose = purpose; document.body.dataset.tablet = String(tablet);
   document.body.innerHTML = '<p id="feedback"></p><button data-complete>Check again</button>'
     + ['busy', 'confirming', 'incomplete', 'conflict', 'failed'].map(key => `<span hidden data-message="${key}">${key}</span>`).join('');
-  const fetch = vi.fn(async () => new Response(JSON.stringify({ data: { completed: false } })));
+  const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ data: { completed: false } })));
   vi.stubGlobal('fetch', fetch);
   return { location, fetch, feedback: document.getElementById('feedback')!, button: document.querySelector('button')! };
 }
@@ -32,15 +32,34 @@ it('shows incomplete only after five increasing waits and retains the manual but
   expect(f.fetch).toHaveBeenCalledTimes(6); expect(f.feedback.textContent).toBe('incomplete'); expect(f.button.disabled).toBe(false);
   f.button.click(); await vi.advanceTimersByTimeAsync(0); expect(f.fetch).toHaveBeenCalledTimes(7);
 });
-it.each([false, true])('refreshes the saved card on unfinished onboarding without repeating the return poll (tablet %s)', async tablet => {
+it.each((['return', 'manual'] as const).flatMap(mode => [false, true].map(tablet => [mode, tablet] as const)))(
+  'refreshes only the saved card while preserving a waiver draft and its Checkout button (%s, tablet %s)', async (mode, tablet) => {
   const f = fixture('onboarding', tablet);
-  f.location.href += '&tablet=1';
-  linkBrowser(); await vi.advanceTimersByTimeAsync(15000);
-  expect(f.fetch).toHaveBeenCalledTimes(6);
-  expect(f.location.replace).toHaveBeenCalledWith('/l/token?tablet=1');
+  if (mode === 'manual') f.location.href = 'https://gym.test/l/token';
+  document.body.insertAdjacentHTML('beforeend', '<section data-card-panel><p data-card-status>No saved card</p><button data-checkout>Add card</button></section>');
+  const checkout = document.querySelector<HTMLButtonElement>('[data-checkout]')!;
+  f.fetch.mockImplementation(async (_url, init) => init?.method === 'POST'
+    ? new Response(JSON.stringify({ data: { completed: false } }))
+    : new Response('<section data-card-panel><p data-card-status>Card ending in 4242</p><button data-checkout>Add card</button></section>'));
+  linkBrowser(); await vi.advanceTimersByTimeAsync(0);
+  // The member starts a waiver while the delayed completion checks are still running.
+  document.body.insertAdjacentHTML('beforeend', '<form data-waiver><input name="name"><canvas></canvas></form>');
+  const name = document.querySelector<HTMLInputElement>('[name="name"]')!, canvas = document.querySelector('canvas')!;
+  name.value = 'Payer draft'; canvas.width = 1234;
+  if (mode === 'manual') { f.button.click(); await vi.advanceTimersByTimeAsync(0); }
+  else await vi.advanceTimersByTimeAsync(15000);
+  const calls = mode === 'manual' ? 2 : 7;
+  expect(f.fetch).toHaveBeenCalledTimes(calls);
+  expect(document.querySelector('[data-card-status]')?.textContent).toBe('Card ending in 4242');
+  expect(document.querySelector('[name="name"]')).toBe(name); expect(name.value).toBe('Payer draft');
+  expect(document.querySelector('canvas')).toBe(canvas); expect(canvas.width).toBe(1234);
+  expect(f.location.replace).not.toHaveBeenCalled();
   expect(f.location.reload).not.toHaveBeenCalled();
-  expect(document.body.textContent).toContain('Check again');
-  await vi.advanceTimersByTimeAsync(20000); expect(f.fetch).toHaveBeenCalledTimes(6);
+  await vi.advanceTimersByTimeAsync(20000); expect(f.fetch).toHaveBeenCalledTimes(calls);
+  expect(document.querySelector('[data-checkout]')).toBe(checkout);
+  f.fetch.mockResolvedValueOnce(new Response(JSON.stringify({ data: { url: 'https://checkout.example.test' } })));
+  checkout.click(); await vi.advanceTimersByTimeAsync(0);
+  expect(tablet ? f.location.replace : f.location.assign).toHaveBeenCalledWith('https://checkout.example.test');
 });
 it.each([201, 409, 503])('stops on HTTP %s and preserves the existing error message', async status => {
   const f = fixture(); f.fetch.mockResolvedValue(new Response('{}', { status })); linkBrowser();

@@ -27,10 +27,10 @@ export function linkPage({ data, state, tablet = false, now, timezone, locale = 
     .format(zonedInstant(value, '12:00', timezone, { gap: 'shift' })!);
   const notice = state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(state + 'Body'))) : null;
   const card = data && (data.purpose === 'update_card' || data.purpose === 'onboarding')
-    ? h('section', { class: panel }, h('h2', { class: 'text-xl font-semibold' }, text('card')),
+    ? h('section', { class: panel, 'data-card-panel': true }, h('h2', { class: 'text-xl font-semibold' }, text('card')),
       h('p', null, text('cardHelp')),
-      data.paymentMethods.length === 0 ? h('p', null, text('noCard')) : null,
-      ...data.paymentMethods.map(c => h('p', null, c.last4 ? text('savedCard', { last4: c.last4 }) : text('noCard'))),
+      data.paymentMethods.length === 0 ? h('p', { 'data-card-status': true }, text('noCard')) : null,
+      ...data.paymentMethods.map(c => h('p', { 'data-card-status': true }, c.last4 ? text('savedCard', { last4: c.last4 }) : text('noCard'))),
       h('button', { type: 'button', class: button, 'data-checkout': true }, text('setupCard'))) : null;
   const invoice = data?.purpose === 'pay_invoice' ? h('section', { class: panel },
     h('h2', { class: 'text-xl font-semibold' }, text('invoice', { number: data.invoice.invoice.number })),

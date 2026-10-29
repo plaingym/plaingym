@@ -42,10 +42,18 @@ export function linkBrowser() {
     if (tablet) return clear();
     location.reload();
   }
-  function refreshOnboarding() {
-    const url = new URL(location.href);
-    url.searchParams.delete('returned');
-    location.replace(url.pathname + url.search);
+  async function refreshOnboarding() {
+    const response = await fetch(location.pathname, { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('request failed');
+    const updated = new DOMParser().parseFromString(await response.text(), 'text/html');
+    if (!activePage) return;
+    const card = document.querySelector('[data-card-panel]'), button = card?.querySelector('[data-checkout]');
+    const rows = [...updated.querySelectorAll('[data-card-panel] [data-card-status]')];
+    if (card && button && rows.length) {
+      card.querySelectorAll('[data-card-status]').forEach(row => row.remove());
+      button.before(...rows);
+    }
+    say('incomplete');
   }
   document.querySelectorAll<HTMLButtonElement>('[data-checkout]').forEach(button => button.addEventListener('click', () => {
     void busy(button, async () => { const result = await call('/checkout');
@@ -55,7 +63,7 @@ export function linkBrowser() {
   complete?.addEventListener('click', () => { void busy(complete, async () => {
     const result = await call('/complete');
     if (result.data.completed) done();
-    else if (purpose === 'onboarding') refreshOnboarding();
+    else if (purpose === 'onboarding') await refreshOnboarding();
     else say('incomplete');
   }); });
   // Returning from Stripe asks the server to verify current processor and local state.
@@ -69,9 +77,8 @@ export function linkBrowser() {
         if (!activePage) return;
         if (result.data.completed) { done(); return; }
       }
-      // Card setup can succeed while waivers still need attention. Refresh their server-rendered
-      // status without starting another return poll or clearing an unfinished signing tablet.
-      if (purpose === 'onboarding') { refreshOnboarding(); return; }
+      // Refresh only the card status: the member may already be filling or drawing a waiver.
+      if (purpose === 'onboarding') { await refreshOnboarding(); return; }
       say('incomplete');
     }, 'confirming');
   }
