@@ -59,6 +59,23 @@ the card or change the household's default. Card and onboarding links use setup
 mode and keep saving cards. The returned or reused Checkout session must match
 the expected card-saving policy.
 
+Setup links reuse an open session only after retrieving its current provider state.
+The persisted start association identifies the current attempt. A completed or
+expired session advances to a new idempotency key derived from that session ID;
+concurrent clicks and lost creation responses still share one attempt. Creation
+responses are retrieved again before redirecting, because an idempotent POST can
+replay its original open snapshot after the session has become terminal. Unknown
+sessions stay unavailable until their state can be resolved.
+
+An authenticated setup return, or restarting a completed setup, can recover a
+missed webhook. It verifies the gym, link, household customer, persisted session
+association, successful SetupIntent and attached method before calling the same
+idempotent card writer used by webhooks. Revoked cards remain revoked and late
+webhooks remain safe. Invoice payment completion still waits for its accounting
+writes. An onboarding return refreshes the page after its bounded checks even
+when waivers remain, so the saved card becomes visible without completing the
+unfinished onboarding or clearing a signing tablet.
+
 Invoice Checkout reserves its idempotency window in `checkout_expires_at`, then
 calls the payment provider outside the transaction. The returned session ID is
 saved before its URL can leave the service. Both transactions check payable

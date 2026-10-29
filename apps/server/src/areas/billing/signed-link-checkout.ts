@@ -10,6 +10,7 @@ import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { createCustomersService, CustomerUnavailable } from './customers.js';
 import { isAssignmentInvoice } from './assignment-invoices.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
+import { createCardHandlers } from './webhooks/handlers/methods.js';
 
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
@@ -29,6 +30,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
   const log = options.log ?? console.error;
   const customers = createCustomersService({ scope, clock, paymentsFor: options.paymentsFor });
   const settings = createGymSettingsAccessor({ scope, clock });
+  const cards = createCardHandlers({ scope, clock });
   async function checkBilling(gymId: string, payment: boolean) {
     if (payment && !(await settings.get(gymId)).billingEnabled) unavailable();
   }
@@ -44,6 +46,84 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     gymId, actorKind: 'system', action, targetType: 'signed_link', targetId: id,
     before: null, after, occurredAt: clock.now(),
   });
+  async function setupStart(tx: Transaction, linkId: string) {
+    const [row] = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+      eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId),
+      eq(auditEvents.action, 'billing.card_setup.started'))).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+    return row?.after && typeof row.after === 'object' && 'sessionId' in row.after && typeof row.after.sessionId === 'string'
+      ? row.after.sessionId : null;
+  }
+  function ownedSetup(session: CheckoutSession, gymId: string, linkId: string, customerId: string) {
+    if (session.metadata.gymId !== gymId || session.metadata.linkId !== linkId || session.customerId !== customerId
+      || session.mode !== 'setup' || !session.savesCard) unavailable();
+  }
+  /** A browser return can repair a missed webhook using the same idempotent card writer.
+   * Neither the return flag nor an arbitrary processor ID authorizes collecting a card. */
+  async function recoverCard(gymId: string, linkId: string, session: CheckoutSession, provider: Payments) {
+    if (session.status !== 'complete' || session.mode !== 'setup' || !session.metadata.linkId) return;
+    const allowed = await scope(gymId, async tx => {
+      const { link, household } = await locked(tx, gymId, linkId, true);
+      if (link.purpose === 'pay_invoice' || link.usedAt) return false;
+      if (session.metadata.gymId !== gymId || session.metadata.linkId !== linkId || session.customerId !== household.stripeCustomerId
+        || session.mode !== 'setup' || !session.savesCard) return false;
+      const [recorded] = await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
+        eq(paymentMethods.householdId, household.id), eq(paymentMethods.processorId, session.paymentMethodId ?? '')));
+      if (recorded) return false; // Includes staff-revoked cards, which must never be re-enabled.
+      const starts = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+        eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId), eq(auditEvents.action, 'billing.card_setup.started')));
+      return starts.some(({ after }) => after && typeof after === 'object' && 'sessionId' in after && after.sessionId === session.id);
+    });
+    if (!allowed) return;
+    if (!session.setupId || !session.paymentMethodId) unavailable();
+    const result = await provider.readPaymentObject({ kind: 'setup', id: session.setupId });
+    if (result.status !== 'found' || result.value.kind !== 'setup') unavailable();
+    const setup = result.value.object;
+    if (setup.status !== 'succeeded' || setup.metadata.gymId !== gymId || setup.metadata.linkId !== linkId
+      || setup.customerId !== session.customerId || setup.paymentMethodId !== session.paymentMethodId) unavailable();
+    await cards.collect(gymId, provider, session.customerId, session.paymentMethodId);
+  }
+  async function startCard(gymId: string, linkId: string, customerId: string, provider: Payments, returnUrl: string) {
+    // The persisted start association also supplies the next attempt's stable key. Concurrent
+    // clicks and lost creation responses retry one attempt; terminal sessions advance the key.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const prepared = await scope(gymId, async tx => {
+        const { link, household } = await locked(tx, gymId, linkId);
+        if (household.stripeCustomerId !== customerId) missing();
+        return { link, sessionId: await setupStart(tx, linkId) };
+      });
+      if (prepared.sessionId) {
+        const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.sessionId });
+        if (found.status !== 'found' || found.value.kind !== 'checkout') unavailable();
+        const session = found.value.object;
+        ownedSetup(session, gymId, linkId, customerId);
+        if (session.status === 'open') {
+          if (!session.url) unavailable();
+          await scope(gymId, async tx => {
+            const { household } = await locked(tx, gymId, linkId);
+            if (household.stripeCustomerId !== customerId || await setupStart(tx, linkId) !== session.id)
+              throw new AppError('conflict', 'Card setup changed');
+          });
+          return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(), clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
+        }
+        await recoverCard(gymId, linkId, session, provider);
+      }
+      const session = await provider.createCheckout({ mode: 'setup', customerId, linkId, successUrl: returnUrl,
+        cancelUrl: returnUrl, saveForOffSession: true,
+        idempotencyKey: `signed-link:${linkId}:setup` + (prepared.sessionId ? `:after:${prepared.sessionId}` : '') });
+      ownedSetup(session, gymId, linkId, customerId);
+      await scope(gymId, async tx => {
+        const { household } = await locked(tx, gymId, linkId);
+        if (household.stripeCustomerId !== customerId) missing();
+        const current = await setupStart(tx, linkId);
+        if (current === session.id) return;
+        if (current !== prepared.sessionId) throw new AppError('conflict', 'Card setup changed');
+        await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id });
+      });
+      // A POST retry can contain Stripe's original open response after expiry/completion.
+      // Retrieve the persisted session on the next iteration before exposing its URL.
+    }
+    return unavailable();
+  }
   async function payable(tx: Transaction, invoice: typeof invoices.$inferSelect) {
     const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
       .where(and(eq(paymentAttempts.invoiceId, invoice.id), eq(paymentAttempts.status, 'pending'))).limit(1);
@@ -98,7 +178,8 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     }
     let session: CheckoutSession;
     await checkBilling(gymId, !!prepared.invoice);
-    if (prepared.invoice?.checkoutSessionId) {
+    if (!prepared.invoice) return startCard(gymId, linkId, customerId, provider, returnUrl);
+    if (prepared.invoice.checkoutSessionId) {
       const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.invoice.checkoutSessionId });
       if (found.status !== 'found' || found.value.kind !== 'checkout') unavailable();
       session = found.value.object;
@@ -132,17 +213,15 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     } else {
       const invoice = prepared.invoice;
       session = await provider.createCheckout({
-        mode: invoice ? 'payment' : 'setup', customerId, linkId: prepared.reservationLinkId ?? linkId,
-        ...(invoice ? { invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase() } : {}),
-        successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: prepared.invoice ? prepared.savesCard : true,
-        idempotencyKey: invoice ? `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}` : `signed-link:${linkId}:setup`,
+        mode: 'payment', customerId, linkId: prepared.reservationLinkId ?? linkId,
+        invoiceId: invoice.id, amount: invoice.amountCents, currency: invoice.currency.toLowerCase(),
+        successUrl: returnUrl, cancelUrl: returnUrl, saveForOffSession: prepared.savesCard,
+        idempotencyKey: `invoice:${invoice.id}:checkout:${invoice.checkoutExpiresAt!.toISOString()}`,
       });
     }
     const sessionLinkId = prepared.invoice?.checkoutSessionId ? linkId : prepared.reservationLinkId ?? linkId;
     if (session.metadata.gymId !== gymId || (session.metadata.linkId && session.metadata.linkId !== sessionLinkId) || session.customerId !== customerId
-      || session.mode !== (prepared.invoice ? 'payment' : 'setup')
-      || session.savesCard !== (prepared.invoice ? prepared.savesCard : true)
-      || (prepared.invoice && session.metadata.invoiceId !== prepared.invoice.id)) unavailable();
+      || session.mode !== 'payment' || session.savesCard !== prepared.savesCard || session.metadata.invoiceId !== prepared.invoice.id) unavailable();
     try {
       await checkBilling(gymId, !!prepared.invoice);
       await scope(gymId, async tx => {
@@ -158,7 +237,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
             await tx.update(invoices).set({ checkoutSessionId: session.id }).where(eq(invoices.id, invoice.id));
             await audit(tx, gymId, 'billing.checkout.started', sessionLinkId, { sessionId: session.id });
           }
-        } else await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id });
+        }
       });
     } catch (error) {
       await provider.expireCheckout(session.id).catch(() => undefined);
@@ -171,14 +250,15 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(),
       prepared.invoice?.checkoutExpiresAt?.getTime() ?? clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
   }
-  /** Called by an authenticated browser receipt or the webhook's persisted link/session association.
-   * Stripe completion alone is insufficient: wait for the existing webhook handler's writes. */
+  /** Called by an authenticated browser receipt or the webhook's persisted link/session association. */
   async function complete(gymId: string, linkId: string, sessionId: string | null) {
     let session: CheckoutSession | null = null;
     if (sessionId) {
       const provider = await options.paymentsFor(gymId);
       const found = await provider.readPaymentObject({ kind: 'checkout', id: sessionId });
       if (found.status === 'found' && found.value.kind === 'checkout') session = found.value.object;
+      if (session?.metadata.gymId === gymId && session.metadata.linkId === linkId)
+        await recoverCard(gymId, linkId, session, provider);
     }
     return scope(gymId, async tx => {
       const { link, household } = await locked(tx, gymId, linkId, true);

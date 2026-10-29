@@ -328,6 +328,117 @@ describe('signed-link audit regressions with real PostgreSQL', () => {
   });
 });
 
+describe('card setup recovery with real PostgreSQL', () => {
+  for (const stripe of [false, true]) {
+    const name = stripe ? 'Stripe' : 'fake';
+    const saved = (f: Awaited<ReturnType<typeof fixture>>) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));
+    it.each(['onboarding', 'update_card'] as const)(`${name} repairs a missed webhook on %s return and tolerates late delivery`, async purpose => {
+      const f = await fixture(purpose, stripe);
+      if (purpose === 'onboarding') await factory('waiverTemplates', f.gymId);
+      const first = await f.checkout.start(f.gymId, f.linkId), session = await f.finish(first.session.id);
+      expect(await saved(f)).toHaveLength(0);
+      expect(await f.checkout.complete(f.gymId, f.linkId, session.id)).toBe(purpose === 'update_card');
+      expect(await saved(f)).toMatchObject([{ processorId: session.paymentMethodId, isDefault: true, revokedAt: null }]);
+      expect(await f.checkout.complete(f.gymId, f.linkId, session.id)).toBe(purpose === 'update_card');
+      await f.dispatch(await f.deliver(session));
+      expect(await saved(f)).toHaveLength(1);
+      expect(await f.used()).toHaveLength(purpose === 'update_card' ? 1 : 0);
+    });
+    it.each(['complete', 'expired'] as const)(`${name} replaces a provider-confirmed %s setup with an open session`, async terminal => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId);
+      if (terminal === 'complete') await f.finish(first.session.id);
+      else expect(await f.provider.expireCheckout(first.session.id)).toEqual({ status: 'expired' });
+      const next = await f.checkout.start(f.gymId, f.linkId);
+      expect(next.session).toMatchObject({ status: 'open', mode: 'setup' });
+      expect(next.session.id).not.toBe(first.session.id);
+      expect((await f.checkout.start(f.gymId, f.linkId)).session.id).toBe(next.session.id);
+      expect(await saved(f)).toHaveLength(terminal === 'complete' ? 1 : 0);
+    });
+    it(`${name} shares one open session across concurrent clicks`, async () => {
+      const f = await fixture('onboarding', stripe);
+      const starts = await Promise.all(Array.from({ length: 5 }, () => f.checkout.start(f.gymId, f.linkId)));
+      expect(new Set(starts.map(s => s.session.id)).size).toBe(1);
+      const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.card_setup.started')));
+      expect(audits).toHaveLength(1);
+    });
+    it(`${name} retries a lost renewal response with the same attempt key`, async () => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId);
+      await f.provider.expireCheckout(first.session.id);
+      const create = f.provider.createCheckout.bind(f.provider);
+      let lost: CheckoutSession | undefined;
+      const spy = vi.spyOn(f.provider, 'createCheckout').mockImplementationOnce(async request => {
+        lost = await create(request); throw new Error('Connection lost after creation');
+      });
+      await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toThrow('Connection lost');
+      const next = await f.checkout.start(f.gymId, f.linkId);
+      expect(next.session.id).toBe(lost!.id);
+      expect(spy.mock.calls[0]![0].idempotencyKey).toBe(spy.mock.calls[1]![0].idempotencyKey);
+    });
+    it(`${name} re-reads an expired cached creation response before exposing the URL`, async () => {
+      const f = await fixture('onboarding', stripe);
+      // The provider received creation but its response never reached the app's start write.
+      const first = await f.provider.createCheckout({ mode: 'setup', customerId: f.household.stripeCustomerId!, linkId: f.linkId,
+        successUrl: origin + '/l/return', cancelUrl: origin + '/l/return', saveForOffSession: true,
+        idempotencyKey: `signed-link:${f.linkId}:setup` });
+      await f.provider.expireCheckout(first.id);
+      const next = await f.checkout.start(f.gymId, f.linkId);
+      expect(next.session.status).toBe('open'); expect(next.session.id).not.toBe(first.id);
+    });
+    it(`${name} refuses unknown sessions without blindly creating another`, async () => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId);
+      const read = f.provider.readPaymentObject.bind(f.provider);
+      vi.spyOn(f.provider, 'readPaymentObject').mockImplementation(reference => reference.id === first.session.id
+        ? Promise.resolve({ status: 'unknown', reference }) : read(reference));
+      const create = vi.spyOn(f.provider, 'createCheckout');
+      await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toMatchObject({ code: 'unavailable' });
+      expect(create).not.toHaveBeenCalled();
+    });
+    it(`${name} never restores a staff-revoked card during missed-event recovery`, async () => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId), session = await f.finish(first.session.id);
+      await db.forGym(f.gymId, tx => tx.insert(paymentMethods).values({ gymId: f.gymId, householdId: f.household.id,
+        processorId: session.paymentMethodId!, last4: '3155', isDefault: false, revokedAt: f.clock.now() }));
+      expect(await f.checkout.complete(f.gymId, f.linkId, session.id)).toBe(false);
+      expect((await saved(f))[0]!.revokedAt).not.toBeNull();
+    });
+    it.each(['setup_customer', 'setup_link', 'method_customer'] as const)(`${name} refuses a mismatched %s before saving a card`, async mismatch => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId), session = await f.finish(first.session.id);
+      const read = f.provider.readPaymentObject.bind(f.provider);
+      vi.spyOn(f.provider, 'readPaymentObject').mockImplementation(async reference => {
+        const result = await read(reference);
+        if (result.status === 'found' && result.value.kind === 'setup') {
+          const object = result.value.object;
+          if (mismatch === 'setup_customer') result.value.object = { ...object, customerId: 'cus_other' };
+          if (mismatch === 'setup_link') result.value.object = { ...object, metadata: { ...object.metadata, linkId: uuidv7() } };
+        }
+        if (result.status === 'found' && result.value.kind === 'payment_method' && mismatch === 'method_customer')
+          result.value.object = { ...result.value.object, customerId: 'cus_other' };
+        return result;
+      });
+      await expect(f.checkout.complete(f.gymId, f.linkId, session.id)).rejects.toThrow();
+      expect(await saved(f)).toHaveLength(0);
+    });
+    it(`${name} refuses recovery across gyms, households, links and unassociated sessions`, async () => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId), session = await f.finish(first.session.id);
+      const otherHousehold = await factory('households', f.gymId, { stripeCustomerId: 'cus_other' });
+      const sameHouseholdLink = await f.links.create(f.context, { purpose: 'onboarding', householdId: f.household.id, expiresAt: f.created.link.expiresAt });
+      const otherLink = await f.links.create(f.context, { purpose: 'onboarding', householdId: otherHousehold.id, expiresAt: f.created.link.expiresAt });
+      for (const link of [sameHouseholdLink, otherLink]) expect(await f.checkout.complete(f.gymId, link.link.id, session.id)).toBe(false);
+      await expect(f.checkout.complete(uuidv7(), f.linkId, session.id)).rejects.toMatchObject({ code: 'not_found' });
+      const unassociated = await f.provider.createCheckout({ mode: 'setup', customerId: f.household.stripeCustomerId!, linkId: f.linkId,
+        successUrl: origin, cancelUrl: origin, saveForOffSession: true, idempotencyKey: 'unassociated' });
+      expect(await f.checkout.complete(f.gymId, f.linkId, (await f.finish(unassociated.id)).id)).toBe(false);
+      expect(await saved(f)).toHaveLength(0);
+    });
+    it.each(['revoked', 'expired'] as const)(`${name} refuses a %s link before recovering any card`, async state => {
+      const f = await fixture('onboarding', stripe), first = await f.checkout.start(f.gymId, f.linkId), session = await f.finish(first.session.id);
+      if (state === 'revoked') await f.links.revoke(f.context, f.linkId);
+      else f.clock.set('2026-12-01T00:00:00Z');
+      await expect(f.checkout.complete(f.gymId, f.linkId, session.id)).rejects.toMatchObject({ code: 'not_found' });
+      expect(await saved(f)).toHaveLength(0);
+    });
+  }
+});
+
 describe('signed-link webhook completion with real PostgreSQL', () => {
   for (const stripe of [false, true]) for (const [purpose, type] of [
     ['pay_invoice', 'checkout.session.completed'], ['pay_invoice', 'payment_intent.succeeded'],

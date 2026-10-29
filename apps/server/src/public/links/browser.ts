@@ -42,15 +42,23 @@ export function linkBrowser() {
     if (tablet) return clear();
     location.reload();
   }
+  function refreshOnboarding() {
+    const url = new URL(location.href);
+    url.searchParams.delete('returned');
+    location.replace(url.pathname + url.search);
+  }
   document.querySelectorAll<HTMLButtonElement>('[data-checkout]').forEach(button => button.addEventListener('click', () => {
     void busy(button, async () => { const result = await call('/checkout');
       if (tablet) location.replace(String(result.data.url)); else location.assign(String(result.data.url)); });
   }));
   const complete = document.querySelector<HTMLButtonElement>('[data-complete]');
   complete?.addEventListener('click', () => { void busy(complete, async () => {
-    const result = await call('/complete'); if (result.data.completed) done(); else say('incomplete');
+    const result = await call('/complete');
+    if (result.data.completed) done();
+    else if (purpose === 'onboarding') refreshOnboarding();
+    else say('incomplete');
   }); });
-  // Returning from Stripe never asserts success. It asks the server whether webhook processing finished.
+  // Returning from Stripe asks the server to verify current processor and local state.
   if (complete && ['pay_invoice', 'update_card', 'onboarding'].includes(purpose)
     && new URL(location.href).searchParams.get('returned') === '1') {
     void busy(complete, async () => {
@@ -61,6 +69,9 @@ export function linkBrowser() {
         if (!activePage) return;
         if (result.data.completed) { done(); return; }
       }
+      // Card setup can succeed while waivers still need attention. Refresh their server-rendered
+      // status without starting another return poll or clearing an unfinished signing tablet.
+      if (purpose === 'onboarding') { refreshOnboarding(); return; }
       say('incomplete');
     }, 'confirming');
   }

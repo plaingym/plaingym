@@ -37,6 +37,23 @@ acknowledged and discarded when the shared key is configured, including when no
 active sandboxes remain. Untagged refunds and disputes resolve their parent
 through gym-scoped providers.
 
+For local development, run `stripe listen --forward-to
+http://127.0.0.1:3000/webhooks/stripe` in test mode on the same Stripe account as
+`DEMO_STRIPE_TEST_KEY`. Set `DEMO_STRIPE_WEBHOOK_SECRET` to this CLI listener's
+signing secret, then restart the development server. A Dashboard endpoint secret
+is different from a CLI secret. Forward to the API port directly; the demo
+install endpoint chooses the sandbox from verified provider ownership.
+
+Distinguish a CLI authentication/reconnection failure from the status of its
+local forwarded POST. A local signature failure returns 400 (`webhook_invalid`);
+an accepted event returns 200 and is then processed asynchronously in the inbox.
+Check both receipt and processing. Restarting a listener does not prove an older
+event was replayed. For a missed setup event, the authenticated Checkout return
+or restarting that link's card setup can recover the saved card after verifying
+the current Stripe objects. Reopening an expired or completed setup creates a
+new usable Checkout session. Never print keys, signing secrets, signed-link
+tokens or full event payloads when diagnosing this flow.
+
 The install credential is resolved directly for both seeding and normal sandbox
 payments; it is never copied into gym rows. This avoids duplicating a shared
 secret in every disposable sandbox and keeps key rotation at install scope.

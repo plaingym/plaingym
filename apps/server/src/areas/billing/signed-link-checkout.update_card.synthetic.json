@@ -121,6 +121,61 @@
             "link_id": "00000000-0000-7000-8000-000000000003"
           }
         },
+        "status": "open",
+        "url": "https://checkout.invalid/fixture",
+        "setup_intent": "seti_1"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/setup_intents/seti_1"
+      },
+      "output": {
+        "id": "seti_1",
+        "created": 1793102400,
+        "livemode": false,
+        "object": "setup_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "link_id": "00000000-0000-7000-8000-000000000003"
+        },
+        "status": "requires_payment_method",
+        "payment_method": null,
+        "amount": 100,
+        "currency": "usd"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/checkout/sessions/cs_2"
+      },
+      "output": {
+        "id": "cs_2",
+        "created": 1793102400,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "setup",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.test/l/return",
+        "cancel_url": "https://gym.example.test/l/return",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "link_id": "00000000-0000-7000-8000-000000000003"
+        },
+        "setup_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "link_id": "00000000-0000-7000-8000-000000000003"
+          }
+        },
         "status": "complete",
         "url": null,
         "setup_intent": "seti_1"

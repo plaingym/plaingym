@@ -558,14 +558,17 @@ describe('campaign completion and production registrations', () => {
     f.clock.advance(86400000); await f.drain(); expect(f.email.messages).toHaveLength(1);
     await f.service.remindCampaign(f.context, c.campaign.id); await f.drain(); expect(f.email.messages).toHaveLength(2);
   });
-  it.each(['onboarding', 'update_card'] as const)('tracks %s after one card-saved webhook and the signed-link completion path', async purpose => {
+  it.each(['onboarding', 'update_card'] as const)('tracks %s after missed webhook recovery and a late card-saved event', async purpose => {
     const f = await fixture(), c = await f.campaign(purpose);
     await f.service.scan(f.gymId); await f.drain();
     const token = f.token();
     const checkout = createSignedLinkCheckout({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor, originFor: async () => origin });
-    const opened = await checkout.start(f.gymId, c.link.id), session = f.provider.completeCheckout(opened.session.id);
-    expect(await checkout.complete(f.gymId, c.link.id, session.id)).toBe(false);
+    const opened = await checkout.start(f.gymId, c.link.id);
+    expect(await checkout.complete(f.gymId, c.link.id, opened.session.id)).toBe(false);
     expect((await f.service.get(f.gymId, c.campaign.id)).progress.pending).toBe(1);
+    const session = f.provider.completeCheckout(opened.session.id);
+    expect(await checkout.complete(f.gymId, c.link.id, session.id)).toBe(true);
+    expect((await f.service.get(f.gymId, c.campaign.id)).progress.completed).toBe(1);
     const handlers = new Map<string, WebhookHandler>();
     registerBillingWebhookHandlers({ register(type, handler) { handlers.set(type, handler); } }, { scope: db.forGym, clock: f.clock,
       transitions: createInvoiceTransitions({ scope: db.forGym, clock: f.clock }) });

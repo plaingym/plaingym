@@ -32,6 +32,16 @@ it('shows incomplete only after five increasing waits and retains the manual but
   expect(f.fetch).toHaveBeenCalledTimes(6); expect(f.feedback.textContent).toBe('incomplete'); expect(f.button.disabled).toBe(false);
   f.button.click(); await vi.advanceTimersByTimeAsync(0); expect(f.fetch).toHaveBeenCalledTimes(7);
 });
+it.each([false, true])('refreshes the saved card on unfinished onboarding without repeating the return poll (tablet %s)', async tablet => {
+  const f = fixture('onboarding', tablet);
+  f.location.href += '&tablet=1';
+  linkBrowser(); await vi.advanceTimersByTimeAsync(15000);
+  expect(f.fetch).toHaveBeenCalledTimes(6);
+  expect(f.location.replace).toHaveBeenCalledWith('/l/token?tablet=1');
+  expect(f.location.reload).not.toHaveBeenCalled();
+  expect(document.body.textContent).toContain('Check again');
+  await vi.advanceTimersByTimeAsync(20000); expect(f.fetch).toHaveBeenCalledTimes(6);
+});
 it.each([201, 409, 503])('stops on HTTP %s and preserves the existing error message', async status => {
   const f = fixture(); f.fetch.mockResolvedValue(new Response('{}', { status })); linkBrowser();
   await vi.advanceTimersByTimeAsync(20000);

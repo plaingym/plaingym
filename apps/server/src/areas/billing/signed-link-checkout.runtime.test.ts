@@ -138,6 +138,35 @@ it('routes all browser link actions and webhook completion through startRuntime 
     for (const path of ['/api/links/update-card', '/api/links/update-card/checkout', '/api/links/update-card/complete'])
       expect((await post(path, kiosk.token)).status).toBe(404);
 
+    // A real browser return repairs a missed setup webhook, while unsigned waivers keep
+    // onboarding active and the server-rendered page shows the recovered card.
+    const recoveryProvider = new FakePayments(gymId, clock, secret);
+    recoveryProvider.seedCustomer({ id: 'cus_recovery', email: 'recovery@example.test' });
+    provider = recoveryProvider;
+    const recoveryHousehold = await factory('households', gymId, { stripeCustomerId: 'cus_recovery' });
+    await factory('members', gymId, { householdId: recoveryHousehold.id });
+    const recoveryLink = await links.create(mutation, { purpose: 'onboarding', householdId: recoveryHousehold.id,
+      expiresAt: new Date(clock.now().getTime() + 86400000).toISOString() });
+    const createRecovery = vi.spyOn(recoveryProvider, 'createCheckout');
+    const recoveryStart = await post('/api/links/onboarding/checkout', recoveryLink.token);
+    expect(recoveryStart.status).toBe(200);
+    const recoveryCookie = recoveryStart.headers.get('set-cookie')!.split(';')[0]!;
+    const recoverySession = await createRecovery.mock.results[0]!.value as CheckoutSession;
+    const recoveryFinished = recoveryProvider.completeCheckout(recoverySession.id);
+    expect(await (await post('/api/links/onboarding/complete', recoveryLink.token, {}, recoveryCookie)).json())
+      .toEqual({ data: { completed: false } });
+    const recoveryData = await app.request(origin + '/api/links/onboarding', { headers: { authorization: 'Bearer ' + recoveryLink.token } });
+    expect((await recoveryData.json()).data.paymentMethods).toMatchObject([{ last4: '4242' }]);
+    const recoveryPage = await app.request(origin + '/l/' + recoveryLink.token);
+    expect(recoveryPage.status).toBe(200); expect(await recoveryPage.text()).toContain('4242');
+    const renewed = await post('/api/links/onboarding/checkout', recoveryLink.token);
+    expect(renewed.status).toBe(200);
+    const newSession = await createRecovery.mock.results[1]!.value as CheckoutSession;
+    expect(newSession.status).toBe('open'); expect(newSession.id).not.toBe(recoverySession.id);
+    await dispatch(recoveryFinished, false);
+    expect((await links.resolve(gymId, recoveryLink.token)).status).toBe('active');
+    createRecovery.mockRestore();
+
     // Record/replay a full HTTP card update without a return visit or Checkout service calls.
     const link = await createLink('update_card'), location = new URL('./signed-link-checkout.runtime.synthetic.json', import.meta.url);
     const recording = process.env.RECORD_LINK_CHECKOUT_FIXTURES === '1', recorder = new FixtureRecorder(gymId);

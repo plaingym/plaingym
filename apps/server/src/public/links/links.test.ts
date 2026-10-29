@@ -274,7 +274,7 @@ describe('signed-link pages through production registrations', () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(await db.forGym(g.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.checkout.reservation_renewed')))).toHaveLength(1);
   });
-  it('uses the existing customer for setup, with gym metadata on session and SetupIntent; abandoned setup remains usable', async () => {
+  it('uses the existing customer and verifies setup metadata while recovering a missed webhook on return', async () => {
     const f = await fixture('update_card');
     const spy = vi.spyOn(f.provider, 'createCheckout');
     const session = await f.checkout.start(f.gymId, f.link.link.id);
@@ -285,8 +285,7 @@ describe('signed-link pages through production registrations', () => {
     expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(false);
     const completed = f.provider.completeCheckout(session.session.id);
     expect(await f.provider.readPaymentObject({ kind: 'setup', id: completed.setupId! })).toMatchObject({ status: 'found', value: { object: { metadata: { gymId: f.gymId } } } });
-    expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(false);
-    await f.completeAtStripe(session.session.id);
+    expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(true);
     expect(await f.checkout.complete(f.gymId, f.link.link.id, session.session.id)).toBe(true);
   });
   it('shows the friendly unavailable state without creating a new customer', async () => {
