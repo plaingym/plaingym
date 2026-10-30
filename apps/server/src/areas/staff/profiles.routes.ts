@@ -7,6 +7,7 @@ import type { Context } from 'hono';
 import { route } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { cspNonce } from '../../core/csp.js';
 import { createStaffProfileService, type StaffActor } from './profiles.js';
 import type { StaffInvitationService } from './profiles.invitations.js';
 import { createStaffPhotoRoutes, createStaffPhotoService } from './profiles.photos.js';
@@ -68,7 +69,7 @@ export function createStaffInvitationRoutes(service: StaffInvitationService | ((
   // The acceptance page is server-rendered HTML, outside the JSON contracts.
   route({ method: 'get', path: '/staff-invitation', permission: { kind: 'public' }, responses: { 200: { description: 'Accept staff invitation', content: { 'text/html': { schema: z.string() } } } } }, async (c) => {
     c.header('Cache-Control', 'no-store'); c.header('Referrer-Policy', 'no-referrer');
-    return c.html(invitationPage(t, await current().passwordRequired(c.get('context').gym.gymId)).toString(), 200);
+    return c.html(invitationPage(t, await current().passwordRequired(c.get('context').gym.gymId), cspNonce(c)).toString(), 200);
   })];
 }
 export const routes = [

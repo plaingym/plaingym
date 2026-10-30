@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { CustomerCreationInProgress, normalizeChargeOutcome, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
+import { CustomerCreationInProgress, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund } from './index.js';
@@ -68,6 +68,11 @@ export function stripeTransport(apiKey: string, options: { testOnly?: boolean; d
       apiVersion: STRIPE_API_VERSION, ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
     }));
   } };
+}
+
+function absent(error: unknown): boolean {
+  const value = error as { code?: string; statusCode?: number } | null;
+  return value?.code === 'resource_missing' && [400, 404].includes(value.statusCode ?? 0);
 }
 
 export class StripePayments implements Payments {
@@ -328,10 +333,6 @@ export class StripePayments implements Payments {
   async detachPaymentMethod(processorId: string): Promise<void> {
     assertNoTransaction('payments.detachPaymentMethod');
     const path = this.#path('payment_methods', processorId);
-    const absent = (error: unknown) => {
-      const value = error as { code?: string; statusCode?: number } | null;
-      return value?.code === 'resource_missing' && [400, 404].includes(value.statusCode ?? 0);
-    };
     let method: ObjectData;
     try { method = await this.#get(path); }
     catch (error) { if (absent(error)) return; throw error; }
@@ -349,6 +350,18 @@ export class StripePayments implements Payments {
       catch (readError) { if (absent(readError)) return; throw error; }
       if (current.customer) throw error;
     }
+  }
+  async redactCustomer(customerId: string): Promise<void> {
+    assertNoTransaction('payments.redactCustomer');
+    const path = this.#path('customers', customerId);
+    let customer: ObjectData;
+    try { customer = await this.#get(path); }
+    catch (error) { if (absent(error)) return; throw error; }
+    if (customer.deleted === true) return;
+    this.#metadata(customer);
+    if (customer.name === ERASED_CUSTOMER_NAME && !customer.email) return;
+    // An empty string clears the email; the customer's metadata, payments and disputes are unchanged.
+    await this.#post(path, { name: ERASED_CUSTOMER_NAME, email: '' }, 'customer:' + customerId + ':redact');
   }
   async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
     assertNoTransaction('payments.adoptCustomer');

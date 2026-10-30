@@ -169,6 +169,17 @@ retryable. Payment Methods **Write** is required and probed during setup. Existi
 keys without it report `Check the Stripe permission for Payment Methods`; local
 card revocation remains in place while the queued detach job retries.
 
+`redactCustomer(id)` serves member erasure. It checks the customer's gym, then
+[updates the Customer](https://docs.stripe.com/api/customers/update) so its name
+is `Erased member` and its email is cleared (an empty string clears it). The
+Customer, its metadata and its payment and dispute history stay, because the gym
+keeps them for disputes and tax; the adapter never deletes a Customer. Missing,
+deleted and already redacted customers succeed without a write, so the call is
+safe to repeat. Erasing a household's last member commits first, then calls it
+with the customer ID the erasure cleared; a durable `members.erasure.redact_customer`
+job carries that ID and retries when Stripe is unreachable. It uses the Customers
+**Write** permission that customer creation already needs.
+
 Run from the repository root with the pinned Node version:
 
 ```powershell

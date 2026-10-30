@@ -4,6 +4,7 @@ import { z } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
 import type { MiddlewareHandler } from 'hono';
 import { createApp } from './app.js';
+import { cspNonce } from './csp.js';
 import { app as defaultApp } from '../app.js';
 import type { RequestEnvironment } from './context.js';
 import { TestClock } from './clock.js';
@@ -67,10 +68,28 @@ describe('server application composition', () => {
       const response = await app.request(path);
       expect(response.headers.get('x-frame-options')).toBe('DENY');
       expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
+      expect(response.headers.get('content-security-policy-report-only')).toBe("default-src 'self'; script-src 'self'; style-src 'self'; "
+        + "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'");
     }
     const own = await app.request('/api/own-policy');
     expect(own.headers.get('x-frame-options')).toBe('DENY');
     expect(own.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
+    expect(own.headers.has('content-security-policy-report-only')).toBe(false);
+  });
+  it('reports, without blocking, inline scripts without the response nonce and images from unlisted origins', async () => {
+    const app = createApp({ resolveGym, session, authorize: allow, contentSecurity: { imageOrigins: ['https://uploads.example.test'] } });
+    app.get('/page', (context) => context.html(`<script nonce="${cspNonce(context)}">1</script>`));
+    const pages = await Promise.all([app.request('/page'), app.request('/page')]);
+    const nonces = await Promise.all(pages.map(async (page) => {
+      const nonce = /nonce="([^"]+)"/.exec(await page.text())![1]!;
+      expect(nonce).toMatch(/^[A-Za-z0-9+/]{22}==$/);
+      expect(page.headers.get('content-security-policy-report-only')).toContain(`script-src 'self' 'nonce-${nonce}';`);
+      expect(page.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data: https://uploads.example.test;");
+      return nonce;
+    }));
+    expect(nonces[0]).not.toBe(nonces[1]);
+    for (const origin of ['https://uploads.example.test/', 'https://*.example.test', 'javascript:alert(1)'])
+      expect(() => createApp({ resolveGym, session, authorize: allow, contentSecurity: { imageOrigins: [origin] } })).toThrow();
   });
   it('authorizes before input validation and formats validation and malformed JSON errors', async () => {
     const entry = route({ method: 'post', path: '/api/validate', permission: { kind: 'staff', capability: 'members.read' },

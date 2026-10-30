@@ -25,12 +25,18 @@ under each session's row lock, clears their waitlist positions without
 renumbering others, and unlinks staff profiles from the erased member. Bookings
 for sessions that have started stay as history. For a household's last member it
 also revokes active cards, clears the local Stripe customer ID and holds open and
-past-due invoices for review. `eraseMember` returns `files` and `revokedCards` for
-storage cleanup and provider detachment after commit. The runtime passes the
-billing detach callback and job queue through `configureMembers`; the route
-queues a detach job for each revoked card before attempting the detach. A failed
-attempt is logged with identifiers only and the erasure still succeeds, since the
-job retries it. Failed file cleanup returns an error.
+past-due invoices for review. `eraseMember` returns `files`, `revokedCards` and
+`erasedCustomerId` (the cleared Stripe customer ID) for storage cleanup, provider
+detachment and customer redaction after commit. The runtime passes the billing
+detach callback, the customer redaction callback (`Payments.redactCustomer`) and
+the job queue through `configureMembers`; the route queues a detach job for each
+revoked card and a `members.erasure.redact_customer` job carrying the customer ID
+before attempting either call; the redaction job is queued first, and the
+`household.anonymized` audit event records the cleared customer ID. The Stripe
+Customer is kept for the books: its name
+becomes `Erased member` and its email is cleared. A failed attempt is logged with
+identifiers only and the erasure still succeeds, since the job retries it.
+Failed file cleanup returns an error.
 Unused households can be deleted; referenced households return a conflict.
 
 `hashHouseholdPin` and `verifyHouseholdPin` take the per-gym secret, gym ID,
@@ -60,7 +66,7 @@ Actual deletion remains the storage subsystem's backup-aware sweep.
 
 ## Composition
 
-The runtime calls `configureMembers({ pinSecret, uploadsFor, clock })` and registers
+The runtime calls `configureMembers({ pinSecret, uploadsFor, clock, detachCard, redactCustomer, jobs })` and registers
 `createMemberPhotoJobs(uploadsFor)` with the worker, using its gym-scoped uploads
 resolver. Until `configureMembers` runs (or when a test passes its own service without
 storage), photo operations and setting a nonempty PIN fail closed. The web feature

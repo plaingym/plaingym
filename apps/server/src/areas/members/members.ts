@@ -40,10 +40,10 @@ const search = (value: string) => '%' + value.replace(/[\\%_]/g, '\\$&') + '%';
 export interface MembersOptions { scope?: typeof forGym; clock?: Clock; pinSecret?: HouseholdPinSecret }
 export function createMembersService(options: MembersOptions = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string) =>
+  const audit = (tx: Transaction, context: MutationContext, action: string, targetType: string, targetId: string, before?: Record<string, string>) =>
     writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
       ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
-      action, targetType, targetId, occurredAt: clock.now() }); // No PII or PINs in the append-only log.
+      action, targetType, targetId, occurredAt: clock.now(), ...(before ? { before } : {}) }); // No PII or PINs in the append-only log.
   const getMemberRow = async (tx: Transaction, id: string) => missing((await tx.select(memberFields).from(members).where(eq(members.id, id)))[0]);
   const getHouseholdRow = async (tx: Transaction, id: string) => missing((await tx.select(householdFields).from(households).where(eq(households.id, id)).for('update'))[0]);
   const service = {
@@ -95,7 +95,7 @@ export function createMembersService(options: MembersOptions = {}) {
     async anonymizeMember(context: MutationContext, id: string, input: c.AnonymizeMemberRequest) {
       return (await service.eraseMember(context, id, input)).member;
     },
-    /** Returns released storage keys and revoked cards for cleanup after the erasure commits. */
+    /** Returns released storage keys, revoked cards and the household's erased provider customer for cleanup after the erasure commits. */
     async eraseMember(context: MutationContext, id: string, input: c.AnonymizeMemberRequest) {
       const { revision } = c.anonymizeMemberRequestSchema.parse(input);
       return scope(context.gymId, async (tx) => {
@@ -140,6 +140,8 @@ export function createMembersService(options: MembersOptions = {}) {
         await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.memberId, id), isNull(signedLinks.revokedAt)));
         const remaining = await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), isNull(members.anonymizedAt))).limit(1);
         const last = remaining.length === 0;
+        // The provider's copy of the payer is redacted after commit (erasure keeps the customer for the books).
+        const [billing] = last ? await tx.select({ customerId: households.stripeCustomerId }).from(households).where(eq(households.id, home.id)) : [];
         const homeGuard = revisionGuard(households.revision, home.revision);
         await tx.update(households).set({ pinHash: null, revision: homeGuard.next,
           ...(last ? { name: 'Anonymized household', email: null, phone: null, address: {}, stripeCustomerId: null } : {}) }).where(eq(households.id, home.id));
@@ -157,8 +159,10 @@ export function createMembersService(options: MembersOptions = {}) {
         }
         await audit(tx, context, 'member.anonymized', 'member', id);
         if (waivers.length) await audit(tx, context, 'member.waivers.deleted', 'member', id);
-        await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id);
-        return { member: member(row), freedSessionIds, revokedCards, files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
+        // The cleared provider customer ID (not personal data) stays on record until its redaction is confirmed.
+        await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id,
+          billing?.customerId ? { stripeCustomerId: billing.customerId } : undefined);
+        return { member: member(row), freedSessionIds, revokedCards, erasedCustomerId: billing?.customerId ?? null, files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
       });
     },
     async listHouseholds(gymId: string, input: c.HouseholdListQuery) {

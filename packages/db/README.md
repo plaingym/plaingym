@@ -33,9 +33,15 @@ once at module scope, naming the journal tag the test starts from. It creates a 
 disposable database from `template0` and runs the real Drizzle migrations through
 that tag (inclusive), with their original SQL and journal metadata. It removes its
 temporary migration folder and cleans up the database after the test file.
-Unlike an install of the starting release, this pre-upgrade database has not run
-`applySecurity` (forced RLS and column-level revokes); `migrateDatabase` applies it
-after the upgrade.
+By default this pre-upgrade database has not run `applySecurity` (forced RLS and
+column-level revokes); `migrateDatabase` applies it after the upgrade. Pass
+`{ applySecurity: true }` to start from the secured state a real install of that
+release had: the current `applySecurity` runs right after the starting migration,
+so it must accept that schema. `database.appUrl` then connects as the app role, to
+seed rows under row-level security the way the running app wrote them
+(`database-upgrade.secured.test.ts`). A test file that imports the helper relatively
+still imports it as `../testing/database-upgrade.js`, which places it in the test
+project that starts a database.
 
 Seed historical rows with plain SQL through `openConnection(database.maintenanceUrl)`;
 current-schema factories can reference columns that did not exist then. Close the

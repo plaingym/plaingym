@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Image scan
+# Pinned packages don't notice advisories published after a release. This builds the runtime image
+# and scans it with Trivy (run from its image, pinned by digest). It fails on a high or critical
+# advisory that has a fixed version, unless deploy/trivy-ignore.yaml lists it; every high and
+# critical finding, fixed or not, is listed in the run log for review.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - 'deploy/Dockerfile'
+      - 'deploy/apt-runtime*'
+      - 'deploy/trivy-ignore.yaml'
+      - '.github/workflows/image-scan.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: image-scan-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+  IMAGE: plaingym:v0.0.0-scan
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build the runtime image
+        run: |
+          docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=${{ github.server_url }}/${{ github.repository }}" -t "$IMAGE" .
+          docker save "$IMAGE" -o "$RUNNER_TEMP/image.tar"
+      - name: List every high and critical advisory
+        run: |
+          docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
+            --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
+            --no-progress --skip-version-check
+      - name: Fail on fixable advisories
+        run: |
+          docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \
+            --cache-dir /scan/trivy-cache --scanners vuln --severity HIGH,CRITICAL --ignorefile /policy/trivy-ignore.yaml \
+            --ignore-unfixed --exit-code 1 --skip-db-update --no-progress --skip-version-check

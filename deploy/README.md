@@ -35,14 +35,56 @@ source URL for modifications. Docker's file-specific ignore list excludes
 credentials, Git history, dependencies, and local build outputs.
 Runtime images contain the server bundle, adjacent fonts, SPA, Node notices,
 dependency license texts, system copyright notices, and a package inventory at
-`/usr/local/share/system-packages.tsv`. Debian/PGDG package versions are exact
-constraints; rebuilding old images requires those versions to remain available
-in the upstream repositories or an archive.
+`/usr/local/share/system-packages.tsv`. The runtime image runs `node` alone: the
+base image's npm, npx, corepack and Yarn are removed.
 
 The image workflow builds and tests on native amd64 and arm64 runners, exports
 both tested images, and assembles their manifest in an ephemeral loopback
 registry. The images and manifest are short-lived workflow artifacts. It does
 not publish releases, external registry images, or Git tags.
+
+## System packages
+
+`deploy/apt-runtime-pins.txt` lists every Debian and PostgreSQL (PGDG) package
+the runtime image installs or upgrades, each at an exact version, plus the
+`snapshot.debian.org` timestamp they come from. `deploy/apt-runtime.sh install`
+points apt at that snapshot of `bookworm`, `bookworm-updates` and
+`bookworm-security`, and at the PGDG archive (`apt-archive.postgresql.org`,
+suite `bookworm-pgdg-archive`), which keeps every version it has published. A
+build therefore installs the pinned packages on any day and both architectures;
+newer Debian or PGDG releases never break it, and none arrive unannounced.
+
+Security updates are an explicit pin change. To take them, pick a newer
+timestamp (UTC, `YYYYMMDDTHHMMSSZ`; the snapshot nearest before it is used) and
+refresh the pins from a Linux or macOS shell with Docker:
+
+```sh
+sh deploy/apt-runtime.sh refresh 20261028T000000Z
+git diff deploy/apt-runtime-pins.txt
+```
+
+The refresh starts the Node base image pinned in the Dockerfile, applies every
+upgrade the snapshot offers, installs the runtime packages, and rewrites the
+pins with every package that changed. PGDG has no snapshots: the refresh takes
+the current stable `postgresql-client-18` release on the day it runs, checks that
+the PGDG archive already serves every pinned version (it can lag a new release by
+a day; refresh again later if not), and the pins then fix that version. Review the diff, since each changed line is an update the image takes, then
+build both architectures and run `deploy/test/smoke.mjs` before committing. Bump
+the Node base image digest in the same way, and refresh the pins after it so
+packages the new base already provides drop out. A CVE fix in a Debian package
+reaches the image only through such a refresh.
+
+## Image scan
+
+The **Image scan** workflow builds the runtime image every Monday, on demand, and
+for pull requests that change the Dockerfile, the pins or the exceptions, and
+scans it with Trivy (run from its image, pinned by digest). It lists every high
+and critical advisory and fails when one has a fixed version, which a pin refresh
+usually resolves. Advisories without a fix are listed for review but don't fail
+the run. `deploy/trivy-ignore.yaml` holds the reviewed exceptions: each entry
+names the advisory, why it doesn't apply or can't be fixed yet, and an
+`expired_at` date after which the scan fails on it again. JavaScript dependencies
+are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
 
 ## Install
 

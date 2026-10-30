@@ -63,6 +63,17 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       await expect(payments.detachPaymentMethod('pm_missing')).resolves.toBeUndefined();
       expect(await payments.readPaymentObject({ kind: 'payment_method', id: detach.owned })).toEqual({ status: 'unknown', reference: { kind: 'payment_method', id: detach.owned } });
     });
+    it('redacts an erased customer idempotently, keeps it, and accepts unknown IDs', async () => {
+      const { payments, charge } = await create();
+      const request = { email: 'erased-payer@example.invalid', name: 'Erased Household', householdId: charge.invoiceId,
+        idempotencyKey: charge.idempotencyKey + ':erased-customer' };
+      const customer = await payments.createCustomer(request);
+      await expect(payments.redactCustomer(customer.id)).resolves.toBeUndefined();
+      await expect(payments.redactCustomer(customer.id)).resolves.toBeUndefined();
+      expect(await payments.findCustomerByEmail(request.email)).not.toContainEqual(customer);
+      expect(await payments.adoptCustomer(customer.id)).toEqual({ id: customer.id, email: null });
+      await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
+    });
     it.each([['4242', 'succeeded'], ['0341', 'failed'], ['3155', 'succeeded'], ['3184', 'action_required']] as const)(
       'normalizes card %s after the setup fixture', async (card, status) => {
         const { payments, charge } = await create(card), intent = await payments.createCharge(charge);

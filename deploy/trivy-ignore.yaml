@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Reviewed exceptions for the image scan (.github/workflows/image-scan.yml). The scan fails
+# on a high or critical advisory that has a fixed version; add an entry here only after review,
+# with the reason it does not apply or cannot be fixed yet, and a date to look at it again:
+#
+#   - id: CVE-YYYY-NNNNN
+#     statement: Why it does not affect the image, and who reviewed it.
+#     expired_at: YYYY-MM-DD
+vulnerabilities: []

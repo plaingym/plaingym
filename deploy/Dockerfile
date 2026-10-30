@@ -11,14 +11,14 @@ RUN test -n "$SOURCE_URL" && SOURCE_URL="$SOURCE_URL" pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 COPY deploy/pgdg.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
-COPY deploy/apt-runtime-pins.txt /tmp/apt-runtime-pins.txt
-RUN apt-get update \
- && apt-get install --yes --no-install-recommends ca-certificates=20250419~deb12u2 openssl=3.0.22-1~deb12u2 libssl3=3.0.22-1~deb12u2 \
- && printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main\n' > /etc/apt/sources.list.d/pgdg.list \
- && apt-get update \
- && sed '/^#/d' /tmp/apt-runtime-pins.txt | xargs --no-run-if-empty apt-get install --yes --no-install-recommends \
+# Exact package pins from a fixed snapshot.debian.org timestamp and the PGDG archive (deploy/README.md).
+COPY deploy/apt-runtime.sh deploy/apt-runtime-pins.txt /tmp/apt/
+RUN sh /tmp/apt/apt-runtime.sh install /tmp/apt/apt-runtime-pins.txt \
  && dpkg-query -W > /usr/local/share/system-packages.tsv \
- && rm -rf /var/lib/apt/lists/* /tmp/apt-runtime-pins.txt
+ && rm -rf /tmp/apt \
+ # The app runs on node alone; the base image's package managers only add unused code to scan and patch.
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+ && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 NODE_OPTIONS=--max-old-space-size=256
 WORKDIR /app
 COPY --from=build /build/apps/server/dist/ ./

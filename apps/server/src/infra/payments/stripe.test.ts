@@ -357,6 +357,40 @@ it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as c
   else await expect(removal).resolves.toBeUndefined();
   expect(transport.requests.filter(input => input.path.endsWith('/detach'))).toHaveLength(['concurrent', 'lost_response'].includes(outcome) ? 1 : 0);
 });
+it('redacts only an owned customer, keeping its metadata, and treats deleted or missing customers as done', async () => {
+  const { payments, transport } = fixture();
+  transport.objects.set('cus_erased', { id: 'cus_erased', object: 'customer', name: 'Pat Payer', email: 'pat@example.invalid',
+    metadata: { gym_id: gymId, household_id: 'household_fixture' } });
+  await payments.redactCustomer('cus_erased');
+  expect(transport.objects.get('cus_erased')).toMatchObject({ name: 'Erased member', email: null,
+    metadata: { gym_id: gymId, household_id: 'household_fixture' } });
+  expect(transport.requests.filter((request) => request.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/customers/cus_erased',
+    params: { name: 'Erased member', email: '' }, idempotencyKey: 'customer:cus_erased:redact' }]);
+  // A finished redaction is not written again.
+  await payments.redactCustomer('cus_erased');
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  transport.objects.set('cus_foreign', { id: 'cus_foreign', object: 'customer', name: 'Other', email: 'other@example.invalid', metadata: { gym_id: 'other' } });
+  transport.objects.set('cus_untagged', { id: 'cus_untagged', object: 'customer', name: 'Dashboard', email: 'dash@example.invalid', metadata: {} });
+  await expect(payments.redactCustomer('cus_foreign')).rejects.toThrow('another gym');
+  await expect(payments.redactCustomer('cus_untagged')).rejects.toThrow('no gym metadata');
+  transport.objects.set('cus_deleted', { id: 'cus_deleted', object: 'customer', deleted: true });
+  await expect(payments.redactCustomer('cus_deleted')).resolves.toBeUndefined();
+  await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
+  await expect(payments.redactCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  expect(transport.objects.get('cus_foreign')).toMatchObject({ name: 'Other', email: 'other@example.invalid' });
+});
+it('redacts a fake customer like the provider and refuses another gym', async () => {
+  const payments = new FakePayments(gymId);
+  payments.seedCustomer({ id: 'cus_seeded', email: 'seeded@example.invalid' });
+  payments.seedCustomer({ id: 'cus_other', email: 'other@example.invalid', gymId: 'other-gym' });
+  await payments.redactCustomer('cus_seeded');
+  expect(payments.customer('cus_seeded')).toEqual({ name: 'Erased member', email: null });
+  await expect(payments.redactCustomer('cus_other')).rejects.toThrow('another gym');
+  expect(payments.customer('cus_other')).toEqual({ name: null, email: 'other@example.invalid' });
+  await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
+  await runInTransaction(async () => { await expect(payments.redactCustomer('cus_seeded')).rejects.toThrow('transaction'); });
+});
 it('blocks all provider operations inside a database transaction before any request', async () => {
   const { payments, transport } = fixture();
   await runInTransaction(async () => {
@@ -367,7 +401,8 @@ it('blocks all provider operations inside a database transaction before any requ
       () => payments.listRefunds('pi_fixture'),
       () => payments.refund({ chargeId: 'pi_fixture', amount: 1, idempotencyKey: 'refund' }), () => payments.createCheckout(checkout),
       () => payments.expireCheckout('cs_fixture'), () => payments.findCustomerByEmail('payer@example.invalid'),
-      () => payments.adoptCustomer('cus_fixture'), () => payments.detachPaymentMethod('pm_4242'), () => payments.parseWebhook(new Uint8Array(), '')];
+      () => payments.adoptCustomer('cus_fixture'), () => payments.detachPaymentMethod('pm_4242'), () => payments.redactCustomer('cus_fixture'),
+      () => payments.parseWebhook(new Uint8Array(), '')];
     for (const call of calls) await expect(call()).rejects.toThrow('transaction');
   });
   expect(transport.requests).toEqual([]);

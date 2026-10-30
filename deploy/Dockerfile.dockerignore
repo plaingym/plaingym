@@ -20,6 +20,7 @@
 !packages/**
 !deploy/
 !deploy/pgdg.asc
+!deploy/apt-runtime.sh
 !deploy/apt-runtime-pins.txt
 !deploy/container/
 !deploy/container/**

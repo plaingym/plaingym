@@ -15,6 +15,7 @@ import { mountHealthz } from './healthz.js';
 import { mountSourceLink, sourceUrl } from './source-link.js';
 import { mountOpenApi } from './openapi.js';
 import { staticAssets } from './static.js';
+import { contentSecurityPolicy, imageOrigins, issuedNonce, type ContentSecurityOptions } from './csp.js';
 import { requireSetupToken } from '../areas/setup/setup.token.js';
 
 export interface AppOptions {
@@ -34,6 +35,7 @@ export interface AppOptions {
   readonly installOrigin?: string;
   readonly setupToken?: string;
   readonly skipSetup?: boolean;
+  readonly contentSecurity?: ContentSecurityOptions;
 }
 
 export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> {
@@ -42,6 +44,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
       if (!result.success) return respondError(context, result.error);
     },
   });
+  const images = imageOrigins(options.contentSecurity?.imageOrigins);
   app.use('*', async (context, next) => {
     // A caller cannot choose a log-correlation ID or inject response headers with it.
     const requestId = randomUUID();
@@ -53,7 +56,13 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     await next();
     // No page of the app is meant to be framed (clickjacking defense); a route's own CSP is kept as it is.
     context.res.headers.set('X-Frame-Options', 'DENY');
-    if (!context.res.headers.has('Content-Security-Policy')) context.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+    if (!context.res.headers.has('Content-Security-Policy')) {
+      context.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+      // Report-only for one release: browsers report violations without blocking. Enforcing it then replaces the
+      // framing-only policy above. Routes that set their own (public pages, signed links, downloads) enforce theirs.
+      context.res.headers.set('Content-Security-Policy-Report-Only',
+        contentSecurityPolicy({ nonce: issuedNonce(context), imageOrigins: images }));
+    }
   });
   app.use('*', requestBodyLimit(options.bodyLimits));
   app.onError(errorHandler);

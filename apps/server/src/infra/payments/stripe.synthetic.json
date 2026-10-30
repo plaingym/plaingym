@@ -2050,6 +2050,148 @@
         }
       ]
     },
+    "extended > redacts an erased customer idempotently, keeps it, and accepts unknown IDs": {
+      "version": 1,
+      "gymId": "00000000-0000-7000-8000-000000000001",
+      "exchanges": [
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/customers",
+            "params": {
+              "email": "erased-payer@example.invalid",
+              "name": "Erased Household",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "household_id": "invoice_fixture"
+              }
+            },
+            "idempotencyKey": "invoice_fixture:1:create:erased-customer"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": "erased-payer@example.invalid",
+            "name": "Erased Household",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_1"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": "erased-payer@example.invalid",
+            "name": "Erased Household",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/customers/cus_1",
+            "params": {
+              "name": "Erased member",
+              "email": ""
+            },
+            "idempotencyKey": "customer:cus_1:redact"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": null,
+            "name": "Erased member",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_1"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": null,
+            "name": "Erased member",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers",
+            "params": {
+              "email": "erased-payer@example.invalid",
+              "limit": 100
+            }
+          },
+          "output": {
+            "data": [],
+            "has_more": false
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_1"
+          },
+          "output": {
+            "id": "cus_1",
+            "created": 1792756800,
+            "livemode": false,
+            "object": "customer",
+            "email": null,
+            "name": "Erased member",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001",
+              "household_id": "invoice_fixture"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_missing"
+          },
+          "error": {
+            "type": "StripeInvalidRequestError",
+            "code": "resource_missing",
+            "statusCode": 404
+          }
+        }
+      ]
+    },
     "extended > normalizes card 4242 after the setup fixture": {
       "version": 1,
       "gymId": "00000000-0000-7000-8000-000000000001",

@@ -165,6 +165,11 @@ export interface Payments {
   adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
   /** Detach a gym-owned card; missing and already detached methods succeed. */
   detachPaymentMethod(processorId: string): Promise<void>;
+  /**
+   * Erasure: renames a gym-owned customer to "Erased member" and clears its email. The customer and its payment
+   * history stay. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
+   */
+  redactCustomer(customerId: string): Promise<void>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
 }
 
@@ -225,6 +230,9 @@ function money(amount: number, currency: string): void {
   }
 }
 
+/** The name an erased household's customer keeps at the provider. */
+export const ERASED_CUSTOMER_NAME = 'Erased member';
+
 export class FakePayments implements Payments {
   readonly #charges = new Map<string, StoredCharge>();
   readonly #checkouts = new Map<string, CheckoutSession>();
@@ -234,7 +242,7 @@ export class FakePayments implements Payments {
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
-  readonly #customers: { id: string; email: string; gymId: string; name?: string; householdId?: string }[] = [];
+  readonly #customers: { id: string; email: string | null; gymId: string; name?: string; householdId?: string }[] = [];
   readonly #changes: ChangeRecord[] = [];
   readonly #idempotency = new Map<string, IdempotentRecord>();
   readonly #uncertain = new Set<string>();
@@ -639,8 +647,8 @@ export class FakePayments implements Payments {
   async findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]> {
     assertNoTransaction('payments.findCustomerByEmail');
     return structuredClone(
-      this.#customers.filter((customer) => customer.gymId === this.gymId && customer.email.toLowerCase() === email.toLowerCase())
-        .map(({ id, email }) => ({ id, email })),
+      this.#customers.filter((customer) => customer.gymId === this.gymId && customer.email?.toLowerCase() === email.toLowerCase())
+        .map(({ id, email }) => ({ id, email: email! })),
     );
   }
   /** Seeded customers belong to this gym; unknown IDs fail like a missing Stripe customer. */
@@ -658,6 +666,19 @@ export class FakePayments implements Payments {
     if (!method || this.#detached.has(processorId)) return;
     await this.adoptCustomer(method.customerId);
     this.#detached.add(processorId);
+  }
+  /** The stored name and email, as the provider would show them. */
+  customer(customerId: string): { name: string | null; email: string | null } | undefined {
+    const customer = this.#customers.find((item) => item.id === customerId);
+    return customer && { name: customer.name ?? null, email: customer.email };
+  }
+  async redactCustomer(customerId: string): Promise<void> {
+    assertNoTransaction('payments.redactCustomer');
+    if (!/^[A-Za-z0-9_]+$/.test(customerId)) throw new Error('Invalid processor ID');
+    const customer = this.#customers.find((item) => item.id === customerId);
+    if (!customer) return;
+    if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
+    customer.name = ERASED_CUSTOMER_NAME; customer.email = null;
   }
   signWebhook(body: Uint8Array): string {
     return createHmac('sha256', this.webhookSecret).update(body).digest('hex');

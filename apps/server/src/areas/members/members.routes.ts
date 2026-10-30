@@ -3,7 +3,7 @@ import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
-import { route } from '../../core/registry.js';
+import { route, type JobRegistration } from '../../core/registry.js';
 import { logError } from '../../core/log.js';
 import type { RequestContext } from '../../core/context.js';
 import { createMembersService, type MembersService } from './members.js';
@@ -31,13 +31,26 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
   });
 }
 
-type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
+type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string) => Promise<void>;
+  /** Payments.redactCustomer for the gym: the erased household's provider customer keeps no name or email. */
+  redactCustomer?: (gymId: string, customerId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
+export const redactCustomerJob = 'members.erasure.redact_customer';
+const redactPayload = z.object({ customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/) });
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
 /** Runtime supplies the gym key for household PINs and file storage for photos before serving requests. */
 export function configureMembers(options: ErasureOptions & { pinSecret: HouseholdPinSecret; uploadsFor: MemberUploads; clock?: Clock }) {
   const service = createMembersService({ pinSecret: options.pinSecret, ...(options.clock ? { clock: options.clock } : {}) });
   configured = { ...options, service, photos: createMemberPhotoService(service, options.uploadsFor) };
+}
+/** Retries redaction of an erased household's provider customer; the payload carries the ID the erasure cleared. */
+export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer'>): readonly JobRegistration[] {
+  return [{ id: redactCustomerJob, async handler(payload, ctx) {
+    const { customerId } = redactPayload.parse(payload);
+    const redact = (supplied ?? configured)?.redactCustomer;
+    if (!redact) throw new Error('Customer redaction is not configured');
+    await redact(ctx.gymId, customerId);
+  } }];
 }
 /** Tests pass a service; otherwise routes use the runtime composition, and without one, photos and
  * nonempty PINs fail closed. */
@@ -55,8 +68,12 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       return { data: photos ? await photos.update(mutation(ctx), p.memberId!, input) : await service.updateMember(mutation(ctx), p.memberId!, input) };
     }),
     jsonRoute(contracts.anonymizeMember, async (ctx, p, _q, b) => {
-      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, jobs } = current();
-      const { member, files, revokedCards, freedSessionIds } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
+      const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs } = current();
+      const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
+      // The household no longer stores the customer ID, so queue its redaction before any other follow-up can fail.
+      if (erasedCustomerId && jobs) await jobs.enqueue(redactCustomerJob, { customerId: erasedCustomerId }, {
+        gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `redact:${erasedCustomerId}`, maxAttempts: 12,
+      });
       for (const sessionId of freedSessionIds) await promoteWaitlist(ctx.gym.gymId, sessionId,
         current().clock ? { clock: current().clock! } : {});
       // Queue every detach before attempting it, so an outage leaves durable retries.
@@ -71,6 +88,15 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
             // The erasure has committed and the queued job retries the detach; without a queue, report it.
             if (!jobs) throw error;
             logError('members.erasure.detach_failed', { gymId: ctx.gym.gymId, memberId: p.memberId!, paymentMethodId: card.id });
+          }
+        }),
+        ...(erasedCustomerId ? [erasedCustomerId] : []).map(async customerId => {
+          if (!redactCustomer) throw new AppError('unavailable', 'Customer redaction is not configured');
+          try { await redactCustomer(ctx.gym.gymId, customerId); }
+          catch (error) {
+            // As with cards, the queued job retries a provider outage after the committed erasure.
+            if (!jobs) throw error;
+            logError('members.erasure.redact_failed', { gymId: ctx.gym.gymId, memberId: p.memberId! });
           }
         }),
         ...files.map(async key => {

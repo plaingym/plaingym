@@ -4,6 +4,7 @@ import type { forGym } from '@plaingym/db';
 import { idSchema } from '@plaingym/shared/contracts';
 import { createMembersService } from './members.js';
 import type { MemberUploads } from './photos.js';
+import { createErasureJobs } from './members.routes.js';
 
 /** Integration supplies the same gym-scoped uploads resolver used by the HTTP routes. */
 export function createMemberPhotoJobs(uploadsFor: MemberUploads, scope?: typeof forGym): readonly JobRegistration[] {
@@ -21,4 +22,4 @@ export function createMemberPhotoJobs(uploadsFor: MemberUploads, scope?: typeof 
   } }];
 }
 
-export const jobs: readonly JobRegistration[] = [];
+export const jobs: readonly JobRegistration[] = createErasureJobs();

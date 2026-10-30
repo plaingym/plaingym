@@ -86,7 +86,11 @@ export class StripeFixtures implements PaymentTransport {
         object.customer = null; return object;
       }
       if (!action && resource === 'customers') {
-        object.metadata = { ...object.metadata as ObjectData, ...params.metadata as ObjectData }; return object;
+        const { metadata, ...rest } = params;
+        Object.assign(object, rest, { metadata: { ...object.metadata as ObjectData, ...metadata as ObjectData } });
+        // Stripe clears a field sent as an empty string.
+        if (object.email === '') object.email = null;
+        return object;
       }
       if (action === 'confirm') {
         if (object.status === 'canceled') throw new Error('Intent canceled');

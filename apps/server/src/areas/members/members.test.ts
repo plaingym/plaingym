@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { members, memberRanks, memberships, waiverSignatures, households, invoices, invoiceLineItems, attendances, householdUsers, signedLinks, auditEvents, paymentMethods, classBookings, classSessions, staffProfiles, allocateInvoiceNumber, uuidv7, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, staffRoles, type StaffRole } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { createMembersService } from './members.js';
-import { createMembersRoutes } from './members.routes.js';
+import { createErasureJobs, createMembersRoutes, redactCustomerJob } from './members.routes.js';
 import { createMemberPhotoJobs } from './members.jobs.js';
 import { createMemberPhotoService } from './photos.js';
 import { hashHouseholdPin, verifyHouseholdPin } from './pin.js';
@@ -37,6 +37,13 @@ function server(principal: Principal, gymId = gymA) {
   app.use('*', async (ctx, next) => { ctx.set('context', { principal, gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, requestId: 'test', clock }); await next(); });
   app.onError(errorHandler);
   createServerRegistry({ routes: createMembersRoutes(service, uploadsFor) }).mount(app, authorize, new Set()); return app;
+}
+function erasureServer(erasure: Parameters<typeof createMembersRoutes>[2]) {
+  const app = new OpenAPIHono<RequestEnvironment>();
+  app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', gymId: gymA, userId, roles: ['owner'] }, gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'erase', clock }); await next(); });
+  app.onError(errorHandler);
+  createServerRegistry({ routes: createMembersRoutes(service, uploadsFor, erasure) }).mount(app, authorize, new Set());
+  return app;
 }
 const staff = (role: StaffRole, gymId = gymA) => server({ kind: 'staff', userId, gymId, roles: [role] }, gymId);
 const send = (app: ReturnType<typeof server>, path: string, method = 'GET', body?: unknown) => app.request(path, { method,
@@ -231,6 +238,7 @@ describe('members and households', () => {
     await expect(service.eraseMember(context(gymB), person.id, { revision: 1 })).rejects.toMatchObject({ code: 'not_found' });
     const erased = await service.eraseMember(context(), person.id, { revision: 1 });
     expect(erased.revokedCards).toEqual(another ? [] : [{ id: card.id, processorId: card.processorId }]);
+    expect(erased.erasedCustomerId).toBe(another ? null : customerId);
     const state = await database.forGym(gymA, async tx => ({
       home: (await tx.select().from(households).where(eq(households.id, home.id)))[0]!,
       cards: await tx.select().from(paymentMethods).where(inArray(paymentMethods.id, [card.id, revoked.id, otherCard.id])),
@@ -301,6 +309,51 @@ describe('members and households', () => {
     expect(JSON.stringify(logs)).not.toContain('Provider unavailable');
     const stored = await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)));
     expect(stored.every(card => card.revokedAt && !card.isDefault)).toBe(true);
+  });
+  it.each([
+    { failure: false, queued: true }, { failure: true, queued: true }, { failure: true, queued: false },
+  ])('redacts the last member\'s provider customer after commit and retries it from a queued job (%o)', async ({ failure, queued }) => {
+    const { home, person } = await routeFixture(gymA), customerId = 'cus_redact_' + uuidv7().replaceAll('-', '');
+    await database.forGym(gymA, tx => tx.update(households).set({ stripeCustomerId: customerId }).where(eq(households.id, home.id)));
+    const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
+    payments.seedCustomer({ id: customerId, email: 'payer@example.test' });
+    const redactCustomer = vi.fn(async (gymId: string, id: string) => {
+      expect(gymId).toBe(gymA);
+      // Redaction runs only after the erasure, which cleared the local customer ID, has committed.
+      expect((await database.forGym(gymA, tx => tx.select().from(households).where(eq(households.id, home.id))))[0]!.stripeCustomerId).toBeNull();
+      if (failure) throw new Error('Provider unavailable');
+      await payments.redactCustomer(id);
+    });
+    const app = erasureServer({ redactCustomer, ...(queued ? { jobs } : {}) });
+    const logs: unknown[] = [], previousLog = setLogSink(entry => { logs.push(JSON.parse(entry)); });
+    try {
+      expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(failure && !queued ? 500 : 200);
+    } finally { setLogSink(previousLog); }
+    expect(redactCustomer).toHaveBeenCalledExactlyOnceWith(gymA, customerId);
+    expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test' } : { name: 'Erased member', email: null });
+    expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload }))).toEqual(queued ? [{ name: redactCustomerJob, payload: { customerId } }] : []);
+    expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.redact_failed'))
+      .toEqual(failure && queued ? [expect.objectContaining({ gymId: gymA, memberId: person.id })] : []);
+    expect(JSON.stringify(logs)).not.toContain(customerId);
+    // The erasure's audit keeps the cleared customer ID (not personal data) as a durable record for redaction.
+    expect((await database.forGym(gymA, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.action, 'household.anonymized'),
+      eq(auditEvents.targetId, home.id)))))[0]!.before).toEqual({ stripeCustomerId: customerId });
+    if (!queued) return;
+    // The retry needs only the job's payload: the household no longer stores the customer ID. It is safe to repeat.
+    const [job] = createErasureJobs({ redactCustomer: (_gymId, id) => payments.redactCustomer(id) });
+    for (let run = 1; run <= 2; run++) await job!.handler(jobs.jobs[0]!.payload, { jobId: 'redact', gymId: gymA, timezone: 'UTC', attempt: run, clock });
+    expect(payments.customer(customerId)).toEqual({ name: 'Erased member', email: null });
+    for (const payload of [{}, { customerId: '../cus_x' }]) await expect(job!.handler(payload,
+      { jobId: 'redact', gymId: gymA, timezone: 'UTC', attempt: 1, clock })).rejects.toThrow();
+  });
+  it('keeps the provider customer untouched while another household member remains', async () => {
+    const { home, person } = await routeFixture(gymA);
+    await database.forGym(gymA, tx => tx.update(households).set({ stripeCustomerId: 'cus_kept' }).where(eq(households.id, home.id)));
+    await factory('members', gymA, { householdId: home.id });
+    const redactCustomer = vi.fn(async () => undefined), jobs = new FakeJobs(clock);
+    expect((await send(erasureServer({ redactCustomer, jobs }), `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(200);
+    expect(redactCustomer).not.toHaveBeenCalled();
+    expect(jobs.jobs).toEqual([]);
   });
   it('cancels the erased member\'s memberships in the same transaction and leaves the household\'s others billable', async () => {
     const { home, person } = await routeFixture(gymA);
