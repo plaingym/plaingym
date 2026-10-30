@@ -14,8 +14,8 @@ Nodemailer reports a lost socket or a timeout as command `CONN` in every phase, 
 | Invalid header or message composition, before connecting | `not_accepted` |
 | DNS, refused or failed connection, greeting, TLS or STARTTLS, authentication | `not_accepted` |
 | Sender, every recipient or the DATA command refused (`EENVELOPE`), or a local size/TLS check before MAIL FROM | `not_accepted` |
+| A 4xx/5xx reply to the end of the message body (the server took no responsibility, RFC 5321) | `not_accepted` |
 | Connection lost or timed out once MAIL FROM is sent, including a lost acknowledgement of the body | `unknown` |
-| Any reply to the message body, even a 4xx/5xx | `unknown` |
 | Accepted for some recipients and refused for others (partial acceptance) | `unknown` |
 
 `MemberEmail` raises `not_accepted` when one of its checks fails, since all of them finish before the transport is called. `FakeEmail.respondNext(error)` lets tests inject either kind.

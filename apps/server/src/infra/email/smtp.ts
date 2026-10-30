@@ -62,7 +62,10 @@ function classify(stage: Stage, error: SMTPConnection.SMTPError): DeliveryError 
   // Refused sender, every recipient refused, refused DATA command, or a local check before MAIL FROM.
   if (error.code === 'EENVELOPE' || error.code === 'EREQUIRETLS' || (error.code === 'EMESSAGE' && error.command !== 'DATA'))
     return new DeliveryError('not_accepted', 'SMTP server refused the message envelope', { cause: error });
-  // Socket loss, timeouts and any reply to the message body: the server may already hold the message.
+  // A 4xx/5xx reply to the end of the body: the server did not take responsibility for it (RFC 5321 §4.1.1.4).
+  if (error.code === 'EMESSAGE' && error.command === 'DATA' && (error.responseCode ?? 0) >= 400)
+    return new DeliveryError('not_accepted', 'SMTP server refused the message', { cause: error });
+  // Socket loss and timeouts once the envelope is under way: the server may already hold the message.
   return new DeliveryError('unknown', 'SMTP delivery outcome is unknown', { cause: error });
 }
 

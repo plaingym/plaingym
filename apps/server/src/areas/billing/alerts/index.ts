@@ -164,7 +164,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
         result = await deliveries.send(gymId, key, prepared.email, message);
       } catch (error) {
         // A possibly delivered link stays usable; it is never resent. Anything that provably did not send this
-      // link (a refusal, a failed reservation, another attempt in flight) revokes it and retries.
+        // link (a refusal, a failed reservation, another attempt in flight) revokes it and retries.
         if (deliveryAcceptance(error) === 'not_accepted') await revoke();
         throw error;
       }

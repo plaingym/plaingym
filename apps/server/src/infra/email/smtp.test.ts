@@ -80,12 +80,12 @@ describe('SMTP transport', () => {
 
   it('propagates permanent and transient delivery failures without retrying', async () => {
     const before = capture.messages.length, connections = capture.connections;
-    // A refused recipient never reaches DATA; a reply to the message body is not proof either way.
+    // A refused recipient never reaches DATA; a 4xx/5xx reply to the body means the server did not take the message.
     capture.rejectRecipient(true);
     try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { responseCode: 550 } }); }
     finally { capture.rejectRecipient(false); }
     capture.rejectData(true);
-    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown', cause: { responseCode: 451 } }); }
+    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { responseCode: 451 } }); }
     finally { capture.rejectData(false); }
     expect(capture.messages).toHaveLength(before);
     expect(capture.connections).toBe(connections + 2);
