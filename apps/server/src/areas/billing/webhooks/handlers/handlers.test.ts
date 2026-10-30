@@ -140,8 +140,7 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     const session = await f.provider.createCheckout({ mode: 'payment', amount: 10000, currency: 'usd', invoiceId: f.invoice.id,
       customerId: 'cus_fixture', successUrl: 'https://gym.example.invalid/ok', cancelUrl: 'https://gym.example.invalid/cancel',
       saveForOffSession: true, idempotencyKey: 'checkout' });
-    f.transport.completeCheckout(session.id);
-    const intent = f.transport.objects.get(session.chargeId!)!;
+    const intent = f.transport.completeCheckout(session.id);
     Object.assign(intent, { amount: 10000, latest_charge: 'ch_checkout' });
     f.transport.objects.set('ch_checkout', { id: 'ch_checkout', object: 'charge', payment_intent: intent.id, created: f.transport.now });
     const success = vi.spyOn(f.composed.transitions, 'cardSucceeded');
@@ -220,8 +219,7 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     const session = await f.provider.createCheckout({ mode: 'payment', amount: 10000, currency: 'usd', invoiceId: f.invoice.id,
       customerId: 'cus_fixture', successUrl: 'https://gym.example.invalid/ok', cancelUrl: 'https://gym.example.invalid/cancel',
       saveForOffSession: savesCard, idempotencyKey: 'checkout' });
-    f.transport.completeCheckout(session.id);
-    f.transport.objects.get(session.chargeId!)!.amount = 10000;
+    f.transport.completeCheckout(session.id).amount = 10000;
     const succeededAt = f.clock.now(); f.clock.advance(3 * 86400000);
     const methodReads = vi.spyOn(f.provider, 'readPaymentObject');
     await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
@@ -238,7 +236,7 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     const session = await f.provider.createCheckout({ mode: 'payment', amount: 10000, currency: 'usd', invoiceId: f.invoice.id,
       customerId: 'cus_fixture', successUrl: 'https://gym.example.invalid/ok', cancelUrl: 'https://gym.example.invalid/cancel',
       saveForOffSession: true, idempotencyKey: 'checkout' });
-    f.transport.completeCheckout(session.id); f.transport.objects.get(session.chargeId!)!.amount = 10000;
+    f.transport.completeCheckout(session.id).amount = 10000;
     f.transport.objects.get('pm_3155')!.customer = null;
     await expect(f.run('checkout.session.completed', { kind: 'checkout', id: session.id })).rejects.toThrow('unresolved');
     expect((await f.read()).invoice.status).toBe('paid'); expect((await f.read()).methods).toHaveLength(0);
@@ -420,9 +418,9 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
       customerId: 'cus_fixture', successUrl: 'https://gym.example.invalid/ok', cancelUrl: 'https://gym.example.invalid/cancel',
       saveForOffSession: true, idempotencyKey: 'checkout' });
     if (recording) {
-      f.transport.completeCheckout(session.id);
-      Object.assign(f.transport.objects.get(session.chargeId!)!, { amount: 10000, latest_charge: 'ch_checkout' });
-      f.transport.objects.set('ch_checkout', { id: 'ch_checkout', object: 'charge', payment_intent: session.chargeId!, created: f.transport.now });
+      const intent = f.transport.completeCheckout(session.id);
+      Object.assign(intent, { amount: 10000, latest_charge: 'ch_checkout' });
+      f.transport.objects.set('ch_checkout', { id: 'ch_checkout', object: 'charge', payment_intent: intent.id, created: f.transport.now });
     }
     const twice = async (type: string, reference: PaymentObjectReference) => { await f.run(type, reference, provider); await f.run(type, reference, provider); };
     await twice('checkout.session.completed', { kind: 'checkout', id: session.id });
@@ -434,8 +432,12 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     if (recording) (f.transport.objects.get('pm_3155')!.card as ObjectData).exp_year = 2035;
     await twice('payment_method.updated', { kind: 'payment_method', id: 'pm_3155' });
     await twice('payment_method.automatically_updated', { kind: 'payment_method', id: 'pm_3155' });
-    if (recording) refund(f);
-    await twice('charge.refunded', { kind: 'charge', id: session.chargeId! });
+    // A dashboard refund of the Checkout's own charge.
+    if (recording) { refund(f); f.transport.objects.get('re_dashboard')!.charge = 'ch_checkout'; }
+    // The session's PaymentIntent exists only once it is paid; read it back as the handlers do.
+    const paid = await provider.readPaymentObject({ kind: 'checkout', id: session.id });
+    if (paid.status !== 'found' || paid.value.kind !== 'checkout' || !paid.value.object.chargeId) throw new Error('Checkout intent missing');
+    await twice('charge.refunded', { kind: 'charge', id: paid.value.object.chargeId });
     for (const type of ['refund.created', 'refund.updated', 'refund.failed']) await twice(type, { kind: 'refund', id: 're_dashboard' });
     if (recording) f.transport.objects.set('dp_recorded', { id: 'dp_recorded', object: 'dispute', charge: 'ch_checkout', amount: 10000, status: 'lost', metadata: {} });
     for (const type of billingWebhookTypes.filter(t => t.startsWith('charge.dispute.'))) await twice(type, { kind: 'dispute', id: 'dp_recorded' });

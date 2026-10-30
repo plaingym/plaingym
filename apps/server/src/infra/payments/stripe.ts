@@ -203,7 +203,10 @@ export class StripePayments implements Payments {
   }
   async #checkout(object: ObjectData): Promise<CheckoutSession> {
     const metadata = this.#metadata(object), chargeId = optionalId(object.payment_intent), setupId = optionalId(object.setup_intent);
-    let paymentMethodId: string | undefined, savesCard = object.mode === 'setup';
+    // Stripe creates a payment session's PaymentIntent only when it is paid; until then the session's own marker,
+    // set at creation from the same request as the intent's setup_future_usage, says whether it saves the card.
+    let paymentMethodId: string | undefined, savesCard = object.mode === 'setup'
+      || (object.mode === 'payment' && data(object.metadata ?? {}).saves_card === 'off_session');
     if (chargeId) {
       const intent = await this.#ownedIntent(chargeId);
       paymentMethodId = optionalId(intent.payment_method);
@@ -229,7 +232,8 @@ export class StripePayments implements Payments {
     const metadata = { gym_id: this.gymId, ...(request.invoiceId ? { invoice_id: request.invoiceId } : {}),
       ...(request.linkId ? { link_id: request.linkId } : {}) };
     const params: ObjectData = { mode: request.mode, customer, success_url: request.successUrl, cancel_url: request.cancelUrl,
-      allowed_payment_method_types: ['card'], metadata,
+      allowed_payment_method_types: ['card'],
+      metadata: request.mode === 'payment' && request.saveForOffSession ? { ...metadata, saves_card: 'off_session' } : metadata,
       ...(request.expiresAt ? { expires_at: Math.floor(request.expiresAt.getTime() / 1000) } : {}),
       ...(request.mode === 'payment' ? { payment_intent_data: { metadata,
         ...(request.saveForOffSession ? { setup_future_usage: 'off_session' } : {}) },

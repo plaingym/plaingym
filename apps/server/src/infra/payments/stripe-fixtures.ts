@@ -16,20 +16,35 @@ export class StripeFixtures implements PaymentTransport {
       id: 'pm_' + card, object: 'payment_method', created: now, customer: 'cus_fixture', card: { brand: 'visa', last4: card, exp_month: 12, exp_year: 2030 }, metadata: { gym_id: gymId },
     });
   }
-  completeCheckout(sessionId: string): void {
+  /** A payer's first attempt on an open payment session: like Stripe, its PaymentIntent exists only from then on. */
+  attemptCheckout(sessionId: string): ObjectData {
+    const session = this.objects.get(sessionId)!;
+    if (session.payment_intent) return this.objects.get(String(session.payment_intent))!;
+    const data = session.payment_intent_data as ObjectData;
+    const price = (session.line_items as { price_data?: { unit_amount: number; currency: string } }[] | undefined)?.[0]?.price_data;
+    const intent = this.#store('pi', { object: 'payment_intent', customer: session.customer, metadata: data.metadata,
+      status: 'requires_payment_method', payment_method: null, amount: price?.unit_amount ?? 100, currency: price?.currency ?? 'usd',
+      setup_future_usage: data.setup_future_usage ?? null });
+    session.payment_intent = intent.id;
+    return intent;
+  }
+  /** Pays or sets up an open session; returns its intent (PaymentIntent or SetupIntent). */
+  completeCheckout(sessionId: string): ObjectData {
     const session = this.objects.get(sessionId)!;
     if (session.status !== 'open') throw new Error('Checkout is not open');
+    let intent: ObjectData;
     if (session.mode === 'payment') {
-      const intent = this.objects.get(String(session.payment_intent))!;
+      intent = this.attemptCheckout(sessionId);
       intent.status = 'succeeded'; intent.payment_method = 'pm_3155';
       if (!intent.setup_future_usage) intent.payment_method = this.#store('pm', { object: 'payment_method', customer: null,
         card: { last4: '3155', exp_month: 12, exp_year: 2030 } }).id;
       intent.latest_charge = this.#store('ch', { object: 'charge', payment_intent: intent.id, metadata: intent.metadata }).id;
     } else {
-      const setup = this.objects.get(String(session.setup_intent))!;
-      setup.status = 'succeeded'; setup.payment_method = 'pm_3155';
+      intent = this.objects.get(String(session.setup_intent))!;
+      intent.status = 'succeeded'; intent.payment_method = 'pm_3155';
     }
     session.status = 'complete'; session.url = null;
+    return intent;
   }
   async request(input: ProviderRequest): Promise<ObjectData> {
     this.requests.push(structuredClone(input));
@@ -115,12 +130,13 @@ export class StripeFixtures implements PaymentTransport {
     if (resource === 'customers') return this.#store('cus', { object: 'customer', ...params });
     if (resource === 'payment_intents') return this.#store('pi', { object: 'payment_intent', ...params, status: 'requires_confirmation' });
     if (resource === 'checkout/sessions') {
-      const mode = params.mode, metadata = (params[mode === 'payment' ? 'payment_intent_data' : 'setup_intent_data'] as ObjectData).metadata;
-      const linked = this.#store(mode === 'payment' ? 'pi' : 'seti', { object: mode === 'payment' ? 'payment_intent' : 'setup_intent',
-        customer: params.customer, metadata, status: 'requires_payment_method', payment_method: null, amount: 100, currency: 'usd',
-        ...(mode === 'payment' ? { setup_future_usage: (params.payment_intent_data as ObjectData).setup_future_usage ?? null } : {}) });
+      // An open payment session has no PaymentIntent yet (completeCheckout creates it); a setup session has its SetupIntent.
+      if (params.mode === 'payment') return this.#store('cs', { object: 'checkout.session', ...params, status: 'open',
+        url: 'https://checkout.invalid/fixture', payment_intent: null });
+      const setup = this.#store('seti', { object: 'setup_intent', customer: params.customer,
+        metadata: (params.setup_intent_data as ObjectData).metadata, status: 'requires_payment_method', payment_method: null });
       return this.#store('cs', { object: 'checkout.session', ...params, status: 'open', url: 'https://checkout.invalid/fixture',
-        [mode === 'payment' ? 'payment_intent' : 'setup_intent']: linked.id });
+        setup_intent: setup.id });
     }
     if (resource === 'refunds') {
       if (!this.objects.has(String(params.payment_intent))) throw Object.assign(new Error('No intent'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });

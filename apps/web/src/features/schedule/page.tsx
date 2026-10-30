@@ -96,9 +96,9 @@ function ScheduleContent({ gymId, roles, enabledModules }: { gymId: string | und
     {!options ? !failed && <LoadingState label={text('loading')}/> : <>
       <div className="space-y-3">
         <div className="grid grid-cols-[auto_1fr_auto] items-end gap-2 sm:flex sm:flex-wrap">
-          <Button variant="outline" onClick={() => setWeek(shiftDate(week, -7))} aria-label={text('previous')}><span aria-hidden="true">‹</span><span className="hidden sm:inline">{text('previous')}</span></Button>
+          <Button variant="outline" className="min-w-11" onClick={() => setWeek(shiftDate(week, -7))} aria-label={text('previous')}><span aria-hidden="true">‹</span><span className="hidden sm:inline">{text('previous')}</span></Button>
           <Field label={text('week')}><Input type="date" value={week} onChange={(event) => { if (event.target.value) setWeek(weekStart(event.target.value)); }}/></Field>
-          <Button variant="outline" onClick={() => setWeek(shiftDate(week, 7))} aria-label={text('next')}><span className="hidden sm:inline">{text('next')}</span><span aria-hidden="true">›</span></Button>
+          <Button variant="outline" className="min-w-11" onClick={() => setWeek(shiftDate(week, 7))} aria-label={text('next')}><span className="hidden sm:inline">{text('next')}</span><span aria-hidden="true">›</span></Button>
           <Button variant="ghost" className="col-span-3 sm:col-span-1" disabled={week === weekStart(today)} onClick={() => setWeek(weekStart(today))}>{text('thisWeek')}</Button>
           {wideScreen && <div role="group" aria-label={text('view')} className="ml-auto flex gap-1">
             {(['week', 'agenda'] as const).map((value) => <Button key={value} variant={layout === value ? 'secondary' : 'ghost'} aria-pressed={layout === value} onClick={() => setLayout(value)}>{text('view.' + value)}</Button>)}

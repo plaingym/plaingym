@@ -25,11 +25,12 @@ async function noHorizontalScroll(page: Page) {
     scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
   expect(scrollWidth, 'page scrolls horizontally').toBeLessThanOrEqual(clientWidth);
 }
-/** Controls in the page content (and an open dialog) must be at least 44 px tall. Checkboxes are covered by their 44 px label rows. */
+/** Controls in the page content (and an open dialog) must be at least 44 px tall, and buttons and selects 44 px wide.
+ * Checkboxes are covered by their 44 px label rows; inline links may be narrower. */
 async function contentTargets(page: Page) {
   const small = await page.evaluate(() => [...document.querySelectorAll(
     '#main-content :is(button, select, a[href], input:not([type=checkbox]):not([type=radio]):not([type=hidden])), dialog[open] :is(button, select, a[href], input:not([type=checkbox]):not([type=radio]))')]
-    .filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height < 44; })
+    .filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && (box.height < 44 || (element.matches('button, select') && box.width < 44)); })
     .map((element) => (element.getAttribute('aria-label') || element.textContent || element.getAttribute('name') || element.tagName).trim().slice(0, 60)));
   expect(small, 'content touch targets under 44 px').toEqual([]);
 }

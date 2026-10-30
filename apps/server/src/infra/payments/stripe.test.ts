@@ -233,8 +233,10 @@ it('reports complete and raced Checkout expiry and retains the explicit saved me
 });
 it('keeps an on-session Checkout decline open while reporting its failed payment', async () => {
   const { payments, transport } = fixture(), session = await payments.createCheckout(checkout);
-  const intent = transport.objects.get(session.chargeId!)!;
-  intent.status = 'requires_payment_method'; intent.last_payment_error = { code: 'card_declined' };
+  // An open payment session has no intent until the payer's first attempt.
+  expect(session.chargeId).toBeUndefined();
+  const intent = transport.attemptCheckout(session.id);
+  intent.last_payment_error = { code: 'card_declined' };
   expect(await payments.findCharge({ kind: 'checkout', id: session.id })).toMatchObject({ status: 'failed', code: 'declined' });
   expect(await payments.readPaymentObject({ kind: 'checkout', id: session.id })).toMatchObject({ status: 'found', value: { object: { status: 'open' } } });
 });

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { and, asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test counts the alert's permanent queue key in its isolated database.
 import { auditEvents, invoices, jobs, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
@@ -116,6 +116,16 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     await f.alerts.disputes(f.gymId); await f.drain();
     expect(f.email.messages).toHaveLength(1);
   });
+  it('publishes the alert when a dispute is first recorded, not on its later status changes', async () => {
+    const f = await fixture(), intentId = await charged(f);
+    const publish = vi.spyOn(f.alerts, 'publishDispute');
+    f.provider.recordDispute({ id: 'dp_status', chargeId: intentId, amount: 10000, status: 'open' });
+    await f.webhook('charge.dispute.created', { kind: 'dispute', id: 'dp_status' });
+    f.provider.recordDispute({ id: 'dp_status', chargeId: intentId, amount: 10000, status: 'won' });
+    await f.webhook('charge.dispute.closed', { kind: 'dispute', id: 'dp_status' });
+    expect((await f.read()).invoice).toMatchObject({ disputeId: 'dp_status', disputeStatus: 'won' });
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
   it('records the succeeded payment before a dispute webhook that arrives first', async () => {
     const f = await fixture(), intentId = await charged(f, { lost: true });
     expect((await f.read()).invoice.status).toBe('open');
@@ -164,5 +174,14 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     if (path === 'webhook') await f.webhook('refund.created', { kind: 'refund', id: refund.id });
     else expect(await f.restore()).toMatchObject({ readyForOwnerReview: true });
     expect((await f.read()).refunds).toEqual([expect.objectContaining({ id: reservationId, processorId: refund.id, status: 'succeeded' })]);
+  });
+  it('reads no processor intent during restore for a refund whose payment is recorded', async () => {
+    const f = await fixture(), intentId = await charged(f), reads = vi.spyOn(f.provider, 'findCharge');
+    const intentReads = async () => { reads.mockClear(); await f.restore(); return reads.mock.calls.filter(([reference]) => reference.id === intentId).length; };
+    // The restore's own charge checks read the intent; the refund adds no read of its own.
+    const baseline = await intentReads();
+    const refund = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: 'dashboard_refund' });
+    expect(await intentReads()).toBe(baseline);
+    expect((await f.read()).refunds).toEqual([expect.objectContaining({ processorId: refund.id })]);
   });
 });

@@ -67,7 +67,7 @@ describe('portal schedule page', () => {
     expect(client.book).toHaveBeenCalledWith(payer, child, id);
     const places = await screen.findByRole('list', { name: 'Household places' });
     expect(within(places).getByText('Casey Parent')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Cancel the Fundamentals booking for Casey Parent' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Cancel booking: Fundamentals for Casey Parent' })).toBeDefined();
   });
   it('hides cancel after the cutoff and reports engine conflicts without server details', async () => {
     client.schedule.mockResolvedValue([{ ...session, cancelBefore: '2026-10-29T15:00:00.000Z', bookings: [{ ...booking, memberId: parent }] },
@@ -75,8 +75,8 @@ describe('portal schedule page', () => {
     client.book.mockRejectedValue(new ApiError(409, 'request_failed'));
     const user = userEvent.setup(); page();
     await screen.findByText(/cancellation cutoff has passed/);
-    expect(screen.queryByRole('button', { name: /Cancel the Fundamentals/ })).toBeNull();
-    await user.click(screen.getByRole('button', { name: 'Join the Advanced waitlist for Pat Parent' }));
+    expect(screen.queryByRole('button', { name: /Cancel booking: Fundamentals/ })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Join the waitlist: Advanced for Pat Parent' }));
     await screen.findByText(/This change isn't available any more/);
   });
   it('an adult member has no picker and books only for themself', async () => {

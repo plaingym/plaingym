@@ -88,9 +88,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "requires_payment_method",
-        "payment_method": null,
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": null
       }
     },
     {
@@ -143,9 +141,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -198,9 +194,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -253,9 +247,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -275,9 +267,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -367,9 +357,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -422,9 +410,7 @@
           "invoice_id": "00000000-0000-7000-8000-000000000002"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     }
   ]

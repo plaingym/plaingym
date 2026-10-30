@@ -3,6 +3,7 @@ import type { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
+import { cspReportBytes } from './body-limit.js';
 import { cspReportPath } from './csp.js';
 import { logInfo } from './log.js';
 import { rateLimit, type RateLimitOptions } from './rate-limit.js';
@@ -125,7 +126,9 @@ export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize:
       // Reading is outside the try: a body over the cap fails the request as everywhere else.
       const text = await context.req.text();
       let violations: Violation[] = [];
-      try { violations = format.read(JSON.parse(text)); } catch { /* A malformed body is dropped. */ }
+      // The install's body limits normally refuse more; an app built with its own limits still parses no larger report.
+      if (Buffer.byteLength(text) <= cspReportBytes)
+        try { violations = format.read(JSON.parse(text)); } catch { /* A malformed body is dropped. */ }
       for (const violation of violations.slice(0, maxReportsPerRequest))
         logInfo('csp.violation', { format: format.name, directive: violation.directive, blocked: violation.blocked, path: violation.path });
     }

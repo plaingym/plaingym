@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { auditEvents, households, linkCampaigns, members, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -415,7 +415,9 @@ describe('campaign sends and reminders', () => {
     f.email.respondNext(new DeliveryError('not_accepted', 'SMTP connection failed'));
     if (when === 'reminder') await f.service.remindCampaign(f.context, c.campaign.id);
     await f.drain();
-    const audits = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, c.link.id)));
+    // Without an order, the reminder's reservation is not reliably the last row read back.
+    const audits = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, c.link.id))
+      .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id)));
     const reserved = (await audits()).filter(a => a.action === 'link_campaign.delivery_reserved').at(-1)!;
     expect((await audits()).filter(a => a.action === 'link_campaign.delivery_released'))
       .toMatchObject([{ after: { reservation: (reserved.after as { reservation: string }).reservation } }]);

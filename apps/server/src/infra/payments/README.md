@@ -26,8 +26,11 @@ restricted to tagged customers and ambiguity fails closed. The saved
 method is returned explicitly; a Checkout success never implies a Customer default.
 
 `CheckoutSession.savesCard` is derived from the payment intent's
-`setup_future_usage` (or setup mode). A payment Checkout without that setting
-does not require an attached card. `PaymentMethod.createdAt` comes from the
+`setup_future_usage` (or setup mode). Stripe creates a payment session's intent
+only when the payer pays, so an open session reads it from its own
+`saves_card` metadata, set from the same request. A payment Checkout without
+that setting does not require an attached card. `StripeFixtures` creates the
+intent on the first attempt (`attemptCheckout`) or completion, as Stripe does. `PaymentMethod.createdAt` comes from the
 provider's `created` timestamp; the fake captures its clock when the method is
 first recorded and preserves it across updates. Consumers store that time to
 order defaults independently of webhook arrival or event retention.

@@ -142,7 +142,8 @@ Refunds and disputes are recorded by the writer shared with webhook processing
 (`../disputes-refunds.ts`): another dispute already attached to the invoice is a
 manual-resolution issue, won/lost/closed states are terminal, each change records
 `billing.invoice.disputed` with before and after values and publishes the owner's
-alert, and refunds get the same local IDs as from webhooks. The optional
+alert, and refunds get the same local IDs as from webhooks. A refund or dispute
+whose payment is already recorded costs no processor read. The optional
 `disputeAlerts` option (the billing alerts service) receives those alerts; without it,
 the hourly dispute scan still finds them.
 

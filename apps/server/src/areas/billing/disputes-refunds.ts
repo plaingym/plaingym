@@ -43,6 +43,9 @@ export interface DisputeRefundOptions {
 export function createDisputeRefundWriter(options: DisputeRefundOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const system = (gymId: string): MutationContext => ({ gymId, actor: { kind: 'system' } });
+  /** The payment already recorded for a PaymentIntent, read without calling the processor. */
+  const recordedPayment = (gymId: string, intentId: string) =>
+    scope(gymId, async tx => (await tx.select().from(payments).where(eq(payments.paymentIntentId, intentId)))[0]);
   /** Refunds and disputes match their recorded payment through the parent PaymentIntent, never their own metadata.
    * One that arrives before the intent's success (or after restoring an earlier snapshot) first records the
    * succeeded intent, with its processor success time, through the caller's charge-outcome path. */
@@ -93,9 +96,10 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
   }
   /** Records a dispute's current status on its payment's invoice, under the invoice lock. Only the dispute ID and
    * status change, with an audit; final statuses never reopen. Another dispute on the invoice needs staff resolution.
-   * A newly recorded dispute publishes its owner alert, whose permanent key sends it once. The alert never fails the
-   * recorded write: the hourly dispute scan recovers one that couldn't be queued. */
+   * A dispute newly attached to its invoice publishes the owner's alert, whose permanent key sends it once; later status
+   * changes don't. The alert never fails the recorded write: the hourly dispute scan recovers one that couldn't be queued. */
   async function dispute(gymId: string, payment: Payment, value: Dispute): Promise<'recorded' | 'unchanged' | 'conflict'> {
+    let attached = false;
     const result = await scope(gymId, async tx => {
       const invoice = await lockInvoice(tx, payment.invoiceId);
       if (invoice.disputeId && invoice.disputeId !== value.id) return 'conflict' as const;
@@ -105,14 +109,15 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
       await tx.update(invoices).set(after).where(eq(invoices.id, invoice.id));
       await audit(tx, system(gymId), clock, 'billing.invoice.disputed', 'invoice', invoice.id, after,
         { disputeId: invoice.disputeId, disputeStatus: invoice.disputeStatus });
+      attached = invoice.disputeId === null;
       return 'recorded' as const;
     });
-    if (result === 'recorded') {
+    if (attached) {
       try { await options.disputeAlerts?.publishDispute(gymId, payment.invoiceId, value.id); }
       catch (error) { logError('billing.dispute.alert_publish_failed', { gymId, invoiceId: payment.invoiceId }, error); }
     }
     return result;
   }
-  return { parentPayment, refund, dispute };
+  return { recordedPayment, parentPayment, refund, dispute };
 }
 export type DisputeRefundWriter = ReturnType<typeof createDisputeRefundWriter>;

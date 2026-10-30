@@ -33,7 +33,8 @@
           ],
           "metadata": {
             "gym_id": "00000000-0000-7000-8000-000000000001",
-            "invoice_id": "00000000-0000-7000-8000-000000000002"
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "saves_card": "off_session"
           },
           "payment_intent_data": {
             "metadata": {
@@ -62,7 +63,7 @@
         "idempotencyKey": "checkout"
       },
       "output": {
-        "id": "cs_2",
+        "id": "cs_1",
         "created": 1792929600,
         "livemode": false,
         "object": "checkout.session",
@@ -75,7 +76,8 @@
         ],
         "metadata": {
           "gym_id": "00000000-0000-7000-8000-000000000001",
-          "invoice_id": "00000000-0000-7000-8000-000000000002"
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "saves_card": "off_session"
         },
         "payment_intent_data": {
           "metadata": {
@@ -102,40 +104,17 @@
         ],
         "status": "open",
         "url": "https://checkout.invalid/fixture",
-        "payment_intent": "pi_1"
+        "payment_intent": null
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/checkout/sessions/cs_1"
       },
       "output": {
-        "id": "pi_1",
-        "created": 1792929600,
-        "livemode": false,
-        "object": "payment_intent",
-        "customer": "cus_fixture",
-        "metadata": {
-          "gym_id": "00000000-0000-7000-8000-000000000001",
-          "invoice_id": "00000000-0000-7000-8000-000000000002"
-        },
-        "status": "requires_payment_method",
-        "payment_method": null,
-        "amount": 100,
-        "currency": "usd",
-        "setup_future_usage": "off_session"
-      }
-    },
-    {
-      "operation": "stripe",
-      "input": {
-        "method": "GET",
-        "path": "/v1/checkout/sessions/cs_2"
-      },
-      "output": {
-        "id": "cs_2",
+        "id": "cs_1",
         "created": 1792929600,
         "livemode": false,
         "object": "checkout.session",
@@ -148,7 +127,8 @@
         ],
         "metadata": {
           "gym_id": "00000000-0000-7000-8000-000000000001",
-          "invoice_id": "00000000-0000-7000-8000-000000000002"
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "saves_card": "off_session"
         },
         "payment_intent_data": {
           "metadata": {
@@ -175,17 +155,17 @@
         ],
         "status": "complete",
         "url": null,
-        "payment_intent": "pi_1"
+        "payment_intent": "pi_2"
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -206,10 +186,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/checkout/sessions/cs_2"
+        "path": "/v1/checkout/sessions/cs_1"
       },
       "output": {
-        "id": "cs_2",
+        "id": "cs_1",
         "created": 1792929600,
         "livemode": false,
         "object": "checkout.session",
@@ -222,7 +202,8 @@
         ],
         "metadata": {
           "gym_id": "00000000-0000-7000-8000-000000000001",
-          "invoice_id": "00000000-0000-7000-8000-000000000002"
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "saves_card": "off_session"
         },
         "payment_intent_data": {
           "metadata": {
@@ -249,17 +230,17 @@
         ],
         "status": "complete",
         "url": null,
-        "payment_intent": "pi_1"
+        "payment_intent": "pi_2"
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -280,10 +261,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -309,7 +290,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -354,10 +335,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/checkout/sessions/cs_2"
+        "path": "/v1/checkout/sessions/cs_1"
       },
       "output": {
-        "id": "cs_2",
+        "id": "cs_1",
         "created": 1792929600,
         "livemode": false,
         "object": "checkout.session",
@@ -370,7 +351,8 @@
         ],
         "metadata": {
           "gym_id": "00000000-0000-7000-8000-000000000001",
-          "invoice_id": "00000000-0000-7000-8000-000000000002"
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "saves_card": "off_session"
         },
         "payment_intent_data": {
           "metadata": {
@@ -397,17 +379,17 @@
         ],
         "status": "complete",
         "url": null,
-        "payment_intent": "pi_1"
+        "payment_intent": "pi_2"
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -428,10 +410,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/checkout/sessions/cs_2"
+        "path": "/v1/checkout/sessions/cs_1"
       },
       "output": {
-        "id": "cs_2",
+        "id": "cs_1",
         "created": 1792929600,
         "livemode": false,
         "object": "checkout.session",
@@ -444,7 +426,8 @@
         ],
         "metadata": {
           "gym_id": "00000000-0000-7000-8000-000000000001",
-          "invoice_id": "00000000-0000-7000-8000-000000000002"
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "saves_card": "off_session"
         },
         "payment_intent_data": {
           "metadata": {
@@ -471,17 +454,17 @@
         ],
         "status": "complete",
         "url": null,
-        "payment_intent": "pi_1"
+        "payment_intent": "pi_2"
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -502,10 +485,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -531,7 +514,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -652,9 +635,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "requires_payment_method",
-        "payment_method": null,
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": null
       }
     },
     {
@@ -704,9 +685,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -725,9 +704,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -814,9 +791,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -835,9 +810,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -893,9 +866,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -914,9 +885,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -972,9 +941,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -993,9 +960,7 @@
           "gym_id": "00000000-0000-7000-8000-000000000001"
         },
         "status": "succeeded",
-        "payment_method": "pm_3155",
-        "amount": 100,
-        "currency": "usd"
+        "payment_method": "pm_3155"
       }
     },
     {
@@ -1187,10 +1152,85 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/checkout/sessions/cs_1"
       },
       "output": {
-        "id": "pi_1",
+        "id": "cs_1",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "checkout.session",
+        "mode": "payment",
+        "customer": "cus_fixture",
+        "success_url": "https://gym.example.invalid/ok",
+        "cancel_url": "https://gym.example.invalid/cancel",
+        "allowed_payment_method_types": [
+          "card"
+        ],
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002",
+          "saves_card": "off_session"
+        },
+        "payment_intent_data": {
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002"
+          },
+          "setup_future_usage": "off_session"
+        },
+        "line_items": [
+          {
+            "quantity": 1,
+            "price_data": {
+              "currency": "usd",
+              "unit_amount": 10000,
+              "product_data": {
+                "name": "Invoice payment",
+                "metadata": {
+                  "gym_id": "00000000-0000-7000-8000-000000000001",
+                  "invoice_id": "00000000-0000-7000-8000-000000000002"
+                }
+              }
+            }
+          }
+        ],
+        "status": "complete",
+        "url": null,
+        "payment_intent": "pi_2"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_2"
+      },
+      "output": {
+        "id": "pi_2",
+        "created": 1792929600,
+        "livemode": false,
+        "object": "payment_intent",
+        "customer": "cus_fixture",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001",
+          "invoice_id": "00000000-0000-7000-8000-000000000002"
+        },
+        "status": "succeeded",
+        "payment_method": "pm_3155",
+        "amount": 10000,
+        "currency": "usd",
+        "setup_future_usage": "off_session",
+        "latest_charge": "ch_checkout"
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
+        "method": "GET",
+        "path": "/v1/payment_intents/pi_2"
+      },
+      "output": {
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1216,7 +1256,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1224,10 +1264,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1250,7 +1290,7 @@
         "method": "GET",
         "path": "/v1/refunds",
         "params": {
-          "payment_intent": "pi_1",
+          "payment_intent": "pi_2",
           "limit": 100
         }
       },
@@ -1259,7 +1299,7 @@
           {
             "id": "re_dashboard",
             "object": "refund",
-            "charge": "ch_2",
+            "charge": "ch_checkout",
             "amount": 2500,
             "currency": "usd",
             "status": "succeeded",
@@ -1274,13 +1314,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1288,10 +1327,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1317,7 +1356,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1329,13 +1368,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1343,10 +1381,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1367,10 +1405,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1391,10 +1429,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1420,7 +1458,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1428,10 +1466,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1454,7 +1492,7 @@
         "method": "GET",
         "path": "/v1/refunds",
         "params": {
-          "payment_intent": "pi_1",
+          "payment_intent": "pi_2",
           "limit": 100
         }
       },
@@ -1463,7 +1501,7 @@
           {
             "id": "re_dashboard",
             "object": "refund",
-            "charge": "ch_2",
+            "charge": "ch_checkout",
             "amount": 2500,
             "currency": "usd",
             "status": "succeeded",
@@ -1478,13 +1516,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1492,10 +1529,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1521,7 +1558,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1533,13 +1570,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1547,10 +1583,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1571,10 +1607,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1600,7 +1636,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1612,13 +1648,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1626,10 +1661,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1650,10 +1685,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1679,7 +1714,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1691,13 +1726,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1705,10 +1739,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1729,10 +1763,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1758,7 +1792,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1770,13 +1804,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1784,10 +1817,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1808,10 +1841,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1837,7 +1870,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1849,13 +1882,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1863,10 +1895,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1887,10 +1919,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1916,7 +1948,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -1928,13 +1960,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -1942,10 +1973,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1966,10 +1997,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -1995,7 +2026,7 @@
       "output": {
         "id": "re_dashboard",
         "object": "refund",
-        "charge": "ch_2",
+        "charge": "ch_checkout",
         "amount": 2500,
         "currency": "usd",
         "status": "succeeded",
@@ -2007,13 +2038,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_2"
+        "path": "/v1/charges/ch_checkout"
       },
       "output": {
-        "id": "ch_2",
+        "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
-        "metadata": {},
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2021,10 +2051,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2045,10 +2075,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2089,7 +2119,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2097,10 +2127,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2121,10 +2151,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2165,7 +2195,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2173,10 +2203,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2197,10 +2227,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2241,7 +2271,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2249,10 +2279,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2273,10 +2303,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2317,7 +2347,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2325,10 +2355,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2349,10 +2379,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2393,7 +2423,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2401,10 +2431,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2425,10 +2455,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2469,7 +2499,7 @@
       "output": {
         "id": "ch_checkout",
         "object": "charge",
-        "payment_intent": "pi_1",
+        "payment_intent": "pi_2",
         "created": 1792929600
       }
     },
@@ -2477,10 +2507,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",
@@ -2501,10 +2531,10 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_2"
       },
       "output": {
-        "id": "pi_1",
+        "id": "pi_2",
         "created": 1792929600,
         "livemode": false,
         "object": "payment_intent",

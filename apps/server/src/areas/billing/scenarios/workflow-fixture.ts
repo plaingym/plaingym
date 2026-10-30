@@ -45,19 +45,7 @@ export async function workflowFixture(db: ReturnType<typeof useTestDatabase>, op
     amountCents: 10000, currency: 'USD', status: 'active', startsOn: '2028-01-01', nextDueOn: options.dueOn ?? '2028-03-01' });
   await factory('paymentMethods', gymId, { householdId: home.id, processorId: options.card ?? 'pm_4242', isDefault: true });
   const transport = new StripeFixtures(gymId, Math.floor(clock.now().getTime() / 1000));
-  // The shared transport's Checkout defaults are $1. Supply the requested line's actual price.
-  const provider = new StripePayments(gymId, { clock, webhookSecret: secret, transport: {
-    async request(input) {
-      const result = await transport.request(input);
-      if (input.method === 'POST' && input.path === '/v1/checkout/sessions' && result.mode === 'payment') {
-        const lines = input.params?.line_items as { price_data: { unit_amount: number; currency: string } }[];
-        Object.assign(transport.objects.get(String(result.payment_intent))!, {
-          amount: lines[0]!.price_data.unit_amount, currency: lines[0]!.price_data.currency,
-        });
-      }
-      return result;
-    },
-  } });
+  const provider = new StripePayments(gymId, { clock, webhookSecret: secret, transport });
   const queue = new PostgresJobs({ database: db, clock }), email = new FakeEmail();
   const settings = createGymSettingsAccessor({ scope: db.forGym }), paymentsFor = async () => provider;
   const common = { scope: db.forGym, clock, settings, jobs: queue };

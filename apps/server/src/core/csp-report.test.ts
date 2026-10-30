@@ -97,6 +97,12 @@ describe('CSP violation reports', () => {
     expect((await post(small)).status).toBe(204);
     expect(events()).toHaveLength(1);
   });
+  it('parses no report over 16 KiB when the app is built with its own body limits', async () => {
+    app = createApp({ clock, resolveGym, session: resolveGym, authorize: allow, bodyLimits: { default: 1024 * 1024, routes: {} } });
+    const big = reportingBody({ documentURL: 'https://gym.example.test/', blockedURL: 'inline', effectiveDirective: 'script-src', sample: 'x'.repeat(cspReportBytes) });
+    expect((await post(big)).status).toBe(204);
+    expect(lines).toEqual([]);
+  });
   it('needs no cookie, Origin or session, and ignores a forged one', async () => {
     const body = reportingBody({ documentURL: 'https://gym.example.test/admin', blockedURL: 'inline', effectiveDirective: 'script-src' });
     for (const headers of [{}, { cookie: 'session=secret' }, { cookie: 'session=secret', origin: 'https://evil.example.test', 'sec-fetch-site': 'cross-site' }])

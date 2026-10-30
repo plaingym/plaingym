@@ -382,7 +382,8 @@
               ],
               "metadata": {
                 "gym_id": "00000000-0000-7000-8000-000000000001",
-                "invoice_id": "invoice_fixture"
+                "invoice_id": "invoice_fixture",
+                "saves_card": "off_session"
               },
               "payment_intent_data": {
                 "metadata": {
@@ -411,7 +412,7 @@
             "idempotencyKey": "checkout_fixture"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -424,7 +425,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -451,30 +453,7 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
+            "payment_intent": null
           }
         },
         {
@@ -507,7 +486,8 @@
               ],
               "metadata": {
                 "gym_id": "00000000-0000-7000-8000-000000000001",
-                "invoice_id": "invoice_fixture"
+                "invoice_id": "invoice_fixture",
+                "saves_card": "off_session"
               },
               "payment_intent_data": {
                 "metadata": {
@@ -536,7 +516,7 @@
             "idempotencyKey": "checkout_fixture"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -549,7 +529,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -576,40 +557,17 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
+            "payment_intent": null
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/checkout/sessions/cs_1"
           },
           "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/checkout/sessions/cs_2"
-          },
-          "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -622,7 +580,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -649,41 +608,18 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
+            "payment_intent": null
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "POST",
-            "path": "/v1/checkout/sessions/cs_2/expire",
+            "path": "/v1/checkout/sessions/cs_1/expire",
             "params": {}
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -696,7 +632,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -723,17 +660,17 @@
             ],
             "status": "expired",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
+            "payment_intent": null
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/checkout/sessions/cs_2"
+            "path": "/v1/checkout/sessions/cs_1"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -746,7 +683,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -773,40 +711,17 @@
             ],
             "status": "expired",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
+            "payment_intent": null
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/checkout/sessions/cs_1"
           },
           "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/checkout/sessions/cs_2"
-          },
-          "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -819,7 +734,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -846,30 +762,7 @@
             ],
             "status": "expired",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
+            "payment_intent": null
           }
         }
       ]
@@ -957,7 +850,8 @@
               "metadata": {
                 "gym_id": "00000000-0000-7000-8000-000000000001",
                 "invoice_id": "invoice_fixture",
-                "link_id": "invoice_fixture"
+                "link_id": "invoice_fixture",
+                "saves_card": "off_session"
               },
               "payment_intent_data": {
                 "metadata": {
@@ -988,7 +882,7 @@
             "idempotencyKey": "checkout_fixture"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -1002,7 +896,8 @@
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "invoice_id": "invoice_fixture",
-              "link_id": "invoice_fixture"
+              "link_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -1031,31 +926,7 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture",
-              "link_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
+            "payment_intent": null
           }
         },
         {
@@ -1089,7 +960,8 @@
               "metadata": {
                 "gym_id": "00000000-0000-7000-8000-000000000001",
                 "invoice_id": "invoice_fixture",
-                "link_id": "invoice_fixture"
+                "link_id": "invoice_fixture",
+                "saves_card": "off_session"
               },
               "payment_intent_data": {
                 "metadata": {
@@ -1120,7 +992,7 @@
             "idempotencyKey": "checkout_fixture"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -1134,7 +1006,8 @@
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "invoice_id": "invoice_fixture",
-              "link_id": "invoice_fixture"
+              "link_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -1163,31 +1036,7 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture",
-              "link_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
+            "payment_intent": null
           }
         },
         {
@@ -1221,7 +1070,8 @@
               "metadata": {
                 "gym_id": "00000000-0000-7000-8000-000000000001",
                 "invoice_id": "invoice_fixture",
-                "link_id": "another-link"
+                "link_id": "another-link",
+                "saves_card": "off_session"
               },
               "payment_intent_data": {
                 "metadata": {
@@ -1259,10 +1109,10 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/checkout/sessions/cs_2"
+            "path": "/v1/checkout/sessions/cs_1"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -1276,7 +1126,8 @@
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "invoice_id": "invoice_fixture",
-              "link_id": "invoice_fixture"
+              "link_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -1305,17 +1156,17 @@
             ],
             "status": "complete",
             "url": null,
-            "payment_intent": "pi_1"
+            "payment_intent": "pi_2"
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_2"
           },
           "output": {
-            "id": "pi_1",
+            "id": "pi_2",
             "created": 1792756800,
             "livemode": false,
             "object": "payment_intent",
@@ -1337,10 +1188,10 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_2"
           },
           "output": {
-            "id": "pi_1",
+            "id": "pi_2",
             "created": 1792756800,
             "livemode": false,
             "object": "payment_intent",
@@ -1454,9 +1305,7 @@
               "link_id": "invoice_fixture"
             },
             "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": null
           }
         },
         {
@@ -1549,9 +1398,7 @@
               "link_id": "invoice_fixture"
             },
             "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": null
           }
         },
         {
@@ -1654,9 +1501,7 @@
               "link_id": "invoice_fixture"
             },
             "status": "succeeded",
-            "payment_method": "pm_3155",
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": "pm_3155"
           }
         },
         {
@@ -1677,9 +1522,7 @@
               "link_id": "invoice_fixture"
             },
             "status": "succeeded",
-            "payment_method": "pm_3155",
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": "pm_3155"
           }
         }
       ]
@@ -1894,9 +1737,7 @@
               "gym_id": "00000000-0000-7000-8000-000000000001"
             },
             "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": null
           }
         }
       ]
@@ -3711,9 +3552,7 @@
               "invoice_id": "invoice_fixture"
             },
             "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": null
           }
         },
         {
@@ -3766,9 +3605,7 @@
               "invoice_id": "invoice_fixture"
             },
             "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": null
           }
         },
         {
@@ -3855,9 +3692,7 @@
               "invoice_id": "invoice_fixture"
             },
             "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd"
+            "payment_method": null
           }
         },
         {
@@ -4849,7 +4684,8 @@
               ],
               "metadata": {
                 "gym_id": "00000000-0000-7000-8000-000000000001",
-                "invoice_id": "invoice_fixture"
+                "invoice_id": "invoice_fixture",
+                "saves_card": "off_session"
               },
               "payment_intent_data": {
                 "metadata": {
@@ -4878,7 +4714,7 @@
             "idempotencyKey": "checkout_fixture"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -4891,7 +4727,8 @@
             ],
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
+              "invoice_id": "invoice_fixture",
+              "saves_card": "off_session"
             },
             "payment_intent_data": {
               "metadata": {
@@ -4918,30 +4755,7 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": "off_session"
+            "payment_intent": null
           }
         }
       ]
@@ -5008,7 +4822,7 @@
             "idempotencyKey": "checkout_fixture"
           },
           "output": {
-            "id": "cs_2",
+            "id": "cs_1",
             "created": 1792756800,
             "livemode": false,
             "object": "checkout.session",
@@ -5047,30 +4861,7 @@
             ],
             "status": "open",
             "url": "https://checkout.invalid/fixture",
-            "payment_intent": "pi_1"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "customer": "cus_fixture",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture"
-            },
-            "status": "requires_payment_method",
-            "payment_method": null,
-            "amount": 100,
-            "currency": "usd",
-            "setup_future_usage": null
+            "payment_intent": null
           }
         }
       ]

@@ -93,10 +93,10 @@ try {
     await page.getByLabel('Booking for').selectOption(child);
     await page.getByRole('button', { name: /^Book Fundamentals with a long class name/ }).click();
     await expect(page.getByText('Casey Parent-Longname is booked.')).toBeVisible();
-    await page.getByRole('button', { name: /^Join the Early class waitlist for Casey/ }).click();
+    await page.getByRole('button', { name: /^Join the waitlist: Early class for Casey/ }).click();
     await expect(page.getByText(/on the waitlist at position 2/)).toBeVisible();
     await check('schedule-payer');
-    await page.getByRole('button', { name: /^Cancel the Fundamentals with a long class name/ }).click();
+    await page.getByRole('button', { name: /^Cancel booking: Fundamentals with a long class name/ }).click();
     await expect(page.getByText(/place for Casey Parent-Longname is cancelled/)).toBeVisible();
     await page.goto(origin + '/portal/checkin');
     await expect(page.getByText(/no active check-in code/)).toBeVisible();

@@ -13,10 +13,10 @@ interface Session extends RecordId { name: string; startsAt: string; endsAt: str
 interface Visitor { firstName: string; lastName: string; email: string; fullName: string }
 
 /** Checks the page on desktop and at 360 px, ending at the phone width the flow runs at. */
-async function bothWidths(page: Page, info: TestInfo, name: string, knownViolations: string[] = []) {
+async function bothWidths(page: Page, info: TestInfo, name: string) {
   for (const size of [desktop, phone]) {
     await page.setViewportSize(size);
-    await accessibleLayout(page, info, `${name}-${size.width}`, knownViolations);
+    await accessibleLayout(page, info, `${name}-${size.width}`);
   }
 }
 /** Draws one stroke on a waiver's signature canvas, as a finger would. */
@@ -91,14 +91,7 @@ async function signInToPortal(page: Page, info: TestInfo, owner: Client, visitor
 test('a visitor joins with the test card, and only the signed checkout webhook activates the join and its portal login', async ({ page, sandboxes }, info) => {
   test.setTimeout(180_000);
   const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner'), visitor = newVisitor();
-  const started = page.waitForResponse(response => new URL(response.url()).pathname === '/join/checkout');
   await join(page, info, sandbox.origin, visitor);
-  // Known failure, and only this symptom is expected: an open payment-mode Checkout has no PaymentIntent yet, so the
-  // adapter reports that it saves no card and join's Checkout start answers 503. Remove this block with the fix.
-  if ((await started).status() === 503 && await page.getByText('Online joining is not available right now.', { exact: false }).isVisible()) {
-    test.fail(true, 'Join Checkout start rejects an open payment session that has no PaymentIntent yet');
-    throw new Error('Join Checkout start answered 503');
-  }
   // Checkout is hosted by the payment provider; in this stack the fake's page takes the test card.
   await page.waitForURL(url => url.origin === stripeOrigin, { timeout: 5_000 });
   const sessionId = new URL(page.url()).pathname.split('/').pop()!;
@@ -167,17 +160,16 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
   const booked = page.getByRole('listitem').filter({ has: page.getByText(soon.name, { exact: true }) });
   await expect(booked.getByRole('list', { name: 'Household places', exact: true })).toHaveText(new RegExp(`^${visitor.fullName}\\s*Booked$`));
   await page.goto(sandbox.origin + '/portal/schedule');
-  await (await portalClass(page, `Join the ${full.name} waitlist for ${visitor.fullName}`)).click();
-  await expect(page.getByRole('button', { name: `Leave the ${full.name} waitlist for ${visitor.fullName}`, exact: true })).toBeVisible();
+  await (await portalClass(page, `Join the waitlist: ${full.name} for ${visitor.fullName}`)).click();
+  await expect(page.getByRole('button', { name: `Leave the waitlist: ${full.name} for ${visitor.fullName}`, exact: true })).toBeVisible();
   await expect(page.getByText('Waitlist — position 1', { exact: true })).toBeVisible();
-  // Known finding, checked on its own below: the schedule's named actions leave out their visible text.
-  await bothWidths(page, info, 'portal-schedule', ['label-content-name-mismatch']);
+  await bothWidths(page, info, 'portal-schedule');
 
   // Staff cancel the held place; the waitlist promotes the visitor.
   await owner.json(`/api/bookings/${held.id}/cancel`, 'POST', {});
   await expect.poll(async () => {
     await page.goto(sandbox.origin + '/portal/schedule');
-    return (await portalClass(page, `Cancel the ${full.name} booking for ${visitor.fullName}`).catch(() => undefined)) !== undefined;
+    return (await portalClass(page, `Cancel booking: ${full.name} for ${visitor.fullName}`).catch(() => undefined)) !== undefined;
   }, { timeout: 60_000, message: 'The waitlist promotes the visitor' }).toBe(true);
 
   // The portal shows a QR check-in code; the sandbox kiosk scans it from its camera.
@@ -215,13 +207,9 @@ test("the portal schedule's booking actions keep their visible text in their acc
   await page.setViewportSize(phone);
   await page.goto(sandbox.origin + '/portal/schedule');
   // The seeded student holds booked places and a waitlist place.
-  await expect(page.getByRole('button', { name: /^Leave the .* waitlist for / }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Leave the waitlist: / }).first()).toBeVisible();
   const result = await new AxeBuilder({ page }).withRules(['label-content-name-mismatch']).analyze();
   const mismatched = result.violations.flatMap(violation => violation.nodes.map(node => node.html));
-  // Known failure, and only this symptom is expected: "Join the waitlist", "Cancel booking" and "Leave the waitlist"
-  // are labelled "Join the <class> waitlist for <name>" and similar, which leave out the visible text. Remove with the fix.
-  if (mismatched.length && mismatched.every(html => /aria-label="(Join|Cancel|Leave) the /.test(html)))
-    test.fail(true, 'Portal schedule action labels leave out their visible text');
   expect(mismatched).toEqual([]);
 });
 

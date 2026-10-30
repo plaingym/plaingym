@@ -99,7 +99,9 @@ export function createReconciliation(options: Options) {
     if (value.kind === 'checkout') return checkout(gymId, value.object.id, provider);
     if (value.kind === 'setup' || value.kind === 'payment_method') return true; // Card collection is webhook-owned.
     // Refunds and disputes are written by the same module as webhook processing, matched through their PaymentIntent.
-    const { payment } = await writer.parentPayment(gymId, provider, value.object.chargeId, success => apply(gymId, success));
+    // A payment already recorded needs no processor read.
+    const payment = await writer.recordedPayment(gymId, value.object.chargeId)
+      ?? (await writer.parentPayment(gymId, provider, value.object.chargeId, success => apply(gymId, success))).payment;
     if (!payment) return false;
     if (value.kind === 'refund') return await writer.refund(gymId, payment, value.object) && value.object.status !== 'pending';
     return await writer.dispute(gymId, payment, value.object) !== 'conflict';
