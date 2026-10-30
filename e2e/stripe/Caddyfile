@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# The demo install reaches the fake Stripe API as api.stripe.com through this proxy's own local CA.
+{
+  admin off
+  skip_install_trust
+}
+https://api.stripe.com {
+  tls internal
+  reverse_proxy stripe:12111
+}

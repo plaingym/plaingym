@@ -50,6 +50,7 @@ services:
     depends_on:
       demo-postgres: {condition: service_healthy}
       demo-s3: {condition: service_started}
+      stripe-tls: {condition: service_healthy}
     environment:
       <<: *app-env
       PGHOST: demo-postgres
@@ -65,12 +66,52 @@ services:
       UPLOADS_S3_ENDPOINT: http://demo-s3:7070
       UPLOADS_S3_ACCESS_KEY_ID: e2e
       UPLOADS_S3_SECRET_ACCESS_KEY: ${E2E_S3_SECRET}
+      # Sandbox billing uses the fake Stripe below; the specs sign its webhooks with this secret.
+      DEMO_STRIPE_TEST_KEY: ${E2E_STRIPE_KEY:?required}
+      DEMO_STRIPE_WEBHOOK_SECRET: ${E2E_STRIPE_WEBHOOK_SECRET:?required}
+      NODE_EXTRA_CA_CERTS: /stripe-ca/root.crt
+    volumes: ['stripe-ca:/stripe-ca:ro']
+  # A stateful stand-in for the Stripe API (stripe/server.mjs), so joins complete without Stripe keys.
+  stripe:
+    image: node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+    user: node
+    init: true
+    command: [node, /fake/server.mjs]
+    volumes: ['./stripe/server.mjs:/fake/server.mjs:ro']
+    environment:
+      STRIPE_SECRET_KEY: ${E2E_STRIPE_KEY:?required}
+      CHECKOUT_ORIGIN: https://stripe.localhost
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:12111/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  # Serves the fake as api.stripe.com on this network; the demo install trusts its exported local CA.
+  stripe-tls:
+    image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
+    init: true
+    # Caddy keeps its CA on a volume across restarts; the export is written whole before it is renamed into place.
+    entrypoint: [sh, -c, 'caddy run --config /etc/caddy/Caddyfile --adapter caddyfile & until [ -s /data/caddy/pki/authorities/local/root.crt ]; do sleep 0.2; done; cp /data/caddy/pki/authorities/local/root.crt /ca/.root.crt && chmod 0644 /ca/.root.crt && mv -f /ca/.root.crt /ca/root.crt; wait']
+    volumes: ['./stripe/Caddyfile:/etc/caddy/Caddyfile:ro', 'stripe-ca:/ca', 'stripe-tls-data:/data']
+    networks:
+      default: {aliases: [api.stripe.com]}
+    depends_on:
+      stripe: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, test, -s, /ca/root.crt]
+      interval: 2s
+      timeout: 3s
+      retries: 30
   caddy:
     image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
-    ports: ['127.0.0.1:443:443']
+    ports: ['${E2E_LOOPBACK:-127.0.0.1}:443:443']
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ../dev/https/Caddyfile:/etc/caddy/demo.Caddyfile:ro
     depends_on:
       app: {condition: service_healthy}
       demo: {condition: service_healthy}
+      stripe: {condition: service_healthy}
+volumes:
+  stripe-ca: {}
+  stripe-tls-data: {}

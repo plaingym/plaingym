@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { defineConfig } from '@playwright/test';
 
+const loopback = process.env.E2E_LOOPBACK ?? '127.0.0.1';
+
 export default defineConfig({
   testDir: './specs',
   projects: process.env.E2E_VM_CONFIG ? [{ name: 'vm', testMatch: '**/vm.spec.ts' }] : [
@@ -25,6 +27,7 @@ export default defineConfig({
     // VM wizard fields include backup credentials and the one-time age key.
     trace: process.env.E2E_VM_CONFIG ? 'off' : 'retain-on-failure',
     screenshot: process.env.E2E_VM_CONFIG ? 'off' : 'only-on-failure',
-    launchOptions: { args: ['--no-proxy-server', '--host-resolver-rules=MAP *.localhost 127.0.0.1'] },
+    // ignoreHTTPSErrors does not cover service worker scripts; the portal's installability check registers one.
+    launchOptions: { args: ['--no-proxy-server', '--host-resolver-rules=MAP *.localhost ' + loopback, '--ignore-certificate-errors'] },
   },
 });

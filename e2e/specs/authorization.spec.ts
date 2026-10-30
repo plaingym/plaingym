@@ -17,17 +17,22 @@ const matrix: Record<string, Role[]> = {
   'attendance.manage': all, 'data.export': managers, 'kiosk_devices.manage': managers,
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
-const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$))|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
+const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
   || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
-  || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
+  || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 // Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.
 // The sweep deliberately exhausts that production budget across roles; only these public
 // intake operations may answer 429. Never broaden this allowance to protected routes.
 // The CSP report endpoint answers 204 to every request, valid or not; no other route may.
 const noContent = new Set(['POST /csp-report']);
-const budgetedPublicIntake =new Set(['POST /api/public/trial', 'POST /api/public/drop-in', 'POST /trial', 'POST /drop-in',
+const budgetedPublicIntake = new Set(['POST /api/public/trial', 'POST /api/public/drop-in', 'POST /trial', 'POST /drop-in',
   'POST /api/public/join', 'POST /join']);
+
+// The signed-link Checkout return finds its link from the receipt cookie the link's page set; without one it is unavailable.
+const receiptReturn = 'GET /l/return';
+// Public portal routes that act for the signed-in user (choosing a household, completing a claim): anonymous callers get 401.
+const signedInPublic = new Set(['GET /api/portal/households', 'POST /api/portal/households/current', 'POST /api/portal/claims/complete']);
 
 test('the running route inventory matches the reviewed authorization sweep', async ({ install }, info) => {
   const actual = Object.entries(install.document.paths).flatMap(([path, methods]) =>
@@ -69,11 +74,16 @@ test('every route enforces all staff roles, anonymous access and device boundari
     // A device token is accepted on check-in endpoints only: tenant routes, public ones included, answer it with
     // 404. Public install routes (the content-pack catalog, setup, demo) run before tenancy and answer it like anyone.
     if (role === 'device' && entry.permission.kind === 'public') expect([200, ...noContent.has(key(entry)) ? [204] : [], 400, 404, 409], detail).toContain(response.status);
+    // Their handlers refuse anonymous callers, after validation rejects the sweep's invalid bodies.
+    else if (role === 'anonymous' && signedInPublic.has(key(entry))) expect(entry.method === 'GET' ? [401] : [400, 401], detail).toContain(response.status);
     else if (role === 'device' && entry.permission.kind !== 'kiosk') expect(response.status, detail).toBe(404);
     // A missing ID makes 404 the right answer only where the path has one; on a collection route a 404 is a
     // missing mount or a wrong denial, never an allowed response.
-    else if (allowed) expect(/\{[^}]+\}/.test(entry.path) ? [200, 400, 404, 409] : [200, ...noContent.has(key(entry)) ? [204] : [], 400, 409], detail).toContain(response.status);
+    else if (allowed) expect(/\{[^}]+\}/.test(entry.path) || key(entry) === receiptReturn ? [200, 400, 404, 409]
+      : [200, ...noContent.has(key(entry)) ? [204] : [], 400, 409], detail).toContain(response.status);
     else if (entry.permission.kind === 'member') expect(response.status, detail).toBe(404);
+    // Only a link's own bearer token opens a signed-link route; sessions and missing tokens are unauthenticated.
+    else if (entry.permission.kind === 'signed_link') expect(response.status, detail).toBe(401);
     else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });

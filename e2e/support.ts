@@ -4,6 +4,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test as base, type BrowserContext } from '@playwright/test';
 
 export const gymOrigin = 'https://gym.localhost';
+/** The stack's one published address; another loopback lets a run sit beside a local proxy on 127.0.0.1:443. */
+export const loopback = process.env.E2E_LOOPBACK ?? '127.0.0.1';
 export const missingId = '019a0000-0000-7000-8000-000000000000';
 export const password = 'qa-password-for-local-tests';
 export type Role = 'owner' | 'admin' | 'coach' | 'front_desk';
@@ -28,8 +30,8 @@ export class Client {
   async request<T>(path: string, method = 'GET', body?: unknown, extra: Record<string, string> = {}) {
     const url = new URL(path, this.origin);
     const payload = Buffer.isBuffer(body) ? body : body === undefined ? undefined : JSON.stringify(body);
-    return new Promise<{ status: number; body: T; text: string; cookies: string[] }>((resolve, reject) => {
-      const req = httpsRequest({ hostname: '127.0.0.1', port: 443, servername: url.hostname,
+    return new Promise<{ status: number; body: T; text: string; cookies: string[]; location?: string; retryAfter?: number }>((resolve, reject) => {
+      const req = httpsRequest({ hostname: loopback, port: 443, servername: url.hostname,
         rejectUnauthorized: false, path: url.pathname + url.search, method,
         headers: { host: url.host, origin: this.origin, ...(this.cookie ? { cookie: this.cookie } : {}),
           ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) }),
@@ -40,7 +42,9 @@ export class Client {
           const text = Buffer.concat(chunks).toString('utf8');
           let body: T;
           try { body = JSON.parse(text) as T; } catch { body = text as T; }
-          resolve({ status: res.statusCode!, body, text, cookies: res.headers['set-cookie'] ?? [] });
+          const retry = Number(res.headers['x-retry-after'] ?? res.headers['retry-after']);
+          resolve({ status: res.statusCode!, body, text, cookies: res.headers['set-cookie'] ?? [], location: res.headers.location,
+            ...(Number.isFinite(retry) ? { retryAfter: retry } : {}) });
         });
       });
       req.on('error', reject);
@@ -119,7 +123,7 @@ async function initialize(): Promise<Install> {
 
 // A failed test starts a fresh worker. Reuse this run's fixtures instead of
 // consuming the sandbox creation quota or trying to initialize the install twice.
-async function cached<T>(name: string, create: () => Promise<T>): Promise<T> {
+export async function cached<T>(name: string, create: () => Promise<T>): Promise<T> {
   const file = new URL('./coverage/fixtures.json', import.meta.url);
   let values: Record<string, unknown> = {};
   try { values = JSON.parse(await readFile(file, 'utf8')); }

@@ -7,7 +7,8 @@ from the repository root to select that suite; the default runner below keeps
 its isolated members/mat Compose workflow.
 
 Run from the repository root with the pinned Node and pnpm versions, Docker, and
-TCP port 443 available on loopback:
+TCP port 443 available on loopback (`127.0.0.1`, or another loopback address in
+`E2E_LOOPBACK`, such as `127.0.0.2` beside a local proxy that holds `127.0.0.1:443`):
 
 ```sh
 pnpm --dir e2e install --frozen-lockfile
@@ -32,8 +33,18 @@ the build context. The production build and entrypoint are unchanged.
 
 Each run starts its own Compose project: two fresh PostgreSQL databases, a
 single-gym install, a demo install with S3-compatible storage (VersityGW) for its seeded
-files, and Caddy with local TLS. Credentials are
-random for each run. Nothing is exposed except `127.0.0.1:443`. Chromium's resolver
+files, a stand-in for the Stripe API, and Caddy with local TLS. Credentials are
+random for each run. Nothing is exposed except port 443 on the loopback address.
+
+The demo install keeps sandbox billing on with a random test key. Its Stripe calls
+reach `stripe/server.mjs`, a small stateful fake of the endpoints the app uses
+(customers, cards, payment intents, Checkout, setup intents, refunds), served as
+`api.stripe.com` on the Compose network through a second Caddy whose local CA the
+demo install trusts (`NODE_EXTRA_CA_CERTS`). Like Stripe, an open payment-mode
+Checkout has no PaymentIntent until it is paid. The browser pays on the fake's
+hosted page at `https://stripe.localhost` with `4242 4242 4242 4242`; specs then
+deliver a signed `checkout.session.completed` to the install's `/webhooks/stripe`
+with the run's random webhook secret (`portal.ts`). No Stripe account is needed. Chromium's resolver
 maps `*.localhost` to loopback; the API helper connects to loopback while keeping
 the hostname, TLS SNI, Origin and cookies. No public DNS or host-file edits are
 needed. Browser TLS verification is disabled only for the local Caddy certificate.
@@ -75,6 +86,23 @@ The checks cover:
   exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
   and Tokyo gym time with a Honolulu browser, verify stored instants and local display, and reject
   the New York spring daylight-saving gap. A coach's direct Settings URL has an explanatory empty state.
+* Every portal and signed-link route in the inventory, both ways between two
+  households of one sandbox (the student, and a seeded family that claims a portal
+  login from its outbox invitation): each route with a path parameter, aimed at the
+  other household's members, invoices, waivers and bookings with a valid body, answers
+  403/404; every portal read and each of household A's signed links (all four
+  purposes) shows nothing of household B; household A's kiosk PIN finds and checks in
+  only A's people; its QR code checks in only its own member and stops working once
+  replaced (`household-isolation.spec.ts`).
+* The sandbox join at 360 px and desktop (`demo-join.spec.ts`): plans, the signed
+  form, the hosted test-card payment, activation only from the signed webhook, the
+  outbox sign-in link into the portal. A join paid at the desk continues: the portal
+  installs (manifest, service worker, no installability errors), books a class, waits
+  on a full class and is promoted when staff free the place, shows a QR code that the
+  kiosk reads from its camera (frames drawn from the portal's own image), and the
+  coach's roster shows the check-in. Two tests are marked `test.fail` for open
+  findings (the payment-mode Checkout start, and the schedule actions' accessible
+  names); each fails until its fix lands, then must be unmarked.
 * Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
 * Login errors and a successful password sign-in; the demo entry button creating
@@ -89,7 +117,9 @@ Browser specs and their helpers import only e2e tooling and local test helpers.
 The End-to-end workflow installs this package independently of the application.
 
 `authorization-inventory.json` is a reviewed snapshot, not regenerated during
-tests. The running OpenAPI document must match it. It includes the locally
+tests. The running OpenAPI document must match it. It includes every portal route,
+the signed-link API (`/api/links/<purpose>`, which answers 401 without the link's
+own token) and the signed-link pages under `/l/`. It includes the locally
 declared photo, invitation-page and schedule-options routes. Household-login
 management contracts are absent from the running application and are not in
 this inventory. The QR check-in contract is also absent until its implementation

@@ -4,3 +4,8 @@ https://gym.localhost {
   tls internal
   reverse_proxy app:3000
 }
+# The fake Stripe's hosted Checkout page and API, for the browser and the specs.
+https://stripe.localhost {
+  tls internal
+  reverse_proxy stripe:12111
+}
