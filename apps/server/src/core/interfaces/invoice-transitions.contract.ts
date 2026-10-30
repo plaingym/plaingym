@@ -59,6 +59,24 @@ export function invoiceTransitionsContract(name: string, create: () => Promise<I
       expect(after.invoice).toBe('paid');
       expect(count(after.effects, 'staff_notice')).toBe(2);
     });
+    it('notifies staff once for a processor refund first recorded failed, or failed after pending', async () => {
+      const h = await create();
+      await h.transitions.cardSucceeded(h.context, h.success);
+      const { invoiceId, paymentId, amountCents, currency } = h.success;
+      const notices = async () => count((await h.read()).effects, 'staff_notice');
+      const failed: RefundTransition = { invoiceId, paymentId, refundId: randomUUID(), processorId: 're_contract_3',
+        amountCents, currency, status: 'failed' };
+      expect((await h.transitions.refund(h.context, failed)).invoice.status).toBe('paid');
+      expect(await notices()).toBe(1);
+      expect((await h.transitions.refund(h.context, failed)).outcome).toBe('ignored');
+      const pending: RefundTransition = { ...failed, refundId: randomUUID(), processorId: 're_contract_4', status: 'pending' };
+      await h.transitions.refund(h.context, pending);
+      expect(await notices()).toBe(1);
+      expect((await h.transitions.refund(h.context, { ...pending, status: 'failed' })).invoice.status).toBe('paid');
+      expect((await h.transitions.refund(h.context, { ...pending, status: 'failed' })).outcome).toBe('ignored');
+      expect(await notices()).toBe(2);
+      expect((await h.read()).invoice).toBe('paid');
+    });
     it('never reverses a refund without a processor ID', async () => {
       const h = await create();
       await h.transitions.manualPayment(h.context, h.manual);

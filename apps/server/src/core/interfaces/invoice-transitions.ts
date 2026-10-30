@@ -58,7 +58,8 @@ export interface InvoiceTransitionResult {
  * and reported to staff; it never pays an invoice twice. One-off failures do
  * not enter dunning. Payment outcomes never reopen paid, refunded or void invoices. The one backward move is a
  * processor refund that fails after it succeeded (same processor refund ID): its amount is released, the invoice's
- * refund status is recomputed (back to partially refunded or paid) and staff are notified.
+ * refund status is recomputed (back to partially refunded or paid) and staff are notified. Staff are notified once for
+ * every processor refund that ends failed: first recorded failed, pending to failed, or reversed.
  */
 export interface InvoiceTransitions {
   settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult>;
@@ -251,7 +252,9 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (request.status !== 'failed' && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
     this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request) });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
-    if (reversed) this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
+    // A failed refund never moves again, so each processor refund that ends failed notifies staff once.
+    if (request.status === 'failed' && request.processorId !== undefined)
+      this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
     if (!(request.status === 'succeeded' || (reversed && ['partially_refunded', 'refunded'].includes(invoice.status)))
       || !payment.accepted) return this.#result('applied', invoice);
     const refunded = [...this.#refunds.entries()].filter(([, { gymId, request: other }]) =>
