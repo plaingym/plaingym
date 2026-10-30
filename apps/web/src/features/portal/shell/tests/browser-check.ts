@@ -18,7 +18,7 @@ const person = { id: member, householdId: household, firstName: 'Alex', lastName
 const login = { id: gym, householdId: household, userId, scope: 'member', memberId: member, createdAt: person.createdAt, email: person.email };
 const second = '00000000-0000-7000-8000-000000000005';
 const choices = [{ householdId: household, name: 'A household with a long name that wraps on a phone', role: 'payer' }, { householdId: second, name: 'Second household', role: 'member' }];
-let revoked = false, current: string | null = null;
+let revoked = false, awaiting = false, current: string | null = null;
 const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QueryClient,QueryClientProvider} from '@tanstack/react-query'; import {ShellServicesContext} from './src/app/context.tsx'; import {PortalAccessTab} from './src/features/portal/access/tab.tsx'; const services={loadBootstrap:async()=>(${JSON.stringify({ ...bootstrap, session: { userId, roles: ['front_desk'], member: false } })})}; createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><ShellServicesContext.Provider value={services}><main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Alex Example</h1><PortalAccessTab memberId="${member}"/></main></ShellServicesContext.Provider></QueryClientProvider>);`, resolveDir: resolve('apps/web'), sourcefile: 'portal-access-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
 await writeFile(resolve(output, 'access.js'), bundle.outputFiles[0]!.text);
 const cssName = (await readdir(resolve(dist, 'assets'))).find(name => name.endsWith('.css'))!;
@@ -40,7 +40,8 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/portal/invitations/accept') { res.end(JSON.stringify({ data: { status: 'claimed' } })); return; }
     if (path === '/api/members/' + member) { res.end(JSON.stringify({ data: person })); return; }
-    if (path.endsWith('/portal-logins')) { res.end(JSON.stringify({ data: revoked ? [] : [login], pagination: { limit: 20, offset: 0, total: revoked ? 0 : 1 } })); return; }
+    if (path.endsWith('/portal-logins')) { res.end(JSON.stringify({ data: revoked ? [] : [login], pagination: { limit: 20, offset: 0, total: revoked ? 0 : 1 },
+      ...(awaiting ? { awaitingConfirmation: { email: 'a-long-joining-address-that-wraps@example.test' } } : {}) })); return; }
     if (path.endsWith('/portal-invitations')) { res.end(JSON.stringify({ data: { delivery: 'print', invitation: { userId, scope: 'member', memberId: member, expiresAt: '2026-11-04T12:00:00.000Z' }, invitationUrl: 'http://localhost/portal/claim#' + 'a'.repeat(64) } })); return; }
     if (req.method === 'DELETE') revoked = true;
     res.end(JSON.stringify({ data: null })); return;
@@ -87,6 +88,13 @@ try {
     await page.getByRole('button', { name: 'Reset password', exact: true }).click(); await page.getByLabel('New password (12–128 characters)').fill('new-browser-password'); await check('reset');
     await page.getByRole('dialog').getByRole('button', { name: 'Reset password', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.getByRole('button', { name: 'Revoke access', exact: true }).click(); await page.getByRole('dialog').getByRole('button', { name: 'Revoke access', exact: true }).click(); await expect(page.getByText('No portal logins yet')).toBeVisible();
+    // A password-mode join awaiting confirmation: staff confirm with a printed payer invitation for its address.
+    awaiting = true; await page.goto(origin + '/access-fixture'); await expect(page.getByText('Awaiting portal confirmation')).toBeVisible(); await check('awaiting');
+    await page.getByRole('button', { name: 'Confirm and print invitation' }).click();
+    await expect(page.getByLabel('Login email')).toHaveValue('a-long-joining-address-that-wraps@example.test');
+    await expect(page.getByLabel('Access')).toHaveValue('payer'); await expect(page.getByLabel('Invitation delivery')).toHaveValue('print'); await check('confirm');
+    await page.getByRole('dialog').getByRole('button', { name: 'Invite', exact: true }).click(); await expect(page.getByText('Private invitation link')).toBeVisible();
+    awaiting = false;
   }
-  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
+  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke and join confirmation at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
 } finally { await browser.close(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(profile, { recursive: true, force: true }); }

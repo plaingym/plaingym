@@ -2,13 +2,14 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { householdUsers, auditEvents, uuidv7 } from '@plaingym/db';
+import { householdUsers, auditEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles, type StaffRole } from '@plaingym/shared';
+import { portalAccessContracts } from '@plaingym/shared/contracts';
 import { FakeMemberHouseholdContext } from '../../core/interfaces/member-household.js';
 import { createMemberHouseholdContext, createPortalPrincipalLoader } from './household-users.context.js';
-import { createHouseholdUsersService } from './household-users.js';
+import { createHouseholdUsersService, requestPortalConfirmation } from './household-users.js';
 import { createPortalAccessRoutes } from '../portal/access.routes.js';
 import { createPortalAuthRoutes } from '../portal/auth.routes.js';
 import { createPortalAuthorization } from '../portal/auth.permissions.js';
@@ -76,6 +77,29 @@ describe('household login routes', () => {
     expect((await send(server, base + '/' + f.adult.id, 'DELETE')).status).toBe(404);
     expect((await send(app(staff('owner')), base, 'POST', { userId: f.adult.userId, scope: 'member', memberId: f.foreign.id })).status).toBe(404);
     expect((await send(app(staff('owner')), `/api/households/${f.otherHousehold.id}/users/${f.adult.id}`, 'DELETE')).status).toBe(404);
+  });
+  it('shows a password-mode join address awaiting confirmation on its own household until it has a payer login', async () => {
+    const f = await fixture(), server = app(staff('front_desk'));
+    const joined = await factory('households', gym, { email: 'joined@example.invalid' });
+    await db.forGym(gym, tx => requestPortalConfirmation(tx, gym, joined.id, clock));
+    const logins = async (householdId: string, target = server) => {
+      const response = await send(target, `/api/households/${householdId}/portal-logins`);
+      expect(response.status).toBe(200);
+      return portalAccessContracts.logins.response.parse(await response.json());
+    };
+    expect(await logins(joined.id)).toEqual({ data: [], pagination: { limit: 50, offset: 0, total: 0 }, awaitingConfirmation: { email: 'joined@example.invalid' } });
+    // Never on another household, and never across gyms or for coaches.
+    expect(await logins(f.household.id)).not.toHaveProperty('awaitingConfirmation');
+    expect((await send(app(staff('owner', otherGym), otherGym), `/api/households/${joined.id}/portal-logins`)).status).toBe(404);
+    expect((await send(app(staff('coach')), `/api/households/${joined.id}/portal-logins`)).status).toBe(403);
+    // An issued invitation (possibly never claimed) or a member-only login keeps it awaiting; a payer login confirms it.
+    await db.forGym(gym, tx => writeAudit(tx, { gymId: gym, actorKind: 'user', actorUserId: staffUser,
+      action: 'household_user.invited', targetType: 'household', targetId: joined.id, occurredAt: clock.now() }));
+    const child = await factory('members', gym, { householdId: joined.id, dateOfBirth: '1990-01-01' });
+    await factory('householdUsers', gym, { householdId: joined.id, scope: 'member', memberId: child.id });
+    expect(await logins(joined.id)).toHaveProperty('awaitingConfirmation');
+    await factory('householdUsers', gym, { householdId: joined.id, scope: 'payer', memberId: null });
+    expect(await logins(joined.id)).not.toHaveProperty('awaitingConfirmation');
   });
   it('separates staff and member routes, reloads scope and immediately denies revoked logins', async () => {
     const f = await fixture(), loader = createPortalPrincipalLoader(db.forGym), principal = await loader(gym, f.adult.userId), server = app(principal);

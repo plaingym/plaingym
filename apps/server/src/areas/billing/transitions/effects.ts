@@ -27,6 +27,9 @@ export interface TransitionEffectOptions {
   notifications: TransitionNotifications;
   /** Charge runner must recheck unpaid state and expire/reconcile Checkout before charging. */
   retry(invoiceId: string, context: JobContext): Promise<void>;
+  /** Runs after a paid or zero-settled invoice's memberships are activated, however it was paid. It may run again
+   * until the effect completes, so it must be idempotent; throwing retries the effect job. */
+  afterInvoicePaid?(gymId: string, invoiceId: string): Promise<void>;
 }
 export function createTransitionEffects(options: TransitionEffectOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -83,6 +86,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         if (membership.status === 'pending' || membership.status === 'trial')
           await options.memberships.activate(system(gymId), { membershipId, revision: membership.revision });
       }
+      await options.afterInvoicePaid?.(gymId, invoice.id);
     } else if (work.kind === 'dunning') {
       if (invoice.kind === 'cycle' && !terminal(invoice) && attempt?.id === latestAttempt?.id)
         await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action' });

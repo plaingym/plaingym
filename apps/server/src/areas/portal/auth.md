@@ -63,6 +63,17 @@ Acceptance proves the account before linking it:
   callback, for the signed-in user the invitation names, while the invitation is
   still valid; completing consumes it.
 
+## Joins awaiting confirmation
+
+A password-mode join provisions no account (`public/pages/join.md`). Its completion calls
+`requestPortalConfirmation`, an audited system marker on the household that holds no contact
+details. Until the household has a payer login, the portal-login listing returns
+`awaitingConfirmation` with the household's current address, and the staff panel offers to
+confirm it. Staff check the person, then issue the printed payer invitation for that address;
+the person sets the password, or proves an existing one, on `/portal/claim`. An invitation that
+expires or is lost leaves the household awaiting, and printing again replaces it. Staff
+accounts are refused as for any invitation.
+
 ## Onboarding links
 
 An active onboarding link can create payer access only for its own household.

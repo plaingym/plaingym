@@ -42,7 +42,6 @@ const service = {
   async state() { return { status: state, householdId: '01900000-0000-7000-8000-000000000020' }; },
   async passwordMode() { return passwordMode; },
   async resend() { calls.push({ kind: 'resend' }); },
-  async passwordLogin() { calls.push({ kind: 'password' }); return { status: 'invited', token: 'f'.repeat(64) }; },
 };
 const publicService = { async config() { return { data: { gym, dropInFee: null } }; } };
 const app = createApp({ skipSetup: true, authorize, contributions: { routes: [...createJoinRoutes({ service, continuations: joinContinuations(new Uint8Array(32).fill(5)) }),
@@ -62,10 +61,11 @@ const check = async (page, name) => {
   expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) }))).toEqual([]);
   await page.screenshot({ path: new URL(name + '.png', output).pathname.replace(/^\/([A-Za-z]:)/, '$1'), fullPage: true });
 };
-async function fill(page, drawn) {
+async function fill(page, drawn, people = 2) {
   for (const [name, value] of Object.entries({ contactName: 'Pat Payer', email: 'payer@example.invalid', 'member-0-firstName': 'Avery', 'member-0-lastName': 'Joiner',
-    'member-0-dateOfBirth': '1990-01-02', 'member-1-firstName': 'Kai', 'member-1-lastName': 'Joiner', 'member-1-dateOfBirth': '2016-05-06' })) await page.locator(`[name="${name}"]`).fill(value);
-  for (const member of [0, 1]) for (const doc of [0, 1]) {
+    'member-0-dateOfBirth': '1990-01-02', 'member-1-firstName': 'Kai', 'member-1-lastName': 'Joiner', 'member-1-dateOfBirth': '2016-05-06' }))
+    if (name.startsWith('member-0') || people > 1 || !name.startsWith('member-')) await page.locator(`[name="${name}"]`).fill(value);
+  for (const member of [0, 1].slice(0, people)) for (const doc of [0, 1]) {
     const prefix = `waiver-${member}-${doc}`;
     if (member === 1) { await page.locator(`[name="${prefix}-kind"]`).selectOption('guardian'); await page.locator(`[name="${prefix}-relationship"]`).fill('Parent'); }
     await page.locator(`[name="${prefix}-name"]`).fill(member ? 'Pat Payer' : 'Avery Joiner'); await page.locator(`[name="${prefix}-consent"]`).check();
@@ -94,7 +94,9 @@ try {
     state = 'active'; await page.goto(base + '/join/return'); await check(page, width + '-welcome-email');
     await page.locator('button', { hasText: 'Send the sign-in link again' }).click(); await page.waitForURL('**/join/sign-in'); await check(page, width + '-resent');
     passwordMode = true; await page.goto(base + '/join/return'); await check(page, width + '-welcome-password');
-    await page.locator('button', { hasText: 'Set up my portal login' }).click(); await page.waitForURL(/\/portal\/claim#f{64}$/);
+    await expect(page.locator('main')).toContainText('The gym confirms your member portal login');
+    state = 'closed'; await page.goto(base + '/join/checkout'); await check(page, width + '-closed');
+    await expect(page.locator('main')).toContainText('Please contact the gym');
     const fresh = await browser.newContext({ viewport: { width, height: 900 } }), lost = await fresh.newPage();
     await lost.goto(base + '/join/return'); await check(lost, width + '-missing'); await fresh.close();
     await context.close();
@@ -106,6 +108,11 @@ try {
   state = 'pending'; await page.goto(base + `/join?plan=${plans[0].id}&members=2`); await fill(page, false);
   await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await page.waitForURL('**/join');
   await check(page, '360-continue-native'); await page.locator('a', { hasText: 'Pay securely' }).click(); await page.waitForURL('**/join/return');
+  // An oversized native form gets join's own page.
+  await page.goto(base + `/join?plan=${plans[0].id}&members=1`); await fill(page, false, 1);
+  await page.evaluate(() => { const extra = document.createElement('input'); extra.type = 'hidden'; extra.name = 'padding'; extra.value = 'x'.repeat(4 * 1024 * 1024 + 1); document.querySelector('[data-join-form]').append(extra); });
+  await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await page.waitForURL('**/join');
+  await check(page, '360-too-large-native'); await expect(page.locator('main')).toContainText('too large to send together');
   await noScript.close();
   expect(errors).toEqual([]);
   const joins = calls.filter(c => c.kind === 'join');
@@ -113,5 +120,5 @@ try {
   expect(joins.every(c => c.body.members.length === 2 && c.body.members[1].waivers.every(w => w.signer.kind === 'guardian' && w.signer.relationship === 'Parent'))).toBe(true);
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members.every(m => m.signatures.every(s => s.pngBase64.startsWith('iVBOR'))))).toBe(true);
   expect(calls.filter(c => c.kind === 'checkout')).toHaveLength(3);
-  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming, cancelled, welcome (email and password), resend, missing, native form, touch targets and axe passed.');
+  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming, cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
 } finally { await browser.close(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }

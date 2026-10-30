@@ -57,7 +57,10 @@ Activation uses MembershipLifecycle after committing a payment or zero-value set
 pending/trial memberships on membership line items, and skips active, frozen and
 cancelled memberships; a sign-up fee alone does not end a trial. Revision checks
 protect concurrent membership edits. Replaying a partially completed activation
-does not activate a membership twice.
+does not activate a membership twice. The optional `afterInvoicePaid(gymId, invoiceId)`
+then runs for every paid or zero-settled invoice, however it was paid; it must be
+idempotent, since the effect runs it again until it completes, and a throw retries the
+effect job.
 
 Cycle failures enqueue dunning and one schedule per invoice. The first failure
 reads the gym's billing retry days (default `[3, 7]`) and saves them with

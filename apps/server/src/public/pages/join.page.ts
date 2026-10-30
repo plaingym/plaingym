@@ -79,8 +79,8 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')), h('p', { class: 'text-sm text-muted-foreground' }, text('dueToday')));
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, summary, counter, form), true);
 }
-export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword' | 'linked' | 'contactGym'
-  | 'cancelled' | 'missing' | 'unavailable' | 'failed';
+export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
+  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge';
 /** Every step after the form. None of these pages grants anything; actions post back to fixed join routes. */
 export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) {
   const text = joinText(input.t), state = input.state;
@@ -91,13 +91,14 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) 
     confirming: ['confirmingTitle', 'confirmingBody', h('a', { href: '/join/return', class: link }, text('checkAgain'))],
     welcomeEmail: ['welcomeTitle', 'welcomeEmail', action('/join/sign-in', 'resend')],
     resent: ['welcomeTitle', 'resent', action('/join/sign-in', 'resend')],
-    welcomePassword: ['welcomeTitle', 'welcomePassword', action('/join/portal-login', 'portalLogin')],
-    linked: ['welcomeTitle', 'linked', h('a', { href: '/portal', class: button }, text('portal'))],
-    contactGym: ['welcomeTitle', 'contactGym', h('a', { href: '/portal', class: link }, text('portal'))],
+    // Password mode: no account and no password until staff confirm the person and issue a printed invitation.
+    welcomePassword: ['welcomeTitle', 'welcomePassword', h('a', { href: '/portal', class: link }, text('portal'))],
     cancelled: ['cancelledTitle', 'cancelledBody', h('a', { href: '/join/checkout', class: button }, text('pay')), start],
+    closed: ['closedTitle', 'closedBody', h('a', { href: '/portal', class: link }, text('portal'))],
     missing: ['missingTitle', 'missingBody', start],
     unavailable: ['title', 'unavailable', start],
     failed: ['title', 'failed', start],
+    tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],
   }[state] as [string, string, ...ReturnType<typeof h>[]];
   return layout(input, text(title), h('section', { class: panel, role: 'status' }, h('p', null, text(body)), ...next));
 }

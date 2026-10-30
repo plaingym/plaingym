@@ -18,7 +18,7 @@ import { calculateCycleInvoice, calculateOneOffInvoice } from '../../areas/billi
 import { issue, system } from '../../areas/billing/runner/store.js';
 import type { CheckoutReturn, createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
-import { assertPortalLoginTarget } from '../../areas/members/household-users.js';
+import { assertPortalLoginTarget, requestPortalConfirmation } from '../../areas/members/household-users.js';
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
 import type { AccountService } from '../../infra/auth/accounts.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
@@ -27,6 +27,8 @@ const t = createTranslator(locales.en ?? {});
 /** Fixed same-origin return pages, never request values. Checkout and its reservation last an hour. */
 export const joinCheckoutFlow: CheckoutReturn = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 60 * 60 * 1000 };
 export const maxJoinMembers = 6, maxJoinDocuments = 8;
+/** Join's form and admission bodies: a family's chosen PNG files (256 KB each) or dozens of drawn signatures. */
+export const joinBodyBytes = 4 * 1024 * 1024;
 const linkLifetimeMs = 24 * 60 * 60 * 1000, settled = ['paid', 'partially_refunded', 'refunded'];
 const upload = z.strictObject({ templateId: c.idSchema, templateVersion: c.waiverTemplateVersionSchema,
   pngBase64: z.string().min(1).max(350_000).regex(/^[A-Za-z0-9+/]+={0,2}$/) });
@@ -42,8 +44,8 @@ export const joinAdmissionResponseSchema = z.strictObject({ data: z.array(z.arra
 const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, memberIds: z.array(c.idSchema), membershipIds: z.array(c.idSchema) });
 const received = admitted.extend({ linkId: c.idSchema, invoiceId: c.idSchema });
 const invoiced = z.strictObject({ invoiceId: c.idSchema, next: z.array(z.strictObject({ membershipId: c.idSchema, nextDueOn: c.dateSchema })) });
-export type JoinState = { status: 'missing' } | { status: 'pending' | 'active'; householdId: string };
-export type JoinInvitation = { status: 'invited'; token: string } | { status: 'linked' | 'refused' };
+/** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
+export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active'; householdId: string };
 
 export interface JoinOptions {
   scope?: typeof forGym;
@@ -56,7 +58,7 @@ export interface JoinOptions {
   paymentsConfigured(gymId: string): Promise<boolean>;
   /** The runtime's portal invitation service: its login-link sender and password-mode rule. */
   invitations: Pick<PortalInvitationService, 'accept' | 'passwordRequired'>;
-  accounts: Pick<AccountService, 'findUserByEmail' | 'provisionUser' | 'hasPassword'>;
+  accounts: Pick<AccountService, 'provisionUser'>;
   invitationStore?: Pick<ReturnType<typeof createPortalInvitationStore>, 'issue'>;
   memberships?: Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update'>;
   links?: Pick<ReturnType<typeof createSignedLinksService>, 'create' | 'revoke'>;
@@ -172,7 +174,7 @@ export function createJoinService(options: JoinOptions) {
   }
   /** A payer invitation for the household's own address. It grants nothing until accepted with that account's proof. */
   async function invite(gymId: string, householdId: string, email: string, name: string) {
-    let result = { status: 'refused' } as { status: 'invited'; token: string; userId: string } | { status: 'linked' | 'refused' };
+    let result = { status: 'refused' } as { status: 'invited'; token: string } | { status: 'linked' | 'refused' };
     await options.accounts.provisionUser(gymId, email, name, clock, async (tx, userId) => {
       // Staff identities are never claimed through a member invitation.
       if ((await tx.select({ id: staffRoles.id }).from(staffRoles).where(eq(staffRoles.userId, userId)).limit(1)).length) return;
@@ -181,7 +183,7 @@ export function createJoinService(options: JoinOptions) {
         eq(householdUsers.userId, userId)))).length) { result = { status: 'linked' }; return; }
       const issued = await store.issue(tx, gymId, { userId, householdId, scope: 'payer', memberId: null }, clock);
       await audit(tx, gymId, 'household_user.invited', 'household', householdId, { userId, scope: 'payer', memberId: null });
-      result = { status: 'invited', token: issued.token, userId };
+      result = { status: 'invited', token: issued.token };
     });
     return result;
   }
@@ -193,6 +195,39 @@ export function createJoinService(options: JoinOptions) {
   async function signIn(gymId: string, householdId: string) {
     const home = await household(gymId, householdId), invitation = await invite(gymId, householdId, home.email, home.name);
     if (invitation.status === 'invited') await options.invitations.accept(gymId, { token: invitation.token }, clock);
+  }
+  /** Once the join's invoice is paid, the joined prospects become active members and the join completes, once.
+   * Passwordless, the payer's sign-in link goes out with it; in password mode the address awaits staff confirmation. */
+  async function complete(gymId: string, find: (tx: Transaction) => Promise<{ householdId: string; invoiceId?: string } | undefined>) {
+    // Every paid invoice and link-tagged Checkout reaches this: one short read, and only an unfinished join goes on.
+    const householdId = await scope(gymId, async tx => {
+      const found = await find(tx), record = found ? await recorded(tx, 'public.join.received', found.householdId, received) : null;
+      return found && record && (!found.invoiceId || record.invoiceId === found.invoiceId) && !await marked(tx, 'public.join.completed', found.householdId)
+        ? found.householdId : null;
+    });
+    if (!householdId) return;
+    const passwordMode = await options.invitations.passwordRequired(gymId);
+    const completed = await scope(gymId, async tx => {
+      await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update');
+      const record = await recorded(tx, 'public.join.received', householdId, received);
+      if (!record) return false;
+      const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
+      if (!bill || !settled.includes(bill.status) || await marked(tx, 'public.join.completed', householdId)) return false;
+      for (const person of await tx.select().from(members).where(inArray(members.id, record.memberIds)).for('update')) {
+        if (person.status !== 'prospect' || person.anonymizedAt) continue;
+        await tx.update(members).set({ status: 'active', revision: person.revision + 1 }).where(and(eq(members.id, person.id), eq(members.revision, person.revision)));
+        await audit(tx, gymId, 'public.join.member_activated', 'member', person.id, { status: 'active', revision: person.revision + 1 },
+          { status: person.status, revision: person.revision });
+      }
+      await audit(tx, gymId, 'public.join.completed', 'household', householdId);
+      // No mail proves the address in password mode: staff check the person, then issue a printed invitation.
+      if (passwordMode) await requestPortalConfirmation(tx, gymId, householdId, clock);
+      return true;
+    });
+    if (!completed || passwordMode) return;
+    // The payment is recorded; a delivery problem must not fail it. The return page can send the link again.
+    try { await signIn(gymId, householdId); }
+    catch (error) { logError('public.join.sign_in_failed', { gymId, householdId }, error); }
   }
   const service = {
     ready, joinablePlan,
@@ -295,39 +330,27 @@ export function createJoinService(options: JoinOptions) {
     /** Read-only: active only after the webhook paid the invoice, activated the memberships and completed the join. */
     async state(gymId: string, linkId: string): Promise<JoinState> {
       return scope(gymId, async tx => {
-        const [link] = await tx.select({ householdId: signedLinks.householdId }).from(signedLinks).where(eq(signedLinks.id, linkId));
+        const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt }).from(signedLinks).where(eq(signedLinks.id, linkId));
         const record = link ? await recorded(tx, 'public.join.received', link.householdId, received) : null;
         if (!link || !record || record.linkId !== linkId) return { status: 'missing' };
         const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
+        // A paid invoice wins over a revoked link: staff may have collected it another way.
+        if (!bill || !settled.includes(bill.status))
+          return bill?.status === 'void' || link.revokedAt ? { status: 'closed' } : { status: 'pending', householdId: link.householdId };
         const rows = await tx.select({ status: memberships.status }).from(memberships).where(inArray(memberships.id, record.membershipIds));
-        const active = !!bill && settled.includes(bill.status) && rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
+        const active = rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
         return { status: active ? 'active' : 'pending', householdId: link.householdId };
       });
     },
     /** Webhook only, after a payment or card is recorded: once the join's invoice is paid, by its own Checkout or any
      * other link of its household, the joined prospects become active members, once. */
     async afterCheckout(gymId: string, linkId: string) {
-      const completed = await scope(gymId, async tx => {
-        const [link] = await tx.select({ householdId: signedLinks.householdId }).from(signedLinks).where(eq(signedLinks.id, linkId));
-        // Every link-tagged Checkout reaches this hook; only a joined household is locked.
-        const record = link ? await recorded(tx, 'public.join.received', link.householdId, received) : null;
-        if (!link || !record) return null;
-        await tx.select({ id: households.id }).from(households).where(eq(households.id, link.householdId)).for('update');
-        const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
-        if (!bill || !settled.includes(bill.status) || await marked(tx, 'public.join.completed', link.householdId)) return null;
-        for (const person of await tx.select().from(members).where(inArray(members.id, record.memberIds)).for('update')) {
-          if (person.status !== 'prospect' || person.anonymizedAt) continue;
-          await tx.update(members).set({ status: 'active', revision: person.revision + 1 }).where(and(eq(members.id, person.id), eq(members.revision, person.revision)));
-          await audit(tx, gymId, 'public.join.member_activated', 'member', person.id, { status: 'active', revision: person.revision + 1 },
-            { status: person.status, revision: person.revision });
-        }
-        await audit(tx, gymId, 'public.join.completed', 'household', link.householdId);
-        return link.householdId;
-      });
-      if (!completed || await options.invitations.passwordRequired(gymId)) return;
-      // The payment is recorded; a delivery problem must not fail it. The return page can send the link again.
-      try { await signIn(gymId, completed); }
-      catch (error) { logError('public.join.sign_in_failed', { gymId, householdId: completed }, error); }
+      await complete(gymId, async tx => (await tx.select({ householdId: signedLinks.householdId }).from(signedLinks).where(eq(signedLinks.id, linkId)))[0]);
+    },
+    /** The invoice transitions' paid-invoice hook, after the memberships activate: completes a join however its invoice
+     * was paid (staff-recorded cash or check, a later pay link), idempotent with `afterCheckout`. */
+    async afterInvoicePaid(gymId: string, invoiceId: string) {
+      await complete(gymId, async tx => (await tx.select({ householdId: invoices.householdId, invoiceId: invoices.id }).from(invoices).where(eq(invoices.id, invoiceId)))[0]);
     },
     /** Passwordless: a new sign-in link replaces the previous one. The same response whatever the address. */
     async resend(gymId: string, linkId: string) {
@@ -335,21 +358,6 @@ export function createJoinService(options: JoinOptions) {
       const state = await service.state(gymId, linkId);
       if (state.status !== 'active') throw new AppError('conflict', 'The membership is not active yet');
       await signIn(gymId, state.householdId);
-    },
-    /** Password mode: an invitation for the claim page, which proves the account with its password. An existing
-     * account without a password is never given one here; only an account this join created can set its first password. */
-    async passwordLogin(gymId: string, linkId: string): Promise<JoinInvitation> {
-      if (!await options.invitations.passwordRequired(gymId)) throw new AppError('forbidden', 'Password login is disabled');
-      const state = await service.state(gymId, linkId);
-      if (state.status !== 'active') throw new AppError('conflict', 'The membership is not active yet');
-      const home = await household(gymId, state.householdId), existing = await options.accounts.findUserByEmail(home.email);
-      if (existing && !await options.accounts.hasPassword(existing.id) && !await scope(gymId, async tx =>
-        (await recorded(tx, 'public.join.account_created', home.id, z.strictObject({ userId: c.idSchema })))?.userId === existing.id)) return { status: 'refused' };
-      const invitation = await invite(gymId, home.id, home.email, home.name);
-      if (invitation.status === 'invited' && !existing) await scope(gymId, async tx => {
-        if (!await marked(tx, 'public.join.account_created', home.id)) await audit(tx, gymId, 'public.join.account_created', 'household', home.id, { userId: invitation.userId });
-      });
-      return invitation.status === 'invited' ? { status: 'invited', token: invitation.token } : invitation;
     },
   };
   return service;

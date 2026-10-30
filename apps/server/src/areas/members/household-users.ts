@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, isNull } from 'drizzle-orm';
-import { forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { createHouseholdUserRequestSchema, householdUserSchema, type CreateHouseholdUserRequest, type Pagination } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -15,6 +15,13 @@ export async function assertPortalLoginTarget(tx: Transaction, householdId: stri
     if (!member) notFound();
     if (scope === 'member' && needsGuardian(member.dateOfBirth, clock.now(), timezone)) throw new AppError('invalid_request', 'An adult date of birth is required for a member login');
   }
+}
+
+const confirmationRequested = 'household_user.confirmation_requested';
+/** Password mode has no mail to prove an address: the household's address awaits portal confirmation by staff
+ * with `portal_access.manage`, who check the person and then issue the printed invitation. Identifiers only. */
+export async function requestPortalConfirmation(tx: Transaction, gymId: string, householdId: string, clock: Clock) {
+  await writeAudit(tx, { gymId, actorKind: 'system', action: confirmationRequested, targetType: 'household', targetId: householdId, occurredAt: clock.now() });
 }
 
 const record = (row: typeof householdUsers.$inferSelect) => householdUserSchema.parse({ id: row.id, householdId: row.householdId, userId: row.userId, scope: row.scope, memberId: row.memberId, createdAt: row.createdAt.toISOString() });
@@ -32,6 +39,18 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
         const total = await tx.$count(householdUsers, where);
         const rows = await tx.select().from(householdUsers).where(where).orderBy(asc(householdUsers.id)).limit(query.limit).offset(query.offset);
         return { data: rows.map(record), pagination: { ...query, total } };
+      });
+    },
+    /** The household's address while it awaits portal confirmation: until it has a payer login. A printed invitation
+     * that expires or is never claimed leaves it awaiting, and printing again replaces the outstanding one. */
+    async awaitingConfirmation(gymId: string, householdId: string): Promise<{ email: string | null } | null> {
+      return scope(gymId, async tx => {
+        const [home] = await tx.select({ email: households.email }).from(households).where(eq(households.id, householdId));
+        if (!home) notFound();
+        const [requested] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.action, confirmationRequested),
+          eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId))).limit(1);
+        if (!requested || await tx.$count(householdUsers, and(eq(householdUsers.householdId, householdId), eq(householdUsers.scope, 'payer')))) return null;
+        return { email: home.email };
       });
     },
     loginEmails: options.loginEmails ?? createPortalInvitationStore().loginEmails,

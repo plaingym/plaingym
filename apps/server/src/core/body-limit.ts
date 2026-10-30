@@ -11,10 +11,14 @@ export interface BodyLimits {
   /** Exact path or `prefix/*` → bytes. */
   readonly routes: Readonly<Record<string, number>>;
 }
-/** Photos are the largest JSON bodies (720 kB); a CSV upload carries its multipart framing. */
+/** Photos are the largest JSON bodies (720 kB); a CSV upload carries its multipart framing. Join's form and admission
+ * carry a family's signature images (4 MiB, checked again by join itself). The native join form gets twice that here,
+ * so join's own check answers a declared oversized length with its page; a chunked body is buffered up to this limit. */
+const join = 4 * 1024 * 1024;
 export const defaultBodyLimits: BodyLimits = {
   default: 1024 * 1024,
-  routes: { '/api/auth/*': 64 * 1024, '/api/imports/uploads': MAX_CSV_BYTES + 1024 * 1024 },
+  routes: { '/api/auth/*': 64 * 1024, '/api/imports/uploads': MAX_CSV_BYTES + 1024 * 1024,
+    '/join': 2 * join, '/join/signatures': join },
 };
 
 /**

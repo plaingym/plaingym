@@ -353,6 +353,28 @@ describe('invoice transitions with real PostgreSQL', () => {
     await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
     expect((await f.lifecycle.get(f.gymId, f.membership.id)).status).toBe('trial');
   });
+  it('runs the paid-invoice hook after activation however the invoice is paid, retrying the effect until it succeeds', async () => {
+    const f = await fixture(), jobs = new FakeJobs(f.clock), seen: string[] = [];
+    let down = true;
+    const afterInvoicePaid = vi.fn(async (gymId: string, invoiceId: string) => {
+      expect([gymId, invoiceId]).toEqual([f.gymId, f.invoice.id]);
+      seen.push((await f.lifecycle.get(gymId, f.membership.id)).status);
+      if (down) { down = false; throw new Error('Hook unavailable'); }
+    });
+    const effects = createTransitionEffects({ ...f.effectOptions, jobs, afterInvoicePaid });
+    for (const job of createTransitionJobs(() => effects)) jobs.handle(job.id, job.handler);
+    const drain = async () => { await effects.publish(f.gymId); while (await jobs.runNext()) { /* all currently due work */ } };
+    await f.transitions.cardFailed(f.context, f.failure); await drain();
+    expect(afterInvoicePaid).not.toHaveBeenCalled();
+    await f.transitions.manualPayment(f.context, f.manual); await drain();
+    expect(seen).toEqual(['active']);
+    // The first run failed after activating; the retried effect activates nothing twice and runs the hook again.
+    f.clock.advance(1000); await drain();
+    expect(seen).toEqual(['active', 'active']);
+    expect((await f.read()).audits.filter(a => a.action === 'billing.membership.activated')).toHaveLength(1);
+    await f.transitions.manualPayment(f.context, f.manual); await drain();
+    expect(afterInvoicePaid).toHaveBeenCalledTimes(2);
+  });
   it('revokes undisclosed dunning links when delivery fails, then retries with usable links', async () => {
     const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure);
     f.email.respondNext(new Error('SMTP down')); await f.drain();

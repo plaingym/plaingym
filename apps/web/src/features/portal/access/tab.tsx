@@ -31,11 +31,16 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
     } else if (edit.kind === 'revoke') await memberRequest(membersContracts.revokeHouseholdUser.response, `/api/households/${householdId}/users/${edit.login.id}`, 'DELETE');
     else await memberRequest(portalAccessContracts.resetPassword.response, `/api/households/${householdId}/users/${edit.login.id}/password`, 'POST', { newPassword: password });
   }, onSuccess: async () => { setEdit(null); setPassword(''); await cache.invalidateQueries({ queryKey: key }); }, onError: () => setPassword('') });
-  const open = (value: typeof edit) => { operation.reset(); setInvitation(null); setEdit(value); setEmail(person.data?.data.email ?? ''); setPassword(''); };
+  // Every dialog starts from member-only access, so a payer grant is always a deliberate choice.
+  const open = (value: typeof edit) => { operation.reset(); setInvitation(null); setEdit(value); setEmail(person.data?.data.email ?? ''); setScope('member'); setDelivery('print'); setPassword(''); };
+  // A password-mode join: after checking the person, staff issue the printed payer invitation for the household's address.
+  const confirm = (address: string | null) => { open('invite'); setEmail(address ?? ''); setScope('payer'); setDelivery('print'); };
+  const awaiting = users.data?.awaitingConfirmation;
   const submit = (event: FormEvent) => { event.preventDefault(); if (!operation.isPending) operation.mutate(); };
   if (person.isPending || users.isPending) return <LoadingState />;
   if (person.isError || users.isError) return <ErrorState onRetry={() => { void person.refetch(); void users.refetch(); }} />;
   return <section className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">{text('title')}</h2><p className="text-muted-foreground">{text('description')}</p></div><Button onClick={() => open('invite')}>{text('invite')}</Button></div>
+    {awaiting && <div className="min-w-0 space-y-3 rounded-lg border border-border bg-muted p-4"><p className="font-medium">{text('awaitingTitle')}</p><p className="break-all">{awaiting.email ?? text('noAddress')}</p><p>{text('awaitingHelp')}</p><Button variant="outline" onClick={() => confirm(awaiting.email)}>{text('confirm')}</Button></div>}
     {operation.isSuccess && <p role="status">{text('saved')}</p>}
     {invitation && <div className="space-y-2 rounded-lg border border-border p-4"><p className="font-medium">{text('privateLink')}</p><p className="break-all select-all">{invitation}</p><Button variant="outline" onClick={() => window.print()}>{text('print')}</Button></div>}
     {!users.data.data.length && <EmptyState title={text('empty')} />}

@@ -20,6 +20,7 @@ export function composeBillingWebhooks(options: {
   scope?: typeof forGym;
   clock?: Clock;
   afterCheckoutRecorded?: NonNullable<HandlerOptions['afterCheckoutRecorded']>;
+  afterInvoicePaid?: NonNullable<TransitionEffectOptions['afterInvoicePaid']>;
   prepare: Parameters<typeof createTransitionNotifications>[0]['prepare'];
   staffRecipients: Parameters<typeof createTransitionNotifications>[0]['staffRecipients'];
 }) {

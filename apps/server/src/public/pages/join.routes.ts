@@ -8,7 +8,8 @@ import { idSchema, paginationSchema, publicContracts as contracts, publicSubmiss
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
-import { createJoinService, joinAdmissionResponseSchema, joinAdmissionSchema, maxJoinDocuments, maxJoinMembers, type JoinOptions, type JoinService } from './join.service.js';
+import { createJoinService, joinAdmissionResponseSchema, joinAdmissionSchema, joinBodyBytes, maxJoinDocuments, maxJoinMembers, type JoinOptions,
+  type JoinService } from './join.service.js';
 import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuations } from './join.continuation.js';
 import { joinFormPage, joinPlansPage, joinStatusPage, type JoinPageState } from './join.page.js';
 import { joinBrowserScript } from './join.browser.js';
@@ -31,11 +32,18 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
   const admissions = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
   // Steps that reach the payment provider or send mail; the read-only pages, which refresh while confirming, have only the global limit.
   const steps = rateLimit({ limit: 30, windowMs: 15 * 60_000 });
-  // The install's request cap: room for dozens of drawn signatures (a few kilobytes each) or a few chosen PNG files.
-  const bounded = bodyLimit({ maxSize: 1024 * 1024, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
+  // Room for several chosen PNG files. The install-wide limiter in front allows the native form more, so it gets its own page.
+  const bounded = bodyLimit({ maxSize: joinBodyBytes, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
+  // The native form renders its own page rather than a JSON error. A browser shows a connection error instead of a
+  // response sent before its upload finishes; the install-wide limiter capped the declared length, so discard the rest.
+  const boundedForm = bodyLimit({ maxSize: joinBodyBytes, onError: async ctx => {
+    const rest = ctx.req.raw.body;
+    if (rest && !rest.locked) await rest.pipeTo(new WritableStream()).catch(() => undefined);
+    return page(ctx, 'tooLarge', 413);
+  } });
   const json = <T extends z.ZodType>(schema: T) => ({ 200: { description: 'Join response', content: { 'application/json': { schema } } } });
   const html = { 200: { description: 'Join page' }, 303: { description: 'Next join step' }, 400: { description: 'Please check the request' },
-    503: { description: 'Online joining is not available' } };
+    413: { description: 'The form is too large' }, 503: { description: 'Online joining is not available' } };
   const protect = (entry: RouteRegistration): RouteRegistration => ({ ...entry, mount(app, authorize) {
     entry.mount(app, permission => async (ctx, next) => {
       // Join URLs carry no credential. 'same-origin' keeps the Origin header on the cookie-bearing form posts, which the
@@ -46,7 +54,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     });
   } });
   const gymOf = (ctx: Context<RequestEnvironment>) => ctx.get('context').gym.gymId;
-  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 503 = 200) {
+  async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 503 = 200) {
     const config = options();
     return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state }), status);
   }
@@ -90,7 +98,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       return ctx.html(joinPlansPage({ ...common, plans: (await config.service.plans(gymId, { limit: 100, offset: 0 })).data }), 200);
     }),
     // Native multipart form: signature PNG files replace the canvases when JavaScript is unavailable.
-    route({ method: 'post', path: '/join', permission: { kind: 'public' }, middleware: [submissions, bounded], responses: html }, async ctx => {
+    route({ method: 'post', path: '/join', permission: { kind: 'public' }, middleware: [submissions, boundedForm], responses: html }, async ctx => {
       const context = ctx.get('context'), service = options().service, gymId = context.gym.gymId;
       try {
         const contentType = ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
@@ -124,11 +132,14 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     }),
     // Only the server learns the Checkout URL, from the provider; the browser follows a same-origin link here.
     route({ method: 'get', path: '/join/checkout', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
-      const linkId = pending(ctx);
-      if (!linkId) return page(ctx, 'missing');
-      try { return ctx.redirect(await options().service.checkout(gymOf(ctx), linkId), 303); }
+      const linkId = pending(ctx), service = options().service;
+      const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
+      if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
+      if (state.status === 'active') return ctx.redirect('/join/return', 303);
+      try { return ctx.redirect(await service.checkout(gymOf(ctx), linkId!), 303); }
       catch (error) {
-        if (settledOrGone(error)) return ctx.redirect('/join/return', 303);
+        // Paid, or a session being recorded, continues on the return page; a void invoice or revoked link cannot be paid here.
+        if (settledOrGone(error)) return (await service.state(gymOf(ctx), linkId!)).status === 'closed' ? page(ctx, 'closed') : ctx.redirect('/join/return', 303);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         throw error;
       }
@@ -137,14 +148,14 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'get', path: '/join/return', permission: { kind: 'public' }, responses: html }, async ctx => {
       const linkId = pending(ctx), service = options().service;
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
-      if (state.status === 'missing') return page(ctx, 'missing');
+      if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
       if (state.status === 'pending') { ctx.header('Refresh', '5'); return page(ctx, 'confirming'); }
       return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail');
     }),
     route({ method: 'get', path: '/join/cancelled', permission: { kind: 'public' }, responses: html }, async ctx => {
       const linkId = pending(ctx), state = linkId ? await options().service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
       if (state.status === 'active') return ctx.redirect('/join/return', 303);
-      return state.status === 'missing' ? page(ctx, 'missing') : page(ctx, 'cancelled');
+      return state.status === 'pending' ? page(ctx, 'cancelled') : page(ctx, state.status);
     }),
     route({ method: 'post', path: '/join/sign-in', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
       const linkId = pending(ctx);
@@ -156,12 +167,10 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
     route({ method: 'post', path: '/join/portal-login', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
       const linkId = pending(ctx);
       if (!linkId) return page(ctx, 'missing');
-      try {
-        const invitation = await options().service.passwordLogin(gymOf(ctx), linkId);
-        // The fragment never reaches a server or a Referer; the existing claim page proves the account by its password.
-        if (invitation.status === 'invited') return ctx.redirect('/portal/claim#' + invitation.token, 303);
-        return page(ctx, invitation.status === 'linked' ? 'linked' : 'contactGym');
-      } catch (error) { if (settledOrGone(error)) return ctx.redirect('/join/return', 303); throw error; }
+      // Issues nothing: in password mode the gym checks the person and then issues the printed portal invitation.
+      const service = options().service, gymId = gymOf(ctx);
+      if (!await service.passwordMode(gymId) || (await service.state(gymId, linkId)).status !== 'active') return ctx.redirect('/join/return', 303);
+      return page(ctx, 'welcomePassword');
     }),
     route({ method: 'get', path: '/join/client.js', permission: { kind: 'public' }, responses: { 200: { description: 'Progressive form enhancement' } } }, ctx => {
       ctx.header('Content-Type', 'text/javascript; charset=utf-8'); return ctx.body(joinBrowserScript);

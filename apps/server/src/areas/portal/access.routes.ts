@@ -23,10 +23,11 @@ export function createPortalAccessRoutes(service = createHouseholdUsersService()
   return [
     route({ ...details, request: { params: details.params, query: details.query }, responses: { 200: { description: 'Household logins with email addresses', content: { 'application/json': { schema: details.response } } } } }, async ctx => {
       const identity = actor(ctx.get('context')), { householdId } = ctx.req.valid('param');
-      const result = await service.list(identity.gymId, householdId, ctx.req.valid('query'));
-      const emails = await service.loginEmails(identity.gymId, householdId);
+      const [result, emails, awaitingConfirmation] = await Promise.all([service.list(identity.gymId, householdId, ctx.req.valid('query')),
+        service.loginEmails(identity.gymId, householdId), service.awaitingConfirmation(identity.gymId, householdId)]);
       ctx.header('Cache-Control', 'no-store');
-      return ctx.json({ ...result, data: result.data.map(row => { const email = emails.find(email => email.id === row.id)?.email; return { ...row, ...(email ? { email } : {}) }; }) }, 200);
+      return ctx.json({ ...result, data: result.data.map(row => { const email = emails.find(email => email.id === row.id)?.email; return { ...row, ...(email ? { email } : {}) }; }),
+        ...(awaitingConfirmation ? { awaitingConfirmation } : {}) }, 200);
     }),
     route({ ...list, request: { params: list.params, query: list.query }, responses: { 200: { description: 'Household logins', content: { 'application/json': { schema: list.response } } } } }, async ctx => {
       const identity = actor(ctx.get('context'));

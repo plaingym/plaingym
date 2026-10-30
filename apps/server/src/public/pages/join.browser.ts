@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { joinBodyBytes } from './join.service.js';
+
 /** Plain browser JavaScript, independent of server bundler helpers. No hydration: without it the native form posts files. */
 export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0-only
 (() => {
@@ -48,7 +50,8 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
         })),
       })));
       const admission = { planId: value('planId'), contact, members, honeypot: value('honeypot') }, key = JSON.stringify(admission);
-      if (key.length > 1000 * 1000) throw new Error('tooLarge');
+      // The admission is sent as UTF-8; leave room below the server's exact limit.
+      if (new Blob([key]).size > ${joinBodyBytes - 64 * 1024}) throw new Error('tooLarge');
       if (cached?.key !== key) cached = { key, data: (await post('/join/signatures', admission)).data };
       await post('/api/public/join', { planId: value('planId'), contact, honeypot: value('honeypot'), members: members.map((person, i) => ({
         member: person.member, waivers: cached.data[i].map((image, j) => {

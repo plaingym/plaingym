@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
@@ -26,6 +28,7 @@ import { registerBillingWebhookHandlers } from '../../areas/billing/webhooks/han
 import type { WebhookHandler } from '../../areas/billing/webhooks/inbox.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
 import { createPortalInvitationService, type PortalLoginLinkSender } from '../../areas/members/household-users.invitations.js';
+import { createHouseholdUsersService } from '../../areas/members/household-users.js';
 import { createPortalPrincipalLoader } from '../../areas/members/household-users.context.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
@@ -36,7 +39,7 @@ import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureJoin } from './join.routes.js';
-import { joinAdmissionResponseSchema } from './join.service.js';
+import { joinAdmissionResponseSchema, joinBodyBytes } from './join.service.js';
 import { joinCookie } from './join.continuation.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng(), pngBase64 = png.toString('base64');
@@ -78,7 +81,10 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     settings: createSettingsService({ scope: db.forGym, clock }), memberships: lifecycle, invitationStore: createPortalInvitationStore(() => db.system.db) });
   const jobs = new FakeJobs(clock), transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings, async prepare() { return { email: mail, origin }; }, async staffRecipients() { return []; } });
-  const effects = createTransitionEffects({ scope: db.forGym, clock, jobs, settings, transitions, memberships: lifecycle, async payments() { return provider; }, notifications, async retry() {} });
+  // As the runtime composes it: the paid-invoice effect completes a join however its invoice was paid.
+  const afterInvoicePaid = vi.fn((gym: string, invoiceId: string) => join.afterInvoicePaid(gym, invoiceId));
+  const effects = createTransitionEffects({ scope: db.forGym, clock, jobs, settings, transitions, memberships: lifecycle, async payments() { return provider; },
+    notifications, async retry() {}, afterInvoicePaid });
   for (const job of createTransitionJobs(() => effects)) jobs.handle(job.id, job.handler);
   const handlers = new Map<string, WebhookHandler>();
   // As the runtime composes it: link completion first, then the join's own completion, for every recorded Checkout.
@@ -91,8 +97,9 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   async function webhook(sessionId: string, type = 'checkout.session.completed') {
     const event = { id: 'evt_' + uuidv7(), type, gymId, objectKind: 'checkout' as const, objectId: sessionId };
     await handlers.get(type)!(event, { gymId, clock, timezone, jobId: uuidv7(), attempt: 1, payments: provider });
-    await effects.publish(gymId); while (await jobs.runNext()) { /* every effect now due */ }
+    await drain();
   }
+  async function drain() { await effects.publish(gymId); while (await jobs.runNext()) { /* every effect now due */ } }
   const app = (resolved = gymId) => createApp({ skipSetup: true, clock, authorize, contributions: areaContributions, origin, rateLimit: { limit: 10_000 },
     resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId: resolved, timezone, enabledModules: new Set() } }); await next(); },
     session: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), principal: { kind: 'anonymous' } }); await next(); } });
@@ -128,11 +135,24 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     logins: await tx.select().from(householdUsers), methods: await tx.select().from(paymentMethods), audits: await tx.select().from(auditEvents) }));
   const joined = async () => (await rows()).homes.filter(h => h.id !== existingHome.id);
   return { gymId, otherGym, clock, plan, annual, trial, free, retired, foreignPlan, templates, foreignTemplate, existingHome, existing, provider, paymentsFor,
-    paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, join, jobs, transitions, sent, mail, afterCheckout, webhook,
+    paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, join, jobs, transitions, sent, mail, afterCheckout, afterInvoicePaid, webhook, drain,
     app, server, get, post, admit, body, submit, pay, rows, joined };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const cookieValue = (cookie: string) => decodeURIComponent(cookie.slice(joinCookie.length + 1));
+/** A valid signature PNG of incompressible pixels, close to the 256 KB cap, like a chosen photo of a signature. */
+function noisePng(width = 290, height = 290) {
+  const chunk = (type: string, data: Buffer) => {
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0); out.write(type, 4, 'ascii'); data.copy(out, 8);
+    out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+    return out;
+  };
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header.set([8, 2, 0, 0, 0], 8);
+  const raw = randomBytes((1 + width * 3) * height);
+  for (let row = 0; row < raw.length; row += 1 + width * 3) raw[row] = 0;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
 /** The native multipart form, as posted without JavaScript: one adult and a PNG file for each current document. */
 function nativeForm(f: Fixture, planId: string, email: string) {
   const form = new FormData();
@@ -396,8 +416,126 @@ describe('public join pages through the production registrations', () => {
     await f.webhook(opened.session.id);
     expect((await f.rows()).members.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active']);
     expect(f.afterCheckout).toHaveBeenCalledWith(f.gymId, staff.link.id, opened.session.id);
+    expect(f.afterInvoicePaid).toHaveBeenCalledWith(f.gymId, bill.id);
     expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect((await f.rows()).audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
     expect(f.sent).toHaveLength(1);
+  });
+
+  it('completes a join paid by cash or check through the paid-invoice effect, once alongside the Checkout hook', async () => {
+    const f = await fixture(), { cookie } = await f.submit([adult(), child()]);
+    const [home] = await f.joined(), bill = (await f.rows()).invoices.find(i => i.householdId === home!.id)!;
+    const staff = await factory('authUser', f.gymId), context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: staff.id } };
+    const cash = { invoiceId: bill.id, paymentId: uuidv7(), method: 'cash' as const, amountCents: bill.amountCents, currency: 'CAD' as const, paidAt: f.clock.now().toISOString() };
+    await f.transitions.manualPayment(context, cash);
+    // Recorded but not yet processed: nothing is active and the return page keeps confirming.
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('Confirming your payment');
+    await f.drain();
+    let state = await f.rows();
+    expect(state.invoices.find(i => i.id === bill.id)!.status).toBe('paid');
+    expect(state.members.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active', 'active']);
+    expect(state.memberships.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active', 'active']);
+    expect(f.afterCheckout).not.toHaveBeenCalled();
+    expect(f.sent).toEqual([expect.objectContaining({ gymId: f.gymId, email: 'payer@example.invalid' })]);
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');
+    // A retried command, a replayed effect and the Checkout hook all find the join complete.
+    await f.transitions.manualPayment(context, cash); await f.drain();
+    await f.join.afterInvoicePaid(f.gymId, bill.id);
+    await f.join.afterCheckout(f.gymId, state.links.find(l => l.invoiceId === bill.id)!.id);
+    state = await f.rows();
+    expect(state.audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
+    expect(state.audits.filter(a => a.action === 'public.join.member_activated')).toHaveLength(2);
+    expect(f.sent).toHaveLength(1);
+    // Another household's paid invoice is not a join.
+    const other = await factory('invoices', f.gymId, { householdId: f.existingHome.id, number: 98, status: 'paid' });
+    await f.join.afterInvoicePaid(f.gymId, other.id);
+    expect((await f.rows()).members.find(m => m.id === f.existing.id)).toMatchObject({ status: 'active', revision: 1 });
+    expect((await f.rows()).audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
+  });
+
+  it('completes once when the Checkout hook and the paid-invoice effect race', async () => {
+    const f = await fixture(), { cookie } = await f.submit();
+    const [home] = await f.joined(), state = await f.rows(), bill = state.invoices.find(i => i.householdId === home!.id)!;
+    const linkId = state.links.find(l => l.invoiceId === bill.id)!.id;
+    await f.transitions.manualPayment({ gymId: f.gymId, actor: { kind: 'system' } },
+      { invoiceId: bill.id, paymentId: uuidv7(), method: 'check', amountCents: bill.amountCents, currency: 'CAD', paidAt: f.clock.now().toISOString() });
+    await Promise.all([f.join.afterInvoicePaid(f.gymId, bill.id), f.join.afterCheckout(f.gymId, linkId), f.join.afterInvoicePaid(f.gymId, bill.id), f.join.afterCheckout(f.gymId, linkId)]);
+    await f.drain();
+    expect((await f.rows()).audits.filter(a => a.action === 'public.join.completed')).toHaveLength(1);
+    expect(f.sent).toHaveLength(1);
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+  });
+
+  it('shows a closed join page when staff void the invoice or revoke its link, and still continues a paid or recording join', async () => {
+    const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout');
+    const closed = async (cookie: string, target = f.server) => {
+      for (const path of ['/join/checkout', '/join/return', '/join/cancelled']) {
+        const response = await f.get(path, cookie, target);
+        expect(response.status).toBe(200); expect(response.headers.get('location')).toBeNull(); expect(response.headers.get('refresh')).toBeNull();
+        const html = await response.text();
+        expect(html).toContain('The gym has closed this payment'); expect(html).toContain('Please contact the gym'); expect(html).not.toContain('Confirming');
+      }
+    };
+    const home = async (email: string) => (await f.joined()).find(h => h.email === email)!;
+    const voided = await f.submit([adult()], 'void@example.invalid'), voidHome = await home('void@example.invalid');
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'void' }).where(eq(invoices.householdId, voidHome.id)));
+    await closed(voided.cookie);
+    expect(create).not.toHaveBeenCalled();
+    // Another gym never learns of it.
+    expect(await (await f.get('/join/checkout', voided.cookie, f.app(f.otherGym))).text()).toContain('This browser no longer has your sign-up');
+    const links = createSignedLinksService({ scope: db.forGym, clock: f.clock }), system = { gymId: f.gymId, actor: { kind: 'system' as const } };
+    const revoked = await f.submit([adult()], 'revoked@example.invalid'), revokedHome = await home('revoked@example.invalid');
+    expect((await f.get('/join/checkout', revoked.cookie)).status).toBe(303);
+    await links.revoke(system, (await f.rows()).links.find(l => l.householdId === revokedHome.id)!.id);
+    await closed(revoked.cookie);
+    // A Checkout completed but not yet recorded still continues to the return page.
+    const recording = await f.submit([adult()], 'recording@example.invalid');
+    const session = new URL((await f.get('/join/checkout', recording.cookie)).headers.get('location')!).pathname.slice(1);
+    f.provider.completeCheckout(session);
+    expect((await f.get('/join/checkout', recording.cookie)).headers.get('location')).toBe('/join/return');
+    await f.webhook(session);
+    // A paid invoice wins over a link revoked afterwards.
+    const paidHome = await home('recording@example.invalid');
+    await links.revoke(system, (await f.rows()).links.find(l => l.householdId === paidHome.id)!.id);
+    expect((await f.get('/join/checkout', recording.cookie)).headers.get('location')).toBe('/join/return');
+    expect(await (await f.get('/join/return', recording.cookie)).text()).toContain('We sent a sign-in link');
+    // Neither closed join activated anything.
+    const state = await f.rows();
+    expect(state.members.filter(m => [voidHome.id, revokedHome.id].includes(m.householdId)).map(m => m.status)).toEqual(['prospect', 'prospect']);
+  });
+
+  it('accepts join bodies up to its 4 MiB cap and renders its own page above it', async () => {
+    const f = await fixture(), big = noisePng(), bigBase64 = big.toString('base64');
+    expect(big.length).toBeGreaterThan(240_000); expect(big.length).toBeLessThan(256 * 1024);
+    // Three adults with two chosen PNG files each: over the install's 1 MiB default, inside the join's cap.
+    const people = [adult('Ana'), adult('Ben'), adult('Cy')];
+    const admission = { planId: f.plan.id, contact: { name: 'Pat Payer', email: 'big@example.invalid' }, honeypot: '',
+      members: people.map(member => ({ member, signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64: bigBase64 })) })) };
+    const body = JSON.stringify(admission);
+    expect(body.length).toBeGreaterThan(1024 * 1024); expect(body.length).toBeLessThan(joinBodyBytes);
+    const admitted = await f.post('/join/signatures', admission);
+    expect(admitted.status, await admitted.clone().text()).toBe(200);
+    for (const size of [joinBodyBytes + 1, 2 * joinBodyBytes + 1]) {
+      const refused = await f.server.request(origin + '/join/signatures', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: 'x'.repeat(size) });
+      expect(refused.status).toBe(400); expect(await refused.text()).toContain('Request too large');
+    }
+    const native = (padding: number) => {
+      const form = nativeForm(f, f.plan.id, `native-${padding}@example.invalid`);
+      f.templates.forEach((_, j) => form.set(`waiver-0-${j}-image`, new File([big], 'signature.png', { type: 'image/png' })));
+      form.set('padding', 'x'.repeat(padding));
+      return f.server.request(origin + '/join', { method: 'POST', headers: { origin }, body: form });
+    };
+    const under = await native(joinBodyBytes - 600 * 1024);
+    expect(under.status, await under.clone().text()).toBe(200); expect(await under.text()).toContain('href="/join/checkout"');
+    for (const padding of [joinBodyBytes + 1, joinBodyBytes + 2 * 1024 * 1024]) {
+      const over = await native(padding);
+      expect(over.status).toBe(413); expect(over.headers.get('content-type')).toContain('text/html');
+      expect(await over.text()).toContain('too large to send together');
+    }
+    // Past twice the cap, the install-wide limiter answers first.
+    expect((await native(2 * joinBodyBytes + 1)).status).toBe(400);
+    expect((await f.rows()).homes.filter(h => h.email?.startsWith('native-'))).toHaveLength(1);
   });
 
   it('keeps a February 29 annual join on its leap-day anniversary', async () => {
@@ -431,29 +569,63 @@ describe('public join pages through the production registrations', () => {
       expect(await (await f.get('/join/return', staffJoin.cookie)).text()).toContain('We sent a sign-in link');
       expect((await f.rows()).logins.filter(l => l.userId === staff.id)).toEqual([]);
     });
-    it('password mode: an existing password must be proven, and an existing passwordless account is never given one', async () => {
-      const f = await fixture('password');
+    it('passwordless: no address awaits staff confirmation', async () => {
+      const f = await fixture(), { home } = await paid(f, 'mailable@example.invalid');
+      expect(await createHouseholdUsersService({ scope: db.forGym, clock: f.clock }).awaitingConfirmation(f.gymId, home.id)).toBeNull();
+      expect((await f.post('/join/portal-login', undefined, (await f.submit([adult()], 'other@example.invalid')).cookie)).headers.get('location')).toBe('/join/return');
+    });
+    it('password mode: a paid join creates no account or password; staff confirm the person with the printed invitation', async () => {
+      const f = await fixture('password'), users = createHouseholdUsersService({ scope: db.forGym, clock: f.clock });
       await f.accounts.createPasswordUser(f.gymId, 'has-password@example.invalid', 'Owner', 'owner-password-123', f.clock);
-      const passwordless = await factory('authUser', f.gymId, { email: 'no-password@example.invalid' });
-      const existing = await paid(f, 'has-password@example.invalid');
-      expect(await (await f.get('/join/return', existing.cookie)).text()).toContain('enter its current password');
-      const login = await f.post('/join/portal-login', undefined, existing.cookie);
-      expect(login.status).toBe(303);
-      const token = login.headers.get('location')!.replace('/portal/claim#', '');
-      await expect(f.invitations.accept(f.gymId, { token, password: 'attacker-password-123' }, f.clock)).rejects.toMatchObject({ code: 'forbidden' });
-      expect((await f.rows()).logins).toEqual([]);
-      expect(await f.invitations.accept(f.gymId, { token, password: 'owner-password-123' }, f.clock)).toEqual({ data: { status: 'claimed' } });
-      const unclaimable = await paid(f, 'no-password@example.invalid');
-      expect(await (await f.post('/join/portal-login', undefined, unclaimable.cookie)).text()).toContain('please contact the gym');
-      expect(await f.accounts.hasPassword(passwordless.id)).toBe(false);
-      expect((await f.rows()).logins.filter(l => l.householdId === unclaimable.home.id)).toEqual([]);
-      const fresh = await paid(f, 'brand-new@example.invalid');
-      const first = (await f.post('/join/portal-login', undefined, fresh.cookie)).headers.get('location')!;
-      const retry = (await f.post('/join/portal-login', undefined, fresh.cookie)).headers.get('location')!;
-      expect(retry).toMatch(/^\/portal\/claim#[a-f0-9]{64}$/); expect(retry).not.toBe(first);
-      expect(await f.invitations.accept(f.gymId, { token: retry.split('#')[1]!, password: 'new-member-password-1' }, f.clock)).toEqual({ data: { status: 'claimed' } });
-      expect((await f.rows()).logins.filter(l => l.householdId === fresh.home.id)).toHaveLength(1);
-      expect(await (await f.post('/join/portal-login', undefined, fresh.cookie)).text()).toContain('your portal login is ready');
+      const staff = await factory('authUser', f.gymId, { email: 'desk@example.invalid' });
+      await factory('staffRoles', f.gymId, { userId: staff.id, role: 'admin' });
+      const before = await f.rows();
+      const fresh = await paid(f, 'brand-new@example.invalid'), existing = await paid(f, 'has-password@example.invalid'), staffJoin = await paid(f, 'desk@example.invalid');
+      expect(await f.accounts.findUserByEmail('brand-new@example.invalid')).toBeFalsy();
+      for (const join of [fresh, existing, staffJoin]) {
+        const welcome = await (await f.get('/join/return', join.cookie)).text();
+        expect(welcome).toContain('The gym confirms your member portal login'); expect(welcome).not.toContain('/join/portal-login');
+        const login = await f.post('/join/portal-login', undefined, join.cookie);
+        expect(login.status).toBe(200); expect(login.headers.get('location')).toBeNull();
+        expect(await login.text()).toContain('The gym confirms your member portal login');
+      }
+      let state = await f.rows();
+      expect(state.logins).toEqual([]); expect(f.sent).toEqual([]);
+      expect(state.audits.filter(a => a.action === 'household_user.invited')).toEqual([]);
+      expect(state.audits.filter(a => a.action === 'public.join.completed')).toHaveLength(3);
+      expect(await f.accounts.findUserByEmail('brand-new@example.invalid')).toBeFalsy();
+      expect(before.homes.length + 3).toBe(state.homes.length);
+      // Staff with portal_access.manage see each address awaiting confirmation on its own household only.
+      expect(await users.awaitingConfirmation(f.gymId, fresh.home.id)).toEqual({ email: 'brand-new@example.invalid' });
+      expect(await users.awaitingConfirmation(f.gymId, existing.home.id)).toEqual({ email: 'has-password@example.invalid' });
+      expect(await users.awaitingConfirmation(f.gymId, f.existingHome.id)).toBeNull();
+      await expect(users.awaitingConfirmation(f.otherGym, fresh.home.id)).rejects.toMatchObject({ code: 'not_found' });
+      // After checking the person, staff issue the existing printed invitation; the person sets the password on the claim page.
+      const owner = await factory('authUser', f.gymId);
+      await factory('staffRoles', f.gymId, { userId: owner.id, role: 'owner' });
+      const actor = { gymId: f.gymId, userId: owner.id, clock: f.clock, timezone };
+      const print = async (home: { id: string; email: string | null }) => {
+        const issued = await f.invitations.invite(actor, home.id, { email: home.email!, scope: 'payer', memberId: null, delivery: 'print' }, origin);
+        if (issued.data.delivery !== 'print') throw new Error('Expected a printed invitation');
+        return new URL(issued.data.invitationUrl).hash.slice(1);
+      };
+      // A printed invitation that is lost keeps the household awaiting; printing again replaces it.
+      const lost = await print(fresh.home), token = await print(fresh.home);
+      expect(await users.awaitingConfirmation(f.gymId, fresh.home.id)).toEqual({ email: 'brand-new@example.invalid' });
+      await expect(f.invitations.accept(f.gymId, { token: lost, password: 'new-member-password-1' }, f.clock)).rejects.toMatchObject({ code: 'not_found' });
+      expect(await f.invitations.accept(f.gymId, { token, password: 'new-member-password-1' }, f.clock)).toEqual({ data: { status: 'claimed' } });
+      expect(await users.awaitingConfirmation(f.gymId, fresh.home.id)).toBeNull();
+      expect(await users.awaitingConfirmation(f.gymId, existing.home.id)).not.toBeNull();
+      // An existing account proves its current password; it is never replaced.
+      const proof = await print(existing.home);
+      await expect(f.invitations.accept(f.gymId, { token: proof, password: 'attacker-password-123' }, f.clock)).rejects.toMatchObject({ code: 'forbidden' });
+      expect(await f.invitations.accept(f.gymId, { token: proof, password: 'owner-password-123' }, f.clock)).toEqual({ data: { status: 'claimed' } });
+      // Staff accounts stay refused, and their join keeps awaiting confirmation.
+      await expect(print(staffJoin.home)).rejects.toMatchObject({ code: 'forbidden' });
+      expect(await users.awaitingConfirmation(f.gymId, staffJoin.home.id)).toEqual({ email: 'desk@example.invalid' });
+      state = await f.rows();
+      expect(state.logins.map(l => [l.householdId, l.scope]).sort()).toEqual([[fresh.home.id, 'payer'], [existing.home.id, 'payer']].sort());
+      expect(state.logins.filter(l => l.userId === staff.id)).toEqual([]);
       expect(f.sent).toEqual([]);
     });
   });
