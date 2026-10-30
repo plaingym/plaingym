@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs, stored webhooks and gym settings in real PostgreSQL.
-import { attendances, auditEvents, classBookings, classSessions, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, members, memberships, paymentAttempts, paymentMethods, programs, stripeEvents, uuidv7 } from '@plaingym/db';
+import { attendances, auditEvents, classBookings, classSessions, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, members, memberships, paymentAttempts, paymentMethods, payments, programs, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { floodLimit, poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
@@ -319,9 +319,30 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     expect(detachJobs.map(job => (job.payload as { value: { paymentMethodId: string } }).value.paymentMethodId)).toContain(erasedCard.id);
     expect(transport.requests.filter(input => input.path.endsWith('/payment_methods/pm_3155/detach'))).toHaveLength(1);
     expect((await database.forGym(sandbox.gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.id, erasedCard.id))))[0]!.revokedAt).not.toBeNull();
-    // Alerts use the real configured mail resolver and dashboard provider.
-    await database.forGym(sandbox.gymId, tx => tx.update(invoices).set({ disputeId: 'dp_runtime', disputeStatus: 'open' }).where(eq(invoices.id, cycle.id)));
+    // A dispute webhook records the dispute and queues the owner's alert at once, under the hourly scan's key.
+    const [paid] = await database.forGym(sandbox.gymId, tx => tx.select().from(payments).where(eq(payments.invoiceId, cycle.id)));
+    transport.objects.set('dp_runtime', { id: 'dp_runtime', object: 'dispute', payment_intent: paid!.paymentIntentId, amount: cycle.amountCents,
+      currency: cycle.currency.toLowerCase(), status: 'needs_response', metadata: { gym_id: sandbox.gymId }, created: transport.now, livemode: false });
+    const disputeEvent = JSON.stringify({ id: 'evt_runtime_dispute', object: 'event', type: 'charge.dispute.created', livemode: false,
+      data: { object: { id: 'dp_runtime', object: 'dispute', metadata: { gym_id: sandbox.gymId } } } });
+    const signedAt = Math.floor(testClock.now().getTime() / 1000);
+    const disputed = await runtime.app.request(sandbox.origin + '/webhooks/stripe', { method: 'POST', body: disputeEvent,
+      headers: { host: new URL(sandbox.origin).host, 'content-type': 'application/json', 'stripe-signature':
+        `t=${signedAt},v1=${createHmac('sha256', demoStripeEnv.DEMO_STRIPE_WEBHOOK_SECRET).update(`${signedAt}.${disputeEvent}`).digest('hex')}` } });
+    expect(disputed.status, await disputed.clone().text()).toBe(200);
+    await run('billing.webhooks.dispatch', { eventId: 'evt_runtime_dispute' });
+    expect((await read()).find(invoice => invoice.id === cycle.id)).toMatchObject({ disputeId: 'dp_runtime', disputeStatus: 'open' });
+    const disputeAlerts = async () => (await database.forSystem(tx => tx.select().from(jobs).where(and(eq(jobs.gymId, sandbox.gymId),
+      eq(jobs.name, 'billing.alerts.send'))))).filter(job => (job.payload as { value: { disputeId?: string } }).value.disputeId === 'dp_runtime');
+    expect(await disputeAlerts()).toHaveLength(1);
+    // Alerts use the real configured mail resolver and dashboard provider; the scan reuses the webhook's key.
     await run('billing.alerts.card_expiry'); await run('billing.alerts.disputes');
+    expect(await disputeAlerts()).toHaveLength(1);
+    // Later tests count this gym's stored events and dispatch jobs.
+    await database.forSystem(async tx => {
+      await tx.delete(stripeEvents).where(eq(stripeEvents.eventId, 'evt_runtime_dispute'));
+      await tx.delete(jobs).where(and(eq(jobs.gymId, sandbox.gymId), eq(jobs.name, 'billing.webhooks.dispatch')));
+    });
     const dashboard = await runtime.app.request(sandbox.origin + '/api/dashboard', { headers });
     expect(dashboard.status).toBe(200);
     expect((await dashboard.json()).data.widgets).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'billing.disputes', count: 1 })]));

@@ -212,7 +212,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configurePortalBookingRoutes(bookingDelivery);
   const accounts = createAccountService(config);
   configureStaffAuth({ accounts, config, smtpConfigured });
-  configureBillingAlerts(createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail }));
+  // Webhooks and restore reconciliation publish a recorded dispute's alert through the same service as the hourly scan.
+  const alerts = createBillingAlerts({ jobs: queue, settings: createGymSettingsAccessor(), accounts, clock, prepare: gymMail });
+  configureBillingAlerts(alerts);
   // Ranks read attendance through the frozen interface; imports and exports need storage and the queue.
   const attendance = createAttendanceQueries({ clock });
   const criteria = configureRanks({ attendance, clock });
@@ -272,7 +274,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const join = configureJoin({ clock, waivers, checkout, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)),
     invitations: portalInvitations, accounts,
     key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
-  const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail,
+  const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail, disputeAlerts: alerts,
     async afterCheckoutRecorded(gymId, linkId, sessionId) {
       try { await checkout.complete(gymId, linkId, sessionId); }
       // Revoked/expired links refuse completion without retrying an already-recorded card or payment.
@@ -284,7 +286,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     afterInvoicePaid: (gymId, invoiceId) => join.afterInvoicePaid(gymId, invoiceId),
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
   const runner = createChargeRunner({ settings, transitions: billing.transitions,
-    jobs: queue, payments: requirePayments, clock });
+    jobs: queue, payments: requirePayments, clock, disputeAlerts: alerts });
   billing.attachRetry(runner.retry);
   // Only daily is monitored. Retry, assignment callbacks and staff collection keep the original runner.
   configureChargeRunner(monitorChargeRunner(runner, { clock, settings }));
