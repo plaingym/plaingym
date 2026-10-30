@@ -75,7 +75,7 @@ try {
   ].join('\n')]);
   assert.throws(() => compose(['exec', '-T', 'app', 'touch', '/app/should-fail']));
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
-  assert.equal(Number(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'").trim()), 55);
+  assert.equal(Number(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'").trim()), 56);
   assert.equal(sql("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity)").trim(), '0');
   compose(['exec', '-T', 'app', 'node', '/app/maintenance.mjs', 'resume']);
   // Actual role drift must fail startup, even while Postgres is healthy.
