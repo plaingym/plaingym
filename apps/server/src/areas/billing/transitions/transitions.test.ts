@@ -22,6 +22,8 @@ import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
 import { effectCreated, effectCompleted } from './store.js';
+import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-transitions.contract.js';
+import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(kind: 'cycle' | 'one_off' = 'cycle') {
@@ -528,4 +530,14 @@ describe('invoice transitions with real PostgreSQL', () => {
     f.clock.set('2028-03-11T17:00:00Z');
     expect(await f.effects.publish(f.gymId)).toBe(3);
   });
+});
+
+invoiceTransitionsContract('invoice transitions with real PostgreSQL', async () => {
+  const f = await fixture();
+  return { transitions: f.transitions, context: f.context, success: f.success, manual: f.manual,
+    async read() {
+      const rows = await f.read(), attempt = rows.attempts.find(row => row.id === f.attempt.id)!;
+      return { invoice: rows.invoice.status, attempt: { status: attempt.status, declineCode: attempt.declineCode },
+        effects: rows.audits.filter(row => row.action === effectCreated).map(row => (row.after as InvoiceEffect).kind).sort() };
+    } };
 });

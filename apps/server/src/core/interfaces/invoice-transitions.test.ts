@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { paymentAttemptStatusSchema } from '../../../../../packages/shared/src/contracts/states.js';
 import { FakeInvoiceTransitions } from './invoice-transitions.js';
+import { invoiceTransitionsContract } from './invoice-transitions.contract.js';
 import type { CardSuccess, InvoiceSnapshot, RefundTransition } from './invoice-transitions.js';
 import { gym, otherGym, household, id, mutation } from './test-fixtures.js';
 const invoiceId = id(20);
@@ -83,7 +84,7 @@ describe('InvoiceTransitions fake', () => {
     expect((await fake.refund(mutation, { ...refund, status: 'pending' })).invoice.status).toBe('paid');
     expect((await fake.refund(mutation, refund)).invoice.status).toBe('partially_refunded');
     expect((await fake.refund(mutation, refund)).outcome).toBe('ignored');
-    expect((await fake.refund(mutation, { ...refund, status: 'failed' })).outcome).toBe('ignored');
+    expect((await fake.refund(mutation, { ...refund, status: 'pending' })).outcome).toBe('ignored');
     expect((await fake.refund(mutation, { ...refund, refundId: id(31), processorId: 're_2', amountCents: 6000 })).invoice.status).toBe('refunded');
     await fake.cardFailed(mutation, failure);
     expect(fake.read(gym, invoiceId).status).toBe('refunded');
@@ -99,10 +100,12 @@ describe('InvoiceTransitions fake', () => {
     await fake.refund(mutation, { ...refund, amountCents: 8000, status: 'failed' });
     expect((await fake.refund(mutation, { ...refund, refundId: id(32), processorId: 're_3', amountCents: 10000 })).invoice.status).toBe('refunded');
   });
-  it('does not resurrect a cancelled intent or a void invoice', async () => {
+  it.each([['pending', 'confirm_abandoned'], ['requires_action', 'intent_canceled']] as const)(
+    'does not resurrect a cancelled %s intent or a void invoice', async (status, declineCode) => {
     const fake = build();
+    if (status === 'requires_action') await fake.cardFailed(mutation, { ...failure, outcome: 'requires_action' });
     await fake.cardFailed(mutation, { ...failure, outcome: 'canceled' });
-    expect(fake.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'intent_canceled' });
+    expect(fake.attempts[0]).toMatchObject({ status: 'failed', declineCode });
     expect(paymentAttemptStatusSchema.parse(fake.attempts[0]!.status)).toBe('failed');
     const restored = new FakeInvoiceTransitions([{ gymId: gym, invoice: fake.read(gym, invoiceId) }], fake.attempts);
     expect((await restored.cardSucceeded(mutation, success)).outcome).toBe('ignored');
@@ -116,4 +119,14 @@ describe('InvoiceTransitions fake', () => {
     (result.invoice as { status: string }).status = 'open';
     expect(fake.read(gym, invoiceId).status).toBe('paid');
   });
+});
+invoiceTransitionsContract('FakeInvoiceTransitions', async () => {
+  const fake = build();
+  return { transitions: fake, context: mutation, success: { ...success, attemptId },
+    manual: { invoiceId, paymentId: id(40), method: 'cash', amountCents: 10000, currency: 'CAD', paidAt: success.paidAt },
+    async read() {
+      const attempt = fake.attempts.find((row) => row.id === attemptId)!;
+      return { invoice: fake.read(gym, invoiceId).status, attempt: { status: attempt.status, declineCode: attempt.declineCode ?? null },
+        effects: fake.effects.map((effect) => effect.kind).sort() };
+    } };
 });

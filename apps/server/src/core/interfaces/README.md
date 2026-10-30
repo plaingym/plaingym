@@ -24,9 +24,16 @@ are implemented here.
   notice). No fake performs network calls, schedules retries, or calculates tax.
   Issued invoices and attempts are seeded explicitly. Late failures cannot reopen
   paid invoices, and one-off failures never schedule dunning. A provider canceled
-  outcome is stored as failed with declineCode intent_canceled, preserving terminal
-  cancellation through the locked schema and after reloading a fake fixture. Refunds reserve
-  pending amounts and only successful refunds change the invoice's refund state.
+  outcome is stored as failed: with declineCode confirm_abandoned when the attempt
+  was still pending (its intent was never confirmed, so the invoice, dunning and
+  retries are untouched), otherwise with intent_canceled as a decline. Both codes
+  preserve terminal cancellation through the locked schema and after reloading a
+  fake fixture. Refunds reserve pending amounts and only successful refunds change
+  the invoice's refund state, with one backward move: a processor refund that fails
+  after it succeeded (same processor ID) releases its amount, recomputes the
+  invoice's refund status (back to partially refunded or paid) and notifies staff.
+  Cash and check refunds never reverse. `invoice-transitions.contract.ts` runs the
+  same cancellation and refund cases against the fake and the real transitions.
 - `MemberHouseholdContext` accepts authenticated user/gym IDs and a selected
   household, then reloads the link. Payers may see the household; non-payers see
   their linked member. Its context carries IDs only. It does not replace

@@ -26,7 +26,9 @@ export interface CardFailure {
   readonly invoiceId: Id;
   readonly attemptId: Id;
   readonly paymentIntentId: string;
-  /** Provider outcome: canceled is persisted as failed with declineCode intent_canceled.
+  /** Provider outcome: canceled is persisted as failed. A cancelled attempt that was still pending (its intent was
+   * never confirmed) gets declineCode confirm_abandoned and leaves the invoice, dunning and retries untouched; any
+   * other cancellation gets intent_canceled and is a decline.
    * The adapter normalizes every authentication_required shape to requires_action. */
   readonly outcome: 'failed' | 'requires_action' | 'canceled';
 }
@@ -54,7 +56,9 @@ export interface InvoiceTransitionResult {
  * persist payments/refunds and enqueue receipt, activation and dunning work.
  * Network calls occur after committing. A duplicate card payment is refunded
  * and reported to staff; it never pays an invoice twice. One-off failures do
- * not enter dunning. Terminal paid/refunded/void invoices cannot be reopened.
+ * not enter dunning. Payment outcomes never reopen paid, refunded or void invoices. The one backward move is a
+ * processor refund that fails after it succeeded (same processor refund ID): its amount is released, the invoice's
+ * refund status is recomputed (back to partially refunded or paid) and staff are notified.
  */
 export interface InvoiceTransitions {
   settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult>;
@@ -71,7 +75,7 @@ export interface InvoiceAttemptFixture {
   readonly number: number;
   readonly paymentIntentId: string;
   readonly status: 'pending' | 'succeeded' | 'failed' | 'requires_action';
-  /** Persisted diagnostic; intent_canceled prevents stale successes resurrecting an intent. */
+  /** Persisted diagnostic; intent_canceled and confirm_abandoned prevent stale successes resurrecting an intent. */
   readonly declineCode?: string | null;
 }
 export type InvoiceEffect = {
@@ -83,6 +87,7 @@ export type InvoiceEffect = {
 interface StoredPayment extends Money { invoiceId: Id; id: Id; accepted: boolean; fingerprint: string; }
 interface StoredRefund { gymId: Id; request: RefundTransition; }
 const terminal = new Set<InvoiceSnapshot['status']>(['paid', 'partially_refunded', 'refunded', 'void']);
+const canceled = (attempt: InvoiceAttemptFixture) => attempt.declineCode === 'intent_canceled' || attempt.declineCode === 'confirm_abandoned';
 
 export class FakeInvoiceTransitions implements InvoiceTransitions {
   readonly #invoices = new Map<string, InvoiceSnapshot>();
@@ -174,7 +179,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   async cardSucceeded(context: MutationContext, request: CardSuccess): Promise<InvoiceTransitionResult> {
     if (request.attemptId !== undefined) {
       const attempt = this.#attempt(context.gymId, request.invoiceId, request.attemptId, request.paymentIntentId);
-      if ((attempt.status === 'failed' && attempt.declineCode === 'intent_canceled')) return this.#result('ignored', this.#invoice(context.gymId, request.invoiceId));
+      if (canceled(attempt)) return this.#result('ignored', this.#invoice(context.gymId, request.invoiceId));
     }
     const result = this.#recordPayment(context, request, 'card');
     if (request.attemptId !== undefined) {
@@ -186,7 +191,12 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
   async cardFailed(context: MutationContext, request: CardFailure): Promise<InvoiceTransitionResult> {
     const invoice = this.#invoice(context.gymId, request.invoiceId);
     const attempt = this.#attempt(context.gymId, invoice.id, request.attemptId, request.paymentIntentId);
-    if (attempt.status === 'succeeded' || (attempt.status === 'failed' && attempt.declineCode === 'intent_canceled') || (attempt.status === 'requires_action' && request.outcome === 'failed')) return this.#result('ignored', invoice);
+    if (attempt.status === 'succeeded' || canceled(attempt) || (attempt.status === 'requires_action' && request.outcome === 'failed')) return this.#result('ignored', invoice);
+    // A cancelled, never-confirmed attempt never reached the card: close it without touching the invoice or dunning.
+    if (request.outcome === 'canceled' && attempt.status === 'pending') {
+      this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status: 'failed', declineCode: 'confirm_abandoned' });
+      return this.#result('applied', invoice);
+    }
     const status = request.outcome === 'canceled' ? 'failed' : request.outcome;
     const alreadyResolved = attempt.status === status;
     this.#attempts.set(scopedKey(context.gymId, attempt.id), { ...attempt, status,
@@ -227,7 +237,9 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (existing && JSON.stringify([existing.paymentId, existing.amountCents, existing.currency, existing.processorId])
       !== JSON.stringify([request.paymentId, request.amountCents, request.currency, request.processorId]))
       conflict('Refund ID reused with different parameters');
-    if (existing && (existing.status === request.status || existing.status !== 'pending')) return this.#result('ignored', invoice);
+    const reversed = existing?.status === 'succeeded' && request.status === 'failed'
+      && existing.processorId !== undefined && existing.processorId === request.processorId;
+    if (existing && !reversed && (existing.status === request.status || existing.status !== 'pending')) return this.#result('ignored', invoice);
     const processorKey = request.processorId === undefined ? undefined : JSON.stringify([context.gymId, request.processorId]);
     if (processorKey !== undefined) {
       const other = this.#processorRefunds.get(processorKey);
@@ -239,12 +251,15 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (request.status !== 'failed' && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
     this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request) });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
-    if (request.status !== 'succeeded' || !payment.accepted) return this.#result('applied', invoice);
+    if (reversed) this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
+    if (!(request.status === 'succeeded' || (reversed && ['partially_refunded', 'refunded'].includes(invoice.status)))
+      || !payment.accepted) return this.#result('applied', invoice);
     const refunded = [...this.#refunds.entries()].filter(([, { gymId, request: other }]) =>
       gymId === context.gymId && other.invoiceId === invoice.id && other.status === 'succeeded'
       && this.#payments.get(scopedKey(context.gymId, other.paymentId))?.accepted)
       .reduce((sum, [, { request: other }]) => sum + other.amountCents, 0);
-    const next: InvoiceSnapshot = { ...invoice, status: refunded >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
+    const next: InvoiceSnapshot = { ...invoice,
+      status: refunded === 0 ? 'paid' : refunded >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
     this.#invoices.set(scopedKey(context.gymId, invoice.id), next);
     return this.#result('applied', next);
   }
