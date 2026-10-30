@@ -80,6 +80,20 @@ it('receives CSP violation reports before tenancy, logging only the sanitized fi
   for (const line of logs) for (const secret of ['secret-link-token', 'a@example.test', 'visitor-data', 'x=1']) expect(line).not.toContain(secret);
 });
 
+it('sends HSTS in production for the install\'s https: host only', async () => {
+  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  runtime = await startRuntime(env(directory));
+  const hsts = async (host: string) => (await runtime!.app.request(`https://${host}/healthz`, { headers: { host } }))
+    .headers.get('strict-transport-security');
+  expect(await hsts('gym.example.test')).toBe('max-age=31536000');
+  expect(await hsts('other.example.test')).toBeNull();
+  await runtime.stop();
+  runtime = await startRuntime({ ...env(directory), NODE_ENV: 'development' });
+  expect(await hsts('gym.example.test')).toBeNull();
+});
+
 it('starts with a bucket host the policy cannot name, leaving it out of the report-only policy', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));

@@ -75,6 +75,7 @@ import { createUploadDownloadRoute } from './uploads-download.js';
 import { logError } from './log.js';
 import { imageOrigins } from './csp.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
+import { createPinLimitWidgetProvider } from '../areas/kiosk/pin-limit.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createStripeHealthProvider } from '../areas/health/stripe.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../areas/health/charge-run.js';
@@ -220,7 +221,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const criteria = configureRanks({ attendance, clock });
   const ranks = createRanksService({ clock, criteria });
   // The dashboard and portal progress read through the same services, with the ranks criteria registry and clock.
-  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider()]);
+  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider()]);
   configurePortalProgress({ ranks, attendance });
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
@@ -332,7 +333,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     contributions, clock, resolveGym: createTenantResolver({ mode }), authorize: createPortalAuthorization(),
     // Signed-link routes resolve their own bearer after normal session loading.
     session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
-    origin: originFor, ...(install ? { installOrigin: install } : {}),
+    origin: originFor, ...(install ? { installOrigin: install } : {}), strictTransportSecurity: env.NODE_ENV === 'production',
     rateLimit: { ...(trustedProxy ? { trustedProxy } : {}), ...(limit ? { limit } : {}) },
     ...(demo ? { restoreGate: demoWebhookMiddleware({ configured: Boolean(env.DEMO_STRIPE_TEST_KEY), inbox, demoGyms: demo.payments.demoGyms,
       ...(gate ? { restoreGate: gate.middleware() } : {}) }) } : gate ? { restoreGate: gate.middleware() } : {}),
