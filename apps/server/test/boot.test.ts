@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { buildServer } from '../build.mjs';
-import { app } from '../src/app.js';
+import { app } from '../src/closed-app.js';
 import { regularFontUrl } from '../src/assets.js';
 
 const database = useTestDatabase();

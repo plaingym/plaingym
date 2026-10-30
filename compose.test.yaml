@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Layered over compose.dev.yaml for the disposable test database (apps/server/test/setup-database.ts).
+# Its data is thrown away after each run, so it skips durable writes; tests ran about 40% faster.
+services:
+  postgres:
+    command: [postgres, -c, fsync=off, -c, synchronous_commit=off, -c, full_page_writes=off]

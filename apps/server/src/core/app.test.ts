@@ -5,7 +5,7 @@ import { AppError } from '@plaingym/shared';
 import type { MiddlewareHandler } from 'hono';
 import { createApp } from './app.js';
 import { cspNonce } from './csp.js';
-import { app as defaultApp } from '../app.js';
+import { app as defaultApp } from '../closed-app.js';
 import type { RequestEnvironment } from './context.js';
 import { TestClock } from './clock.js';
 import { route, type PermissionMiddleware } from './registry.js';

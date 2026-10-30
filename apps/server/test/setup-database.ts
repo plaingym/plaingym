@@ -38,7 +38,7 @@ export default async function setupDatabase(project: TestProject) {
     APP_PASSWORD: randomBytes(24).toString('hex'), MAINTENANCE_PASSWORD: randomBytes(24).toString('hex'), POSTGRES_PORT: '0',
   };
   const compose = ['compose', '--project-directory', root, '--env-file', envFile,
-    '--project-name', projectName, '-f', join(root, 'compose.dev.yaml')];
+    '--project-name', projectName, '-f', join(root, 'compose.dev.yaml'), '-f', join(root, 'compose.test.yaml')];
   const command = (args: string[]) => run('docker', [...compose, ...args], { cwd: root, env, windowsHide: true, timeout: 120_000 });
   const cleanup = async () => {
     try { await command(['down', '--volumes', '--remove-orphans']); }

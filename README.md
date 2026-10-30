@@ -160,10 +160,14 @@ module reloads remain available.
 
 `pnpm verify` is the check to run before handing off a branch: types, lint,
 compliance, and the tests affected by the branch's changes since it left `main`.
-Vitest finds those by following imports. Changes that tests read without importing
-them (migrations, locales, test setup, the lockfile; `forceRerunTriggers` in
-`vitest.config.ts`) run every test. `pnpm verify --full` and `pnpm test` run the
-full suite. CI runs the full suite, split across four jobs, on every push and pull
+Vitest finds those by following imports. Whole-app tests (those importing the area
+registry, the runtime, or the demo seed composition) relate to almost every change,
+so they run locally only when their own folder changed. Changes that tests read
+without importing them (migrations, test setup, the lockfile; `forceRerunTriggers`
+in `vitest.config.ts`) run every test, and `pnpm generate` validates locale files.
+`pnpm verify --list` prints the selection, and `pnpm verify --full` and `pnpm test`
+run the full suite. The disposable test database skips durable writes
+(`compose.test.yaml`). CI runs the full suite, split across four jobs, on every push and pull
 request, and gates landing. On a push to `main`, CI reuses a passing run of the same
 commit (from its integration branch) instead of repeating it.
 Dependency lifecycle scripts are allowlisted for esbuild only.
