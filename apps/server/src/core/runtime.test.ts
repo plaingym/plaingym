@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs, stored webhooks and gym settings in real PostgreSQL.
 import { attendances, auditEvents, classBookings, classSessions, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, members, memberships, paymentAttempts, paymentMethods, payments, programs, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -22,7 +22,7 @@ import { clock, TestClock } from './clock.js';
 import { setLogSink } from './log.js';
 
 const database = useTestDatabase();
-const factory = createFactories(database), handlers = new Map<string, JobHandler>();
+const factory = createFactories(database), handlers = new Map<string, JobHandler>(), workers: PostgresJobs[] = [];
 const origin = 'https://demo.example.test';
 const demoStripeEnv = { DEMO_STRIPE_TEST_KEY: 'rk_test_runtime', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_runtime' };
 let runtime: Runtime, directory: string, ownerCookie: string;
@@ -48,7 +48,7 @@ beforeAll(async () => {
   vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
     handlers.set(name, handler); handle.call(this, name, handler);
   });
-  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  vi.spyOn(PostgresJobs.prototype, 'start').mockImplementation(function (this: PostgresJobs) { workers.push(this); return { async stop() {} }; });
   directory = await mkdtemp(join(tmpdir(), 'runtime-demo-'));
   storage = await s3Server();
   runtime = await startRuntime(env());
@@ -448,6 +448,22 @@ it('issues, scans, replaces and revokes QR codes through the production runtime 
   }
 });
 
+it('schedules daily job retention on the worker queue, keeping billing alert jobs', async () => {
+  // The worker's first tick schedules today's retention run at 03:30 UTC as an install job.
+  const queue = workers.at(-1)!, date = new Date().toISOString().slice(0, 10);
+  await queue.scheduleDue();
+  const retention = await database.forSystem(tx => tx.select().from(jobs).where(eq(jobs.name, 'jobs.retention')));
+  expect(retention.map(job => ({ gymId: job.gymId, status: job.status, runAt: job.runAt.toISOString() })))
+    .toContainEqual({ gymId: null, status: 'pending', runAt: `${date}T03:30:00.000Z` });
+  const old = new Date(Date.now() - 30 * 86_400_000);
+  const finished = (name: string) => ({ id: uuidv7(), gymId: sandbox.gymId, name, status: 'succeeded', attempts: 1, maxAttempts: 3,
+    payload: { version: 1, timezone: 'UTC', value: {} }, idempotencyKey: `unique:${uuidv7()}`, runAt: old, createdAt: old });
+  const alert = finished('billing.alerts.send'), other = finished('bookings.notice');
+  await database.forSystem(tx => tx.insert(jobs).values([alert, other]));
+  await queue.prune();
+  const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, other.id])));
+  expect(kept).toEqual([{ id: alert.id }]);
+});
 it('registers seed and webhook replay in the real CLI', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
   const cliEnv = { ...env(), ...demoStripeEnv };

@@ -103,7 +103,7 @@ import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createPaymentService } from '../areas/billing/payments.js';
 import { configurePayments } from '../areas/billing/payments.routes.js';
 import { configurePaymentDelivery } from '../areas/billing/payments.jobs.js';
-import { createBillingAlerts, createDisputeAlertProvider } from '../areas/billing/alerts/index.js';
+import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { configureStaffAuth } from '../areas/staff/auth.routes.js';
@@ -205,7 +205,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
-  const queue = new PostgresJobs({ clock, listGyms: () => listGyms() });
+  const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] } });
   const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock,
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });
   configureBookingJobs(bookingDelivery);
