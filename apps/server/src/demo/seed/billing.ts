@@ -18,6 +18,7 @@ import type { SeedStep } from './index.js';
 import { demoHouseholds, householdEmail, inBatches, memberKey, settableClock } from './members.js';
 import type { Household } from '@plaingym/shared/contracts';
 import type { BillingSeedProvider } from './billing-payments.js';
+import type { GymSettings } from '../../core/interfaces/gym-settings.js';
 
 const page = { limit: 100, offset: 0 } as const;
 export const demoPlans = [
@@ -49,9 +50,7 @@ export function billingSeed(options: {
       return { anchor: clock.now(), billingEnabled: gym.billingEnabled };
     });
     const { anchor } = seedState;
-    const today = localDate(anchor, gym.timezone), dueOn = addDays(today, -2), billingDay = Number(dueOn.slice(8));
-    const previous = previousBillingDate({ dueOn, interval: 'monthly', billingDay });
-    const startsOn = previousBillingDate({ dueOn: previous, interval: 'monthly', billingDay });
+    const calendar = seedCalendar(anchor, gym.timezone), { today, billingDay, startsOn } = calendar;
     const at = settableClock(anchor), catalog = createCatalogService({ scope, clock: at, settings });
     const plans = new Map((await catalog.listPlans(gymId, page)).data.map(row => [row.name, row]));
     for (const plan of demoPlans) if (!plans.has(plan.name))
@@ -81,19 +80,7 @@ export function billingSeed(options: {
         if (!household) throw new Error('Run the members seed before the billing seed');
         if ((await scope(gymId, tx => recorded(tx, completed, household.id))).length) return;
         const customerId = await customers.ensureCustomer(gymId, household.id);
-        const saved = await scope(gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, household.id)));
-        if (!saved.length) {
-          // Reserve before calling out, so a lost card response is never retried after Stripe forgets its key.
-          await scope(gymId, async tx => {
-            await tx.select({ id: households.id }).from(households).where(eq(households.id, household.id)).for('update');
-            const [reservation] = await recorded(tx, cardReserved, household.id);
-            if (reservation && clock.now().getTime() >= reservation.occurredAt.getTime() + 23 * 60 * 60 * 1000)
-              throw new Error('Demo card creation needs reconciliation; its idempotency window elapsed');
-            if (!reservation) await audit(tx, actor, clock, cardReserved, 'household', household.id, {});
-          });
-          const methodId = await provider.seedCard(customerId, household.id, pastDueHouseholds.some(slug => slug === home.slug));
-          await cards.collect(gymId, provider.payments, customerId, methodId);
-        }
+        await seedTestCard({ scope, clock, cards, provider }, gymId, household.id, customerId, pastDueHouseholds.some(slug => slug === home.slug));
         prepared.set(home.slug, household);
       }, 3);
       for (const home of demoHouseholds) {
@@ -120,23 +107,7 @@ export function billingSeed(options: {
           if (person.status === 'frozen' && membership.status === 'active') await lifecycle.freeze(actor, { membershipId: membership.id, revision: membership.revision });
           if (person.status === 'cancelled' && membership.status !== 'cancelled') await lifecycle.cancel(actor, { membershipId: membership.id, revision: membership.revision });
         }
-        // Generate just this seeded household's periods through the real runner's calendar and invoice engine.
-        for (const date of [startsOn, previous, dueOn]) {
-          at.set(zonedInstant(date, '12:00', gym.timezone, { gap: 'shift' })!);
-          while (await scope(gymId, tx => generateCycle(tx, gym, at, household.id, date))) { /* One committed household/period. */ }
-        }
-        const history = await scope(gymId, tx => tx.select().from(invoices).where(and(eq(invoices.householdId, household.id),
-          eq(invoices.kind, 'cycle'))).orderBy(asc(invoices.dueOn)));
-        for (const invoice of history) {
-          if (invoice.status !== 'open') continue;
-          at.set(zonedInstant(invoice.dueOn, '12:00', gym.timezone, { gap: 'shift' })!);
-          if (invoice.dueOn < dueOn) await transitions.manualPayment(actor, { invoiceId: invoice.id, paymentId: uuidv7(),
-            method: 'cash', amountCents: invoice.amountCents, currency: gym.currency, paidAt: at.now().toISOString() });
-          else {
-            const result = await runner.charge(gymId, invoice.id);
-            if (!['succeeded', 'failed'].includes(result.status)) throw new Error('Demo charge needs reconciliation before the seed can finish');
-          }
-        }
+        await settleSeedPeriods({ scope, at, transitions, runner }, gym, household.id, calendar);
         at.set(anchor);
         await scope(gymId, tx => audit(tx, actor, clock, completed, 'household', household.id, {}));
       }
@@ -148,4 +119,51 @@ export function billingSeed(options: {
     }
     await scope(gymId, tx => audit(tx, actor, clock, 'billing.seed.completed', 'gym', gymId, {}));
   } };
+}
+
+/** The seed's three monthly periods: two before the current one, which fell due two days before the anchor. */
+export function seedCalendar(anchor: Date, timezone: string) {
+  const today = localDate(anchor, timezone), dueOn = addDays(today, -2), billingDay = Number(dueOn.slice(8));
+  const previous = previousBillingDate({ dueOn, interval: 'monthly', billingDay });
+  return { today, dueOn, billingDay, previous, startsOn: previousBillingDate({ dueOn: previous, interval: 'monthly', billingDay }) };
+}
+/** Saves a named test card once. Reserve before calling out, so a lost card response is never retried after Stripe forgets its key. */
+export async function seedTestCard(options: { scope: typeof forGym; clock: Clock; cards: ReturnType<typeof createCardHandlers>; provider: BillingSeedProvider },
+  gymId: string, householdId: string, customerId: string, declines: boolean) {
+  const { scope, clock, provider } = options;
+  if ((await scope(gymId, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, householdId)))).length) return;
+  await scope(gymId, async tx => {
+    await tx.select({ id: households.id }).from(households).where(eq(households.id, householdId)).for('update');
+    const [reservation] = await recorded(tx, cardReserved, householdId);
+    if (reservation && clock.now().getTime() >= reservation.occurredAt.getTime() + 23 * 60 * 60 * 1000)
+      throw new Error('Demo card creation needs reconciliation; its idempotency window elapsed');
+    if (!reservation) await audit(tx, system(gymId), clock, cardReserved, 'household', householdId, {});
+  });
+  const methodId = await provider.seedCard(customerId, householdId, declines);
+  await options.cards.collect(gymId, provider.payments, customerId, methodId);
+}
+/**
+ * Generates one household's periods through the real runner's calendar and invoice engine, pays the older ones in
+ * cash and charges the current one. A charge must end succeeded or failed; anything else waits for reconciliation.
+ */
+export async function settleSeedPeriods(options: { scope: typeof forGym; at: ReturnType<typeof settableClock>;
+  transitions: ReturnType<typeof createInvoiceTransitions>; runner: ReturnType<typeof createChargeRunner> },
+gym: GymSettings, householdId: string, calendar: ReturnType<typeof seedCalendar>) {
+  const { scope, at } = options, gymId = gym.gymId, noon = (date: string) => zonedInstant(date, '12:00', gym.timezone, { gap: 'shift' })!;
+  for (const date of [calendar.startsOn, calendar.previous, calendar.dueOn]) {
+    at.set(noon(date));
+    while (await scope(gymId, tx => generateCycle(tx, gym, at, householdId, date))) { /* One committed household/period. */ }
+  }
+  const history = await scope(gymId, tx => tx.select().from(invoices).where(and(eq(invoices.householdId, householdId),
+    eq(invoices.kind, 'cycle'))).orderBy(asc(invoices.dueOn)));
+  for (const invoice of history) {
+    if (invoice.status !== 'open') continue;
+    at.set(noon(invoice.dueOn));
+    if (invoice.dueOn < calendar.dueOn) await options.transitions.manualPayment(system(gymId), { invoiceId: invoice.id, paymentId: uuidv7(),
+      method: 'cash', amountCents: invoice.amountCents, currency: gym.currency, paidAt: at.now().toISOString() });
+    else {
+      const result = await options.runner.charge(gymId, invoice.id);
+      if (!['succeeded', 'failed'].includes(result.status)) throw new Error('Demo charge needs reconciliation before the seed can finish');
+    }
+  }
 }

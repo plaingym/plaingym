@@ -46,7 +46,8 @@ it('fully seeds a demo sandbox, serves PDFs, permits bounded waiver images and b
     const sandbox = await demo.create(), gymId = sandbox.gymId;
     const service = configureWaivers({ scope: db.forGym, clock, uploadsFor: uploads.forGym });
     const copies = await service.listSignatures(gymId);
-    expect(copies.pagination.total).toBe(3); expect((await service.listTemplates(gymId)).pagination.total).toBe(1);
+    // Three sample members and the one-click student (portal seed).
+    expect(copies.pagination.total).toBe(4); expect((await service.listTemplates(gymId)).pagination.total).toBe(1);
     const [owner] = await db.forGym(gymId, tx => tx.select().from(staffRoles).where(eq(staffRoles.role, 'owner')));
     const app = createApp({ clock, origin: sandbox.origin, skipSetup: true, authorize, contributions: areaContributions,
       resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
@@ -79,6 +80,6 @@ it('fully seeds a demo sandbox, serves PDFs, permits bounded waiver images and b
       env: { ...process.env, ...env, DATABASE_URL: db.appUrl, DATABASE_POOL_MAX: '2' },
     });
     expect(cli.stdout).toContain('Seed complete');
-    expect((await createWaiversService({ scope: db.forGym, clock, uploadsFor: uploads.forGym }).listSignatures(gymId)).pagination.total).toBe(3);
+    expect((await createWaiversService({ scope: db.forGym, clock, uploadsFor: uploads.forGym }).listSignatures(gymId)).pagination.total).toBe(4);
   } finally { uploads.close(); await s3.close(); }
 }, 90_000);

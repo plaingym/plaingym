@@ -29,6 +29,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
   const mode = discovery.data?.data;
   const expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
   const [expiredAt, setExpiredAt] = useState<string>();
+  const login = useLoginState();
   const { refetch } = discovery;
   useEffect(() => {
     if (!expires) return;
@@ -62,12 +63,12 @@ export function DemoShell({ children }: { children: ReactNode }) {
     }
     setKioskToken(null);
   }, [activeSandbox, kioskToken]);
-  return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}>
+  return <DemoContext.Provider value={discovery.isError || expired ? undefined : mode}><LoginContext.Provider value={login}>
     {(discovery.isError || expired) && <div className="p-4" role="alert">
       <p>{t('demo/demo:error')}</p><Button type="button" onClick={() => { void refetch(); }}>{t('shell/shell:retry')}</Button>
     </div>}
     <DemoNotice /><DemoEntry />{kioskToken && (discovery.isPending || activeSandbox) ? <LoadingState /> : children}
-  </DemoContext.Provider>;
+  </LoginContext.Provider></DemoContext.Provider>;
 }
 export function DemoEntry() {
   return useContext(DemoContext)?.mode === 'entry' ? <aside aria-label={t('demo/demo:entryTitle')} className="border-b border-border bg-secondary p-4 sm:p-6">
@@ -81,19 +82,37 @@ export function DemoKioskHint() {
     <p className="font-semibold">{t('demo/demo:kioskTitle')}</p><p>{t('demo/demo:kioskHint')}</p>
   </div> : null;
 }
+interface DemoLogin {
+  login(role: 'owner' | 'coach' | 'student', destination?: `/admin/${string}`): Promise<void>;
+  readonly pending: boolean; readonly error: boolean;
+}
+const LoginContext = createContext<DemoLogin | undefined>(undefined);
+/** One-click sign-in as a sandbox identity. The shell shares one state, so every sign-in control waits for the same request. */
+export function useDemoLogin(): DemoLogin {
+  const local = useLoginState();
+  return useContext(LoginContext) ?? local;
+}
+/** The page leaves for the role's home (or a page within it) on success. */
+function useLoginState(): DemoLogin {
+  const [error, setError] = useState(false), [pending, setPending] = useState(false);
+  async function login(role: 'owner' | 'coach' | 'student', destination?: `/admin/${string}`) {
+    if (pending) return;
+    setPending(true); setError(false);
+    try {
+      const result = await request<{ data: { redirect: '/admin' | '/portal' } }>('/api/demo/login', { role });
+      window.location.assign(destination && result.data.redirect === '/admin' ? destination : result.data.redirect);
+    }
+    catch { setError(true); setPending(false); }
+  }
+  return { login, pending, error };
+}
 /** The root shares discovery with every demo control and sandbox consumer. */
 export function DemoNotice() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const atKiosk = pathname === '/kiosk' || pathname.startsWith('/kiosk/');
   const mode = useContext(DemoContext), expires = mode?.mode === 'sandbox' ? mode.expiresAt : undefined;
-  const [error, setError] = useState(false), [pending, setPending] = useState(false), [help, setHelp] = useState(false);
+  const { login, pending, error } = useDemoLogin(), [help, setHelp] = useState(false);
   if (!expires) return null;
-  async function login(role: 'owner' | 'coach' | 'student') {
-    if (pending) return;
-    setPending(true); setError(false);
-    try { const result = await request<{ data: { redirect: '/admin' | '/portal' } }>('/api/demo/login', { role }); window.location.assign(result.data.redirect); }
-    catch { setError(true); setPending(false); }
-  }
   return <aside className="border-b border-border bg-secondary px-4 py-3" aria-label={t('demo/demo:controls')}>
     <div className="mx-auto max-w-6xl space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-semibold">{t('demo/demo:sandbox')}</p>
@@ -103,6 +122,7 @@ export function DemoNotice() {
           aria-label={t(`demo/demo:${role}`)} onClick={() => { void login(role); }}>{t(`demo/demo:${role}Label`)}</Button>)}
       </div>
       <div className="flex flex-col gap-1 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4">
+        {pathname !== '/demo' && <a className="inline-flex min-h-11 items-center underline" href="/demo">{t('demo/landing:startLink')}</a>}
         {!atKiosk && <><a className="inline-flex min-h-11 items-center underline" href="/kiosk">{t('demo/demo:kioskTitle')}</a>
           <p>{t('demo/demo:kioskHint')}</p></>}
         <p className="text-muted-foreground">{t('demo/demo:expires', { time: new Date(expires).toLocaleString() })}</p>
@@ -126,7 +146,8 @@ export function TryDemoButton({ navigate = (url: string) => window.location.assi
     setPending(true); setError('');
     try {
       const { data } = sandboxResponse.parse(await request('/api/demo/sandboxes', {}));
-      const destination = new URL('/admin', data.origin);
+      // The sandbox's start page offers every role, the join walkthrough and the kiosk.
+      const destination = new URL('/demo', data.origin);
       destination.hash = new URLSearchParams({ kioskToken: data.kioskToken }).toString();
       navigate(destination.href);
     } catch (error) {

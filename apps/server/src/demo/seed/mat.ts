@@ -161,7 +161,7 @@ export function matSeed(options: { scope?: typeof forGym; clock?: Clock } = {}):
     });
   } };
 }
-async function sessionsBetween(schedule: ReturnType<typeof createScheduleService>, gymId: string, from: Date, until: Date) {
+export async function sessionsBetween(schedule: ReturnType<typeof createScheduleService>, gymId: string, from: Date, until: Date) {
   const rows: ClassSession[] = [];
   for (let offset = 0; ; offset += 100) {
     const result = await schedule.listSessions(gymId, { limit: 100, offset, from: from.toISOString(), until: until.toISOString() });

@@ -1,0 +1,19 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Your demo gym",
+  "intro": "Everything here is fictional and private to you. Explore as staff or as a member, join as a new member with a test card, and check in at the kiosk.",
+  "rolesTitle": "Explore by role",
+  "studentHelp": "Open the member portal as Alex Student: two booked classes, a waitlist place, rank progress and a check-in QR code, plus paid invoices when this demo has a Stripe test account.",
+  "joinTitle": "Join as a new member",
+  "joinNeedsStripe": "Joining needs this demo's Stripe test account. Without one, the join page says online joining is unavailable.",
+  "joinStepPlan": "Open the join page, choose a plan and sign the waiver. Use any name and an email address you make up.",
+  "joinStepPay": "Pay with this test card, any future expiry date and any CVC. No real money moves.",
+  "testCard": "Test card number",
+  "joinStepSignIn": "Sign in as the owner and open the demo outbox. Follow the sign-in link sent to the address you entered: it opens your new member portal.",
+  "joinOpen": "Open the join page",
+  "outboxOpen": "Open the demo outbox",
+  "kioskTitle": "Check in at the kiosk",
+  "kioskHelp": "In the member portal, open your check-in code. Then open the kiosk in another window of this browser, which is paired as the gym's kiosk, and scan the code with the camera, or search the full name Marcus Rivera with PIN 2468.",
+  "kioskOpen": "Open the kiosk",
+  "startLink": "Demo start page"
+}

@@ -9,7 +9,7 @@ const fetcher = vi.fn();
 const route = vi.hoisted(() => ({ pathname: '/admin' }));
 vi.mock('@tanstack/react-router', () => ({ useRouterState: () => route.pathname }));
 vi.stubGlobal('fetch', fetcher);
-const { DemoShell, DemoKioskHint, TryDemoButton, useDemoSandbox } = await import('./notice.js');
+const { DemoShell, DemoKioskHint, TryDemoButton, useDemoLogin, useDemoSandbox } = await import('./notice.js');
 const { readToken } = await import('../kiosk/api.js');
 beforeEach(() => { fetcher.mockReset(); localStorage.clear(); route.pathname = '/admin'; window.history.replaceState(null, '', '/admin'); });
 afterEach(() => { cleanup(); vi.useRealTimers(); focusManager.setFocused(undefined); onlineManager.setOnline(true); });
@@ -25,7 +25,7 @@ it('announces creation immediately, prevents repeat activation, and navigates on
   await act(async () => { finish(Response.json({ data: { gymId: '019a0000-0000-7000-8000-000000000001', origin: 'https://sample.demo.localhost',
     expiresAt: '2026-11-01T00:00:00.000Z', kioskToken: 'device-token-for-success-test' } })); });
   expect(navigate).toHaveBeenCalledOnce(); const destination = new URL(navigate.mock.calls[0]![0] as string);
-  expect(destination.origin).toBe('https://sample.demo.localhost'); expect(destination.pathname).toBe('/admin');
+  expect(destination.origin).toBe('https://sample.demo.localhost'); expect(destination.pathname).toBe('/demo');
 });
 it.each([500, 429])('offers a focused retry and useful feedback after HTTP %s', async status => {
   fetcher.mockResolvedValue(Response.json({}, { status })); render(<TryDemoButton />);
@@ -114,6 +114,14 @@ it('shows all sandbox identities before the login screen guard', async () => {
   expect(screen.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toBeDefined();
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+it.each([['/admin', true], ['/demo', false]] as const)('links back to the sandbox start page from %s: %s', async (pathname, shown) => {
+  route.pathname = pathname;
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  start();
+  await screen.findByRole('button', { name: 'Sign in as owner' });
+  const link = screen.queryByRole('link', { name: 'Demo start page' });
+  expect(link?.getAttribute('href') ?? null).toBe(shown ? '/demo' : null);
+});
 it('opens the guide under its own label without offering sandbox creation', async () => {
   fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
   start();
@@ -125,6 +133,23 @@ it('opens the guide under its own label without offering sandbox creation', asyn
   fireEvent.click(within(guide).getByRole('button', { name: 'Close demo guide' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo guide' }));
+});
+function PageSignIn() {
+  const { login, pending } = useDemoLogin();
+  return <button type="button" disabled={pending} onClick={() => { void login('student'); }}>Page sign-in</button>;
+}
+it('shares one sign-in state between the banner and a page inside the shell', async () => {
+  let fail!: (reason: Error) => void;
+  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }))
+    .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => { fail = reject; }));
+  start(undefined, <PageSignIn />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Page sign-in' }));
+  expect((screen.getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in as owner' }));
+  expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(1);
+  await act(async () => { fail(new TypeError('Offline')); });
+  expect(await screen.findAllByRole('alert')).toHaveLength(1);
+  expect((screen.getByRole('button', { name: 'Page sign-in' }) as HTMLButtonElement).disabled).toBe(false);
 });
 it('disables all role switches while one is pending and restores them after a failure', async () => {
   let fail!: (reason: Error) => void;

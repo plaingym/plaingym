@@ -23,6 +23,8 @@ Optional billing uses `DEMO_STRIPE_TEST_KEY` (`sk_test_…` or `rk_test_…`) an
 key requires the signing secret; live keys and other key formats refuse startup.
 Without the key, creation succeeds and logs `Demo billing seed skipped` with the
 missing variable name. Payments and the Stripe health tile report unconfigured.
+With the key, the portal seed leaves billing on, so each sandbox's `/join` takes
+test-card payments through the shared account.
 Webhook requests pass through to the tenant route, which returns 503
 (`Payments are not set up for this gym`) for a sandbox without the shared key.
 
@@ -100,11 +102,14 @@ Ordinary install-wide identities remain shared.
 ## Running the demo
 
 The [demo installer](../../../../deploy/demo/README.md) sets up the server, wildcard
-TLS, and S3 configuration. Open its printed link to create a sandbox, then use the
-demo controls to log in as owner or coach. No command line setup is needed in a sandbox.
+TLS, and S3 configuration. Open its printed link to create a sandbox. A new sandbox
+opens on its start page (`/demo`), which offers one-click owner, coach and student
+logins, the public join with the test card, and the kiosk; the demo controls link
+back to it. No command line setup is needed in a sandbox.
 
 The [mat seed guide](seed/mat.md) describes the sample households, schedule and
-promotion history. Seeded households use kiosk PIN **2468**. Search by a **full
+promotion history; the [portal seed guide](seed/portal.md) describes the student's
+portal and the full demo walkthrough. Seeded households use kiosk PIN **2468**. Search by a **full
 member name**, for example **Marcus Rivera**, then enter that PIN. A broad search
 such as "family" or "Ma" can match several households; the kiosk refuses ambiguous
 matches. Staff can find other sample members' full names in the members page.
@@ -156,7 +161,7 @@ Runtime and shared composition use these exports:
   The notice links to `/admin/outbox`; the shell enables its navigation entry
   only after the sandbox status check succeeds.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
-  `runSeeds(context)` applies foundation, members, billing, waivers and mat seeds.
+  `runSeeds(context)` applies foundation, members, billing, waivers, mat and portal seeds.
   Both sandbox creation and the seed CLI use this composition. Billing receives
   the same scope and clock as the other seeds and a shared test-account provider.
   Each step owns its short transactions and must support retries.

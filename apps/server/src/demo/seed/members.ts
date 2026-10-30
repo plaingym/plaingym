@@ -84,7 +84,7 @@ async function findHousehold(service: Pick<MembersService, 'listHouseholds'>, gy
   return (await service.listHouseholds(gymId, { ...page, search: home.name })).data.find((row) => row.name === home.name && row.email === householdEmail(home));
 }
 /** PINs need the gym key; without `APP_ENCRYPTION_KEY` (a bare development shell) households get no PIN. */
-function environmentPinSecret(scope: typeof forGym): HouseholdPinSecret | null {
+export function environmentPinSecret(scope: typeof forGym): HouseholdPinSecret | null {
   const key = process.env.APP_ENCRYPTION_KEY;
   return key ? createGymKeyResolver({ key: parseEncryptionKey(key), scope }) : null;
 }

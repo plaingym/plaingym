@@ -9,6 +9,8 @@ import type { DemoRole } from '@plaingym/shared/contracts';
 import { requireDemo, type DemoConfig } from './config.js';
 
 export const demoEmail = (gymId: string, role: DemoRole) => `${role}.${gymId}@example.invalid`;
+/** The one-click student's household and member; the portal seed finds them by these names. */
+export const demoStudent = { household: 'Demo student', firstName: 'Alex', lastName: 'Student' } as const;
 /** One-click logins per client address; the login route enforces it, and the internal sign-in uses the same rule. */
 export const demoLoginRateLimit = { window: 60, max: 20 } as const;
 export function createDemoIdentities(options: {
@@ -28,8 +30,8 @@ export function createDemoIdentities(options: {
           const [existing] = await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.userId, userId));
           if (!existing) {
             const householdId = uuidv7(), memberId = uuidv7();
-            await tx.insert(households).values({ id: householdId, gymId, name: 'Demo student', email: demoEmail(gymId, role), createdAt: options.clock.now() });
-            await tx.insert(members).values({ id: memberId, gymId, householdId, firstName: 'Alex', lastName: 'Student', status: 'active', createdAt: options.clock.now() });
+            await tx.insert(households).values({ id: householdId, gymId, name: demoStudent.household, email: demoEmail(gymId, role), createdAt: options.clock.now() });
+            await tx.insert(members).values({ id: memberId, gymId, householdId, firstName: demoStudent.firstName, lastName: demoStudent.lastName, status: 'active', createdAt: options.clock.now() });
             await tx.insert(householdUsers).values({ gymId, userId, householdId, memberId, scope: 'payer', createdAt: options.clock.now() });
           }
         }

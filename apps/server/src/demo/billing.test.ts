@@ -170,8 +170,9 @@ it('creates a sandbox through the composed seeds with paid/past-due invoices, ca
   }));
   expect(rows.invoices.filter(row => row.status === 'paid').length).toBeGreaterThan(15);
   expect(rows.invoices.filter(row => row.status === 'past_due')).toHaveLength(2);
-  expect(rows.cards).toHaveLength(14); expect(rows.cards.every(row => row.isDefault && !row.revokedAt)).toBe(true);
-  expect(rows.homes.filter(row => row.stripeCustomerId)).toHaveLength(14);
+  // The 14 sample households and the one-click student's household (portal seed).
+  expect(rows.cards).toHaveLength(15); expect(rows.cards.every(row => row.isDefault && !row.revokedAt)).toBe(true);
+  expect(rows.homes.filter(row => row.stripeCustomerId)).toHaveLength(15);
   expect(rows.gym.stripeConfig).toBeNull(); expect(JSON.stringify(rows.gym)).not.toContain('rk_test_');
   expect(await f.payments.paymentsFor(gymId)).toBe(f.gateways.get(gymId)!.payments);
   const queue = new PostgresJobs({ clock: f.clock, database: db });
