@@ -361,8 +361,10 @@ describe('invoice transitions with real PostgreSQL', () => {
     const reversed = rows.audits.filter(row => row.action === 'billing.refund.reversed');
     expect(reversed.map(row => row.targetId).sort()).toEqual(refunded.map(row => row.refundId).sort());
     expect(reversed[0]).toMatchObject({ actorKind: 'system', before: { status: 'succeeded' }, after: { status: 'failed' } });
-    expect(rows.audits.filter(row => row.action === 'billing.invoice.refund_reversed').map(row => (row.after as { status: string }).status))
-      .toEqual(statuses.slice(1));
+    // The audits share one timestamp, so compare each step rather than the rows' order.
+    const status = (snapshot: unknown) => (snapshot as { status: string }).status;
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.refund_reversed').map(row => `${status(row.before)} → ${status(row.after)}`).sort())
+      .toEqual(statuses.slice(1).map((next, index) => `${statuses[index]} → ${next}`).sort());
     const notices = f.email.messages.slice(sent);
     expect(notices).toHaveLength(amounts.length);
     expect(notices.every(m => m.to === 'staff@example.invalid' && m.subject === 'Refund failed for invoice 1')).toBe(true);

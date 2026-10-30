@@ -321,7 +321,7 @@ describe('runner review regression cases with PostgreSQL', () => {
     const rows = await f.read(); expect(rows.payments).toHaveLength(0);
     // The member never had a chance to pay: no decline, dunning or retries, and the kiosk still lets them in.
     expect(rows.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'confirm_abandoned' });
-    expect(rows.invoices[0]).toMatchObject({ id: bill.id, status: 'open' });
+    expect(rows.invoices.find(row => row.id === bill.id)).toMatchObject({ status: 'open' });
     expect(rows.audits.filter(row => row.action === 'billing.invoice.dunning_started' || row.action === 'billing.invoice.payment_failed'
       || row.action === 'billing.transition.effect.created')).toEqual([]);
     expect(await createBillingStanding(db.forGym).check({ gymId: f.gymId, memberId: f.member.id, clock: f.clock })).toEqual({ status: 'ok' });
@@ -331,7 +331,8 @@ describe('runner review regression cases with PostgreSQL', () => {
       await tx.update(paymentMethods).set({ revokedAt: null, isDefault: true }).where(eq(paymentMethods.householdId, f.home.id));
     });
     f.clock.set('2028-03-02T17:00:00Z'); expect((await f.runner.daily(f.gymId)).attempted).toBe(1);
-    expect((await f.read()).invoices[0]).toMatchObject({ id: bill.id, status: 'paid' });
+    // The run also generates the next cycle invoice, which can share the bill's due date.
+    expect((await f.read()).invoices.find(row => row.id === bill.id)).toMatchObject({ status: 'paid' });
   });
   it('does not cancel an intent already saved by another caller after losing compare-and-set', async () => {
     const f = await fixture(), bill = await invoice(f), create = f.provider.createCharge.bind(f.provider);
