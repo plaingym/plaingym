@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
 import { demoContracts, ranksContracts, setupContracts } from '@plaingym/shared/contracts';
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { clock as systemClock, type Clock } from './clock.js';
 import type { RequestContext, RequestEnvironment } from './context.js';
 import { createServerRegistry, type PermissionMiddleware, type ServerContributions } from './registry.js';
@@ -37,7 +37,15 @@ export interface AppOptions {
   readonly setupToken?: string;
   readonly skipSetup?: boolean;
   readonly contentSecurity?: ContentSecurityOptions;
+  /**
+   * For production only: send HSTS on responses for the canonical host when its origin is `https:` (a resolved
+   * gym's `origin`, else the static `origin` or `installOrigin`). Development leaves it off, so a browser never pins
+   * a local hostname to HTTPS.
+   */
+  readonly strictTransportSecurity?: boolean;
 }
+/** One year, for this hostname only: a gym's hostname is often a subdomain of a domain used for other services. */
+const strictTransportSecurity = 'max-age=31536000';
 
 export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> {
   const app = new OpenAPIHono<RequestEnvironment>({
@@ -46,6 +54,19 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     },
   });
   const images = imageOrigins(options.contentSecurity?.imageOrigins);
+  const httpsHost = (origin: string | undefined) => {
+    const url = origin === undefined ? undefined : new URL(origin);
+    return url?.protocol === 'https:' ? url.host : undefined;
+  };
+  const installHost = options.strictTransportSecurity
+    ? httpsHost(typeof options.origin === 'string' ? options.origin : options.installOrigin) : undefined;
+  /** The host HSTS may pin: never a hostname that resolved to no gym, nor any other than the canonical one. */
+  const transportSecurityHost = (context: Context<RequestEnvironment>) => {
+    if (!options.strictTransportSecurity) return undefined;
+    if (typeof options.origin !== 'function' || !context.get('context').gym) return installHost;
+    try { return httpsHost(options.origin(context)); }
+    catch { return undefined; }
+  };
   app.use('*', async (context, next) => {
     // A caller cannot choose a log-correlation ID or inject response headers with it.
     const requestId = randomUUID();
@@ -57,6 +78,8 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     await next();
     // No page of the app is meant to be framed (clickjacking defense); a route's own CSP is kept as it is.
     context.res.headers.set('X-Frame-Options', 'DENY');
+    const pinned = transportSecurityHost(context);
+    if (pinned && pinned === new URL(context.req.url).host) context.res.headers.set('Strict-Transport-Security', strictTransportSecurity);
     if (!context.res.headers.has('Content-Security-Policy')) {
       context.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
       // Report-only for one release: browsers report violations without blocking. Enforcing it then replaces the

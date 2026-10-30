@@ -20,5 +20,6 @@
   "empty": "No kiosk devices registered.",
   "error": "The request failed. Refresh the list and try again.",
   "previous": "Previous page",
-  "next": "Next page"
+  "next": "Next page",
+  "pinLimitTitle": "Kiosks locked out by PIN guesses (24 h)"
 }

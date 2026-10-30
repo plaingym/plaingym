@@ -14,7 +14,7 @@ import type { Principal, RequestEnvironment } from '../../../core/context.js';
 import { FakeUploads } from '../../../infra/storage/index.js';
 import { authorize } from '../../staff/auth.permissions.js';
 import { hashHouseholdPin } from '../../members/pin.js';
-import { createKioskCheckin } from './checkin.js';
+import { createKioskCheckin, maxCandidateHouseholds } from './checkin.js';
 import { createKioskCheckinRoutes } from './standing.routes.js';
 import { createStandingChecks } from './standing.js';
 import { createApp } from '../../../core/app.js';
@@ -92,6 +92,21 @@ describe('kiosk name and PIN check-in', () => {
     expect(await service.checkin(gymB, deviceB, { name, pin: '0042', checkins: [{ memberId: own.parent.id, sessionId: null }] }))
       .toEqual([{ status: 'see_front_desk' }]);
     expect(await visits(gymA, own.parent.id)).toHaveLength(0);
+  });
+  it('checks a PIN guess against at most three households, while a first and last name narrows a common surname', async () => {
+    const surname = 'Nguyen' + uuidv7().slice(-6);
+    expect(maxCandidateHouseholds).toBe(3);
+    for (let i = 0; i < maxCandidateHouseholds; i++) await family(gymA, `${surname} ${i}`, String(1000 + i));
+    // The surname inside another word of a household name is no match, so it doesn't crowd out the others.
+    await family(gymA, `Mc${surname} family`, '3000');
+    expect((await service.lookup(gymA, { name: surname, pin: '1000' })).status).toBe('select_member');
+    expect((await service.lookup(gymA, { name: 'family', pin: '3000' })).status).toBe('select_member');
+    const crowded = await family(gymA, `${surname} extra`, '2000');
+    // A fourth household with the surname sends even a right PIN to the front desk.
+    for (const pin of ['1000', '2000']) expect(await service.lookup(gymA, { name: surname, pin })).toEqual({ status: 'see_front_desk' });
+    await factory('members', gymA, { householdId: crowded.id, firstName: 'Imani', lastName: surname, status: 'active' });
+    const narrowed = await service.lookup(gymA, { name: 'Imani ' + surname, pin: '2000' });
+    expect(narrowed.status === 'select_member' && narrowed.members.map((member) => member.firstName)).toEqual(['Dana', 'Imani', 'Kai']);
   });
   it('checks in a family for open mat, keeping every tap, and audits the device', async () => {
     const home = await family();

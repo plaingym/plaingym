@@ -79,6 +79,34 @@ describe('server application composition', () => {
     expect(own.headers.has('content-security-policy-report-only')).toBe(false);
     expect(own.headers.has('reporting-endpoints')).toBe(false);
   });
+  it('sends HSTS only in production, for the canonical https: host', async () => {
+    const paths = ['/api/plain', '/api/fails', '/api/own-policy', '/api/missing', '/healthz'];
+    const hsts = async (options: Partial<Parameters<typeof createApp>[0]>, host = 'gym.example') => {
+      const app = createApp({ resolveGym, session, authorize: allow, ...options });
+      app.get('/api/plain', (context) => context.json({ ok: true }));
+      app.get('/api/fails', () => { throw new AppError('conflict', 'Fixture conflict.'); });
+      app.get('/api/own-policy', (context) => context.body('file', 200, { 'Content-Security-Policy': "default-src 'none'; sandbox" }));
+      return Promise.all(paths.map(async (path) => (await app.request(`https://${host}${path}`)).headers.get('strict-transport-security')));
+    };
+    const sent = paths.map(() => 'max-age=31536000'), none = paths.map(() => null);
+    expect(await hsts({ strictTransportSecurity: true, origin: 'https://gym.example' })).toEqual(sent);
+    expect(await hsts({ strictTransportSecurity: true, installOrigin: 'https://gym.example' })).toEqual(sent);
+    // Development, a plain HTTP origin, no canonical origin, and any other hostname send nothing.
+    for (const options of [{ origin: 'https://gym.example' }, { strictTransportSecurity: false, origin: 'https://gym.example' },
+      { strictTransportSecurity: true, origin: 'http://gym.example' }, { strictTransportSecurity: true }])
+      expect(await hsts(options)).toEqual(none);
+    expect(await hsts({ strictTransportSecurity: true, origin: 'https://gym.example' }, 'other.example')).toEqual(none);
+    // A per-gym origin pins only a hostname that resolved to a gym; install endpoints use the install origin.
+    const perGym = { strictTransportSecurity: true, installOrigin: 'https://install.example',
+      origin: (context: Parameters<MiddlewareHandler<RequestEnvironment>>[0]) => 'https://' + new URL(context.req.url).host,
+      resolveGym: (async (context, next) => {
+        if (new URL(context.req.url).hostname !== 'gym.example') throw new AppError('not_found', 'Gym not found');
+        await resolveGym(context, next);
+      }) satisfies MiddlewareHandler<RequestEnvironment> };
+    expect(await hsts(perGym)).toEqual([...sent.slice(0, 4), null]);
+    expect(await hsts(perGym, 'unknown.example')).toEqual(none);
+    expect(await hsts(perGym, 'install.example')).toEqual(sent);
+  });
   it('reports, without blocking, inline scripts without the response nonce and images from unlisted origins', async () => {
     const app = createApp({ resolveGym, session, authorize: allow, contentSecurity: { imageOrigins: ['https://uploads.example.test'] } });
     app.get('/page', (context) => context.html(`<script nonce="${cspNonce(context)}">1</script>`));

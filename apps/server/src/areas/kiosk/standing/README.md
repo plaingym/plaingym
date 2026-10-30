@@ -12,7 +12,11 @@ Requests reserve a slot while verification runs; a uniquely verified household
 PIN releases its own slot, including when standing returns the neutral front-desk
 result. Prior failures remain counted. Every
 submission verifies the name and household PIN again, reloads the household's
-members, and evaluates standing. Multiple matching households, invalid PINs,
+members, and evaluates standing. A guess is checked against at most three
+households where a member's first or last name, or a word of the household
+name, starts with the search; a wider match
+goes to the front desk, and a first and last name narrows a common surname.
+Multiple matching households, invalid PINs,
 members outside the household, and failed checks receive the same neutral
 front-desk result. Lookup displays only first names, last initials, and optional
 five-minute photo links. Credentials, roster data, and standing reasons are

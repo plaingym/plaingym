@@ -27,6 +27,18 @@ polling bypass that middleware: the coordinator must begin outside the lease it
 drains. Other first-boot handlers, the catalog, assets and gym routes use the gate.
 Liveness and source metadata remain reachable while restore runs.
 
+## Transport security
+
+With `strictTransportSecurity` set (production only), responses for the
+canonical host carry `Strict-Transport-Security: max-age=31536000` when its
+origin is `https:`, without `includeSubDomains` or `preload`: a gym's hostname is
+often a subdomain of a domain its owner uses for other services. The canonical
+origin is a resolved gym's `origin`; requests that resolve no gym (install
+endpoints, unknown hostnames) use a static `origin`, else `installOrigin`. Any
+other hostname, an `http:` origin, or a missing origin gets no header, and
+development leaves the option off so a browser never pins a local hostname. The header comes from the app rather than the Caddyfile, so
+installs receive it with an image update.
+
 ## Content-Security-Policy reports
 
 Responses that set no policy of their own carry `frame-ancestors 'none'` and a
@@ -57,9 +69,15 @@ Set `installOrigin` to the install's canonical origin for first-boot writes,
 which have no resolved gym. These requests have a separate install/client IP
 rate-limit bucket and never call a gym-dependent origin function.
 
-Rate limiting defaults to 300 requests per minute per gym and client address,
-with at most 10,000 in-memory buckets per process. Active buckets are never
-evicted to admit new clients. This is process-local flood protection; auth
+Rate limiting defaults to 300 requests per minute per gym and client key,
+with at most 10,000 in-memory buckets per process. `clientKey` keeps an IPv4
+address as it is, counts an IPv4-mapped IPv6 address as IPv4, and groups other
+IPv6 addresses by /64, as Better Auth's limiter does; every limiter uses it. A
+full table (`RateBuckets`) evicts rather than refusing new clients, so a flood
+can't lock new visitors out: ended windows and the oldest buckets still within
+their limits go first, and a bucket over its limit goes only once every other
+bucket is too, so a flood of new keys can't lift a refusal. Refusals keep their
+`Retry-After`. This is process-local flood protection; auth
 retains its database-backed limiter. `peerAddress` defaults to the Node socket
 address. Set `trustedProxy` to a predicate matching only the immediate reverse
 proxy; only then is the rightmost X-Forwarded-For address used. Pass the same

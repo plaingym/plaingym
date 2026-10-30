@@ -14,8 +14,11 @@ import { createBillingStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';
 
 export { checkinOpensBeforeMs } from '../checkin.js';
-/** Bounds the PIN comparisons one search can trigger; more matching households need the front desk. */
-const maxCandidateHouseholds = 25;
+/**
+ * Bounds the households one PIN guess is checked against, so a guess can't land in whichever of many matching
+ * households shares it. A wider match goes to the front desk; a first and last name narrows a common surname.
+ */
+export const maxCandidateHouseholds = 3;
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 
 export interface KioskCheckinOptions {
@@ -38,7 +41,9 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
     const candidates = await scope(gymId, (tx) => tx.selectDistinct({ id: households.id, pinHash: households.pinHash })
       .from(members).innerJoin(households, eq(households.id, members.householdId))
       .where(and(isNull(members.anonymizedAt), isNotNull(households.pinHash), or(
-        ilike(members.firstName, prefix(text)), ilike(members.lastName, prefix(text)), ilike(households.name, '%' + escapeLike(text) + '%'),
+        // A household name matches where one of its words starts with the search, never in the middle of a word.
+        ilike(members.firstName, prefix(text)), ilike(members.lastName, prefix(text)),
+        ilike(households.name, prefix(text)), ilike(households.name, '% ' + prefix(text)),
         rest.length ? and(ilike(members.firstName, prefix(first!)), ilike(members.lastName, prefix(rest.join(' ')))) : undefined,
       ))).limit(maxCandidateHouseholds + 1));
     if (!candidates.length || candidates.length > maxCandidateHouseholds) return null;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { and, eq } from 'drizzle-orm';
+import { auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { kioskContracts, portalContracts } from '@plaingym/shared/contracts';
@@ -8,11 +9,13 @@ import type { MiddlewareHandler } from 'hono';
 import { createKioskDeviceService } from './devices.js';
 import { createKioskDeviceRoutes } from './devices.routes.js';
 import { createKioskAuthMiddleware, markKioskPinVerified, type KioskAuthOptions } from './devices.auth.js';
+import { createPinLimitAudit, pinLimitReachedAction } from './pin-limit.js';
 import { createApp } from '../../core/app.js';
 import { route } from '../../core/registry.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { authorize } from '../staff/auth.permissions.js';
+import { setLogSink } from '../../core/log.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-10-22T12:00:00Z');
@@ -50,7 +53,7 @@ function server(options: KioskAuthOptions = {}, principal: Principal = { kind: '
   const session = vi.fn<MiddlewareHandler<RequestEnvironment>>(async (c, next) => {
     c.set('context', { ...c.get('context'), principal }); await next();
   });
-  const middleware = createKioskAuthMiddleware({ service, session, ...options });
+  const middleware = createKioskAuthMiddleware({ service, session, pinLimitReached: createPinLimitAudit({ scope: database.forGym }), ...options });
   const app = createApp({
     clock, authorize,
     resolveGym: async (c, next) => {
@@ -163,12 +166,79 @@ describe('kiosk authentication middleware', () => {
     expect((await request(app, bodies[0][0], secondToken, pinBody, { 'x-forwarded-for': '192.0.2.55, 192.0.2.1' })).status).toBe(429);
     expect((await request(app, bodies[0][0], secondToken, pinBody, { 'x-forwarded-for': '192.0.2.55, 192.0.2.2' })).status).toBe(200);
   });
-  it('fails closed at bucket capacity and reclaims expired buckets', async () => {
-    const { app } = server({ pinLimit: 10, maxBuckets: 2, peerAddress: () => '192.0.2.1' });
+  it('evicts the oldest buckets at capacity instead of refusing new devices, keeping real refusals', async () => {
+    let peer = '192.0.2.1';
+    const { app } = server({ pinLimit: 1, maxBuckets: 2, peerAddress: () => peer });
     expect((await request(app)).status).toBe(200);
-    expect((await request(app, bodies[0][0], secondToken)).status).toBe(429);
-    clock.advance(60_000);
+    peer = '192.0.2.2';
+    const refused = await request(app);
+    expect(refused.status).toBe(429); expect(refused.headers.get('retry-after')).toBe('60');
+    // The second device and a new address make room by evicting the oldest buckets rather than refusing.
     expect((await request(app, bodies[0][0], secondToken)).status).toBe(200);
+  });
+  it('shares the address budget across a /64 and counts IPv4-mapped addresses as IPv4', async () => {
+    const third = (await service.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Third device' })).token;
+    let peer = '2001:db8:a:b::1';
+    const { app } = server({ pinLimit: 1, peerAddress: () => peer });
+    expect((await request(app)).status).toBe(200);
+    peer = '2001:db8:a:b:ffff::2';
+    expect((await request(app, bodies[0][0], secondToken)).status).toBe(429);
+    peer = '2001:db8:a:c::1';
+    expect((await request(app, bodies[0][0], secondToken)).status).toBe(200);
+    peer = '::ffff:192.0.2.9';
+    expect((await request(app, bodies[0][0], third)).status).toBe(200);
+    peer = '192.0.2.9';
+    const other = (await service.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Fourth device' })).token;
+    expect((await request(app, bodies[0][0], other)).status).toBe(429);
+  });
+  it('audits a device using up its PIN budget once per window, with the device as the actor', async () => {
+    const device = await service.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Guessed device' });
+    const audits = () => database.forGym(gymA, (tx) => tx.select().from(auditEvents)
+      .where(and(eq(auditEvents.action, pinLimitReachedAction), eq(auditEvents.targetId, device.device.id))));
+    let peer = '192.0.2.40';
+    const { app } = server({ pinLimit: 2, peerAddress: () => peer });
+    const guess = (body: unknown = pinBody) => request(app, bodies[0][0], device.token, body);
+    // Verified attempts don't spend the budget, so they never count as using it up.
+    for (let i = 0; i < 3; i++) expect((await guess({ ...pinBody, name: 'Verified' })).status).toBe(200);
+    expect((await guess()).status).toBe(200);
+    expect(await audits()).toEqual([]);
+    expect((await guess()).status).toBe(200);
+    for (let i = 0; i < 3; i++) { peer = '192.0.2.' + (41 + i); expect((await guess()).status).toBe(429); }
+    expect(await audits()).toEqual([expect.objectContaining({ gymId: gymA, actorKind: 'device', actorDeviceId: device.device.id,
+      actorUserId: null, targetType: 'kiosk_device', after: { limit: 2, windowEndsAt: new Date(clock.now().getTime() + 60_000).toISOString() } })]);
+    clock.advance(60_000);
+    for (let i = 0; i < 2; i++) expect((await guess()).status).toBe(200);
+    expect(await audits()).toHaveLength(2);
+    expect(await database.forGym(gymB, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, pinLimitReachedAction)))).toEqual([]);
+  });
+  it('reports a used-up budget from settled failures, not from in-flight attempts that later verify', async () => {
+    const device = await service.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Busy device' });
+    const pinLimitReached = vi.fn(async () => {});
+    const { app } = server({ pinLimit: 2, pinLimitReached });
+    let release!: () => void;
+    verificationGate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const verified = request(app, bodies[0][0], device.token, { ...pinBody, name: 'Verified' });
+    try {
+      await started;
+      expect((await request(app, bodies[0][0], device.token)).status).toBe(200);
+      expect(pinLimitReached).not.toHaveBeenCalled();
+    } finally { release(); verificationStarted = undefined; verificationGate = undefined; }
+    expect((await verified).status).toBe(200);
+    expect((await request(app, bodies[0][0], device.token)).status).toBe(200);
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
+    expect((await request(app, bodies[0][0], device.token)).status).toBe(429);
+  });
+  it('answers the kiosk the same when recording the used-up budget fails', async () => {
+    const lines: string[] = [], previous = setLogSink((line) => { lines.push(line); });
+    try {
+      const pinLimitReached = vi.fn(async () => { throw new Error('database unavailable'); });
+      const { app } = server({ pinLimit: 1, pinLimitReached });
+      expect((await request(app)).status).toBe(200);
+      expect((await request(app)).status).toBe(429);
+      expect(pinLimitReached).toHaveBeenCalledTimes(1);
+      expect(lines.map((line) => JSON.parse(line) as { event: string })).toEqual([expect.objectContaining({ event: 'kiosk.pin_limit.audit_failed' })]);
+    } finally { setLogSink(previous); }
   });
   it('counts invalid PIN payloads and keeps real kiosk bearer requests compatible with the CSRF guard', async () => {
     const { app } = server({ pinLimit: 1 });
