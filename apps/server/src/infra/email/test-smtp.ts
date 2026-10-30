@@ -11,6 +11,7 @@ export async function captureSmtp(auth?: { user: string; pass: string }) {
   let rejectData = false;
   let loseReply = false;
   let dropOn: string | undefined;
+  let stallOn: string | undefined;
   const server = createServer((socket) => {
     connections++;
     sockets.add(socket);
@@ -37,6 +38,7 @@ export async function captureSmtp(auth?: { user: string; pass: string }) {
         const command = line.split(' ')[0]?.toUpperCase();
         commands.push(command ?? '');
         if (command === dropOn) { socket.destroy(); return; }
+        if (command === stallOn) continue;
         if (command === 'EHLO') socket.write('250-capture.example.test\r\n' +
           (auth ? '250-AUTH PLAIN\r\n' : '') + '250 SIZE 1000000\r\n');
         else if (command === 'AUTH') {
@@ -68,6 +70,8 @@ export async function captureSmtp(auth?: { user: string; pass: string }) {
     loseReply(value: boolean) { loseReply = value; },
     /** Drops the connection when the client sends this command (for example MAIL). */
     dropOn(command: string | undefined) { dropOn = command; },
+    /** Never answers this command, keeping the connection open (for example RCPT). */
+    stallOn(command: string | undefined) { stallOn = command; },
     async close() {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

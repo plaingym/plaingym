@@ -169,7 +169,8 @@ retryable. Payment Methods **Write** is required and probed during setup. Existi
 keys without it report `Check the Stripe permission for Payment Methods`; local
 card revocation remains in place while the queued detach job retries.
 
-`redactCustomer(id)` serves member erasure. It checks the customer's gym, then
+`redactCustomer(id)` serves member erasure. It refuses a customer tagged for another
+gym and, as `adoptCustomer` does, treats an untagged one (an imported ID) as the gym's; it then
 [updates the Customer](https://docs.stripe.com/api/customers/update) so its name
 is `Erased member` and its email is cleared (an empty string clears it). The
 Customer, its metadata and its payment and dispute history stay, because the gym

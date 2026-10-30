@@ -71,8 +71,9 @@ details. Until the household has a payer login, the portal-login listing returns
 `awaitingConfirmation` with the household's current address, and the staff panel offers to
 confirm it. Staff check the person, then issue the printed payer invitation for that address;
 the person sets the password, or proves an existing one, on `/portal/claim`. An invitation that
-expires or is lost leaves the household awaiting, and printing again replaces it. Staff
-accounts are refused as for any invitation.
+expires or is lost leaves the household awaiting, and printing again replaces it; revoking
+the payer login later offers confirmation again. A household without an address, such as an
+erased one, never awaits confirmation. Staff accounts are refused as for any invitation.
 
 ## Onboarding links
 

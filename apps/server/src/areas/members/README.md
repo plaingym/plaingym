@@ -31,7 +31,8 @@ detachment and customer redaction after commit. The runtime passes the billing
 detach callback, the customer redaction callback (`Payments.redactCustomer`) and
 the job queue through `configureMembers`; the route queues a detach job for each
 revoked card and a `members.erasure.redact_customer` job carrying the customer ID
-before attempting either call; the redaction job is queued first, and the
+before attempting either call; the redaction job is queued first, to run a minute
+later (after the inline attempt), and the
 `household.anonymized` audit event records the cleared customer ID. The Stripe
 Customer is kept for the books: its name
 becomes `Erased member` and its email is cleared. A failed attempt is logged with

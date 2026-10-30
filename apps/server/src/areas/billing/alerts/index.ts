@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
-import { auditEvents, forGym, households, invoices, members, memberships, paymentMethods, writeAudit } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, members, memberships, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, type Clock, type Translator } from '@plaingym/shared';
 import { dateSchema, extensionDashboardWidgetSchema, idSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -115,16 +115,23 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       cursor = rows.at(-1)!.id;
     }
   }
+  const write = (tx: Transaction, gymId: string, kind: AlertPayload['kind'], targetId: string, after: Record<string, unknown>, outcome: string) =>
+    writeAudit(tx, { gymId, actorKind: 'system', action: `billing.alert.${kind}.${outcome}`,
+      targetType: kind === 'card_expiry' ? 'payment_method' : 'invoice', targetId, after, occurredAt: clock.now() });
   async function audit(gymId: string, kind: AlertPayload['kind'], targetId: string, after: Record<string, unknown>, outcome = 'sent') {
-    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: `billing.alert.${kind}.${outcome}`,
-      targetType: kind === 'card_expiry' ? 'payment_method' : 'invoice', targetId, after, occurredAt: clock.now() }));
+    await scope(gymId, tx => write(tx, gymId, kind, targetId, after, outcome));
   }
-  /** Repairs an outcome audit a crash lost after the send state was recorded; `match` names the cycle or dispute. */
+  /** Repairs an outcome audit a crash lost after the send state was recorded; `match` names the cycle or dispute. The
+   * alert's card or invoice row is locked, so concurrent attempts write one audit between them. */
   async function auditOnce(gymId: string, kind: AlertPayload['kind'], targetId: string, match: Record<string, string>, outcome: string) {
-    const rows = await scope(gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
-      eq(auditEvents.gymId, gymId), eq(auditEvents.action, `billing.alert.${kind}.${outcome}`), eq(auditEvents.targetId, targetId))));
-    const [field, value] = Object.entries(match)[0]!;
-    if (!rows.some(row => (row.after as Record<string, unknown> | null)?.[field] === value)) await audit(gymId, kind, targetId, match, outcome);
+    await scope(gymId, async tx => {
+      if (kind === 'card_expiry') await tx.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.id, targetId)).for('update');
+      else await tx.select({ id: invoices.id }).from(invoices).where(eq(invoices.id, targetId)).for('update');
+      const rows = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+        eq(auditEvents.gymId, gymId), eq(auditEvents.action, `billing.alert.${kind}.${outcome}`), eq(auditEvents.targetId, targetId)));
+      const [field, value] = Object.entries(match)[0]!;
+      if (!rows.some(row => (row.after as Record<string, unknown> | null)?.[field] === value)) await write(tx, gymId, kind, targetId, match, outcome);
+    });
   }
   async function send(payload: unknown, context: JobContext) {
     const work = payloadSchema.parse(payload), gymId = context.gymId;
@@ -171,6 +178,9 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       // Suppressed, or another attempt holds the key: this link was never sent.
       if (result.status !== 'sent') {
         await revoke();
+        // Another attempt's notice was accepted after this one's precheck: make sure its audit exists.
+        if (result.status === 'skipped' && result.state === 'accepted')
+          await auditOnce(gymId, work.kind, work.paymentMethodId, { cycle: work.cycle }, 'sent');
         return;
       }
       await audit(gymId, work.kind, work.paymentMethodId, { cycle: work.cycle, linkId: created.link.id });

@@ -10,7 +10,7 @@ import { DeliveryError, deliveryAcceptance, type Email, type EmailMessage, type 
 export type EmailDeliveryState = 'sending' | 'accepted' | 'unknown' | 'not_accepted';
 /** `skipped` means an earlier attempt under the key was accepted or may have been; nothing was sent. */
 export type RecordedEmailResult = EmailResult | { status: 'skipped'; state: 'accepted' | 'unknown' };
-/** Longer than any SMTP session the transport allows (10 s connect and greeting, 30 s per reply). */
+/** Twice the SMTP transport's hard session deadline (`smtpSessionLimitMs`), so a `sending` row this old has finished. */
 export const emailInFlightMs = 10 * 60_000;
 
 function validKey(key: string): void {

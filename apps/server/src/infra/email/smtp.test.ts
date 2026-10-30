@@ -153,6 +153,16 @@ describe('delivery classification', () => {
     expect(capture.messages).toHaveLength(before + 1);
   });
 
+  it('ends a session at its deadline however slowly the server replies, classified by the stage reached', async () => {
+    const slow = new SmtpEmail({ host: '127.0.0.1', port: capture.port, security: 'plain', from: 'owner@example.test' }, { sessionLimitMs: 300 });
+    try {
+      capture.stallOn('EHLO');
+      await expect(slow.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { code: 'ETIMEDOUT' } });
+      capture.stallOn('RCPT');
+      await expect(slow.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown', cause: { code: 'ETIMEDOUT' } });
+    } finally { capture.stallOn(undefined); slow.close(); }
+  });
+
   it('classifies a connection lost during the envelope as unknown, since Nodemailer cannot place it', async () => {
     capture.dropOn('MAIL');
     try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown' }); }

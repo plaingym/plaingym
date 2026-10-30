@@ -357,7 +357,7 @@ it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as c
   else await expect(removal).resolves.toBeUndefined();
   expect(transport.requests.filter(input => input.path.endsWith('/detach'))).toHaveLength(['concurrent', 'lost_response'].includes(outcome) ? 1 : 0);
 });
-it('redacts only an owned customer, keeping its metadata, and treats deleted or missing customers as done', async () => {
+it('redacts a customer of this gym or an untagged one, keeping its metadata, and treats deleted or missing customers as done', async () => {
   const { payments, transport } = fixture();
   transport.objects.set('cus_erased', { id: 'cus_erased', object: 'customer', name: 'Pat Payer', email: 'pat@example.invalid',
     metadata: { gym_id: gymId, household_id: 'household_fixture' } });
@@ -372,12 +372,14 @@ it('redacts only an owned customer, keeping its metadata, and treats deleted or 
   transport.objects.set('cus_foreign', { id: 'cus_foreign', object: 'customer', name: 'Other', email: 'other@example.invalid', metadata: { gym_id: 'other' } });
   transport.objects.set('cus_untagged', { id: 'cus_untagged', object: 'customer', name: 'Dashboard', email: 'dash@example.invalid', metadata: {} });
   await expect(payments.redactCustomer('cus_foreign')).rejects.toThrow('another gym');
-  await expect(payments.redactCustomer('cus_untagged')).rejects.toThrow('no gym metadata');
+  // An imported customer ID is untagged until the charge runner adopts it; erasure still redacts it, without tagging it.
+  await payments.redactCustomer('cus_untagged');
+  expect(transport.objects.get('cus_untagged')).toMatchObject({ name: 'Erased member', email: null, metadata: {} });
   transport.objects.set('cus_deleted', { id: 'cus_deleted', object: 'customer', deleted: true });
   await expect(payments.redactCustomer('cus_deleted')).resolves.toBeUndefined();
   await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
   await expect(payments.redactCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
-  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
   expect(transport.objects.get('cus_foreign')).toMatchObject({ name: 'Other', email: 'other@example.invalid' });
 });
 it('redacts a fake customer like the provider and refuses another gym', async () => {

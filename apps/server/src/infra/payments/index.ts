@@ -166,7 +166,7 @@ export interface Payments {
   /** Detach a gym-owned card; missing and already detached methods succeed. */
   detachPaymentMethod(processorId: string): Promise<void>;
   /**
-   * Erasure: renames a gym-owned customer to "Erased member" and clears its email. The customer and its payment
+   * Erasure: renames the gym's customer (tagged for this gym or untagged) to "Erased member" and clears its email. The customer and its payment
    * history stay. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
    */
   redactCustomer(customerId: string): Promise<void>;

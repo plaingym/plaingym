@@ -100,6 +100,10 @@ describe('household login routes', () => {
     expect(await logins(joined.id)).toHaveProperty('awaitingConfirmation');
     await factory('householdUsers', gym, { householdId: joined.id, scope: 'payer', memberId: null });
     expect(await logins(joined.id)).not.toHaveProperty('awaitingConfirmation');
+    // An erased household keeps its marker but has no address left to confirm.
+    const erased = await factory('households', gym, { email: null });
+    await db.forGym(gym, tx => requestPortalConfirmation(tx, gym, erased.id, clock));
+    expect(await logins(erased.id)).not.toHaveProperty('awaitingConfirmation');
   });
   it('separates staff and member routes, reloads scope and immediately denies revoked logins', async () => {
     const f = await fixture(), loader = createPortalPrincipalLoader(db.forGym), principal = await loader(gym, f.adult.userId), server = app(principal);

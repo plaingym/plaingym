@@ -14,6 +14,7 @@ import type { StripePayments } from '../infra/payments/stripe.js';
 import * as stripeStep from '../areas/setup/stripe-step.js';
 import { redactCustomerJob } from '../areas/members/members.routes.js';
 import { clock } from './clock.js';
+import { setLogSink } from './log.js';
 import { startRuntime, type Runtime } from './runtime.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
@@ -53,4 +54,18 @@ it('reports images from the uploads bucket\'s origin under the report-only polic
   const response = await runtime.app.request(origin + '/healthz', { headers: { host: 'gym.example.test' } });
   expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
   expect(response.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data: https://account.storage.example.test;");
+});
+
+it('starts with a bucket host the policy cannot name, leaving it out of the report-only policy', async () => {
+  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+  try {
+    runtime = await startRuntime({ ...env(directory), UPLOADS_S3_BUCKET: 'gym-uploads', UPLOADS_S3_REGION: 'auto',
+      UPLOADS_S3_ENDPOINT: 'http://plaingym_minio:9000' });
+  } finally { setLogSink(previous); }
+  const response = await runtime.app.request(origin + '/healthz', { headers: { host: 'gym.example.test' } });
+  expect(response.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data:;");
+  expect(logs.map(line => JSON.parse(line).event)).toContain('runtime.csp.image_origin_skipped');
 });

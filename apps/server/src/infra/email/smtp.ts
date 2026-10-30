@@ -49,6 +49,8 @@ export function smtpOptions(config: SmtpConfig): SMTPTransport.Options {
 }
 
 type Stage = 'connect' | 'login' | 'send';
+/** A whole session ends by this deadline, however its replies trickle in; keyed send state relies on it (deliveries.ts). */
+export const smtpSessionLimitMs = 5 * 60_000;
 interface SentInfo { messageId: string; accepted: string[]; rejected: string[] }
 
 /**
@@ -74,6 +76,8 @@ interface SessionConfig {
   readonly auth: SmtpConfig['auth'];
   /** Sessions still open, so close() can end them. */
   readonly open: Set<SMTPConnection>;
+  /** Tests shorten the session deadline. */
+  readonly limitMs?: number;
 }
 
 /** One SMTP session per call; without a message it verifies the connection and credentials only. */
@@ -83,9 +87,12 @@ function session(config: SessionConfig, message?: { envelope: SMTPConnection.Env
     const connection = new SMTPConnection(config.options), auth = config.auth;
     let stage: Stage = 'connect', settled = false;
     config.open.add(connection);
+    const deadline = setTimeout(() => fail(Object.assign(new Error('SMTP session time limit reached'), { code: 'ETIMEDOUT' })),
+      config.limitMs ?? smtpSessionLimitMs);
     const fail = (error: SMTPConnection.SMTPError) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       config.open.delete(connection);
       connection.close();
       reject(classify(stage, error));
@@ -93,6 +100,7 @@ function session(config: SessionConfig, message?: { envelope: SMTPConnection.Env
     const finish = (info?: SMTPConnection.SentMessageInfo) => {
       if (settled) return;
       settled = true;
+      clearTimeout(deadline);
       config.open.delete(connection);
       connection.quit();
       resolve(info);
@@ -137,11 +145,12 @@ export class SmtpEmail implements Email {
   readonly #from: string;
   readonly #replyTo: string | undefined;
 
-  constructor(config: SmtpConfig) {
+  constructor(config: SmtpConfig, testing: { sessionLimitMs?: number } = {}) {
     const { disableFileAccess, disableUrlAccess, ...options } = smtpOptions(config);
     // Credentials go to login() only; the connection options never hold them.
     delete options.auth;
-    this.#session = { options: options as SMTPConnection.Options, auth: config.auth, open: new Set() };
+    this.#session = { options: options as SMTPConnection.Options, auth: config.auth, open: new Set(),
+      ...(testing.sessionLimitMs ? { limitMs: testing.sessionLimitMs } : {}) };
     // A transport plugin receives the access restrictions through the message defaults.
     this.#transport = nodemailer.createTransport(smtpTransport(this.#session), { disableFileAccess, disableUrlAccess });
     this.#from = config.from;

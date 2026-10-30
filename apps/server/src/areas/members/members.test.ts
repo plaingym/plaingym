@@ -332,6 +332,8 @@ describe('members and households', () => {
     expect(redactCustomer).toHaveBeenCalledExactlyOnceWith(gymA, customerId);
     expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test' } : { name: 'Erased member', email: null });
     expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload }))).toEqual(queued ? [{ name: redactCustomerJob, payload: { customerId } }] : []);
+    // The retry waits a minute, past the inline attempt, so the two don't race on one idempotency key.
+    if (queued) expect(jobs.jobs[0]!.runAt.getTime()).toBe(clock.now().getTime() + 60_000);
     expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.redact_failed'))
       .toEqual(failure && queued ? [expect.objectContaining({ gymId: gymA, memberId: person.id })] : []);
     expect(JSON.stringify(logs)).not.toContain(customerId);

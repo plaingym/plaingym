@@ -197,6 +197,9 @@ describe('outbox isolation, permissions, and external boundaries', () => {
     expect(rows.data.some((row) => row.subject === 'Other gym private message')).toBe(false);
     expect((await db.forGym(infraContractGyms.a, (tx) => tx.select().from(auditEvents))).some((audit) => audit.action === 'demo.email_captured')).toBe(true);
     await expect(runInTransaction(() => mail.sendEmail({ to: 'x', subject: 'x', html: 'x', text: 'x' }))).rejects.toThrow(/transaction/i);
+    // A failed capture stores nothing, so it is a definite non-send that keyed sends may retry.
+    const failing = new OutboxEmail(infraContractGyms.a, clock(), (async () => { throw new Error('database unavailable'); }) as unknown as typeof db.forGym);
+    await expect(failing.sendEmail({ to: 'x@example.test', subject: 'x', html: 'x', text: 'x' })).rejects.toMatchObject({ acceptance: 'not_accepted' });
   });
   it.each(roleNames)('checks the outbox allow/deny policy for %s on list and detail', async (role) => {
     const f = fixture(), a = await f.service.create();

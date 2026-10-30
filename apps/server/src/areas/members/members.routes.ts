@@ -71,8 +71,10 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs } = current();
       const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
       // The household no longer stores the customer ID, so queue its redaction before any other follow-up can fail.
+      // It runs a minute later, after the inline attempt below, and then finds the customer already redacted.
       if (erasedCustomerId && jobs) await jobs.enqueue(redactCustomerJob, { customerId: erasedCustomerId }, {
         gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `redact:${erasedCustomerId}`, maxAttempts: 12,
+        runAt: new Date(ctx.clock.now().getTime() + 60_000),
       });
       for (const sessionId of freedSessionIds) await promoteWaitlist(ctx.gym.gymId, sessionId,
         current().clock ? { clock: current().clock! } : {});

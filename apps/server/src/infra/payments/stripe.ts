@@ -358,7 +358,9 @@ export class StripePayments implements Payments {
     try { customer = await this.#get(path); }
     catch (error) { if (absent(error)) return; throw error; }
     if (customer.deleted === true) return;
-    this.#metadata(customer);
+    // As adoptCustomer: an untagged customer (imported or made in the dashboard) is the gym's own; another gym's is refused.
+    const owner = data(customer.metadata ?? {}).gym_id;
+    if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
     if (customer.name === ERASED_CUSTOMER_NAME && !customer.email) return;
     // An empty string clears the email; the customer's metadata, payments and disputes are unchanged.
     await this.#post(path, { name: ERASED_CUSTOMER_NAME, email: '' }, 'customer:' + customerId + ':redact');

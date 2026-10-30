@@ -73,6 +73,7 @@ import { demoWebhookMiddleware } from '../demo/webhook.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { createUploadDownloadRoute } from './uploads-download.js';
 import { logError } from './log.js';
+import { imageOrigins } from './csp.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createStripeHealthProvider } from '../areas/health/stripe.js';
@@ -317,6 +318,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
     return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
   } });
+  // Photos load from the uploads bucket's signed URLs when S3 is configured. A host the policy can't name (such as a
+  // Compose service with an underscore) is left out and reported, rather than refusing to start over a report-only policy.
+  const bucketImages = (() => {
+    if (!uploads.imageOrigin) return [];
+    try { return imageOrigins([uploads.imageOrigin]); }
+    catch (error) { logError('runtime.csp.image_origin_skipped', {}, error); return []; }
+  })();
   const kioskSession = createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session });
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), authorize: createPortalAuthorization(),
@@ -328,8 +336,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       ...(gate ? { restoreGate: gate.middleware() } : {}) }) } : gate ? { restoreGate: gate.middleware() } : {}),
     ...(env.SOURCE_URL ? { sourceUrl: env.SOURCE_URL } : {}),
     ...(env.SETUP_TOKEN ? { setupToken: env.SETUP_TOKEN } : {}), ...(demo ? { skipSetup: demo.skipSetup } : {}),
-    // Photos load from the uploads bucket's signed URLs when S3 is configured.
-    ...(uploads.imageOrigin ? { contentSecurity: { imageOrigins: [uploads.imageOrigin] } } : {}),
+    ...(bucketImages.length ? { contentSecurity: { imageOrigins: bucketImages } } : {}),
   });
 
   registerModuleJobs(createServerRegistry(contributions), queue, createGymSettingsAccessor());

@@ -16,7 +16,8 @@ export interface ContentSecurityOptions {
   readonly imageOrigins?: readonly string[];
 }
 
-/** Each origin must be a bare http(s) origin, so no path or wildcard can widen the policy. */
+/** Each origin must be a bare http(s) origin whose host a policy can name (letters, digits, hyphens and dots), so no
+ * path or wildcard can widen the policy. */
 export function imageOrigins(origins: readonly string[] = []): string[] {
   return origins.map((origin) => {
     const url = new URL(origin);

@@ -42,11 +42,14 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
       });
     },
     /** The household's address while it awaits portal confirmation: until it has a payer login. A printed invitation
-     * that expires or is never claimed leaves it awaiting, and printing again replaces the outstanding one. */
-    async awaitingConfirmation(gymId: string, householdId: string): Promise<{ email: string | null } | null> {
+     * that expires or is never claimed leaves it awaiting, and printing again replaces the outstanding one; revoking
+     * the payer login later offers confirmation again. A household without an address never awaits. */
+    async awaitingConfirmation(gymId: string, householdId: string): Promise<{ email: string } | null> {
       return scope(gymId, async tx => {
         const [home] = await tx.select({ email: households.email }).from(households).where(eq(households.id, householdId));
         if (!home) notFound();
+        // An erased household (or one without an address) has nothing for staff to confirm.
+        if (!home.email) return null;
         const [requested] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.action, confirmationRequested),
           eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId))).limit(1);
         if (!requested || await tx.$count(householdUsers, and(eq(householdUsers.householdId, householdId), eq(householdUsers.scope, 'payer')))) return null;
