@@ -16,6 +16,7 @@
   "lastSeen": "Last visit",
   "neverSeen": "No visits recorded",
   "showing": "Showing {shown} of {total} members.",
+  "showingItems": "Showing {shown} of {total}.",
   "status.not_configured": "Not set up",
   "status.unavailable": "Temporarily unavailable",
   "empty": "Nothing to show yet",

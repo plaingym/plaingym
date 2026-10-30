@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, exists, isNotNull, isNull, notExists } from 'drizzle-orm';
 import { auditEvents, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { createHouseholdUserRequestSchema, householdUserSchema, type CreateHouseholdUserRequest, type Pagination } from '@plaingym/shared/contracts';
@@ -17,11 +17,20 @@ export async function assertPortalLoginTarget(tx: Transaction, householdId: stri
   }
 }
 
-const confirmationRequested = 'household_user.confirmation_requested';
+export const confirmationRequested = 'household_user.confirmation_requested';
 /** Password mode has no mail to prove an address: the household's address awaits portal confirmation by staff
  * with `portal_access.manage`, who check the person and then issue the printed invitation. Identifiers only. */
 export async function requestPortalConfirmation(tx: Transaction, gymId: string, householdId: string, clock: Clock) {
   await writeAudit(tx, { gymId, actorKind: 'system', action: confirmationRequested, targetType: 'household', targetId: householdId, occurredAt: clock.now() });
+}
+
+/** The one rule for a household awaiting portal confirmation: an address, a confirmation request, and no payer login yet.
+ * The household tab and the dashboard widget both apply it. */
+export function awaitingConfirmationCondition(tx: Transaction, gymId: string) {
+  return and(eq(households.gymId, gymId), isNotNull(households.email),
+    exists(tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, confirmationRequested),
+      eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, households.id)))),
+    notExists(tx.select({ id: householdUsers.id }).from(householdUsers).where(and(eq(householdUsers.householdId, households.id), eq(householdUsers.scope, 'payer')))));
 }
 
 const record = (row: typeof householdUsers.$inferSelect) => householdUserSchema.parse({ id: row.id, householdId: row.householdId, userId: row.userId, scope: row.scope, memberId: row.memberId, createdAt: row.createdAt.toISOString() });
@@ -50,10 +59,8 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
         if (!home) notFound();
         // An erased household (or one without an address) has nothing for staff to confirm.
         if (!home.email) return null;
-        const [requested] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.action, confirmationRequested),
-          eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId))).limit(1);
-        if (!requested || await tx.$count(householdUsers, and(eq(householdUsers.householdId, householdId), eq(householdUsers.scope, 'payer')))) return null;
-        return { email: home.email };
+        const [waiting] = await tx.select({ id: households.id }).from(households).where(and(eq(households.id, householdId), awaitingConfirmationCondition(tx, gymId)));
+        return waiting ? { email: home.email } : null;
       });
     },
     loginEmails: options.loginEmails ?? createPortalInvitationStore().loginEmails,

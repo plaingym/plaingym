@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, like } from 'drizzle-orm';
 import { authVerification, authUser, authAccount, householdUsers, type Transaction } from '@plaingym/db';
 import { scopedDatabase, systemDatabase } from '@plaingym/db/client';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { z } from 'zod';
+import { idSchema } from '@plaingym/shared/contracts';
 import { passwordAdapter } from './password.js';
 
 /** The household login an invitation grants. The link itself is created only when the invitation is accepted. */
@@ -70,6 +71,39 @@ export function createPortalInvitationStore(database = systemDatabase) {
     async loginEmails(gymId: string, householdId: string) {
       return forGym(gymId, tx => tx.select({ id: householdUsers.id, email: authUser.email }).from(householdUsers)
         .innerJoin(authUser, eq(authUser.id, householdUsers.userId)).where(eq(householdUsers.householdId, householdId)));
+    },
+    /** The household's unexpired invitations with the invitee's login email, newest first. Gym-scoped and for one household:
+     * the caller is a staff member authorized for that household. Tokens are stored hashed and never returned. */
+    async outstanding(gymId: string, householdId: string, clock: Clock) {
+      return forGym(gymId, async tx => {
+        // The household ID is a validated UUID, so the substring match only narrows the scan; the parsed binding decides.
+        const rows = await tx.select().from(authVerification).where(and(like(authVerification.identifier, prefix(gymId) + '%'),
+          gt(authVerification.expiresAt, clock.now()), like(authVerification.value, `%"householdId":"${idSchema.parse(householdId)}"%`)))
+          .orderBy(desc(authVerification.expiresAt), asc(authVerification.id)).limit(100);
+        const invitations = rows.flatMap(row => {
+          try { return [{ id: row.id, expiresAt: row.expiresAt, binding: bindingOf(row.value) }]; } catch { return []; }
+        }).filter(row => row.binding.householdId === householdId);
+        const users = invitations.length ? await tx.select({ id: authUser.id, email: authUser.email }).from(authUser)
+          .where(inArray(authUser.id, invitations.map(row => row.binding.userId))) : [];
+        return invitations.flatMap(row => {
+          const email = users.find(user => user.id === row.binding.userId)?.email;
+          return email ? [{ ...row, email }] : [];
+        });
+      });
+    },
+    /** Deletes one of the household's unexpired invitations, so accepting it fails. `revoked` runs in the same transaction
+     * (the audit); the invitation must belong to this gym and household, otherwise it is not found. */
+    async revoke(input: { gymId: string; householdId: string; invitationId: string; clock: Clock },
+      revoked: (tx: Transaction, binding: PortalInvitationBinding) => Promise<void>) {
+      assertNoTransaction('auth.revokeInvitation');
+      await forGym(input.gymId, async tx => {
+        const [invite] = await tx.select().from(authVerification).where(eq(authVerification.id, input.invitationId)).for('update');
+        if (!invite || !invite.identifier.startsWith(prefix(input.gymId)) || invite.expiresAt <= input.clock.now()) throw invalid();
+        const binding = bindingOf(invite.value);
+        if (binding.householdId !== input.householdId) throw invalid();
+        await revoked(tx, binding);
+        await tx.delete(authVerification).where(eq(authVerification.id, invite.id));
+      });
     },
     /** Runs in the caller's transaction. Replaces outstanding links for the binding and returns the raw token once. */
     async issue(tx: Transaction, gymId: string, binding: PortalInvitationBinding, clock: Clock) {

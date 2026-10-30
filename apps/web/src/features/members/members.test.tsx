@@ -55,6 +55,16 @@ describe('member admin UI', () => {
     expect(screen.getByRole('tabpanel').textContent).toContain('Two ' + memberId);
     expect(screen.queryByText('Secret tab')).toBeNull(); expect(screen.queryByText('Disabled module')).toBeNull();
   });
+  it('opens the tab a link names in the URL hash, and ignores an unknown or malformed one', () => {
+    const registries = createWebRegistries<ExtensionView>([{ memberTabs: ['one', 'two'].map((name) => ({ id: 'memberTabs.' + name, labelKey: 'members/members:' + (name === 'one' ? 'profile' : 'tags'), enabled: true,
+      permission: { kind: 'staff' as const, capability: 'members.read' as const }, component: () => <p>Tab {name}</p> })) }]);
+    const open = (hash: string) => { window.location.hash = hash; cleanup(); view(<MemberTabs memberId={memberId} roles={['front_desk']} enabledModules={new Set()} registries={registries}/>); };
+    try {
+      open('#memberTabs.two'); expect(screen.getByRole('tab', { name: 'Tags', selected: true })).toBeDefined();
+      open('#memberTabs.missing'); expect(screen.getByRole('tab', { name: 'Profile', selected: true })).toBeDefined();
+      open('#%'); expect(screen.getByRole('tab', { name: 'Profile', selected: true })).toBeDefined();
+    } finally { window.location.hash = ''; }
+  });
   it('front desk never requests or renders medical notes', async () => {
     view(<MemberProfile memberId={memberId}/>);
     await screen.findByRole('heading', { name: 'Alex Smith' });

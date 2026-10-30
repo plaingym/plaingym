@@ -53,6 +53,18 @@ only when the invitation is accepted. An address that already has a login for th
 household, or a member who already has one, is a conflict. Staff identities cannot
 be claimed through a member invitation.
 
+The household's Portal access tab lists its outstanding invitations: the invitee's
+address, the access granted (whole household or one member) and the expiry.
+`GET /api/households/{householdId}/portal-invitations` reads them through the auth
+module, scoped to the gym and to the household in the route. An invitation that has
+expired or been accepted is no longer listed, and neither a token nor its hash is
+ever returned. Staff with `portal_access.manage` revoke one with
+`DELETE /api/households/{householdId}/portal-invitations/{invitationId}`, which deletes
+it and writes a `household_user.invitation_revoked` audit event in the same
+transaction. Accepting a revoked invitation fails as for an expired one, whether the
+invitee holds the link or a claim code already sent. An invitation of another
+household or gym, an expired one, and any other verification row answer 404.
+
 Acceptance proves the account before linking it:
 
 * **Password login:** the claim page asks for a password. An existing password
@@ -74,6 +86,13 @@ the person sets the password, or proves an existing one, on `/portal/claim`. An 
 expires or is lost leaves the household awaiting, and printing again replaces it; revoking
 the payer login later offers confirmation again. A household without an address, such as an
 erased one, never awaits confirmation. Staff accounts are refused as for any invitation.
+
+Password-mode installs have no mail to tell staff, so the dashboard does: the
+`members.portal-confirmations` widget (`household-users.widget.ts`, for staff with
+`portal_access.manage`) counts the households awaiting confirmation and lists up to
+twenty by name, each linking to the Portal access tab of its first member. It holds no
+address, and the dashboard hides it while nothing is waiting. A household with no
+member left to open, such as one whose members were all anonymized, isn't listed.
 
 ## Onboarding links
 

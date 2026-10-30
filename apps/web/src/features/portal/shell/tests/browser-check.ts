@@ -18,9 +18,13 @@ const person = { id: member, householdId: household, firstName: 'Alex', lastName
 const login = { id: gym, householdId: household, userId, scope: 'member', memberId: member, createdAt: person.createdAt, email: person.email };
 const second = '00000000-0000-7000-8000-000000000005';
 const choices = [{ householdId: household, name: 'A household with a long name that wraps on a phone', role: 'payer' }, { householdId: second, name: 'Second household', role: 'member' }];
-let revoked = false, awaiting = false, current: string | null = null;
+const invitation = { id: '00000000-0000-7000-8000-000000000006', scope: 'member', memberId: member, memberName: 'Alex Example', email: 'a-long-invited-address-that-wraps-on-a-phone@example.test', expiresAt: '2026-11-04T12:00:00.000Z' };
+const waiting = { id: 'members.portal-confirmations', kind: 'count', titleKey: 'portal/access:waitingTitle', status: 'ready', count: 22, items: [{ label: 'A household with a long name that must wrap on a phone', href: '/admin/members/' + member + '#memberTabs.portal-access' }, { label: 'Second household', href: '/admin/members/' + second + '#memberTabs.portal-access' }] };
+let revoked = false, awaiting = false, pending = false, current: string | null = null;
 const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QueryClient,QueryClientProvider} from '@tanstack/react-query'; import {ShellServicesContext} from './src/app/context.tsx'; import {PortalAccessTab} from './src/features/portal/access/tab.tsx'; const services={loadBootstrap:async()=>(${JSON.stringify({ ...bootstrap, session: { userId, roles: ['front_desk'], member: false } })})}; createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><ShellServicesContext.Provider value={services}><main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Alex Example</h1><PortalAccessTab memberId="${member}"/></main></ShellServicesContext.Provider></QueryClientProvider>);`, resolveDir: resolve('apps/web'), sourcefile: 'portal-access-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
 await writeFile(resolve(output, 'access.js'), bundle.outputFiles[0]!.text);
+const dashboardBundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {DashboardWidgets} from './src/features/dashboard/widgets.tsx'; createRoot(document.getElementById('root')).render(<main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Dashboard</h1><DashboardWidgets roles={['front_desk']} widgets={[${JSON.stringify(waiting)}, ${JSON.stringify({ ...waiting, id: 'members.hidden', count: 0, items: [] })}]}/></main>);`, resolveDir: resolve('apps/web'), sourcefile: 'dashboard-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
+await writeFile(resolve(output, 'dashboard.js'), dashboardBundle.outputFiles[0]!.text);
 const cssName = (await readdir(resolve(dist, 'assets'))).find(name => name.endsWith('.css'))!;
 const pwa = new OpenAPIHono(); for (const entry of createPortalPwaRoutes()) entry.mount(pwa, () => async (_ctx: unknown, next: () => Promise<void>) => { await next(); });
 const server = createServer(async (req, res) => {
@@ -42,11 +46,15 @@ const server = createServer(async (req, res) => {
     if (path === '/api/members/' + member) { res.end(JSON.stringify({ data: person })); return; }
     if (path.endsWith('/portal-logins')) { res.end(JSON.stringify({ data: revoked ? [] : [login], pagination: { limit: 20, offset: 0, total: revoked ? 0 : 1 },
       ...(awaiting ? { awaitingConfirmation: { email: 'a-long-joining-address-that-wraps@example.test' } } : {}) })); return; }
+    if (path.includes('/portal-invitations/') && req.method === 'DELETE') { pending = false; res.end(JSON.stringify({ data: null })); return; }
+    if (path.endsWith('/portal-invitations') && req.method === 'GET') { res.end(JSON.stringify({ data: pending ? [invitation] : [] })); return; }
     if (path.endsWith('/portal-invitations')) { res.end(JSON.stringify({ data: { delivery: 'print', invitation: { userId, scope: 'member', memberId: member, expiresAt: '2026-11-04T12:00:00.000Z' }, invitationUrl: 'http://localhost/portal/claim#' + 'a'.repeat(64) } })); return; }
     if (req.method === 'DELETE') revoked = true;
     res.end(JSON.stringify({ data: null })); return;
   }
   if (path === '/access-fixture') { res.setHeader('Content-Type', 'text/html'); res.end(`<!doctype html><html lang="en"><head><title>Portal access</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/${cssName}"></head><body><div id="root"></div><script type="module" src="/access.js"></script></body></html>`); return; }
+  if (path === '/dashboard-fixture') { res.setHeader('Content-Type', 'text/html'); res.end(`<!doctype html><html lang="en"><head><title>Dashboard</title><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/${cssName}"></head><body><div id="root"></div><script type="module" src="/dashboard.js"></script></body></html>`); return; }
+  if (path === '/dashboard.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(await readFile(resolve(output, 'dashboard.js'))); return; }
   if (path === '/access.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(await readFile(resolve(output, 'access.js'))); return; }
   if (path.startsWith('/assets/')) { res.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(await readFile(resolve(dist, 'assets', path.split('/').at(-1)!))); return; }
   res.setHeader('Content-Type', 'text/html'); res.end(await readFile(resolve(dist, 'index.html')));
@@ -88,6 +96,13 @@ try {
     await page.getByRole('button', { name: 'Reset password', exact: true }).click(); await page.getByLabel('New password (12–128 characters)').fill('new-browser-password'); await check('reset');
     await page.getByRole('dialog').getByRole('button', { name: 'Reset password', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.getByRole('button', { name: 'Revoke access', exact: true }).click(); await page.getByRole('dialog').getByRole('button', { name: 'Revoke access', exact: true }).click(); await expect(page.getByText('No portal logins yet')).toBeVisible();
+    // Outstanding invitations: listed with their address and expiry, and revoked after a confirmation.
+    pending = true; await page.goto(origin + '/access-fixture'); await expect(page.getByText('Invitations not yet accepted')).toBeVisible(); await expect(page.getByText(invitation.email)).toBeVisible(); await check('pending');
+    await page.getByRole('button', { name: 'Revoke invitation', exact: true }).click(); await check('withdraw');
+    await page.getByRole('dialog').getByRole('button', { name: 'Revoke invitation', exact: true }).click(); await expect(page.getByText('Invitations not yet accepted')).toHaveCount(0);
+    // The dashboard shortlist of households awaiting confirmation; an empty one is hidden.
+    await page.goto(origin + '/dashboard-fixture'); await expect(page.getByRole('heading', { name: 'Households awaiting portal confirmation' })).toBeVisible(); await expect(page.getByRole('link', { name: 'Second household' })).toBeVisible();
+    await expect(page.getByRole('heading')).toHaveCount(2); await expect(page.getByText('Showing 2 of 22.')).toBeVisible(); await check('dashboard');
     // A password-mode join awaiting confirmation: staff confirm with a printed payer invitation for its address.
     awaiting = true; await page.goto(origin + '/access-fixture'); await expect(page.getByText('Awaiting portal confirmation')).toBeVisible(); await check('awaiting');
     await page.getByRole('button', { name: 'Confirm and print invitation' }).click();
@@ -96,5 +111,5 @@ try {
     await page.getByRole('dialog').getByRole('button', { name: 'Invite', exact: true }).click(); await expect(page.getByText('Private invitation link')).toBeVisible();
     awaiting = false;
   }
-  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke and join confirmation at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
+  expect(errors).toEqual([]); console.log('Passed: household picker and header switcher, portal shell, claim, access, invite/print/reset/revoke, outstanding invitations, the dashboard shortlist and join confirmation at 360 and 1280 px; no overflow; 44 px controls; axe A/AA; Chromium PWA installability; no offline caches.');
 } finally { await browser.close(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await rm(profile, { recursive: true, force: true }); }

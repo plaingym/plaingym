@@ -27,5 +27,13 @@
   "awaitingTitle": "Awaiting portal confirmation",
   "awaitingHelp": "This household joined online with this email address, and password logins can't prove who owns it. Check the person, then print a payer invitation for them; they set their password from it.",
   "noAddress": "The household has no email address.",
-  "confirm": "Confirm and print invitation"
+  "confirm": "Confirm and print invitation",
+  "pendingFailed": "We couldn't load the outstanding invitations.",
+  "retry": "Try again",
+  "pendingTitle": "Invitations not yet accepted",
+  "pendingHelp": "Nobody has this access until they accept. Revoke an invitation to make its link stop working.",
+  "expires": "Expires",
+  "withdraw": "Revoke invitation",
+  "confirmWithdraw": "Revoke this invitation? Its link will stop working.",
+  "waitingTitle": "Households awaiting portal confirmation"
 }

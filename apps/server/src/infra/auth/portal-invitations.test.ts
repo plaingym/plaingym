@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, eq } from 'drizzle-orm';
-import { authVerification, authAccount, authSession, authUser, householdUsers, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, authVerification, authAccount, authSession, authUser, householdUsers, signedLinks, uuidv7 } from '@plaingym/db';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -289,5 +289,110 @@ describe('portal invitations', () => {
     await service.claimOnboarding(f.gymId, (await onboardingLink(f)).id, { email: existing.email }, clock);
     const second = new URL(delivered.at(-1)!.url); second.searchParams.set('callbackURL', tampered.searchParams.get('callbackURL')!);
     expect((await server.request(second.toString())).headers.get('location')).toBe(f.origin + '/admin');
+  });
+});
+
+describe('outstanding invitations', () => {
+  type Listed = { id: string; scope: string; memberId: string | null; memberName: string | null; email: string; expiresAt: string };
+  const get = (server: ReturnType<typeof app>, path: string) => server.request(path);
+  const remove = (server: ReturnType<typeof app>, path: string) => server.request(path, { method: 'DELETE' });
+  const listPath = (householdId: string) => `/api/households/${householdId}/portal-invitations`;
+  const listed = async (f: Fixture, householdId = f.home.id, server = app(f)) => {
+    const response = await get(server, listPath(householdId));
+    expect(response.status).toBe(200);
+    return (await response.json() as { data: Listed[] }).data;
+  };
+  const stored = (gymId: string) => db.system.db.select().from(authVerification).then(rows => rows.filter(row => row.identifier.startsWith('portal-invitation:' + gymId + ':')));
+  const revocations = (gymId: string) => db.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'household_user.invitation_revoked')));
+
+  it.each(staffRoles)('checks list and revoke permissions for %s', async role => {
+    const f = await fixture(role), allowed = role !== 'coach', boss = await factory('staffRoles', f.gymId, { role: 'owner' });
+    const asOwner = app(f, invitations, { kind: 'staff', gymId: f.gymId, userId: boss.userId, roles: ['owner'] }), server = app(f);
+    expect((await send(asOwner, listPath(f.home.id), input())).status).toBe(200);
+    const [row] = await listed(f, f.home.id, asOwner);
+    expect((await get(server, listPath(f.home.id))).status).toBe(allowed ? 200 : 403);
+    expect((await remove(server, `${listPath(f.home.id)}/${row!.id}`)).status).toBe(allowed ? 200 : 403);
+    expect(await listed(f, f.home.id, asOwner)).toHaveLength(allowed ? 0 : 1);
+  });
+
+  it("lists the household's unexpired invitations for staff, with address, scope, member and expiry, and never a token", async () => {
+    const f = await fixture(), adult = await factory('members', f.gymId, { householdId: f.home.id, dateOfBirth: '1990-01-01' });
+    expect(await listed(f)).toEqual([]);
+    const payer = await invite(f, invitations, input('payer@example.test'));
+    expect((await send(app(f), listPath(f.home.id), { email: 'adult@example.test', scope: 'member', memberId: adult.id, delivery: 'print' })).status).toBe(200);
+    const response = await get(app(f), listPath(f.home.id)), text = await response.text();
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(text).not.toContain(payer.token); expect(text).not.toContain('portal-invitation:');
+    const rows = JSON.parse(text).data as Listed[];
+    expect(rows.map(row => [row.scope, row.email, row.memberId, row.memberName]).sort()).toEqual([
+      ['member', 'adult@example.test', adult.id, `${adult.firstName} ${adult.lastName}`], ['payer', 'payer@example.test', null, null]].sort());
+    expect(rows.every(row => row.expiresAt === '2026-11-04T12:00:00.000Z')).toBe(true);
+    // Printing again replaces the outstanding invitation instead of adding another.
+    await invite(f, invitations, input('payer@example.test'));
+    expect((await listed(f)).filter(row => row.email === 'payer@example.test')).toHaveLength(1);
+  });
+
+  it("hides expired and accepted invitations, other households' and gyms' invitations, and other verification rows", async () => {
+    const f = await fixture(), other = await fixture(), first = await invite(f);
+    await invite(f);
+    expect((await send(app(f), listPath(f.other.id), input('neighbour@example.test'))).status).toBe(200);
+    await invite(other);
+    await db.system.db.insert(authVerification).values({ identifier: 'magic-link-token', value: JSON.stringify({ email: 'x@example.test', householdId: f.home.id }), expiresAt: new Date('2026-11-01T00:00:00Z') });
+    expect(await listed(f)).toHaveLength(2);
+    expect((await listed(f, f.other.id)).map(row => row.email)).toEqual(['neighbour@example.test']);
+    // The other gym's actor reads its own gym only; this gym's household is unknown there.
+    expect((await get(app(f, invitations, undefined, f.otherGymId), listPath(f.home.id))).status).toBe(404);
+    expect((await get(app(f), listPath(f.foreign.id))).status).toBe(404);
+    await invitations.accept(f.gymId, { token: first.token, password }, clock);
+    expect(await listed(f)).toHaveLength(1);
+    const later = new TestClock('2026-11-05T00:00:00Z');
+    expect(await invitations.outstanding({ gymId: f.gymId, userId: f.actor.userId, clock: later }, f.home.id)).toEqual({ data: [] });
+  });
+
+  it('revokes an invitation with an audit row, and accepting it then fails in password mode', async () => {
+    const f = await fixture(), issued = await invite(f), [row] = await listed(f);
+    const response = await remove(app(f), `${listPath(f.home.id)}/${row!.id}`);
+    expect(response.status).toBe(200); expect(await response.json()).toEqual({ data: null });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await listed(f)).toEqual([]); expect(await stored(f.gymId)).toEqual([]);
+    const audit = await revocations(f.gymId);
+    expect(audit).toEqual([expect.objectContaining({ actorKind: 'user', actorUserId: f.actor.userId, targetType: 'household', targetId: f.home.id,
+      before: { userId: issued.userId, scope: 'payer', memberId: null }, after: null })]);
+    expect(JSON.stringify(audit)).not.toContain(issued.token);
+    const anonymous = { kind: 'anonymous' as const };
+    expect((await send(app(f, invitations, anonymous), '/api/portal/invitations/accept', { token: issued.token, password })).status).toBe(404);
+    expect(await links(f.gymId, issued.userId)).toEqual([]);
+    expect((await remove(app(f), `${listPath(f.home.id)}/${row!.id}`)).status).toBe(404);
+  });
+
+  it('passwordless: a revoked invitation can be neither claimed nor completed with a claim code already sent', async () => {
+    const f = await fixture(), issued = await invite(f, emailOnly);
+    expect(await emailOnly.accept(f.gymId, { token: issued.token }, clock)).toEqual({ data: { status: 'email_sent' } });
+    const claim = lastClaim(), [row] = await listed(f);
+    expect((await remove(app(f, emailOnly), `${listPath(f.home.id)}/${row!.id}`)).status).toBe(200);
+    await expect(emailOnly.completeClaim(f.gymId, issued.userId, { claim }, clock)).rejects.toMatchObject({ code: 'not_found' });
+    await expect(emailOnly.accept(f.gymId, { token: issued.token }, clock)).rejects.toMatchObject({ code: 'not_found' });
+    expect(await links(f.gymId, issued.userId)).toEqual([]);
+  });
+
+  it('refuses to revoke across households and gyms, expired invitations, and rows that are not invitations', async () => {
+    const f = await fixture(), other = await fixture();
+    await invite(f); await invite(other);
+    const [row] = await listed(f), [theirs] = await listed(other, other.home.id, app(other));
+    // Household B's route can't revoke household A's invitation, and the other gym's route can't either.
+    expect((await remove(app(f), `${listPath(f.other.id)}/${row!.id}`)).status).toBe(404);
+    expect((await remove(app(f, invitations, undefined, f.otherGymId), `${listPath(f.home.id)}/${row!.id}`)).status).toBe(404);
+    expect((await remove(app(f), `${listPath(f.home.id)}/${theirs!.id}`)).status).toBe(404);
+    expect((await remove(app(f), `${listPath(f.foreign.id)}/${theirs!.id}`)).status).toBe(404);
+    expect((await remove(app(other), `${listPath(f.home.id)}/${row!.id}`)).status).toBe(404);
+    expect((await remove(app(f), `${listPath(f.home.id)}/${uuidv7()}`)).status).toBe(404);
+    const [magic] = await db.system.db.insert(authVerification).values({ identifier: 'magic-link-token', value: JSON.stringify({ email: 'x@example.test' }), expiresAt: new Date('2026-11-01T00:00:00Z') }).returning();
+    expect((await remove(app(f), `${listPath(f.home.id)}/${magic!.id}`)).status).toBe(404);
+    expect(await db.system.db.select().from(authVerification).where(eq(authVerification.id, magic!.id))).toHaveLength(1);
+    const later = new TestClock('2026-11-05T00:00:00Z');
+    await expect(invitations.revokeInvitation({ gymId: f.gymId, userId: f.actor.userId, clock: later }, f.home.id, row!.id)).rejects.toMatchObject({ code: 'not_found' });
+    // Everything above left both invitations in place and wrote no audit row.
+    expect(await listed(f)).toHaveLength(1); expect(await listed(other, other.home.id, app(other))).toHaveLength(1);
+    expect(await revocations(f.gymId)).toEqual([]); expect(await revocations(other.gymId)).toEqual([]);
   });
 });

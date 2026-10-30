@@ -80,6 +80,7 @@ let configured: InvitationOptions | undefined;
 export function configurePortalAccess(options: InvitationOptions) { configured = options; }
 export function createPortalInvitationRoutes(options?: InvitationOptions, sessions = createPortalSessionStore()) {
   const current = () => options ?? configured ?? (() => { throw new AppError('unavailable', 'Portal invitations are not configured'); })();
+  const outstanding = portalAccessContracts.invitations, withdraw = portalAccessContracts.revokeInvitation;
   const invite = portalAccessContracts.invite, claim = portalAccessContracts.claim, reset = portalAccessContracts.resetPassword, complete = portalAccessContracts.completeClaim;
   return [
     route({ ...reset, middleware: rateLimit({ limit: 10 }), request: { params: reset.params, body: { required: true, content: { 'application/json': { schema: reset.body } } } }, responses: { 200: { description: 'Portal password reset', content: { 'application/json': { schema: reset.response } } } } }, async ctx => {
@@ -91,6 +92,16 @@ export function createPortalInvitationRoutes(options?: InvitationOptions, sessio
       const identity = actor(ctx.get('context')), { clock } = ctx.get('context'), options = current();
       ctx.header('Cache-Control', 'no-store');
       return ctx.json(await options.service.invite({ gymId: identity.gymId, timezone: identity.timezone, userId: identity.actor.userId, clock }, ctx.req.valid('param').householdId, ctx.req.valid('json'), options.origin(ctx)), 200);
+    }),
+    route({ ...outstanding, request: { params: outstanding.params }, responses: { 200: { description: 'Invitations not yet accepted', content: { 'application/json': { schema: outstanding.response } } } } }, async ctx => {
+      const identity = actor(ctx.get('context')), { clock } = ctx.get('context');
+      ctx.header('Cache-Control', 'no-store');
+      return ctx.json(await current().service.outstanding({ gymId: identity.gymId, userId: identity.actor.userId, clock }, ctx.req.valid('param').householdId), 200);
+    }),
+    route({ ...withdraw, middleware: rateLimit({ limit: 20 }), request: { params: withdraw.params }, responses: { 200: { description: 'Invitation revoked', content: { 'application/json': { schema: withdraw.response } } } } }, async ctx => {
+      const identity = actor(ctx.get('context')), { clock } = ctx.get('context'), params = ctx.req.valid('param');
+      ctx.header('Cache-Control', 'no-store');
+      return ctx.json(await current().service.revokeInvitation({ gymId: identity.gymId, userId: identity.actor.userId, clock }, params.householdId, params.invitationId), 200);
     }),
     route({ ...claim, middleware: rateLimit({ limit: 10 }), request: { body: { required: true, content: { 'application/json': { schema: claim.body } } } }, responses: { 200: { description: 'Portal invitation accepted', content: { 'application/json': { schema: claim.response } } } } }, async ctx => {
       const { gym, clock } = ctx.get('context');

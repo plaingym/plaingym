@@ -22,7 +22,10 @@ import { HouseholdDetails } from './households.js';
 
 export function MemberTabs({ memberId, roles, enabledModules, registries = createRegistries() }: { memberId: string; roles: readonly StaffRole[]; enabledModules: ReadonlySet<string>; registries?: ReturnType<typeof createRegistries> }) {
   const entries = registries.memberTabs.forModules(enabledModules).filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability));
-  const [activeId, setActive] = useState<string>();
+  // A link may name the tab to open (`#memberTabs.portal-access`), such as the dashboard's confirmation shortlist.
+  const [activeId, setActive] = useState<string | undefined>(() => {
+    try { return decodeURIComponent(window.location.hash.slice(1)) || undefined; } catch { return undefined; }
+  });
   const active = entries.some((entry) => entry.id === activeId) ? activeId : entries[0]?.id;
   if (!entries.length) return null;
   return <div className="space-y-4"><div role="tablist" aria-label={text('profileTabs')} className="flex flex-wrap gap-2 border-b border-border pb-3">{entries.map((entry) => <Button type="button" key={entry.id} role="tab" id={'tab-' + entry.id} aria-controls={'panel-' + entry.id} aria-selected={active === entry.id} variant={active === entry.id ? 'default' : 'outline'} onClick={() => setActive(entry.id)}>{t(entry.labelKey)}</Button>)}</div>

@@ -28,6 +28,8 @@ export const billingDashboardWidgetSchema = z.discriminatedUnion('id', [
 export const extensionDashboardWidgetSchema = z.strictObject({
   ...common, id: z.string().regex(/^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/),
   kind: z.literal('count'), count,
+  // An optional shortlist under the count. A widget that lists items and has none left is not shown.
+  items: z.array(z.strictObject({ label: z.string().min(1).max(200), href: z.string().regex(/^\/admin\/[A-Za-z0-9\-._~%/]*(?:#[A-Za-z0-9\-._~%]+)?$/) })).max(20).optional(),
 });
 export const dashboardWidgetSchema = z.union([
   matDashboardWidgetSchema, billingDashboardWidgetSchema, extensionDashboardWidgetSchema,

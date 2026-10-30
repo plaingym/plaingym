@@ -265,6 +265,12 @@ export const portalInvitationResponseSchema = z.strictObject({ data: z.discrimin
   z.strictObject({ delivery: z.literal('email'), invitation: portalPendingInvitationSchema }),
   z.strictObject({ delivery: z.literal('print'), invitation: portalPendingInvitationSchema, invitationUrl: z.url({ protocol: /^https?$/ }) }),
 ]) });
+/** An invitation staff issued that nobody has accepted yet; the login exists only after acceptance. */
+export const portalOutstandingInvitationSchema = z.strictObject({
+  id: idSchema, scope: z.enum(['payer', 'member']), memberId: idSchema.nullable(), memberName: z.string().nullable(),
+  email: z.string().max(254), expiresAt: instantSchema,
+});
+export const portalInvitationParamsSchema = z.strictObject({ householdId: idSchema, invitationId: idSchema });
 export const portalClaimRequestSchema = z.strictObject({ token: z.string().regex(/^[a-f0-9]{64}$/), password: z.string().min(12).max(128).optional() });
 export const portalOnboardingClaimRequestSchema = z.strictObject({ email: z.email().max(254), password: z.string().min(12).max(128).optional() });
 /** In passwordless mode a claim or invitation emails a login link; its callback carries this signed, opaque code. */
@@ -285,6 +291,8 @@ export const portalAccessContracts = {
     .extend({ awaitingConfirmation: z.strictObject({ email: z.string().max(254).nullable() }).optional() }) },
   resetPassword: { method: 'post', path: '/api/households/{householdId}/users/{householdUserId}/password', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdUserParamsSchema, body: z.strictObject({ newPassword: z.string().min(12).max(128) }), response: z.strictObject({ data: z.null() }) },
   invite: { method: 'post', path: '/api/households/{householdId}/portal-invitations', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, body: portalInvitationRequestSchema, response: portalInvitationResponseSchema },
+  invitations: { method: 'get', path: '/api/households/{householdId}/portal-invitations', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: householdParamsSchema, response: z.strictObject({ data: z.array(portalOutstandingInvitationSchema).max(100) }) },
+  revokeInvitation: { method: 'delete', path: '/api/households/{householdId}/portal-invitations/{invitationId}', permission: { kind: 'staff', capability: 'portal_access.manage' }, params: portalInvitationParamsSchema, response: z.strictObject({ data: z.null() }) },
   claim: { method: 'post', path: '/api/portal/invitations/accept', permission: { kind: 'public' }, body: portalClaimRequestSchema, response: portalClaimResponseSchema },
   claimOnboarding: { method: 'post', path: '/api/links/onboarding/portal', permission: { kind: 'signed_link', purpose: 'onboarding' }, body: portalOnboardingClaimRequestSchema, response: portalClaimResponseSchema },
   // Public routes that require a gym-bound session; anonymous callers get 401.
@@ -294,3 +302,4 @@ export const portalAccessContracts = {
 } as const satisfies Record<string, EndpointContract>;
 export type PortalInvitationRequest = z.infer<typeof portalInvitationRequestSchema>;
 export type PortalHouseholdChoice = z.infer<typeof portalHouseholdChoiceSchema>;
+export type PortalOutstandingInvitation = z.infer<typeof portalOutstandingInvitationSchema>;

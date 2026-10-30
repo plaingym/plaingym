@@ -35,6 +35,16 @@ describe('dashboard contracts', () => {
     expect(extensionDashboardWidgetSchema.safeParse({ ...extension, id: 'mrr' }).success).toBe(false);
     expect(matDashboardResponseSchema.parse({ data: { generatedAt, widgets: [extension] } }).data.widgets[0]?.id).toBe(extension.id);
   });
+  it('lets an extension widget list at most twenty admin links, and nothing else', () => {
+    const extension = { id: 'example.custom-count', kind: 'count', titleKey: 'example.count', status: 'ready', count: 30 };
+    const link = { label: 'Adams household', href: '/admin/members/019ab4f0-0000-7000-8000-000000000002#memberTabs.portal-access' };
+    expect(extensionDashboardWidgetSchema.parse({ ...extension, items: [link] })).toEqual({ ...extension, items: [link] });
+    expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: Array.from({ length: 21 }, () => link) }).success).toBe(false);
+    for (const href of ['https://example.test/admin/x', '//example.test/admin/x', '/portal/x', '/admin/x y', 'javascript:alert(1)', '/admin/x#a b'])
+      expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: [{ label: 'Link', href }] }).success, href).toBe(false);
+    expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: [{ label: '', href: '/admin/x' }] }).success).toBe(false);
+    expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: [{ label: 'Link', href: '/admin/x', extra: 1 }] }).success).toBe(false);
+  });
   it('denies billing widgets to coaches while allowing them to read mat widgets', () => {
     for (const role of staffRoles) {
       expect(canStaff([role], dashboardContracts.mat.permission.capability)).toBe(true);

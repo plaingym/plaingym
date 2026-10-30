@@ -22,11 +22,19 @@ export function DashboardWidgets({ widgets, roles, views = [] }: {
   return <div className="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">{widgets.map((widget) => {
     const view = views.find((entry) => entry.id === widget.id);
     if (!canStaff(roles, view?.permission ?? knownPermissions[widget.id] ?? 'members.read')) return null;
+    // A widget that lists items (a to-do shortlist) is shown only while something is waiting.
+    if (widget.status === 'ready' && 'items' in widget && widget.count === 0) return null;
     return <Card key={widget.id} aria-labelledby={'dashboard-' + widget.id} className="min-w-0 p-4 sm:p-6">
       <h2 id={'dashboard-' + widget.id} className="text-lg font-semibold">{t(widget.titleKey)}</h2>
       {widget.status !== 'ready' ? <p className="mt-3 text-muted-foreground">{label('status.' + widget.status)}</p>
         : view ? view.render(widget) : <>
           {'count' in widget && <p className="mt-3 text-4xl font-semibold tabular-nums">{widget.count.toLocaleString()}</p>}
+          {'items' in widget && widget.items && widget.items.length > 0 && <>
+            <ul className="mt-3 divide-y divide-border">{widget.items.map((item) => <li key={item.href}>
+              <a className="flex min-h-11 items-center break-words font-medium underline underline-offset-4" href={item.href}>{item.label}</a>
+            </li>)}</ul>
+            {widget.count > widget.items.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showingItems', { shown: widget.items.length, total: widget.count })}</p>}
+          </>}
           {'members' in widget && <>
             <p className="mt-3 text-sm text-muted-foreground">{label('description.' + widget.id)}</p>
             {widget.members.length === 0 ? <p className="mt-4 rounded-lg border border-dashed border-border p-4 text-sm">{label('empty.' + widget.id)}</p>

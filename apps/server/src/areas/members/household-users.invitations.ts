@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { forGym, forHousehold, householdUsers, signedLinks, staffRoles, writeAudit, type Transaction } from '@plaingym/db';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { forGym, forHousehold, householdUsers, households, members, signedLinks, staffRoles, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, createTranslator, type Clock, type StaffRole } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { portalClaimCompletionRequestSchema, portalClaimRequestSchema, portalInvitationRequestSchema, portalOnboardingClaimRequestSchema, type PortalInvitationRequest } from '@plaingym/shared/contracts';
@@ -95,6 +95,28 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
       const sent = await mailer!.sendEmail({ to: input.email.trim().toLowerCase(), subject: t('portal/access:title'), text, html: '<p>' + escaped + '</p>' });
       if (sent.status !== 'sent') throw new AppError('unavailable', 'Invitation was not delivered');
       return { data: { delivery: 'email' as const, invitation } };
+    },
+    /** The household's invitations that haven't expired or been accepted; the invitee's address is shown to staff only. */
+    async outstanding(actor: Actor, householdId: string) {
+      if (!(await scope(actor.gymId, tx => tx.select({ id: households.id }).from(households).where(eq(households.id, householdId))))[0]) notFound();
+      const rows = await store.outstanding(actor.gymId, householdId, actor.clock);
+      const ids = rows.flatMap(row => row.binding.memberId ? [row.binding.memberId] : []);
+      const people = ids.length ? await scope(actor.gymId, tx => tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName })
+        .from(members).where(and(inArray(members.id, ids), eq(members.householdId, householdId), isNull(members.anonymizedAt)))) : [];
+      const names = new Map(people.map(member => [member.id, `${member.firstName} ${member.lastName}`]));
+      return { data: rows.map(row => {
+        const person = row.binding.memberId ? names.get(row.binding.memberId) : undefined;
+        return { id: row.id, scope: row.binding.scope, memberId: row.binding.memberId, memberName: person ?? null,
+          email: row.email, expiresAt: row.expiresAt.toISOString() };
+      }) };
+    },
+    /** Withdraws an invitation before it expires. Accepting it afterwards fails, whether the invitee holds the link or a claim code. */
+    async revokeInvitation(actor: Actor, householdId: string, invitationId: string) {
+      await store.revoke({ gymId: actor.gymId, householdId, invitationId, clock: actor.clock }, async (tx, binding) => {
+        await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId, action: 'household_user.invitation_revoked', targetType: 'household', targetId: householdId,
+          before: { userId: binding.userId, scope: binding.scope, memberId: binding.memberId }, occurredAt: actor.clock.now() });
+      });
+      return { data: null };
     },
     /** Password mode: the password proves the account and the login is created at once.
      * Passwordless: email or print alike, a login link goes to the invited address and the login is created on its callback. */
