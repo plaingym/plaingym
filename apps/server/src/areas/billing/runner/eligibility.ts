@@ -6,6 +6,7 @@ import { billingRulesSchema } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
+import { abandonedAttempt } from '../transitions/store.js';
 export { assignmentInvoiceCondition, isAssignmentInvoice } from '../assignment-invoices.js';
 
 export type ChargeMode = 'automatic' | 'retry' | 'staff';
@@ -45,9 +46,9 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
     const retryDays = billingRulesSchema.shape.retryDays.parse(saved === undefined ? [3, 7] : saved);
     const deadlines = retryDays.map(day => zonedInstant(addDays(firstDate, day), '09:00', gym.timezone, { gap: 'shift' })!);
     const deadline = deadlines.filter(date => date <= clock.now()).at(-1);
-    if (!deadline || attempts.some(row => row.createdAt >= deadline && row.declineCode !== 'create_abandoned'))
+    if (!deadline || attempts.some(row => row.createdAt >= deadline && !abandonedAttempt(row)))
       return skipped('outside_retry_window');
-  } else if (mode === 'automatic' && attempts.some(row => row.declineCode !== 'create_abandoned')) return skipped('already_attempted');
+  } else if (mode === 'automatic' && attempts.some(row => !abandonedAttempt(row))) return skipped('already_attempted');
   const latest = attempts.at(-1);
   if (invoice.amountCents === 0) return { status: 'eligible', invoice, latest, payment: null };
   const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;

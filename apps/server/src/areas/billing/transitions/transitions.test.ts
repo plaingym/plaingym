@@ -196,17 +196,42 @@ describe('invoice transitions with real PostgreSQL', () => {
   });
   it.each(['failed', 'requires_action', 'canceled'] as const)('one-off %s stays open and never creates dunning or retry work', async outcome => {
     const f = await fixture('one_off');
+    // Only a cancelled action-needed attempt is a decline; a never-confirmed one leaves the invoice alone (below).
+    if (outcome === 'canceled') await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' });
     await f.transitions.cardFailed(f.context, { ...f.failure, outcome }); await f.drain();
     expect((await f.read()).invoice.status).toBe('open'); expect(f.jobs.jobs).toEqual([]); expect(f.email.messages).toEqual([]);
     expect((await f.read()).audits.filter(a => a.action === effectCreated)).toEqual([]);
   });
-  it('persists cancellation across a service restart and ignores stale success even without attemptId', async () => {
-    const f = await fixture(); await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'canceled' });
+  it.each([['pending', 'confirm_abandoned'], ['requires_action', 'intent_canceled']] as const)(
+    'persists cancellation of a %s attempt across a service restart and ignores stale success even without attemptId', async (status, code) => {
+    const f = await fixture();
+    if (status === 'requires_action') await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' });
+    await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'canceled' });
     const restored = createInvoiceTransitions(f.options);
     const { attemptId: _attemptId, ...withoutAttempt } = f.success;
     expect(_attemptId).toBe(f.attempt.id);
     expect((await restored.cardSucceeded(f.context, withoutAttempt)).outcome).toBe('ignored');
-    expect((await f.read()).payments).toEqual([]); expect((await f.read()).attempts[0]!.declineCode).toBe('intent_canceled');
+    expect((await f.read()).payments).toEqual([]); expect((await f.read()).attempts[0]!.declineCode).toBe(code);
+  });
+  it('closes a cancelled, never-confirmed attempt without moving the invoice or starting dunning', async () => {
+    const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure);
+    const second = await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber: 2, paymentIntentId: 'pi_second' });
+    await f.drain();
+    const before = await f.read(), sent = f.email.messages.length;
+    const canceled = { ...f.failure, attemptId: second.id, paymentIntentId: 'pi_second', outcome: 'canceled' as const };
+    expect(await f.transitions.cardFailed(f.context, canceled)).toMatchObject({ outcome: 'applied', invoice: { status: 'past_due' } });
+    // Replays, and any later outcome for the cancelled intent, are ignored.
+    for (const outcome of ['canceled', 'failed', 'requires_action'] as const)
+      expect((await f.transitions.cardFailed(f.context, { ...canceled, outcome })).outcome).toBe('ignored');
+    await f.drain();
+    const after = await f.read();
+    expect(after.invoice).toEqual(before.invoice);
+    expect(after.attempts.find(row => row.id === second.id)).toMatchObject({ status: 'failed', declineCode: 'confirm_abandoned',
+      resolvedAt: f.clock.now() });
+    const effects = (rows: typeof after) => rows.audits.filter(row => row.action === effectCreated).length;
+    expect(effects(after)).toBe(effects(before));
+    expect(after.audits.filter(row => row.action === 'billing.attempt.resolved' && row.targetId === second.id)).toHaveLength(1);
+    expect(f.email.messages.slice(sent)).toEqual([]);
   });
   it('records manual payments idempotently and rejects reused IDs or another manual payment', async () => {
     const f = await fixture();
@@ -256,13 +281,12 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(new Set(changes.changes.filter(c => c.kind === 'refund').map(c => c.object.id)).size).toBe(1);
     expect((await f.read()).invoice.status).toBe('paid');
   });
-  it('applies partial and full refunds once and ignores late failure/pending snapshots', async () => {
+  it('applies partial and full refunds once and ignores late pending snapshots', async () => {
     const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success);
     const refund = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, refundId: uuidv7(), processorId: 're_1',
       amountCents: 4000, currency: 'CAD', status: 'pending' as const };
     expect((await f.transitions.refund(f.context, refund)).invoice.status).toBe('paid');
     expect((await f.transitions.refund(f.context, { ...refund, status: 'succeeded' })).invoice.status).toBe('partially_refunded');
-    expect((await f.transitions.refund(f.context, { ...refund, status: 'failed' })).outcome).toBe('ignored');
     expect((await f.transitions.refund(f.context, refund)).outcome).toBe('ignored');
     expect((await f.transitions.refund(f.context, { ...refund, status: 'succeeded' })).outcome).toBe('ignored');
     expect((await f.transitions.refund(f.context, { ...refund, refundId: uuidv7(), processorId: 're_2', amountCents: 6000, status: 'succeeded' })).invoice.status).toBe('refunded');
@@ -290,6 +314,84 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await f.transitions.refund(f.context, { ...request, status: 'failed' })).invoice.status).toBe('paid');
     expect((await f.transitions.refund(f.context, { ...request, status: 'succeeded' })).outcome).toBe('ignored');
     expect((await f.transitions.refund(f.context, { ...request, refundId: uuidv7(), processorId: 're_b', amountCents: 10000, status: 'succeeded' })).invoice.status).toBe('refunded');
+  });
+  it.each([[false, 'confirm_abandoned', 'processing'], [true, 'intent_canceled', 'past_due']] as const)(
+    'treats a cancelled intent as declined only when a confirmation reached the card (charge: %s)', async (charged, code, status) => {
+      const f = await fixture();
+      const canceled = normalizeChargeOutcome({ id: f.success.paymentIntentId, status: 'canceled', amount: 10000, currency: 'cad',
+        customerId: 'cus_test', ...(charged ? { latestChargeId: 'ch_declined' } : {}),
+        metadata: { gymId: f.gymId, invoiceId: f.invoice.id, attemptId: f.attempt.id } });
+      await applyChargeOutcome(f.transitions, f.context, { ...f.success, paymentId: uuidv7() }, canceled);
+      await applyChargeOutcome(f.transitions, f.context, { ...f.success, paymentId: uuidv7() }, canceled);
+      const rows = await f.read();
+      expect(rows.invoice.status).toBe(status);
+      expect(rows.attempts[0]).toMatchObject({ status: 'failed', declineCode: code });
+      expect(rows.audits.filter(row => row.action === 'billing.invoice.dunning_started')).toHaveLength(charged ? 1 : 0);
+    });
+  it('still sends the dunning email for a decline when a newer attempt is abandoned before it is delivered', async () => {
+    const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure);
+    const second = await factory('paymentAttempts', f.gymId, { invoiceId: f.invoice.id, attemptNumber: 2, paymentIntentId: 'pi_second' });
+    await f.transitions.cardFailed(f.context, { ...f.failure, attemptId: second.id, paymentIntentId: 'pi_second', outcome: 'canceled' });
+    await f.drain();
+    expect(f.email.messages).toMatchObject([{ to: 'payer@example.invalid', subject: 'Payment needed for invoice 1' }]);
+  });
+  it.each([
+    ['one refund', [10000], ['refunded', 'paid']],
+    ['two refunds', [4000, 6000], ['refunded', 'partially_refunded', 'paid']],
+  ] as const)('reverses a refund that fails after success, with %s', async (_label, amounts, statuses) => {
+    const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
+    const refunded = amounts.map((amountCents, index) => ({ invoiceId: f.invoice.id, paymentId: f.success.paymentId,
+      refundId: uuidv7(), processorId: `re_${index}`, amountCents, currency: 'CAD', status: 'succeeded' as const }));
+    for (const refund of refunded) await f.transitions.refund(f.context, refund);
+    expect((await f.read()).invoice.status).toBe(statuses[0]);
+    const sent = f.email.messages.length;
+    for (const [index, refund] of [...refunded].reverse().entries()) {
+      const failed = { ...refund, status: 'failed' as const };
+      expect(await f.transitions.refund(f.context, failed)).toMatchObject({ outcome: 'applied', invoice: { status: statuses[index + 1] } });
+      // Failed is final: a replay, a stale success or a pending snapshot never moves it again.
+      for (const status of ['failed', 'succeeded', 'pending'] as const)
+        expect((await f.transitions.refund(f.context, { ...refund, status })).outcome).toBe('ignored');
+    }
+    await f.drain();
+    const rows = await f.read();
+    expect(rows.invoice).toMatchObject({ status: 'paid', paidAt: f.clock.now() });
+    expect(rows.refunds.map(row => row.status)).toEqual(amounts.map(() => 'failed'));
+    const reversed = rows.audits.filter(row => row.action === 'billing.refund.reversed');
+    expect(reversed.map(row => row.targetId).sort()).toEqual(refunded.map(row => row.refundId).sort());
+    expect(reversed[0]).toMatchObject({ actorKind: 'system', before: { status: 'succeeded' }, after: { status: 'failed' } });
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.refund_reversed').map(row => (row.after as { status: string }).status))
+      .toEqual(statuses.slice(1));
+    const notices = f.email.messages.slice(sent);
+    expect(notices).toHaveLength(amounts.length);
+    expect(notices.every(m => m.to === 'staff@example.invalid' && m.subject === 'Refund failed for invoice 1')).toBe(true);
+    expect(notices.map(m => m.text).sort()).toEqual(amounts.map(cents =>
+      `A refund of CA$${(cents / 100).toFixed(2)} for invoice 1 was reported as successful but then failed, so the payer did not receive it. `
+      + 'Check the payment in billing and refund the payer another way.').sort());
+    // The failed amount is released and can be refunded again.
+    expect((await f.transitions.refund(f.context, { ...refunded[0]!, refundId: uuidv7(), processorId: 're_again' })).invoice.status)
+      .toBe(statuses.at(-2));
+  });
+  it('reverses only processor refunds, and keeps the invoice paid when a duplicate payment refund fails', async () => {
+    const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual);
+    const cash = { invoiceId: f.invoice.id, paymentId: f.manual.paymentId, refundId: uuidv7(), amountCents: 2000, currency: 'CAD',
+      status: 'succeeded' as const };
+    await f.transitions.refund(f.context, cash);
+    expect((await f.transitions.refund(f.context, { ...cash, status: 'failed' })).outcome).toBe('ignored');
+    expect((await f.transitions.refund(f.context, { ...cash, processorId: 're_cash', status: 'failed' })).outcome).toBe('ignored');
+    expect((await f.read()).refunds).toMatchObject([{ id: cash.refundId, status: 'succeeded' }]);
+    // An additional card payment is refunded automatically. When that refund fails, staff are told and the invoice stays paid.
+    const duplicate = await fixture(); await duplicate.transitions.manualPayment(duplicate.context, duplicate.manual); await succeed(duplicate);
+    expect((await duplicate.transitions.cardSucceeded(duplicate.context, duplicate.success)).outcome).toBe('duplicate_payment');
+    await duplicate.drain(); await duplicate.drain();
+    const [reservation] = (await duplicate.read()).refunds;
+    expect(reservation).toMatchObject({ status: 'succeeded', reason: 'duplicate_payment' });
+    const sent = duplicate.email.messages.length;
+    const before = (await duplicate.read()).invoice;
+    await duplicate.transitions.refund(duplicate.context, { invoiceId: duplicate.invoice.id, paymentId: duplicate.success.paymentId,
+      refundId: reservation!.id, processorId: reservation!.processorId!, amountCents: reservation!.amountCents, currency: 'CAD', status: 'failed' });
+    await duplicate.drain();
+    expect((await duplicate.read()).invoice).toEqual(before);
+    expect(duplicate.email.messages.slice(sent)).toMatchObject([{ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1' }]);
   });
   it('ignores unknown/pending provider outcomes and rejects cross-gym outcome metadata', async () => {
     const f = await fixture();

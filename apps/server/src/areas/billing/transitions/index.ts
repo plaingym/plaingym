@@ -8,7 +8,8 @@ import { conflict, instant, notFound, requireMoney, type MutationContext } from 
 import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
 import { logError } from '../../../core/log.js';
 import { readBillingRules } from '../../settings/settings.js';
-import { accepted, audit, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal, type InvoiceRow } from './store.js';
+import { accepted, audit, canceledAttempt, confirmAbandoned, effect, lockInvoice, paymentRecorded, recorded, result, snapshot, terminal,
+  type InvoiceRow } from './store.js';
 
 export interface TransitionOptions {
   scope?: typeof forGym;
@@ -35,7 +36,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       const card = 'paymentIntentId' in request;
       if (card && (!request.paymentIntentId || !request.chargeId)) conflict('Processor payment IDs are required');
       const linkedAttempt = card ? await attempt(tx, invoice, request.paymentIntentId, request.attemptId) : undefined;
-      if (linkedAttempt?.declineCode === 'intent_canceled') return result('ignored', invoice);
+      if (linkedAttempt && canceledAttempt(linkedAttempt)) return result('ignored', invoice);
       const method = card ? 'card' : request.method;
       const previous = await tx.select().from(payments).where(or(eq(payments.id, request.paymentId),
         ...(card ? [eq(payments.paymentIntentId, request.paymentIntentId), eq(payments.chargeId, request.chargeId)] : [])));
@@ -108,8 +109,15 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
         const row = await attempt(tx, invoice, request.paymentIntentId, request.attemptId) ?? notFound();
-        if (row.status === 'succeeded' || row.declineCode === 'intent_canceled'
+        if (row.status === 'succeeded' || canceledAttempt(row)
           || (row.status === 'requires_action' && request.outcome === 'failed')) return result('ignored', invoice);
+        // An intent cancelled before it was confirmed never reached the member's card: close the attempt without
+        // touching the invoice, dunning or retries, so the next collection charges it. A cancelled action-needed
+        // attempt stays a decline below.
+        if (request.outcome === 'canceled' && row.status === 'pending') {
+          await resolveAttempt(tx, context, row, 'failed', confirmAbandoned);
+          return result('applied', invoice);
+        }
         const status = request.outcome === 'canceled' ? 'failed' : request.outcome;
         const declineCode = request.outcome === 'canceled' ? 'intent_canceled'
           : request.outcome === 'requires_action' ? 'authentication_required' : null;
@@ -150,7 +158,10 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         if (previous && (previous.paymentId !== request.paymentId || previous.amountCents !== request.amountCents
           || previous.currency !== request.currency || (previous.processorId !== null && previous.processorId !== request.processorId)))
           conflict('Refund ID reused with different parameters');
-        if (previous && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)
+        // The one backward move: the processor reports that a refund it reported as successful has failed.
+        const reversed = previous?.status === 'succeeded' && request.status === 'failed'
+          && previous.processorId !== null && previous.processorId === request.processorId;
+        if (previous && !reversed && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)
           || previous.status !== 'pending')) return result('ignored', invoice);
         if (request.processorId !== undefined) {
           const other = (await tx.select().from(refunds).where(eq(refunds.processorId, request.processorId)))[0];
@@ -169,17 +180,25 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
             .onConflictDoNothing().returning();
           if (!inserted.length) conflict('Refund identity already recorded');
         }
-        await audit(tx, context, clock, 'billing.refund.recorded', 'refund', request.refundId,
-          { paymentId: payment.id, amountCents: request.amountCents, currency: request.currency, ...values });
-        if (request.status !== 'succeeded' || !await accepted(tx, payment.id)) return result('applied', invoice);
+        const recordedRefund = { paymentId: payment.id, amountCents: request.amountCents, currency: request.currency, ...values };
+        if (!reversed) await audit(tx, context, clock, 'billing.refund.recorded', 'refund', request.refundId, recordedRefund);
+        else {
+          await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
+            { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
+          await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_failed', invoiceId: invoice.id,
+            paymentId: payment.id, refundId: request.refundId });
+        }
+        if (!(request.status === 'succeeded' || reversed && ['partially_refunded', 'refunded'].includes(invoice.status))
+          || !await accepted(tx, payment.id)) return result('applied', invoice);
         const successful = await tx.select({ refund: refunds, payment: payments }).from(refunds)
           .innerJoin(payments, eq(payments.id, refunds.paymentId)).where(and(eq(payments.invoiceId, invoice.id), eq(refunds.status, 'succeeded')));
         let total = 0;
         for (const row of successful) if (await accepted(tx, row.payment.id)) total += row.refund.amountCents;
-        const next = { ...invoice, status: total >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
+        const next = { ...invoice, status: total === 0 ? 'paid' : total >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
         if (next.status !== invoice.status) {
           await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
-          await audit(tx, context, clock, 'billing.invoice.refunded', 'invoice', invoice.id, snapshot(next), snapshot(invoice));
+          await audit(tx, context, clock, reversed ? 'billing.invoice.refund_reversed' : 'billing.invoice.refunded', 'invoice',
+            invoice.id, snapshot(next), snapshot(invoice));
         }
         return result('applied', next);
       });

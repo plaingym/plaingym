@@ -21,7 +21,15 @@ touching Checkout. Thus free plans and full family discounts can activate pendin
 memberships through the ordinary effect job.
 
 Failures update attempt diagnostics, but cannot reopen paid, refunded or void
-invoices, or change the invoice for an older attempt. Authentication-needed
+invoices, or change the invoice for an older attempt. A cancellation is a decline
+only when the member could have acted on the payment. Cancelling a still-`pending`
+attempt (its intent was never confirmed) closes it `failed` with `confirm_abandoned`
+and changes nothing else: no invoice status, dunning or retry effects. Cancelling an
+action-needed attempt records `intent_canceled` and is handled as a failure. Neither
+cancelled intent can later record a success or another outcome. `applyChargeOutcome`
+records a cancelled intent that carries a processor Charge (`latestChargeId`) as a
+decline first: its confirmation reached the card and was declined before the
+cancellation, even if that response was lost and the attempt is still pending. Authentication-needed
 attempts ignore generic failure snapshots. `applyChargeOutcome` accepts the
 normalized `Payments` outcome, maps every `action_required` to `requires_action`,
 and ignores pending/unknown outcomes. Consumers must obtain current provider
@@ -72,7 +80,8 @@ edits never reset that schedule or move queued jobs. Legacy invoices keep their
 original effects and jobs; the runner uses `[3, 7]` when their audit has no saved days.
 Each failure of the latest attempt sends one dunning email, up to five from the
 first failure and four automatic retries when member emails are enabled.
-Dunning for an older attempt is suppressed. Retry jobs recheck
+Dunning for an older attempt is suppressed; an abandoned newer attempt
+(`create_abandoned` or `confirm_abandoned`) doesn't count as newer. Retry jobs recheck
 unpaid state and billing enablement; the injected runner must also check these
 when reserving the attempt and expire/reconcile open Checkout sessions before
 charging. A completed Checkout reconciled to paid is a skip, not a failed retry.
@@ -100,10 +109,20 @@ failed or mismatched provider outcomes remain errors for staff resolution. A
 pending processor refund is stored for subsequent webhook/reconciliation updates.
 Refunds of excess payments never reduce the original invoice's paid balance.
 Pending refunds reserve their amounts, failed reservations release them, and
-successful refunds advance accepted payments to partial/full refund only.
+successful refunds advance accepted payments to partial/full refund.
+Refund states move forward only, with one exception: when the processor reports
+that a refund it reported as successful has failed (the stored refund has the same
+processor ID), the refund moves from `succeeded` to `failed`, releasing its amount.
+The invoice status is recomputed from its remaining successful refunds (back to
+`paid` or `partially_refunded`) and audited as `billing.invoice.refund_reversed`;
+the refund change is audited as `billing.refund.reversed`, and a staff notice tells
+the gym's staff recipients (owners and admins at runtime) that the payer was not
+refunded. A refund without a processor ID (a cash or check refund) never reverses,
+and a failed refund never moves again.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
-links, and staff notices. Runtime must supply a gym SMTP resolver (or demo
+links, and staff notices (a duplicate card payment, or a refund that failed after
+success). Runtime must supply a gym SMTP resolver (or demo
 outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and

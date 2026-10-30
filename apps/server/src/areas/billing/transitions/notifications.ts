@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { forGym, type payments } from '@plaingym/db';
+import { forGym, type payments, type refunds } from '@plaingym/db';
 import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -15,10 +15,12 @@ export interface TransitionNotice {
   invoice: InvoiceSnapshot;
   payment?: typeof payments.$inferSelect;
 }
+/** Staff are told about a duplicate card payment (the default) or a refund that failed after it succeeded. */
+export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' } | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect });
 export interface TransitionNotifications {
   receipt(notice: TransitionNotice): Promise<void>;
   dunning(notice: TransitionNotice & { actionRequired: boolean }): Promise<void>;
-  staffNotice(notice: TransitionNotice): Promise<void>;
+  staffNotice(notice: StaffNotice): Promise<void>;
 }
 // English messages live in locales/en/billing/transitions.json.
 const defaultTranslator = createTranslator(locales.en ?? {});
@@ -34,12 +36,13 @@ export function createTransitionNotifications(options: {
 }): TransitionNotifications {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const links = createSignedLinksService({ scope, clock });
-  async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate') {
+  async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'refundFailed', amountCents?: number) {
     assertNoTransaction('invoice notification');
     const { gymId, invoice } = notice;
-    const recipients = kind === 'duplicate' ? await options.staffRecipients(gymId) : await memberRecipients(gymId, invoice.householdId);
+    const staff = kind === 'duplicate' || kind === 'refundFailed';
+    const recipients = staff ? await options.staffRecipients(gymId) : await memberRecipients(gymId, invoice.householdId);
     if (!recipients.length) {
-      if (kind === 'duplicate') throw new Error('No staff recipient configured for duplicate-payment notices');
+      if (staff) throw new Error('No staff recipient configured for billing staff notices');
       return;
     }
     const prepared = await options.prepare(gymId);
@@ -64,16 +67,16 @@ export function createTransitionNotifications(options: {
         updateUrl = new URL(`/l/${update.token}`, origin).href;
       }
       const values = { number: invoice.number, amount: new Intl.NumberFormat('en', { style: 'currency', currency: invoice.currency })
-        .format((notice.payment?.amountCents ?? invoice.amountCents) / 100), payUrl, updateUrl };
+        .format((amountCents ?? notice.payment?.amountCents ?? invoice.amountCents) / 100), payUrl, updateUrl };
       const subject = t(`billing/transitions:${kind}Subject`, values), text = t(`billing/transitions:${kind}Body`, values);
       for (const to of new Set(recipients)) {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
-        if (kind !== 'duplicate' && !(await options.settings.get(gymId)).memberEmailsEnabled) {
+        if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
           for (const linkId of minted) await links.revoke({ gymId, actor: { kind: 'system' } }, linkId);
           return;
         }
         const sent: EmailResult = await prepared.email.sendEmail({ to, subject, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
-        if (sent.status === 'suppressed' && kind === 'duplicate') throw new Error('Staff notice was suppressed');
+        if (sent.status === 'suppressed' && staff) throw new Error('Staff notice was suppressed');
         if (sent.status === 'suppressed' && minted.length) throw new Error('Dunning email was suppressed');
       }
     } catch (error) {
@@ -91,6 +94,9 @@ export function createTransitionNotifications(options: {
   return {
     async receipt(notice) { await deliver(notice, 'receipt'); },
     async dunning(notice) { await deliver(notice, notice.actionRequired ? 'action' : 'failed'); },
-    async staffNotice(notice) { await deliver(notice, 'duplicate'); },
+    async staffNotice(notice) {
+      if (notice.reason === 'refund_failed') await deliver(notice, 'refundFailed', notice.refund.amountCents);
+      else await deliver(notice, 'duplicate');
+    },
   };
 }

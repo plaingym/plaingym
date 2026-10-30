@@ -17,7 +17,12 @@ export async function applyChargeOutcome(transitions: InvoiceTransitions, contex
       amountCents: outcome.amount, currency: outcome.currency.toUpperCase() as 'USD' | 'CAD' });
   }
   if (!identity.attemptId) conflict('Failed payment requires its attempt ID');
-  return transitions.cardFailed(context, { invoiceId: identity.invoiceId, attemptId: identity.attemptId,
-    paymentIntentId: outcome.id, outcome: outcome.status === 'action_required' ? 'requires_action'
-      : outcome.code === 'canceled' ? 'canceled' : 'failed' });
+  const failure = { invoiceId: identity.invoiceId, attemptId: identity.attemptId, paymentIntentId: outcome.id };
+  if (outcome.status === 'action_required') return transitions.cardFailed(context, { ...failure, outcome: 'requires_action' });
+  if (outcome.code !== 'canceled') return transitions.cardFailed(context, { ...failure, outcome: 'failed' });
+  // A cancelled intent with a Charge was confirmed and declined before the cancellation (a lost response, then a
+  // cancel): record the decline first, so the cancellation can't pass for one that never reached the card.
+  const declined = outcome.latestChargeId ? await transitions.cardFailed(context, { ...failure, outcome: 'failed' }) : undefined;
+  const canceled = await transitions.cardFailed(context, { ...failure, outcome: 'canceled' });
+  return declined?.outcome === 'applied' ? declined : canceled;
 }

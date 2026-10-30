@@ -218,14 +218,18 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
     expectWork(state, ['dunning', 'retry', 'retry', 'receipt', 'activate_memberships']);
   });
 
-  it('never resurrects an intent cancelled by reconciliation', async () => {
+  it.each([
+    ['never-confirmed', 'pending', 'confirm_abandoned', 'open', []],
+    ['action-needed', 'requires_action', 'intent_canceled', 'past_due', ['dunning', 'dunning', 'retry', 'retry']],
+  ] as const)('never resurrects a cancelled %s intent', async (_label, status, code, invoiceStatus, work) => {
     const f = await fixture();
+    if (status === 'requires_action') await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'requires_action' });
     await f.transitions.cardFailed(f.context, { ...f.failure, outcome: 'canceled' });
-    expect(await f.transitions.cardSucceeded(f.context, f.success)).toMatchObject({ outcome: 'ignored', invoice: { status: 'past_due' } });
+    expect(await f.transitions.cardSucceeded(f.context, f.success)).toMatchObject({ outcome: 'ignored', invoice: { status: invoiceStatus } });
     const state = await f.read();
     expect(state.payments).toEqual([]);
-    expect(state.attempts).toMatchObject([{ status: 'failed', declineCode: 'intent_canceled' }]);
-    expectWork(state, ['dunning', 'retry', 'retry']);
+    expect(state.attempts).toMatchObject([{ status: 'failed', declineCode: code }]);
+    expectWork(state, [...work]);
   });
 
   it.each(['cash', 'check'] as const)('records %s once and reserves a refund for a late Checkout payment without paying twice', async method => {
@@ -274,7 +278,7 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
     expectWork(after, ['receipt', 'activate_memberships', 'refund_duplicate', 'staff_notice'], true);
   });
 
-  it.each(['card success', 'restored payment'] as const)('reserves partial then full refunds once and ignores late failures: %s', async origin => {
+  it.each(['card success', 'restored payment'] as const)('reserves partial then full refunds once and ignores late pending snapshots: %s', async origin => {
     const f = await fixture('cycle', origin === 'restored payment');
     if (origin === 'card success') await f.transitions.cardSucceeded(f.context, f.success);
     const partial: RefundTransition = { invoiceId: f.invoice.id, paymentId: f.success.paymentId,
@@ -285,7 +289,7 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
     expect((await f.transitions.refund(f.context, { ...partial, status: 'succeeded' })).outcome).toBe('ignored');
     const rest: RefundTransition = { ...partial, refundId: uuidv7(), processorId: 're_rest', amountCents: 7000, status: 'succeeded' };
     expect((await f.transitions.refund(f.context, rest)).invoice.status).toBe('refunded');
-    await f.transitions.refund(f.context, { ...rest, status: 'failed' });
+    expect((await f.transitions.refund(f.context, { ...rest, status: 'pending' })).outcome).toBe('ignored');
     await f.transitions.cardFailed(f.context, f.failure);
     const state = await f.read();
     expect(state.invoice.status).toBe('refunded');

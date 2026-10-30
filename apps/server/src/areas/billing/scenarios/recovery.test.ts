@@ -45,7 +45,12 @@ describe('runner recovery and collection exclusion', () => {
     const state = await f.read();
     expect(state.attempts).toHaveLength(1); expect(state.payments).toHaveLength(winner === 'confirm' ? 1 : 0);
     expect(state.attempts[0]!.status).toBe(winner === 'confirm' ? 'succeeded' : 'failed');
-    expect(f.email.messages).toHaveLength(1);
+    // A receipt for the payment; a cancelled, never-confirmed intent sends no dunning email.
+    expect(f.email.messages).toHaveLength(winner === 'confirm' ? 1 : 0);
+    if (winner === 'cancel') {
+      expect(state.invoices[0]!.status).toBe('open');
+      await f.runJob('billing.runner.daily'); expect((await f.read()).payments).toHaveLength(1);
+    }
   });
 
   it.each([false, true])('crash after processor success reconciles by saved ID after 25 hours (unknown first: %s)', async unknown => {

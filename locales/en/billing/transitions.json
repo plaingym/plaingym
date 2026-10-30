@@ -7,5 +7,7 @@
   "actionSubject": "Authentication needed for invoice {number}",
   "actionBody": "Your bank requires authentication for invoice {number}. Complete payment: {payUrl}\nUpdate your saved card: {updateUrl}",
   "duplicateSubject": "Duplicate payment for invoice {number}",
-  "duplicateBody": "An additional card payment of {amount} arrived for invoice {number}, which was already paid. An automatic refund was queued. Check the refund status in billing."
+  "duplicateBody": "An additional card payment of {amount} arrived for invoice {number}, which was already paid. An automatic refund was queued. Check the refund status in billing.",
+  "refundFailedSubject": "Refund failed for invoice {number}",
+  "refundFailedBody": "A refund of {amount} for invoice {number} was reported as successful but then failed, so the payer did not receive it. Check the payment in billing and refund the payer another way."
 }

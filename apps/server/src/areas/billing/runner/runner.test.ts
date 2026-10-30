@@ -29,6 +29,7 @@ import { composeBillingWebhooks } from '../webhooks/handlers/composition.js';
 import { setLogSink } from '../../../core/log.js';
 import { createMembersService } from '../../members/members.js';
 import { createMembershipRoutes } from '../memberships.routes.js';
+import { createBillingStanding } from '../kiosk-standing.js';
 import { createApp } from '../../../app.js';
 import { authorize } from '../../staff/auth.permissions.js';
 
@@ -318,7 +319,19 @@ describe('runner review regression cases with PostgreSQL', () => {
     expect(await f.runner.charge(f.gymId, bill.id)).toEqual({ status: 'skipped', reason: 'collection_changed' });
     expect(confirm).not.toHaveBeenCalled(); expect(cancel).toHaveBeenCalledTimes(1);
     const rows = await f.read(); expect(rows.payments).toHaveLength(0);
-    expect(rows.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'intent_canceled' });
+    // The member never had a chance to pay: no decline, dunning or retries, and the kiosk still lets them in.
+    expect(rows.attempts[0]).toMatchObject({ status: 'failed', declineCode: 'confirm_abandoned' });
+    expect(rows.invoices[0]).toMatchObject({ id: bill.id, status: 'open' });
+    expect(rows.audits.filter(row => row.action === 'billing.invoice.dunning_started' || row.action === 'billing.invoice.payment_failed'
+      || row.action === 'billing.transition.effect.created')).toEqual([]);
+    expect(await createBillingStanding(db.forGym).check({ gymId: f.gymId, memberId: f.member.id, clock: f.clock })).toEqual({ status: 'ok' });
+    // The next daily run collects it once the household is chargeable again.
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(households).set({ stripeCustomerId: 'cus_test' }).where(eq(households.id, f.home.id));
+      await tx.update(paymentMethods).set({ revokedAt: null, isDefault: true }).where(eq(paymentMethods.householdId, f.home.id));
+    });
+    f.clock.set('2028-03-02T17:00:00Z'); expect((await f.runner.daily(f.gymId)).attempted).toBe(1);
+    expect((await f.read()).invoices[0]).toMatchObject({ id: bill.id, status: 'paid' });
   });
   it('does not cancel an intent already saved by another caller after losing compare-and-set', async () => {
     const f = await fixture(), bill = await invoice(f), create = f.provider.createCharge.bind(f.provider);
@@ -732,8 +745,10 @@ describe('charge crashes and reconciliation races', () => {
     f.clock.advance(16 * 60_000); await f.runner.reconcile(f.gymId); resume.release(); await run;
     const rows = await f.read();
     expect(rows.payments).toHaveLength(winner === 'confirm wins' ? 1 : 0);
-    expect(rows.invoices[0]!.status).toBe(winner === 'confirm wins' ? 'paid' : 'past_due');
-    expect(rows.attempts[0]!.status).toBe(winner === 'confirm wins' ? 'succeeded' : 'failed');
+    // A confirm that arrives after the reconcile cancelled the intent never reached the member's card.
+    expect(rows.invoices[0]!.status).toBe(winner === 'confirm wins' ? 'paid' : 'open');
+    expect(rows.attempts[0]).toMatchObject(winner === 'confirm wins' ? { status: 'succeeded' }
+      : { status: 'failed', declineCode: 'confirm_abandoned' });
   });
   it('a no-ID reconciler CAS cannot overwrite an ID saved while it waits for the attempt lock', async () => {
     const f = await fixture(); f.provider.loseNextResponse('createCharge'); await f.runner.daily(f.gymId);

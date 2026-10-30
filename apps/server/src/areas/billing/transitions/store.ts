@@ -18,7 +18,16 @@ export interface TransitionEffect {
   attemptId?: string;
   refundId?: string;
   retryDay?: number;
+  /** A staff notice's subject; absent on older notices, which all report a duplicate payment. */
+  notice?: 'refund_failed';
 }
+/** The app gave up on these attempts before the member's card was charged: neither a decline nor a collection. */
+export const createAbandoned = 'create_abandoned', confirmAbandoned = 'confirm_abandoned';
+export const abandonedAttempt = (row: { declineCode: string | null }) =>
+  row.declineCode === createAbandoned || row.declineCode === confirmAbandoned;
+/** A cancelled intent never pays, whether or not its cancellation was a decline. */
+export const canceledAttempt = (row: { declineCode: string | null }) =>
+  row.declineCode === 'intent_canceled' || row.declineCode === confirmAbandoned;
 export const terminal = (invoice: InvoiceRow) => ['paid', 'partially_refunded', 'refunded', 'void'].includes(invoice.status);
 export function snapshot(row: InvoiceRow): InvoiceSnapshot {
   if (row.status === 'draft' || row.number === null) throw new Error('Invoice must be issued before payment');

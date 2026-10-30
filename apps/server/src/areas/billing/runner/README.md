@@ -74,8 +74,19 @@ only if the attempt is still pending, unresolved and has no ID. A worker losing
 that compare-and-set never confirms it, and cancels only when the attempt does
 not already hold the same intent ID. Before confirming a saved ID, the runner
 rechecks invoice state, Checkout, review hold, the household customer, saved-card
-ownership/revocation and billing enablement. A changed collection is cancelled
-and its result reconciled.
+ownership/revocation and billing enablement. A changed collection (or billing
+paused mid-charge) is cancelled and its result reconciled.
+
+Cancelling an intent that was never confirmed (the attempt is still `pending`) is
+not a decline: the member's card was never asked. The transitions close that
+attempt `failed` with `confirm_abandoned` and leave the invoice status, dunning
+and retries untouched. This covers the runner's `collection_changed` and
+`billing_disabled` cancels and the hourly reconciliation cancelling a stale
+unconfirmed intent (a confirm that never reached Stripe). Like `create_abandoned`,
+these attempts never block the daily run (`already_attempted`) or consume a retry
+window, so the next daily run, or the next retry day, collects the invoice.
+Cancelling an action-needed attempt stays a decline (`intent_canceled`), so an
+assignment invoice awaiting authentication isn't charged again every day.
 
 `releaseActionNeeded` and `releaseCheckout` are shared with staff cash/check
 collection. Provider calls run outside transactions and all results use
@@ -95,12 +106,14 @@ still require one, and resolution failures make the job fail loudly. With a save
 reconciliation reads the provider and cancels stale pending work; Stripe's
 cancel/confirm serialization decides the outcome. Unknown results remain pending
 and block new attempts, including after the provider's idempotency window expires.
+A stale intent the sweep cancels unconfirmed is closed as `confirm_abandoned` (above).
 
 Retries read the anchor and saved `retryDays` from `billing.invoice.dunning_started`.
 The gym chooses 0 to 4 increasing days from 1 to 28, defaulting to `[3, 7]`.
 Only legacy audits without saved days fall back to `[3, 7]`; an empty schedule
 never permits an automatic retry. Later settings edits do not change an invoice's windows.
-The invoice lock and non-abandoned attempt creation times consume each retry window once. If
+The invoice lock and the creation times of attempts that weren't abandoned (`create_abandoned` or
+`confirm_abandoned`) consume each retry window once. If
 several retry jobs arrive late, only the latest due window is charged.
 Failure never resets the anchor. Other Checkout
 creators must honor pending attempts under the same invoice lock. A changed
@@ -113,7 +126,8 @@ and no new intent is created. Unknown cancellation outcomes block the new attemp
 
 A retry with a pending attempt commits a `billing.runner.retry` continuation before
 returning, using the injected shared job queue. Provider errors also queue this
-continuation when they leave a pending reservation, then propagate. Default queue
+continuation when they leave a pending reservation, or one that reconciliation has
+meanwhile abandoned, then propagate. Default queue
 retries (three attempts), and the transition effect's twelve attempts with one-second
 exponential backoff, can finish before the stale threshold plus the hourly sweep.
 The continuation runs after the stale threshold plus 61 minutes (76 minutes by

@@ -11,7 +11,8 @@ import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.
 import type { Jobs, JobContext } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
-import { audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal, type TransitionEffect } from './store.js';
+import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal,
+  type TransitionEffect } from './store.js';
 
 export const effectJob = 'billing.transitions.effect';
 /** How far back the publisher looks. A publish normally follows its commit at once, or within the hour. */
@@ -67,15 +68,19 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const invoice = await lockInvoice(tx, work.invoiceId);
       const payment = work.paymentId ? (await tx.select().from(payments).where(eq(payments.id, work.paymentId)))[0] : undefined;
       if (payment && payment.invoiceId !== invoice.id) notFound();
+      const refund = work.notice === 'refund_failed' && work.refundId
+        ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
+      if (refund && refund.paymentId !== payment?.id) notFound();
       const attempt = work.attemptId ? (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, work.attemptId)))[0] : undefined;
+      // An attempt abandoned before the card was charged never replaces the failure a member must hear about.
       const latestAttempt = (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id))
-        .orderBy(asc(paymentAttempts.attemptNumber))).at(-1);
+        .orderBy(asc(paymentAttempts.attemptNumber))).filter(row => !abandonedAttempt(row)).at(-1);
       const lines = work.kind === 'activate_memberships' ? await tx.select({ membershipId: invoiceLineItems.membershipId })
         .from(invoiceLineItems).where(and(eq(invoiceLineItems.invoiceId, invoice.id), eq(invoiceLineItems.kind, 'membership'))) : [];
-      return { event, work, invoice, payment, attempt, latestAttempt, lines };
+      return { event, work, invoice, payment, refund, attempt, latestAttempt, lines };
     });
     if (!loaded) return;
-    const { work, invoice, payment, attempt, latestAttempt, lines } = loaded;
+    const { work, invoice, payment, refund, attempt, latestAttempt, lines } = loaded;
     const data = { gymId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
     if (work.kind === 'receipt') await options.notifications.receipt(data);
     else if (work.kind === 'activate_memberships') {
@@ -93,7 +98,11 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     } else if (work.kind === 'retry') {
       if (invoice.kind === 'cycle' && !terminal(invoice) && (await options.settings.get(gymId)).billingEnabled)
         await options.retry(invoice.id, context);
-    } else if (work.kind === 'staff_notice') await options.notifications.staffNotice(data);
+    } else if (work.kind === 'staff_notice') {
+      if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
+      else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund });
+      else throw new Error('Failed refund notice has no refund');
+    }
     else if (work.kind === 'refund_duplicate') {
       if (!payment || !work.refundId || !payment.paymentIntentId) throw new Error('Duplicate payment has no processor identity');
       const reservation = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.id, work.refundId!)))[0] ?? notFound());

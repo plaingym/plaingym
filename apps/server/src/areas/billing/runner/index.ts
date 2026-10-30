@@ -14,6 +14,7 @@ import { assignmentInvoices, audit, generateCycle, system } from './store.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, skipped, type ChargeMode, type Skipped } from './eligibility.js';
+import { abandonedAttempt } from '../transitions/store.js';
 import { releaseActionNeeded, releaseCheckout } from './releases.js';
 export { releaseActionNeeded, releaseCheckout } from './releases.js';
 
@@ -187,8 +188,8 @@ export function createChargeRunner(options: RunnerOptions) {
     const latest = await scope(context.gymId, async tx => (await tx.select({ status: paymentAttempts.status,
       declineCode: paymentAttempts.declineCode }).from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId))
       .orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0]);
-    // Reconciliation may have abandoned the reservation between charge() and this read.
-    if (!latest || latest.status !== 'pending' && latest.declineCode !== 'create_abandoned') return;
+    // Reconciliation may have abandoned the reservation, or cancelled its unconfirmed intent, between charge() and this read.
+    if (!latest || latest.status !== 'pending' && !abandonedAttempt(latest)) return;
     // Queue backoff can exhaust before the stale threshold plus the hourly sweep.
     // Commit a continuation before acknowledging this callback. Replays of the same
     // source job reuse it; a continuation can defer again if reconciliation is delayed.

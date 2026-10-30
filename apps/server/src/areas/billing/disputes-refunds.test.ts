@@ -175,6 +175,36 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     else expect(await f.restore()).toMatchObject({ readyForOwnerReview: true });
     expect((await f.read()).refunds).toEqual([expect.objectContaining({ id: reservationId, processorId: refund.id, status: 'succeeded' })]);
   });
+  it.each(['webhook', 'restore'] as const)('records a refund that fails after success from the %s path', async path => {
+    const f = await fixture(), intentId = await charged(f);
+    const first = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: 'dashboard_refund' });
+    const second = await f.provider.refund({ chargeId: intentId, amount: 3000, idempotencyKey: 'second_refund' });
+    for (const refund of [first, second]) await f.webhook('refund.created', { kind: 'refund', id: refund.id });
+    expect((await f.read()).invoice.status).toBe('partially_refunded');
+    // Stripe now reports the second refund as failed.
+    const read = f.provider.readPaymentObject.bind(f.provider);
+    vi.spyOn(f.provider, 'readPaymentObject').mockImplementation(async reference => {
+      const found = await read(reference);
+      return found.status === 'found' && found.value.kind === 'refund' && found.value.object.id === second.id
+        ? { status: 'found', value: { kind: 'refund', object: { ...found.value.object, status: 'failed' } } } : found;
+    });
+    if (path === 'webhook') await f.webhook('refund.failed', { kind: 'refund', id: second.id });
+    else expect(await f.restore()).toMatchObject({ readyForOwnerReview: true });
+    const rows = await f.read();
+    expect(rows.refunds.map(row => [row.processorId, row.status]).sort()).toEqual([[first.id, 'succeeded'], [second.id, 'failed']].sort());
+    expect(rows.invoice.status).toBe('partially_refunded');
+    expect(rows.audits.filter(row => row.action === 'billing.refund.reversed')).toMatchObject([{ targetId: processorRefundId(f.gymId, second.id) }]);
+    expect(rows.audits.filter(row => row.action === 'billing.transition.effect.created').map(row => row.after))
+      .toContainEqual(expect.objectContaining({ kind: 'staff_notice', notice: 'refund_failed', refundId: processorRefundId(f.gymId, second.id) }));
+    // The first refund fails as well: nothing is refunded any more.
+    vi.mocked(f.provider.readPaymentObject).mockImplementation(async reference => {
+      const found = await read(reference);
+      return found.status === 'found' && found.value.kind === 'refund'
+        ? { status: 'found', value: { kind: 'refund', object: { ...found.value.object, status: 'failed' } } } : found;
+    });
+    await f.webhook('refund.failed', { kind: 'refund', id: first.id });
+    expect((await f.read()).invoice.status).toBe('paid');
+  });
   it('reads no processor intent during restore for a refund whose payment is recorded', async () => {
     const f = await fixture(), intentId = await charged(f), reads = vi.spyOn(f.provider, 'findCharge');
     const intentReads = async () => { reads.mockClear(); await f.restore(); return reads.mock.calls.filter(([reference]) => reference.id === intentId).length; };
