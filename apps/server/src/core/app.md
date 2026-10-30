@@ -76,7 +76,8 @@ IPv6 addresses by /64, as Better Auth's limiter does; every limiter uses it. A
 full table (`RateBuckets`) evicts rather than refusing new clients, so a flood
 can't lock new visitors out: ended windows and the oldest buckets still within
 their limits go first, and a bucket over its limit goes only once every other
-bucket is too, so a flood of new keys can't lift a refusal. Refusals keep their
+bucket is too, so lifting a refusal takes a flood that fills the whole table
+with refused clients. Refusals keep their
 `Retry-After`. This is process-local flood protection; auth
 retains its database-backed limiter. `peerAddress` defaults to the Node socket
 address. Set `trustedProxy` to a predicate matching only the immediate reverse

@@ -57,7 +57,8 @@ export interface RateBucket { count: number; resetAt: number }
 /**
  * Fixed-window buckets in creation order. A full table evicts buckets rather than refusing new keys, so a flood of
  * new keys can't lock out new visitors. Ended windows and the oldest buckets still within their limits go first;
- * a bucket over its limit (`blocked`) goes only once every other bucket is too, so a flood can't lift a refusal.
+ * a bucket over its limit (`blocked`) goes only once every other bucket is too, so lifting a refusal takes a flood
+ * that fills the whole table with refused keys.
  */
 export class RateBuckets<Bucket extends RateBucket = RateBucket> {
   readonly #buckets = new Map<string, Bucket>();
