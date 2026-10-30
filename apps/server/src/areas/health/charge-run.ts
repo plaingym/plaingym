@@ -16,8 +16,8 @@ export interface ChargeRunOptions { scope?: typeof forGym; clock: Clock; setting
 /** Wrap the runner before composing its jobs. No payment calls occur inside the audit transactions. */
 export function monitorChargeRunner(runner: ChargeRunner, options: ChargeRunOptions): ChargeRunner {
   const scope = options.scope ?? forGym;
-  return { ...runner, async daily(gymId) {
-    if (!(await options.settings.get(gymId)).billingEnabled) return runner.daily(gymId);
+  return { ...runner, async daily(gymId, run) {
+    if (!(await options.settings.get(gymId)).billingEnabled) return runner.daily(gymId, run);
     const lastStartedAt = options.clock.now().toISOString(), runId = uuidv7(options.clock.now().getTime());
     const record = (details: ChargeRunHealthDetails) => scope(gymId, tx => writeAudit(tx, {
       gymId, actorKind: 'system', action: details.result === 'running' ? started : completed, targetType: 'charge_run', targetId: runId,
@@ -25,7 +25,7 @@ export function monitorChargeRunner(runner: ChargeRunner, options: ChargeRunOpti
     }));
     await record({ lastStartedAt, lastCompletedAt: null, result: 'running', invoicesProcessed: 0, failures: 0 });
     let result: Awaited<ReturnType<ChargeRunner['daily']>>;
-    try { result = await runner.daily(gymId); }
+    try { result = await runner.daily(gymId, run); }
     catch (error) {
       try {
         await record({ lastStartedAt, lastCompletedAt: options.clock.now().toISOString(), result: 'failed', invoicesProcessed: 0, failures: 1 });

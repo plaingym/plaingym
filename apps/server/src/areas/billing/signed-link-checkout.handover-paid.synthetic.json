@@ -165,7 +165,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -183,7 +188,18 @@
         "amount": 100,
         "currency": "usd",
         "setup_future_usage": null,
-        "latest_charge": "ch_4"
+        "latest_charge": {
+          "id": "ch_4",
+          "created": 1793102400,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "link_id": "00000000-0000-7000-8000-000000000003"
+          }
+        }
       }
     },
     {
@@ -242,7 +258,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -260,7 +281,18 @@
         "amount": 100,
         "currency": "usd",
         "setup_future_usage": null,
-        "latest_charge": "ch_4"
+        "latest_charge": {
+          "id": "ch_4",
+          "created": 1793102400,
+          "livemode": false,
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001",
+            "invoice_id": "00000000-0000-7000-8000-000000000002",
+            "link_id": "00000000-0000-7000-8000-000000000003"
+          }
+        }
       }
     }
   ]

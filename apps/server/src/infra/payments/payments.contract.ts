@@ -79,7 +79,9 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
         const { payments, charge } = await create(card), intent = await payments.createCharge(charge);
         // A success names the processor's charge as well as the intent; invoice transitions need both.
         const charged = status === 'succeeded' ? { latestChargeId: expect.stringMatching(/^ch_/) } : {};
-        expect(await payments.confirmCharge(intent.id, { idempotencyKey: charge.idempotencyKey + ':confirm' })).toMatchObject({ status, ...charged });
+        // A confirmed success also carries its success time, so recording the payment needs no further reads.
+        expect(await payments.confirmCharge(intent.id, { idempotencyKey: charge.idempotencyKey + ':confirm' }))
+          .toMatchObject({ status, ...charged, ...status === 'succeeded' ? { succeededAt: expect.any(Date) } : {} });
         expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status, ...charged });
       });
     it('rejects reuse with changed immutable parameters', async () => {

@@ -140,7 +140,7 @@ export interface Payments {
   createCharge(request: CreateCharge): Promise<{ id: string }>;
   confirmCharge(id: string, options: { idempotencyKey: string }): Promise<ChargeOutcome>;
   cancelCharge(id: string): Promise<ChargeOutcome>;
-  /** includeSuccessTime retrieves the latest Charge's creation time for payment accounting. */
+  /** includeSuccessTime requires the latest Charge's creation time for payment accounting, read with the intent where it can be. */
   findCharge(reference: ChargeReference, options?: { includeSuccessTime?: boolean }): Promise<ChargeOutcome>;
   /** All refunds of this PaymentIntent, including dashboard refunds; no event-history scan. */
   listRefunds(chargeId: string): Promise<readonly Refund[]>;
@@ -188,6 +188,20 @@ function needsAuthentication(error: unknown, depth = 0): boolean {
       needsAuthentication(value[key], depth + 1),
     )
   );
+}
+
+const outageTypes = new Set(['StripeConnectionError', 'StripeAPIError', 'StripeRateLimitError', 'StripeAuthenticationError']);
+/**
+ * True when the provider couldn't serve the request at all: unreachable or timed out, rate limited, a server
+ * error, or the gym's key rejected. Every other request would fail the same way. A decline, a missing or
+ * foreign object, an invalid request, or a permission the key lacks (other requests can still succeed)
+ * concerns that request only.
+ */
+export function isProviderOutage(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { type, statusCode } = error as { type?: unknown; statusCode?: unknown };
+  return (typeof type === 'string' && outageTypes.has(type))
+    || (typeof statusCode === 'number' && (statusCode === 429 || statusCode >= 500));
 }
 
 export function normalizeChargeOutcome(charge: ProviderChargeState, error?: unknown): ChargeOutcome {

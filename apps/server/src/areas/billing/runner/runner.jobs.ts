@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { JobRegistration } from '../../../core/registry.js';
-import { instantSchema, idSchema } from '@plaingym/shared/contracts';
-import type { ChargeRunner } from './index.js';
+import { z } from 'zod';
+import { dateSchema, instantSchema, idSchema } from '@plaingym/shared/contracts';
+import { dailyRunJob, type ChargeRunner } from './index.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 
+/** Runs in the jobs batch lane, so webhook dispatch and transition effects never wait behind a collection. */
+export const runnerBatchJobs = [dailyRunJob] as const;
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
 /** Used by go-live's explicit rerun; resolves the same runner configured for the worker. */
@@ -21,9 +24,12 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     return runner;
   }
   return [
-    { id: 'billing.runner.daily', cron: '0 9 * * *', async handler(_payload, context) {
-      const result = await (await scheduled(context.gymId))?.daily(context.gymId);
-      if (result?.errors.length) throw new Error('Some invoice charges need reconciliation');
+    // Also runs a stopped collection's continuation, whose payload names the day it continues.
+    { id: dailyRunJob, cron: '0 9 * * *', async handler(payload, context) {
+      const { continues } = z.object({ continues: dateSchema.optional() }).parse(payload);
+      const result = await (await scheduled(context.gymId))?.daily(context.gymId, continues ? { continues } : {});
+      // A stopped collection queued its continuation; failing would rerun it into the same outage at once.
+      if (result?.errors.length && !result.stopped) throw new Error('Some invoice charges need reconciliation');
     } },
     { id: 'billing.runner.reconcile', cron: '17 * * * *', async handler(_payload, context) {
       const result = await (await scheduled(context.gymId))?.reconcile(context.gymId);

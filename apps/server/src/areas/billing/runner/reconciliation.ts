@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
+import { createAbandoned } from '../transitions/store.js';
 import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { audit, system } from './store.js';
 import type { RunnerOptions } from './index.js';
@@ -116,7 +117,7 @@ export function createReconciliation(options: Options) {
     for (const attempt of attempts) {
       if (!attempt.paymentIntentId) {
         await scope(gymId, async tx => {
-          const changed = await tx.update(paymentAttempts).set({ status: 'failed', declineCode: 'create_abandoned', resolvedAt: clock.now() })
+          const changed = await tx.update(paymentAttempts).set({ status: 'failed', declineCode: createAbandoned, resolvedAt: clock.now() })
             .where(and(eq(paymentAttempts.id, attempt.id), eq(paymentAttempts.status, 'pending'),
               isNull(paymentAttempts.paymentIntentId), isNull(paymentAttempts.resolvedAt))).returning();
           if (changed.length) await audit(tx, system(gymId), clock, 'billing.runner.create_abandoned', 'payment_attempt', attempt.id,

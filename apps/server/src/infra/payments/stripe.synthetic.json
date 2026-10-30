@@ -9,28 +9,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -91,28 +88,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -173,7 +167,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -201,7 +200,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -231,7 +235,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -255,14 +262,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -284,14 +308,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -313,7 +354,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         }
       ]
@@ -326,7 +379,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_missing"
+            "path": "/v1/payment_intents/pi_missing",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "error": {
             "type": "StripeInvalidRequestError",
@@ -1163,7 +1221,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_2"
+            "path": "/v1/payment_intents/pi_2",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_2",
@@ -1181,14 +1244,30 @@
             "amount": 100,
             "currency": "usd",
             "setup_future_usage": "off_session",
-            "latest_charge": "ch_3"
+            "latest_charge": {
+              "id": "ch_3",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_2",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "link_id": "invoice_fixture"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_2"
+            "path": "/v1/payment_intents/pi_2",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_2",
@@ -1206,7 +1285,18 @@
             "amount": 100,
             "currency": "usd",
             "setup_future_usage": "off_session",
-            "latest_charge": "ch_3"
+            "latest_charge": {
+              "id": "ch_3",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_2",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "link_id": "invoice_fixture"
+              }
+            }
           }
         }
       ]
@@ -2041,28 +2131,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -2123,7 +2210,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2153,7 +2245,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -2177,14 +2272,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2206,7 +2318,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         }
       ]
@@ -2219,28 +2343,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_0341",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_0341"
           },
           "output": {
             "id": "pm_0341",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "0341",
@@ -2301,7 +2422,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2331,7 +2457,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -2369,7 +2498,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2406,28 +2540,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_3155",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_3155"
           },
           "output": {
             "id": "pm_3155",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "3155",
@@ -2488,7 +2619,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2518,7 +2654,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -2542,14 +2681,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2571,7 +2727,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         }
       ]
@@ -2584,28 +2752,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_3184",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_3184"
           },
           "output": {
             "id": "pm_3184",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "3184",
@@ -2666,7 +2831,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2696,7 +2866,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -2734,7 +2907,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -2771,28 +2949,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -2853,28 +3028,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -2923,28 +3095,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -3005,7 +3174,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3062,7 +3236,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3096,28 +3275,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -3178,7 +3354,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3208,7 +3389,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -3232,14 +3416,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3261,7 +3462,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -3298,7 +3511,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3320,14 +3538,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3349,7 +3584,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -3386,7 +3633,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3408,7 +3660,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -3436,7 +3700,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3458,7 +3727,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         }
       ]
@@ -3717,28 +3998,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -3799,7 +4077,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -3829,7 +4112,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -3853,21 +4139,18 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
             }
           }
         },
@@ -3875,13 +4158,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
+            }
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -3940,7 +4235,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_3"
+            "path": "/v1/payment_intents/pi_3",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_3",
@@ -3969,7 +4269,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_3/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:other:confirm"
           },
@@ -3992,14 +4295,30 @@
               "attempt_id": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_4"
+            "latest_charge": {
+              "id": "ch_4",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_3",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4021,7 +4340,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -4043,7 +4374,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4065,7 +4401,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -4102,7 +4450,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4124,14 +4477,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_3"
+            "path": "/v1/payment_intents/pi_3",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_3",
@@ -4152,7 +4522,18 @@
               "attempt_id": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_4"
+            "latest_charge": {
+              "id": "ch_4",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_3",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1"
+              }
+            }
           }
         },
         {
@@ -4189,7 +4570,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_3"
+            "path": "/v1/payment_intents/pi_3",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_3",
@@ -4210,14 +4596,30 @@
               "attempt_id": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_4"
+            "latest_charge": {
+              "id": "ch_4",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_3",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4239,7 +4641,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -4276,7 +4690,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4298,14 +4717,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4327,7 +4763,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -4364,7 +4812,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4386,14 +4839,31 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_missing"
+            "path": "/v1/payment_intents/pi_missing",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "error": {
             "type": "StripeInvalidRequestError",
@@ -4411,28 +4881,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -4493,7 +4960,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4523,7 +4995,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -4547,55 +5022,18 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
-          },
-          "output": {
-            "id": "pi_1",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "payment_intent",
-            "amount": 100,
-            "currency": "usd",
-            "customer": "cus_fixture",
-            "payment_method": "pm_4242",
-            "allowed_payment_method_types": [
-              "card"
-            ],
-            "confirm": false,
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture",
-              "attempt_id": "1",
-              "attempt_n": "1"
-            },
-            "status": "succeeded",
-            "latest_charge": "ch_2"
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/charges/ch_2"
-          },
-          "output": {
-            "id": "ch_2",
-            "created": 1792756800,
-            "livemode": false,
-            "object": "charge",
-            "payment_intent": "pi_1",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001",
-              "invoice_id": "invoice_fixture",
-              "attempt_id": "1",
-              "attempt_n": "1"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
             }
           }
         },
@@ -4603,7 +5041,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4625,26 +5068,64 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/charges/ch_2"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
-            "id": "ch_2",
+            "id": "pi_1",
             "created": 1792756800,
             "livemode": false,
-            "object": "charge",
-            "payment_intent": "pi_1",
+            "object": "payment_intent",
+            "amount": 100,
+            "currency": "usd",
+            "customer": "cus_fixture",
+            "payment_method": "pm_4242",
+            "allowed_payment_method_types": [
+              "card"
+            ],
+            "confirm": false,
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "invoice_id": "invoice_fixture",
               "attempt_id": "1",
               "attempt_n": "1"
+            },
+            "status": "succeeded",
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
             }
           }
         }
@@ -4874,28 +5355,25 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/customers/cus_fixture"
-          },
-          "output": {
-            "id": "cus_fixture",
-            "object": "customer",
-            "email": "payer@example.invalid",
-            "metadata": {
-              "gym_id": "00000000-0000-7000-8000-000000000001"
+            "path": "/v1/payment_methods/pm_4242",
+            "params": {
+              "expand": [
+                "customer"
+              ]
             }
-          }
-        },
-        {
-          "operation": "stripe",
-          "input": {
-            "method": "GET",
-            "path": "/v1/payment_methods/pm_4242"
           },
           "output": {
             "id": "pm_4242",
             "object": "payment_method",
             "created": 1792756800,
-            "customer": "cus_fixture",
+            "customer": {
+              "id": "cus_fixture",
+              "object": "customer",
+              "email": "payer@example.invalid",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001"
+              }
+            },
             "card": {
               "brand": "visa",
               "last4": "4242",
@@ -4956,7 +5434,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -4986,7 +5469,10 @@
             "method": "POST",
             "path": "/v1/payment_intents/pi_1/confirm",
             "params": {
-              "off_session": true
+              "off_session": true,
+              "expand": [
+                "latest_charge"
+              ]
             },
             "idempotencyKey": "invoice_fixture:1:create:confirm"
           },
@@ -5010,7 +5496,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -5048,7 +5546,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -5070,7 +5573,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -5129,7 +5644,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -5151,7 +5671,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {
@@ -5199,7 +5731,12 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
-            "path": "/v1/payment_intents/pi_1"
+            "path": "/v1/payment_intents/pi_1",
+            "params": {
+              "expand": [
+                "latest_charge"
+              ]
+            }
           },
           "output": {
             "id": "pi_1",
@@ -5221,7 +5758,19 @@
               "attempt_n": "1"
             },
             "status": "succeeded",
-            "latest_charge": "ch_2"
+            "latest_charge": {
+              "id": "ch_2",
+              "created": 1792756800,
+              "livemode": false,
+              "object": "charge",
+              "payment_intent": "pi_1",
+              "metadata": {
+                "gym_id": "00000000-0000-7000-8000-000000000001",
+                "invoice_id": "invoice_fixture",
+                "attempt_id": "1",
+                "attempt_n": "1"
+              }
+            }
           }
         },
         {

@@ -9,10 +9,11 @@ Register handlers, then call `startJobsWorker(queue, options)`. Await
 handlers and lease heartbeats. `runNext()` drains one due job without starting a
 polling loop. The default process concurrency is four, the shared per-gym cap is
 one, and leases last 30 seconds with a heartbeat every third of the lease.
-Workers must use the same cap. All workers coordinate their short cap-check and
+Workers must use the same caps and batch lane. All workers coordinate their short cap-check and
 claim transactions with an advisory lock and `FOR UPDATE SKIP LOCKED`. Each claim
-counts live leases per gym once (a CTE), leaves out gyms at their cap, then takes
-the earliest due job, so a gym's backlog never runs a cap check per row.
+counts live leases per gym and lane once (a CTE), leaves out each gym's lanes at
+their cap, then takes the earliest due job, so a gym's backlog never runs a cap
+check per row. Long batch work runs in its own lane (Batch lane, below).
 
 Handlers execute outside transactions. They receive the persisted timezone,
 gym, attempt number, job ID, and injected clock, and open their own short database
@@ -64,6 +65,23 @@ the newest occurrence row of that generation, as earlier releases kept it, so an
 upgrade neither skips nor repeats occurrences; all of a gym's missing cursors are
 seeded in one transaction before any of its occurrences is enqueued. Schedule
 handler effects need the same idempotency guarantees as other jobs.
+
+## Batch lane
+
+With `batch: { jobs, perGymConcurrency? }`, the named jobs run in a per-gym batch
+lane with its own cap (default one), and every other job runs in the default lane
+under `perGymConcurrency`. Long batch work (the daily charge run, imports, exports,
+campaign scans and sends) then holds only its own lane: the gym's webhook
+dispatch, transition effects and notices are claimed alongside it instead of
+waiting behind it, and a gym runs one batch job at a time. Splitting a batch into
+many small jobs would not help on its own, because claims take the earliest due
+job first. The lane is decided by job name when a job is claimed, so producers
+enqueue as before and every worker must list the same names. Across gyms, a
+worker runs at most `batchConcurrency` batch jobs at once (at most its concurrency;
+default one less, at least one), so with two or more slots other gyms' batch work
+can't take every one. A single-slot worker shares its slot.
+`runNext()` claims from either lane. Without `batch`, every job runs in the
+default lane.
 
 ## Retention
 

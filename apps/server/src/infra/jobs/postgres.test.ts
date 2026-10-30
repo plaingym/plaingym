@@ -396,6 +396,57 @@ describe('claim fairness', () => {
     expect(await q.runNext()).toBe(true);
     expect(seen).toEqual([gymB, gymA]);
   });
+  it('counts live leases once per gym and lane, each lane against its own cap', async () => {
+    const q = queue({ batch: { jobs: ['batch'], perGymConcurrency: 2 } }); const seen: string[] = [];
+    q.handle('batch', async () => { seen.push('batch'); }); q.handle('work', async () => { seen.push('work'); });
+    await q.enqueue('work', {}, { ...options, runAt: new Date(clock.now().getTime() - 60_000) });
+    await q.enqueue('batch', {}, options); await q.enqueue('batch', {}, options);
+    // Gym A holds one live default lease (its cap) and one live batch lease (below the batch cap of two).
+    await database.forSystem((tx) => tx.insert(jobs).values([lease(gymA), lease(gymA, 'batch')]));
+    expect(await q.runNext()).toBe(true);
+    expect(seen).toEqual(['batch']);
+    // A second live batch lease fills the batch lane as well; the default lane stays full.
+    await database.forSystem((tx) => tx.insert(jobs).values(lease(gymA, 'batch')));
+    expect(await q.runNext()).toBe(false);
+    expect(() => queue({ batch: { jobs: ['batch'], perGymConcurrency: 0 } })).toThrow();
+  });
+});
+
+describe('batch lane', () => {
+  it("runs a gym's other jobs while its batch lane is busy, one batch job per gym, and other gyms' alongside", async () => {
+    const q = queue({ batch: { jobs: ['batch'] } }), held = latch(), seen: string[] = [];
+    const name = (gymId: string) => gymId === gymA ? 'A' : 'B';
+    q.handle('batch', async (_, c) => { seen.push('batch ' + name(c.gymId)); await held.promise; });
+    q.handle('dispatch', async (_, c) => { seen.push('dispatch ' + name(c.gymId)); });
+    await q.enqueue('batch', {}, options); await q.enqueue('batch', {}, options);
+    await q.enqueue('dispatch', {}, options); await q.enqueue('batch', {}, { ...options, gymId: gymB });
+    const first = q.runNext(); await until(async () => seen.length === 1);
+    let other: Promise<boolean> | undefined;
+    try {
+      // Gym A's second batch job waits for its lane, gym A's dispatch doesn't, and gym B's batch lane is its own.
+      expect(await q.runNext()).toBe(true);
+      other = q.runNext(); await until(async () => seen.length === 3);
+      expect(seen).toEqual(['batch A', 'dispatch A', 'batch B']);
+      expect(await q.runNext()).toBe(false);
+    } finally { held.resolve(); await Promise.all([first, other]); }
+    expect(await q.runNext()).toBe(true);
+    expect(seen.at(-1)).toBe('batch A');
+  });
+  it('keeps a worker slot for other jobs while batch jobs could fill them all', async () => {
+    const q = queue({ batch: { jobs: ['batch'] } }), held = latch(); const batches: string[] = [], dispatched: string[] = [];
+    q.handle('batch', async (_, c) => { batches.push(c.gymId); await held.promise; });
+    q.handle('dispatch', async (_, c) => { dispatched.push(c.gymId); });
+    await q.enqueue('batch', {}, options); await q.enqueue('batch', {}, { ...options, gymId: gymB });
+    for (const invalid of [{ batchConcurrency: 0 }, { concurrency: 2, batchConcurrency: 3 }]) expect(() => startJobsWorker(q, invalid)).toThrow();
+    // Two slots: one for batch work, so gym B's batch job waits although its own lane is free.
+    const worker = startJobsWorker(q, { concurrency: 2, pollMs: 2 });
+    try {
+      await until(async () => batches.length === 1);
+      await q.enqueue('dispatch', {}, { ...options, gymId: gymB });
+      await until(async () => dispatched.length === 1);
+      expect(batches).toEqual([gymA]);
+    } finally { held.resolve(); await worker.stop(); }
+  });
 });
 
 describe('retention', () => {

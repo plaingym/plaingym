@@ -5,7 +5,10 @@ Compose `createImportPipeline` and `createExportService` with the runtime's
 `uploadsFor(gymId)` and `Jobs`. Mount `createPipelineRoutes` and
 `createExportRoutes`; register `createPipelineJobs` and `createExportJobs` through
 the server registry. The static part exports stay empty until this composition
-is wired. Do not register both static and composed routes.
+is wired. Do not register both static and composed routes. Import and export
+runs are batch jobs (`importBatchJobs`, `exportBatchJobs`): when the worker's
+queue lists them in its batch lane (`infra/jobs/README.md`), they run without
+holding up the gym's webhooks and notices.
 
 CSV uploads live under the gym's immutable `Uploads` prefix and expire after
 24 hours. Run state lives in the gym-owned `import_runs`, `import_chunks`, and

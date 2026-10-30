@@ -38,9 +38,13 @@ function money(amount: number | undefined, currency: string | undefined): void {
     throw new Error('Expected positive integer cents in usd or cad');
 }
 function key(value: string): void { if (!value || value.length > 200) throw new Error('Invalid idempotency key'); }
+function optionalTimestamp(value: Json | undefined): Date | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? new Date(value * 1000) : undefined;
+}
 function timestamp(value: Json | undefined): Date {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error('Invalid provider timestamp');
-  return new Date(value * 1000);
+  const time = optionalTimestamp(value);
+  if (!time) throw new Error('Invalid provider timestamp');
+  return time;
 }
 class NotForGym extends Error {}
 function queryString(params: ObjectData): string {
@@ -110,14 +114,21 @@ export class StripePayments implements Payments {
       ...(typeof metadata.link_id === 'string' ? { linkId: metadata.link_id } : {}) };
   }
   #intent(object: ObjectData, error?: unknown): ChargeOutcome {
+    // An expanded Charge (intent reads and confirmation request it) carries the success time. If it is missing,
+    // belongs to another intent or has no valid time, the outcome has none and findCharge reads the Charge itself.
+    const charge = object.latest_charge && typeof object.latest_charge === 'object' ? data(object.latest_charge) : undefined;
+    const succeededAt = object.status === 'succeeded' && charge && id(charge.payment_intent) === id(object.id)
+      ? optionalTimestamp(charge.created) : undefined;
     return normalizeChargeOutcome({ id: id(object.id), amount: Number(object.amount), currency: String(object.currency),
       customerId: id(object.customer), ...(object.payment_method ? { paymentMethodId: id(object.payment_method) } : {}),
-      ...(object.latest_charge ? { latestChargeId: id(object.latest_charge) } : {}),
+      ...(object.latest_charge ? { latestChargeId: id(object.latest_charge) } : {}), ...(succeededAt ? { succeededAt } : {}),
       metadata: this.#metadata(object), status: String(object.status),
       ...(object.last_payment_error ? { last_payment_error: data(object.last_payment_error) as { code?: string } } : {}) }, error);
   }
+  /** The expanded Charge gives a successful outcome its success time without another request. */
   async #ownedIntent(objectId: string): Promise<ObjectData> {
-    const intent = await this.#get(this.#path('payment_intents', objectId)); this.#metadata(intent); return intent;
+    const intent = await this.#get(this.#path('payment_intents', objectId), { expand: ['latest_charge'] });
+    this.#metadata(intent); return intent;
   }
   async #ownedCustomer(customerId: string): Promise<void> {
     this.#metadata(await this.#get(this.#path('customers', customerId)));
@@ -144,9 +155,11 @@ export class StripePayments implements Payments {
   }
   async createCharge(request: CreateCharge): Promise<{ id: string }> {
     assertNoTransaction('payments.createCharge'); money(request.amount, request.currency); key(request.idempotencyKey);
-    await this.#ownedCustomer(request.customerId);
-    const method = await this.#get(this.#path('payment_methods', request.paymentMethodId));
-    if (optionalId(method.customer) !== request.customerId) throw new Error('Payment method is not attached to payer');
+    // One read checks both: the method is attached to the payer, and the payer (expanded) is this gym's.
+    const method = await this.#get(this.#path('payment_methods', request.paymentMethodId), { expand: ['customer'] });
+    const payer = method.customer && typeof method.customer === 'object' ? data(method.customer) : undefined;
+    if (!payer || id(payer.id) !== request.customerId) throw new Error('Payment method is not attached to payer');
+    this.#metadata(payer);
     const result = await this.#post('/v1/payment_intents', { amount: request.amount, currency: request.currency,
       customer: request.customerId, payment_method: request.paymentMethodId, allowed_payment_method_types: ['card'], confirm: false,
       metadata: { gym_id: this.gymId, invoice_id: request.invoiceId, attempt_id: request.attemptId,
@@ -157,8 +170,9 @@ export class StripePayments implements Payments {
     assertNoTransaction('payments.confirmCharge'); key(options.idempotencyKey);
     const before = await this.#ownedIntent(objectId);
     if (before.status === 'succeeded' || before.status === 'canceled') return this.#intent(before);
+    // As in intent reads, the expanded Charge returns the success time, so recording it needs no further reads.
     try { return this.#intent(await this.#post(this.#path('payment_intents', objectId) + '/confirm',
-      { off_session: true }, options.idempotencyKey)); }
+      { off_session: true, expand: ['latest_charge'] }, options.idempotencyKey)); }
     catch (error) {
       // Card errors embed the authoritative intent; network/permission errors remain errors, never declines.
       const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
@@ -191,9 +205,9 @@ export class StripePayments implements Payments {
         outcome = session.chargeId ? this.#intent(await this.#ownedIntent(session.chargeId)) : { status: 'unknown', reference };
       }
     } catch (error) { if (missing(error) || error instanceof NotForGym) return { status: 'unknown', reference }; throw error; }
-    // Opt in so existing caller request sequences remain unchanged. A missing Charge is retryable,
-    // never an unknown intent and never permission to substitute the processing clock.
-    if (options?.includeSuccessTime && outcome.status === 'succeeded') {
+    // The intent read's expanded Charge normally supplies the time. Otherwise read the Charge: a missing one is
+    // retryable, never an unknown intent and never permission to substitute the processing clock.
+    if (options?.includeSuccessTime && outcome.status === 'succeeded' && !outcome.succeededAt) {
       if (!outcome.latestChargeId) throw new Error('Successful payment requires its processor Charge ID');
       const charge = await this.#get(this.#path('charges', outcome.latestChargeId));
       if (id(charge.payment_intent) !== outcome.id) throw new Error('Successful Charge parent mismatch');

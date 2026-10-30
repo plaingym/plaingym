@@ -4,7 +4,7 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { CustomerCreationInProgress, FakePayments } from './index.js';
+import { CustomerCreationInProgress, FakePayments, isProviderOutage } from './index.js';
 import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
@@ -135,6 +135,56 @@ it('tags all explicitly created objects and sends Endive parameters', async () =
   expect(enabled).toContain('payment_method.automatically_updated');
   expect(enabled).not.toContain('charge.dispute.funds_reinstated');
   expect(enabled).not.toContain('charge.dispute.funds_withdrawn');
+});
+it('charges a saved card in four requests, checking the payer and its gym through the expanded payment method', async () => {
+  const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
+  const outcome = await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  expect(transport.requests.map(({ method, path, params }) => [method, path, params?.expand])).toEqual([
+    ['GET', '/v1/payment_methods/pm_4242', ['customer']], ['POST', '/v1/payment_intents', undefined],
+    ['GET', '/v1/payment_intents/' + intent.id, ['latest_charge']], ['POST', '/v1/payment_intents/' + intent.id + '/confirm', ['latest_charge']],
+  ]);
+  // The success time is the Charge's creation time, from the confirmation itself; recording it reads nothing more.
+  expect(outcome).toMatchObject({ status: 'succeeded', succeededAt: new Date(transport.now * 1000) });
+  expect(await payments.findCharge({ kind: 'charge', id: intent.id }, { includeSuccessTime: true })).toEqual(outcome);
+  expect(transport.requests).toHaveLength(5);
+  const before = transport.requests.length;
+  transport.objects.set('cus_other', { id: 'cus_other', object: 'customer', metadata: { gym_id: gymId } });
+  transport.objects.set('pm_other', { id: 'pm_other', object: 'payment_method', customer: 'cus_other', metadata: {} });
+  await expect(payments.createCharge({ ...charge, paymentMethodId: 'pm_other', idempotencyKey: 'other:1:create' }))
+    .rejects.toThrow('not attached to payer');
+  await expect(payments.createCharge({ ...charge, customerId: 'cus_foreign', paymentMethodId: detach.foreign, idempotencyKey: 'foreign:1:create' }))
+    .rejects.toThrow('another gym');
+  expect(transport.requests.slice(before).map(({ method }) => method)).toEqual(['GET', 'GET']);
+});
+it('reads the Charge for the success time only when the expanded one cannot supply it', async () => {
+  const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
+  await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  const chargeId = String(transport.objects.get(intent.id)!.latest_charge), stored = transport.objects.get(chargeId)!;
+  // An expanded Charge of another intent, or one without a valid time, gives no success time.
+  for (const change of [{ payment_intent: 'pi_other' }, { created: 'later' }]) {
+    const original = { ...stored }; Object.assign(stored, change);
+    expect(await payments.findCharge({ kind: 'charge', id: intent.id })).not.toHaveProperty('succeededAt');
+    Object.assign(stored, original);
+  }
+  vi.spyOn(transport, 'request').mockImplementationOnce(async (input) => {
+    const object = await transport.request(input); return { ...object, latest_charge: chargeId };
+  });
+  const before = transport.requests.length;
+  expect(await payments.findCharge({ kind: 'charge', id: intent.id }, { includeSuccessTime: true }))
+    .toMatchObject({ status: 'succeeded', succeededAt: new Date(transport.now * 1000) });
+  expect(transport.requests.slice(before).map(({ path }) => path)).toEqual(['/v1/payment_intents/' + intent.id, '/v1/charges/' + chargeId]);
+});
+it('classifies the SDK errors that mean the provider could not serve any request as outages', () => {
+  const outages = [new Stripe.errors.StripeConnectionError({ message: 'timed out' }), new Stripe.errors.StripeAPIError({ message: 'server' }),
+    new Stripe.errors.StripeRateLimitError({ message: 'slow down' }), new Stripe.errors.StripeAuthenticationError({ message: 'key' }),
+    Object.assign(new Error('Bad gateway'), { statusCode: 502 })];
+  // A permission the key lacks fails only the requests that need it, so it is not an outage.
+  const others = [new Stripe.errors.StripePermissionError({ message: 'permission' }), Object.assign(new Error('Forbidden'), { statusCode: 403 }),
+    new Stripe.errors.StripeCardError({ message: 'declined' }), new Stripe.errors.StripeInvalidRequestError({ message: 'missing' }),
+    new Stripe.errors.StripeIdempotencyError({ message: 'reused' }), Object.assign(new Error('Missing'), { statusCode: 404 }),
+    new Error('Payment object belongs to another gym'), undefined, 'timeout'];
+  expect(outages.map(isProviderOutage)).toEqual(outages.map(() => true));
+  expect(others.map(isProviderOutage)).toEqual(others.map(() => false));
 });
 it('reconciles untagged dashboard refunds and disputes through Charge -> PaymentIntent', async () => {
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);

@@ -156,4 +156,4 @@ export class FakeJobs implements Jobs, JobRecovery {
 }
 
 export { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
-export type { JobRetentionOptions, PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';
+export type { BatchLaneOptions, JobRetentionOptions, PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';

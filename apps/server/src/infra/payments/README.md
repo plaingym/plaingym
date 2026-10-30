@@ -42,14 +42,31 @@ hours after creation) and is part of the idempotent request; without it the
 provider default applies. The fake reports an open session as expired once its
 clock reaches that time.
 
-`findCharge(reference, { includeSuccessTime: true })` adds `succeededAt` to a
-successful outcome by retrieving the latest Charge and reading its `created`
-timestamp. It verifies the Charge's parent intent. Missing/invalid time or an
-unresolved Charge fails the lookup; callers must not substitute their processing
-clock. The option is explicit so default lookups, confirmation, cancellation,
-and change-feed requests keep their existing request sequences and strict replay
-compatibility. The fake records success time when confirmation or Checkout
-completion succeeds and keeps it on later reads.
+A successful outcome's `succeededAt` is its latest Charge's `created` timestamp.
+Every PaymentIntent read and the confirmation expand `latest_charge`, so a
+successful confirmation or lookup carries it without another request; the
+expanded Charge must name the intent as its parent and carry a valid time, or the
+outcome has none. `findCharge(reference, { includeSuccessTime: true })` requires
+it: without an expanded time it retrieves the latest Charge, verifies its parent
+intent and reads `created`. Missing/invalid time or an unresolved Charge fails
+the lookup; callers must not substitute their processing clock. The fake records
+success time when confirmation or Checkout completion succeeds and keeps it on
+later reads.
+
+`createCharge` reads the saved payment method with its customer expanded: one
+request checks both that the method is attached to the payer and that the payer
+carries this gym's `gym_id`, before the intent is created. A successful saved-card
+charge makes four requests: that read, the create, the confirmation's ownership
+read and the confirmation. The charge runner's customer adoption adds a fifth,
+and a sixth when it first tags an untagged customer.
+
+`isProviderOutage(error)` tells an error with which the provider could not serve
+the request at all (unreachable or timed out, rate limited, a server error, or
+the gym's key rejected) from one about that request only (a decline, a missing or
+foreign object, an invalid request, or a permission the key lacks, since requests
+that don't need it still succeed). It reads the SDK error's type and status, so
+callers need no SDK import; the charge runner uses it to stop its daily
+collection during an outage.
 
 `listRefunds(paymentIntentId)` checks intent ownership and pages
 `GET /v1/refunds?payment_intent=<id>&limit=100`, following `starting_after`.
@@ -205,6 +222,8 @@ write probe. Database authorization, encryption, audit, revision-race, account-c
 refused-old-key tests are in `areas/setup/stripe-step.test.ts`, and the startup check is
 tested in `areas/setup/stripe-step.endpoints.test.ts` and `core/runtime.stripe-endpoints.test.ts`.
 
+`StripeFixtures` answers `expand` as Stripe does: the response inlines each named
+object, while the stored object keeps its ID reference.
 `FixtureRecorder` records either the public interface or the transport. It redacts
 keys, signing secrets, client secrets, card numbers, and CVC. Use only a synthetic
 payer in a test account: other personal fields are intentionally not rewritten,
@@ -255,7 +274,8 @@ successful setup read, and `already_completed` expiry. `findCharge` returns
 A separate real reconciliation pass skipped an untagged customer/payment method
 and customerless PaymentIntent while retaining a tagged charge.
 
-**Unverified:** the endpoint lifecycle scenarios and the Webhook Endpoints write probe (they are in the opt-in run but were added after it), real HTTPS webhook delivery (deployment stage 2), actual inbox
+**Unverified:** the endpoint lifecycle scenarios and the Webhook Endpoints write probe (they are in the opt-in run but were added after it),
+the expanded payment-method customer and `latest_charge` reads (also added after it, and covered by the contract's success-time check), real HTTPS webhook delivery (deployment stage 2), actual inbox
 integration, and a real dispute lifecycle. Offline signature/parent-resolution
 tests and real Disputes Read probes do not prove delivery or dispute transitions.
 No real transport recordings, credentials, or account IDs are committed;

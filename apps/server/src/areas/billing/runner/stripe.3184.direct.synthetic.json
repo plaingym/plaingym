@@ -22,29 +22,27 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/customers/cus_test"
-      },
-      "output": {
-        "id": "cus_test",
-        "object": "customer",
-        "email": "payer@example.invalid",
-        "metadata": {
-          "gym_id": "00000000-0000-7000-8000-000000000001"
+        "path": "/v1/payment_methods/pm_3184",
+        "params": {
+          "expand": [
+            "customer"
+          ]
         }
-      }
-    },
-    {
-      "operation": "stripe",
-      "input": {
-        "method": "GET",
-        "path": "/v1/payment_methods/pm_3184"
       },
       "output": {
         "id": "pm_3184",
         "object": "payment_method",
         "created": 1835542800,
-        "customer": "cus_test",
+        "customer": {
+          "id": "cus_test",
+          "object": "customer",
+          "email": "payer@example.invalid",
+          "metadata": {
+            "gym_id": "00000000-0000-7000-8000-000000000001"
+          }
+        },
         "card": {
+          "brand": "visa",
           "last4": "3184",
           "exp_month": 12,
           "exp_year": 2030
@@ -103,7 +101,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_1"
+        "path": "/v1/payment_intents/pi_1",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_1",
@@ -133,7 +136,10 @@
         "method": "POST",
         "path": "/v1/payment_intents/pi_1/confirm",
         "params": {
-          "off_session": true
+          "off_session": true,
+          "expand": [
+            "latest_charge"
+          ]
         },
         "idempotencyKey": "00000000-0000-7000-8000-000000000002:1:confirm"
       },

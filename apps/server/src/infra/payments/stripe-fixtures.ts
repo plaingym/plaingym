@@ -55,9 +55,19 @@ export class StripeFixtures implements PaymentTransport {
         return structuredClone(previous.result);
       }
     }
-    const result = this.#execute(input);
+    const result = this.#expand(this.#execute(input), input.params?.expand);
     if (input.idempotencyKey) this.#keys.set(input.idempotencyKey, { request: structuredClone(input), result: structuredClone(result) });
     return structuredClone(result);
+  }
+  /** As Stripe's `expand`: the response inlines each named object; the stored object keeps its ID reference. */
+  #expand(object: ObjectData, expand: ObjectData[string] | undefined): ObjectData {
+    if (!Array.isArray(expand)) return object;
+    const result = { ...object };
+    for (const field of expand) {
+      const reference = typeof field === 'string' ? result[field] : undefined;
+      if (typeof reference === 'string' && this.objects.has(reference)) result[field as string] = structuredClone(this.objects.get(reference)!);
+    }
+    return result;
   }
   #store(prefix: string, object: ObjectData): ObjectData {
     const result = { id: prefix + '_' + ++this.#nextId, created: this.now, livemode: false, ...object };

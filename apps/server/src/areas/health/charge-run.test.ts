@@ -76,7 +76,7 @@ describe('durable daily charge-run health', () => {
   });
   it('records partial collection errors and respects paused billing', async () => {
     const f = await fixture(), paused = await fixture(false);
-    await monitorChargeRunner({ ...f.runner, async daily() { return { generatedPeriods: 3, attempted: 2, errors: [{ invoiceId: uuidv7(), message: 'private' }] }; } }, f.options).daily(f.gymId);
+    await monitorChargeRunner({ ...f.runner, async daily() { return { generatedPeriods: 3, attempted: 2, errors: [{ invoiceId: uuidv7(), message: 'private' }], stopped: false }; } }, f.options).daily(f.gymId);
     expect(await f.read()).toMatchObject({ status: 'error', details: { invoicesProcessed: 2, failures: 1 } });
     await monitorChargeRunner(paused.runner, paused.options).daily(paused.gymId);
     expect(await paused.read()).toMatchObject({ status: 'not_configured', details: { result: 'never_run' } });
@@ -85,7 +85,7 @@ describe('durable daily charge-run health', () => {
     const f = await fixture();
     let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; });
-    const slow = monitorChargeRunner({ ...f.runner, async daily() { await wait; return { generatedPeriods: 0, attempted: 0, errors: [] }; } }, f.options);
+    const slow = monitorChargeRunner({ ...f.runner, async daily() { await wait; return { generatedPeriods: 0, attempted: 0, errors: [], stopped: false }; } }, f.options);
     const older = slow.daily(f.gymId);
     await expect.poll(async () => (await f.read()).details).toMatchObject({ result: 'running' });
     f.clock.advance(1000);

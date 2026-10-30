@@ -21,10 +21,10 @@ import { createPaymentService } from '../payments.js';
 import { createInvoiceTransitions } from '../transitions/index.js';
 import { createTransitionEffects } from '../transitions/effects.js';
 import { createTransitionJobs } from '../transitions/transitions.jobs.js';
-import { createChargeRunner } from './index.js';
+import { createChargeRunner, dailyRunJob } from './index.js';
 import { assignmentInvoiceCondition, isAssignmentInvoice } from './eligibility.js';
-import { createRunnerJobs } from './runner.jobs.js';
-import { createWebhookInbox } from '../webhooks/inbox.js';
+import { createRunnerJobs, runnerBatchJobs } from './runner.jobs.js';
+import { createWebhookInbox, webhookDispatchJob } from '../webhooks/inbox.js';
 import { composeBillingWebhooks } from '../webhooks/handlers/composition.js';
 import { setLogSink } from '../../../core/log.js';
 import { createMembersService } from '../../members/members.js';
@@ -69,6 +69,19 @@ async function invoice(f: Fixture) {
     dueOn: '2028-03-01', periodStartsOn: '2028-03-01', periodEndsOn: '2028-04-01' });
 }
 function gate() { let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; }); return { wait, release }; }
+/** More households, each with a saved card and a membership due on the fixture's date: one more invoice for the daily run. */
+async function addHouseholds(f: Fixture, count: number) {
+  for (let n = 0; n < count; n++) {
+    f.provider.seedCustomer({ id: `cus_more_${n}`, email: `payer${n}@example.invalid` });
+    const home = await factory('households', f.gymId, { billingDay: 1, stripeCustomerId: `cus_more_${n}` });
+    const member = await factory('members', f.gymId, { householdId: home.id });
+    await factory('memberships', f.gymId, { householdId: home.id, memberId: member.id, planId: f.plan.id, status: 'active',
+      startsOn: '2028-01-01', nextDueOn: '2028-03-01' });
+    await factory('paymentMethods', f.gymId, { householdId: home.id, processorId: `pm_more_${n}`, isDefault: true });
+  }
+}
+/** What the Stripe adapter throws when the provider can't be reached in time. */
+const outage = () => Object.assign(new Error('Request to the provider timed out'), { type: 'StripeConnectionError' });
 async function checkout(f: Fixture, invoiceId: string) {
   const session = await f.provider.createCheckout({ mode: 'payment', customerId: 'cus_test', amount: 10000, currency: 'cad',
     invoiceId, successUrl: 'https://gym.example.invalid/success', cancelUrl: 'https://gym.example.invalid/cancel',
@@ -1037,5 +1050,90 @@ describe('post-restore reconciliation', () => {
     expect(await f.runner.postRestore(f.gymId, f.clock.now())).toMatchObject({ readyForOwnerReview: false,
       issues: [{ kind: 'charge', id: orphan.id, reason: 'manual_resolution_required' }] });
     expect((await f.read()).payments).toHaveLength(0);
+  });
+});
+
+describe('daily run lane and circuit breaker', () => {
+  const gymJob = (f: Fixture) => ({ gymId: f.gymId, timezone: 'America/Vancouver' });
+  /** The worker's queue with the charge runner's batch lane; the runner queues its continuations there. */
+  function lanes(f: Fixture) {
+    const queue = new PostgresJobs({ database: db, clock: f.clock, batch: { jobs: runnerBatchJobs } });
+    const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, jobs: queue, payments: async () => f.provider });
+    for (const job of createRunnerJobs(() => runner, f.settings)) queue.handle(job.id, job.handler);
+    return queue;
+  }
+  it('runs a webhook dispatch while the daily run holds the batch lane, where one shared lane would wait', async () => {
+    const f = await fixture(), entered = gate(), held = gate(), adopt = f.provider.adoptCustomer.bind(f.provider);
+    vi.spyOn(f.provider, 'adoptCustomer').mockImplementationOnce(async id => { entered.release(); await held.wait; return adopt(id); });
+    const queue = lanes(f), shared = new PostgresJobs({ database: db, clock: f.clock });
+    for (const job of createRunnerJobs(() => f.runner, f.settings)) shared.handle(job.id, job.handler);
+    const dispatched: string[] = [];
+    for (const worker of [queue, shared]) worker.handle(webhookDispatchJob, async (_, context) => { dispatched.push(context.jobId); });
+    await queue.enqueue(dailyRunJob, {}, gymJob(f));
+    const daily = queue.runNext(); await entered.wait;
+    try {
+      const { jobId } = await queue.enqueue(webhookDispatchJob, { eventId: uuidv7() }, gymJob(f));
+      expect(await shared.runNext()).toBe(false);
+      expect(await queue.runNext()).toBe(true);
+      expect(dispatched).toEqual([jobId]);
+    } finally { held.release(); }
+    expect(await daily).toBe(true);
+    expect((await f.read()).invoices.map(row => row.status)).toEqual(['paid']);
+  });
+  it('stops after three consecutive provider outages and collects the rest in one continuation an hour later', async () => {
+    const f = await fixture(); await addHouseholds(f, 4);
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer');
+    for (let n = 0; n < 3; n++) adopt.mockRejectedValueOnce(outage());
+    const logs: string[] = [], prior = setLogSink(line => logs.push(line)), queue = lanes(f);
+    try {
+      await queue.enqueue(dailyRunJob, {}, gymJob(f));
+      expect(await queue.runNext()).toBe(true);
+    } finally { setLogSink(prior); }
+    // The fourth and fifth invoices are never tried: each would only wait out the provider's timeout.
+    expect(adopt).toHaveBeenCalledTimes(3);
+    let rows = await f.read();
+    expect(rows.attempts.map(row => row.declineCode)).toEqual(['create_abandoned', 'create_abandoned', 'create_abandoned']);
+    expect(rows.invoices.map(row => row.status)).toEqual(Array(5).fill('open'));
+    expect(logs.map(line => JSON.parse(line) as object)).toContainEqual(expect.objectContaining({
+      event: 'billing.runner.collection_stopped', gymId: f.gymId, failures: 3, continuesAt: '2028-03-01T18:00:00.000Z' }));
+    // The run doesn't fail into its one- and two-second retries; the continuation waits its hour.
+    f.clock.advance(3_599_000); expect(await queue.runNext()).toBe(false);
+    f.clock.advance(1000); expect(await queue.runNext()).toBe(true);
+    rows = await f.read();
+    expect(rows.invoices.map(row => row.status)).toEqual(Array(5).fill('paid'));
+    expect(rows.attempts.filter(row => row.status === 'succeeded')).toHaveLength(5);
+    expect(await queue.runNext()).toBe(false);
+  });
+  it('leaves a continuation that stops again to the next daily run, one continuation a day', async () => {
+    const f = await fixture(); await addHouseholds(f, 2);
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer');
+    for (let n = 0; n < 6; n++) adopt.mockRejectedValueOnce(outage());
+    const queue = lanes(f), logs: string[] = [], prior = setLogSink(line => logs.push(line));
+    try {
+      await queue.enqueue(dailyRunJob, {}, gymJob(f));
+      expect(await queue.runNext()).toBe(true);
+      f.clock.advance(3_600_000); expect(await queue.runNext()).toBe(true);
+    } finally { setLogSink(prior); }
+    expect(adopt).toHaveBeenCalledTimes(6);
+    // The continuation's stop queues nothing more, and its log says so.
+    expect(logs.map(line => JSON.parse(line) as { event: string }).filter(line => line.event === 'billing.runner.collection_stopped'))
+      .toEqual([expect.objectContaining({ continuesAt: '2028-03-01T18:00:00.000Z' }), expect.objectContaining({ continuesAt: null })]);
+    f.clock.advance(3_600_000); expect(await queue.runNext()).toBe(false);
+    f.clock.set('2028-03-02T17:00:00Z');
+    await queue.enqueue(dailyRunJob, {}, { ...gymJob(f), idempotencyKey: 'next day' });
+    expect(await queue.runNext()).toBe(true);
+    expect((await f.read()).invoices.map(row => row.status)).toEqual(Array(3).fill('paid'));
+  });
+  it('counts only consecutive provider outages: answers and other errors in between keep the run going', async () => {
+    const f = await fixture(); await addHouseholds(f, 7);
+    const real = f.provider.adoptCustomer.bind(f.provider), adopt = vi.spyOn(f.provider, 'adoptCustomer');
+    const refused = () => new Error('Customer belongs to another gym');
+    // Two outages, an answer, two outages, then refusals that aren't outages: never three outages in a row.
+    for (const next of [outage, outage, null, outage, outage, refused, refused, refused]) {
+      if (next) adopt.mockRejectedValueOnce(next()); else adopt.mockImplementationOnce(id => real(id));
+    }
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 1, stopped: false });
+    expect(adopt).toHaveBeenCalledTimes(8);
+    expect(f.serviceOptions.jobs.jobs.filter(job => job.name === dailyRunJob)).toEqual([]);
   });
 });

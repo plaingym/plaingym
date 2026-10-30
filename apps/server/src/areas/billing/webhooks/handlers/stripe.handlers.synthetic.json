@@ -162,7 +162,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -179,7 +184,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -237,7 +247,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -254,14 +269,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -278,20 +303,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
-      }
-    },
-    {
-      "operation": "stripe",
-      "input": {
-        "method": "GET",
-        "path": "/v1/charges/ch_checkout"
-      },
-      "output": {
-        "id": "ch_checkout",
-        "object": "charge",
-        "payment_intent": "pi_2",
-        "created": 1792929600
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -386,7 +403,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -403,7 +425,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -461,7 +488,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -478,14 +510,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -502,20 +544,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
-      }
-    },
-    {
-      "operation": "stripe",
-      "input": {
-        "method": "GET",
-        "path": "/v1/charges/ch_checkout"
-      },
-      "output": {
-        "id": "ch_checkout",
-        "object": "charge",
-        "payment_intent": "pi_2",
-        "created": 1792929600
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1203,7 +1237,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1220,14 +1259,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1244,27 +1293,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_checkout"
-      },
-      "output": {
-        "id": "ch_checkout",
-        "object": "charge",
-        "payment_intent": "pi_2",
-        "created": 1792929600
-      }
-    },
-    {
-      "operation": "stripe",
-      "input": {
-        "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1281,7 +1327,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1327,7 +1378,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1344,7 +1400,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1381,7 +1442,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1398,14 +1464,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1422,14 +1498,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1446,27 +1532,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/charges/ch_checkout"
-      },
-      "output": {
-        "id": "ch_checkout",
-        "object": "charge",
-        "payment_intent": "pi_2",
-        "created": 1792929600
-      }
-    },
-    {
-      "operation": "stripe",
-      "input": {
-        "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1483,7 +1566,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1529,7 +1617,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1546,7 +1639,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1583,7 +1681,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1600,14 +1703,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1624,7 +1737,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1661,7 +1779,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1678,14 +1801,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1702,7 +1835,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1739,7 +1877,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1756,14 +1899,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1780,7 +1933,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1817,7 +1975,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1834,14 +1997,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1858,7 +2031,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1895,7 +2073,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1912,14 +2095,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1936,7 +2129,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -1973,7 +2171,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -1990,14 +2193,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2014,7 +2227,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2051,7 +2269,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2068,14 +2291,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2092,7 +2325,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2127,7 +2365,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2144,14 +2387,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2168,7 +2421,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2203,7 +2461,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2220,14 +2483,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2244,7 +2517,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2279,7 +2557,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2296,14 +2579,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2320,7 +2613,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2355,7 +2653,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2372,14 +2675,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2396,7 +2709,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2431,7 +2749,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2448,14 +2771,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2472,7 +2805,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
@@ -2507,7 +2845,12 @@
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2524,14 +2867,24 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     },
     {
       "operation": "stripe",
       "input": {
         "method": "GET",
-        "path": "/v1/payment_intents/pi_2"
+        "path": "/v1/payment_intents/pi_2",
+        "params": {
+          "expand": [
+            "latest_charge"
+          ]
+        }
       },
       "output": {
         "id": "pi_2",
@@ -2548,7 +2901,12 @@
         "amount": 10000,
         "currency": "usd",
         "setup_future_usage": "off_session",
-        "latest_charge": "ch_checkout"
+        "latest_charge": {
+          "id": "ch_checkout",
+          "object": "charge",
+          "payment_intent": "pi_2",
+          "created": 1792929600
+        }
       }
     }
   ]

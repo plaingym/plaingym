@@ -29,6 +29,13 @@ export interface JobRetentionOptions {
   readonly failedDays?: number;
   readonly batchSize?: number;
 }
+/** Long batch work runs in its own per-gym lane, so the gym's other jobs never wait behind it. */
+export interface BatchLaneOptions {
+  /** Job names that run in the batch lane; every other job runs in the default lane. */
+  readonly jobs: readonly string[];
+  /** Batch jobs one gym runs at once. Default one. */
+  readonly perGymConcurrency?: number;
+}
 export interface PostgresJobsOptions {
   readonly database?: Scope;
   readonly clock?: Clock;
@@ -40,9 +47,16 @@ export interface PostgresJobsOptions {
   readonly maxScheduledPerTick?: number;
   /** Registers the daily `jobs.retention` install job; without it every row is kept. */
   readonly retention?: JobRetentionOptions;
+  /** Without it every job runs in the default lane. */
+  readonly batch?: BatchLaneOptions;
 }
 export interface WorkerOptions {
   readonly concurrency?: number;
+  /**
+   * Batch-lane jobs this process runs at once, at most `concurrency`. Default: one less than `concurrency` (at least
+   * one), so with two or more slots other jobs always keep one.
+   */
+  readonly batchConcurrency?: number;
   readonly pollMs?: number;
   readonly onError?: (error: unknown) => void;
   /** Checked before each poll, e.g. while a restore holds the install. */
@@ -63,6 +77,11 @@ function envelope(value: unknown): Envelope {
     throw new Error('Invalid job envelope');
   return value as Envelope;
 }
+/** `name in (...)`, or false for no names. */
+const nameIn = (names: Iterable<string>) => {
+  const list = [...names];
+  return list.length ? sql`(${jobs.name} in (${sql.join(list.map((name) => sql`${name}`), sql`, `)}))` : sql`false`;
+};
 // Schema keys are (gym_id, idempotency_key); namespace caller keys by job name.
 const hashKey = (name: string, key: string) => createHash('sha256').update(JSON.stringify([name, key])).digest('hex');
 
@@ -75,6 +94,8 @@ export class PostgresJobs implements Jobs, JobRecovery {
   readonly #listGyms: PostgresJobsOptions['listGyms'];
   readonly #maxScheduled: number;
   readonly #retention: Required<JobRetentionOptions> | undefined;
+  readonly #batch: ReadonlySet<string>;
+  readonly #batchCap: number;
   readonly #handlers = new Map<string, JobHandler>();
   readonly #systemHandlers = new Map<string, SystemJobHandler>();
   readonly #schedules = new Map<string, string>();
@@ -88,6 +109,8 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.#retryBaseMs = positive(options.retryBaseMs ?? 1000, 'retryBaseMs');
     this.#maxScheduled = positive(options.maxScheduledPerTick ?? 100, 'maxScheduledPerTick');
     this.#listGyms = options.listGyms;
+    this.#batch = new Set(options.batch?.jobs ?? []);
+    this.#batchCap = positive(options.batch?.perGymConcurrency ?? 1, 'batch.perGymConcurrency');
     if (options.retention) {
       const { keep, succeededDays = 14, failedDays = 90, batchSize = 1000 } = options.retention;
       this.#retention = { keep: [...keep], succeededDays: positive(succeededDays, 'succeededDays'),
@@ -147,7 +170,8 @@ export class PostgresJobs implements Jobs, JobRecovery {
     };
     return gymId === null ? this.#database.forSystem(insert) : this.#database.forGym(gymId, insert);
   }
-  async #claim(): Promise<Row | undefined> {
+  /** `batch: false` leaves batch-lane jobs for later, when this process has no batch slot free. */
+  async #claim(batch = true): Promise<Row | undefined> {
     assertNoTransaction('jobs.claim');
     const now = this.clock.now();
     return this.#database.forSystem(async (tx) => {
@@ -158,20 +182,21 @@ export class PostgresJobs implements Jobs, JobRecovery {
       await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, runAt: now,
         lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'
           and ${jobs.lockedUntil} <= ${now.toISOString()} and ${jobs.attempts} >= ${jobs.maxAttempts}`);
-      const names = [...this.#handlers.keys()], systemNames = [...this.#systemHandlers.keys()];
-      const gymNames = names.length ? sql`${jobs.name} in (${sql.join(names.map((name) => sql`${name}`), sql`, `)})` : sql`false`;
-      const installNames = systemNames.length ? sql`${jobs.name} in (${sql.join(systemNames.map((name) => sql`${name}`), sql`, `)})` : sql`false`;
-      const accepted = sql`((${jobs.gymId} is not null and ${gymNames})
-        or (${jobs.gymId} is null and ${installNames}))`;
-      // Count live leases per gym once, then skip gyms at their cap. Install jobs share the null-gym bucket.
-      const busy = tx.$with('busy').as(tx.select({ gymId: jobs.gymId }).from(jobs)
-        .where(sql`${jobs.status} = 'running' and ${jobs.lockedUntil} > ${now.toISOString()}`)
-        .groupBy(jobs.gymId).having(sql`count(*) >= ${this.#cap}`));
+      const accepted = sql`((${jobs.gymId} is not null and ${nameIn(this.#handlers.keys())})
+        or (${jobs.gymId} is null and ${nameIn(this.#systemHandlers.keys())}))`;
+      const inBatch = nameIn(this.#batch);
+      // Count live leases per gym once, then skip each gym's lanes at their cap. Install jobs share the null-gym bucket.
+      const busy = tx.$with('busy').as(tx.select({ gymId: jobs.gymId,
+        defaultFull: sql<boolean>`count(*) filter (where not ${inBatch}) >= ${this.#cap}`.as('default_full'),
+        batchFull: sql<boolean>`count(*) filter (where ${inBatch}) >= ${this.#batchCap}`.as('batch_full') }).from(jobs)
+        .where(sql`${jobs.status} = 'running' and ${jobs.lockedUntil} > ${now.toISOString()}`).groupBy(jobs.gymId));
       const [candidate] = await tx.with(busy).select().from(jobs).where(sql`${accepted}
         and ${jobs.attempts} < ${jobs.maxAttempts}
         and ((${jobs.status} = 'pending' and ${jobs.runAt} <= ${now.toISOString()})
           or (${jobs.status} = 'running' and ${jobs.lockedUntil} <= ${now.toISOString()}))
-        and not exists (select 1 from ${busy} where ${busy.gymId} is not distinct from ${jobs.gymId})`)
+        and not exists (select 1 from ${busy} where ${busy.gymId} is not distinct from ${jobs.gymId}
+          and case when ${inBatch} then ${busy.batchFull} else ${busy.defaultFull} end)
+        ${batch ? sql`` : sql`and not ${inBatch}`}`)
         .orderBy(asc(jobs.runAt), asc(jobs.id)).limit(1).for('update', { of: jobs, skipLocked: true });
       if (!candidate) return undefined;
       const [claimed] = await tx.update(jobs).set({ status: 'running', attempts: candidate.attempts + 1,
@@ -349,11 +374,15 @@ export class PostgresJobs implements Jobs, JobRecovery {
     assertNoTransaction('jobs.start');
     if (this.#started) throw new Error('Worker already started');
     const concurrency = positive(options.concurrency ?? 4, 'concurrency');
+    // With a single slot, batch work has to share it.
+    const batchSlots = positive(options.batchConcurrency ?? Math.max(1, concurrency - 1), 'batchConcurrency');
+    if (batchSlots > concurrency) throw new Error('batchConcurrency must not exceed concurrency');
     const pollMs = positive(options.pollMs ?? 1000, 'pollMs');
     if (this.#schedules.size && !this.#listGyms) throw new Error('Scheduled jobs require a tenancy listGyms provider');
     this.#started = true;
     const abort = new AbortController();
     const running = new Set<Promise<void>>();
+    let batchRunning = 0;
     const report = (error: unknown) => { if (options.onError) options.onError(error); else console.error('Jobs worker infrastructure error', error); };
     let scheduledMinute: number | undefined;
     const loop = (async () => {
@@ -366,10 +395,16 @@ export class PostgresJobs implements Jobs, JobRecovery {
           const minute = Math.floor(this.clock.now().getTime() / 60_000);
           if (!paused && minute !== scheduledMinute) { scheduledMinute = minute; await this.scheduleDue(); }
           while (!paused && !abort.signal.aborted && running.size < concurrency) {
-            const row = await this.#claim();
+            // Across gyms, batch jobs could otherwise fill every slot and hold up the others' webhooks.
+            const row = await this.#claim(batchRunning < batchSlots);
             if (!row) break;
+            const batch = this.#batch.has(row.name);
+            if (batch) batchRunning++;
             const execute = () => this.#execute(row);
-            const task = (options.around ? options.around(execute) : execute()).catch(report).finally(() => { running.delete(task); });
+            const task = (options.around ? options.around(execute) : execute()).catch(report).finally(() => {
+              running.delete(task);
+              if (batch) batchRunning--;
+            });
             running.add(task);
           }
         } catch (error) { report(error); }

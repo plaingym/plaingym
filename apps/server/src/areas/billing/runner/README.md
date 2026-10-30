@@ -7,7 +7,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 
 | Entry point | Behavior |
 | --- | --- |
-| `daily(gymId)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, plus each failed invoice's ID. Logs contain identifiers and safe error classifications, without raw error messages. |
+| `daily(gymId)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, each failed invoice's ID, and whether an outage stopped the collection (`stopped`). Logs contain identifiers and safe error classifications, without raw error messages. |
 | `charge(gymId, invoiceId, options?)` | Collect an eligible issued invoice. Returns an outcome object, or `{ status: 'skipped', reason }`. Provider errors propagate and leave any committed reservation for reconciliation. |
 | `collectAssigned(gymId, householdId)` | Immediately collect that household's open, unattempted assignment one-offs after the assignment transaction commits. Returns collection counts and errors; never call it from `onAssigned`. |
 | `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the invoice's saved retry windows at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
@@ -161,10 +161,39 @@ whose payment is already recorded costs no processor read. The optional
 `disputeAlerts` option (the billing alerts service) receives those alerts; without it,
 the hourly dispute scan still finds them.
 
-Successful reconciliation calls `findCharge(reference, { includeSuccessTime: true })`
-and records the processor's `succeededAt`, including after restore or a cancel/confirm
-race. Missing or invalid success times remain retryable; the clock never supplies
-a replacement payment date.
+A successful confirmation carries the processor's `succeededAt` (the adapter
+expands the latest Charge), so recording it reads nothing more: a saved-card
+charge makes five provider requests (customer adoption, the payment-method read
+that also checks the payer, create, and the confirmation's read and request), and
+six when adoption first tags an untagged customer.
+Any other success, including after restore or a cancel/confirm race, calls
+`findCharge(reference, { includeSuccessTime: true })` and records its
+`succeededAt`. Missing or invalid success times remain retryable; the clock never
+supplies a replacement payment date.
+
+The daily collection stops after three consecutive provider outage errors
+(`isProviderOutage`: unreachable or timed out, rate limited, a server error, or a
+rejected key; not a permission the key lacks, which fails only some charges).
+Without the stop, each remaining charge would wait out the adapter's
+20-second timeout and fail the same way, and the failed job would then rerun the
+whole collection after one and two seconds. A charge outcome resets the count, a
+skip leaves it as it is, and any other error resets it, so a few households whose
+charges fail on their own never stop the run. A stopped run enqueues one
+continuation, `billing.runner.daily` an hour later with the payload
+`{ continues: <gym-local date> }` and that date in its key (`continue:<date>`), so a
+replayed run reuses it, and returns `stopped` instead of failing its job. The
+continuation runs the daily pass again and collects what is left, including the
+stopped run's `create_abandoned` attempts; an attempt whose create had started
+stays pending until the hourly reconciliation resolves it. A continuation that
+stops again queues nothing (its log says `continuesAt: null`), even when delayed
+past midnight, so each daily run gets at most one; the next daily run collects
+the rest. The charge-run health tile records a stopped run as failed until a run
+completes.
+
+The daily run is a batch job (`runnerBatchJobs`). When the worker's queue lists
+it in its batch lane (`infra/jobs/README.md`), the run holds only that lane, so
+webhook dispatch (join completion included), transition effects and notices run
+while it collects; without the lane they wait for the run.
 
 `core/runtime.ts` composes billing before starting the job worker:
 
@@ -178,7 +207,7 @@ a replacement payment date.
    errors are logged; assignment still succeeds and the daily sweep recovers collection.
 3. It calls `configureChargeRunner(runner)` before starting workers; the webhook
    composition already configures transition effects. The billing barrel includes:
-   `billing.runner.daily` (09:00 local), `billing.runner.reconcile` (hourly at :17),
+   `billing.runner.daily` (09:00 local, and a stopped collection's continuation), `billing.runner.reconcile` (hourly at :17),
    `billing.runner.retry` (`{ invoiceId }`), and `billing.runner.restore`
    (`{ snapshotAt, restoreId }`; legacy jobs may omit `restoreId`). Restore queues
    one durable job per gym/restore before completing its journal. The normal retry path is the transition effect job callback;
@@ -199,7 +228,9 @@ The PostgreSQL suite covers reservation visibility, replay, concurrent runs,
 recorded synthetic Stripe adapter fixtures, customer adoption, catch-up, local
 dates, leap-day anniversaries, assignment invoices, cross-gym isolation, lost
 responses, both cancel/confirm race winners, delayed creation, retry windows and
-Checkout exclusion, transition job composition, and restore refunds/disputes.
+Checkout exclusion, transition job composition, restore refunds/disputes, the
+outage stop and its continuation, and a webhook dispatch running while the daily
+run holds the batch lane.
 The service composition test uses `composeBillingWebhooks` and `attachRetry` with
 the real membership, transition, and runner services. `core/runtime.test.ts` covers
 assignment through the API and the configured retry callback. To re-record the local synthetic adapter

@@ -82,9 +82,7 @@ async function recordedIntent(f: Fixture, card: string) {
     return typeof value === 'string' ? value.replaceAll('00000000-0000-7000-8000-000000000001', f.gymId)
       .replaceAll('invoice_fixture', f.invoice.id) : value;
   }) as Tape;
-  // The opt-in accounting lookup adds one Charge read; the shared adapter tape keeps its original request sequence.
-  if (card === '4242') tape.exchanges.push({ operation: 'stripe', input: { method: 'GET', path: '/v1/charges/ch_2' },
-    output: { id: 'ch_2', object: 'charge', payment_intent: 'pi_1', created: f.transport.now } });
+  // The success time comes from the intent's expanded Charge, so the accounting lookup needs no Charge read.
   const transport = replayTransport(tape, f.gymId), provider = new StripePayments(f.gymId, { transport, clock: f.clock, webhookSecret: secret });
   const created = await provider.createCharge({ amount: 10000, currency: 'usd', customerId: 'cus_fixture', paymentMethodId: 'pm_' + card,
     invoiceId: f.invoice.id, attemptId: f.attempt.id, idempotencyKey: `${f.invoice.id}:1:create` });
