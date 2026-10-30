@@ -145,8 +145,11 @@ export function createChargeRunner(options: RunnerOptions) {
     let attempted = 0, outages = 0, stopped = false;
     for (const invoice of due) {
       try {
-        // A skip may never have reached the provider, so only a charge outcome shows that it answered.
-        if ((await charge(gymId, invoice.id)).status !== 'skipped') { attempted++; outages = 0; }
+        // A skip may never have reached the provider, and a $0 settlement never does, so only a charge outcome shows
+        // that it answered.
+        const { status } = await charge(gymId, invoice.id);
+        if (status !== 'skipped') attempted++;
+        if (status !== 'skipped' && status !== 'settled_zero') outages = 0;
       } catch (error) {
         errors.push({ invoiceId: invoice.id });
         logError('billing.runner.charge_failed', { gymId, invoiceId: invoice.id }, error);
@@ -178,7 +181,9 @@ export function createChargeRunner(options: RunnerOptions) {
   async function daily(gymId: string, run: { continues?: string } = {}) {
     const gym = await options.settings.get(gymId);
     if (!gym.billingEnabled) return { generatedPeriods: 0, attempted: 0, errors: [] as CollectionError[], stopped: false };
-    const today = localDate(clock.now(), gym.timezone);
+    const now = localDate(clock.now(), gym.timezone);
+    // A continuation delayed past local midnight finishes its own day; that day's 09:00 run collects the next one.
+    const today = run.continues && run.continues < now ? run.continues : now;
     const homes = await scope(gymId, tx => tx.selectDistinct({ id: memberships.householdId }).from(memberships)
       .where(and(inArray(memberships.status, ['active', 'frozen']), lte(memberships.nextDueOn, today))));
     let generatedPeriods = 0;

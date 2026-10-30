@@ -117,7 +117,7 @@ export class StripePayments implements Payments {
     // An expanded Charge (intent reads and confirmation request it) carries the success time. If it is missing,
     // belongs to another intent or has no valid time, the outcome has none and findCharge reads the Charge itself.
     const charge = object.latest_charge && typeof object.latest_charge === 'object' ? data(object.latest_charge) : undefined;
-    const succeededAt = object.status === 'succeeded' && charge && id(charge.payment_intent) === id(object.id)
+    const succeededAt = object.status === 'succeeded' && charge && optionalId(charge.payment_intent) === id(object.id)
       ? optionalTimestamp(charge.created) : undefined;
     return normalizeChargeOutcome({ id: id(object.id), amount: Number(object.amount), currency: String(object.currency),
       customerId: id(object.customer), ...(object.payment_method ? { paymentMethodId: id(object.payment_method) } : {}),

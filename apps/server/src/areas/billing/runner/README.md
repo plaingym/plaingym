@@ -177,18 +177,20 @@ rejected key; not a permission the key lacks, which fails only some charges).
 Without the stop, each remaining charge would wait out the adapter's
 20-second timeout and fail the same way, and the failed job would then rerun the
 whole collection after one and two seconds. A charge outcome resets the count, a
-skip leaves it as it is, and any other error resets it, so a few households whose
-charges fail on their own never stop the run. A stopped run enqueues one
-continuation, `billing.runner.daily` an hour later with the payload
+skip or a $0 settlement (which never reaches the provider) leaves it as it is, and
+any other error resets it, so a few households whose charges fail on their own
+never stop the run. A stopped run enqueues one continuation,
+`billing.runner.daily` an hour later with the payload
 `{ continues: <gym-local date> }` and that date in its key (`continue:<date>`), so a
 replayed run reuses it, and returns `stopped` instead of failing its job. The
 continuation runs the daily pass again and collects what is left, including the
 stopped run's `create_abandoned` attempts; an attempt whose create had started
 stays pending until the hourly reconciliation resolves it. A continuation that
-stops again queues nothing (its log says `continuesAt: null`), even when delayed
-past midnight, so each daily run gets at most one; the next daily run collects
-the rest. The charge-run health tile records a stopped run as failed until a run
-completes.
+stops again queues nothing (its log says `continuesAt: null`), so each daily run
+gets at most one; the next daily run collects the rest. A continuation delayed
+past local midnight collects only its own day, as that day's run would have, and
+leaves the next day to its own 09:00 run. The charge-run health tile records a
+stopped run as failed until a run completes.
 
 The daily run is a batch job (`runnerBatchJobs`). When the worker's queue lists
 it in its batch lane (`infra/jobs/README.md`), the run holds only that lane, so

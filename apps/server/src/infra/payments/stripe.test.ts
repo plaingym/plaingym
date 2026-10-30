@@ -160,8 +160,8 @@ it('reads the Charge for the success time only when the expanded one cannot supp
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
   await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
   const chargeId = String(transport.objects.get(intent.id)!.latest_charge), stored = transport.objects.get(chargeId)!;
-  // An expanded Charge of another intent, or one without a valid time, gives no success time.
-  for (const change of [{ payment_intent: 'pi_other' }, { created: 'later' }]) {
+  // An expanded Charge of another intent or of none, or one without a valid time, gives no success time.
+  for (const change of [{ payment_intent: 'pi_other' }, { payment_intent: null }, { created: 'later' }]) {
     const original = { ...stored }; Object.assign(stored, change);
     expect(await payments.findCharge({ kind: 'charge', id: intent.id })).not.toHaveProperty('succeededAt');
     Object.assign(stored, original);

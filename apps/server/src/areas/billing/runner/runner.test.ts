@@ -1136,4 +1136,45 @@ describe('daily run lane and circuit breaker', () => {
     expect(adopt).toHaveBeenCalledTimes(8);
     expect(f.serviceOptions.jobs.jobs.filter(job => job.name === dailyRunJob)).toEqual([]);
   });
+  it('still stops when $0 settlements, which never reach the provider, fall between the outages', async () => {
+    const f = await fixture({ dueOn: '2028-02-24' }), free = await factory('plans', f.gymId, { amountCents: 0 });
+    // By due date: paid, $0, paid, $0, paid, $0, paid.
+    for (const [n, dueOn] of ['2028-02-25', '2028-02-26', '2028-02-27', '2028-02-28', '2028-02-29', '2028-03-01'].entries()) {
+      const paid = n % 2 === 1;
+      f.provider.seedCustomer({ id: `cus_mixed_${n}`, email: `mixed${n}@example.invalid` });
+      const home = await factory('households', f.gymId, { billingDay: 1, stripeCustomerId: `cus_mixed_${n}` });
+      const member = await factory('members', f.gymId, { householdId: home.id });
+      await factory('memberships', f.gymId, { householdId: home.id, memberId: member.id, planId: paid ? f.plan.id : free.id,
+        status: 'active', amountCents: paid ? 10000 : 0, startsOn: '2028-01-01', nextDueOn: dueOn });
+      await factory('paymentMethods', f.gymId, { householdId: home.id, processorId: `pm_mixed_${n}`, isDefault: true });
+    }
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValue(outage());
+    expect(await f.runner.daily(f.gymId)).toMatchObject({ attempted: 2, stopped: true });
+    expect(adopt).toHaveBeenCalledTimes(3);
+    // Each household's prorated first period comes first by due date; nothing after the third outage is tried.
+    const statuses = (await f.read()).invoices.map(row => row.status);
+    expect(statuses).toEqual(['open', 'paid', 'open', 'paid', ...Array(statuses.length - 4).fill('open')]);
+  });
+  it('collects only its own day when its continuation runs after local midnight', async () => {
+    const f = await fixture(); await addHouseholds(f, 2);
+    f.provider.seedCustomer({ id: 'cus_tomorrow', email: 'tomorrow@example.invalid' });
+    const home = await factory('households', f.gymId, { billingDay: 2, stripeCustomerId: 'cus_tomorrow' });
+    const member = await factory('members', f.gymId, { householdId: home.id });
+    await factory('memberships', f.gymId, { householdId: home.id, memberId: member.id, planId: f.plan.id, status: 'active',
+      startsOn: '2028-01-02', nextDueOn: '2028-03-02' });
+    await factory('paymentMethods', f.gymId, { householdId: home.id, processorId: 'pm_tomorrow', isDefault: true });
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer');
+    for (let n = 0; n < 3; n++) adopt.mockRejectedValueOnce(outage());
+    const queue = lanes(f);
+    await queue.enqueue(dailyRunJob, {}, gymJob(f));
+    expect(await queue.runNext()).toBe(true);
+    // The worker was down until 00:30 the next local day; the continuation still collects only 1 March.
+    f.clock.set('2028-03-02T08:30:00Z');
+    expect(await queue.runNext()).toBe(true);
+    expect((await f.read()).invoices.map(row => [row.dueOn, row.status])).toEqual(Array(3).fill(['2028-03-01', 'paid']));
+    f.clock.set('2028-03-02T17:00:00Z');
+    await queue.enqueue(dailyRunJob, {}, { ...gymJob(f), idempotencyKey: 'next day' });
+    expect(await queue.runNext()).toBe(true);
+    expect((await f.read()).invoices.map(row => [row.dueOn, row.status]).at(-1)).toEqual(['2028-03-02', 'paid']);
+  });
 });
