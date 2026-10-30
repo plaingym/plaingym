@@ -15,8 +15,10 @@ export interface TransitionNotice {
   invoice: InvoiceSnapshot;
   payment?: typeof payments.$inferSelect;
 }
-/** Staff are told about a duplicate card payment (the default) or a refund that failed after it succeeded. */
-export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' } | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect });
+/** Staff are told about a duplicate card payment (the default) or a processor refund that failed; `reversed` when it
+ * failed after it was reported successful. */
+export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' }
+  | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect; reversed?: boolean });
 export interface TransitionNotifications {
   receipt(notice: TransitionNotice): Promise<void>;
   dunning(notice: TransitionNotice & { actionRequired: boolean }): Promise<void>;
@@ -36,10 +38,11 @@ export function createTransitionNotifications(options: {
 }): TransitionNotifications {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const links = createSignedLinksService({ scope, clock });
-  async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'refundFailed', amountCents?: number) {
+  async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'refundFailed' | 'refundReversed',
+    amountCents?: number) {
     assertNoTransaction('invoice notification');
     const { gymId, invoice } = notice;
-    const staff = kind === 'duplicate' || kind === 'refundFailed';
+    const staff = kind === 'duplicate' || kind === 'refundFailed' || kind === 'refundReversed';
     const recipients = staff ? await options.staffRecipients(gymId) : await memberRecipients(gymId, invoice.householdId);
     if (!recipients.length) {
       if (staff) throw new Error('No staff recipient configured for billing staff notices');
@@ -95,7 +98,8 @@ export function createTransitionNotifications(options: {
     async receipt(notice) { await deliver(notice, 'receipt'); },
     async dunning(notice) { await deliver(notice, notice.actionRequired ? 'action' : 'failed'); },
     async staffNotice(notice) {
-      if (notice.reason === 'refund_failed') await deliver(notice, 'refundFailed', notice.refund.amountCents);
+      if (notice.reason === 'refund_failed')
+        await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', notice.refund.amountCents);
       else await deliver(notice, 'duplicate');
     },
   };

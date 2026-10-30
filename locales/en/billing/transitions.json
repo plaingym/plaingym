@@ -9,5 +9,7 @@
   "duplicateSubject": "Duplicate payment for invoice {number}",
   "duplicateBody": "An additional card payment of {amount} arrived for invoice {number}, which was already paid. An automatic refund was queued. Check the refund status in billing.",
   "refundFailedSubject": "Refund failed for invoice {number}",
-  "refundFailedBody": "A refund of {amount} for invoice {number} was reported as successful but then failed, so the payer did not receive it. Check the payment in billing and refund the payer another way."
+  "refundFailedBody": "A refund of {amount} for invoice {number} failed or was canceled, so the payer did not receive it. Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.",
+  "refundReversedSubject": "Refund failed for invoice {number}",
+  "refundReversedBody": "A refund of {amount} for invoice {number} was reported as successful but then failed, so the payer did not receive it. Check the payment in billing and refund the payer another way."
 }

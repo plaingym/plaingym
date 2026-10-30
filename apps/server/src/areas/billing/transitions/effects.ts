@@ -71,16 +71,18 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const refund = work.notice === 'refund_failed' && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
+      // A refund that failed after it was reported successful gets its own wording.
+      const reversed = refund ? Boolean(await recorded(tx, 'billing.refund.reversed', refund.id)) : false;
       const attempt = work.attemptId ? (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, work.attemptId)))[0] : undefined;
       // An attempt abandoned before the card was charged never replaces the failure a member must hear about.
       const latestAttempt = (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoice.id))
         .orderBy(asc(paymentAttempts.attemptNumber))).filter(row => !abandonedAttempt(row)).at(-1);
       const lines = work.kind === 'activate_memberships' ? await tx.select({ membershipId: invoiceLineItems.membershipId })
         .from(invoiceLineItems).where(and(eq(invoiceLineItems.invoiceId, invoice.id), eq(invoiceLineItems.kind, 'membership'))) : [];
-      return { event, work, invoice, payment, refund, attempt, latestAttempt, lines };
+      return { event, work, invoice, payment, refund, reversed, attempt, latestAttempt, lines };
     });
     if (!loaded) return;
-    const { work, invoice, payment, refund, attempt, latestAttempt, lines } = loaded;
+    const { work, invoice, payment, refund, reversed, attempt, latestAttempt, lines } = loaded;
     const data = { gymId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
     if (work.kind === 'receipt') await options.notifications.receipt(data);
     else if (work.kind === 'activate_memberships') {
@@ -100,13 +102,13 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         await options.retry(invoice.id, context);
     } else if (work.kind === 'staff_notice') {
       if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
-      else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund });
+      else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed });
       else throw new Error('Failed refund notice has no refund');
     }
     else if (work.kind === 'refund_duplicate') {
       if (!payment || !work.refundId || !payment.paymentIntentId) throw new Error('Duplicate payment has no processor identity');
       const reservation = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.id, work.refundId!)))[0] ?? notFound());
-      if (reservation.status === 'failed') throw new Error('Automatic duplicate refund failed; staff resolution required');
+      // A failed refund is final: the transition that recorded it queued the staff notice, so this work is done.
       if (reservation.status === 'pending') {
         const provider = await options.payments(gymId);
         let refund: Refund | undefined;
@@ -139,7 +141,6 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         await options.transitions.refund(system(gymId), { invoiceId: invoice.id, paymentId: payment.id,
           refundId: reservation.id, processorId: refund.id, amountCents: refund.amount,
           currency: payment.currency as 'USD' | 'CAD', status: refund.status });
-        if (refund.status === 'failed') throw new Error('Automatic duplicate refund failed; staff resolution required');
       }
     }
     await scope(gymId, async tx => {

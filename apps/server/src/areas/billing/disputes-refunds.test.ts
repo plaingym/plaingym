@@ -205,6 +205,52 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     await f.webhook('refund.failed', { kind: 'refund', id: first.id });
     expect((await f.read()).invoice.status).toBe('paid');
   });
+  /** Stripe reports these refunds with the given status from now on. */
+  function report(f: Fixture, statuses: Map<string, 'pending' | 'failed'>) {
+    const read = f.provider.readPaymentObject.bind(f.provider);
+    vi.spyOn(f.provider, 'readPaymentObject').mockImplementation(async reference => {
+      const found = await read(reference), status = found.status === 'found' && found.value.kind === 'refund'
+        ? statuses.get(found.value.object.id) : undefined;
+      return found.status === 'found' && found.value.kind === 'refund' && status
+        ? { status: 'found', value: { kind: 'refund', object: { ...found.value.object, status } } } : found;
+    });
+  }
+  const refundNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
+    .filter(row => row.action === 'billing.transition.effect.created' && (row.after as { notice?: string }).notice === 'refund_failed')
+    .map(row => (row.after as { refundId: string }).refundId);
+  it.each(['webhook', 'restore'] as const)('queues one staff notice for a refund first recorded as failed from the %s path', async first => {
+    const f = await fixture(), intentId = await charged(f);
+    const refund = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: 'dashboard_refund' });
+    report(f, new Map([[refund.id, 'failed']]));
+    const viaWebhook = () => f.webhook('refund.failed', { kind: 'refund', id: refund.id });
+    const viaRestore = async () => expect(await f.restore()).toMatchObject({ readyForOwnerReview: true });
+    // The first path records it; replaying either path afterwards changes nothing.
+    for (const step of first === 'webhook' ? [viaWebhook, viaWebhook, viaRestore] : [viaRestore, viaRestore, viaWebhook]) await step();
+    const rows = await f.read();
+    expect(rows.refunds).toEqual([expect.objectContaining({ id: processorRefundId(f.gymId, refund.id), processorId: refund.id,
+      status: 'failed' })]);
+    expect(rows.invoice.status).toBe('paid');
+    expect(refundNotices(rows)).toEqual([processorRefundId(f.gymId, refund.id)]);
+    expect(rows.audits.filter(row => row.action === 'billing.refund.reversed')).toEqual([]);
+  });
+  it('queues one staff notice when a pending refund fails, however often the failure is replayed', async () => {
+    const f = await fixture(), intentId = await charged(f);
+    const refund = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: 'dashboard_refund' });
+    const statuses = new Map<string, 'pending' | 'failed'>([[refund.id, 'pending']]);
+    report(f, statuses);
+    await f.webhook('refund.created', { kind: 'refund', id: refund.id });
+    expect((await f.read()).refunds).toEqual([expect.objectContaining({ status: 'pending' })]);
+    expect(refundNotices(await f.read())).toEqual([]);
+    statuses.set(refund.id, 'failed');
+    await f.webhook('refund.failed', { kind: 'refund', id: refund.id });
+    await f.webhook('refund.failed', { kind: 'refund', id: refund.id });
+    await f.webhook('refund.updated', { kind: 'refund', id: refund.id });
+    expect(await f.restore()).toMatchObject({ readyForOwnerReview: true });
+    const rows = await f.read();
+    expect(rows.refunds).toEqual([expect.objectContaining({ processorId: refund.id, status: 'failed' })]);
+    expect(rows.invoice.status).toBe('paid');
+    expect(refundNotices(rows)).toEqual([processorRefundId(f.gymId, refund.id)]);
+  });
   it('reads no processor intent during restore for a refund whose payment is recorded', async () => {
     const f = await fixture(), intentId = await charged(f), reads = vi.spyOn(f.provider, 'findCharge');
     const intentReads = async () => { reads.mockClear(); await f.restore(); return reads.mock.calls.filter(([reference]) => reference.id === intentId).length; };

@@ -182,12 +182,13 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         }
         const recordedRefund = { paymentId: payment.id, amountCents: request.amountCents, currency: request.currency, ...values };
         if (!reversed) await audit(tx, context, clock, 'billing.refund.recorded', 'refund', request.refundId, recordedRefund);
-        else {
-          await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
-            { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
+        else await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
+          { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
+        // Staff hear about every processor refund that ends failed: the payer wasn't refunded. A failed refund never
+        // moves again, so a replayed webhook or reconciliation is ignored above and queues no second notice.
+        if (request.status === 'failed' && values.processorId !== null)
           await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_failed', invoiceId: invoice.id,
             paymentId: payment.id, refundId: request.refundId });
-        }
         if (!(request.status === 'succeeded' || reversed && ['partially_refunded', 'refunded'].includes(invoice.status))
           || !await accepted(tx, payment.id)) return result('applied', invoice);
         const successful = await tx.select({ refund: refunds, payment: payments }).from(refunds)

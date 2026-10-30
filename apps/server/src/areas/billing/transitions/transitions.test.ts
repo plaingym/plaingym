@@ -397,6 +397,98 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await duplicate.read()).invoice).toEqual(before);
     expect(duplicate.email.messages.slice(sent)).toMatchObject([{ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1' }]);
   });
+  const failedNotice = (cents: number) => ({ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1',
+    text: `A refund of CA$${(cents / 100).toFixed(2)} for invoice 1 failed or was canceled, so the payer did not receive it. `
+      + 'Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.' });
+  const refundNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
+    .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_failed')
+    .map(row => (row.after as { refundId: string }).refundId);
+  it('notifies staff once when a processor refund fails while pending or is first recorded as failed', async () => {
+    const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
+    const base = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, currency: 'CAD' };
+    // A staff card refund is reserved without a processor ID; the processor then reports it failed.
+    const reserved = { ...base, refundId: uuidv7(), amountCents: 3000, status: 'pending' as const };
+    const failed = { ...base, refundId: uuidv7(), processorId: 're_failed', amountCents: 2000, status: 'failed' as const };
+    await f.transitions.refund(f.context, reserved);
+    const sent = f.email.messages.length;
+    for (const request of [{ ...reserved, processorId: 're_reserved', status: 'failed' as const }, failed]) {
+      expect(await f.transitions.refund(f.context, request)).toMatchObject({ outcome: 'applied', invoice: { status: 'paid' } });
+      // A replayed webhook or a rerun reconciliation changes nothing and queues no second notice.
+      for (const replay of [request, request, { ...request, status: 'pending' as const }])
+        expect((await f.transitions.refund(f.context, replay)).outcome).toBe('ignored');
+    }
+    await f.drain(); await f.drain();
+    const rows = await f.read();
+    expect(rows.refunds.map(row => [row.processorId, row.status]).sort()).toEqual([['re_failed', 'failed'], ['re_reserved', 'failed']]);
+    expect(refundNotices(rows).sort()).toEqual([reserved.refundId, failed.refundId].sort());
+    expect(rows.audits.filter(row => row.action === 'billing.refund.reversed')).toEqual([]);
+    expect(f.email.messages.slice(sent).sort((a, b) => a.text.localeCompare(b.text)))
+      .toMatchObject([failedNotice(2000), failedNotice(3000)]);
+    // A refund without a processor (cash or check) never notifies, even if it is recorded as failed.
+    const cash = await fixture(); await cash.transitions.manualPayment(cash.context, cash.manual); await cash.drain();
+    const staff = cash.email.messages.length;
+    expect((await cash.transitions.refund(cash.context, { invoiceId: cash.invoice.id, paymentId: cash.manual.paymentId,
+      refundId: uuidv7(), amountCents: 1000, currency: 'CAD', status: 'failed' })).outcome).toBe('applied');
+    await cash.drain();
+    expect(refundNotices(await cash.read())).toEqual([]);
+    expect(cash.email.messages).toHaveLength(staff);
+  });
+  it('records a failed automatic duplicate-payment refund and notifies staff instead of failing its job', async () => {
+    const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual); await succeed(f); await f.drain();
+    const create = f.provider.refund.bind(f.provider);
+    vi.spyOn(f.provider, 'refund').mockImplementation(async request => ({ ...await create(request), status: 'failed' }));
+    const before = (await f.read()).invoice, sent = f.email.messages.length;
+    expect((await f.transitions.cardSucceeded(f.context, f.success)).outcome).toBe('duplicate_payment');
+    await f.drain(); await f.drain();
+    const rows = await f.read();
+    expect(rows.refunds).toMatchObject([{ status: 'failed', reason: 'duplicate_payment', processorId: expect.stringMatching(/^re_/) }]);
+    expect(rows.invoice).toEqual(before);
+    expect(refundNotices(rows)).toEqual([rows.refunds[0]!.id]);
+    expect(f.jobs.jobs.filter(job => job.status !== 'completed')).toEqual([]);
+    expect(f.email.messages.slice(sent).map(m => m.subject).sort())
+      .toEqual(['Duplicate payment for invoice 1', 'Refund failed for invoice 1']);
+    expect(f.email.messages.slice(sent).find(m => m.subject.startsWith('Refund'))).toMatchObject(failedNotice(10000));
+  });
+  it('completes the duplicate-payment refund job when the processor reported the refund failed before a retry', async () => {
+    const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual); await succeed(f); await f.drain();
+    expect((await f.transitions.cardSucceeded(f.context, f.success)).outcome).toBe('duplicate_payment');
+    f.provider.loseNextResponse('refund'); await f.drain();
+    const [reservation] = (await f.read()).refunds;
+    expect(reservation).toMatchObject({ status: 'pending', processorId: null });
+    // The refund.failed webhook arrives before the job's retry and fills the reservation.
+    const changes = await f.provider.listChangesSince(new Date('2028-03-10T00:00:00Z'));
+    const processorRefund = changes.changes.find(change => change.kind === 'refund')!.object as { id: string };
+    await f.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: f.success.paymentId, refundId: reservation!.id,
+      processorId: processorRefund.id, amountCents: 10000, currency: 'CAD', status: 'failed' });
+    const refunds = vi.spyOn(f.provider, 'refund');
+    f.clock.set('2028-03-10T17:00:02Z'); await f.drain();
+    expect(refunds).not.toHaveBeenCalled();
+    expect(f.jobs.jobs.filter(job => job.status !== 'completed')).toEqual([]);
+    const rows = await f.read();
+    expect(rows.refunds).toMatchObject([{ id: reservation!.id, status: 'failed', processorId: processorRefund.id }]);
+    expect(refundNotices(rows)).toEqual([reservation!.id]);
+    expect(f.email.messages.filter(m => m.subject === 'Refund failed for invoice 1')).toHaveLength(1);
+  });
+  it("never notifies another gym's staff about a gym's failed refund", async () => {
+    const f = await fixture(), stranger = await fixture();
+    await f.transitions.cardSucceeded(f.context, f.success); await stranger.transitions.cardSucceeded(stranger.context, stranger.success);
+    await f.drain(); await stranger.drain();
+    const failed = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, refundId: uuidv7(), processorId: 're_cross',
+      amountCents: 2000, currency: 'CAD', status: 'failed' as const };
+    // Another gym can't record a refund against this gym's payment.
+    await expect(stranger.transitions.refund(stranger.context, failed)).rejects.toMatchObject({ code: 'not_found' });
+    await f.transitions.refund(f.context, failed);
+    const [effectId] = (await f.read()).audits.filter(row => row.action === effectCreated
+      && (row.after as { notice?: string }).notice === 'refund_failed').map(row => row.targetId);
+    // Nor run this gym's notice work.
+    await expect(stranger.effects.run(effectId!, { jobId: 'job_cross', gymId: stranger.gymId, timezone: 'America/Vancouver',
+      attempt: 1, clock: stranger.clock })).rejects.toMatchObject({ code: 'not_found' });
+    const strangerSent = stranger.email.messages.length, sent = f.email.messages.length;
+    await f.drain(); await stranger.drain();
+    expect(stranger.email.messages).toHaveLength(strangerSent);
+    expect(refundNotices(await stranger.read())).toEqual([]);
+    expect(f.email.messages.slice(sent)).toMatchObject([failedNotice(2000)]);
+  });
   it('ignores unknown/pending provider outcomes and rejects cross-gym outcome metadata', async () => {
     const f = await fixture();
     const outcome = await f.provider.findCharge({ kind: 'charge', id: f.success.paymentIntentId });

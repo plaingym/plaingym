@@ -104,9 +104,11 @@ An additional card payment reserves its full duplicate refund and queues a staff
 notice. The worker reconciles existing refunds before calling Payments.refund,
 using one stable idempotency key and the PaymentIntent ID expected by that
 interface. A lost response is recovered from provider changes. It never retries
-a create outside a conservative 23-hour idempotency window; ambiguous, missing,
-failed or mismatched provider outcomes remain errors for staff resolution. A
-pending processor refund is stored for subsequent webhook/reconciliation updates.
+a create outside a conservative 23-hour idempotency window; ambiguous, missing
+or mismatched provider outcomes remain errors for staff resolution. A failed
+automatic refund is recorded as failed, which queues the failed-refund staff
+notice below, and the effect completes. A pending processor refund is stored for
+subsequent webhook/reconciliation updates.
 Refunds of excess payments never reduce the original invoice's paid balance.
 Pending refunds reserve their amounts, failed reservations release them, and
 successful refunds advance accepted payments to partial/full refund.
@@ -115,15 +117,22 @@ that a refund it reported as successful has failed (the stored refund has the sa
 processor ID), the refund moves from `succeeded` to `failed`, releasing its amount.
 The invoice status is recomputed from its remaining successful refunds (back to
 `paid` or `partially_refunded`) and audited as `billing.invoice.refund_reversed`;
-the refund change is audited as `billing.refund.reversed`, and a staff notice tells
-the gym's staff recipients (owners and admins at runtime) that the payer was not
-refunded. A refund without a processor ID (a cash or check refund) never reverses,
-and a failed refund never moves again.
+the refund change is audited as `billing.refund.reversed`. A refund without a
+processor ID (a cash or check refund) never reverses, and a failed refund never
+moves again.
+Every processor refund that ends `failed` (recorded failed from the start, moved
+from `pending`, or reversed after success) queues one `staff_notice` effect with
+`notice: 'refund_failed'` in the same transaction, which tells the gym's staff
+recipients (owners and admins at runtime) that the payer was not refunded; a
+reversal's email says the refund had been reported successful. The Stripe adapter
+reports a canceled refund as `failed`, so the email asks staff to check the
+payment's refunds before refunding the payer another way. Because a failed
+refund never moves again, a replayed webhook or rerun reconciliation queues no
+second notice.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
-links, and staff notices (a duplicate card payment, or a refund that failed after
-success). Runtime must supply a gym SMTP resolver (or demo
-outbox), trusted canonical origin and staff recipients. Household email respects
+links, and staff notices (a duplicate card payment, or a failed processor refund).
+Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and
 dunning recheck the persisted switch immediately before each send, after preparing
