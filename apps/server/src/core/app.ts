@@ -15,7 +15,8 @@ import { mountHealthz } from './healthz.js';
 import { mountSourceLink, sourceUrl } from './source-link.js';
 import { mountOpenApi } from './openapi.js';
 import { staticAssets } from './static.js';
-import { contentSecurityPolicy, imageOrigins, issuedNonce, type ContentSecurityOptions } from './csp.js';
+import { contentSecurityPolicy, imageOrigins, issuedNonce, reportingEndpoints, type ContentSecurityOptions } from './csp.js';
+import { mountCspReports } from './csp-report.js';
 import { requireSetupToken } from '../areas/setup/setup.token.js';
 
 export interface AppOptions {
@@ -62,6 +63,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
       // framing-only policy above. Routes that set their own (public pages, signed links, downloads) enforce theirs.
       context.res.headers.set('Content-Security-Policy-Report-Only',
         contentSecurityPolicy({ nonce: issuedNonce(context), imageOrigins: images }));
+      context.res.headers.set('Reporting-Endpoints', reportingEndpoints);
     }
   });
   app.use('*', requestBodyLimit(options.bodyLimits));
@@ -74,6 +76,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   };
   mountHealthz(app, installAuthorize);
   mountSourceLink(app, sourceUrl(options.sourceUrl), installAuthorize);
+  mountCspReports(app, installAuthorize, options.rateLimit);
   const contributions = { ...options.contributions, routes: (options.contributions?.routes ?? []).filter((entry) =>
     !options.skipSetup || !Object.values(setupContracts).some((contract) => entry.id === `${contract.method.toUpperCase()} ${contract.path}`)) };
   const firstBootIds = new Set(Object.values(setupContracts)

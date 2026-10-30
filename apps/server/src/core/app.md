@@ -27,6 +27,26 @@ polling bypass that middleware: the coordinator must begin outside the lease it
 drains. Other first-boot handlers, the catalog, assets and gym routes use the gate.
 Liveness and source metadata remain reachable while restore runs.
 
+## Content-Security-Policy reports
+
+Responses that set no policy of their own carry `frame-ancestors 'none'` and a
+report-only policy that names `POST /csp-report` (`report-to` with a
+`Reporting-Endpoints` header, and `report-uri` for older browsers). The route
+(`csp-report.ts`) is public and mounts before tenancy, so it needs no gym, session
+or CSRF Origin; it stores nothing and never echoes a body. It reads
+`application/reports+json` and `application/csp-report` bodies up to 16 KiB (a larger
+one gets the usual 400 from the body limit) and logs one `csp.violation` line per
+report, up to five per request, holding only the format, the effective directive
+(a known name or `other`), the blocked resource's origin, scheme (`data:`) or keyword
+(`inline`), and the document's path. In that path a signed link's token becomes
+`/l/:token` and every segment that is not one of the app's own route words (`admin`,
+`members`, `invoices`, ...) becomes `:id`, so IDs, tokens and names never appear; the
+query, fragment, host, samples, referrers, source files and the raw body are never
+logged. Any other body or content type is ignored. Each client may send 30 requests a
+minute and the install 300; requests over either budget are dropped unlogged. Every
+request within the body cap and the budgets answers 204, so a browser has nothing to
+retry and a flood nothing to react to.
+
 Set `origin` to the canonical install origin or a function of the resolved gym;
 it defaults to the request URL's origin, never forwarded host/protocol headers.
 Cookie-authenticated writes require a matching Origin and reject cross-site

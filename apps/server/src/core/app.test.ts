@@ -69,12 +69,15 @@ describe('server application composition', () => {
       expect(response.headers.get('x-frame-options')).toBe('DENY');
       expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
       expect(response.headers.get('content-security-policy-report-only')).toBe("default-src 'self'; script-src 'self'; style-src 'self'; "
-        + "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'");
+        + "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+        + 'report-uri /csp-report; report-to csp');
+      expect(response.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
     }
     const own = await app.request('/api/own-policy');
     expect(own.headers.get('x-frame-options')).toBe('DENY');
     expect(own.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
     expect(own.headers.has('content-security-policy-report-only')).toBe(false);
+    expect(own.headers.has('reporting-endpoints')).toBe(false);
   });
   it('reports, without blocking, inline scripts without the response nonce and images from unlisted origins', async () => {
     const app = createApp({ resolveGym, session, authorize: allow, contentSecurity: { imageOrigins: ['https://uploads.example.test'] } });

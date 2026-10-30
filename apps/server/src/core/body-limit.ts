@@ -4,6 +4,7 @@ import type { MiddlewareHandler } from 'hono';
 import { AppError } from '@plaingym/shared';
 import { MAX_CSV_BYTES } from '../areas/imports/pipeline.csv.js';
 import type { RequestEnvironment } from './context.js';
+import { cspReportPath } from './csp.js';
 
 export interface BodyLimits {
   /** Bytes allowed for any route without its own entry. */
@@ -15,10 +16,12 @@ export interface BodyLimits {
  * carry a family's signature images (4 MiB, checked again by join itself). The native join form gets twice that here,
  * so join's own check answers a declared oversized length with its page; a chunked body is buffered up to this limit. */
 const join = 4 * 1024 * 1024;
+/** Violation reports are a few hundred bytes each; the public report route takes a handful per request. */
+export const cspReportBytes = 16 * 1024;
 export const defaultBodyLimits: BodyLimits = {
   default: 1024 * 1024,
   routes: { '/api/auth/*': 64 * 1024, '/api/imports/uploads': MAX_CSV_BYTES + 1024 * 1024,
-    '/join': 2 * join, '/join/signatures': join },
+    '/join': 2 * join, '/join/signatures': join, [cspReportPath]: cspReportBytes },
 };
 
 /**

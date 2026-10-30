@@ -56,6 +56,30 @@ it('reports images from the uploads bucket\'s origin under the report-only polic
   expect(response.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data: https://account.storage.example.test;");
 });
 
+it('receives CSP violation reports before tenancy, logging only the sanitized fields', async () => {
+  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
+  const gymId = uuidv7(); await factory('gyms', gymId);
+  runtime = await startRuntime(env(directory));
+  const policy = (await runtime.app.request(origin + '/healthz', { headers: { host: 'gym.example.test' } })).headers;
+  expect(policy.get('reporting-endpoints')).toBe('csp="/csp-report"');
+  expect(policy.get('content-security-policy-report-only')).toContain('report-uri /csp-report; report-to csp');
+  const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+  try {
+    const report = [{ type: 'csp-violation', url: origin, body: { documentURL: `${origin}/l/secret-link-token?email=a@example.test`,
+      blockedURL: 'https://cdn.example.test/a.js?x=1', effectiveDirective: 'script-src-elem', sample: 'visitor-data' } }];
+    // Browsers send it with the visitor's cookies and no Origin; the host is not a configured gym's.
+    for (const host of ['gym.example.test', 'unknown.example.test']) {
+      const response = await runtime.app.request(origin + '/csp-report', { method: 'POST', body: JSON.stringify(report),
+        headers: { host, cookie: 'session=secret', 'content-type': 'application/reports+json' } });
+      expect(response.status).toBe(204);
+    }
+  } finally { setLogSink(previous); }
+  expect(logs.map(line => JSON.parse(line))).toMatchObject(Array(2).fill({ event: 'csp.violation', directive: 'script-src-elem',
+    blocked: 'https://cdn.example.test', path: '/l/:token' }));
+  for (const line of logs) for (const secret of ['secret-link-token', 'a@example.test', 'visitor-data', 'x=1']) expect(line).not.toContain(secret);
+});
+
 it('starts with a bucket host the policy cannot name, leaving it out of the report-only policy', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));

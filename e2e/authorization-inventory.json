@@ -863,5 +863,6 @@
   {"method":"GET","path":"/join/cancelled","permission":{"kind":"public"}},
   {"method":"POST","path":"/join/sign-in","permission":{"kind":"public"}},
   {"method":"POST","path":"/join/portal-login","permission":{"kind":"public"}},
-  {"method":"GET","path":"/join/client.js","permission":{"kind":"public"}}
+  {"method":"GET","path":"/join/client.js","permission":{"kind":"public"}},
+  {"method":"POST","path":"/csp-report","permission":{"kind":"public"}}
 ]

@@ -28,10 +28,18 @@ export function imageOrigins(origins: readonly string[] = []): string[] {
   });
 }
 
+/** The same-origin route that receives violation reports (`core/csp-report.ts`). */
+export const cspReportPath = '/csp-report';
+/** The `Reporting-Endpoints` name that `report-to` refers to. */
+const cspReportGroup = 'csp';
+/** Value of the `Reporting-Endpoints` header sent with the policy. */
+export const reportingEndpoints = `${cspReportGroup}="${cspReportPath}"`;
+
 /**
  * The policy for every response that sets none of its own: the SPA, its assets and the API. Scripts, styles,
  * fonts and connections stay on the app's origin, and server-rendered inline scripts need this response's nonce.
- * Images also allow data: URLs (generated QR codes). frame-ancestors is enforced separately.
+ * Images also allow data: URLs (generated QR codes). frame-ancestors is enforced separately. Violations go to
+ * the report route: `report-to` for browsers with the Reporting API, `report-uri` for older ones.
  */
 export function contentSecurityPolicy(options: { nonce?: string | undefined; imageOrigins?: readonly string[] } = {}): string {
   return [
@@ -44,6 +52,8 @@ export function contentSecurityPolicy(options: { nonce?: string | undefined; ima
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
+    `report-uri ${cspReportPath}`,
+    `report-to ${cspReportGroup}`,
   ].join('; ');
 }
 
