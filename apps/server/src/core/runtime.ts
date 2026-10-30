@@ -44,7 +44,8 @@ import { configureWaivers } from '../areas/waivers/waivers.routes.js';
 import { configureLinkPages } from '../public/links/links.routes.js';
 import { configurePublicPages } from '../public/pages/pages.routes.js';
 import { configureJoin } from '../public/pages/join.routes.js';
-import { createPublicStaffNotifier } from '../public/pages/notifications.js';
+import { createPublicStaffNotices } from '../public/pages/notifications.js';
+import { configurePublicStaffNotices } from '../public/pages/pages.jobs.js';
 import { createBookingDelivery } from '../areas/bookings/bookings.delivery.js';
 import { configureBookingJobs } from '../areas/bookings/bookings.jobs.js';
 import { configureBookingRoutes } from '../areas/bookings/bookings.routes.js';
@@ -236,13 +237,12 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Signature images and rendered waiver PDFs use the gym's file storage.
   const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
   configurePortalWaivers(waivers);
-  const notifyStaff = createPublicStaffNotifier(async gymId => {
-    // Ordinary installs can accept intake before SMTP is configured; demos use the outbox.
-    if (!demo && !await smtpConfigured(gymId)) return null;
-    const [mail, recipients] = await Promise.all([gymMail(gymId), accounts.staffEmails(gymId, ['owner', 'admin'])]);
-    return { ...mail, recipients };
-  });
-  configurePublicPages({ clock, waivers, uploadsFor: uploads.forGym, notifyStaff });
+  // Trial and drop-in staff notices are queued after the intake commits and sent to owners and admins by a job.
+  const publicNotices = createPublicStaffNotices({ jobs: queue, accounts, clock,
+    // Ordinary installs can accept intake before SMTP is configured (the notice is then skipped); demos use the outbox.
+    prepare: async gymId => (!demo && !await smtpConfigured(gymId)) ? null : gymMail(gymId) });
+  configurePublicStaffNotices(publicNotices);
+  configurePublicPages({ clock, waivers, uploadsFor: uploads.forGym, notifyStaff: publicNotices.publish });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
@@ -279,6 +279,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       // A paid join activates its people and sends the portal sign-in link once.
       await join.afterCheckout(gymId, linkId);
     },
+    // A join also completes when staff record cash or a check, or a later pay link settles its invoice.
+    afterInvoicePaid: (gymId, invoiceId) => join.afterInvoicePaid(gymId, invoiceId),
     staffRecipients: (gymId) => accounts.staffEmails(gymId, ['owner', 'admin']) });
   const runner = createChargeRunner({ settings, transitions: billing.transitions,
     jobs: queue, payments: requirePayments, clock });
@@ -289,8 +291,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureMemberships(memberships, { assigned: runner.collectAssigned });
   const detachCard = async (gymId: string, id: string) => (await requirePayments(gymId)).detachPaymentMethod(id);
   // Household PINs use the gym's random key; member photos use the gym's file storage. Erasure
-  // detaches a household's revoked cards through the same callback and durable job as card removal.
-  configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue });
+  // detaches a household's revoked cards through the same callback and durable job as card removal, and
+  // redacts the erased household's Stripe customer (name and email) with its own retrying job.
+  configureMembers({ pinSecret: gymKey, uploadsFor: uploads.forGym, clock, detachCard, jobs: queue,
+    redactCustomer: async (gymId, customerId) => (await requirePayments(gymId)).redactCustomer(customerId) });
   const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
     transitions: billing.transitions, runner, detachCard });
   configurePayments(payments);
@@ -324,6 +328,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
       ...(gate ? { restoreGate: gate.middleware() } : {}) }) } : gate ? { restoreGate: gate.middleware() } : {}),
     ...(env.SOURCE_URL ? { sourceUrl: env.SOURCE_URL } : {}),
     ...(env.SETUP_TOKEN ? { setupToken: env.SETUP_TOKEN } : {}), ...(demo ? { skipSetup: demo.skipSetup } : {}),
+    // Photos load from the uploads bucket's signed URLs when S3 is configured.
+    ...(uploads.imageOrigin ? { contentSecurity: { imageOrigins: [uploads.imageOrigin] } } : {}),
   });
 
   registerModuleJobs(createServerRegistry(contributions), queue, createGymSettingsAccessor());

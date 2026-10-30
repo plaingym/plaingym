@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Runtime composition test configures encrypted gym SMTP in real PostgreSQL.
-import { gyms, members, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Runtime composition test configures encrypted gym SMTP and inspects queued notices in real PostgreSQL.
+import { gyms, jobs, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { SmtpEmail } from '../infra/email/index.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
+import { staffNoticeJob } from '../public/pages/notifications.js';
 import { encryptSmtpConfig } from '../areas/settings/smtp.js';
 import { demoSignaturePng } from '../demo/seed/waivers-image.js';
 import { parseEncryptionKey } from './secrets.js';
@@ -19,7 +20,7 @@ import { startRuntime, type Runtime } from './runtime.js';
 
 const db = useTestDatabase(), factory = createFactories(db), gymId = uuidv7();
 const origin = 'https://gym.example.test', key = 'ab'.repeat(32);
-let runtime: Runtime, directory: string, template: { id: string; version: number };
+let runtime: Runtime, directory: string, template: { id: string; version: number }, queue: PostgresJobs | undefined;
 const send = vi.spyOn(SmtpEmail.prototype, 'sendEmail');
 const input = () => ({ contact: { name: 'Private Contact', email: 'visitor@example.invalid', phone: '555-0100' },
   member: { firstName: 'Private', lastName: 'Applicant', dateOfBirth: '1990-01-02' }, honeypot: '' });
@@ -41,8 +42,16 @@ async function smtp(configured: boolean) {
     host: 'smtp.example.invalid', port: 587, security: 'starttls', from: 'desk@example.invalid', username: 'gym', password: 'private-smtp-secret',
   }) : null }).where(eq(gyms.id, gymId)));
 }
+/** Runs every due job, as the stopped worker would: the staff notice is sent by a job after the intake commits. */
+async function drain() { while (await queue!.runNext()) { /* each due job */ } }
+const notices = () => db.forGym(gymId, tx => tx.select().from(jobs).where(eq(jobs.name, staffNoticeJob)));
 beforeAll(async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  const register = PostgresJobs.prototype.handle;
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- Drains the runtime's own queue, as its stopped worker would.
+    queue = this; register.call(this, name, handler);
+  });
   directory = await mkdtemp(join(tmpdir(), 'plaingym-public-runtime-'));
   await factory('gyms', gymId, { memberEmailsEnabled: false, websiteEnabled: false });
   template = await factory('waiverTemplates', gymId);
@@ -68,9 +77,12 @@ it.each(['trial', 'drop-in'] as const)('receives %s without SMTP, records the ap
   const after = await db.forGym(gymId, tx => tx.select().from(members));
   expect(after).toHaveLength(before.length + 1);
   expect(after.filter(row => !before.some(old => old.id === row.id))).toMatchObject([{ status: kind === 'trial' ? 'prospect' : 'visitor' }]);
+  // The queued notice is skipped quietly without SMTP: it completes and sends nothing.
+  await drain();
   expect(send).not.toHaveBeenCalled();
+  expect((await notices()).filter(job => job.status !== 'succeeded')).toEqual([]);
 });
-it.each(['trial', 'drop-in'] as const)('still receives %s when the mailer throws, logging the request ID without visitor PII', async kind => {
+it.each(['trial', 'drop-in'] as const)('still receives %s when the mailer throws; the queued notice retries without visitor PII', async kind => {
   await smtp(true);
   send.mockRejectedValue(new Error('Delivery failed for visitor@example.invalid Private Applicant 555-0100'));
   const logs: string[] = [], previous = setLogSink(line => logs.push(line));
@@ -78,18 +90,28 @@ it.each(['trial', 'drop-in'] as const)('still receives %s when the mailer throws
     const response = await submit(kind);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ data: { status: 'received' } });
+    // The visitor's response never waits on SMTP; the job holds identifiers only.
+    expect(send).not.toHaveBeenCalled();
+    const [queued] = (await notices()).filter(job => job.status === 'pending');
+    expect(queued?.payload).toMatchObject({ value: { kind, memberId: expect.any(String) } });
+    expect(Object.keys((queued!.payload as { value: object }).value).sort()).toEqual(['kind', 'memberId']);
+    await drain();
     expect(send).toHaveBeenCalled();
-    expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
-      event: 'public.intake.notification_failed', requestId: response.headers.get('x-request-id'), gymId, kind,
-    }));
-    expect(logs.join('\n')).not.toMatch(/visitor@example|Private Applicant|Private Contact|555-0100/);
-  } finally { setLogSink(previous); }
+    const [failed] = (await notices()).filter(job => job.id === queued!.id);
+    expect(failed).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(JSON.stringify([failed, logs])).not.toMatch(/visitor@example|Private Applicant|Private Contact|555-0100/);
+    // Retire the retry, so a later test counts only its own notice.
+    await db.forSystem(tx => tx.update(jobs).set({ status: 'failed' }).where(eq(jobs.id, queued!.id)));
+  } finally { setLogSink(previous); send.mockReset(); }
 });
 it('sends public intake notices only to owner/admin staff even with member emails disabled', async () => {
   await smtp(true);
+  send.mockReset();
   send.mockResolvedValue({ status: 'sent', messageId: 'staff-notice' });
   const response = await submit('trial');
   expect(response.status).toBe(200);
+  await drain();
+  // The notice goes to owner and admin once each.
   expect(send.mock.calls.map(([message]) => message.to).sort()).toEqual(['admin@example.invalid', 'owner@example.invalid']);
   const config = await runtime.app.request(origin + '/api/public/config');
   expect((await config.json()).data.dropInFee).toBeNull();

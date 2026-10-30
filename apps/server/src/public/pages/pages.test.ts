@@ -14,12 +14,10 @@ import { createSettingsService } from '../../areas/settings/settings.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { readSnapshot } from '../../areas/waivers/snapshot.js';
 import { FakeUploads } from '../../infra/storage/index.js';
-import { FakeEmail } from '../../infra/email/index.js';
 import { demoUploads } from '../../demo/uploads.js';
 import { demoSignatureReservation } from '../../demo/waiver-signatures.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configurePublicPages, createPublicRoutes } from './pages.routes.js';
-import { createPublicStaffNotifier } from './notifications.js';
 import { themeCss } from './page.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng();
@@ -40,11 +38,12 @@ async function fixture(demo = false) {
   await uploads.get(gymId)!.put(gymId + '/logo.png', png, 'image/png');
   const uploadsFor = async (id: string) => demo ? demoUploads(uploads.get(id)!) : uploads.get(id)!;
   const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor });
-  const mail = new FakeEmail();
+  // The staff-notice hook the runtime gives the public pages (it queues the notice after commit).
+  const notices: { gymId: string; kind: string; memberId: string }[] = [];
   const service = configurePublicPages({ scope: db.forGym, clock, waivers, uploadsFor,
     settings: createSettingsService({ scope: db.forGym, clock }), stylesheet: async () => '/* shared css */',
     dropInFeeFor: async id => id === gymId ? { amountCents: 2500, currency: 'CAD' } : null,
-    notifyStaff: createPublicStaffNotifier(async () => ({ email: mail, recipients: ['staff@example.invalid'], gymName: 'North Gym' })) });
+    notifyStaff: async (id, intake) => { notices.push({ gymId: id, kind: intake.kind, memberId: intake.memberId }); } });
   const app = (resolved = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ skipSetup: true, clock, authorize,
     contributions: areaContributions, origin, rateLimit: { limit: 10_000 },
     resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId: resolved, timezone: 'America/Vancouver', enabledModules: new Set() } }); await next(); },
@@ -59,7 +58,7 @@ async function fixture(demo = false) {
   }
   const rows = () => db.forGym(gymId, async tx => ({ members: await tx.select().from(members), homes: await tx.select().from(households),
     signatures: await tx.select().from(waiverSignatures), audits: await tx.select().from(auditEvents), invoices: await tx.select().from(invoices) }));
-  return { gymId, otherGym, clock, existing, existingHome, sibling, template, secondTemplate, foreignTemplate, waivers, uploads, mail, service, app, server, post, admission, admit, rows };
+  return { gymId, otherGym, clock, existing, existingHome, sibling, template, secondTemplate, foreignTemplate, waivers, uploads, notices, service, app, server, post, admission, admit, rows };
 }
 
 describe('core public pages through the production registrations', () => {
@@ -102,7 +101,7 @@ describe('core public pages through the production registrations', () => {
     const rows = await f.rows(); expect(rows.members.filter(m => m.status === 'prospect')).toHaveLength(2);
     expect(rows.members.find(m => m.id === f.existing.id)).toMatchObject({ status: 'active', firstName: 'Private Member', revision: 1 });
     expect(rows.homes.find(h => h.id === f.existingHome.id)).toMatchObject({ name: 'Existing household', revision: 1 });
-    expect(f.mail.messages).toHaveLength(2); expect(f.mail.messages.every(m => m.to === 'staff@example.invalid')).toBe(true);
+    expect(f.notices).toHaveLength(2); expect(f.notices.every(n => n.gymId === f.gymId && n.kind === 'trial')).toBe(true);
     expect(rows.audits.filter(a => a.action === 'public.trial.received')).toHaveLength(2);
     expect(JSON.stringify(rows.audits)).not.toContain('existing@example.invalid');
   });
@@ -114,7 +113,7 @@ describe('core public pages through the production registrations', () => {
     }
     const form = new URLSearchParams({ firstName: 'Bot', lastName: 'Person', dateOfBirth: '1990-01-01', contactName: 'Bot', email: 'bot@example.invalid', honeypot: 'bot' });
     expect((await f.server.request(origin + '/trial', { method: 'POST', headers: { origin }, body: form })).status).toBe(400);
-    expect((await f.rows()).members).toHaveLength(before.members.length); expect(f.mail.messages).toHaveLength(0);
+    expect((await f.rows()).members).toHaveLength(before.members.length); expect(f.notices).toHaveLength(0);
   });
   it('limits failed validation before parsing, shares native/JSON budgets, and recovers with the core clock', async () => {
     const f = await fixture();
@@ -143,7 +142,7 @@ describe('core public pages through the production registrations', () => {
     expect((await f.post('/api/public/drop-in', input)).status).toBe(200);
     const rows = await f.rows(); expect(rows.members.filter(m => m.status === 'visitor')).toHaveLength(1); expect(rows.signatures).toHaveLength(2); expect(rows.invoices).toHaveLength(0);
     expect(readSnapshot(rows.signatures[0]!.snapshot, rows.signatures[0]!.snapshotHash).member.firstName).toBe('New');
-    expect(f.mail.messages).toHaveLength(1); expect(rows.audits.filter(a => a.action === 'public.drop_in.received')).toHaveLength(1);
+    expect(f.notices).toHaveLength(1); expect(rows.audits.filter(a => a.action === 'public.drop_in.received')).toHaveLength(1);
   });
   it('responds identically to new and enrolled drop-ins and does not touch the enrolled member or sibling', async () => {
     const f = await fixture(), fresh = await f.admit(), existing = await f.admit(body('existing@example.invalid'));
@@ -226,7 +225,7 @@ describe('core public pages through the production registrations', () => {
       expect(html).toContain('North &lt;Gym&gt;'); expect(html).toContain('href="/source"');
       expect(html).not.toContain('Request received');
     }
-    expect((await f.rows()).members).toHaveLength(before.members.length); expect(f.mail.messages).toHaveLength(0);
+    expect((await f.rows()).members).toHaveLength(before.members.length); expect(f.notices).toHaveLength(0);
   });
   it('renders a useful contact state when no waivers or fee are configured', async () => {
     const f = await fixture();
@@ -249,7 +248,7 @@ describe('core public pages through the production registrations', () => {
   it('rejects cross-origin mutations through the production CSRF guard', async () => {
     const f = await fixture();
     const response = await f.server.request(origin + '/api/public/trial', { method: 'POST', headers: { origin: 'https://attacker.invalid', cookie: 'session=untrusted', 'content-type': 'application/json' }, body: JSON.stringify(body()) });
-    expect(response.status).toBe(403); expect(f.mail.messages).toHaveLength(0);
+    expect(response.status).toBe(403); expect(f.notices).toHaveLength(0);
   });
 });
 

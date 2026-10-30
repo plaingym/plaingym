@@ -26,7 +26,8 @@ export interface PublicPagesOptions {
   waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign'>;
   uploadsFor?: (gymId: string) => Promise<Uploads>;
   dropInFeeFor?: (gymId: string) => Promise<{ amountCents: number; currency: string } | null>;
-  notifyStaff: (gymId: string, intake: { kind: 'trial' | 'drop-in'; memberId: string; contact: c.PublicContact; member: c.PublicApplicant }) => Promise<void>;
+  /** Called after the intake commits, with identifiers only; the runtime queues the staff notice. */
+  notifyStaff: (gymId: string, intake: { kind: 'trial' | 'drop-in'; memberId: string }) => Promise<void>;
 }
 const received = () => c.publicSubmissionResponseSchema.parse({ data: { status: 'received' } });
 const missing = (): never => { throw new AppError('not_found', 'Admission not found'); };
@@ -101,7 +102,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     async trial(gymId: string, body: unknown, timezone: string, requestId?: string) {
       const input = c.publicTrialRequestSchema.parse(body); applicant(input, timezone);
       const id = await intake(gymId, input, 'public.trial.received');
-      await notifyStaff(gymId, { kind: 'trial', memberId: id, contact: input.contact, member: input.member }, requestId);
+      await notifyStaff(gymId, { kind: 'trial', memberId: id }, requestId);
       return received();
     },
     async admit(gymId: string, body: unknown, timezone: string) {
@@ -146,7 +147,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
         await audit(tx, gymId, 'public.drop_in.received', id);
         return true;
       });
-      if (changed) await notifyStaff(gymId, { kind: 'drop-in', memberId: id, contact: input.contact, member: input.member }, requestId);
+      if (changed) await notifyStaff(gymId, { kind: 'drop-in', memberId: id }, requestId);
       return received();
     },
   };

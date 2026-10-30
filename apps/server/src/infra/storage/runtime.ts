@@ -33,6 +33,9 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
       return uploads;
   }
   return {
+    /** Where the browser loads signed S3 URLs from (path-style, as `createS3Client` forces); local uploads use the app's origin. */
+    imageOrigin: client ? (env.UPLOADS_S3_ENDPOINT ? new URL(env.UPLOADS_S3_ENDPOINT).origin
+      : `https://s3.${env.UPLOADS_S3_REGION ?? 'us-east-1'}.amazonaws.com`) : undefined,
     async forGym(gymId: string): Promise<Uploads> {
       const uploads = await unwrapped(gymId);
       return env.DEMO_MODE === 'true' ? demoUploads(uploads) : uploads;

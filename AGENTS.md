@@ -64,7 +64,7 @@ Third-party services are only ever accessed through these internal modules. Neve
 | `auth` | `getSession(req) → { userId } \| null` (roles live in our `staff_roles` / household tables) |
 | `jobs` | `enqueue(name, payload, opts)`, `handle(name, fn)`, `schedule(name, cron, fn)` |
 | `email` | `sendEmail({ to, subject, html, text, replyTo })` |
-| `payments` | `createCustomer`, `createCharge` (unconfirmed PaymentIntent), `confirmCharge`, `cancelCharge`, `findCharge`, `listRefunds`, `readPaymentObject`, `listChangesSince`, `refund`, `createCheckout`, `expireCheckout`, `findCustomerByEmail`, `adoptCustomer`, `detachPaymentMethod`, `parseWebhook` (webhook verification lives in the provider, not the inbox) |
+| `payments` | `createCustomer`, `createCharge` (unconfirmed PaymentIntent), `confirmCharge`, `cancelCharge`, `findCharge`, `listRefunds`, `readPaymentObject`, `listChangesSince`, `refund`, `createCheckout`, `expireCheckout`, `findCustomerByEmail`, `adoptCustomer`, `detachPaymentMethod`, `redactCustomer`, `parseWebhook` (webhook verification lives in the provider, not the inbox) |
 | `pdf` (`infra/pdf`) | `renderPdf` renders bounded documents with pinned fonts; `missingGlyphs` reports unsupported code points |
 | `storage` | Uploads: `put` (new immutable key, never overwrites), `get`, `head`, `list`, `signedUrl`, `markDeleted`, `sweep`. Backup destination: multipart `putObject` (aborted on failure), `getObject`, `headObject`, `listObjects`, `deleteObject` |
 | db client | `packages/db/src/client.ts` is the only file that opens the database; app code gets a handle only via `forGym(gymId)` |

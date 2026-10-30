@@ -13,10 +13,8 @@ the gym's mail through `prepare(gymId)` (including the demo outbox), and mails
 visitor. That fixed recipient list is what exempts the notice from the member-email
 switch; any visitor confirmation must apply the switch. Each recipient has its own
 durable send-state key (`infra/email/README.md`), so a retry reaches only staff a
-definite non-send missed. `createPublicStaffNotifier` sends the same notice during the
-request to staff addresses its `prepare` returns, for compositions not yet using the
-queue. These core
-registrations work with every optional module disabled. Unconfigured services fail
+definite non-send missed. The public pages hand `notifyStaff` identifiers only. These
+core registrations work with every optional module disabled. Unconfigured services fail
 closed. The public plan and join routes are separate contributions.
 
 An ordinary install without SMTP skips staff mail while still recording intake:

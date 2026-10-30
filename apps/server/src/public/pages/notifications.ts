@@ -12,7 +12,6 @@ import type { AccountService } from '../../infra/auth/accounts.js';
 import { createEmailDeliveries, type Email } from '../../infra/email/index.js';
 import type { JobContext, Jobs } from '../../infra/jobs/index.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
-import type { PublicPagesOptions } from './service.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 
 export const staffNoticeJob = 'public.pages.staff_notice';
@@ -82,20 +81,3 @@ export function createPublicStaffNotices(options: PublicStaffNoticesOptions) {
   return { publish, send };
 }
 export type PublicStaffNotices = ReturnType<typeof createPublicStaffNotices>;
-
-/**
- * Sends the notice during the request instead of queueing it. Kept for compositions that have not yet passed
- * `createPublicStaffNotices(...).publish` as the public pages' `notifyStaff`; its `prepare` must return staff
- * addresses only. Prefer the queued notices: they are keyed, retried and never delay the visitor.
- */
-export function createPublicStaffNotifier(prepare: (gymId: string) => Promise<{ email: Email; recipients: readonly string[]; gymName: string } | null>,
-  t: Translator = createTranslator({ 'public/pages': messages })): PublicPagesOptions['notifyStaff'] {
-  return async (gymId, intake) => {
-    const prepared = await prepare(gymId);
-    if (!prepared) return;
-    const { email, recipients, gymName } = prepared;
-    const message = await compose(t, gymName, intake.kind, { name: intake.member.firstName + ' ' + intake.member.lastName,
-      contact: intake.contact.name, email: intake.contact.email, phone: intake.contact.phone ?? null });
-    for (const to of new Set(recipients)) await email.sendEmail({ to, ...message });
-  };
-}
