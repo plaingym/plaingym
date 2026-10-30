@@ -84,11 +84,15 @@ test('demo entry creates a gym, phone role controls and guide work, full-name ki
   await expect(page.getByLabel('Your name', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Household PIN', { exact: true })).toHaveValue('');
   expect((await page.context().cookies()).filter((cookie) => cookie.name.includes('session_token'))).toHaveLength(0);
+  // A sandbox's /demo is its start page: every role, the join walkthrough with the test card, and the kiosk.
   await page.goto(sandbox.origin + '/demo');
+  const start = page.getByRole('main');
   for (const size of sizes) {
     await page.setViewportSize(size);
-    await expect(page.getByRole('heading', { name: 'PlainGym demo', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Owner', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Your demo gym', exact: true })).toBeVisible();
+    for (const role of ['Owner', 'Coach', 'Student']) await expect(start.getByRole('heading', { name: role, exact: true })).toBeVisible();
+    await expect(start.getByText('4242 4242 4242 4242')).toBeVisible();
+    await expect(start.getByRole('link', { name: 'Open the join page', exact: true })).toHaveAttribute('href', '/join');
     await accessibleLayout(page, info, 'sandbox-demo-page-' + size.width);
   }
   await page.goto(sandbox.origin + '/admin');
