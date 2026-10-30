@@ -96,6 +96,7 @@ switches with real PostgreSQL and fake payment/email providers.
 All switch regressions assert passing behavior against the real services and fake
 providers. `go-live.readiness.test.ts` covers the GET, rejected unconfirmed PATCH
 and confirmed PATCH through `createApp` and the real registrations.
-`health/restore.test.ts` exercises encrypted restore, durable publication, the
-production worker and go-live rerun routes against PostgreSQL, including interrupted
-publication, unresolved/resolved payments, provider failure and a newer restore.
+`health/restore.billing.test.ts` and `health/restore.billing-recheck.test.ts` exercise
+encrypted restore, durable publication, the production worker and go-live rerun routes
+against PostgreSQL, including interrupted publication, unresolved/resolved payments,
+provider failure and a newer restore.

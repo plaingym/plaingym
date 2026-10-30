@@ -52,7 +52,7 @@ const emailPaths = [
 
 describe('go-live switch test inventory', () => {
   it('classifies every production charge/customer/Checkout and email send boundary', () => {
-    const found = globSync('apps/server/src/**/*.ts', { cwd: root, exclude: ['**/*.test.ts', '**/infra/payments/**'] })
+    const found = globSync('apps/server/src/**/*.ts', { cwd: root, exclude: ['**/*.test.ts', '**/*.test-helper.ts', '**/infra/payments/**'] })
       .map(file => file.replaceAll('\\', '/').replace('apps/server/src/', ''))
       .filter(file => file !== 'core/registry-infra-contracts.ts')
       .filter(file => /\.(?:createCharge|confirmCharge|createCheckout|createCustomer|sendEmail)\s*\(|\bdeliveries\.send\s*\(/.test(source(file)));

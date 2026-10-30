@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { attendances, auditEvents, classSessions, classTemplates, emailOutbox, households, memberRanks, members, staffProfiles, staffRoles, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -60,66 +60,74 @@ function dashboard(time: TestClock) {
 }
 const widget = <Id extends DashboardWidget['id']>(widgets: readonly DashboardWidget[], id: Id) => widgets.find((item) => item.id === id) as Extract<DashboardWidget, { id: Id }>;
 
-// Each test seeds whole sandboxes (~5–9 s alone), which can take several times longer under full-suite load.
+// Each seed of a whole sandbox takes ~5–9 s alone, which can take several times longer under full-suite load.
 describe('demo mat seed', { timeout: 60_000 }, () => {
-  it('creates a lived-in sandbox in a few seconds through the area services', async () => {
-    const f = fixture(), started = performance.now();
-    const sandbox = await f.service.create();
-    // A guard against gross regressions: alone a sandbox takes ~5 s, but full-suite load has taken it past 20 s.
-    expect(performance.now() - started).toBeLessThan(40_000);
-    const now = f.time.now().getTime();
-    const rows = await db.forGym(sandbox.gymId, async (tx) => ({
-      members: await tx.select().from(members), households: await tx.select().from(households), roles: await tx.select().from(staffRoles),
-      profiles: await tx.select().from(staffProfiles), templates: await tx.select().from(classTemplates), sessions: await tx.select().from(classSessions),
-      visits: await tx.select().from(attendances), promotions: await tx.select().from(memberRanks),
-    }));
-    const seeded = demoHouseholds.flatMap((home) => home.members);
-    // The demo student identity brings its own household and member.
-    expect(rows.members).toHaveLength(seeded.length + 1);
-    expect(rows.households).toHaveLength(demoHouseholds.length + 1);
-    expect(rows.members.filter((row) => row.dateOfBirth && row.dateOfBirth > '2010-01-01').length).toBeGreaterThanOrEqual(6);
-    for (const row of rows.households.filter((item) => item.name !== 'Demo student')) expect(verifyHouseholdPin(pinKey, sandbox.gymId, row.id, demoPin, row.pinHash)).toBe(true);
-    expect(rows.profiles.map((row) => row.displayName).sort()).toEqual(demoStaff.map((row) => row.displayName).sort());
-    const owner = rows.roles.find((row) => row.role === 'owner')!, coach = rows.roles.find((row) => row.role === 'coach')!;
-    expect(rows.profiles.find((row) => row.displayName === 'Ana Ribeiro')?.userId).toBe(owner.userId);
-    expect(rows.profiles.find((row) => row.displayName === 'Jordan Lee')?.userId).toBe(coach.userId);
-    expect(rows.templates).toHaveLength(demoTemplates.reduce((total, item) => total + item.weekdays.length, 0));
-    expect(rows.templates.every((row) => row.kind === 'open_mat' || row.coachId !== null)).toBe(true);
-    // A populated calendar: the history weeks behind and the 8-week horizon ahead (created with each template),
-    // with one upcoming cancellation.
-    expect(rows.sessions.filter((row) => row.startsAt.getTime() < now).length).toBe(historyWeeks * rows.templates.length);
-    expect(rows.sessions.filter((row) => row.startsAt.getTime() >= now).length).toBe(8 * rows.templates.length);
-    expect(rows.sessions.filter((row) => row.status === 'cancelled')).toHaveLength(1);
-    expect(rows.visits.filter((row) => row.occurredAt.getTime() > now - 2 * day).length).toBeGreaterThan(0);
-    expect(rows.visits.some((row) => row.kind === 'open_mat')).toBe(true);
-    expect(new Set(rows.visits.map((row) => row.source))).toEqual(new Set(['kiosk', 'coach']));
-    expect(rows.promotions.length).toBeGreaterThan(30);
+  describe('with the shared sandbox', () => {
+    // The first test reads this sandbox and the second leaves it alone, so one creation serves both.
+    let first: { f: ReturnType<typeof fixture>; sandbox: { gymId: string }; elapsed: number };
+    beforeAll(async () => {
+      const f = fixture(), started = performance.now();
+      first = { f, sandbox: await f.service.create(), elapsed: performance.now() - started };
+    }, 90_000);
 
-    const view = await dashboard(f.time).get({ gymId: sandbox.gymId, roles: ['owner'], clock: f.time });
-    const named = (list: readonly { firstName: string; lastName: string }[]) => list.map((row) => `${row.firstName} ${row.lastName}`).sort();
-    expect(named(widget(view.data.widgets, 'promotion_ready').members)).toEqual(['Ava Chen', 'Leo Becker', 'Marcus Rivera', 'Sofia Rivera', 'Tom Becker']);
-    expect(named(widget(view.data.widgets, 'not_seen').members)).toEqual(["Grace O'Neill", 'Owen Murphy']);
-    expect(widget(view.data.widgets, 'active_members').count).toBe(seeded.filter((row) => row.status === 'active').length + 1);
-  });
+    it('creates a lived-in sandbox in a few seconds through the area services', async () => {
+      const { f, sandbox } = first;
+      // A guard against gross regressions: alone a sandbox takes ~5 s, but full-suite load has taken it past 20 s.
+      expect(first.elapsed).toBeLessThan(40_000);
+      const now = f.time.now().getTime();
+      const rows = await db.forGym(sandbox.gymId, async (tx) => ({
+        members: await tx.select().from(members), households: await tx.select().from(households), roles: await tx.select().from(staffRoles),
+        profiles: await tx.select().from(staffProfiles), templates: await tx.select().from(classTemplates), sessions: await tx.select().from(classSessions),
+        visits: await tx.select().from(attendances), promotions: await tx.select().from(memberRanks),
+      }));
+      const seeded = demoHouseholds.flatMap((home) => home.members);
+      // The demo student identity brings its own household and member.
+      expect(rows.members).toHaveLength(seeded.length + 1);
+      expect(rows.households).toHaveLength(demoHouseholds.length + 1);
+      expect(rows.members.filter((row) => row.dateOfBirth && row.dateOfBirth > '2010-01-01').length).toBeGreaterThanOrEqual(6);
+      for (const row of rows.households.filter((item) => item.name !== 'Demo student')) expect(verifyHouseholdPin(pinKey, sandbox.gymId, row.id, demoPin, row.pinHash)).toBe(true);
+      expect(rows.profiles.map((row) => row.displayName).sort()).toEqual(demoStaff.map((row) => row.displayName).sort());
+      const owner = rows.roles.find((row) => row.role === 'owner')!, coach = rows.roles.find((row) => row.role === 'coach')!;
+      expect(rows.profiles.find((row) => row.displayName === 'Ana Ribeiro')?.userId).toBe(owner.userId);
+      expect(rows.profiles.find((row) => row.displayName === 'Jordan Lee')?.userId).toBe(coach.userId);
+      expect(rows.templates).toHaveLength(demoTemplates.reduce((total, item) => total + item.weekdays.length, 0));
+      expect(rows.templates.every((row) => row.kind === 'open_mat' || row.coachId !== null)).toBe(true);
+      // A populated calendar: the history weeks behind and the 8-week horizon ahead (created with each template),
+      // with one upcoming cancellation.
+      expect(rows.sessions.filter((row) => row.startsAt.getTime() < now).length).toBe(historyWeeks * rows.templates.length);
+      expect(rows.sessions.filter((row) => row.startsAt.getTime() >= now).length).toBe(8 * rows.templates.length);
+      expect(rows.sessions.filter((row) => row.status === 'cancelled')).toHaveLength(1);
+      expect(rows.visits.filter((row) => row.occurredAt.getTime() > now - 2 * day).length).toBeGreaterThan(0);
+      expect(rows.visits.some((row) => row.kind === 'open_mat')).toBe(true);
+      expect(new Set(rows.visits.map((row) => row.source))).toEqual(new Set(['kiosk', 'coach']));
+      expect(rows.promotions.length).toBeGreaterThan(30);
 
-  it('stays inside the sandbox gym, sends no email, writes no upload, and tolerates retries', async () => {
-    const f = fixture(), other = await f.service.create(), before = await counts(other.gymId);
-    const sandbox = await f.service.create();
-    expect(await counts(other.gymId)).toEqual(before);
-    const seeded = await counts(sandbox.gymId);
-    expect(seeded.email_outbox).toBe(0);
-    const photos = await db.forGym(sandbox.gymId, async (tx) => [...await tx.select({ key: members.photoKey }).from(members), ...await tx.select({ key: staffProfiles.photoKey }).from(staffProfiles)]);
-    expect(photos.every((row) => row.key === null)).toBe(true);
-    // Every audit names its own gym, and none of the other sandbox's rows moved.
-    expect((await db.forGym(sandbox.gymId, (tx) => tx.select().from(auditEvents))).every((row) => row.gymId === sandbox.gymId)).toBe(true);
+      const view = await dashboard(f.time).get({ gymId: sandbox.gymId, roles: ['owner'], clock: f.time });
+      const named = (list: readonly { firstName: string; lastName: string }[]) => list.map((row) => `${row.firstName} ${row.lastName}`).sort();
+      expect(named(widget(view.data.widgets, 'promotion_ready').members)).toEqual(['Ava Chen', 'Leo Becker', 'Marcus Rivera', 'Sofia Rivera', 'Tom Becker']);
+      expect(named(widget(view.data.widgets, 'not_seen').members)).toEqual(["Grace O'Neill", 'Owen Murphy']);
+      expect(widget(view.data.widgets, 'active_members').count).toBe(seeded.filter((row) => row.status === 'active').length + 1);
+    });
 
-    // Rerunning the steps (as `gym-app seed` does) adds no duplicates, an hour later too.
-    f.time.advance(60 * 60 * 1000);
-    await f.seed({ gymId: sandbox.gymId, timezone: 'UTC', enabledModules: new Set() });
-    const again = await counts(sandbox.gymId);
-    for (const table of ['members', 'households', 'member_tags', 'member_tag_links', 'staff_profiles', 'class_templates', 'member_ranks', 'attendances'])
-      expect(again[table], table).toBe(seeded[table]);
-    expect(await db.forGym(sandbox.gymId, (tx) => tx.select().from(emailOutbox).where(eq(emailOutbox.gymId, sandbox.gymId)))).toEqual([]);
+    it('stays inside the sandbox gym, sends no email, writes no upload, and tolerates retries', async () => {
+      const f = fixture(), other = first.sandbox, before = await counts(other.gymId);
+      const sandbox = await f.service.create();
+      expect(await counts(other.gymId)).toEqual(before);
+      const seeded = await counts(sandbox.gymId);
+      expect(seeded.email_outbox).toBe(0);
+      const photos = await db.forGym(sandbox.gymId, async (tx) => [...await tx.select({ key: members.photoKey }).from(members), ...await tx.select({ key: staffProfiles.photoKey }).from(staffProfiles)]);
+      expect(photos.every((row) => row.key === null)).toBe(true);
+      // Every audit names its own gym, and none of the other sandbox's rows moved.
+      expect((await db.forGym(sandbox.gymId, (tx) => tx.select().from(auditEvents))).every((row) => row.gymId === sandbox.gymId)).toBe(true);
+
+      // Rerunning the steps (as `gym-app seed` does) adds no duplicates, an hour later too.
+      f.time.advance(60 * 60 * 1000);
+      await f.seed({ gymId: sandbox.gymId, timezone: 'UTC', enabledModules: new Set() });
+      const again = await counts(sandbox.gymId);
+      for (const table of ['members', 'households', 'member_tags', 'member_tag_links', 'staff_profiles', 'class_templates', 'member_ranks', 'attendances'])
+        expect(again[table], table).toBe(seeded[table]);
+      expect(await db.forGym(sandbox.gymId, (tx) => tx.select().from(emailOutbox).where(eq(emailOutbox.gymId, sandbox.gymId)))).toEqual([]);
+    });
   });
 
   it('seeds an ordinary gym without staff accounts, leaving profiles and coaches out', async () => {

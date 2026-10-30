@@ -190,7 +190,7 @@ describe('campaign sends and reminders', () => {
     const sends = f.jobs.jobs.filter(j => j.name === campaignSendJob);
     expect(sends).toHaveLength(2000); expect(new Set(sends.map(j => j.options.idempotencyKey)).size).toBe(2000);
     expect(f.email.messages).toHaveLength(0);
-  });
+  }, 90_000);
   it('repairs a publication interrupted midway through an audit batch without duplicate sends', async () => {
     const f = await fixture();
     const people = await db.forGym(f.gymId, tx => tx.insert(households).values(Array.from({ length: 12 }, (_, i) => ({

@@ -1,97 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHmac } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
-import { attendances, classBookings, classSessions, gyms, households, invoices, memberRanks, members, memberships, paymentMethods,
-  uuidv7, waiverSignatures } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { classBookings, gyms, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
-import { setLogSink } from '../../core/log.js';
-import * as goLive from '../../areas/settings/go-live.js';
 import { createApp } from '../../core/app.js';
-import { parseEncryptionKey } from '../../core/secrets.js';
-import { FakePayments, type CreateCharge } from '../../infra/payments/index.js';
-import { FakeUploads } from '../../infra/storage/index.js';
-import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
+import { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { createWebhookInbox, webhookDispatchJob } from '../../areas/billing/webhooks/inbox.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
-import { authConfig } from '../../infra/auth/config.js';
-import { createAccountService } from '../../infra/auth/accounts.js';
-import { createAuthService } from '../../infra/auth/service.js';
 import { createCheckinCodeService } from '../../areas/members/checkin-code.js';
 import { verifyHouseholdPin } from '../../areas/members/pin.js';
 import { createBillingStanding } from '../../areas/billing/kiosk-standing.js';
-import { createGymDeleteService } from '../../areas/settings/gym-delete.js';
 import { demoBootCheck } from '../config.js';
 import { createDemoPayments } from '../payments.js';
-import { createDemoIdentities } from '../identities.js';
-import { createDemoService } from '../service.js';
 import { demoWebhookMiddleware } from '../webhook.js';
 import { createSeedCommand } from '../seed-cli.js';
-import type { BillingSeedProvider } from './billing-payments.js';
-import { runSeeds } from './index.js';
 import { demoPin } from './members.js';
+import { baseEnv, pinKey, portalFixture, studentRows as rowsOf } from './portal.fixture.test-helper.js';
 import { demoStudent, studentClassesPerWeek, studentPromotions, waitlistClass, waitlistFillers } from './portal.js';
 
-const db = useTestDatabase(), factory = createFactories(db), pinKey = new Uint8Array(32).fill(7);
-const baseEnv = { DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: 'demo.example.test',
-  APP_ENCRYPTION_KEY: 'cd'.repeat(32), AUTH_SECRET: 'demo-portal-seed-secret-with-more-than-32-characters', AUTH_PASSWORD_LOGIN: 'off' };
-
-// Monday noon: the next Competition Training (Tuesday) is cancelled by the mat seed, so Thursday's holds the waitlist.
-function fixture(configured: boolean, clock = new TestClock('2026-10-26T12:00:00Z')) {
-  const env = { ...baseEnv, ...(configured ? { DEMO_STRIPE_TEST_KEY: 'rk_test_SYNTHETIC', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_SYNTHETIC' } : {}) };
-  const config = demoBootCheck(env), scope = db.forGym, gateways = new Map<string, BillingSeedProvider>();
-  const provider = vi.fn(async (gymId: string) => {
-    let gateway = gateways.get(gymId);
-    if (gateway) return gateway;
-    class TestPayments extends FakePayments {
-      override async createCharge(input: CreateCharge) {
-        const charge = await super.createCharge(input);
-        this.respondNextConfirmation('succeeded');
-        return charge;
-      }
-    }
-    const payments = new TestPayments(gymId, clock);
-    gateway = { gymId, mode: 'test', payments, async seedCard(customerId) {
-      const id = 'pm_' + uuidv7().replaceAll('-', '');
-      payments.recordPaymentMethod({ id, customerId, last4: '4242', expiresMonth: 12, expiresYear: 2030 });
-      return id;
-    } };
-    gateways.set(gymId, gateway); return gateway;
-  });
-  const payments = createDemoPayments({ config, scope, system: db.forSystem, clock, provider });
-  const authentication = authConfig(env, true);
-  const identities = createDemoIdentities({ config, authConfig: authentication, clock, scope,
-    accounts: createAccountService(authentication, () => db.system.db),
-    authFactory: options => createAuthService({ ...options, database: () => db.system.db }) });
-  const uploads = new Map<string, FakeUploads>();
-  const seed: typeof runSeeds = (context, steps) => runSeeds(context, steps, { env, scope, clock, pinSecret: async () => pinKey, log: () => {},
-    billingPaymentsFor: payments.forSeed, uploadsFor: async (gymId: string) => {
-      if (!uploads.has(gymId)) uploads.set(gymId, new FakeUploads(gymId, clock));
-      return uploads.get(gymId)!;
-    } });
-  const deletion = createGymDeleteService({ clock, scope, system: db.forSystem, removeUploads: async () => {} });
-  const service = createDemoService({ config, key: parseEncryptionKey(env.APP_ENCRYPTION_KEY), clock, scope, system: db.forSystem, identities, seed, deletion });
-  return { service, seed, clock, provider };
-}
-async function studentRows(gymId: string) {
-  return db.forGym(gymId, async tx => {
-    const [home] = await tx.select().from(households).where(eq(households.name, demoStudent.household));
-    const [member] = await tx.select().from(members).where(eq(members.householdId, home!.id));
-    const bookings = await tx.select({ booking: classBookings, session: classSessions }).from(classBookings)
-      .innerJoin(classSessions, eq(classBookings.sessionId, classSessions.id)).where(eq(classBookings.memberId, member!.id));
-    return { home: home!, member: member!, bookings,
-      visits: await tx.select().from(attendances).where(eq(attendances.memberId, member!.id)),
-      promotions: await tx.select().from(memberRanks).where(eq(memberRanks.memberId, member!.id)),
-      signatures: await tx.select().from(waiverSignatures).where(eq(waiverSignatures.memberId, member!.id)),
-      invoices: await tx.select().from(invoices).where(eq(invoices.householdId, home!.id)),
-      cards: await tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home!.id)),
-      memberships: await tx.select().from(memberships).where(eq(memberships.householdId, home!.id)),
-      gym: (await tx.select().from(gyms))[0]! };
-  });
-}
+const db = useTestDatabase(), factory = createFactories(db);
+const fixture = (configured: boolean) => portalFixture(db, configured);
+const studentRows = (gymId: string) => rowsOf(db, gymId);
 
 it('gives the sandbox student bookings, a waitlist place, rank progress, paid invoices and a QR code, once', async () => {
   const f = fixture(true), { gymId } = await f.service.create(), rows = await studentRows(gymId);
@@ -127,7 +60,8 @@ it('gives the sandbox student bookings, a waitlist place, rank progress, paid in
   const { code } = await codes.read(gymId, rows.member.id);
   expect(code).toMatch(/^pgci1_/);
   expect(await codes.resolve(gymId, code!)).toBe(rows.member.id);
-  const other = await f.service.create();
+  // A second sandbox in the same database; it needs its own student and QR key, not billing.
+  const other = await fixture(false).service.create();
   expect(await codes.resolve(other.gymId, code!)).toBeNull();
   expect((await studentRows(other.gymId)).member.id).not.toBe(rows.member.id);
 
@@ -144,26 +78,6 @@ it('gives the sandbox student bookings, a waitlist place, rank progress, paid in
   expect(again.gym.billingEnabled).toBe(false);
   expect((await codes.read(gymId, rows.member.id)).code).toBe(code);
 }, 120_000);
-
-it('seeds the student without invoices and leaves billing off when the shared test account is not configured', async () => {
-  const f = fixture(false), { gymId } = await f.service.create(), rows = await studentRows(gymId);
-  expect(rows.bookings.map(row => row.booking.status).sort()).toEqual(['booked', 'booked', 'waitlisted']);
-  expect(rows.promotions).toHaveLength(studentPromotions.length);
-  expect(rows.invoices).toEqual([]); expect(rows.memberships).toEqual([]);
-  expect(rows.gym.billingEnabled).toBe(false);
-}, 60_000);
-
-it('leaves a gym without the demo student alone', async () => {
-  const f = fixture(false), { gymId } = await f.service.create();
-  const before = await studentRows(gymId);
-  await db.forGym(gymId, async tx => {
-    await tx.update(households).set({ email: 'someone@example.invalid' }).where(eq(households.id, before.home.id));
-    await tx.delete(classBookings).where(and(eq(classBookings.memberId, before.member.id)));
-  });
-  const io = { stdout: vi.fn(), stderr: vi.fn() };
-  expect(await createSeedCommand(db.forGym, f.seed).run([gymId], io)).toBe(0);
-  expect((await studentRows(gymId)).bookings).toEqual([]);
-}, 60_000);
 
 it('routes a join Checkout completion from the shared test account to its own sandbox with the real Stripe adapter', async () => {
   const clock = new TestClock('2026-10-26T12:00:00Z'), secret = 'whsec_SYNTHETIC', joined = uuidv7(), neighbour = uuidv7();
@@ -196,82 +110,3 @@ it('routes a join Checkout completion from the shared test account to its own sa
   await expect(inbox.replay(neighbour, 'evt_join')).rejects.toMatchObject({ code: 'not_found' });
   expect(transport.request).not.toHaveBeenCalled(); expect(tenant).not.toHaveBeenCalled();
 });
-
-it('finishes the bookings, waitlist place and visits a failed run left unfinished', async () => {
-  const f = fixture(false), { gymId } = await f.service.create(), rows = await studentRows(gymId);
-  // As if the first run had stopped after one booking and three visits, before the waitlist.
-  const [kept] = rows.bookings.filter(row => row.booking.status === 'booked');
-  await db.forGym(gymId, async tx => {
-    for (const row of rows.bookings) if (row.booking.id !== kept!.booking.id) await tx.delete(classBookings).where(eq(classBookings.id, row.booking.id));
-    for (const visit of rows.visits.slice(3)) await tx.delete(attendances).where(eq(attendances.id, visit.id));
-  });
-  const io = { stdout: vi.fn(), stderr: vi.fn() };
-  expect(await createSeedCommand(db.forGym, f.seed).run([gymId], io)).toBe(0);
-  const again = await studentRows(gymId);
-  expect(again.bookings.map(row => row.booking.status).sort()).toEqual(['booked', 'booked', 'waitlisted']);
-  expect(again.bookings.some(row => row.booking.id === kept!.booking.id)).toBe(true);
-  expect(again.visits).toHaveLength(4 * studentClassesPerWeek);
-}, 90_000);
-
-it('restores the billing switch when the student billing fails, and completes on retry', async () => {
-  // A sandbox seeded before the test account was configured, then seeded again with it.
-  const unkeyed = fixture(false), { gymId } = await unkeyed.service.create(), keyed = fixture(true, unkeyed.clock);
-  const { home } = await studentRows(gymId), gateway = await keyed.provider(gymId), seedCard = gateway.seedCard.bind(gateway);
-  const failing = vi.spyOn(gateway, 'seedCard').mockImplementation(async (customerId, householdId, declines) => {
-    if (householdId === home.id) throw new Error('Test card unavailable');
-    return seedCard(customerId, householdId, declines);
-  });
-  const io = { stdout: vi.fn(), stderr: vi.fn() };
-  expect(await createSeedCommand(db.forGym, keyed.seed).run([gymId], io)).toBe(1);
-  const failed = await studentRows(gymId);
-  expect(failed.gym.billingEnabled).toBe(false); expect(failed.invoices).toEqual([]);
-  failing.mockImplementation(seedCard);
-  expect(await createSeedCommand(db.forGym, keyed.seed).run([gymId], io)).toBe(0);
-  const again = await studentRows(gymId);
-  expect(again.gym.billingEnabled).toBe(true);
-  expect(again.cards).toHaveLength(1);
-  expect(again.invoices.map(row => row.status)).toEqual(['paid', 'paid', 'paid']);
-}, 120_000);
-
-it('fails rather than shrinking another class when the waitlist class is missing, and needs it only for a missing place', async () => {
-  const f = fixture(false), { gymId } = await f.service.create(), rows = await studentRows(gymId);
-  const io = { stdout: vi.fn(), stderr: vi.fn() };
-  // No Competition Training ahead: with the student's places already held, a rerun still succeeds.
-  await db.forGym(gymId, tx => tx.update(classSessions).set({ status: 'cancelled' }).where(eq(classSessions.name, waitlistClass)));
-  expect(await createSeedCommand(db.forGym, f.seed).run([gymId], io)).toBe(0);
-  // Without the waitlist place, the step fails and leaves every other class's capacity alone.
-  const waitlisted = rows.bookings.find(row => row.booking.status === 'waitlisted')!;
-  await db.forGym(gymId, tx => tx.delete(classBookings).where(eq(classBookings.id, waitlisted.booking.id)));
-  const capacities = () => db.forGym(gymId, tx => tx.select({ id: classSessions.id, capacity: classSessions.capacity }).from(classSessions));
-  const before = await capacities();
-  expect(await createSeedCommand(db.forGym, f.seed).run([gymId], io)).toBe(1);
-  expect(await capacities()).toEqual(before);
-  expect((await studentRows(gymId)).bookings.map(row => row.booking.status)).toEqual(['booked', 'booked']);
-}, 90_000);
-
-it('reports the student billing failure, not a failing switch restore', async () => {
-  const unkeyed = fixture(false), { gymId } = await unkeyed.service.create(), keyed = fixture(true, unkeyed.clock);
-  const { home } = await studentRows(gymId), gateway = await keyed.provider(gymId), seedCard = gateway.seedCard.bind(gateway);
-  let studentFailed = false;
-  vi.spyOn(gateway, 'seedCard').mockImplementation(async (customerId, householdId, declines) => {
-    if (householdId === home.id) { studentFailed = true; throw Object.assign(new Error('Test card unavailable'), { code: 'TEST_CARD_DOWN' }); }
-    return seedCard(customerId, householdId, declines);
-  });
-  // The portal seed's restore fails too (the billing seed's own restore, earlier, works); the seed's own failure must
-  // still be the one reported.
-  const create = goLive.createGoLiveService;
-  const spy = vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
-    const service = create(options);
-    return { ...service, async update(context, input) {
-      if (studentFailed && input.billingEnabled === false) throw Object.assign(new Error('Switch unavailable'), { code: 'RESTORE_DOWN' });
-      return service.update(context, input);
-    } };
-  });
-  const logs: string[] = [], previous = setLogSink(line => logs.push(line));
-  try {
-    expect(await createSeedCommand(db.forGym, keyed.seed).run([gymId], { stdout: vi.fn(), stderr: vi.fn() })).toBe(1);
-  } finally { setLogSink(previous); spy.mockRestore(); }
-  const events = logs.map(line => JSON.parse(line) as { event: string; step?: string; error?: { code?: string } });
-  expect(events.find(entry => entry.event === 'demo.seed_failed')).toMatchObject({ step: 'portal', error: { code: 'TEST_CARD_DOWN' } });
-  expect(events.find(entry => entry.event === 'demo.portal.billing_restore_failed')).toMatchObject({ gymId, error: { code: 'RESTORE_DOWN' } });
-}, 120_000);
