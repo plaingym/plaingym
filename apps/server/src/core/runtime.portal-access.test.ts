@@ -2,12 +2,13 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { and, eq } from 'drizzle-orm';
 import { householdUsers, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { requestPortalConfirmation } from '../areas/members/household-users.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { authConfig } from '../infra/auth/config.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
@@ -15,32 +16,35 @@ import { clock } from './clock.js';
 import { startRuntime, type Runtime } from './runtime.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
-let runtime: Runtime | undefined, directory: string | undefined;
+const origin = 'https://gym.example.test', gymId = uuidv7();
+let runtime: Runtime | undefined, directory: string | undefined, accounts: ReturnType<typeof createAccountService>;
+beforeAll(async () => {
+  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  directory = await mkdtemp(join(tmpdir(), 'plaingym-portal-access-runtime-'));
+  const env = { DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'cd'.repeat(32),
+    AUTH_SECRET: 'runtime-portal-access-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on', TENANCY: 'single',
+    PUBLIC_ORIGIN: origin, NODE_ENV: 'production', UPLOADS_DIR: join(directory, 'uploads') };
+  await factory('gyms', gymId);
+  accounts = createAccountService(authConfig(env), () => db.system.db);
+  runtime = await startRuntime(env);
+});
 afterAll(async () => {
   await runtime?.stop();
   if (directory) await rm(directory, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
+const headers = (cookie = '') => ({ host: 'gym.example.test', origin, 'content-type': 'application/json', cookie });
+async function signIn(email: string, password: string) {
+  const response = await runtime!.app.request(origin + '/api/auth/sign-in/email', { method: 'POST', headers: headers(), body: JSON.stringify({ email, password }) });
+  expect(response.status).toBe(200);
+  return response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+}
 it('keeps a signed-in session without staff roles or household links, so the admin can explain the missing access', async () => {
-  vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
-  directory = await mkdtemp(join(tmpdir(), 'plaingym-portal-access-runtime-'));
-  const env = { DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'cd'.repeat(32),
-    AUTH_SECRET: 'runtime-portal-access-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on', TENANCY: 'single',
-    PUBLIC_ORIGIN: 'https://gym.example.test', NODE_ENV: 'production', UPLOADS_DIR: join(directory, 'uploads') };
-  const gymId = uuidv7(); await factory('gyms', gymId);
-  const accounts = createAccountService(authConfig(env), () => db.system.db);
   const unlinked = await accounts.createPasswordUser(gymId, 'unlinked@example.test', 'Unlinked', 'unlinked-user-password', clock);
   const member = await accounts.createPasswordUser(gymId, 'member@example.test', 'Member', 'linked-member-password', clock);
   const login = await factory('householdUsers', gymId, { userId: member.userId, scope: 'payer', memberId: null });
-  runtime = await startRuntime(env);
-  const headers = (cookie = '') => ({ host: 'gym.example.test', origin: env.PUBLIC_ORIGIN, 'content-type': 'application/json', cookie });
-  const signIn = async (email: string, password: string) => {
-    const response = await runtime!.app.request(env.PUBLIC_ORIGIN + '/api/auth/sign-in/email', { method: 'POST', headers: headers(), body: JSON.stringify({ email, password }) });
-    expect(response.status).toBe(200);
-    return response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
-  };
-  const bootstrap = async (cookie: string) => (await (await runtime!.app.request(env.PUBLIC_ORIGIN + '/api/auth/bootstrap', { headers: headers(cookie) })).json()).data.session;
-  const get = async (path: string, cookie: string) => (await runtime!.app.request(env.PUBLIC_ORIGIN + path, { headers: headers(cookie) })).status;
+  const bootstrap = async (cookie: string) => (await (await runtime!.app.request(origin + '/api/auth/bootstrap', { headers: headers(cookie) })).json()).data.session;
+  const get = async (path: string, cookie: string) => (await runtime!.app.request(origin + path, { headers: headers(cookie) })).status;
 
   const unlinkedCookie = await signIn('unlinked@example.test', 'unlinked-user-password');
   expect(await bootstrap(unlinkedCookie)).toEqual({ userId: unlinked.userId, roles: [], member: false });
@@ -61,14 +65,14 @@ it('keeps a signed-in session without staff roles or household links, so the adm
   for (const household of [first, second]) await factory('householdUsers', gymId, { householdId: household.id, userId: member.userId, scope: 'payer', memberId: null });
   expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, roles: [], member: true });
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
-  const choices = await (await runtime.app.request(env.PUBLIC_ORIGIN + '/api/portal/households', { headers: headers(memberCookie) })).json();
+  const choices = await (await runtime!.app.request(origin + '/api/portal/households', { headers: headers(memberCookie) })).json();
   expect(choices).toEqual({ data: { current: null, households: [
     { householdId: first.id, name: 'First household', role: 'payer' }, { householdId: second.id, name: 'Second household', role: 'payer' }] } });
 
   // The choice is stored with the session and read back by the real principal loader on the next request.
-  const choose = (householdId: string) => runtime!.app.request(env.PUBLIC_ORIGIN + '/api/portal/households/current',
+  const choose = (householdId: string) => runtime!.app.request(origin + '/api/portal/households/current',
     { method: 'POST', headers: headers(memberCookie), body: JSON.stringify({ householdId }) });
-  const context = async () => (await runtime!.app.request(env.PUBLIC_ORIGIN + '/api/portal/context', { headers: headers(memberCookie) })).json();
+  const context = async () => (await runtime!.app.request(origin + '/api/portal/context', { headers: headers(memberCookie) })).json();
   const unlinkedHousehold = await factory('households', gymId);
   expect((await choose(unlinkedHousehold.id)).status).toBe(404);
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
@@ -79,4 +83,23 @@ it('keeps a signed-in session without staff roles or household links, so the adm
   // A revoked choice is never honored: with one link left, the session opens that household.
   await db.forGym(gymId, tx => tx.delete(householdUsers).where(and(eq(householdUsers.householdId, first.id), eq(householdUsers.userId, member.userId))));
   expect(await context()).toEqual({ data: { role: 'payer', householdId: second.id, memberId: null } });
+});
+it('shows the owner, never a coach, the households awaiting portal confirmation on the dashboard', async () => {
+  const owner = await accounts.createPasswordUser(gymId, 'owner@example.test', 'Owner', 'owner-user-password', clock);
+  const coach = await accounts.createPasswordUser(gymId, 'coach@example.test', 'Coach', 'coach-user-password', clock);
+  await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
+  await factory('staffRoles', gymId, { userId: coach.userId, role: 'coach' });
+  // A password-mode join leaves its household awaiting staff confirmation.
+  const home = await factory('households', gymId, { name: 'Waiting household', email: 'waiting@example.test' });
+  const person = await factory('members', gymId, { householdId: home.id });
+  await db.forGym(gymId, tx => requestPortalConfirmation(tx, gymId, home.id, clock));
+  const widgets = async (cookie: string) => {
+    const response = await runtime!.app.request(origin + '/api/dashboard', { headers: headers(cookie) });
+    expect(response.status).toBe(200);
+    return (await response.json()).data.widgets as { id: string }[];
+  };
+  expect(await widgets(await signIn('owner@example.test', 'owner-user-password'))).toEqual(expect.arrayContaining([expect.objectContaining({
+    id: 'members.portal-confirmations', kind: 'count', count: 1,
+    items: [{ label: 'Waiting household', href: `/admin/members/${person.id}#memberTabs.portal-access` }] })]));
+  expect((await widgets(await signIn('coach@example.test', 'coach-user-password'))).map(widget => widget.id)).not.toContain('members.portal-confirmations');
 });

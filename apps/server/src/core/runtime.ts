@@ -24,6 +24,7 @@ import { createPortalAuthorization } from '../areas/portal/auth.permissions.js';
 import { configurePortalAccess } from '../areas/portal/access.routes.js';
 import { createPortalPrincipalLoader } from '../areas/members/household-users.context.js';
 import { createPortalInvitationService } from '../areas/members/household-users.invitations.js';
+import { createPortalConfirmationWidgetProvider } from '../areas/members/household-users.widget.js';
 import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
 import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
@@ -221,7 +222,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const criteria = configureRanks({ attendance, clock });
   const ranks = createRanksService({ clock, criteria });
   // The dashboard and portal progress read through the same services, with the ranks criteria registry and clock.
-  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider()]);
+  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(), createPortalConfirmationWidgetProvider()]);
   configurePortalProgress({ ranks, attendance });
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
