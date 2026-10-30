@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Billing webhook handlers
 
-`registerBillingWebhookHandlers(inbox, { transitions, scope?, clock? })` registers
+`registerBillingWebhookHandlers(inbox, { transitions, disputeAlerts?, scope?, clock? })` registers
 intent success/failure/action-needed events, completed Checkout, successful setup,
 manual and automatic payment-method updates, Charge refunds, refund lifecycle
 events, and dispute created/updated/closed events. Call it before starting the
@@ -20,14 +20,21 @@ payment or attempt. Failures without a runner attempt do not start dunning.
 Dashboard refunds and disputes match through their parent PaymentIntent, not
 their own metadata. `charge.refunded` uses the intent-scoped, paginated
 `Payments.listRefunds(intentId)` and re-reads each returned refund before applying
-it. No handler calls `listChangesSince`. A refund arriving before success first
-applies the current successful payment with its provider timestamp. Refunds use
-the transition service, retaining an existing local refund/reservation ID or a
-deterministic UUIDv5 for a new processor refund. Duplicate-payment refunds reuse
-the worker's reservation.
+it. No handler calls `listChangesSince`. Refunds and disputes are recorded by the
+writer in `../../disputes-refunds.ts`, which restore reconciliation also uses. A
+refund or dispute arriving before success first applies the current successful
+payment with its provider timestamp; one whose payment hasn't succeeded stays
+retryable. Refunds use the transition service, retaining an existing local
+refund/reservation ID or a deterministic UUIDv5 for a new processor refund.
+Duplicate-payment refunds reuse the worker's reservation.
 
 Disputes update only the invoice's dispute ID/status, under its row lock, with an
-audit. `won`, `lost`, and `closed` are terminal and cannot be reopened. The adapter
+audit; the invoice transitions alone change its status. `won`, `lost`, and `closed`
+(`terminalDisputeStatuses`) are terminal and cannot be reopened. Each recorded
+dispute change calls `disputeAlerts.publishDispute`, which queues the owner's notice
+under its permanent per-dispute key. A failed publish is logged and never fails the
+recorded dispute; it, and any dispute recorded without `disputeAlerts`, is found by
+the hourly dispute scan. The adapter
 normalizes closed inquiries, refunded disputes, and prevented disputes to
 `closed`; this does not assert that either party won. Multiple dispute IDs on one
 invoice require staff resolution rather than overwriting the earlier dispute.
@@ -50,7 +57,8 @@ revoked card. Changes retain ordinary payment-method audits.
 
 ## Production composition
 
-`composeBillingWebhooks` constructs one `createInvoiceTransitions` service with
+`composeBillingWebhooks` passes an optional `disputeAlerts` (the billing alerts
+service) to the handlers. It constructs one `createInvoiceTransitions` service with
 `afterCommit: gymId => effects.publish(gymId)`, the real membership lifecycle,
 `createTransitionNotifications` and `createTransitionEffects`. It registers the
 handlers and calls `configureTransitionEffects`. Its return value contains

@@ -12,6 +12,7 @@ import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError } from '../../../core/log.js';
 import { assignmentInvoices, audit, generateCycle, system } from './store.js';
 import { createReconciliation } from './reconciliation.js';
+import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, skipped, type ChargeMode, type Skipped } from './eligibility.js';
 import { releaseActionNeeded, releaseCheckout } from './releases.js';
 export { releaseActionNeeded, releaseCheckout } from './releases.js';
@@ -27,6 +28,8 @@ export interface RunnerOptions {
   transitions: InvoiceTransitions;
   jobs: Pick<Jobs, 'enqueue'>;
   payments(gymId: string): Promise<Payments>;
+  /** Publishes owner alerts for disputes that restore reconciliation records. */
+  disputeAlerts?: DisputeRefundOptions['disputeAlerts'];
   /** Must exceed the provider's entire request/retry timeout. Default: fifteen minutes. */
   staleAfterMs?: number;
 }

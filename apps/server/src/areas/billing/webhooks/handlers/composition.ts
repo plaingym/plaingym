@@ -21,6 +21,7 @@ export function composeBillingWebhooks(options: {
   clock?: Clock;
   afterCheckoutRecorded?: NonNullable<HandlerOptions['afterCheckoutRecorded']>;
   afterInvoicePaid?: NonNullable<TransitionEffectOptions['afterInvoicePaid']>;
+  disputeAlerts?: HandlerOptions['disputeAlerts'];
   prepare: Parameters<typeof createTransitionNotifications>[0]['prepare'];
   staffRecipients: Parameters<typeof createTransitionNotifications>[0]['staffRecipients'];
 }) {

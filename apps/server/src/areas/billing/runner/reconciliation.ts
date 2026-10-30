@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
+import { createDisputeRefundWriter } from '../disputes-refunds.js';
 import { audit, system } from './store.js';
 import type { RunnerOptions } from './index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
@@ -13,6 +14,7 @@ export function createReconciliation(options: Options) {
   const { scope, clock } = options;
   const staleAfterMs = options.staleAfterMs ?? 15 * 60_000;
   if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error('Invalid reconciliation threshold');
+  const writer = createDisputeRefundWriter({ ...options, scope, clock });
   /** Returns false for unknown, unmatched, or still-processing objects. Never guesses from search. */
   async function apply(gymId: string, outcome: ChargeOutcome, context: MutationContext = system(gymId)): Promise<boolean> {
     if (context.gymId !== gymId) throw new Error('Payment outcome actor gym mismatch');
@@ -96,46 +98,11 @@ export function createReconciliation(options: Options) {
     }
     if (value.kind === 'checkout') return checkout(gymId, value.object.id, provider);
     if (value.kind === 'setup' || value.kind === 'payment_method') return true; // Card collection is webhook-owned.
-    const remote = value.object;
-    // The payments adapter resolves dashboard Refund/Dispute -> Charge -> PaymentIntent.
-    let payment = await scope(gymId, async tx => (await tx.select().from(payments).where(or(
-      eq(payments.paymentIntentId, remote.chargeId), eq(payments.chargeId, remote.chargeId))))[0]);
-    if (!payment) {
-      await apply(gymId, await provider.findCharge({ kind: 'charge', id: remote.chargeId }, { includeSuccessTime: true }));
-      payment = await scope(gymId, async tx => (await tx.select().from(payments).where(or(
-        eq(payments.paymentIntentId, remote.chargeId), eq(payments.chargeId, remote.chargeId))))[0]);
-    }
+    // Refunds and disputes are written by the same module as webhook processing, matched through their PaymentIntent.
+    const { payment } = await writer.parentPayment(gymId, provider, value.object.chargeId, success => apply(gymId, success));
     if (!payment) return false;
-    if (value.kind === 'refund') {
-      const refund = value.object;
-      if (refund.metadata.gymId !== gymId || refund.currency.toUpperCase() !== payment.currency) return false;
-      const previous = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.processorId, refund.id)))[0]);
-      try {
-        await options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
-          refundId: previous?.id ?? uuidv7(), processorId: refund.id, amountCents: refund.amount,
-          currency: payment.currency as 'USD' | 'CAD', status: refund.status });
-      } catch (error) {
-        // A concurrent pass may have inserted this processor refund with another local UUID.
-        const raced = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.processorId, refund.id)))[0]);
-        if (!raced || raced.paymentId !== payment.id || raced.amountCents !== refund.amount || raced.currency !== payment.currency) throw error;
-        await options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
-          refundId: raced.id, processorId: refund.id, amountCents: refund.amount,
-          currency: payment.currency as 'USD' | 'CAD', status: refund.status });
-      }
-      return refund.status !== 'pending';
-    }
-    const dispute = value.object;
-    return scope(gymId, async tx => {
-      const invoice = (await tx.select().from(invoices).where(eq(invoices.id, payment.invoiceId)).for('update'))[0]!;
-      if (invoice.disputeId && invoice.disputeId !== dispute.id) return false;
-      if (invoice.disputeId === dispute.id && (invoice.disputeStatus === dispute.status
-        || invoice.disputeStatus === 'won' || invoice.disputeStatus === 'lost' || invoice.disputeStatus === 'closed')) return true;
-      const after = { disputeId: dispute.id, disputeStatus: dispute.status };
-      await tx.update(invoices).set(after).where(eq(invoices.id, invoice.id));
-      await audit(tx, system(gymId), clock, 'billing.invoice.disputed', 'invoice', invoice.id, after,
-        { disputeId: invoice.disputeId, disputeStatus: invoice.disputeStatus });
-      return true;
-    });
+    if (value.kind === 'refund') return await writer.refund(gymId, payment, value.object) && value.object.status !== 'pending';
+    return await writer.dispute(gymId, payment, value.object) !== 'conflict';
   }
   async function pending(gymId: string) {
     const before = new Date(clock.now().getTime() - staleAfterMs);

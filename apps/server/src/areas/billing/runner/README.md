@@ -138,10 +138,13 @@ before applying its success. Stored intent IDs also match when optional invoice
 metadata is missing; conflicting metadata is rejected. Missing reservations, unmatched objects, unknown
 results and pending refunds stay in the review report. Enumeration errors fail
 the pass. There is no search-based outcome inference or automatic billing resume.
-Disputes follow the webhook writer's rules: another dispute already attached to
-the invoice is a manual-resolution issue, won/lost/closed states are terminal, and each
-change records `billing.invoice.disputed` with before and after values. Refund
-and dispute writers should be shared with webhook processing at integration.
+Refunds and disputes are recorded by the writer shared with webhook processing
+(`../disputes-refunds.ts`): another dispute already attached to the invoice is a
+manual-resolution issue, won/lost/closed states are terminal, each change records
+`billing.invoice.disputed` with before and after values and publishes the owner's
+alert, and refunds get the same local IDs as from webhooks. The optional
+`disputeAlerts` option (the billing alerts service) receives those alerts; without it,
+the hourly dispute scan still finds them.
 
 Successful reconciliation calls `findCharge(reference, { includeSuccessTime: true })`
 and records the processor's `succeededAt`, including after restore or a cancel/confirm

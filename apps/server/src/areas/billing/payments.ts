@@ -16,6 +16,7 @@ import { calculateOneOffInvoice } from './invoicing/index.js';
 import { createInvoiceTransitions } from './transitions/index.js';
 import { releaseActionNeeded, releaseCheckout, type ChargeRunner } from './runner/index.js';
 import { createReconciliation } from './runner/reconciliation.js';
+import { hasOpenDispute } from './disputes-refunds.js';
 import { chargeSkipped, paymentConflict, paymentUnavailable } from './payments.errors.js';
 import { createPaymentMutations } from './payments.mutations.js';
 
@@ -56,7 +57,7 @@ export async function loadHousehold(tx: Transaction, id: string, lock = false) {
 export async function requireCollectible(tx: Transaction, invoice: typeof invoices.$inferSelect) {
   if (['paid', 'partially_refunded', 'refunded'].includes(invoice.status)) paymentConflict('already_paid', 'Invoice is already paid');
   if (!['open', 'past_due'].includes(invoice.status)) paymentConflict('not_payable', 'Invoice is not available for collection');
-  if (invoice.disputeId && !['won', 'lost', 'closed'].includes(invoice.disputeStatus ?? '')) paymentConflict('open_dispute', 'Invoice has an open dispute');
+  if (hasOpenDispute(invoice)) paymentConflict('open_dispute', 'Invoice has an open dispute');
   if (invoice.checkoutSessionId) paymentConflict('checkout_changed', 'Resolve the existing Checkout before recording another payment');
   if ((await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(and(eq(paymentAttempts.invoiceId, invoice.id),
     inArray(paymentAttempts.status, ['pending', 'requires_action']))).limit(1)).length) chargeSkipped('pending_attempt');
@@ -94,7 +95,7 @@ export function createPaymentService(options: PaymentOptions = {}) {
     async charge(context: MutationContext, invoiceId: string) {
       const row = await scope(context.gymId, tx => loadInvoice(tx, invoiceId));
       if (row.amountCents === 0) paymentConflict('zero_invoice', 'A zero-value invoice cannot be charged from this action');
-      if (row.disputeId && !['won', 'lost', 'closed'].includes(row.disputeStatus ?? '')) paymentConflict('open_dispute', 'Invoice has an open dispute');
+      if (hasOpenDispute(row)) paymentConflict('open_dispute', 'Invoice has an open dispute');
       if (!options.runner) paymentUnavailable('runner_unavailable', 'Card collection is not configured');
       let result;
       try { result = await options.runner.charge(context.gymId, invoiceId, { mode: 'staff', context }); }
@@ -169,7 +170,7 @@ export function createPaymentService(options: PaymentOptions = {}) {
         const invoice = await loadInvoice(tx, invoiceId, true);
         if (['paid', 'partially_refunded', 'refunded'].includes(invoice.status)) paymentConflict('already_paid', 'Invoice is already paid');
         if (!['open', 'past_due'].includes(invoice.status)) paymentConflict('not_payable', 'Invoice is not available for collection');
-        if (invoice.disputeId && !['won', 'lost', 'closed'].includes(invoice.disputeStatus ?? '')) paymentConflict('open_dispute', 'Invoice has an open dispute');
+        if (hasOpenDispute(invoice)) paymentConflict('open_dispute', 'Invoice has an open dispute');
         if (request.amountCents !== invoice.amountCents || request.currency !== invoice.currency)
           paymentConflict('payment_mismatch', 'Payment amount or currency does not match');
         const attempts = await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId)).orderBy(desc(paymentAttempts.attemptNumber));

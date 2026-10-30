@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, isNull, or } from 'drizzle-orm';
-import { auditEvents, forGym, households, invoices, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
+import { and, eq, or } from 'drizzle-orm';
+import { auditEvents, forGym, households, invoices, paymentAttempts, payments, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../../../core/clock.js';
 import type { InvoiceTransitions } from '../../../../core/interfaces/invoice-transitions.js';
 import type { ChargeOutcome, CheckoutSession, PaymentMetadata, Payments, PaymentObjectReference, Refund } from '../../../../infra/payments/index.js';
 import type { WebhookHandler, WebhookInbox } from '../inbox.js';
 import { applyChargeOutcome } from '../../transitions/outcomes.js';
-import { audit, lockInvoice } from '../../transitions/store.js';
+import { createDisputeRefundWriter, type DisputeRefundOptions } from '../../disputes-refunds.js';
 import { createCardHandlers } from './methods.js';
-import { processorRefundId } from './identity.js';
 
 export const billingWebhookTypes = [
   'payment_intent.succeeded', 'payment_intent.payment_failed', 'payment_intent.requires_action',
@@ -20,6 +19,7 @@ export const billingWebhookTypes = [
 export interface HandlerOptions {
   transitions: InvoiceTransitions;
   afterCheckoutRecorded?(gymId: string, linkId: string, sessionId: string): Promise<void>;
+  disputeAlerts?: DisputeRefundOptions['disputeAlerts'];
   scope?: typeof forGym;
   clock?: Clock;
 }
@@ -40,6 +40,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   const cards = createCardHandlers({ scope, clock });
+  const writer = createDisputeRefundWriter({ ...options, scope, clock });
   async function afterCheckoutRecorded(gymId: string, provider: Payments, metadata: PaymentMetadata,
     reference: PaymentObjectReference, checkout?: CheckoutSession) {
     const linkId = metadata.linkId;
@@ -99,34 +100,17 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
       paidAt: outcome.status === 'succeeded' ? successTime(outcome) : clock.now().toISOString(),
     }, { ...outcome, metadata: { ...outcome.metadata, invoiceId: matched.invoice.id } });
   }
+  /** The recorded payment behind a refund or dispute, recording its succeeded intent first when needed. */
+  async function parentPayment(gymId: string, provider: Payments, intentId: string, kind: 'Refund' | 'Dispute') {
+    // The adapter's chargeId on refunds/disputes is their parent PaymentIntent, including dashboard objects.
+    const { outcome, payment } = await writer.parentPayment(gymId, provider, intentId, success => applyIntent(gymId, success));
+    await match(gymId, outcome);
+    if (!payment) throw new Error(`${kind} payment is unresolved`);
+    return payment;
+  }
   async function applyRefund(gymId: string, provider: Payments, refund: Refund) {
-    // The adapter's chargeId on refunds/disputes is their parent PaymentIntent, including dashboard refunds.
-    const outcome = await provider.findCharge({ kind: 'charge', id: refund.chargeId }, { includeSuccessTime: true });
-    let matched = await match(gymId, outcome);
-    if (!matched.payment) {
-      // Refund may arrive before the success webhook, or after restoring an earlier snapshot.
-      if (outcome.status !== 'succeeded') throw new Error('Refund payment is unresolved');
-      await applyIntent(gymId, outcome);
-      matched = await match(gymId, outcome);
-    }
-    const payment = matched.payment;
-    if (!payment) throw new Error('Refund payment is unresolved');
-    const refundId = await scope(gymId, async tx => {
-      const existing = (await tx.select().from(refunds).where(eq(refunds.processorId, refund.id)))[0];
-      if (existing) return existing.id;
-      // The duplicate-payment worker reserves a refund before calling the processor.
-      const reservations = await tx.select().from(refunds).where(and(eq(refunds.paymentId, payment.id),
-        isNull(refunds.processorId), eq(refunds.status, 'pending')));
-      if (reservations.length) {
-        if (reservations.length !== 1 || reservations[0]!.amountCents !== refund.amount
-          || reservations[0]!.currency !== refund.currency.toUpperCase()) throw new Error('Refund reservation is ambiguous');
-        return reservations[0]!.id;
-      }
-      return processorRefundId(gymId, refund.id);
-    });
-    await options.transitions.refund(system(gymId), { invoiceId: matched.invoice.id, paymentId: payment.id,
-      refundId, processorId: refund.id, amountCents: refund.amount,
-      currency: refund.currency.toUpperCase() as 'USD' | 'CAD', status: refund.status });
+    const payment = await parentPayment(gymId, provider, refund.chargeId, 'Refund');
+    if (!await writer.refund(gymId, payment, refund)) throw new Error('Refund payment mismatch');
   }
   const handle: WebhookHandler = async (event, context) => {
     const { gymId, payments: provider } = context;
@@ -154,19 +138,9 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         await afterCheckoutRecorded(gymId, provider, current.object.metadata, { kind: 'charge', id: current.object.id });
     } else if (current.kind === 'refund') await applyRefund(gymId, provider, current.object);
     else if (current.kind === 'dispute') {
-      const dispute = current.object;
-      const outcome = await provider.findCharge({ kind: 'charge', id: dispute.chargeId });
-      const { invoice } = await match(gymId, outcome);
-      await scope(gymId, async tx => {
-        const locked = await lockInvoice(tx, invoice.id);
-        if (locked.disputeId && locked.disputeId !== dispute.id) throw new Error('Invoice has another dispute; staff resolution required');
-        if (locked.disputeId === dispute.id && (locked.disputeStatus === dispute.status
-          || ['won', 'lost', 'closed'].includes(locked.disputeStatus ?? ''))) return;
-        const after = { disputeId: dispute.id, disputeStatus: dispute.status };
-        await tx.update(invoices).set(after).where(eq(invoices.id, invoice.id));
-        await audit(tx, system(gymId), clock, 'billing.invoice.disputed', 'invoice', invoice.id, after,
-          { disputeId: locked.disputeId, disputeStatus: locked.disputeStatus });
-      });
+      const payment = await parentPayment(gymId, provider, current.object.chargeId, 'Dispute');
+      if (await writer.dispute(gymId, payment, current.object) === 'conflict')
+        throw new Error('Invoice has another dispute; staff resolution required');
     } else if (current.kind === 'checkout') {
       const session = current.object;
       if (session.status !== 'complete') return;

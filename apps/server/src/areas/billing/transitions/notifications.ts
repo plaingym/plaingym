@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { eq } from 'drizzle-orm';
-import { forGym, households, members, type payments } from '@plaingym/db';
+import { forGym, type payments } from '@plaingym/db';
 import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -9,6 +8,7 @@ import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.
 import type { Email, EmailResult } from '../../../infra/email/index.js';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { createSignedLinksService } from '../../links/service.js';
+import { householdRecipient } from '../../members/household-recipient.js';
 
 export interface TransitionNotice {
   gymId: string;
@@ -84,12 +84,8 @@ export function createTransitionNotifications(options: {
   async function memberRecipients(gymId: string, householdId: string): Promise<string[]> {
     if (!(await options.settings.get(gymId)).memberEmailsEnabled) return [];
     return scope(gymId, async tx => {
-      const household = (await tx.select().from(households).where(eq(households.id, householdId)))[0];
-      const email = household?.email?.trim();
-      if (!email) return [];
-      const family = await tx.select().from(members).where(eq(members.householdId, householdId));
-      if (family.some(member => member.email?.trim().toLowerCase() === email.toLowerCase() && (member.emailOptOut || !member.emailDeliverable))) return [];
-      return [email];
+      const recipient = await householdRecipient(tx, gymId, householdId);
+      return recipient && !recipient.suppressed ? [recipient.email] : [];
     });
   }
   return {

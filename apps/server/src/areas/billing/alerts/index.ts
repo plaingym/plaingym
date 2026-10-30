@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
-import { auditEvents, forGym, households, invoices, members, memberships, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, invoices, memberships, paymentMethods, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, type Clock, type Translator } from '@plaingym/shared';
 import { dateSchema, extensionDashboardWidgetSchema, idSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -13,6 +13,7 @@ import { createEmailDeliveries, deliveryAcceptance, type Email } from '../../../
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import { renderBillingAlert } from '../../../emails/billing/alerts.js';
 import { createSignedLinksService } from '../../links/service.js';
+import { householdRecipient } from '../../members/household-recipient.js';
 import { unalertedDisputes } from './disputes.query.js';
 
 export const sendAlertJob = 'billing.alerts.send';
@@ -69,13 +70,9 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
         eq(memberships.householdId, card.householdId), inArray(memberships.status, ['active', 'trial', 'pending']),
         gt(memberships.amountCents, 0))).orderBy(asc(memberships.nextDueOn)).limit(1);
       if (!membership || !needsCardExpiryAlert(card, membership.cycle, localDate(clock.now(), timezone))) return;
-      const [household] = await tx.select({ email: households.email }).from(households).where(eq(households.id, card.householdId));
-      const email = household?.email?.trim();
-      if (!email) return;
-      const family = await tx.select({ email: members.email, optOut: members.emailOptOut, deliverable: members.emailDeliverable })
-        .from(members).where(eq(members.householdId, card.householdId));
-      if (family.some(member => member.email?.trim().toLowerCase() === email.toLowerCase() && (member.optOut || !member.deliverable))) return;
-      return { card, cycle: membership.cycle, email };
+      const household = await householdRecipient(tx, gymId, card.householdId);
+      if (!household || household.suppressed) return;
+      return { card, cycle: membership.cycle, email: household.email };
     });
   }
   async function cardExpiry(gymId: string) {
@@ -98,22 +95,30 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       cursor = cards.at(-1)!.id;
     }
   }
+  /** Mail and an owner address are checked before the permanent key is used, so a later scan can still recover. */
+  async function disputeReady(gymId: string) {
+    if (!await ready(gymId)) return false;
+    return (await options.accounts.staffEmails(gymId, ['owner'])).map(recipient).length > 0;
+  }
+  const enqueueDispute = (gymId: string, timezone: string, invoiceId: string, disputeId: string) =>
+    options.jobs.enqueue(sendAlertJob, { kind: 'dispute', invoiceId, disputeId } satisfies AlertPayload,
+      { gymId, timezone, idempotencyKey: disputeKey(disputeId), maxAttempts: disputeAlertMaxAttempts });
   async function disputes(gymId: string) {
     const gym = await options.settings.get(gymId);
-    if (!await ready(gymId)) return;
-    const owners = [...new Set((await options.accounts.staffEmails(gymId, ['owner'])).map(recipient))];
-    if (!owners.length) return;
+    if (!await disputeReady(gymId)) return;
     let cursor: string | undefined;
     for (;;) {
       // Include already resolved disputes: an owner must still learn about one resolved between polls.
       const rows = await scope(gymId, tx => unalertedDisputes(tx, gymId, cursor));
-      for (const row of rows) await options.jobs.enqueue(sendAlertJob,
-        { kind: 'dispute', invoiceId: row.id, disputeId: row.disputeId! } satisfies AlertPayload,
-        { gymId, timezone: gym.timezone, idempotencyKey: disputeKey(row.disputeId!),
-          maxAttempts: disputeAlertMaxAttempts });
+      for (const row of rows) await enqueueDispute(gymId, gym.timezone, row.id, row.disputeId!);
       if (rows.length < 100) return;
       cursor = rows.at(-1)!.id;
     }
+  }
+  /** Called after a dispute is recorded (webhook or restore). The scan's key makes the two paths send one notice. */
+  async function publishDispute(gymId: string, invoiceId: string, disputeId: string) {
+    const gym = await options.settings.get(gymId);
+    if (await disputeReady(gymId)) await enqueueDispute(gymId, gym.timezone, invoiceId, disputeId);
   }
   const write = (tx: Transaction, gymId: string, kind: AlertPayload['kind'], targetId: string, after: Record<string, unknown>, outcome: string) =>
     writeAudit(tx, { gymId, actorKind: 'system', action: `billing.alert.${kind}.${outcome}`,
@@ -213,7 +218,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       await audit(gymId, work.kind, invoice.id, identity);
     }
   }
-  return { cardExpiry, disputes, send };
+  return { cardExpiry, disputes, publishDispute, send };
 }
 export type BillingAlerts = ReturnType<typeof createBillingAlerts>;
 

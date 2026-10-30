@@ -27,9 +27,10 @@ preparation result must carry the matching gym ID. Delivery is unavailable until
 configured; no credential is created in that case.
 
 Send creates a fresh link, commits it, then emails the household's address using the
-shared email layout. The URL is `/l/<token>` on the configured origin. Matching
-members' opt-out and deliverability flags are checked; waiver sends also honor the
-target member's flags. No member address is substituted for a missing household
+shared email layout. The URL is `/l/<token>` on the configured origin. The household
+recipient helper (`areas/members/household-recipient.ts`, shared with billing
+notifications and alerts) checks matching members' opt-out and deliverability flags;
+waiver sends also honor the target member's flags. No member address is substituted for a missing household
 address. Transport failures and suppressed sends revoke the undisclosed credential
 and return a generic unavailable error. Delivery reloads the persisted member-email
 switch immediately before sending, after asynchronous preparation and rendering;

@@ -13,6 +13,13 @@ starts. The daily scan runs at 09:00 in each gym's timezone; the dispute scan ru
 hourly at minute 41 and reads invoice flags written by webhook handlers. The runtime
 configures these jobs before starting the worker.
 
+`publishDispute(gymId, invoiceId, disputeId)` queues one dispute's notice right
+after the shared dispute writer (`../disputes-refunds.ts`) records it, from a webhook
+or from restore reconciliation. It applies the scan's readiness and owner checks and
+uses the same delivery key, so the scan, webhook replay and repeated restore passes
+send one notice. When mail isn't ready it uses no key and the hourly scan recovers;
+the writer logs a failed publish instead of failing the recorded dispute.
+
 Each enabled card scan and each dispute scan prepares mail once and validates the
 origin before enqueueing anything. Preparation failure leaves delivery keys unused
 so a later scan can recover after SMTP is configured. A dispute scan also requires
@@ -68,6 +75,6 @@ requires a widget and the registry always renders it. TODO: allow an optional
 provider result to hide the zero-count card. No new HTTP routes are added. The
 dispute email links to `/admin/billing/invoices/<invoiceId>` on the gym's configured origin.
 
-The household recipient/opt-out logic also exists in signed-link delivery and
-transition notifications. TODO: consolidate the three callers with a shared
-recipient helper.
+Card reminders take the household address and its opt-out/deliverability check from
+the household recipient helper (`areas/members/household-recipient.ts`), shared with
+signed-link delivery and transition notifications.
