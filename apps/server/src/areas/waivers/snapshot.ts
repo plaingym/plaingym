@@ -39,6 +39,10 @@ export function validateSignatureImage(bytes: Uint8Array) {
     if (type === 'IHDR' && (offset !== 8 || length !== 13)) invalid('Invalid signature PNG');
     if (!/^[A-Za-z]{4}$/.test(type)) invalid('Invalid signature PNG');
     if (!['IHDR', 'IDAT', 'IEND'].includes(type) && !/^[a-z]/.test(type)) invalid('Unsupported signature PNG');
+    // The PDF renderer's PNG reader passes a text chunk's bytes as one call's arguments (a large one overflows the
+    // stack) and plays animation frames, so text stays small and animated PNGs are refused.
+    if (['acTL', 'fcTL', 'fdAT'].includes(type) || (['tEXt', 'zTXt', 'iTXt'].includes(type) && length > 8 * 1024))
+      invalid('Unsupported signature PNG');
     if (type === 'IDAT') compressed.push(b.subarray(offset + 8, end - 4));
     if (type === 'IEND') { ended = length === 0 && end === b.length; break; }
     offset = end;

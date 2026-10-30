@@ -33,6 +33,8 @@ this records the agreement and does not mutate or enforce a membership term.
 The image upload binds its immutable key to a gym and member. PNGs are capped at
 256 KiB and 1200×600 pixels; headers, chunk CRCs and bounded decompression are
 checked. Unknown ancillary chunks are skipped; unknown critical chunks fail.
+Text chunks (`tEXt`, `zTXt`, `iTXt`) are limited to 8 KiB each and animated PNGs
+(`acTL`, `fcTL`, `fdAT`) are refused, because the PDF renderer's PNG reader reads both.
 Signing checks the image digest, then rechecks member/template state in
 a short transaction. Storage and rendering occur outside transactions. Retrying
 the same image and signing details returns the original signature; reusing that
