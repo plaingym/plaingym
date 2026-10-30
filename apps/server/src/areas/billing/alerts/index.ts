@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
-import { forGym, households, invoices, members, memberships, paymentMethods, writeAudit } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, members, memberships, paymentMethods, writeAudit } from '@plaingym/db';
 import { AppError, canStaff, type Clock, type Translator } from '@plaingym/shared';
 import { dateSchema, extensionDashboardWidgetSchema, idSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -9,7 +9,7 @@ import { clock as defaultClock } from '../../../core/clock.js';
 import type { DashboardWidgetProvider } from '../../../core/interfaces/extensions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { AccountService } from '../../../infra/auth/accounts.js';
-import type { Email } from '../../../infra/email/index.js';
+import { createEmailDeliveries, deliveryAcceptance, type Email } from '../../../infra/email/index.js';
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import { renderBillingAlert } from '../../../emails/billing/alerts.js';
 import { createSignedLinksService } from '../../links/service.js';
@@ -23,6 +23,9 @@ export { terminalDisputeStatuses } from '@plaingym/shared/contracts';
 const cardPayload = z.strictObject({ kind: z.literal('card_expiry'), paymentMethodId: idSchema, cycle: dateSchema });
 const disputePayload = z.strictObject({ kind: z.literal('dispute'), invoiceId: idSchema, disputeId: z.string().min(1) });
 const payloadSchema = z.discriminatedUnion('kind', [cardPayload, disputePayload]);
+/** Job idempotency keys and durable send-state keys: both are kept permanently. */
+const cardKey = (paymentMethodId: string, cycle: string) => `billing.alert.card_expiry:${paymentMethodId}:${cycle}`;
+const disputeKey = (disputeId: string) => `billing.alert.dispute:${disputeId}`;
 type Card = typeof paymentMethods.$inferSelect;
 type AlertPayload = z.infer<typeof payloadSchema>;
 
@@ -46,6 +49,7 @@ export interface BillingAlertsOptions {
 export function createBillingAlerts(options: BillingAlertsOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const links = createSignedLinksService({ scope, clock });
+  const deliveries = createEmailDeliveries({ scope, clock });
   async function ready(gymId: string) {
     try {
       const prepared = await options.prepare(gymId);
@@ -87,7 +91,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
         const candidate = await cardForCycle(gymId, id, gym.timezone);
         if (candidate) await options.jobs.enqueue(sendAlertJob,
           { kind: 'card_expiry', paymentMethodId: id, cycle: candidate.cycle } satisfies AlertPayload,
-          { gymId, timezone: gym.timezone, idempotencyKey: `billing.alert.card_expiry:${id}:${candidate.cycle}`,
+          { gymId, timezone: gym.timezone, idempotencyKey: cardKey(id, candidate.cycle),
             maxAttempts: cardAlertMaxAttempts });
       }
       if (cards.length < 100) return;
@@ -105,15 +109,22 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       const rows = await scope(gymId, tx => unalertedDisputes(tx, gymId, cursor));
       for (const row of rows) await options.jobs.enqueue(sendAlertJob,
         { kind: 'dispute', invoiceId: row.id, disputeId: row.disputeId! } satisfies AlertPayload,
-        { gymId, timezone: gym.timezone, idempotencyKey: `billing.alert.dispute:${row.disputeId}`,
+        { gymId, timezone: gym.timezone, idempotencyKey: disputeKey(row.disputeId!),
           maxAttempts: disputeAlertMaxAttempts });
       if (rows.length < 100) return;
       cursor = rows.at(-1)!.id;
     }
   }
-  async function audit(gymId: string, kind: AlertPayload['kind'], targetId: string, after: unknown) {
-    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: `billing.alert.${kind}.sent`,
+  async function audit(gymId: string, kind: AlertPayload['kind'], targetId: string, after: Record<string, unknown>, outcome = 'sent') {
+    await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: `billing.alert.${kind}.${outcome}`,
       targetType: kind === 'card_expiry' ? 'payment_method' : 'invoice', targetId, after, occurredAt: clock.now() }));
+  }
+  /** Repairs an outcome audit a crash lost after the send state was recorded; `match` names the cycle or dispute. */
+  async function auditOnce(gymId: string, kind: AlertPayload['kind'], targetId: string, match: Record<string, string>, outcome: string) {
+    const rows = await scope(gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+      eq(auditEvents.gymId, gymId), eq(auditEvents.action, `billing.alert.${kind}.${outcome}`), eq(auditEvents.targetId, targetId))));
+    const [field, value] = Object.entries(match)[0]!;
+    if (!rows.some(row => (row.after as Record<string, unknown> | null)?.[field] === value)) await audit(gymId, kind, targetId, match, outcome);
   }
   async function send(payload: unknown, context: JobContext) {
     const work = payloadSchema.parse(payload), gymId = context.gymId;
@@ -122,29 +133,45 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       if (!gym.memberEmailsEnabled) return;
       let candidate = await cardForCycle(gymId, work.paymentMethodId, gym.timezone);
       if (!candidate || candidate.cycle !== work.cycle) return;
+      // An accepted or possibly accepted notice is never sent again, so no second link is minted for it.
+      const key = cardKey(work.paymentMethodId, work.cycle), sent = await deliveries.state(gymId, key);
+      if (sent === 'sending') throw new Error('Card expiry alert is still being sent');
+      if (sent === 'accepted') await auditOnce(gymId, work.kind, work.paymentMethodId, { cycle: work.cycle }, 'sent');
+      if (sent === 'accepted' || sent === 'unknown') return;
       const prepared = await options.prepare(gymId), origin = trustedOrigin(prepared.origin);
       const created = await links.create({ gymId, actor: { kind: 'system' } }, {
         purpose: 'update_card', householdId: candidate.card.householdId,
         expiresAt: zonedInstant(addDays(work.cycle, 7), '09:00', gym.timezone, { gap: 'shift' })!.toISOString(),
       });
+      const revoke = () => links.revoke({ gymId, actor: { kind: 'system' } }, created.link.id);
+      let message;
       try {
         // Recheck after preparation/link creation too; a queued notice never follows an old default card.
         candidate = await cardForCycle(gymId, work.paymentMethodId, gym.timezone);
         if (!candidate || candidate.cycle !== work.cycle || !(await options.settings.get(gymId)).memberEmailsEnabled) {
-          await links.revoke({ gymId, actor: { kind: 'system' } }, created.link.id);
+          await revoke();
           return;
         }
-        const message = await renderBillingAlert({ ...prepared, kind: 'cardExpiry', timezone: gym.timezone,
+        message = { to: recipient(candidate.email), ...await renderBillingAlert({ ...prepared, kind: 'cardExpiry', timezone: gym.timezone,
           dueOn: work.cycle, expiryMonth: candidate.card.expiryMonth!, expiryYear: candidate.card.expiryYear!,
-          url: new URL(`/l/${created.token}`, origin).href }, prepared.t);
-        const result = await prepared.email.sendEmail({ to: recipient(candidate.email), ...message });
-        if (result.status === 'suppressed') {
-          await links.revoke({ gymId, actor: { kind: 'system' } }, created.link.id);
-          return;
-        }
+          url: new URL(`/l/${created.token}`, origin).href }, prepared.t) };
       } catch (error) {
-        await links.revoke({ gymId, actor: { kind: 'system' } }, created.link.id);
+        await revoke();
         throw error;
+      }
+      let result;
+      try {
+        result = await deliveries.send(gymId, key, prepared.email, message);
+      } catch (error) {
+        // A possibly delivered link stays usable; it is never resent. Anything that provably did not send this
+      // link (a refusal, a failed reservation, another attempt in flight) revokes it and retries.
+        if (deliveryAcceptance(error) === 'not_accepted') await revoke();
+        throw error;
+      }
+      // Suppressed, or another attempt holds the key: this link was never sent.
+      if (result.status !== 'sent') {
+        await revoke();
+        return;
       }
       await audit(gymId, work.kind, work.paymentMethodId, { cycle: work.cycle, linkId: created.link.id });
     } else {
@@ -156,10 +183,24 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
       const message = await renderBillingAlert({ ...prepared, kind: 'dispute', timezone: gym.timezone, number: invoice.number ?? invoice.id,
         disputeId: work.disputeId, status: invoice.disputeStatus ?? 'unknown',
         url: new URL('/admin/billing/invoices/' + invoice.id, trustedOrigin(prepared.origin)).href }, prepared.t);
-      // One SMTP message addresses all owners, avoiding a partial loop that resends to earlier owners on retry.
-      const result = await prepared.email.sendEmail({ to: owners.join(', '), ...message });
+      const identity = { disputeId: work.disputeId };
+      let result;
+      try {
+        // One SMTP message addresses all owners; a partial acceptance is unknown and never resent.
+        result = await deliveries.send(gymId, disputeKey(work.disputeId), prepared.email, { to: owners.join(', '), ...message });
+      } catch (error) {
+        if (deliveryAcceptance(error) === 'not_accepted') throw error;
+        // Possibly delivered: never resent. The uncertain audit stops the scan from finding it again.
+        await auditOnce(gymId, work.kind, invoice.id, identity, 'uncertain');
+        return;
+      }
+      if (result.status === 'skipped') {
+        // The recorded state outlived its audit (a crash in between): repair it so the scan stops.
+        await auditOnce(gymId, work.kind, invoice.id, identity, result.state === 'accepted' ? 'sent' : 'uncertain');
+        return;
+      }
       if (result.status === 'suppressed') throw new Error('Dispute owner email was suppressed');
-      await audit(gymId, work.kind, invoice.id, { disputeId: work.disputeId });
+      await audit(gymId, work.kind, invoice.id, identity);
     }
   }
   return { cardExpiry, disputes, send };

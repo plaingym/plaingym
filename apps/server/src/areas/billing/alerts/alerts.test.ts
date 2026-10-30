@@ -3,7 +3,7 @@ import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Integration tests inspect persistent delivery keys and change the gym email switch in their isolated database.
-import { auditEvents, gyms, invoices, jobs, members, memberships, paymentAttempts, paymentMethods, staffRoles as staffRoleTable, uuidv7 } from '@plaingym/db';
+import { auditEvents, emailDeliveries, gyms, invoices, jobs, members, memberships, paymentAttempts, paymentMethods, staffRoles as staffRoleTable, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -15,7 +15,8 @@ import { createServerRegistry } from '../../../core/registry.js';
 import { areaContributions } from '../../../core/registry-areas.js';
 import { createApp } from '../../../app.js';
 import { PostgresJobs } from '../../../infra/jobs/index.js';
-import { FakeEmail } from '../../../infra/email/index.js';
+import { DeliveryError, FakeEmail, SmtpEmail } from '../../../infra/email/index.js';
+import { captureSmtp } from '../../../infra/email/test-smtp.js';
 import { FakePayments } from '../../../infra/payments/index.js';
 import { createAccountService } from '../../../infra/auth/accounts.js';
 import { authConfig } from '../../../infra/auth/config.js';
@@ -130,7 +131,9 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
   it.each(['card', 'dispute', 'suppressed dispute'] as const)('retries a transient %s send failure after restarting the worker', async kind => {
     const f = await fixture();
     if (kind !== 'card') await factory('invoices', f.gymId, { disputeId: 'dp_transient', disputeStatus: 'open' });
-    f.email.respondNext(kind === 'suppressed dispute' ? { status: 'suppressed', reason: 'disabled' } : new Error('Temporary SMTP outage'));
+    // Only a definite non-send is retried; DeliveryError proves no recipient got the message.
+    f.email.respondNext(kind === 'suppressed dispute' ? { status: 'suppressed', reason: 'disabled' }
+      : new DeliveryError('not_accepted', 'Temporary SMTP outage'));
     if (kind === 'card') await f.alerts.cardExpiry(f.gymId); else await f.alerts.disputes(f.gymId);
     await drain(f.queue);
     expect(f.email.messages).toHaveLength(0);
@@ -139,6 +142,88 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     await drain(f.compose().queue);
     expect(f.email.messages).toHaveLength(1);
     expect(await f.readJobs()).toMatchObject([{ status: 'succeeded', attempts: 2 }]);
+    if (kind === 'card') expect((await f.links.list(f.gymId)).data.filter(link => !link.revokedAt)).toHaveLength(1);
+  });
+  it.each(['card', 'dispute'] as const)('never resends a %s alert SMTP accepted when the worker was lost before recording it', async kind => {
+    const f = await fixture();
+    if (kind === 'dispute') await factory('invoices', f.gymId, { disputeId: 'dp_accepted', disputeStatus: 'open' });
+    const send = f.email.sendEmail.bind(f.email);
+    // SMTP accepted the message, then the worker lost its lease before the outcome was written.
+    vi.spyOn(f.email, 'sendEmail').mockImplementationOnce(async message => { await send(message); throw new Error('Worker lease lost'); });
+    if (kind === 'card') await f.alerts.cardExpiry(f.gymId); else await f.alerts.disputes(f.gymId);
+    await drain(f.queue);
+    expect(f.email.messages).toHaveLength(1);
+    if (kind === 'card') {
+      const [retry] = await f.readJobs(); expect(retry).toMatchObject({ status: 'pending', attempts: 1 });
+      f.clock.set(retry!.runAt);
+      await drain(f.compose().queue);
+      expect(await f.readJobs()).toMatchObject([{ status: 'succeeded', attempts: 2 }]);
+      // The member may hold the first link, so it stays usable and no second one is minted.
+      expect((await f.links.list(f.gymId)).data).toMatchObject([{ revokedAt: null }]);
+    } else {
+      // The possibly delivered dispute notice is audited as uncertain, so neither the job nor the scan resends it.
+      expect(await f.readJobs()).toMatchObject([{ status: 'succeeded', attempts: 1 }]);
+      expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.alert.dispute.uncertain'))))
+        .toMatchObject([{ after: { disputeId: 'dp_accepted' } }]);
+      const enqueue = vi.spyOn(f.queue, 'enqueue');
+      await f.alerts.disputes(f.gymId);
+      expect(enqueue).not.toHaveBeenCalled();
+    }
+    expect(f.email.messages).toHaveLength(1);
+  });
+  it.each(['card', 'dispute'] as const)('treats a %s alert recorded as accepted but never audited as delivered', async kind => {
+    const f = await fixture();
+    if (kind === 'dispute') await factory('invoices', f.gymId, { disputeId: 'dp_unaudited', disputeStatus: 'open' });
+    const key = kind === 'card' ? `billing.alert.card_expiry:${f.card.id}:${f.membership.nextDueOn}` : 'billing.alert.dispute:dp_unaudited';
+    // A crash between recording acceptance and the audit, after which the job row itself was retried.
+    await db.forGym(f.gymId, tx => tx.insert(emailDeliveries).values({ gymId: f.gymId, key, state: 'accepted', updatedAt: f.clock.now() }));
+    if (kind === 'card') await f.alerts.cardExpiry(f.gymId); else await f.alerts.disputes(f.gymId);
+    await drain(f.queue);
+    expect(f.email.messages).toHaveLength(0);
+    expect(await f.readJobs()).toMatchObject([{ status: 'succeeded', attempts: 1 }]);
+    const action = `billing.alert.${kind === 'card' ? 'card_expiry' : 'dispute'}.sent`;
+    // The accepted notice is audited now, once.
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, action)))).toHaveLength(1);
+    if (kind === 'card') expect((await f.links.list(f.gymId)).data).toHaveLength(0);
+    else {
+      // The dispute scan stops finding it.
+      const enqueue = vi.spyOn(f.queue, 'enqueue');
+      await f.alerts.disputes(f.gymId);
+      expect(enqueue).not.toHaveBeenCalled();
+    }
+  });
+  it('never resends a dispute alert one owner rejected after another accepted it', async () => {
+    const f = await fixture(), capture = await captureSmtp();
+    const smtp = new SmtpEmail({ host: '127.0.0.1', port: capture.port, security: 'plain', from: 'desk@example.invalid' });
+    try {
+      const second = await factory('authUser', f.gymId, { email: uuidv7() + '@example.invalid' });
+      await factory('staffRoles', f.gymId, { userId: second.id, role: 'owner' });
+      await factory('invoices', f.gymId, { disputeId: 'dp_partial', disputeStatus: 'open' });
+      const { alerts, queue } = f.compose(async () => ({ email: smtp, origin: 'https://gym.example.invalid', gymName: 'Riverside Gym' }));
+      capture.rejectRecipient(second.email);
+      await alerts.disputes(f.gymId); await drain(queue);
+      capture.rejectRecipient(false);
+      // The first owner already has it; resending would duplicate it, so the outcome stays unknown.
+      expect(capture.messages).toHaveLength(1);
+      expect(await f.readJobs()).toMatchObject([{ status: 'succeeded', attempts: 1 }]);
+      expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.alert.dispute.sent')))).toHaveLength(0);
+      expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.alert.dispute.uncertain')))).toHaveLength(1);
+      await alerts.disputes(f.gymId); await drain(queue);
+      expect(capture.messages).toHaveLength(1);
+      expect(await f.readJobs()).toHaveLength(1);
+    } finally { smtp.close(); await capture.close(); }
+  });
+  it('keeps a card link usable and sends nothing more when its delivery outcome is unknown', async () => {
+    const f = await fixture();
+    f.email.respondNext(new DeliveryError('unknown', 'SMTP delivery outcome is unknown'));
+    await f.alerts.cardExpiry(f.gymId); await drain(f.queue);
+    const [retry] = await f.readJobs(); expect(retry).toMatchObject({ status: 'pending', attempts: 1 });
+    f.clock.set(retry!.runAt);
+    await drain(f.compose().queue);
+    expect(f.email.messages).toHaveLength(0);
+    expect(await f.readJobs()).toMatchObject([{ status: 'succeeded', attempts: 2 }]);
+    // The member may have received this link, so it is neither revoked nor replaced.
+    expect((await f.links.list(f.gymId)).data).toMatchObject([{ revokedAt: null }]);
   });
   it.each(['card', 'dispute'] as const)('keeps the %s retry budget alive through its required delivery window', async kind => {
     const f = await fixture('UTC', '2026-11-01T09:00:00Z');

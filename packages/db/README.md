@@ -20,6 +20,9 @@ Migration `0007_payment_method_processor_created_at.sql` adds nullable
 `payment_methods.processor_created_at` for processor ordering of saved cards.
 Migration `0008_audit_action_target.sql` adds `audit_events_gym_action_target_idx`
 on `(gym_id, action, target_id)` for transition/outbox lookups; no data is rewritten.
+Migration `0011_email_deliveries.sql` adds the gym-owned `email_deliveries` table: durable
+send state (`sending`, `accepted`, `unknown`, `not_accepted`) per caller idempotency key, unique on
+`(gym_id, key)`. It starts empty and its rows are never pruned (`infra/email/README.md`).
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 Run generation from this package with `pnpm exec drizzle-kit generate --name <name>`.

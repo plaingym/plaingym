@@ -7,7 +7,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { createServerRegistry } from '../../core/registry.js';
-import { FakeEmail } from '../../infra/email/index.js';
+import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { captureSmtp } from '../../infra/email/test-smtp.js';
@@ -76,13 +76,20 @@ describe('promotion jobs and notices', () => {
     await drain(g.jobs);
     expect((await g.service.list(g.gymId, { limit: 50, offset: 0 })).data.find(row => row.id === g.queued.id)?.status).toBe('booked');
   });
-  it('retries failed SMTP delivery without re-promoting the booking', async () => {
-    const f = await fixture(); f.email.respondNext(new Error('SMTP temporarily unavailable'));
+  it('retries a definite SMTP non-send without re-promoting the booking', async () => {
+    const f = await fixture(); f.email.respondNext(new DeliveryError('not_accepted', 'SMTP temporarily unavailable'));
     await f.delivery.promote(f.gymId, f.session.id); await drain(f.jobs);
     expect(f.email.messages).toHaveLength(0);
     f.clock.advance(1000); await drain(f.jobs);
     expect(f.email.messages).toHaveLength(1);
     expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'booking.promoted')))).toBe(1);
+  });
+  it('never resends a notice whose delivery outcome is unknown', async () => {
+    const f = await fixture(); f.email.respondNext(new DeliveryError('unknown', 'SMTP reply lost'));
+    await f.delivery.promote(f.gymId, f.session.id); await drain(f.jobs);
+    f.clock.advance(1000); await drain(f.jobs);
+    expect(f.email.messages).toHaveLength(0);
+    expect(f.jobs.jobs.filter(row => row.name === noticeJob)).toMatchObject([{ status: 'completed', attempt: 2 }]);
   });
   it.each(['disabled', 'opt_out', 'undeliverable', 'cancelled', 'erased', 'session_cancelled', 'started'] as const)('does not send a stale or suppressed %s notice', async reason => {
     const f = await fixture(); await f.delivery.promote(f.gymId, f.session.id);

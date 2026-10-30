@@ -17,6 +17,7 @@ const boundaries = {
   'areas/billing/alerts/index.ts': 'memberEmailsEnabled: card expiry; owner disputes are exempt',
   'areas/links/service.delivery.ts': 'memberEmailsEnabled reloaded from persisted settings immediately before delivery',
   'infra/email/member.ts': 'memberEmailsEnabled: member-targeted email adapter',
+  'infra/email/deliveries.ts': 'keyed send state around a transport its callers chose; each caller above checks its own switch',
   'infra/email/smtp.ts': 'administrative SMTP test, delivery transport guarded by its member callers',
   'infra/auth/delivery.ts': 'security: requested login links are exempt',
   'areas/staff/profiles.invitations.ts': 'staff invitations are exempt',
@@ -54,7 +55,7 @@ describe('go-live switch test inventory', () => {
     const found = globSync('apps/server/src/**/*.ts', { cwd: root, exclude: ['**/*.test.ts', '**/infra/payments/**'] })
       .map(file => file.replaceAll('\\', '/').replace('apps/server/src/', ''))
       .filter(file => file !== 'core/registry-infra-contracts.ts')
-      .filter(file => /\.(?:createCharge|confirmCharge|createCheckout|createCustomer|sendEmail)\s*\(/.test(source(file)));
+      .filter(file => /\.(?:createCharge|confirmCharge|createCheckout|createCustomer|sendEmail)\s*\(|\bdeliveries\.send\s*\(/.test(source(file)));
     expect(found.sort()).toEqual(Object.keys(boundaries).sort());
     expect(Object.values(boundaries).every(reason => reason.length > 20)).toBe(true);
   });

@@ -2,17 +2,28 @@
 # Core public pages
 
 `configurePublicPages` supplies the real waiver service, gym uploads, a staff
-notifier and an optional `dropInFeeFor(gymId)` projection. `createPublicStaffNotifier`
-adapts the gym's mail (including the demo outbox). Its runtime `prepare(gymId)` must
-return staff addresses only, never the visitor's address. The member-email switch
-exemption depends on that wiring; any visitor confirmation must apply the switch.
-These core
+notifier and an optional `dropInFeeFor(gymId)` projection. `createPublicStaffNotices`
+queues trial and drop-in staff notices: pass its `publish` as `notifyStaff` and give
+its `send` to the `public.pages.staff_notice` job through `configurePublicStaffNotices`.
+`publish` runs after the intake commits and enqueues only the kind and member ID,
+keyed `public.<kind>.staff_notice:<memberId>`, so no visitor details reach the jobs
+table. The job reads the intake when it runs (an erased one sends nothing), resolves
+the gym's mail through `prepare(gymId)` (including the demo outbox), and mails
+`accounts.staffEmails(gymId, ['owner', 'admin'])` one message each, never the
+visitor. That fixed recipient list is what exempts the notice from the member-email
+switch; any visitor confirmation must apply the switch. Each recipient has its own
+durable send-state key (`infra/email/README.md`), so a retry reaches only staff a
+definite non-send missed. `createPublicStaffNotifier` sends the same notice during the
+request to staff addresses its `prepare` returns, for compositions not yet using the
+queue. These core
 registrations work with every optional module disabled. Unconfigured services fail
 closed. The public plan and join routes are separate contributions.
 
-An ordinary install without SMTP skips staff mail while still recording intake.
-Notification failures are logged with the request ID and safe error metadata;
-visitors still receive the same successful response after their record commits.
+An ordinary install without SMTP skips staff mail while still recording intake:
+`prepare` returns null and the job completes quietly. Publication or notification
+failures are logged with the request ID and safe error metadata, never visitor
+details; visitors still receive the same successful response after their record
+commits.
 
 `publicLayout` is the Hono JSX shell for core pages. It escapes gym and document
 text, uses `t()`, keeps `/source`, and serves only same-origin assets under a strict

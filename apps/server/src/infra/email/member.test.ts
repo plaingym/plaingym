@@ -103,7 +103,9 @@ describe('member-targeted suppression', () => {
     await expect(emailFor(gymA, missing.id).sendEmail(message)).rejects.toThrow('does not match');
     const unavailable = new MemberEmail({ gymId: gymA, memberId: memberA, email: smtp, forGym: database.forGym,
       settings: { get: async () => { throw new Error('Settings unavailable'); } } });
-    await expect(unavailable.sendEmail(message)).rejects.toThrow('Settings unavailable');
+    // Every check runs before the transport, so its failure proves nothing was sent.
+    await expect(unavailable.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { message: 'Settings unavailable' } });
+    await expect(emailFor(gymA, missing.id).sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
     expect(capture.connections).toBe(before);
   });
 

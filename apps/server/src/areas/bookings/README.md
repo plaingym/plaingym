@@ -59,9 +59,10 @@ after committing. The scan also finds vacancies after a restart or erasure.
 Capacity edits promote in their locked transaction. Promotion audits are durable
 delivery work: a restart between promotion and enqueue is recovered by scanning
 them. Notice jobs have a permanent idempotency key per booking, and a successful
-delivery audit prevents a completed notice from being replayed. SMTP itself
-cannot provide exactly-once delivery: a process failure after SMTP accepts mail
-but before the audit commits can resend a notice on retry.
+delivery audit prevents a completed notice from being replayed. The same key
+records durable send state (`infra/email/README.md`): once SMTP accepted the
+notice, or may have, a retry never sends it again, even if the process failed
+before the audit committed. Only a definite non-send is retried.
 
 `createBookingMailer` uses `createSmtpResolver` for each gym's encrypted SMTP
 settings (with its existing install fallback). The runtime may inject the demo

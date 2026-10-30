@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { emailContract } from '../../core/registry-infra-contracts.js';
 import { useTestDatabase } from '../../../../../packages/db/src/testing/database.js';
 import { uuidv7 } from '@plaingym/db';
-import { SmtpEmail, smtpOptions, type SmtpConfig } from './index.js';
+import { createServer } from 'node:net';
+import { DeliveryError, deliveryAcceptance, SmtpEmail, smtpOptions, type SmtpConfig } from './index.js';
 import { captureSmtp } from './test-smtp.js';
 
 const database = useTestDatabase();
@@ -57,8 +58,8 @@ describe('SMTP transport', () => {
       await good.verifyConnection();
       await good.sendEmail(message);
       expect(authenticated.messages).toHaveLength(1);
-      await expect(bad.verifyConnection()).rejects.toMatchObject({ code: 'EAUTH' });
-      await expect(bad.sendEmail(message)).rejects.toMatchObject({ code: 'EAUTH' });
+      await expect(bad.verifyConnection()).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { code: 'EAUTH' } });
+      await expect(bad.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { code: 'EAUTH' } });
       expect(authenticated.messages).toHaveLength(1);
     } finally { good.close(); bad.close(); await authenticated.close(); }
   });
@@ -66,7 +67,7 @@ describe('SMTP transport', () => {
   it('requires STARTTLS by default and never downgrades to plaintext', async () => {
     const secured = new SmtpEmail({ host: '127.0.0.1', port: capture.port, from: 'owner@example.test' });
     const before = capture.messages.length;
-    try { await expect(secured.sendEmail(message)).rejects.toMatchObject({ code: 'ETLS' }); }
+    try { await expect(secured.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { code: 'ETLS' } }); }
     finally { secured.close(); }
     expect(capture.messages).toHaveLength(before);
   });
@@ -78,14 +79,16 @@ describe('SMTP transport', () => {
   });
 
   it('propagates permanent and transient delivery failures without retrying', async () => {
-    const before = capture.messages.length;
+    const before = capture.messages.length, connections = capture.connections;
+    // A refused recipient never reaches DATA; a reply to the message body is not proof either way.
     capture.rejectRecipient(true);
-    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ responseCode: 550 }); }
+    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', cause: { responseCode: 550 } }); }
     finally { capture.rejectRecipient(false); }
     capture.rejectData(true);
-    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ responseCode: 451 }); }
+    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown', cause: { responseCode: 451 } }); }
     finally { capture.rejectData(false); }
     expect(capture.messages).toHaveLength(before);
+    expect(capture.connections).toBe(connections + 2);
   });
 
   it('rejects send, verification and test sends inside a real scoped transaction before connecting', async () => {
@@ -107,7 +110,80 @@ describe('SMTP transport', () => {
     expect(() => new SmtpEmail({ ...base, auth: { user: 'user', pass: '' } })).toThrow('credentials');
     const before = capture.connections;
     for (const field of ['to', 'subject', 'replyTo'] as const)
-      await expect(email.sendEmail({ ...message, [field]: 'value\r\nBcc: b@example.test' })).rejects.toThrow('Invalid email');
+      await expect(email.sendEmail({ ...message, [field]: 'value\r\nBcc: b@example.test' })).rejects.toMatchObject({
+        acceptance: 'not_accepted', message: 'Invalid email ' + field });
     expect(capture.connections).toBe(before);
+  });
+});
+
+describe('delivery classification', () => {
+  const rejection = (send: Promise<unknown>) => send.then(() => { throw new Error('expected a delivery failure'); }, (error: unknown) => error);
+
+  it('classifies a refused connection as not accepted', async () => {
+    const closed = createServer();
+    await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve));
+    const port = (closed.address() as { port: number }).port;
+    await new Promise<void>(resolve => closed.close(() => resolve()));
+    const refused = new SmtpEmail({ host: '127.0.0.1', port, security: 'plain', from: 'owner@example.test' });
+    try {
+      const error = await rejection(refused.sendEmail(message));
+      expect(error).toBeInstanceOf(DeliveryError);
+      expect(error).toMatchObject({ acceptance: 'not_accepted', code: 'not_accepted', message: 'SMTP connection failed' });
+    } finally { refused.close(); }
+  });
+
+  it('classifies an unresolvable host as not accepted', async () => {
+    const missing = new SmtpEmail({ host: 'smtp.invalid', port: 25, security: 'plain', from: 'owner@example.test' });
+    try { await expect(missing.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted' }); }
+    finally { missing.close(); }
+  });
+
+  it('classifies a connection lost before the greeting completes as not accepted', async () => {
+    capture.dropOn('EHLO');
+    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted' }); }
+    finally { capture.dropOn(undefined); }
+  });
+
+  it('classifies a lost acknowledgement after the message body as unknown', async () => {
+    const before = capture.messages.length;
+    capture.loseReply(true);
+    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown', cause: { code: 'ECONNECTION' } }); }
+    finally { capture.loseReply(false); }
+    // The server holds the message although the client never learned it.
+    expect(capture.messages).toHaveLength(before + 1);
+  });
+
+  it('classifies a connection lost during the envelope as unknown, since Nodemailer cannot place it', async () => {
+    capture.dropOn('MAIL');
+    try { await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown' }); }
+    finally { capture.dropOn(undefined); }
+  });
+
+  it('classifies a partial acceptance as unknown after delivering to the accepted recipients', async () => {
+    const before = capture.messages.length;
+    capture.rejectRecipient('second@example.test');
+    try {
+      await expect(email.sendEmail({ ...message, to: 'first@example.test, second@example.test' }))
+        .rejects.toMatchObject({ acceptance: 'unknown', message: 'SMTP server accepted the message for only some recipients' });
+    } finally { capture.rejectRecipient(false); }
+    expect(capture.messages).toHaveLength(before + 1);
+  });
+
+  it('ends an open session on close, so a server that never answers cannot hang the caller', async () => {
+    const silent = createServer(() => {});
+    await new Promise<void>(resolve => silent.listen(0, '127.0.0.1', resolve));
+    const quiet = new SmtpEmail({ host: '127.0.0.1', port: (silent.address() as { port: number }).port, security: 'plain', from: 'owner@example.test' });
+    try {
+      const pending = quiet.sendEmail(message);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      quiet.close();
+      // Still waiting for the greeting, so nothing can have been handed over.
+      await expect(pending).rejects.toMatchObject({ acceptance: 'not_accepted' });
+    } finally { await new Promise<void>(resolve => silent.close(() => resolve())); }
+  });
+
+  it('treats any error other than a DeliveryError as unknown', () => {
+    expect(deliveryAcceptance(new Error('lost'))).toBe('unknown');
+    expect(deliveryAcceptance(new DeliveryError('not_accepted', 'refused'))).toBe('not_accepted');
   });
 });

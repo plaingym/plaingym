@@ -15,7 +15,7 @@ import { createServerRegistry } from '../../core/registry.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { createApp } from '../../app.js';
 import { authorize } from '../staff/auth.permissions.js';
-import { FakeEmail } from '../../infra/email/index.js';
+import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { createSignedLinkCheckout } from '../billing/signed-link-checkout.js';
@@ -399,8 +399,7 @@ describe('campaign sends and reminders', () => {
     await f.service.send({ campaignId: c.campaign.id, linkId: c.link.id, occurrence: 'initial' }, f.gymId);
     expect(f.email.sendEmail).toHaveBeenCalledTimes(1);
   });
-  // TODO: expose delivery acceptance classification through the email interface.
-  it('treats refused connections without delivery acceptance classification as ambiguous', async () => {
+  it('treats a transport error without a delivery classification as ambiguous', async () => {
     const f = await fixture(), c = await f.campaign();
     f.email.respondNext(Object.assign(new Error('Connection refused'), { code: 'ECONNREFUSED' }));
     const send = vi.spyOn(f.email, 'sendEmail'); await f.drain();
@@ -408,6 +407,44 @@ describe('campaign sends and reminders', () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, c.link.id),
       eq(auditEvents.action, 'link_campaign.delivery_uncertain')))))).toHaveLength(1);
+  });
+  it.each(['initial', 'reminder'] as const)('releases the %s reservation after a definite non-send and the job retry delivers it', async when => {
+    const f = await fixture(), c = await f.campaign();
+    let oldToken: string | undefined;
+    if (when === 'reminder') { await f.drain(); oldToken = f.token(); f.clock.advance(86400000); }
+    f.email.respondNext(new DeliveryError('not_accepted', 'SMTP connection failed'));
+    if (when === 'reminder') await f.service.remindCampaign(f.context, c.campaign.id);
+    await f.drain();
+    const audits = () => db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, c.link.id)));
+    const reserved = (await audits()).filter(a => a.action === 'link_campaign.delivery_reserved').at(-1)!;
+    expect((await audits()).filter(a => a.action === 'link_campaign.delivery_released'))
+      .toMatchObject([{ after: { reservation: (reserved.after as { reservation: string }).reservation } }]);
+    expect((await audits()).some(a => a.action === 'link_campaign.delivery_not_accepted')).toBe(true);
+    // Nothing reached the member, so the earlier email's link still works.
+    if (oldToken) expect((await f.links.resolve(f.gymId, oldToken)).status).toBe('active');
+    const sentBefore = f.email.messages.length;
+    const [retry] = f.jobs.jobs.filter(job => job.name === campaignSendJob && job.status === 'queued');
+    expect(retry).toMatchObject({ attempt: 1 });
+    // The released reservation no longer counts toward the occurrence or the gym-local day.
+    f.clock.set(retry!.runAt); await f.drain();
+    expect(f.email.messages).toHaveLength(sentBefore + 1);
+    expect((await audits()).filter(a => a.action === 'link_campaign.delivery_sent')).toHaveLength(when === 'reminder' ? 2 : 1);
+    expect((await f.links.resolve(f.gymId, f.token())).status).toBe('active');
+    if (oldToken) expect((await f.links.resolve(f.gymId, oldToken)).status).not.toBe('active');
+    // A delivered occurrence is still never sent again.
+    await f.service.send({ campaignId: c.campaign.id, linkId: c.link.id, occurrence: (retry!.payload as { occurrence: string }).occurrence }, f.gymId);
+    expect(f.email.messages).toHaveLength(sentBefore + 1);
+  });
+  it('keeps a reservation after an unknown delivery outcome and never retries it', async () => {
+    const f = await fixture(), c = await f.campaign();
+    f.email.respondNext(new DeliveryError('unknown', 'SMTP delivery outcome is unknown'));
+    const send = vi.spyOn(f.email, 'sendEmail'); await f.drain();
+    expect(f.jobs.jobs.filter(job => job.name === campaignSendJob)).toMatchObject([{ status: 'completed' }]);
+    await f.service.send({ campaignId: c.campaign.id, linkId: c.link.id, occurrence: 'initial' }, f.gymId);
+    expect(send).toHaveBeenCalledTimes(1);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, c.link.id)));
+    expect(audits.filter(a => a.action === 'link_campaign.delivery_uncertain')).toHaveLength(1);
+    expect(audits.some(a => a.action === 'link_campaign.delivery_released')).toBe(false);
   });
   it('leaves a working token untouched when the trusted origin fails before reservation', async () => {
     const f = await fixture(), c = await f.campaign(); await f.drain(); const token = f.token(); f.clock.advance(86400000);

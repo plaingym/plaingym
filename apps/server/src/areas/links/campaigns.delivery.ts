@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
-import { signedLinks, type forGym, writeAudit } from '@plaingym/db';
+import { signedLinks, type forGym, uuidv7, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import type { Email } from '../../infra/email/index.js';
+import { deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
 import { campaignRecipient } from './campaigns.model.js';
@@ -25,6 +25,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   }
   const token = randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
+  const reservationId = uuidv7(clock.now().getTime());
   const reservation = await scope(gymId, async tx => {
     const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))).for('update');
     if (!row || campaignRecipient(row, clock.now()).state !== 'pending') return;
@@ -37,11 +38,11 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     if (deliveryBlocked(history, linkId, occurrence, clock.now(), gym.timezone)) return;
     await tx.update(signedLinks).set({ tokenHash }).where(eq(signedLinks.id, linkId));
     await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_reserved',
-      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() });
+      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reservation: reservationId }, occurredAt: clock.now() });
     return { link: campaignRecipient(row, clock.now()).link, previousHash: row.tokenHash };
   });
   if (!reservation) return;
-  let outcome = 'cancelled', transportEntered = false, transportSuppressed = false;
+  let outcome = 'cancelled', transportEntered = false, transportSuppressed = false, failure: unknown;
   // Observe the shared delivery's existing transport boundary. All sending and its last-moment
   // switch/recipient checks still live in service.delivery; no second outbound call site is added.
   const observed: Email = { sendEmail: new Proxy(prepared.email.sendEmail, {
@@ -61,9 +62,11 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
         delivery: { ...prepared, email: observed } });
       outcome = 'sent';
     }
-  } catch {
-    // SMTP can accept a message and lose the reply. Do not replay this occurrence blindly.
-    outcome = transportEntered && !transportSuppressed ? 'uncertain' : 'suppressed';
+  } catch (error) {
+    if (!transportEntered || transportSuppressed) outcome = 'suppressed';
+    // Only proof that no recipient got it permits a retry; SMTP can accept a message and lose the reply.
+    else if (deliveryAcceptance(error) === 'not_accepted') { outcome = 'not_accepted'; failure = error; }
+    else outcome = 'uncertain';
   }
   await scope(gymId, async tx => {
     if (outcome !== 'sent' && outcome !== 'uncertain') {
@@ -73,5 +76,9 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     }
     await writeAudit(tx, { gymId, actorKind: 'system', action: `link_campaign.delivery_${outcome}`,
       targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() });
+    // A released reservation no longer counts toward the occurrence or daily limit, so the job retry can send.
+    if (outcome === 'not_accepted') await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_released',
+      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reservation: reservationId }, occurredAt: clock.now() });
   });
+  if (failure !== undefined) throw failure;
 }

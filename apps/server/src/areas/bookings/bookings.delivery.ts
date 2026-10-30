@@ -4,7 +4,7 @@ import { auditEvents, classBookings, classSessions, forGym, members, writeAudit 
 import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
-import { MemberEmail, SmtpEmail, type Email } from '../../infra/email/index.js';
+import { createEmailDeliveries, MemberEmail, SmtpEmail, type Email } from '../../infra/email/index.js';
 import type { Jobs } from '../../infra/jobs/index.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
@@ -28,10 +28,12 @@ export interface BookingDeliveryOptions extends BookingOptions {
 export function createBookingDelivery(options: BookingDeliveryOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
+  const deliveries = createEmailDeliveries({ scope, clock });
+  const noticeKey = (bookingId: string) => `booking-promotion:${bookingId}`;
   async function enqueueNotice(gymId: string, bookingId: string) {
     const gym = await settings.get(gymId);
     await options.jobs.enqueue(noticeJob, { bookingId }, { gymId, timezone: gym.timezone,
-      idempotencyKey: `booking-promotion:${bookingId}`, maxAttempts: 18 });
+      idempotencyKey: noticeKey(bookingId), maxAttempts: 18 });
   }
   async function promote(gymId: string, sessionId: string) {
     const rows = await promoteWaitlist(gymId, sessionId, { scope, clock, settings });
@@ -89,8 +91,9 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
     const details = await createSettingsService({ scope }).get(gymId);
     const message = await renderBookingPromotion({ gymName: details.name, name: row.session.name, startsAt: row.session.startsAt, timezone: gym.timezone });
     const sender = new MemberEmail({ gymId, memberId: row.memberId, email, settings, forGym: scope });
-    const result = await sender.sendEmail({ to: row.email, ...message });
-    if (result.status !== 'sent') return;
+    // The job key doubles as the send-state key: an accepted or possibly accepted notice is never resent.
+    const result = await deliveries.send(gymId, noticeKey(bookingId), sender, { to: row.email, ...message });
+    if (result.status === 'suppressed' || (result.status === 'skipped' && result.state === 'unknown')) return;
     await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'booking.notice_sent', targetType: 'class_booking', targetId: bookingId, occurredAt: clock.now() }));
   }
   return { promote, request, sweep, send };

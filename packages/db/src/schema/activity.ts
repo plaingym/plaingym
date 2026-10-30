@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, index, jsonb, pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { check, index, integer, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
 import { base, choice, instant, ref, scoped } from './common.js';
 import { kioskDevices } from './links.js';
@@ -21,3 +21,15 @@ export const emailOutbox = pgTable('email_outbox', {
   ...base(), recipient: text('recipient').notNull(), subject: text('subject').notNull(),
   html: text('html').notNull(), text: text('text').notNull(), sentAt: instant('sent_at').notNull(),
 }, (t) => [...scoped('email_outbox', t), index('email_outbox_gym_time_idx').on(t.gymId, t.sentAt)]).enableRLS();
+/**
+ * Durable send state per caller idempotency key. `sending` marks an attempt in flight and counts as `unknown` once
+ * stale, so a crash never permits a resend; only `not_accepted` (proof no recipient received it) may be retried.
+ * Rows are kept permanently.
+ */
+export const emailDeliveries = pgTable('email_deliveries', {
+  ...base(), key: text('key').notNull(), state: text('state').notNull(), attempts: integer('attempts').notNull().default(1),
+  updatedAt: instant('updated_at').notNull(),
+}, (t) => [...scoped('email_deliveries', t), unique('email_deliveries_key_key').on(t.gymId, t.key),
+  choice('email_deliveries_state_check', t.state, ['sending', 'accepted', 'unknown', 'not_accepted']),
+  check('email_deliveries_key_check', sql`char_length(${t.key}) between 1 and 300`),
+  check('email_deliveries_attempts_check', sql`${t.attempts} > 0`)]).enableRLS();
