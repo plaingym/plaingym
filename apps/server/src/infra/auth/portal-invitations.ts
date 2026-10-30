@@ -75,14 +75,16 @@ export function createPortalInvitationStore(database = systemDatabase) {
     /** The household's unexpired invitations with the invitee's login email, newest first. Gym-scoped and for one household:
      * the caller is a staff member authorized for that household. Tokens are stored hashed and never returned. */
     async outstanding(gymId: string, householdId: string, clock: Clock) {
+      // Bindings store IDs in lowercase, while a route accepts either case.
+      const id = idSchema.parse(householdId).toLowerCase();
       return forGym(gymId, async tx => {
         // The household ID is a validated UUID, so the substring match only narrows the scan; the parsed binding decides.
         const rows = await tx.select().from(authVerification).where(and(like(authVerification.identifier, prefix(gymId) + '%'),
-          gt(authVerification.expiresAt, clock.now()), like(authVerification.value, `%"householdId":"${idSchema.parse(householdId)}"%`)))
+          gt(authVerification.expiresAt, clock.now()), like(authVerification.value, `%"householdId":"${id}"%`)))
           .orderBy(desc(authVerification.expiresAt), asc(authVerification.id)).limit(100);
         const invitations = rows.flatMap(row => {
           try { return [{ id: row.id, expiresAt: row.expiresAt, binding: bindingOf(row.value) }]; } catch { return []; }
-        }).filter(row => row.binding.householdId === householdId);
+        }).filter(row => row.binding.householdId === id);
         const users = invitations.length ? await tx.select({ id: authUser.id, email: authUser.email }).from(authUser)
           .where(inArray(authUser.id, invitations.map(row => row.binding.userId))) : [];
         return invitations.flatMap(row => {
@@ -100,7 +102,7 @@ export function createPortalInvitationStore(database = systemDatabase) {
         const [invite] = await tx.select().from(authVerification).where(eq(authVerification.id, input.invitationId)).for('update');
         if (!invite || !invite.identifier.startsWith(prefix(input.gymId)) || invite.expiresAt <= input.clock.now()) throw invalid();
         const binding = bindingOf(invite.value);
-        if (binding.householdId !== input.householdId) throw invalid();
+        if (binding.householdId !== input.householdId.toLowerCase()) throw invalid();
         await revoked(tx, binding);
         await tx.delete(authVerification).where(eq(authVerification.id, invite.id));
       });

@@ -110,9 +110,12 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
           email: row.email, expiresAt: row.expiresAt.toISOString() };
       }) };
     },
-    /** Withdraws an invitation before it expires. Accepting it afterwards fails, whether the invitee holds the link or a claim code. */
+    /** Withdraws an invitation before it expires. Accepting it afterwards fails, whether the invitee holds the link or a claim code.
+     * Like `invite`, it checks the actor's role again in its own transaction. */
     async revokeInvitation(actor: Actor, householdId: string, invitationId: string) {
       await store.revoke({ gymId: actor.gymId, householdId, invitationId, clock: actor.clock }, async (tx, binding) => {
+        const roles = await tx.select({ role: staffRoles.role }).from(staffRoles).where(eq(staffRoles.userId, actor.userId));
+        if (!canStaff(roles.map(row => row.role as StaffRole), 'portal_access.manage')) notFound();
         await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId, action: 'household_user.invitation_revoked', targetType: 'household', targetId: householdId,
           before: { userId: binding.userId, scope: binding.scope, memberId: binding.memberId }, occurredAt: actor.clock.now() });
       });

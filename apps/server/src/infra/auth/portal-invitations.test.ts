@@ -365,6 +365,25 @@ describe('outstanding invitations', () => {
     expect((await remove(app(f), `${listPath(f.home.id)}/${row!.id}`)).status).toBe(404);
   });
 
+  it('lists and revokes through a household ID written in uppercase', async () => {
+    const f = await fixture(), upper = f.home.id.toUpperCase();
+    await invite(f);
+    const [row] = await listed(f, upper);
+    expect(row).toBeDefined();
+    expect((await remove(app(f), `${listPath(upper)}/${row!.id}`)).status).toBe(200);
+    expect(await listed(f)).toEqual([]);
+    expect(await revocations(f.gymId)).toEqual([expect.objectContaining({ targetId: f.home.id })]);
+  });
+
+  it('refuses a revoke from an actor who no longer holds portal access, keeping the invitation and writing no audit', async () => {
+    const f = await fixture();
+    await invite(f);
+    const [row] = await listed(f);
+    await expect(invitations.revokeInvitation({ gymId: f.gymId, userId: uuidv7(), clock }, f.home.id, row!.id)).rejects.toMatchObject({ code: 'not_found' });
+    expect(await listed(f)).toHaveLength(1);
+    expect(await revocations(f.gymId)).toEqual([]);
+  });
+
   it('passwordless: a revoked invitation can be neither claimed nor completed with a claim code already sent', async () => {
     const f = await fixture(), issued = await invite(f, emailOnly);
     expect(await emailOnly.accept(f.gymId, { token: issued.token }, clock)).toEqual({ data: { status: 'email_sent' } });

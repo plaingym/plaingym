@@ -40,7 +40,8 @@ describe('dashboard contracts', () => {
     const link = { label: 'Adams household', href: '/admin/members/019ab4f0-0000-7000-8000-000000000002#memberTabs.portal-access' };
     expect(extensionDashboardWidgetSchema.parse({ ...extension, items: [link] })).toEqual({ ...extension, items: [link] });
     expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: Array.from({ length: 21 }, () => link) }).success).toBe(false);
-    for (const href of ['https://example.test/admin/x', '//example.test/admin/x', '/portal/x', '/admin/x y', 'javascript:alert(1)', '/admin/x#a b'])
+    for (const href of ['https://example.test/admin/x', '//example.test/admin/x', '/portal/x', '/admin/x y', 'javascript:alert(1)', '/admin/x#a b',
+      '/admin/../portal/x', '/admin/x/../../api/x', '/admin/..', '/admin/./x', '/admin/%2e%2e/portal/x', '/administrator', '/admin..'])
       expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: [{ label: 'Link', href }] }).success, href).toBe(false);
     expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: [{ label: '', href: '/admin/x' }] }).success).toBe(false);
     expect(extensionDashboardWidgetSchema.safeParse({ ...extension, items: [{ label: 'Link', href: '/admin/x', extra: 1 }] }).success).toBe(false);
