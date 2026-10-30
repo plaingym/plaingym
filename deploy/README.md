@@ -38,6 +38,17 @@ dependency license texts, system copyright notices, and a package inventory at
 `/usr/local/share/system-packages.tsv`. The runtime image runs `node` alone: the
 base image's npm, npx, corepack and Yarn are removed.
 
+The build (BuildKit, the default builder in current Docker) installs
+dependencies from the lockfile and the workspace `package.json` files before it
+copies the source, so a source-only rebuild reuses the installed `node_modules`
+layer. A new workspace package needs its `package.json` added to that `COPY`
+list in the Dockerfile. pnpm's store sits in a BuildKit cache mount
+(`plaingym-pnpm-store`) rather than in an image layer, so a changed manifest or
+lockfile only downloads the packages the store lacks. Each rebuild still leaves
+the new build output and server bundle in Docker's build cache; `docker buildx du`
+shows what it holds, and pruning it (`docker builder prune`) also clears the
+pnpm store.
+
 The image workflow builds and tests on native amd64 and arm64 runners, exports
 both tested images, and assembles their manifest in an ephemeral loopback
 registry. The images and manifest are short-lived workflow artifacts. It does

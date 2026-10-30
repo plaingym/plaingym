@@ -4,8 +4,16 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /build
 ENV CI=true
 RUN npm install --global pnpm@10.34.7
+# Dependencies install from the manifests alone, so a source-only change reuses this layer. The store is a
+# BuildKit cache mount: it never becomes a layer, and a changed manifest or lockfile only fetches what the store
+# lacks. Every workspace in pnpm-workspace.yaml needs its package.json in this list.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY apps/server/package.json apps/server/
+COPY apps/web/package.json apps/web/
+COPY packages/db/package.json packages/db/
+COPY packages/shared/package.json packages/shared/
+RUN --mount=type=cache,id=plaingym-pnpm-store,target=/pnpm/store npm_config_store_dir=/pnpm/store pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm install --frozen-lockfile
 ARG SOURCE_URL=https://github.com/plaingym/plaingym
 RUN test -n "$SOURCE_URL" && SOURCE_URL="$SOURCE_URL" pnpm build
 
