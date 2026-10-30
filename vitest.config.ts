@@ -17,6 +17,11 @@ export default defineConfig({
     hookTimeout: 30_000,
     clearMocks: true,
     setupFiles: ['./apps/server/test/quiet-logs.ts'],
+    // Changes that tests read without importing them. With `--changed` (pnpm verify), any of these runs every test.
+    forceRerunTriggers: [
+      '**/package.json', '**/pnpm-lock.yaml', '**/{vitest,vite}.config.*', '**/apps/server/test/**',
+      '**/packages/db/src/migrations/**', '**/locales/**', '**/scripts/generate*.mjs', '**/compose.dev.yaml', '**/dev/postgres/**',
+    ],
     projects: [
       // `pnpm test:unit` runs these without Docker or a database.
       { extends: true, test: { name: 'unit', include: unit } },

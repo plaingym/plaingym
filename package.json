@@ -26,9 +26,7 @@
     "dev:proxy:stop": "docker compose -p plaingym-dev-proxy -f compose.dev-proxy.yaml down --remove-orphans",
     "dev:proxy:trust": "node scripts/dev-proxy.mjs",
     "dev:proxy:untrust": "node scripts/dev-proxy.mjs --remove",
-    "hooks:install": "simple-git-hooks",
     "verify": "node scripts/verify.mjs",
-    "prepare": "node apps/server/install-hooks.mjs",
     "generate": "pnpm --filter @plaingym/server exec tsx ../../scripts/generate.mjs",
     "seed": "pnpm --filter @plaingym/server run seed",
     "cli": "pnpm --filter @plaingym/server run cli"
@@ -37,13 +35,9 @@
     "@eslint/js": "10.0.1",
     "@types/node": "24.19.2",
     "eslint": "10.13.0",
-    "simple-git-hooks": "2.14.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.0",
     "vitest": "5.0.5",
     "globals": "17.13.0"
-  },
-  "simple-git-hooks": {
-    "pre-push": "if [ -f scripts/verify.mjs ]; then node scripts/verify.mjs --pre-push; else pnpm check-types && pnpm lint && pnpm test; fi"
   }
 }

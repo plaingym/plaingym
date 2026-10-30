@@ -6,5 +6,3 @@ packages:
   - packages/shared
 onlyBuiltDependencies:
   - esbuild
-  # Reviewed hook installer; prepare also refreshes hooks on subsequent installs.
-  - simple-git-hooks

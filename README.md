@@ -158,17 +158,15 @@ schema namespaces, and shared-contract namespaces remain available. Server runti
 imports are static and cannot use `createRequire`; frontend lazy imports and test
 module reloads remain available.
 
-`pnpm verify` runs types, lint, tests and compliance on a clean checkout and
-records the tree it checked (in the shared `.git` directory, keyed by tree, Node
-version and platform). The pre-push hook runs the same verification for the commit
-being pushed, unless that tree is already recorded; deleting a remote branch pushes
-no code and runs nothing. Pushing the same tree again, or a commit you verified
-before, therefore never repeats the suite. On a push to `main`, CI likewise reuses
-a passing run of the same commit (from its integration branch) instead of
-repeating it. Local `pnpm install` installs or refreshes the hook automatically;
-`pnpm hooks:install` can reinstall it manually.
-Dependency lifecycle scripts are allowlisted for esbuild and the reviewed
-simple-git-hooks installer only. Source archives and CI skip the root hook setup.
+`pnpm verify` is the check to run before handing off a branch: types, lint,
+compliance, and the tests affected by the branch's changes since it left `main`.
+Vitest finds those by following imports. Changes that tests read without importing
+them (migrations, locales, test setup, the lockfile; `forceRerunTriggers` in
+`vitest.config.ts`) run every test. `pnpm verify --full` and `pnpm test` run the
+full suite. CI runs the full suite, split across four jobs, on every push and pull
+request, and gates landing. On a push to `main`, CI reuses a passing run of the same
+commit (from its integration branch) instead of repeating it.
+Dependency lifecycle scripts are allowlisted for esbuild only.
 
 The server build copies the Noto Sans font and its [OFL notice](apps/server/src/assets/fonts/OFL.txt).
 Tests boot a relocated bundle to check asset resolution and run a bundled
