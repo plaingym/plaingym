@@ -65,10 +65,11 @@ they are used, `POST /join/signatures` answers 429.
 ## Checks
 
 `portal.test.ts` seeds real sandboxes in real PostgreSQL with FakePayments: the
-student's data, isolation between two sandboxes, reruns on a later day, and the
-seed without a test account. It also routes a signed payment-mode
-`checkout.session.completed` through the install endpoint with the real Stripe
-adapter, offline. `portal.runtime.test.ts` starts the production runtime in demo
+student's data, isolation between two sandboxes and reruns on a later day. It
+also routes a signed payment-mode `checkout.session.completed` through the
+install endpoint with the real Stripe adapter, offline. `portal.reruns.test.ts`
+covers the seed without a test account, a failed run's resume, a missing
+waitlist class and the billing switch restore. `portal.runtime.test.ts` starts the production runtime in demo
 mode and walks the full demo through its HTTP routes: the student's portal and QR
 check-in, a join activated by the install webhook, the outbox sign-in link, a new
 QR code at the kiosk, and the signature-image limit.

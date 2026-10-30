@@ -110,7 +110,8 @@ describe('demo mat seed', { timeout: 60_000 }, () => {
     });
 
     it('stays inside the sandbox gym, sends no email, writes no upload, and tolerates retries', async () => {
-      const f = fixture(), other = first.sandbox, before = await counts(other.gymId);
+      // A second sandbox from the same service, as the first was created.
+      const f = first.f, other = first.sandbox, before = await counts(other.gymId);
       const sandbox = await f.service.create();
       expect(await counts(other.gymId)).toEqual(before);
       const seeded = await counts(sandbox.gymId);

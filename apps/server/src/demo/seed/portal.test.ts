@@ -60,8 +60,8 @@ it('gives the sandbox student bookings, a waitlist place, rank progress, paid in
   const { code } = await codes.read(gymId, rows.member.id);
   expect(code).toMatch(/^pgci1_/);
   expect(await codes.resolve(gymId, code!)).toBe(rows.member.id);
-  // A second sandbox in the same database; it needs its own student and QR key, not billing.
-  const other = await fixture(false).service.create();
+  // A second sandbox from the same service needs its own student and QR key.
+  const other = await f.service.create();
   expect(await codes.resolve(other.gymId, code!)).toBeNull();
   expect((await studentRows(other.gymId)).member.id).not.toBe(rows.member.id);
 

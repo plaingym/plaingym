@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { gyms } from '@plaingym/db';
+import { gyms, uuidv7 } from '@plaingym/db';
+import { createFactories } from '@plaingym/db/testing/factories';
 import { generateIdentity } from '../../infra/age/index.js';
 import { snapshotPrefix } from './backups.format.js';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -11,7 +12,11 @@ import { useRestoreFixture } from './restore.fixture.test-helper.js';
 const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
 const { gymId } = f;
 let base: Awaited<ReturnType<ReturnType<typeof f.backup>['snapshot']>>;
-beforeAll(async () => { base = await f.prepare(() => f.backup().snapshot()); });
+beforeAll(async () => {
+  base = await f.prepare(() => f.backup().snapshot());
+  // The live install has a gym of its own, so a damaged restore that drops or replaces rows can't go unnoticed.
+  await createFactories(f.target)('gyms', uuidv7(), { qrKey: 'live-install-qr-key' });
+});
 
 describe('install restore of a damaged snapshot', () => {
   it.each(['wrong-key', 'truncated-dump', 'corrupt-blob', 'reordered-dump', 'missing-reference', 'substituted-manifest'])(
@@ -32,6 +37,7 @@ describe('install restore of a damaged snapshot', () => {
         f.server.objects.set(prefix + 'manifest.age', f.server.objects.get('backups/' + snapshotPrefix(second.id) + 'manifest.age')!);
       }
       const before = await f.target.forSystem((tx) => tx.select({ id: gyms.id, secret: gyms.qrKey }).from(gyms));
+      expect(before).toHaveLength(1);
       await expect(f.restore().restore(snapshot.id, mode === 'wrong-key' ? await generateIdentity() : f.identity)).rejects.toThrow();
       expect(await f.target.forSystem((tx) => tx.select({ id: gyms.id, secret: gyms.qrKey }).from(gyms))).toEqual(before);
       expect(await new Response(await f.restoredUploads().get(gymId + '/sentinel')).text()).toBe('live upload sentinel');

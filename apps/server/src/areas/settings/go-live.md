@@ -98,5 +98,5 @@ providers. `go-live.readiness.test.ts` covers the GET, rejected unconfirmed PATC
 and confirmed PATCH through `createApp` and the real registrations.
 `health/restore.billing.test.ts` and `health/restore.billing-recheck.test.ts` exercise
 encrypted restore, durable publication, the production worker and go-live rerun routes
-against PostgreSQL, including interrupted publication, unresolved/resolved payments,
-provider failure and a newer restore.
+against PostgreSQL, including unresolved/resolved payments, provider failure and a
+newer restore; `health/restore.resume.test.ts` covers interrupted publication.
