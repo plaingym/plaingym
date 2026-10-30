@@ -9,6 +9,7 @@ import {
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { Uploads } from '../../../infra/storage/index.js';
 import { createKioskCheckinHelpers, type KioskMemberRow } from '../checkin.js';
+import type { KioskPinCheck } from '../devices.auth.js';
 import { verifyHouseholdPin, type HouseholdPinSecret } from '../../members/pin.js';
 import { createBillingStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';
@@ -19,6 +20,8 @@ export { checkinOpensBeforeMs } from '../checkin.js';
  * households shares it. A wider match goes to the front desk; a first and last name narrows a common surname.
  */
 export const maxCandidateHouseholds = 3;
+/** Hears what one PIN guess came to; the kiosk limiter spends budget only on wrong PINs (`devices.auth.ts`). */
+export type PinChecked = (check: KioskPinCheck) => void;
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 
 export interface KioskCheckinOptions {
@@ -33,8 +36,11 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   const standing = options.standing ?? createStandingChecks([inactiveStanding(scope), waiverStanding(scope), createBillingStanding(scope)]);
   const { identities, currentSessions, bookedSessions, record } = createKioskCheckinHelpers({ ...options, scope, clock });
 
-  /** The one household whose PIN matches among households with a member or household name matching the search. */
-  async function findHousehold(gymId: string, name: string, pin: string): Promise<string | null> {
+  /**
+   * The one household whose PIN matches among households with a member or household name matching the search.
+   * `pinChecked` hears whether the guess was compared, and whether it matched.
+   */
+  async function findHousehold(gymId: string, name: string, pin: string, pinChecked?: PinChecked): Promise<string | null> {
     if (!options.pinSecret) throw new AppError('unavailable', 'Kiosk PIN check-in is not configured');
     const text = name.trim().replace(/\s+/g, ' '), [first, ...rest] = text.split(' ');
     const prefix = (value: string) => escapeLike(value) + '%';
@@ -46,10 +52,11 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
         ilike(households.name, prefix(text)), ilike(households.name, '% ' + prefix(text)),
         rest.length ? and(ilike(members.firstName, prefix(first!)), ilike(members.lastName, prefix(rest.join(' ')))) : undefined,
       ))).limit(maxCandidateHouseholds + 1));
-    if (!candidates.length || candidates.length > maxCandidateHouseholds) return null;
+    if (!candidates.length || candidates.length > maxCandidateHouseholds) { pinChecked?.('skipped'); return null; }
     const secret = await options.pinSecret(gymId);
     const matches = candidates.filter((row) => verifyHouseholdPin(secret, gymId, row.id, pin, row.pinHash));
     // Two households sharing a name and PIN can't be told apart: never guess.
+    pinChecked?.(matches.length === 1 ? 'verified' : 'compared');
     return matches.length === 1 ? matches[0]!.id : null;
   }
   async function householdMembers(gymId: string, householdId: string): Promise<KioskMemberRow[]> {
@@ -59,20 +66,18 @@ export function createKioskCheckin(options: KioskCheckinOptions = {}) {
   }
 
   return {
-    async lookup(gymId: string, input: unknown, pinVerified?: () => void): Promise<KioskLookupResponse['data']> {
+    async lookup(gymId: string, input: unknown, pinChecked?: PinChecked): Promise<KioskLookupResponse['data']> {
       const { name, pin } = kioskLookupRequestSchema.parse(input);
-      const householdId = await findHousehold(gymId, name, pin);
-      if (householdId) pinVerified?.();
+      const householdId = await findHousehold(gymId, name, pin, pinChecked);
       const rows = householdId ? await householdMembers(gymId, householdId) : [];
       if (!rows.length) return { status: 'see_front_desk' };
       const people = await identities(gymId, rows);
       return { status: 'select_member', members: rows.map((row) => people.get(row.id)!) };
     },
     /** Rechecks the name and PIN on every submission; results keep the order of the selections. */
-    async checkin(gymId: string, deviceId: string, input: unknown, pinVerified?: () => void): Promise<KioskCheckinResult[]> {
+    async checkin(gymId: string, deviceId: string, input: unknown, pinChecked?: PinChecked): Promise<KioskCheckinResult[]> {
       const { name, pin, checkins } = kioskNamePinCheckinRequestSchema.parse(input);
-      const householdId = await findHousehold(gymId, name, pin);
-      if (householdId) pinVerified?.();
+      const householdId = await findHousehold(gymId, name, pin, pinChecked);
       const rows = householdId ? await householdMembers(gymId, householdId) : [];
       const people = await identities(gymId, rows.filter((row) => checkins.some((item) => item.memberId === row.id)));
       const sessions = await currentSessions(gymId);

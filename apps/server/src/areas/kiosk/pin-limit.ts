@@ -9,24 +9,31 @@ import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.j
 export const pinLimitReachedAction = 'kiosk.device.pin_limit_reached';
 const day = 24 * 60 * 60 * 1000;
 
+/** Each kiosk PIN guess spends the device's budget and its client address's budget (shared by kiosks behind one address). */
+export type PinBudget = 'device' | 'address';
 export interface PinLimitReached {
   readonly gymId: string;
+  /** The device whose wrong PIN used up the budgets. */
   readonly deviceId: string;
   readonly limit: number;
+  readonly budgets: readonly PinBudget[];
   readonly occurredAt: Date;
   readonly windowEndsAt: Date;
 }
-/** Audits a device using up its PIN budget; the kiosk limiter calls it once per device and window. */
+/** Audits a kiosk locked out of PIN check-in; the kiosk limiter calls it once per budget and window. */
 export function createPinLimitAudit(options: { scope?: typeof forGym } = {}) {
   const scope = options.scope ?? forGym;
   return (event: PinLimitReached) => scope(event.gymId, async (tx) => {
     await writeAudit(tx, { gymId: event.gymId, actorKind: 'device', actorDeviceId: event.deviceId,
       action: pinLimitReachedAction, targetType: 'kiosk_device', targetId: event.deviceId,
-      after: { limit: event.limit, windowEndsAt: event.windowEndsAt.toISOString() }, occurredAt: event.occurredAt });
+      after: { limit: event.limit, budgets: event.budgets, windowEndsAt: event.windowEndsAt.toISOString() }, occurredAt: event.occurredAt });
   });
 }
 
-/** Staff who manage kiosk devices see how many devices used up their PIN budget in the last 24 hours. */
+/**
+ * Staff who manage kiosk devices see how many devices used up a PIN budget in the last 24 hours: their own, or the one
+ * their address shares with other kiosks (only the device whose wrong PIN used it up is counted).
+ */
 export function createPinLimitWidgetProvider(options: { scope?: typeof forGym } = {}): DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {
   const scope = options.scope ?? forGym;
   return { id: 'kiosk.pin-limits', permission: 'kiosk_devices.manage', order: 50, schema: extensionDashboardWidgetSchema,

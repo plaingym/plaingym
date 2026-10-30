@@ -6,15 +6,19 @@ import type { RequestEnvironment } from '../../core/context.js';
 import { logError } from '../../core/log.js';
 import { clientIp, clientKey, RateBuckets, type ClientIpOptions } from '../../core/rate-limit.js';
 import { createKioskDeviceService } from './devices.js';
-import { createPinLimitAudit, type PinLimitReached } from './pin-limit.js';
+import { createPinLimitAudit, type PinBudget, type PinLimitReached } from './pin-limit.js';
 
 const checkins = [kioskContracts.lookup, kioskContracts.checkinNamePin, kioskContracts.checkinQr];
 const pinPaths = new Set<string>([kioskContracts.lookup.path, kioskContracts.checkinNamePin.path]);
-const pinAttempts = new WeakMap<Request, { verified: boolean }>();
-/** Called only after the check-in service verifies the household's name and PIN. */
-export function markKioskPinVerified(request: Request): void {
+/**
+ * What the check-in service learned of a PIN guess: `skipped` when no household or too many matched the name, so no
+ * PIN was compared; `compared` for a wrong PIN; `verified` when it matched exactly one household.
+ */
+export type KioskPinCheck = 'skipped' | 'compared' | 'verified';
+const pinAttempts = new WeakMap<Request, { check?: KioskPinCheck }>();
+export function markKioskPinChecked(request: Request, check: KioskPinCheck): void {
   const attempt = pinAttempts.get(request);
-  if (attempt) attempt.verified = true;
+  if (attempt) attempt.check = check;
 }
 export interface KioskAuthOptions extends ClientIpOptions {
   readonly service?: ReturnType<typeof createKioskDeviceService>;
@@ -23,7 +27,7 @@ export interface KioskAuthOptions extends ClientIpOptions {
   readonly pinLimit?: number;
   readonly windowMs?: number;
   readonly maxBuckets?: number;
-  /** Records a device using up its PIN budget, once per device and window (an audit event by default). */
+  /** Records a device or client address using up its PIN budget, once per budget and window (an audit event by default). */
   readonly pinLimitReached?: (event: PinLimitReached) => Promise<void>;
 }
 
@@ -35,7 +39,7 @@ export function createKioskAuthMiddleware(options: KioskAuthOptions = {}): Middl
   for (const value of [limit, windowMs, maxBuckets])
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error('Kiosk rate limit settings must be positive integers');
   // Process-local limits are independent for device and client address; neither can bypass the other.
-  // `failures` counts settled unverified attempts, so in-flight reservations never report a used-up budget.
+  // `failures` counts settled wrong PINs, so in-flight reservations never report a used-up budget.
   const buckets = new RateBuckets<{ count: number; resetAt: number; failures: number; reported?: boolean }>(
     maxBuckets, (bucket) => bucket.count >= limit);
   return async (c, next) => {
@@ -51,36 +55,44 @@ export function createKioskAuthMiddleware(options: KioskAuthOptions = {}): Middl
     c.header('Cache-Control', 'no-store');
     if (pinPaths.has(c.req.path)) {
       const now = current.clock.now().getTime();
-      const keys = [JSON.stringify([principal.gymId, 'device', principal.deviceId]),
-        JSON.stringify([principal.gymId, 'address', clientKey(clientIp(c, options))])];
+      const budgets: readonly { budget: PinBudget; key: string }[] = [
+        { budget: 'device', key: JSON.stringify([principal.gymId, 'device', principal.deviceId]) },
+        { budget: 'address', key: JSON.stringify([principal.gymId, 'address', clientKey(clientIp(c, options))]) }];
+      const keys = budgets.map(({ key }) => key);
       const live = keys.map((key) => buckets.get(key, now));
       const blocked = live.find((bucket) => bucket && bucket.count >= limit);
       if (blocked) {
         c.header('Retry-After', String(Math.max(1, Math.ceil((blocked.resetAt - now) / 1000))));
         throw new AppError('rate_limited', 'Too many requests.');
       }
-      const reservations = keys.map((key, index) => {
+      const reservations = budgets.map(({ budget, key }, index) => {
         const bucket = live[index] ?? buckets.add(key, { count: 0, resetAt: now + windowMs, failures: 0 }, now, keys);
         bucket.count++;
-        return { key, bucket };
+        return { budget, key, bucket };
       });
-      // Reserve before verification so concurrent guesses cannot bypass the limit.
-      // Successful PIN checks release only their own slots, never earlier failures.
-      const attempt = { verified: false };
+      // Reserve before verification so concurrent guesses cannot bypass the limit. A wrong PIN keeps its slots, and so
+      // does any answered request the service didn't report (fail closed). A verified or skipped check, or an invalid
+      // body or error answered before any check was reported, releases only its own slots, never earlier failures.
+      const attempt: { check?: KioskPinCheck } = {};
+      let answered = false;
       pinAttempts.set(c.req.raw, attempt);
-      try { await next(); }
+      try { await next(); answered = c.res.status < 400; }
       finally {
         pinAttempts.delete(c.req.raw);
-        if (attempt.verified) for (const { key, bucket } of reservations) {
-          if (!buckets.holds(key, bucket)) continue;
-          if (--bucket.count === 0) buckets.delete(key);
-        }
-        const device = reservations[0]!.bucket;
-        if (!attempt.verified && ++device.failures >= limit && !device.reported) {
-          device.reported = true;
+        const failed = attempt.check === 'compared' || (attempt.check === undefined && answered);
+        if (!failed) {
+          for (const { key, bucket } of reservations) {
+            if (!buckets.holds(key, bucket)) continue;
+            if (--bucket.count === 0) buckets.delete(key);
+          }
+        } else {
+          // The device and the shared address budget are each reported once per window, in one event when both run out together.
+          const reached = reservations.filter(({ bucket }) => ++bucket.failures >= limit && !bucket.reported);
+          for (const { bucket } of reached) bucket.reported = true;
           // Recording is best effort: it never changes the answer the kiosk gets.
-          await pinLimitReached({ gymId: principal.gymId, deviceId: principal.deviceId, limit,
-            occurredAt: current.clock.now(), windowEndsAt: new Date(device.resetAt) })
+          if (reached.length) await pinLimitReached({ gymId: principal.gymId, deviceId: principal.deviceId, limit,
+            budgets: reached.map(({ budget }) => budget), occurredAt: current.clock.now(),
+            windowEndsAt: new Date(Math.max(...reached.map(({ bucket }) => bucket.resetAt))) })
             .catch((error: unknown) => logError('kiosk.pin_limit.audit_failed', { gymId: principal.gymId }, error));
         }
       }

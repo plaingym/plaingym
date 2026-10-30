@@ -4,11 +4,12 @@ import { and, eq } from 'drizzle-orm';
 import { auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { AppError } from '@plaingym/shared';
 import { kioskContracts, portalContracts } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import { createKioskDeviceService } from './devices.js';
 import { createKioskDeviceRoutes } from './devices.routes.js';
-import { createKioskAuthMiddleware, markKioskPinVerified, type KioskAuthOptions } from './devices.auth.js';
+import { createKioskAuthMiddleware, markKioskPinChecked, type KioskAuthOptions } from './devices.auth.js';
 import { createPinLimitAudit, pinLimitReachedAction } from './pin-limit.js';
 import { createApp } from '../../core/app.js';
 import { route } from '../../core/registry.js';
@@ -30,19 +31,31 @@ beforeAll(async () => {
 });
 let verificationGate: Promise<void> | undefined;
 let verificationStarted: (() => void) | undefined;
+/**
+ * Stands in for the check-in service: 'Verified' matches, 'Nobody' compares no PIN, 'Broken' fails before any check,
+ * 'Silent' reports nothing, and any other name is a wrong PIN.
+ */
+async function checkPin(request: Request, name: string) {
+  if (name === 'Nobody') return markKioskPinChecked(request, 'skipped');
+  if (name === 'Broken') throw new AppError('unavailable', 'Kiosk PIN check-in is not configured');
+  if (name === 'Silent') return;
+  if (name !== 'Verified') return markKioskPinChecked(request, 'compared');
+  verificationStarted?.(); await verificationGate;
+  markKioskPinChecked(request, 'verified');
+}
 const checkinRoutes = [
   route({ ...kioskContracts.lookup, request: { body: { required: true, content: { 'application/json': { schema: kioskContracts.lookup.body } } } },
     responses: { 200: { description: 'Lookup fixture', content: { 'application/json': { schema: kioskContracts.lookup.response } } } } },
   async (c) => {
-    if (c.req.valid('json').name === 'Verified') {
-      verificationStarted?.(); await verificationGate;
-      markKioskPinVerified(c.req.raw);
-    }
+    await checkPin(c.req.raw, c.req.valid('json').name);
     return c.json({ data: { status: 'see_front_desk' as const } }, 200);
   }),
   route({ ...kioskContracts.checkinNamePin, request: { body: { required: true, content: { 'application/json': { schema: kioskContracts.checkinNamePin.body } } } },
     responses: { 200: { description: 'Check-in fixture', content: { 'application/json': { schema: kioskContracts.checkinNamePin.response } } } } },
-  (c) => c.json({ data: [{ status: 'see_front_desk' as const }] }, 200)),
+  async (c) => {
+    await checkPin(c.req.raw, c.req.valid('json').name);
+    return c.json({ data: [{ status: 'see_front_desk' as const }] }, 200);
+  }),
   route({ ...kioskContracts.checkinQr, request: { body: { required: true, content: { 'application/json': { schema: kioskContracts.checkinQr.body } } } },
     responses: { 200: { description: 'QR fixture', content: { 'application/json': { schema: kioskContracts.checkinQr.response } } } } },
   (c) => c.json({ data: { status: 'see_front_desk' as const } }, 200)),
@@ -71,8 +84,8 @@ const bodies = [
   [kioskContracts.checkinQr.path, { code: 'qr-fixture' }],
 ] as const;
 function request(app: ReturnType<typeof server>['app'], path = kioskContracts.lookup.path as string,
-  bearer = token, body: unknown = pinBody, headers: Record<string, string> = {}) {
-  return app.request('https://a.example' + path, { method: 'POST',
+  bearer = token, body: unknown = pinBody, headers: Record<string, string> = {}, host = 'a.example') {
+  return app.request('https://' + host + path, { method: 'POST',
     headers: { authorization: 'Bearer ' + bearer, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 }
 describe('kiosk authentication middleware', () => {
@@ -141,6 +154,36 @@ describe('kiosk authentication middleware', () => {
     expect((await request(app)).status).toBe(200);
     expect((await request(app)).status).toBe(429);
   });
+  it('releases attempts that compare no PIN, answering the kiosk exactly as before', async () => {
+    const pinLimitReached = vi.fn(async () => {});
+    const { app } = server({ pinLimit: 2, pinLimitReached });
+    const checkin = (name: string) => ({ name, pin: '1234', checkins: [{ memberId: uuidv7(), sessionId: null }] });
+    for (let i = 0; i < 5; i++) {
+      // No household or too many matched the name: the same neutral answer, and no PIN was compared.
+      const lookup = await request(app, kioskContracts.lookup.path, token, { ...pinBody, name: 'Nobody' });
+      expect(lookup.status).toBe(200); expect(await lookup.json()).toEqual({ data: { status: 'see_front_desk' } });
+      const family = await request(app, kioskContracts.checkinNamePin.path, token, checkin('Nobody'));
+      expect(family.status).toBe(200); expect(await family.json()).toEqual({ data: [{ status: 'see_front_desk' }] });
+      // An invalid body and a server error before the comparison answer as before too.
+      expect((await request(app, kioskContracts.lookup.path, token, { name: 'Alex', pin: '12' })).status).toBe(400);
+      expect((await request(app, kioskContracts.checkinNamePin.path, token, {})).status).toBe(400);
+      expect((await request(app, kioskContracts.lookup.path, token, { ...pinBody, name: 'Broken' })).status).toBe(503);
+      expect((await request(app, kioskContracts.checkinNamePin.path, token, checkin('Broken'))).status).toBe(503);
+    }
+    expect(pinLimitReached).not.toHaveBeenCalled();
+    // The whole budget is still there for wrong PINs, on the device and on its address.
+    expect((await request(app)).status).toBe(200);
+    expect((await request(app, kioskContracts.checkinNamePin.path, token, checkin('Alex'))).status).toBe(200);
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
+    expect((await request(app, kioskContracts.lookup.path, token, { ...pinBody, name: 'Nobody' })).status).toBe(429);
+  });
+  it('counts an answered attempt the check-in service never reported, so a missing report fails closed', async () => {
+    const pinLimitReached = vi.fn(async () => {});
+    const { app } = server({ pinLimit: 2, pinLimitReached });
+    for (let i = 0; i < 2; i++) expect((await request(app, kioskContracts.lookup.path, token, { ...pinBody, name: 'Silent' })).status).toBe(200);
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
+    expect((await request(app)).status).toBe(429);
+  });
   it('reserves in-flight attempts so concurrent requests cannot bypass the PIN limit', async () => {
     const { app } = server({ pinLimit: 1 });
     let release!: () => void;
@@ -205,11 +248,35 @@ describe('kiosk authentication middleware', () => {
     expect((await guess()).status).toBe(200);
     for (let i = 0; i < 3; i++) { peer = '192.0.2.' + (41 + i); expect((await guess()).status).toBe(429); }
     expect(await audits()).toEqual([expect.objectContaining({ gymId: gymA, actorKind: 'device', actorDeviceId: device.device.id,
-      actorUserId: null, targetType: 'kiosk_device', after: { limit: 2, windowEndsAt: new Date(clock.now().getTime() + 60_000).toISOString() } })]);
+      actorUserId: null, targetType: 'kiosk_device',
+      after: { limit: 2, budgets: ['device', 'address'], windowEndsAt: new Date(clock.now().getTime() + 60_000).toISOString() } })]);
     clock.advance(60_000);
     for (let i = 0; i < 2; i++) expect((await guess()).status).toBe(200);
     expect(await audits()).toHaveLength(2);
     expect(await database.forGym(gymB, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, pinLimitReachedAction)))).toEqual([]);
+  });
+  it('audits kiosks sharing an address that use up its budget together, apart from other gyms', async () => {
+    const register = async (gymId: string, name: string) => service.register({ gymId, actor: { kind: 'system' } }, { name });
+    const first = await register(gymA, 'Front tablet'), second = await register(gymA, 'Mat tablet'), foreign = await register(gymB, 'Next door');
+    const audits = (gymId: string) => database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, pinLimitReachedAction)));
+    const before = await audits(gymA);
+    let peer = '198.51.100.7';
+    const { app } = server({ pinLimit: 2, peerAddress: () => peer });
+    expect((await request(app, kioskContracts.lookup.path, first.token)).status).toBe(200);
+    // Another gym's kiosk behind the same address has its own budget there.
+    for (let i = 0; i < 2; i++)
+      expect((await request(app, kioskContracts.lookup.path, foreign.token, pinBody, {}, 'b.example')).status).toBe(200);
+    expect((await request(app, kioskContracts.lookup.path, second.token)).status).toBe(200);
+    // Neither device used up its own budget, but together they used up their address's, which locks both out.
+    for (const device of [first, second]) expect((await request(app, kioskContracts.lookup.path, device.token)).status).toBe(429);
+    const added = (await audits(gymA)).filter((row) => !before.some((old) => old.id === row.id));
+    expect(added).toEqual([expect.objectContaining({ actorKind: 'device', actorDeviceId: second.device.id, targetId: second.device.id,
+      after: { limit: 2, budgets: ['address'], windowEndsAt: new Date(clock.now().getTime() + 60_000).toISOString() } })]);
+    expect(await audits(gymB)).toEqual([expect.objectContaining({ actorDeviceId: foreign.device.id,
+      after: expect.objectContaining({ budgets: ['device', 'address'] }) })]);
+    // The first device still has budget of its own at another address.
+    peer = '198.51.100.8';
+    expect((await request(app, kioskContracts.lookup.path, first.token)).status).toBe(200);
   });
   it('reports a used-up budget from settled failures, not from in-flight attempts that later verify', async () => {
     const device = await service.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Busy device' });
@@ -240,10 +307,11 @@ describe('kiosk authentication middleware', () => {
       expect(lines.map((line) => JSON.parse(line) as { event: string })).toEqual([expect.objectContaining({ event: 'kiosk.pin_limit.audit_failed' })]);
     } finally { setLogSink(previous); }
   });
-  it('counts invalid PIN payloads and keeps real kiosk bearer requests compatible with the CSRF guard', async () => {
+  it('keeps real kiosk bearer requests compatible with the CSRF guard', async () => {
     const { app } = server({ pinLimit: 1 });
     const headers = { cookie: 'stale=staff', origin: 'https://unrelated.example', 'sec-fetch-site': 'cross-site' };
     expect((await request(app, bodies[0][0], token, {}, headers)).status).toBe(400);
+    expect((await request(app, bodies[0][0], token, pinBody, headers)).status).toBe(200);
     expect((await request(app, bodies[0][0], token, pinBody, headers)).status).toBe(429);
     expect((await request(app, bodies[2][0], token, bodies[2][1], headers)).status).toBe(200);
   });

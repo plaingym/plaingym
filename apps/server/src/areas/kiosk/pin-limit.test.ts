@@ -17,7 +17,7 @@ import { createMembersService } from '../members/members.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 import { authorize } from '../staff/auth.permissions.js';
-import { createPinLimitAudit, createPinLimitWidgetProvider, pinLimitReachedAction } from './pin-limit.js';
+import { createPinLimitAudit, createPinLimitWidgetProvider, pinLimitReachedAction, type PinBudget } from './pin-limit.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const hour = 60 * 60 * 1000;
@@ -29,8 +29,8 @@ async function fixture() {
   return { gymId, clock, devices };
 }
 const audit = createPinLimitAudit({ scope: database.forGym });
-const reached = (gymId: string, deviceId: string, occurredAt: Date) =>
-  audit({ gymId, deviceId, limit: 10, occurredAt, windowEndsAt: new Date(occurredAt.getTime() + 60_000) });
+const reached = (gymId: string, deviceId: string, occurredAt: Date, budgets: readonly PinBudget[] = ['device']) =>
+  audit({ gymId, deviceId, limit: 10, budgets, occurredAt, windowEndsAt: new Date(occurredAt.getTime() + 60_000) });
 
 describe('kiosk PIN limit widget', () => {
   it('audits the device as the actor', async () => {
@@ -38,7 +38,7 @@ describe('kiosk PIN limit widget', () => {
     await reached(f.gymId, f.devices[0]!, f.clock.now());
     const rows = await database.forGym(f.gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, pinLimitReachedAction)));
     expect(rows).toEqual([expect.objectContaining({ actorKind: 'device', actorDeviceId: f.devices[0], actorUserId: null,
-      targetType: 'kiosk_device', targetId: f.devices[0], after: { limit: 10, windowEndsAt: '2026-10-30T12:01:00.000Z' } })]);
+      targetType: 'kiosk_device', targetId: f.devices[0], after: { limit: 10, budgets: ['device'], windowEndsAt: '2026-10-30T12:01:00.000Z' } })]);
   });
   it('counts each device that hit the limit in the last 24 hours once, within its own gym', async () => {
     const f = await fixture(), other = await fixture();
@@ -56,8 +56,10 @@ describe('kiosk PIN limit widget', () => {
       targetType: 'kiosk_device', targetId: f.devices[1]!, occurredAt: new Date(now) }));
     expect(await read()).toHaveProperty('count', 1);
     expect(await read(other.gymId)).toHaveProperty('count', 1);
-    await reached(f.gymId, f.devices[1]!, new Date(now - 23 * hour));
+    // A device that used up its address's shared budget was locked out too.
+    await reached(f.gymId, f.devices[1]!, new Date(now - 23 * hour), ['address']);
     expect(await read()).toHaveProperty('count', 2);
+    expect(await read(other.gymId)).toHaveProperty('count', 1);
     f.clock.advance(23 * hour);
     expect(await read()).toHaveProperty('count', 0);
     for (const role of ['coach', 'front_desk'] as StaffRole[])

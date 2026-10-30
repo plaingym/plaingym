@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { attendances, auditEvents, classSessions, households, members, uuidv7 } from '@plaingym/db';
@@ -63,6 +63,58 @@ describe('kiosk name and PIN check-in', () => {
       expect(await result.json()).toMatchObject({ data: [{ status: 'checked_in' }] });
       expect(await visits(gymA, home.parent.id)).toHaveLength(1);
     }
+  });
+  it('spends the device limiter\'s PIN budget only on compared, wrong PINs', async () => {
+    const devices = createKioskDeviceService({ scope: database.forGym, clock });
+    const issued = await devices.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'Lobby tablet' });
+    let keyMissing = false;
+    const keyed = createKioskCheckin({ scope: database.forGym, clock, pinSecret: async (gymId) => {
+      if (keyMissing) throw new Error('gym key unavailable');
+      return secrets.get(gymId)!;
+    } });
+    const unconfigured = createKioskCheckin({ scope: database.forGym, clock });
+    let current = keyed;
+    const pinLimitReached = vi.fn(async () => {});
+    const app = createApp({ clock, authorize,
+      resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+      session: createKioskAuthMiddleware({ service: devices, pinLimitReached }),
+      contributions: { routes: createKioskCheckinRoutes({ ...keyed,
+        lookup: (...args) => current.lookup(...args), checkin: (...args) => current.checkin(...args) }) },
+    });
+    const post = (path: string, body: unknown) => app.request(path, { method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + issued.token }, body: JSON.stringify(body) });
+    const surname = 'Haddad' + uuidv7().slice(-6);
+    const homes = [];
+    for (let i = 0; i <= maxCandidateHouseholds; i++) homes.push(await family(gymA, `${surname} ${i}`, String(4000 + i)));
+    const home = homes[0]!, checkins = [{ memberId: home.parent.id, sessionId: null }];
+    const frontDesk = async (path: string, body: unknown) => {
+      const response = await post(path, body);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data: path.endsWith('lookup') ? { status: 'see_front_desk' } : [{ status: 'see_front_desk' }] });
+    };
+    for (let i = 0; i < 12; i++) {
+      // Too wide (even with a right PIN) or no match: the same neutral answer as before, with no PIN compared.
+      await frontDesk('/api/kiosk/lookup', { name: surname, pin: home.pin });
+      await frontDesk('/api/kiosk/checkin', { name: 'Nobody ' + uuidv7().slice(-6), pin: home.pin, checkins });
+      expect((await post('/api/kiosk/lookup', { name: home.name, pin: 'wrong' })).status).toBe(400);
+      current = unconfigured;
+      expect((await post('/api/kiosk/lookup', { name: home.name, pin: home.pin })).status).toBe(503);
+      current = keyed; keyMissing = true;
+      expect((await post('/api/kiosk/checkin', { name: home.name, pin: home.pin, checkins })).status).toBe(500);
+      keyMissing = false;
+    }
+    expect(pinLimitReached).not.toHaveBeenCalled();
+    // Nine wrong PINs, then the right one still checks in without resetting them; the tenth wrong PIN locks the device out.
+    for (let i = 0; i < 9; i++) await frontDesk('/api/kiosk/lookup', { name: home.name, pin: '9999' });
+    expect((await post('/api/kiosk/lookup', { name: home.name, pin: home.pin })).status).toBe(200);
+    const checkedIn = await post('/api/kiosk/checkin', { name: home.name, pin: home.pin, checkins });
+    expect(await checkedIn.json()).toMatchObject({ data: [{ status: 'checked_in' }] });
+    await frontDesk('/api/kiosk/checkin', { name: home.name, pin: '9999', checkins });
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
+    expect(pinLimitReached).toHaveBeenCalledWith(expect.objectContaining({ gymId: gymA, deviceId: issued.device.id, limit: 10, budgets: ['device', 'address'] }));
+    for (const body of [{ name: home.name, pin: home.pin }, { name: surname, pin: home.pin }])
+      expect((await post('/api/kiosk/lookup', body)).status).toBe(429);
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
   });
   it('finds one household by name and PIN, showing only first names, last initials and photo links', async () => {
     const home = await family();
