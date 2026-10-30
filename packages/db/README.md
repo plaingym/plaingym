@@ -23,6 +23,10 @@ on `(gym_id, action, target_id)` for transition/outbox lookups; no data is rewri
 Migration `0011_email_deliveries.sql` adds the gym-owned `email_deliveries` table: durable
 send state (`sending`, `accepted`, `unknown`, `not_accepted`) per caller idempotency key, unique on
 `(gym_id, key)`. It starts empty and its rows are never pruned (`infra/email/README.md`).
+Migration `0012_job_schedule_cursors.sql` adds `job_schedule_cursors`, a system table with gym
+access next to `jobs`: one row per gym and cron schedule, unique on `(gym_id, name)`, holding the
+schedule's expression, timezone and latest enqueued occurrence. It starts empty; the scheduler seeds
+each cursor from the existing job history on its first tick (`infra/jobs/README.md`).
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 Run generation from this package with `pnpm exec drizzle-kit generate --name <name>`.
@@ -88,11 +92,11 @@ System tables have forced RLS too, with policies for two contexts:
 
 | Context | Set by | Sees |
 | --- | --- | --- |
-| Gym | `forGym` (`app.gym_id`) | Only its own gym's system rows: its `gyms` row (read and update, never insert or delete), domains, jobs, sessions and webhook events. Never another gym's rows, install-level rows (no gym), identity or backup history. |
+| Gym | `forGym` (`app.gym_id`) | Only its own gym's system rows: its `gyms` row (read and update, never insert or delete), domains, jobs, schedule cursors, sessions and webhook events. Never another gym's rows, install-level rows (no gym), identity or backup history. |
 | System | `forSystem` (`app.system`, one transaction) or `systemDatabase()` (a separate pool with `app.system` on every connection, for the auth adapter, which runs its own queries) | Every system row, for tenancy lookup, authentication, job claiming, the webhook inbox, setup and restore. Grants no tenant data: gym-owned tables still require their gym. |
 
 With neither context a connection sees no system rows and can't write any (fail
-closed). Access kinds: `gym` (domains, jobs, sessions, webhook events), `gym-config`
+closed). Access kinds: `gym` (domains, jobs, schedule cursors, sessions, webhook events), `gym-config`
 (`gyms`) and `system` (identity tables, backup history); the catalog check verifies
 each table's exact policies, ENABLE and FORCE. This prevents accidental cross-gym
 queries on the app role's ordinary connections; it doesn't constrain `maintenance`

@@ -53,6 +53,7 @@ const defaults = {
   linkCampaigns: () => ({ name: 'Test campaign', purpose: 'update_card' }),
   signedLinks: () => ({ tokenHash: createHash('sha256').update(uuidv7()).digest('hex'), purpose: 'update_card', expiresAt: new Date('2026-02-01Z') }),
   jobs: () => ({ name: 'test', runAt: date, idempotencyKey: uuidv7() }),
+  jobScheduleCursors: () => ({ name: 'test.' + uuidv7(), expression: '0 0 * * *', timezone: 'UTC', lastOccurrence: date }),
   backupRuns: () => ({ kind: 'manual', startedAt: date, objectPrefix: uuidv7() }),
   stripeEvents: () => ({ eventId: 'evt_' + uuidv7(), type: 'test.event', payload: {} }),
   auditEvents: () => ({ actorKind: 'system', action: 'test.created', targetType: 'test', targetId: uuidv7(), occurredAt: date }),

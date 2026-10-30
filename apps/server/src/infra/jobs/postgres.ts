@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, asc, eq, sql } from 'drizzle-orm';
-import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, jobs, uuidv7 } from '@plaingym/db';
+import { and, asc, eq, inArray, lt, notInArray, or, sql } from 'drizzle-orm';
+import { advisoryLockNamespace, advisoryLocks, forGym, forSystem, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js';
@@ -10,15 +10,25 @@ import type { Id } from '@plaingym/shared/contracts';
 import { instantSchema, idSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
 import { describeError } from '../../core/log.js';
-import type { Jobs, JobOptions, JobHandler, JobContext } from './index.js';
+import type { Jobs, JobOptions, JobHandler, JobContext, JobRecovery, FailedJob } from './index.js';
 import { cronOccurrences, occurrenceKey, validateCron } from './cron.js';
 
 type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
 type Row = typeof jobs.$inferSelect;
+type Tx = Parameters<Parameters<typeof forSystem>[0]>[0];
+type Gym = Pick<JobOptions, 'gymId' | 'timezone'>;
 type Envelope = { version: 1; timezone: string; value: unknown; schedule?: { expression: string; at: string } };
 export type SystemJobContext = Omit<JobContext, 'gymId'> & { readonly gymId: null };
 export type SystemJobHandler = (payload: unknown, context: SystemJobContext) => Promise<void>;
 export type SystemJobOptions = Omit<JobOptions, 'gymId'>;
+/** Install-level pruning of finished job rows, once per UTC day. */
+export interface JobRetentionOptions {
+  /** Job names whose rows are kept for good, because their idempotency keys must stay unique forever. */
+  readonly keep: readonly string[];
+  readonly succeededDays?: number;
+  readonly failedDays?: number;
+  readonly batchSize?: number;
+}
 export interface PostgresJobsOptions {
   readonly database?: Scope;
   readonly clock?: Clock;
@@ -26,8 +36,10 @@ export interface PostgresJobsOptions {
   readonly leaseMs?: number;
   readonly retryBaseMs?: number;
   /** Provided by tenancy; this module never reads gym configuration tables. */
-  readonly listGyms?: () => Promise<readonly Pick<JobOptions, 'gymId' | 'timezone'>[]>;
+  readonly listGyms?: () => Promise<readonly Gym[]>;
   readonly maxScheduledPerTick?: number;
+  /** Registers the daily `jobs.retention` install job; without it every row is kept. */
+  readonly retention?: JobRetentionOptions;
 }
 export interface WorkerOptions {
   readonly concurrency?: number;
@@ -39,6 +51,8 @@ export interface WorkerOptions {
   readonly around?: (execute: () => Promise<void>) => Promise<void>;
 }
 export interface JobWorker { stop(): Promise<void> }
+export const retentionJob = 'jobs.retention';
+const day = 86_400_000;
 function positive(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
   return value;
@@ -49,8 +63,10 @@ function envelope(value: unknown): Envelope {
     throw new Error('Invalid job envelope');
   return value as Envelope;
 }
+// Schema keys are (gym_id, idempotency_key); namespace caller keys by job name.
+const hashKey = (name: string, key: string) => createHash('sha256').update(JSON.stringify([name, key])).digest('hex');
 
-export class PostgresJobs implements Jobs {
+export class PostgresJobs implements Jobs, JobRecovery {
   readonly #database: Scope;
   readonly clock: Clock;
   readonly #cap: number;
@@ -58,9 +74,11 @@ export class PostgresJobs implements Jobs {
   readonly #retryBaseMs: number;
   readonly #listGyms: PostgresJobsOptions['listGyms'];
   readonly #maxScheduled: number;
+  readonly #retention: Required<JobRetentionOptions> | undefined;
   readonly #handlers = new Map<string, JobHandler>();
   readonly #systemHandlers = new Map<string, SystemJobHandler>();
   readonly #schedules = new Map<string, string>();
+  #retentionDay: string | undefined;
   #started = false;
   constructor(options: PostgresJobsOptions = {}) {
     this.#database = options.database ?? { forGym, forSystem };
@@ -70,6 +88,12 @@ export class PostgresJobs implements Jobs {
     this.#retryBaseMs = positive(options.retryBaseMs ?? 1000, 'retryBaseMs');
     this.#maxScheduled = positive(options.maxScheduledPerTick ?? 100, 'maxScheduledPerTick');
     this.#listGyms = options.listGyms;
+    if (options.retention) {
+      const { keep, succeededDays = 14, failedDays = 90, batchSize = 1000 } = options.retention;
+      this.#retention = { keep: [...keep], succeededDays: positive(succeededDays, 'succeededDays'),
+        failedDays: positive(failedDays, 'failedDays'), batchSize: positive(batchSize, 'batchSize') };
+      this.handleSystem(retentionJob, async () => { await this.prune(); });
+    }
   }
   handle(name: string, handler: JobHandler): void {
     if (!name || this.#handlers.has(name)) throw new Error(`Duplicate or empty job handler: ${name}`);
@@ -95,21 +119,24 @@ export class PostgresJobs implements Jobs {
     return this.#enqueue(name, payload, options, null);
   }
   async #enqueue(name: string, payload: unknown, options: SystemJobOptions, gymId: string | null,
-    schedule?: Envelope['schedule']): Promise<{ jobId: string }> {
+    schedule?: Envelope['schedule'] & { name: string }): Promise<{ jobId: string }> {
     if (!name) throw new Error('Job name is required');
     new Intl.DateTimeFormat('en', { timeZone: options.timezone });
     const maxAttempts = positive(options.maxAttempts ?? 3, 'maxAttempts');
     const now = this.clock.now(), runAt = options.runAt ?? now;
     if (!Number.isFinite(runAt.getTime())) throw new Error('Invalid job time');
     const id = uuidv7();
-    // Schema keys are (gym_id, idempotency_key); namespace caller keys by job name.
-    const idempotencyKey = options.idempotencyKey === undefined ? `unique:${id}`
-      : createHash('sha256').update(JSON.stringify([name, options.idempotencyKey])).digest('hex');
-    const body: Envelope = { version: 1, timezone: options.timezone, value: payload, ...(schedule ? { schedule } : {}) };
+    const idempotencyKey = options.idempotencyKey === undefined ? `unique:${id}` : hashKey(name, options.idempotencyKey);
+    const body: Envelope = { version: 1, timezone: options.timezone, value: payload,
+      ...(schedule ? { schedule: { expression: schedule.expression, at: schedule.at } } : {}) };
     // Validate JSON before opening a transaction, including cycles and BigInts.
     const encoded = JSON.stringify(body);
     if (!Object.hasOwn(JSON.parse(encoded) as object, 'value')) throw new Error('Job payload must be JSON');
-    const insert = async (tx: Parameters<Parameters<typeof forSystem>[0]>[0]) => {
+    const insert = async (tx: Tx) => {
+      // An occurrence and its schedule's cursor commit together, so a crash neither skips nor repeats it.
+      if (schedule && gymId) await tx.update(jobScheduleCursors).set({ lastOccurrence: new Date(schedule.at) }).where(and(
+        eq(jobScheduleCursors.gymId, gymId), eq(jobScheduleCursors.name, schedule.name), eq(jobScheduleCursors.expression, schedule.expression),
+        eq(jobScheduleCursors.timezone, options.timezone), lt(jobScheduleCursors.lastOccurrence, new Date(schedule.at))));
       const [row] = await tx.insert(jobs).values({ id, gymId, name, payload: JSON.parse(encoded) as unknown,
         runAt, maxAttempts, idempotencyKey, createdAt: now }).onConflictDoNothing().returning({ id: jobs.id });
       if (row) return { jobId: row.id };
@@ -128,7 +155,7 @@ export class PostgresJobs implements Jobs {
       // skips this tick rather than waiting with a pooled connection held.
       const lock = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(${advisoryLockNamespace}::int, ${advisoryLocks.jobClaims}::int) as acquired`);
       if (!lock[0]?.acquired) return undefined;
-      await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null,
+      await tx.update(jobs).set({ status: 'failed', lockedUntil: null, lockToken: null, runAt: now,
         lastError: 'Lease expired after final attempt' }).where(sql`${jobs.status} = 'running'
           and ${jobs.lockedUntil} <= ${now.toISOString()} and ${jobs.attempts} >= ${jobs.maxAttempts}`);
       const names = [...this.#handlers.keys()], systemNames = [...this.#systemHandlers.keys()];
@@ -136,13 +163,16 @@ export class PostgresJobs implements Jobs {
       const installNames = systemNames.length ? sql`${jobs.name} in (${sql.join(systemNames.map((name) => sql`${name}`), sql`, `)})` : sql`false`;
       const accepted = sql`((${jobs.gymId} is not null and ${gymNames})
         or (${jobs.gymId} is null and ${installNames}))`;
-      const [candidate] = await tx.select().from(jobs).where(sql`${accepted}
+      // Count live leases per gym once, then skip gyms at their cap. Install jobs share the null-gym bucket.
+      const busy = tx.$with('busy').as(tx.select({ gymId: jobs.gymId }).from(jobs)
+        .where(sql`${jobs.status} = 'running' and ${jobs.lockedUntil} > ${now.toISOString()}`)
+        .groupBy(jobs.gymId).having(sql`count(*) >= ${this.#cap}`));
+      const [candidate] = await tx.with(busy).select().from(jobs).where(sql`${accepted}
         and ${jobs.attempts} < ${jobs.maxAttempts}
         and ((${jobs.status} = 'pending' and ${jobs.runAt} <= ${now.toISOString()})
           or (${jobs.status} = 'running' and ${jobs.lockedUntil} <= ${now.toISOString()}))
-        and (select count(*) from jobs active where active.gym_id is not distinct from ${jobs.gymId}
-          and active.status = 'running' and active.locked_until > ${now.toISOString()}) < ${this.#cap}`)
-        .orderBy(asc(jobs.runAt), asc(jobs.id)).limit(1).for('update', { skipLocked: true });
+        and not exists (select 1 from ${busy} where ${busy.gymId} is not distinct from ${jobs.gymId})`)
+        .orderBy(asc(jobs.runAt), asc(jobs.id)).limit(1).for('update', { of: jobs, skipLocked: true });
       if (!candidate) return undefined;
       const [claimed] = await tx.update(jobs).set({ status: 'running', attempts: candidate.attempts + 1,
         lockedUntil: new Date(now.getTime() + this.#leaseMs), lockToken: uuidv7(), lastError: null })
@@ -177,11 +207,13 @@ export class PostgresJobs implements Jobs {
     } catch (error) { failed = true; failure = error; }
     finally { heartbeatAbort.abort(); await heartbeatResult; }
     const now = this.clock.now();
-    const backoff = Math.min(86_400_000, this.#retryBaseMs * 2 ** Math.min(row.attempts - 1, 30));
+    const final = row.attempts >= row.maxAttempts;
+    const backoff = Math.min(day, this.#retryBaseMs * 2 ** Math.min(row.attempts - 1, 30));
     await this.#database.forSystem(async (tx) => {
       await tx.update(jobs).set({
-        status: failed ? (row.attempts >= row.maxAttempts ? 'failed' : 'pending') : 'succeeded',
-        ...(failed ? { runAt: new Date(now.getTime() + backoff) } : {}),
+        status: failed ? (final ? 'failed' : 'pending') : 'succeeded',
+        // A finished row's run time records when it finished: retention and failed-job lookups read it.
+        runAt: failed && !final ? new Date(now.getTime() + backoff) : now,
         lastError: failed ? (({ name, code }) => JSON.stringify({ name, code }))(describeError(failure)) : null,
         lockedUntil: null, lockToken: null,
       }).where(and(eq(jobs.id, row.id), eq(jobs.status, 'running'), eq(jobs.lockToken, row.lockToken!),
@@ -195,29 +227,123 @@ export class PostgresJobs implements Jobs {
     await this.#execute(row);
     return true;
   }
-  /** Durable occurrence records provide catch-up and deduplication across restarts. */
+  /** Only rows marked failed: an expired final lease counts once a claim marks it, so a live handler is never reset. */
+  async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
+    assertNoTransaction('jobs.failedJobs');
+    idSchema.parse(options.gymId);
+    if (!idempotencyKeys.length) return [];
+    const keys = new Map(idempotencyKeys.map((key) => [hashKey(name, key), key]));
+    const rows = await this.#database.forGym(options.gymId, (tx) => tx.select({ id: jobs.id, key: jobs.idempotencyKey,
+      runAt: jobs.runAt }).from(jobs).where(and(eq(jobs.name, name), inArray(jobs.idempotencyKey, [...keys.keys()]),
+      eq(jobs.status, 'failed'))));
+    return rows.map((row) => ({ jobId: row.id, idempotencyKey: keys.get(row.key)!, failedAt: row.runAt }));
+  }
+  /** Resets one failed job of the gym to pending with fresh attempts, keeping its ID and key; other jobs are left alone. */
+  async retryFailed(jobId: string, options: { gymId: string; runAt: Date }): Promise<boolean> {
+    assertNoTransaction('jobs.retryFailed');
+    idSchema.parse(options.gymId);
+    if (!Number.isFinite(options.runAt.getTime())) throw new Error('Invalid job time');
+    const reset = await this.#database.forGym(options.gymId, (tx) => tx.update(jobs).set({ status: 'pending', attempts: 0,
+      runAt: options.runAt, lockedUntil: null, lockToken: null, lastError: null })
+      .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'))).returning({ id: jobs.id }));
+    return reset.length > 0;
+  }
+  /** Seeds missing or replaced cursors from the newest matching occurrence row, where earlier releases kept them. */
+  async #seed(gym: Gym, missing: readonly (readonly [string, string])[], now: Date): Promise<Map<string, Date>> {
+    // On first registration the current minute is eligible.
+    const initial = new Date(Math.floor(now.getTime() / 60_000) * 60_000 - 1);
+    return this.#database.forGym(gym.gymId, async (tx) => {
+      const history = await tx.select({ name: jobs.name, at: sql<string | null>`max(${jobs.payload}->'schedule'->>'at')` })
+        .from(jobs).where(and(sql`${jobs.payload}->>'timezone' = ${gym.timezone}`, or(...missing.map(([name, expression]) =>
+          and(eq(jobs.name, name), sql`${jobs.payload}->'schedule'->>'expression' = ${expression}`)))))
+        .groupBy(jobs.name);
+      const latest = new Map(history.map((row) => [row.name, row.at]));
+      const saved = await tx.insert(jobScheduleCursors).values(missing.map(([name, expression]) => {
+        const at = latest.get(name);
+        return { gymId: gym.gymId, name, expression, timezone: gym.timezone, lastOccurrence: at ? new Date(at) : initial };
+      })).onConflictDoUpdate({ target: [jobScheduleCursors.gymId, jobScheduleCursors.name], set: {
+        expression: sql`excluded.expression`, timezone: sql`excluded.timezone`,
+        // A concurrent scheduler may have advanced the same generation already; never move it back.
+        lastOccurrence: sql`case when ${jobScheduleCursors.expression} = excluded.expression
+          and ${jobScheduleCursors.timezone} = excluded.timezone
+          then greatest(${jobScheduleCursors.lastOccurrence}, excluded.last_occurrence) else excluded.last_occurrence end`,
+      } }).returning();
+      return new Map(saved.map((row) => [row.name, row.lastOccurrence]));
+    });
+  }
+  /** Durable cursors provide catch-up across restarts; occurrence keys collapse competing schedulers. */
   async scheduleDue(): Promise<void> {
     assertNoTransaction('jobs.schedule');
+    const now = this.clock.now();
+    if (this.#retention) await this.#scheduleRetention(now);
     if (this.#schedules.size === 0) return;
     if (!this.#listGyms) throw new Error('Scheduled jobs require a tenancy listGyms provider');
-    const now = this.clock.now();
-    for (const gym of await this.#listGyms()) for (const [name, expression] of this.#schedules) {
-      const latest = await this.#database.forGym(gym.gymId, async (tx) => {
-        const [row] = await tx.select({ at: sql<string>`${jobs.payload}->'schedule'->>'at'` }).from(jobs)
-          .where(and(eq(jobs.name, name), sql`${jobs.payload}->'schedule'->>'expression' = ${expression}`,
-            sql`${jobs.payload}->>'timezone' = ${gym.timezone}`))
-          .orderBy(sql`${jobs.payload}->'schedule'->>'at' desc`).limit(1);
-        return row?.at;
-      });
-      const after = latest ? new Date(latest) : new Date(Math.floor(now.getTime() / 60_000) * 60_000 - 1);
-      let count = 0;
-      for (const at of cronOccurrences(expression, gym.timezone, after, now)) {
-        if (count++ >= this.#maxScheduled) break;
-        await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
-          idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
-        gym.gymId, { expression, at: at.toISOString() });
+    const gyms = await this.#listGyms();
+    for (let offset = 0; offset < gyms.length; offset += 500) await this.#scheduleGyms(gyms.slice(offset, offset + 500), now);
+  }
+  async #scheduleGyms(gyms: readonly Gym[], now: Date): Promise<void> {
+    // One query reads a batch of gyms' cursors, instead of a scan of job payloads per gym and schedule.
+    const cursors = Map.groupBy(await this.#database.forSystem((tx) => tx.select().from(jobScheduleCursors)
+      .where(inArray(jobScheduleCursors.gymId, gyms.map((gym) => gym.gymId)))), (row) => row.gymId);
+    for (const gym of gyms) {
+      const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
+        && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
+      // All of a gym's missing cursors are seeded in one transaction, before any of its occurrences is enqueued.
+      const missing = [...this.#schedules].filter(([name]) => !current.has(name));
+      if (missing.length) for (const [name, at] of await this.#seed(gym, missing, now)) current.set(name, at);
+      for (const [name, expression] of this.#schedules) {
+        let count = 0;
+        for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
+          if (count++ >= this.#maxScheduled) break;
+          await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
+            idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
+          gym.gymId, { name, expression, at: at.toISOString() });
+        }
       }
     }
+  }
+  async #scheduleRetention(now: Date): Promise<void> {
+    const date = now.toISOString().slice(0, 10);
+    if (this.#retentionDay === date) return;
+    // Once per UTC day at 03:30, or at once when a process starts later that day.
+    await this.#enqueue(retentionJob, {}, { timezone: 'UTC', runAt: new Date(`${date}T03:30:00Z`),
+      idempotencyKey: date, maxAttempts: 3 }, null);
+    this.#retentionDay = date;
+  }
+  /**
+   * Deletes succeeded jobs that finished more than `succeededDays` ago and failed jobs more than `failedDays` ago, in
+   * batches. Pending and running jobs and the `keep` names are never deleted.
+   */
+  async prune(): Promise<number> {
+    assertNoTransaction('jobs.prune');
+    if (!this.#retention) throw new Error('Job retention is not configured');
+    const { keep, succeededDays, failedDays, batchSize } = this.#retention;
+    const now = this.clock.now().getTime();
+    const deletable = and(keep.length ? notInArray(jobs.name, [...keep]) : undefined,
+      // Until a gym's cursors are seeded, its newest occurrence rows are the scheduler's only watermark.
+      sql`(${jobs.payload}->'schedule' is null or exists (select 1 from ${jobScheduleCursors}
+        where ${jobScheduleCursors.gymId} = ${jobs.gymId}))`)!;
+    let deleted = 0;
+    for (const [status, days] of [['succeeded', succeededDays], ['failed', failedDays]] as const) {
+      const before = new Date(now - days * day);
+      // Each batch continues after the last row the previous one read, so kept rows are read once per run.
+      let after: { runAt: Date; id: string } | undefined;
+      for (;;) {
+        const batch = await this.#database.forSystem(async (tx) => {
+          const rows = await tx.select({ id: jobs.id, runAt: jobs.runAt, deletable: sql<boolean>`${deletable}` }).from(jobs)
+            .where(and(eq(jobs.status, status), lt(jobs.runAt, before), after
+              ? sql`(${jobs.runAt}, ${jobs.id}) > (${after.runAt.toISOString()}::timestamptz, ${after.id}::uuid)` : undefined))
+            .orderBy(asc(jobs.runAt), asc(jobs.id)).limit(batchSize).for('update', { skipLocked: true });
+          const ids = rows.filter((row) => row.deletable).map((row) => row.id);
+          if (ids.length) await tx.delete(jobs).where(inArray(jobs.id, ids));
+          return { read: rows.length, deleted: ids.length, last: rows.at(-1) };
+        });
+        deleted += batch.deleted;
+        if (batch.read < batchSize) break;
+        after = batch.last;
+      }
+    }
+    return deleted;
   }
   start(options: WorkerOptions = {}): JobWorker {
     assertNoTransaction('jobs.start');
@@ -229,12 +355,16 @@ export class PostgresJobs implements Jobs {
     const abort = new AbortController();
     const running = new Set<Promise<void>>();
     const report = (error: unknown) => { if (options.onError) options.onError(error); else console.error('Jobs worker infrastructure error', error); };
+    let scheduledMinute: number | undefined;
     const loop = (async () => {
       while (!abort.signal.aborted) {
         try {
           // A paused worker claims and schedules nothing; running jobs finish normally.
           const paused = options.paused ? await options.paused() : false;
-          if (!paused) await this.scheduleDue();
+          // Cron has minute resolution: schedule once per clock minute, not on every poll. A failed
+          // tick waits for the next minute; cursors catch up whatever it missed.
+          const minute = Math.floor(this.clock.now().getTime() / 60_000);
+          if (!paused && minute !== scheduledMinute) { scheduledMinute = minute; await this.scheduleDue(); }
           while (!paused && !abort.signal.aborted && running.size < concurrency) {
             const row = await this.#claim();
             if (!row) break;

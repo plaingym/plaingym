@@ -23,6 +23,20 @@ export const jobs = pgTable('jobs', {
   // Install-level jobs (no gym) are visible only to the worker's system context.
   ...systemAccess('jobs', 'gym', t.gymId),
 ]).enableRLS();
+/**
+ * One cursor per gym and cron schedule: the latest occurrence the scheduler enqueued for the schedule's current
+ * expression and timezone. A different expression or timezone replaces the row (a new schedule generation).
+ */
+export const jobScheduleCursors = pgTable('job_schedule_cursors', {
+  id: uuid('id').primaryKey().$defaultFn(uuidv7),
+  gymId: uuid('gym_id').notNull().references(() => gyms.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(), expression: text('expression').notNull(), timezone: text('timezone').notNull(),
+  lastOccurrence: instant('last_occurrence').notNull(),
+}, (t) => [
+  unique('job_schedule_cursors_gym_name_key').on(t.gymId, t.name),
+  // The scheduler reads every gym's cursors, and retention checks them, in system context.
+  ...systemAccess('job_schedule_cursors', 'gym', t.gymId),
+]).enableRLS();
 export const backupRuns = pgTable('backup_runs', {
   id: uuid('id').primaryKey().$defaultFn(uuidv7), kind: text('kind').notNull(),
   status: text('status').notNull().default('running'), startedAt: instant('started_at').notNull(),

@@ -23,6 +23,19 @@ export interface Jobs {
   handle(name: string, handler: JobHandler): void;
   schedule(name: string, cron: string, handler: JobHandler): void;
 }
+/** A job that used up its attempts, found by the caller's own idempotency key. */
+export interface FailedJob {
+  readonly jobId: string;
+  readonly idempotencyKey: string;
+  readonly failedAt: Date;
+}
+/** Gym-scoped recovery of exhausted jobs; producers never read or change queue rows directly. */
+export interface JobRecovery {
+  /** The gym's failed jobs (attempts used up) with this name among the given caller idempotency keys. */
+  failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]>;
+  /** Atomically resets one failed job of the gym to pending at `runAt`, keeping its ID and key. */
+  retryFailed(jobId: string, options: { gymId: string; runAt: Date }): Promise<boolean>;
+}
 export interface FakeJob {
   id: string;
   name: string;
@@ -33,7 +46,7 @@ export interface FakeJob {
   status: 'queued' | 'running' | 'completed' | 'failed';
 }
 
-export class FakeJobs implements Jobs {
+export class FakeJobs implements Jobs, JobRecovery {
   readonly #jobs: FakeJob[] = [];
   readonly #handlers = new Map<string, JobHandler>();
   readonly #schedules = new Map<string, string>();
@@ -97,6 +110,19 @@ export class FakeJobs implements Jobs {
     if (!this.#schedules.has(name)) throw new Error(`Unknown schedule: ${name}`);
     for (const gym of gyms) await this.enqueue(name, {}, { ...gym, idempotencyKey: occurrence });
   }
+  async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
+    assertNoTransaction('jobs.failedJobs');
+    return this.#jobs.filter((job) => job.name === name && job.options.gymId === options.gymId && job.status === 'failed'
+      && job.options.idempotencyKey !== undefined && idempotencyKeys.includes(job.options.idempotencyKey))
+      .map((job) => ({ jobId: job.id, idempotencyKey: job.options.idempotencyKey!, failedAt: new Date(job.runAt) }));
+  }
+  async retryFailed(jobId: string, options: { gymId: string; runAt: Date }): Promise<boolean> {
+    assertNoTransaction('jobs.retryFailed');
+    const job = this.#jobs.find((item) => item.id === jobId && item.options.gymId === options.gymId && item.status === 'failed');
+    if (!job) return false;
+    Object.assign(job, { status: 'queued', attempt: 0, runAt: new Date(options.runAt) });
+    return true;
+  }
   async runNext(): Promise<boolean> {
     assertNoTransaction('jobs.runNext');
     const running = new Map<string, number>();
@@ -120,12 +146,14 @@ export class FakeJobs implements Jobs {
       });
       job.status = 'completed';
     } catch {
-      job.status = job.attempt >= (job.options.maxAttempts ?? 3) ? 'failed' : 'queued';
-      job.runAt = new Date(this.clock.now().getTime() + 1000 * 2 ** (job.attempt - 1));
+      // As in the real queue, a failed job's run time records when it failed.
+      const final = job.attempt >= (job.options.maxAttempts ?? 3);
+      job.status = final ? 'failed' : 'queued';
+      job.runAt = new Date(this.clock.now().getTime() + (final ? 0 : 1000 * 2 ** (job.attempt - 1)));
     }
     return true;
   }
 }
 
-export { PostgresJobs, PostgresJobStatsQuery, startJobsWorker } from './postgres.js';
-export type { PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';
+export { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
+export type { JobRetentionOptions, PostgresJobsOptions, WorkerOptions, JobWorker, SystemJobContext, SystemJobHandler, SystemJobOptions } from './postgres.js';

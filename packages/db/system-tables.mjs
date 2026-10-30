@@ -44,6 +44,15 @@ export const systemTables = [
     ]
   },
   {
+    "name": "job_schedule_cursors",
+    "exportName": "jobScheduleCursors",
+    "reason": "Scheduler reads every gym's cron cursors before selecting gym context; job retention checks them",
+    "access": "gym",
+    "modules": [
+      "infra/jobs/.*"
+    ]
+  },
+  {
     "name": "auth_user",
     "exportName": "authUser",
     "reason": "Install-wide authentication state",

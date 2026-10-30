@@ -8,7 +8,7 @@ import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, link
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
-import type { Jobs } from '../../infra/jobs/index.js';
+import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createSignedLinksService } from './service.js';
@@ -23,7 +23,7 @@ export const campaignPublishJob = 'links.campaigns.publish';
 export interface CampaignsOptions {
   scope?: typeof forGym;
   clock?: Clock;
-  jobs: Jobs;
+  jobs: Jobs & JobRecovery;
   delivery: SignedLinkDelivery;
   paymentsFor(gymId: string): Promise<Payments>;
 }
@@ -52,7 +52,20 @@ export function createCampaignsService(options: CampaignsOptions) {
       return campaignDetail(row, links.map(link => campaignRecipient(link, clock.now())));
     });
   }
-  async function queue(gymId: string, campaignId: string, occurrence: string) {
+  /** Retries published, unreserved sends whose jobs used up their attempts, at most once per gym-local day. */
+  async function retryExhausted(gymId: string, timezone: string, campaignId: string, occurrence: string, linkIds: string[]) {
+    const now = clock.now(), today = localDate(now, timezone);
+    const keys = new Map(linkIds.map(id => [`${id}:${occurrence}`, id]));
+    // Like scheduled reminders, a retry goes out from 09:00 gym-local.
+    const runAt = new Date(Math.max(now.getTime(), zonedInstant(today, '09:00', timezone, { gap: 'shift' })!.getTime()));
+    for (const job of await options.jobs.failedJobs(campaignSendJob, [...keys.keys()], { gymId })) {
+      if (localDate(job.failedAt, timezone) >= today) continue;
+      if (await options.jobs.retryFailed(job.jobId, { gymId, runAt })) await scope(gymId, tx => writeAudit(tx, { gymId,
+        actorKind: 'system', action: 'link_campaign.delivery_retried', targetType: 'signed_link', targetId: keys.get(job.idempotencyKey)!,
+        after: { campaignId, occurrence }, occurredAt: now }));
+    }
+  }
+  async function queue(gymId: string, campaignId: string, occurrence: string, retry = false) {
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled) return 0;
     const rows = await scope(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).where(and(
@@ -62,9 +75,13 @@ export function createCampaignsService(options: CampaignsOptions) {
     const history = await scope(gymId, tx => deliveryHistory(tx, gymId, rows.map(r => r.id)));
     let queued = 0;
     for (let offset = 0; offset < rows.length; offset += 100) {
-      const audits: (typeof auditEvents.$inferInsert)[] = [];
+      const audits: (typeof auditEvents.$inferInsert)[] = [], published: string[] = [];
       for (const row of rows.slice(offset, offset + 100)) {
-        if (deliveryBlocked(history, row.id, occurrence, clock.now(), gym.timezone, true)) continue;
+        if (deliveryBlocked(history, row.id, occurrence, clock.now(), gym.timezone, true)) {
+          // Published but never reserved: its send job may have failed before reaching delivery.
+          if (retry && !deliveryBlocked(history, row.id, occurrence, clock.now(), gym.timezone)) published.push(row.id);
+          continue;
+        }
         await options.jobs.enqueue(campaignSendJob, { campaignId, linkId: row.id, occurrence }, {
           gymId, timezone: gym.timezone, idempotencyKey: `${row.id}:${occurrence}`, maxAttempts: 8,
         });
@@ -74,6 +91,7 @@ export function createCampaignsService(options: CampaignsOptions) {
       }
       // A crash before the batch commits is repaired using the same recipient job keys.
       if (audits.length) await scope(gymId, tx => tx.insert(auditEvents).values(audits));
+      if (published.length) await retryExhausted(gymId, gym.timezone, campaignId, occurrence, published);
     }
     return queued;
   }
@@ -168,7 +186,7 @@ export function createCampaignsService(options: CampaignsOptions) {
           .groupBy(linkCampaigns.id).orderBy(asc(linkCampaigns.id)).limit(100));
         for (const row of rows) {
           // Catch up only the latest due reminder, avoiding a burst after downtime. All days use local 09:00.
-          await queue(gymId, row.id, occurrenceAt(row, clock.now(), gym.timezone));
+          await queue(gymId, row.id, occurrenceAt(row, clock.now(), gym.timezone), true);
         }
         if (rows.length < 100) return;
         cursor = rows.at(-1)!.id;

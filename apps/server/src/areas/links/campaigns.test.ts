@@ -448,6 +448,31 @@ describe('campaign sends and reminders', () => {
     expect(audits.filter(a => a.action === 'link_campaign.delivery_uncertain')).toHaveLength(1);
     expect(audits.some(a => a.action === 'link_campaign.delivery_released')).toBe(false);
   });
+  it('retries an exhausted, unreserved send once on the next gym-local day, without new jobs or touching active ones', async () => {
+    const f = await fixture(), c = await f.campaign();
+    const prepare = f.prepare.getMockImplementation()!;
+    f.prepare.mockImplementation(async gymId => ({ ...await prepare(gymId), origin: 'https://attacker.test/unsafe/path' }));
+    const sends = () => f.jobs.jobs.filter(job => job.name === campaignSendJob);
+    // Every attempt fails before reservation; the queue's backoff doubles from one second.
+    for (let n = 0; n < 9; n++) { await f.drain(); f.clock.advance(2 ** n * 1000); }
+    const [failed] = sends();
+    expect(sends()).toMatchObject([{ status: 'failed', attempt: 8 }]);
+    await f.service.scan(f.gymId);
+    expect(sends()).toMatchObject([{ id: failed!.id, status: 'failed' }]);
+    f.prepare.mockImplementation(prepare);
+    f.clock.set('2026-10-27T12:00:00Z'); // 05:00 the next gym-local day
+    await f.service.scan(f.gymId); await f.service.scan(f.gymId);
+    // The same job, from 09:00 local like a reminder; the second scan leaves the now active job alone.
+    expect(sends()).toMatchObject([{ id: failed!.id, status: 'queued', attempt: 0, runAt: new Date('2026-10-27T16:00:00Z') }]);
+    await f.drain(); expect(f.email.messages).toHaveLength(0);
+    f.clock.set('2026-10-27T16:00:00Z'); await f.drain();
+    expect(f.email.messages).toHaveLength(1);
+    expect(sends()).toMatchObject([{ id: failed!.id, status: 'completed' }]);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, c.link.id),
+      eq(auditEvents.action, 'link_campaign.delivery_retried')))))).toMatchObject([{ after: { campaignId: c.campaign.id, occurrence: 'initial' } }]);
+    f.clock.advance(86_400_000); await f.service.scan(f.gymId); await f.drain();
+    expect(f.email.messages).toHaveLength(1);
+  });
   it('leaves a working token untouched when the trusted origin fails before reservation', async () => {
     const f = await fixture(), c = await f.campaign(); await f.drain(); const token = f.token(); f.clock.advance(86400000);
     const prepare = f.prepare.getMockImplementation()!;

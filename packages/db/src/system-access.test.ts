@@ -19,6 +19,7 @@ beforeAll(async () => {
   await factory('gyms', gymA); await factory('gyms', gymB);
   const domainA = await factory('gymDomains', gymA), domainB = await factory('gymDomains', gymB);
   const jobA = await factory('jobs', gymA), jobB = await factory('jobs', gymB);
+  const cursorA = await factory('jobScheduleCursors', gymA), cursorB = await factory('jobScheduleCursors', gymB);
   const [installJob] = await database.forSystem((tx) => tx.insert(schema.jobs)
     .values({ name: 'install', runAt: new Date('2026-01-01Z'), idempotencyKey: uuidv7() }).returning());
   const user = await factory('authUser', gymA);
@@ -29,6 +30,7 @@ beforeAll(async () => {
   await factory('authAccount', gymA, { userId: user.id });
   await factory('backupRuns', gymA);
   fixture = { domainA: domainA.id, domainB: domainB.id, jobA: jobA.id, jobB: jobB.id, installJob: installJob!.id,
+    cursorA: cursorA.id, cursorB: cursorB.id,
     user: user.id, sessionA: sessionA.id, sessionB: sessionB.id, eventA: eventA.id, eventB: eventB.id, installEvent: installEvent!.id };
 });
 
@@ -45,10 +47,13 @@ describe('gym context sees only its own system rows', () => {
     await expect(database.forGym(gymA, (tx) => tx.insert(schema.gyms).values({ name: 'Rogue', slug: uuidv7() }))).rejects.toMatchObject(denied);
     expect(await database.forSystem((tx) => tx.select().from(schema.gyms).where(eq(schema.gyms.id, gymA)))).toHaveLength(1);
   });
-  it('scopes domains, jobs, sessions and webhook events to the gym, hiding install-level rows', async () => {
+  it('scopes domains, jobs, schedule cursors, sessions and webhook events to the gym, hiding install-level rows', async () => {
     await database.forGym(gymA, async (tx) => {
       expect(ids(await raw(tx, 'select id from gym_domains'))).toEqual([fixture.domainA]);
       expect(ids(await raw(tx, 'select id from jobs'))).toEqual([fixture.jobA]);
+      expect(ids(await raw(tx, 'select id from job_schedule_cursors'))).toEqual([fixture.cursorA]);
+      expect(await tx.update(schema.jobScheduleCursors).set({ lastOccurrence: new Date('2027-01-01Z') })
+        .where(eq(schema.jobScheduleCursors.id, fixture.cursorB!)).returning()).toEqual([]);
       expect(ids(await raw(tx, 'select id from auth_session'))).toEqual([fixture.sessionA]);
       expect(ids(await raw(tx, 'select id from stripe_events'))).toEqual([fixture.eventA]);
     });
@@ -56,6 +61,8 @@ describe('gym context sees only its own system rows', () => {
     expect(await database.forGym(gymA, (tx) => tx.insert(schema.jobs).values(job(gymA)).returning())).toHaveLength(1);
     await expect(database.forGym(gymA, (tx) => tx.insert(schema.jobs).values(job(gymB)))).rejects.toMatchObject(denied);
     await expect(database.forGym(gymA, (tx) => tx.insert(schema.jobs).values(job(null)))).rejects.toMatchObject(denied);
+    await expect(database.forGym(gymA, (tx) => tx.insert(schema.jobScheduleCursors).values({ gymId: gymB, name: 'test',
+      expression: '0 0 * * *', timezone: 'UTC', lastOccurrence: new Date('2026-01-01Z') }))).rejects.toMatchObject(denied);
     await expect(database.forGym(gymA, (tx) => tx.insert(schema.gymDomains).values({ gymId: gymB, hostname: uuidv7() + '.example.test' })))
       .rejects.toMatchObject(denied);
     await expect(database.forGym(gymA, (tx) => tx.insert(schema.stripeEvents).values({ eventId: 'evt_' + uuidv7(), type: 't', payload: {} })))
@@ -78,7 +85,7 @@ describe('gym context sees only its own system rows', () => {
 
 describe('missing context fails closed', () => {
   it('shows no system rows and accepts no system writes without gym or system context', async () => {
-    for (const table of ['gyms', 'gym_domains', 'jobs', 'auth_user', 'auth_session', 'auth_account', 'auth_verification',
+    for (const table of ['gyms', 'gym_domains', 'jobs', 'job_schedule_cursors', 'auth_user', 'auth_session', 'auth_account', 'auth_verification',
       'auth_rate_limit', 'backup_runs', 'stripe_events']) {
       expect(await raw(database.app.db, `select * from ${table}`), table).toEqual([]);
     }
@@ -93,6 +100,7 @@ describe('system context', () => {
       const [domain] = await tx.select().from(schema.gymDomains).where(eq(schema.gymDomains.id, fixture.domainB!));
       expect(domain?.gymId).toBe(gymB);
       expect(ids(await raw(tx, 'select id from jobs'))).toEqual(expect.arrayContaining([fixture.jobA, fixture.jobB, fixture.installJob]));
+      expect(ids(await raw(tx, 'select id from job_schedule_cursors'))).toEqual([fixture.cursorA, fixture.cursorB].sort());
       expect(ids(await raw(tx, 'select id from stripe_events'))).toEqual(expect.arrayContaining([fixture.eventA, fixture.eventB, fixture.installEvent]));
     });
     // The auth adapter's pool carries system context on every connection.

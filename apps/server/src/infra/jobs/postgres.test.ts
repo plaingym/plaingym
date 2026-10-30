@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { setTimeout as delay } from 'node:timers/promises';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { advisoryLockNamespace, advisoryLocks, jobs, uuidv7 } from '@plaingym/db';
+import { advisoryLockNamespace, advisoryLocks, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- holds the backup advisory lock exactly as a running snapshot does
 import { openConnection } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -10,9 +10,9 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
 import { jobsContract, infraContractGyms } from '../../core/registry-infra-contracts.js';
-import { PostgresJobs, PostgresJobStatsQuery, startJobsWorker } from './postgres.js';
+import { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
 import { cronOccurrences, occurrenceKey } from './cron.js';
-import type { Jobs, JobOptions } from './index.js';
+import { FakeJobs, type Jobs, type JobOptions, type JobRecovery } from './index.js';
 
 const database = useTestDatabase();
 const factory = createFactories(database);
@@ -21,7 +21,7 @@ const options = { gymId: gymA, timezone: 'America/Vancouver' };
 let clock: TestClock;
 beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB); });
 beforeEach(async () => {
-  await database.forSystem((tx) => tx.delete(jobs));
+  await database.forSystem(async (tx) => { await tx.delete(jobs); await tx.delete(jobScheduleCursors); });
   clock = new TestClock('2026-01-01T00:00:00Z');
 });
 function queue(extra: Omit<ConstructorParameters<typeof PostgresJobs>[0], 'database' | 'clock'> = {}) {
@@ -310,5 +310,201 @@ describe('timezone scheduling and health statistics', () => {
     expect(await stats.get(gymB)).toMatchObject({ pending: 1, succeeded: 0, failed: 0 });
     expect(await stats.get(uuidv7())).toEqual({ pending: 0, running: 0, succeeded: 0, failed: 0, oldestPendingAt: null });
     expect((await database.forGym(gymA, (tx) => tx.select().from(jobs))).every((r) => r.gymId === gymA)).toBe(true);
+  });
+});
+
+describe('schedule cursors', () => {
+  const gyms: Pick<JobOptions, 'gymId' | 'timezone'>[] = [{ gymId: gymA, timezone: 'UTC' }];
+  const make = (expression = '*/5 * * * *') => {
+    const q = queue({ listGyms: async () => gyms }); q.schedule('tick', expression, async () => {}); return q;
+  };
+  const cursors = () => database.forSystem((tx) => tx.select().from(jobScheduleCursors));
+  const occurrences = async () => (await rows()).map((r) => (r.payload as { schedule: { at: string } }).schedule.at.slice(11, 16)).sort();
+  it('catches up from the cursor, so pruned history is never enqueued again', async () => {
+    clock.set('2026-01-01T00:02:00Z');
+    await make().scheduleDue();
+    expect(await cursors()).toMatchObject([{ gymId: gymA, name: 'tick', expression: '*/5 * * * *', timezone: 'UTC',
+      lastOccurrence: new Date('2026-01-01T00:01:59.999Z') }]);
+    expect(await rows()).toEqual([]);
+    clock.set('2026-01-01T00:21:00Z');
+    await make().scheduleDue();
+    expect(await occurrences()).toEqual(['00:05', '00:10', '00:15', '00:20']);
+    expect((await cursors())[0]!.lastOccurrence).toEqual(new Date('2026-01-01T00:20:00Z'));
+    await database.forSystem((tx) => tx.delete(jobs));
+    clock.set('2026-01-01T00:26:00Z');
+    await make().scheduleDue();
+    expect(await occurrences()).toEqual(['00:25']);
+    expect(await cursors()).toHaveLength(1);
+  });
+  it('seeds a missing cursor once from the newest occurrence row on upgrade, without skipping or repeating', async () => {
+    await make().scheduleDue();
+    clock.set('2026-01-01T00:10:00Z'); await make().scheduleDue();
+    // The previous release kept no cursor: its newest occurrence row was the watermark.
+    await database.forSystem((tx) => tx.delete(jobScheduleCursors));
+    expect(await occurrences()).toEqual(['00:00', '00:05', '00:10']);
+    clock.set('2026-01-01T00:31:00Z');
+    await Promise.all([make().scheduleDue(), make().scheduleDue()]);
+    expect(await occurrences()).toEqual(['00:00', '00:05', '00:10', '00:15', '00:20', '00:25', '00:30']);
+    expect(await cursors()).toMatchObject([{ lastOccurrence: new Date('2026-01-01T00:30:00Z') }]);
+  });
+  it('starts a new generation when the expression or timezone changes', async () => {
+    clock.set('2026-01-01T00:00:30Z'); await make().scheduleDue();
+    clock.set('2026-01-01T00:07:30Z'); await make('*/2 * * * *').scheduleDue();
+    // A new generation starts at the current minute; it does not replay another generation's history.
+    expect(await cursors()).toMatchObject([{ expression: '*/2 * * * *', lastOccurrence: new Date('2026-01-01T00:06:59.999Z') }]);
+    expect(await occurrences()).toEqual(['00:00']);
+    clock.set('2026-01-01T00:12:30Z'); await make().scheduleDue();
+    // Back to the first expression: its retained history is the watermark again.
+    expect(await occurrences()).toEqual(['00:00', '00:05', '00:10']);
+    gyms[0] = { gymId: gymA, timezone: 'America/Vancouver' };
+    try {
+      clock.set('2026-01-01T00:15:30Z'); await make().scheduleDue();
+      expect(await cursors()).toMatchObject([{ timezone: 'America/Vancouver', lastOccurrence: new Date('2026-01-01T00:15:00Z') }]);
+      expect(await occurrences()).toEqual(['00:00', '00:05', '00:10', '00:15']);
+    } finally { gyms[0] = { gymId: gymA, timezone: 'UTC' }; }
+  });
+  it('schedules from the worker once per clock minute, not on every poll', async () => {
+    const q = make(); const tick = vi.spyOn(q, 'scheduleDue');
+    const worker = q.start({ pollMs: 2 });
+    try {
+      await until(async () => tick.mock.calls.length === 1); await delay(30);
+      expect(tick).toHaveBeenCalledTimes(1);
+      clock.advance(60_000);
+      await until(async () => tick.mock.calls.length === 2); await delay(30);
+      expect(tick).toHaveBeenCalledTimes(2);
+    } finally { await worker.stop(); }
+  });
+});
+
+describe('claim fairness', () => {
+  const lease = (gymId: string | null, name = 'work') => ({ gymId, name, payload: { version: 1, timezone: 'UTC', value: {} },
+    runAt: new Date('2025-12-31T00:00:00Z'), attempts: 1, maxAttempts: 3, status: 'running', lockToken: uuidv7(),
+    lockedUntil: new Date('2026-01-01T00:01:00Z'), idempotencyKey: uuidv7() });
+  it('skips every gym at its cap, install jobs included, and takes the earliest due job of the rest', async () => {
+    const q = queue({ perGymConcurrency: 2 }); const seen: (string | null)[] = [];
+    q.handle('work', async (_, c) => { seen.push(c.gymId); }); q.handleSystem('install', async () => { seen.push(null); });
+    for (let n = 0; n < 200; n++) await q.enqueue('work', {}, { ...options, runAt: new Date(clock.now().getTime() - 60_000) });
+    await q.enqueueSystem('install', {}, { timezone: 'UTC', runAt: new Date(clock.now().getTime() - 30_000) });
+    await q.enqueue('work', {}, { ...options, gymId: gymB });
+    // Gym A and the install bucket hold two live leases each; gym B holds one, below the cap.
+    await database.forSystem((tx) => tx.insert(jobs).values([lease(gymA), lease(gymA), lease(null, 'install'), lease(null, 'install'), lease(gymB)]));
+    expect(await q.runNext()).toBe(true);
+    expect(await q.runNext()).toBe(false);
+    expect(seen).toEqual([gymB]);
+    // An expired lease frees its slot: gym A's oldest job runs next.
+    await database.forSystem((tx) => tx.update(jobs).set({ lockedUntil: clock.now() }).where(eq(jobs.gymId, gymA)));
+    expect(await q.runNext()).toBe(true);
+    expect(seen).toEqual([gymB, gymA]);
+  });
+});
+
+describe('retention', () => {
+  const finished = (status: 'succeeded' | 'failed' | 'pending' | 'running', days: number, extra: Partial<typeof jobs.$inferInsert> = {}) => ({
+    gymId: gymA, name: 'work', payload: { version: 1, timezone: 'UTC', value: {} }, status, attempts: 1, maxAttempts: 1,
+    runAt: new Date(clock.now().getTime() - days * 86_400_000), idempotencyKey: uuidv7(), ...extra });
+  const occurrence = (gymId: string, days: number) => finished('succeeded', days, { gymId, name: 'tick',
+    payload: { version: 1, timezone: 'UTC', value: {}, schedule: { expression: '* * * * *', at: '2025-01-01T00:00:00.000Z' } } });
+  it('deletes old finished jobs in batches, keeping active rows, protected names and unseeded cron history', async () => {
+    clock.set('2026-06-01T00:00:00Z');
+    const q = queue({ retention: { keep: ['billing.alerts.send'], batchSize: 2 } });
+    await database.forSystem((tx) => tx.insert(jobScheduleCursors).values({ gymId: gymA, name: 'tick', expression: '* * * * *',
+      timezone: 'UTC', lastOccurrence: clock.now() }));
+    const deleted = await database.forSystem((tx) => tx.insert(jobs).values([
+      finished('succeeded', 15), finished('succeeded', 15), finished('succeeded', 400), finished('failed', 91),
+      finished('succeeded', 15, { gymId: null, name: 'install' }), occurrence(gymA, 15),
+    ]).returning({ id: jobs.id }));
+    const kept = await database.forSystem((tx) => tx.insert(jobs).values([
+      finished('succeeded', 13), finished('failed', 89), finished('pending', 400), finished('running', 400),
+      finished('succeeded', 400, { name: 'billing.alerts.send' }), finished('failed', 400, { name: 'billing.alerts.send' }),
+      // Gym B has no cursors yet: its newest occurrence rows are still its scheduler's watermark.
+      occurrence(gymB, 15),
+    ]).returning({ id: jobs.id }));
+    expect(await q.prune()).toBe(deleted.length);
+    expect((await rows()).map((r) => r.id).sort()).toEqual(kept.map((r) => r.id).sort());
+  });
+  it('ages a succeeded job from when it finished, not when it was first due', async () => {
+    const q = queue({ retention: { keep: [] } }); q.handle('work', async () => {});
+    const { jobId } = await q.enqueue('work', {}, { ...options, runAt: new Date('2025-12-01T00:00:00Z') });
+    expect(await q.runNext()).toBe(true);
+    expect(await row(jobId)).toMatchObject({ status: 'succeeded', runAt: clock.now() });
+    clock.advance(13 * 86_400_000);
+    expect(await q.prune()).toBe(0);
+    clock.advance(2 * 86_400_000);
+    expect(await q.prune()).toBe(1);
+  });
+  it('keeps a protected key unique after pruning, while an unprotected key can be reused', async () => {
+    const q = queue({ retention: { keep: ['billing.alerts.send'] } });
+    q.handle('billing.alerts.send', async () => {}); q.handle('work', async () => {});
+    const alert = await q.enqueue('billing.alerts.send', {}, { ...options, idempotencyKey: 'card:2026-02-01' });
+    const work = await q.enqueue('work', {}, { ...options, idempotencyKey: 'once' });
+    await q.runNext(); await q.runNext();
+    clock.advance(15 * 86_400_000);
+    expect(await q.prune()).toBe(1);
+    expect(await q.enqueue('billing.alerts.send', {}, { ...options, idempotencyKey: 'card:2026-02-01' })).toEqual(alert);
+    expect(await q.enqueue('work', {}, { ...options, idempotencyKey: 'once' })).not.toEqual(work);
+  });
+  it('enqueues one install retention job per UTC day and runs it through the queue', async () => {
+    const make = () => queue({ retention: { keep: [] } });
+    const q = make();
+    await database.forSystem((tx) => tx.insert(jobs).values(finished('succeeded', 30)));
+    await q.scheduleDue(); await q.scheduleDue(); await make().scheduleDue();
+    expect((await rows()).filter((r) => r.name === retentionJob)).toMatchObject([{ gymId: null, status: 'pending',
+      runAt: new Date('2026-01-01T03:30:00Z') }]);
+    expect(await q.runNext()).toBe(false);
+    clock.set('2026-01-01T03:30:00Z');
+    expect(await q.runNext()).toBe(true);
+    expect((await rows()).map((r) => [r.name, r.status])).toEqual([[retentionJob, 'succeeded']]);
+    clock.set('2026-01-02T05:00:00Z'); await q.scheduleDue();
+    expect((await rows()).filter((r) => r.name === retentionJob)).toHaveLength(2);
+    await expect(queue().prune()).rejects.toThrow('not configured');
+    expect(() => queue({ retention: { keep: [], failedDays: 0 } })).toThrow('failedDays');
+  });
+});
+
+/** Shared by the fake and the real queue so the fake's recovery cannot drift. */
+function recoveryContract(name: string, create: (clock: TestClock) => Jobs & JobRecovery & { runNext(): Promise<boolean> }) {
+  it(`${name}: finds and retries only the gym's failed jobs, keeping their ID and key`, async () => {
+    const q = create(clock); let fail = true; const attempts: number[] = [];
+    q.handle('send', async (_, c) => { attempts.push(c.attempt); if (fail) throw new Error('down'); });
+    const failed = await q.enqueue('send', {}, { ...options, idempotencyKey: 'k1', maxAttempts: 1 });
+    await q.runNext();
+    const active = await q.enqueue('send', {}, { ...options, idempotencyKey: 'k2', runAt: new Date('2026-01-02Z') });
+    expect(await q.failedJobs('send', ['k1', 'k2', 'missing'], options)).toEqual([
+      { jobId: failed.jobId, idempotencyKey: 'k1', failedAt: clock.now() }]);
+    expect(await q.failedJobs('other', ['k1'], options)).toEqual([]);
+    expect(await q.failedJobs('send', ['k1'], { gymId: gymB })).toEqual([]);
+    const later = new Date('2026-01-01T01:00:00Z');
+    expect(await q.retryFailed(active.jobId, { gymId: gymA, runAt: later })).toBe(false);
+    expect(await q.retryFailed(failed.jobId, { gymId: gymB, runAt: later })).toBe(false);
+    expect(await q.retryFailed(failed.jobId, { gymId: gymA, runAt: later })).toBe(true);
+    expect(await q.retryFailed(failed.jobId, { gymId: gymA, runAt: later })).toBe(false);
+    expect(await q.enqueue('send', {}, { ...options, idempotencyKey: 'k1' })).toEqual(failed);
+    expect(await q.failedJobs('send', ['k1'], options)).toEqual([]);
+    expect(await q.runNext()).toBe(false);
+    fail = false; clock.set(later);
+    expect(await q.runNext()).toBe(true);
+    expect(attempts).toEqual([1, 1]);
+  });
+}
+describe('failed job recovery', () => {
+  recoveryContract('FakeJobs', (c) => new FakeJobs(c));
+  recoveryContract('PostgresJobs', () => queue());
+  it('leaves a running final attempt alone until a claim marks its expired lease failed, and fences its old handler', async () => {
+    const q = queue({ leaseMs: 1000 }); const started = latch(), held = latch();
+    q.handle('work', async () => { started.resolve(); await held.promise; });
+    const { jobId } = await q.enqueue('work', {}, { ...options, idempotencyKey: 'slow', maxAttempts: 1 });
+    const active = q.runNext(); await started.promise;
+    try {
+      clock.advance(1001);
+      // Expired but not yet marked: its handler may still be running, so it is not offered for a retry.
+      expect(await q.failedJobs('work', ['slow'], options)).toEqual([]);
+      expect(await q.retryFailed(jobId, { gymId: gymA, runAt: clock.now() })).toBe(false);
+      clock.advance(1000);
+      expect(await q.runNext()).toBe(false);
+      expect(await q.failedJobs('work', ['slow'], options)).toEqual([
+        { jobId, idempotencyKey: 'slow', failedAt: new Date('2026-01-01T00:00:02.001Z') }]);
+      expect(await q.retryFailed(jobId, { gymId: gymA, runAt: clock.now() })).toBe(true);
+    } finally { held.resolve(); await active; }
+    expect(await row(jobId)).toMatchObject({ status: 'pending', attempts: 0, lockToken: null, lastError: null });
   });
 });
