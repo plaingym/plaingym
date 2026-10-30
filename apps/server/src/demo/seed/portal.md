@@ -38,14 +38,16 @@ stays off, so `/join` shows that online joining is unavailable.
 Each part tops up what is missing, so a retry finishes a run that failed partway:
 the PIN, signature and code are added once, promotions by rank and sub-rank,
 visits up to eight, booked classes up to two, and the waitlist until the student
-holds a place. A rerun on a later day adds nothing once they are in place. A
-missing waitlist class, coach or competition team member fails the step rather
-than leaving the student without a waitlist place.
+holds a place. A rerun on a later day adds nothing once they are in place. While
+the student has no waitlist place, a missing upcoming Competition Training, coach
+or competition team member fails the step; it never shrinks another class instead.
 
 Billing shares the billing seed's helpers (`seedCalendar`, `seedTestCard`,
 `settleSeedPeriods`) and markers: its first run anchors the calendar, a card
 reservation blocks a blind retry after 23 hours, and the student's history must
-end paid. If the step fails, it restores the billing switch it found; a completed
+end paid. If the step fails, it restores the billing switch it found (a restore that
+fails too is logged as `demo.portal.billing_restore_failed`, and the step's own error is
+the one reported); a completed
 run leaves the switch to the gym, even if the owner has turned billing off since.
 
 ## The full demo

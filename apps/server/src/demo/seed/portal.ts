@@ -5,6 +5,7 @@ import type { Clock } from '@plaingym/shared';
 import type { ClassSession } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { createAttendanceQueries, createAttendanceService } from '../../areas/attendance/attendance.js';
 import { createCatalogService } from '../../areas/billing/catalog.js';
@@ -156,12 +157,13 @@ async function bookings(scope: typeof forGym, clock: Clock, gymId: string, stude
   const sorted = [...upcoming].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
   const reservable = sorted.filter(row => row.capacity !== null && row.name !== waitlistClass);
   // Reservations need a capacity; the small class gets one below.
-  const small = sorted.find(row => row.name === waitlistClass) ?? reservable[2];
-  if (!small) throw new Error('Demo seed requires upcoming classes to book');
+  const small = sorted.find(row => row.name === waitlistClass);
   const missing = Math.max(0, 2 - held.filter(row => row.status === 'booked').length);
-  for (const session of reservable.filter(row => row.id !== small.id && !held.some(item => item.sessionId === row.id)).slice(0, missing))
+  for (const session of reservable.filter(row => !held.some(item => item.sessionId === row.id)).slice(0, missing))
     await service.book(self, { memberId: student.member.id, sessionId: session.id, allowWaitlist: false });
   if (held.some(row => row.status === 'waitlisted')) return;
+  // Without the class the step fails rather than shrinking another public class (portal.md).
+  if (!small) throw new Error(`Demo seed requires an upcoming ${waitlistClass} class`);
   const roles = (await createStaffProfileService(scope).listRoles(gymId, page)).data;
   const coach = roles.find(row => row.role === 'coach') ?? roles.find(row => row.role === 'owner');
   const team = await findDemoMembers(createMembersService({ scope, clock }), gymId);
@@ -224,10 +226,13 @@ async function billing(scope: typeof forGym, clock: Clock, gymId: string, househ
     if (paid.length !== cycles.length) throw new Error('Demo student charge needs reconciliation before the seed can finish');
     await scope(gymId, tx => audit(tx, actor, clock, completed, 'household', householdId, {}));
   } catch (error) {
-    // A failed run restores the gym's original switch, as the billing seed does.
+    // A failed run restores the gym's original switch, as the billing seed does. The seed's own failure is the one
+    // reported: a restore that fails too is logged on its own and never replaces it.
     if (!initial.billingEnabled) {
-      const current = await switches.checklist(gymId);
-      await switches.update(actor, { revision: current.revision, billingEnabled: false });
+      try {
+        const current = await switches.checklist(gymId);
+        await switches.update(actor, { revision: current.revision, billingEnabled: false });
+      } catch (restoreError) { logError('demo.portal.billing_restore_failed', { gymId }, restoreError); }
     }
     throw error;
   }

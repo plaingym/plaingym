@@ -7,6 +7,8 @@ import { attendances, classBookings, classSessions, gyms, households, invoices, 
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
+import * as goLive from '../../areas/settings/go-live.js';
 import { createApp } from '../../core/app.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { FakePayments, type CreateCharge } from '../../infra/payments/index.js';
@@ -229,4 +231,47 @@ it('restores the billing switch when the student billing fails, and completes on
   expect(again.gym.billingEnabled).toBe(true);
   expect(again.cards).toHaveLength(1);
   expect(again.invoices.map(row => row.status)).toEqual(['paid', 'paid', 'paid']);
+}, 120_000);
+
+it('fails rather than shrinking another class when the waitlist class is missing, and needs it only for a missing place', async () => {
+  const f = fixture(false), { gymId } = await f.service.create(), rows = await studentRows(gymId);
+  const io = { stdout: vi.fn(), stderr: vi.fn() };
+  // No Competition Training ahead: with the student's places already held, a rerun still succeeds.
+  await db.forGym(gymId, tx => tx.update(classSessions).set({ status: 'cancelled' }).where(eq(classSessions.name, waitlistClass)));
+  expect(await createSeedCommand(db.forGym, f.seed).run([gymId], io)).toBe(0);
+  // Without the waitlist place, the step fails and leaves every other class's capacity alone.
+  const waitlisted = rows.bookings.find(row => row.booking.status === 'waitlisted')!;
+  await db.forGym(gymId, tx => tx.delete(classBookings).where(eq(classBookings.id, waitlisted.booking.id)));
+  const capacities = () => db.forGym(gymId, tx => tx.select({ id: classSessions.id, capacity: classSessions.capacity }).from(classSessions));
+  const before = await capacities();
+  expect(await createSeedCommand(db.forGym, f.seed).run([gymId], io)).toBe(1);
+  expect(await capacities()).toEqual(before);
+  expect((await studentRows(gymId)).bookings.map(row => row.booking.status)).toEqual(['booked', 'booked']);
+}, 90_000);
+
+it('reports the student billing failure, not a failing switch restore', async () => {
+  const unkeyed = fixture(false), { gymId } = await unkeyed.service.create(), keyed = fixture(true, unkeyed.clock);
+  const { home } = await studentRows(gymId), gateway = await keyed.provider(gymId), seedCard = gateway.seedCard.bind(gateway);
+  let studentFailed = false;
+  vi.spyOn(gateway, 'seedCard').mockImplementation(async (customerId, householdId, declines) => {
+    if (householdId === home.id) { studentFailed = true; throw Object.assign(new Error('Test card unavailable'), { code: 'TEST_CARD_DOWN' }); }
+    return seedCard(customerId, householdId, declines);
+  });
+  // The portal seed's restore fails too (the billing seed's own restore, earlier, works); the seed's own failure must
+  // still be the one reported.
+  const create = goLive.createGoLiveService;
+  const spy = vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
+    const service = create(options);
+    return { ...service, async update(context, input) {
+      if (studentFailed && input.billingEnabled === false) throw Object.assign(new Error('Switch unavailable'), { code: 'RESTORE_DOWN' });
+      return service.update(context, input);
+    } };
+  });
+  const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+  try {
+    expect(await createSeedCommand(db.forGym, keyed.seed).run([gymId], { stdout: vi.fn(), stderr: vi.fn() })).toBe(1);
+  } finally { setLogSink(previous); spy.mockRestore(); }
+  const events = logs.map(line => JSON.parse(line) as { event: string; step?: string; error?: { code?: string } });
+  expect(events.find(entry => entry.event === 'demo.seed_failed')).toMatchObject({ step: 'portal', error: { code: 'TEST_CARD_DOWN' } });
+  expect(events.find(entry => entry.event === 'demo.portal.billing_restore_failed')).toMatchObject({ gymId, error: { code: 'RESTORE_DOWN' } });
 }, 120_000);
