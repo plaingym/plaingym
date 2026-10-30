@@ -45,6 +45,15 @@ const integer = (value, name) => {
   return number;
 };
 
+/** As Stripe does, `expand` replaces each named top-level ID with the object it names. */
+function expanded(body, ...params) {
+  for (const param of params) for (const name of Object.values(param.expand ?? {})) {
+    const target = typeof body[name] === 'string' ? objects.get(body[name]) : undefined;
+    if (target) body[name] = visible(target);
+  }
+  return body;
+}
+
 function list(prefix, query, filter = () => true) {
   const created = query.created ?? {}, limit = Math.min(Number(query.limit ?? 10), 100);
   let rows = [...objects.values()].filter((object) => object.id.startsWith(prefix + '_') && filter(object)
@@ -226,9 +235,9 @@ createServer(async (request, response) => {
       status = 404; body = { error: { type: 'invalid_request_error', message: `Unrecognized request URL (${request.method}: ${url.pathname})` } };
     } else {
       try {
-        const [found, handle] = match, result = handle(parseForm(text), parseForm(url.search), found[1]);
+        const [found, handle] = match, form = parseForm(text), query = parseForm(url.search), result = handle(form, query, found[1]);
         if (result instanceof StripeError) throw result;
-        body = visible(result);
+        body = expanded(visible(result), form, query);
       } catch (error) {
         if (!(error instanceof StripeError)) throw error;
         status = error.status; body = { error: error.body };
