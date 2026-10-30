@@ -227,7 +227,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     await this.#execute(row);
     return true;
   }
-  /** Only rows marked failed: an expired final lease counts once a claim marks it, so a live handler is never reset. */
+  /** Only rows marked failed: an expired final lease counts once a claim marks it failed. */
   async failedJobs(name: string, idempotencyKeys: readonly string[], options: { gymId: string }): Promise<FailedJob[]> {
     assertNoTransaction('jobs.failedJobs');
     idSchema.parse(options.gymId);

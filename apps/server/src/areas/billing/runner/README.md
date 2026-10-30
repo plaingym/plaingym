@@ -84,7 +84,7 @@ and retries untouched. This covers the runner's `collection_changed` and
 `billing_disabled` cancels and the hourly reconciliation cancelling a stale
 unconfirmed intent (a confirm that never reached Stripe). Like `create_abandoned`,
 these attempts never block the daily run (`already_attempted`) or consume a retry
-window, so the next daily run, or the next retry day, collects the invoice.
+window, so the next daily run, or the next retry day if one remains, collects the invoice.
 Cancelling an action-needed attempt stays a decline (`intent_canceled`), so an
 assignment invoice awaiting authentication isn't charged again every day.
 

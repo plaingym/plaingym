@@ -28,9 +28,11 @@ recover its own exhausted jobs without reading queue rows: `failedJobs(name,
 keys, { gymId })` returns the gym's failed jobs of that name among the caller's
 idempotency keys, with their failure time, and `retryFailed(jobId, { gymId,
 runAt })` atomically resets one such job to pending with fresh attempts, keeping
-its ID and key. Both see only rows marked failed: a final attempt whose lease
-expired counts once the next claim marks it failed, so a handler that may still
-be running is never reset. `retryFailed` returns false for any other job.
+its ID and key. Both see only rows marked failed, never a running job. A final
+attempt whose lease expired counts once the next claim marks it failed; as with
+any expired lease, its handler may still be running, so a retried job's handler
+needs the same idempotency as any other. `retryFailed` returns false for any
+other job.
 
 Install-level work uses `enqueueSystem` and `handleSystem`, with `gymId: null` in
 the handler context. These separate methods keep the gym-required `Jobs` contract
@@ -51,7 +53,7 @@ next minute.
 
 Each gym and schedule has a cursor in `job_schedule_cursors` (a system table
 with gym access): its expression, timezone and latest enqueued occurrence. A tick
-reads every listed gym's cursors in one query. Enqueueing an occurrence advances
+reads the listed gyms' cursors in one query per 500 gyms. Enqueueing an occurrence advances
 its cursor in the same transaction, and the occurrence's idempotency key collapses
 competing schedulers. On first registration the current minute is eligible;
 subsequent ticks and restarts catch up from the cursor, with at most 100
