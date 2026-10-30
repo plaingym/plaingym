@@ -192,10 +192,10 @@ past local midnight collects only its own day, as that day's run would have, and
 leaves the next day to its own 09:00 run. The charge-run health tile records a
 stopped run as failed until a run completes.
 
-The daily run is a batch job (`runnerBatchJobs`). When the worker's queue lists
-it in its batch lane (`infra/jobs/README.md`), the run holds only that lane, so
-webhook dispatch (join completion included), transition effects and notices run
-while it collects; without the lane they wait for the run.
+The daily run is a batch job (`runnerBatchJobs`). The runtime's worker queue
+lists it in its batch lane (`infra/jobs/README.md`), so the run holds only that
+lane: webhook dispatch (join completion included), transition effects and notices
+run while it collects; a queue without the lane makes them wait for the run.
 
 `core/runtime.ts` composes billing before starting the job worker:
 

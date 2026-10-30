@@ -464,6 +464,23 @@ it('schedules daily job retention on the worker queue, keeping billing alert job
   const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, other.id])));
   expect(kept).toEqual([{ id: alert.id }]);
 });
+it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane', async () => {
+  const queue = workers.at(-1)!, gymId = sandbox.gymId, now = Date.now();
+  const job = (name: string, value: object, runAt: Date) => ({ id: uuidv7(), gymId, name, status: 'pending', attempts: 0, maxAttempts: 3,
+    payload: { version: 1, timezone: 'UTC', value }, idempotencyKey: `unique:${uuidv7()}`, runAt, createdAt: runAt });
+  // Another slot is mid-way through the daily run; due first, a second daily run and then a webhook dispatch wait.
+  const running = { ...job('billing.runner.daily', {}, new Date(now - 60_000)), status: 'running', attempts: 1,
+    lockedUntil: new Date(now + 600_000), lockToken: uuidv7() };
+  const waiting = job('billing.runner.daily', { continues: '2000-01-01' }, new Date('2000-01-01T00:00:00Z'));
+  const dispatch = job('billing.webhooks.dispatch', { eventId: uuidv7() }, new Date('2000-01-01T00:00:01Z'));
+  await database.forSystem(tx => tx.insert(jobs).values([running, waiting, dispatch]));
+  try {
+    expect(await queue.runNext()).toBe(true);
+    const rows = await database.forSystem(tx => tx.select({ id: jobs.id, status: jobs.status }).from(jobs)
+      .where(inArray(jobs.id, [waiting.id, dispatch.id])));
+    expect(Object.fromEntries(rows.map(row => [row.id, row.status]))).toEqual({ [waiting.id]: 'pending', [dispatch.id]: 'succeeded' });
+  } finally { await database.forSystem(tx => tx.delete(jobs).where(inArray(jobs.id, [running.id, waiting.id, dispatch.id]))); }
+});
 it('registers seed and webhook replay in the real CLI', async () => {
   const io = { stdout: vi.fn(), stderr: vi.fn() };
   const cliEnv = { ...env(), ...demoStripeEnv };

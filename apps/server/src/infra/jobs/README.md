@@ -81,7 +81,9 @@ worker runs at most `batchConcurrency` batch jobs at once (at most its concurren
 default one less, at least one), so with two or more slots other gyms' batch work
 can't take every one. A single-slot worker shares its slot.
 `runNext()` claims from either lane. Without `batch`, every job runs in the
-default lane.
+default lane. `core/runtime.ts` gives the worker's queue `runnerBatchJobs`,
+`importBatchJobs`, `exportBatchJobs` and `campaignBatchJobs`; queues that only
+enqueue (the CLI's, restore's) need no lane.
 
 ## Retention
 

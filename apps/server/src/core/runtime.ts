@@ -60,6 +60,7 @@ import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
+import { campaignBatchJobs } from '../areas/links/campaigns.jobs.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { backupsConfigured, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
@@ -85,10 +86,10 @@ import { configureRanks } from '../areas/ranks/ranks.routes.js';
 import { createAttendanceQueries } from '../areas/attendance/attendance.js';
 import { createImportPipeline } from '../areas/imports/pipeline.js';
 import { createPipelineRoutes } from '../areas/imports/pipeline.routes.js';
-import { createPipelineJobs } from '../areas/imports/pipeline.jobs.js';
+import { createPipelineJobs, importBatchJobs } from '../areas/imports/pipeline.jobs.js';
 import { createExportService } from '../areas/imports/export.js';
 import { createExportRoutes } from '../areas/imports/export.routes.js';
-import { createExportJobs } from '../areas/imports/export.jobs.js';
+import { createExportJobs, exportBatchJobs } from '../areas/imports/export.jobs.js';
 import { createImportRetention, createImportRetentionJobs } from '../areas/imports/retention.js';
 import { createPaymentsResolver } from '../areas/setup/stripe-step.js';
 import { createStripeEndpointCheck } from '../areas/setup/stripe-step.endpoints.js';
@@ -98,7 +99,7 @@ import { configureWebhookInboxJobs } from '../areas/billing/webhooks/inbox.jobs.
 import { configureWebhookReplay } from '../cli/replay.js';
 import { composeBillingWebhooks } from '../areas/billing/webhooks/handlers/composition.js';
 import { createChargeRunner } from '../areas/billing/runner/index.js';
-import { configureChargeRunner } from '../areas/billing/runner/runner.jobs.js';
+import { configureChargeRunner, runnerBatchJobs } from '../areas/billing/runner/runner.jobs.js';
 import { createMembershipService } from '../areas/billing/memberships.js';
 import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createPaymentService } from '../areas/billing/payments.js';
@@ -206,7 +207,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
 
   // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
   const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
-  const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] } });
+  // Charge runs, imports, exports and campaigns run in each gym's batch lane, so webhooks and effects never wait behind them.
+  const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] },
+    batch: { jobs: [...runnerBatchJobs, ...importBatchJobs, ...exportBatchJobs, ...campaignBatchJobs] } });
   const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock,
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });
   configureBookingJobs(bookingDelivery);
