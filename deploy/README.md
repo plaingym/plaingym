@@ -182,6 +182,27 @@ URL-safe values and an image pin, protect it with `chmod 600 .env`, and run
 runtime/maintenance roles on each app start; a healthy TCP database probe alone
 does not establish correct role initialization.
 
+### Which process holds the maintenance role
+
+The app connects as `app`, which row-level security confines to one gym at a
+time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups and restore.
+
+* **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):
+  the app container holds `MAINTENANCE_PASSWORD` and `MAINTENANCE_DATABASE_URL`.
+  Its entrypoint checks the roles, resumes an interrupted restore and migrates
+  before the server starts, and the server takes backups in-process.
+* **Multi-gym installs** (`TENANCY=multi`, such as the [demo](demo/README.md)):
+  the app container never holds the role, so a compromised app process can't
+  reach every gym. A one-shot `migrate` service from the same image runs
+  `/app/deploy/database.sh prepare` (role check, then migrations) and exits;
+  the app starts only after it succeeds (`service_completed_successfully`).
+  In production (`NODE_ENV=production`, as in the image) the app refuses to
+  start when either variable is set, naming the variable. Without the role,
+  multi-gym installs have no in-process backups or restore: their app also
+  leaves `BACKUP_STAGING_DIR` unset, so the setup wizard's restore answers
+  that it isn't configured and no restore gate pauses requests, and the
+  daily upload sweep runs without the backup lock.
+
 ## Updates and recovery
 
 Generate an age key pair on your own computer (`age-keygen -o backup.key`).

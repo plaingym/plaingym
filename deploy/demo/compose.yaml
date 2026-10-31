@@ -1,8 +1,41 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Overlay on ../compose.yaml; the installer copies both into its own directory.
 services:
-  app:
+  # Multi-gym mode: only this one-shot step holds the maintenance role (BYPASSRLS). It checks the
+  # database roles and applies migrations, then exits before the app starts; the app refuses the role.
+  migrate:
+    image: ${APP_IMAGE:?set an explicit version or digest}
+    restart: 'no'
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: ${APP_MEMORY_LIMIT:-512m}
+    pids_limit: 128
+    tmpfs: ["/tmp:size=32m,mode=1777,noexec,nosuid"]
+    # It exits once migrated; the image's server healthcheck never applies.
+    healthcheck: {disable: true}
+    entrypoint: [/app/deploy/database.sh, prepare]
     environment:
+      NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=256}
+      POSTGRES_DB: ${POSTGRES_DB:-plaingym}
+      APP_PASSWORD: ${APP_PASSWORD:?required}
+      MAINTENANCE_PASSWORD: ${MAINTENANCE_PASSWORD:?required}
+      MAINTENANCE_DATABASE_URL: postgres://maintenance:${MAINTENANCE_PASSWORD:?required}@postgres:5432/${POSTGRES_DB:-plaingym}
+    depends_on:
+      postgres: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    networks: [database]
+  app:
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    environment:
+      MAINTENANCE_PASSWORD: !reset null
+      MAINTENANCE_DATABASE_URL: !reset null
+      # Restore needs the maintenance role, so the app keeps no restore staging (and no restore gate).
+      BACKUP_STAGING_DIR: !reset null
       TENANCY: multi
       DEMO_MODE: 'true'
       DEMO_DOMAIN: ${GYM_HOSTNAME:?required}

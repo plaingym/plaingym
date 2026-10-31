@@ -51,6 +51,8 @@ compose stop app
 # Variables expand inside the database container only.
 # shellcheck disable=SC2016
 compose exec -T postgres sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h 127.0.0.1 -U postgres -Fc "$POSTGRES_DB"' > "$snapshot"
+# The app never holds the maintenance role in multi-gym mode; the one-shot step migrates first.
+DEMO_TARGET_APP_IMAGE="$target" compose run --rm --no-deps -T migrate
 DEMO_TARGET_APP_IMAGE="$target" compose up -d --no-deps --pull never --wait --wait-timeout 180 app
 demo_health
 awk -v image="$target" '/^APP_IMAGE=/ { print "APP_IMAGE=" image; next } { print }' "$ROOT/.env" > "$ROOT/.env.next"

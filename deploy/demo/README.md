@@ -6,6 +6,11 @@ preserves the SSH listener in the firewall, enables security updates, adds swap,
 and starts Postgres, the app and a prebuilt Cloudflare-enabled Caddy. Images are
 never built on the VPS. Docker logs rotate at 10 MB × 3 per container.
 
+The demo runs in multi-gym mode, so the app never holds the `maintenance`
+database role: a one-shot `migrate` service applies migrations and exits before
+the app starts, and the app refuses to start with maintenance credentials
+([which process holds the role](../README.md#which-process-holds-the-maintenance-role)).
+
 Create DNS-only A records for `demo.plaingym.app` and `*.demo.plaingym.app` pointing
 at the VPS. Add AAAA only if the server has working public IPv6. Create a token
 with **Zone Read** and **DNS Edit**, scoped to the domain's zone, and a dedicated
@@ -76,8 +81,8 @@ bundle URL and SHA256, adding `--update plaingym:v0.0.1-local`. No manual image
 upload or `docker load` is needed. The maintainer must use a different app tag for
 each bundle update; bundle preparation supports `-AppTag` for this purpose.
 The command loads/pulls the target before downtime, stops writers, captures a
-private pre-update database snapshot, starts the new app (migrations run at boot),
-and publishes its image pin only after health checks. Failure restarts the
+private pre-update database snapshot, applies migrations with the one-shot
+`migrate` service, starts the new app, and publishes its image pin only after health checks. Failure restarts the
 previous image by ID; the old pin stays in place. Snapshot files remain in the
 root-only `snapshots/` directory (`0700`), as unencrypted `pg_dump` archives (`0600`).
 These short-lived local rollback copies contain the database, including its

@@ -15,12 +15,12 @@ x-postgres: &postgres
     timeout: 3s
     retries: 30
 x-app-env: &app-env
-  <<: *database-env
+  POSTGRES_DB: plaingym
+  APP_PASSWORD: ${E2E_APP_PASSWORD:?required}
   AUTH_SECRET: ${E2E_AUTH_SECRET:?required}
   APP_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:?required}
   SETUP_TOKEN: ${E2E_SETUP_TOKEN:?required}
   UPLOADS_DIR: /var/lib/plaingym/uploads
-  BACKUP_STAGING_DIR: /var/lib/plaingym/staging
   # Every browser and API request reaches the app from Caddy's one address; the default
   # 300 per minute would make the specs wait for fresh windows (unit tests cover the limiter).
   RATE_LIMIT_PER_MINUTE: '20000'
@@ -37,7 +37,23 @@ services:
       TENANCY: single
       AUTH_PASSWORD_LOGIN: 'on'
       DATABASE_URL: postgres://app:${E2E_APP_PASSWORD}@postgres:5432/plaingym
+      MAINTENANCE_PASSWORD: ${E2E_MAINTENANCE_PASSWORD:?required}
       MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@postgres:5432/plaingym
+      BACKUP_STAGING_DIR: /var/lib/plaingym/staging
+  # Multi-gym mode: only this one-shot step holds the maintenance role. It checks the roles and
+  # migrates the demo database, then exits before the demo app starts without the role.
+  demo-migrate:
+    image: ${E2E_IMAGE:?required}
+    entrypoint: [/app/deploy/database.sh, prepare]
+    healthcheck: {disable: true}
+    depends_on:
+      demo-postgres: {condition: service_healthy}
+    environment:
+      PGHOST: demo-postgres
+      POSTGRES_DB: plaingym
+      APP_PASSWORD: ${E2E_APP_PASSWORD:?required}
+      MAINTENANCE_PASSWORD: ${E2E_MAINTENANCE_PASSWORD:?required}
+      MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@demo-postgres:5432/plaingym
   # S3-compatible storage for demo sandboxes: the seed stores waiver signature images.
   demo-s3:
     image: versity/versitygw:v1.0.20@sha256:c2f9b9289d237b85736214dfbef376b7d092b8540e1456d547aaa35dd03ad0b3
@@ -48,7 +64,7 @@ services:
   demo:
     image: ${E2E_IMAGE:?required}
     depends_on:
-      demo-postgres: {condition: service_healthy}
+      demo-migrate: {condition: service_completed_successfully}
       demo-s3: {condition: service_started}
       stripe-tls: {condition: service_healthy}
     environment:
@@ -60,7 +76,6 @@ services:
       DEMO_DOMAIN: demo.localhost
       AUTH_PASSWORD_LOGIN: 'off'
       DATABASE_URL: postgres://app:${E2E_APP_PASSWORD}@demo-postgres:5432/plaingym
-      MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@demo-postgres:5432/plaingym
       # Visitor uploads stay disabled; only the seed and generated waiver PDFs write here.
       UPLOADS_S3_BUCKET: plaingym
       UPLOADS_S3_ENDPOINT: http://demo-s3:7070

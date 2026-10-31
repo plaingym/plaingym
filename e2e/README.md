@@ -33,7 +33,9 @@ the build context. The production build and entrypoint are unchanged.
 
 Each run starts its own Compose project: two fresh PostgreSQL databases, a
 single-gym install, a demo install with S3-compatible storage (VersityGW) for its seeded
-files, a stand-in for the Stripe API, and Caddy with local TLS. Credentials are
+files, a stand-in for the Stripe API, and Caddy with local TLS. As in a deployed
+multi-gym install, the demo app holds no maintenance credentials: a one-shot
+`demo-migrate` service migrates its database first. Credentials are
 random for each run. Nothing is exposed except port 443 on the loopback address.
 
 The demo install keeps sandbox billing on with a random test key. Its Stripe calls

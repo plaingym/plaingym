@@ -139,4 +139,9 @@ for snapshot in $before_failure; do [ -f "$snapshot" ]; done
 [ "$(find "$ROOT/snapshots" -name 'pre-update-*.dump' -type f | wc -l)" -eq 3 ]
 compose exec -T app node /app/deploy/healthcheck.mjs
 python3 "$SOURCE/test-client.py" preserved
-printf 'PASS: install, unchanged rerun, verified deploy refresh, plaintext private snapshots, default/custom retention, preserved sandbox and failed-update rollback.\n'
+# Only the one-shot migrate step holds the maintenance role; the running app never does.
+# A failed exec fails the smoke too, instead of passing unchecked.
+# shellcheck disable=SC2016
+compose exec -T app sh -c 'test -z "${MAINTENANCE_PASSWORD:-}${MAINTENANCE_DATABASE_URL:-}"' \
+  || { echo 'The app holds maintenance credentials, or its environment could not be checked.' >&2; exit 1; }
+printf 'PASS: install, unchanged rerun, verified deploy refresh, plaintext private snapshots, default/custom retention, preserved sandbox, failed-update rollback and no maintenance role in the app.\n'
