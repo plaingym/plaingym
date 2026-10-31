@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createServer as httpServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createServer } from 'vite';
 import { developmentProxy } from '../../dev-proxy.js';
@@ -20,7 +23,10 @@ it('proxies signed pages, assets, returns and POSTs with sandbox authority, cook
     else { res.writeHead(req.url === '/l/invalid' ? 404 : 200, { 'content-type': req.url?.endsWith('.css') ? 'text/css' : 'text/html' }); res.end('server-rendered'); }
   });
   const backendPort = await listen(backend);
-  const vite = await createServer({ configFile: false, appType: 'custom', server: { middlewareMode: true, proxy: developmentProxy(backendPort) } });
+  // Its own dependency cache: the shared one belongs to any running dev server, which would lose its bundles.
+  const cacheDir = await mkdtemp(join(tmpdir(), 'plaingym-dev-proxy-'));
+  cleanups.push(() => rm(cacheDir, { recursive: true, force: true }));
+  const vite = await createServer({ configFile: false, appType: 'custom', cacheDir, server: { middlewareMode: true, proxy: developmentProxy(backendPort) } });
   cleanups.push(() => vite.close());
   const frontend = httpServer((req, res) => vite.middlewares(req, res, () => { res.statusCode = 418; res.end('SPA'); }));
   const port = await listen(frontend);
@@ -33,15 +39,16 @@ it('proxies signed pages, assets, returns and POSTs with sandbox authority, cook
       }); req.on('error', reject); req.end();
     });
   }
-  for (const path of ['/l/example?tablet=1', '/l/styles.css', '/l/client.js', '/l/invalid', '/l/return?returned=1']) {
+  for (const path of ['/l/example?tablet=1', '/l/styles.css', '/l/client.js', '/l/invalid', '/l/return?returned=1', '/join?plan=example', '/public/pages/styles.css']) {
     const response = await get(path);
     expect(response.status).toBe(path === '/l/invalid' ? 404 : path.startsWith('/l/return') ? 302 : 200);
     if (response.status === 302) { expect(response.location).toBe('/l/example?returned=1'); expect(response.cookie?.[0]).toContain('HttpOnly'); }
     else expect(response.text).toBe('server-rendered');
   }
   await get('/api/links/example/complete', 'POST');
-  expect(seen).toHaveLength(6);
-  expect(seen.map(request => ({ host: request.host, cookie: request.cookie }))).toEqual(Array.from({ length: 6 }, () => ({ host: headers.host, cookie: headers.cookie })));
-  expect(seen[0]?.url).toBe('/l/example?tablet=1'); expect(seen[5]?.method).toBe('POST');
+  expect(seen).toHaveLength(8);
+  expect(seen.map(request => ({ host: request.host, cookie: request.cookie }))).toEqual(Array.from({ length: 8 }, () => ({ host: headers.host, cookie: headers.cookie })));
+  expect(seen[0]?.url).toBe('/l/example?tablet=1'); expect(seen[5]?.url).toBe('/join?plan=example'); expect(seen[7]?.method).toBe('POST');
   expect((await fetch(`http://127.0.0.1:${port}/login`)).status).toBe(418);
+  expect((await fetch(`http://127.0.0.1:${port}/joined`)).status).toBe(418);
 });
