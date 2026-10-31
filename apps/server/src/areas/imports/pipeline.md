@@ -20,8 +20,54 @@ No source bytes or preview values are stored in PostgreSQL. Preview only reads
 domain data; dry runs write operational progress and safe issues to the run
 tables, without changing domain data or writing import audits.
 
-`MapperRegistry` takes one implementation per mapper ID. People and mat have
-implementations; memberships has an unavailable stub that reports each row as an error.
+A preview is stored once per upload, plan (mapper, columns, duplicate policy),
+timezone and import revision, under the upload's own prefix
+(`<gym>/imports/uploads/<id>/preview/<key>/`, the key a hash of all four). The
+first request parses the CSV once and analyzes it chunk by chunk, writing the
+preview rows (issues are not stored: the response doesn't return them) to
+5,000-row files under a new `pages/<generation>/`, about 20 files for 100,000
+rows. It writes the summary last, at `<bucket>/summary.json`, where the bucket is
+the time the computation finished divided by the five-minute `PREVIEW_LIFETIME`.
+Storage is never listed. A page request reads `meta.json`, computes the summary
+keys for the current and the previous bucket, and reads the one or two row files
+its page spans, so it never reads the CSV and costs the same however much the gym
+has stored. The process remembers the newest summary it stored or read for each
+plan, so a warm page in that process reads only `meta.json` and the row files.
+A preview is served for `PREVIEW_LIFETIME` from when its computation finished, so
+one slower than that is still served for the full lifetime. Two requests for one
+preview in a process share one pass; each plan keeps its own preview while it is
+fresh.
+
+The import revision changes whenever a real (not dry-run) import run of the gym
+is created or completes, or retention removes runs: one aggregate over the gym's
+`import_runs`, bounded by `import_runs_retention_idx`. A preview computed before
+any of those is never found again. That covers previews of every upload (people
+before memberships) and runs that start or finish while a preview is computing;
+`start` itself does no storage work after the run is committed and queued. Edits
+made by hand are not tracked, so a preview can be up to five minutes behind them.
+
+Upload keys are immutable, so every computation writes new keys. A computation
+that fails marks its own row files deleted; one that crashes leaves row files
+under its own generation, which block nothing. When another process stored the
+same bucket's summary first, that preview is served and this computation's rows
+are marked deleted. A summary key that a crashed writer reserved and never wrote
+can't be read or written: until the next bucket, each request is served
+from its own computation's rows, which are marked deleted once its page is read. After storing a summary, a computation marks deleted the previous
+bucket's preview of the same plan (its summary names its row files); every other
+preview file goes with its upload. Stored previews hold row values, so
+`imports.retention` marks them deleted with the whole upload prefix (a preview
+written late never extends the upload's deadline), and they are never read for
+another gym: every key starts with the gym ID. A full 100,000-row preview takes
+about 32 MB (21 files).
+
+`start` takes the row count from the upload's `meta.json` and never reads the CSV;
+the job parses it when it runs, and fails the run if the file's row count differs from
+the run's. Parsing slices each cell out of the text rather than
+appending character by character, and a preview or run holds the parsed document and
+the mapper's whole-file index, never every planned row.
+
+`MapperRegistry` takes one implementation per mapper ID: people, mat and
+memberships.
 Implementations analyze rows using the supplied read-only query handle, apply
 the column mapping and detect both existing and within-file duplicates. They
 receive the complete immutable `sourceRows` in the run context, including after

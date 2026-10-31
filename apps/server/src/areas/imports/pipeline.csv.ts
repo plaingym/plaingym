@@ -6,29 +6,49 @@ import { importTargetFieldSchema, type ImportColumnMapping } from '@plaingym/sha
 export interface CsvRow { rowNumber: number; values: Record<string, string> }
 export interface CsvDocument { columns: string[]; rows: CsvRow[] }
 export const MAX_CSV_BYTES = 20 * 1024 * 1024;
+const COMMA = 44, QUOTE = 34, LF = 10, CR = 13;
 /** Strict RFC 4180 records, accepting LF and CRLF, quoted newlines and a UTF-8 BOM. */
 export function parseCsv(text: string): CsvDocument {
-  if (new TextEncoder().encode(text).length > MAX_CSV_BYTES || text.includes('\0')) invalid();
-  text = text.replace(/^\uFEFF/, '');
-  const records: { line: number; cells: string[] }[] = [];
-  let cells: string[] = [], cell = '', quoted = false, closed = false, line = 1, start = 1, hasRecord = false;
-  const field = () => { cells.push(cell); cell = ''; closed = false; };
-  const record = () => { field(); if (hasRecord) records.push({ line: start, cells }); cells = []; hasRecord = false; };
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i]!;
-    if (c !== '\r' && c !== '\n') hasRecord = true;
-    if (quoted) {
-      if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else { quoted = false; closed = true; } }
-      else { cell += c; if (c === '\n' || c === '\r' && text[i + 1] !== '\n') line++; }
-    } else if (c === ',') field();
-    else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text[i + 1] === '\n') i++;
-      record(); line++; start = line;
-    } else if (c === '"') { if (cell !== '' || closed) invalid(); quoted = true; }
-    else { if (closed) invalid(); cell += c; }
+  if (Buffer.byteLength(text) > MAX_CSV_BYTES || text.includes('\0')) invalid();
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  // Cells are slices of the text. Appending them one character at a time builds a rope of cons strings per cell,
+  // which cost over 4 KB of heap per row for a 200-byte row.
+  const records: { line: number; cells: string[] }[] = [], end = text.length;
+  let cells: string[] = [], line = 1, start = 1, hasRecord = false, i = 0;
+  for (;;) {
+    let value: string;
+    if (text.charCodeAt(i) === QUOTE) {
+      hasRecord = true; value = '';
+      for (let pos = i + 1; ;) {
+        const quote = text.indexOf('"', pos);
+        if (quote < 0) invalid();
+        for (let j = pos; j < quote; j++) {
+          const c = text.charCodeAt(j);
+          if (c === LF || c === CR && text.charCodeAt(j + 1) !== LF) line++;
+        }
+        value += text.slice(pos, quote);
+        if (text.charCodeAt(quote + 1) === QUOTE) { value += '"'; pos = quote + 2; } else { i = quote + 1; break; }
+      }
+      const next = text.charCodeAt(i);
+      if (i < end && next !== COMMA && next !== LF && next !== CR) invalid();
+    } else {
+      let j = i;
+      for (; j < end; j++) {
+        const c = text.charCodeAt(j);
+        if (c === COMMA || c === LF || c === CR) break;
+        if (c === QUOTE) invalid();
+      }
+      if (j > i) hasRecord = true;
+      value = text.slice(i, j); i = j;
+    }
+    cells.push(value);
+    const terminator = text.charCodeAt(i);
+    if (i < end && terminator === COMMA) { i++; hasRecord = true; continue; }
+    if (hasRecord) records.push({ line: start, cells });
+    if (i >= end) break;
+    if (terminator === CR && text.charCodeAt(i + 1) === LF) i++;
+    i++; cells = []; hasRecord = false; line++; start = line;
   }
-  if (quoted) invalid();
-  if (hasRecord) record();
   const columns = records.shift()?.cells.map((name) => name.trim()) ?? [];
   if (!columns.length || columns.length > 200 || columns.some((name) => !name || name.length > 256)
     || new Set(columns).size !== columns.length) invalid();

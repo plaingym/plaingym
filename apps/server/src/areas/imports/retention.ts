@@ -39,10 +39,11 @@ export function createImportRetention(options: { uploadsFor: UploadsFor; clock?:
       const uploads = await options.uploadsFor(gymId), prefix = `${gymId}/imports/`;
       const groups = new Map<string, { kind: string; id: string; keys: string[]; newest: number; stored?: boolean }>();
       for (const info of await uploads.list(prefix)) {
-        const [kind, id] = info.key.slice(prefix.length).split('/');
+        const [kind, id, ...rest] = info.key.slice(prefix.length).split('/');
         if (!kind || !id || retention[kind] === undefined) continue;
         const group = groups.get(kind + '/' + id) ?? { kind, id, keys: [], newest: 0 };
-        group.newest = Math.max(group.newest, info.createdAt.getTime());
+        // A stored preview is written long after its upload; it goes with the upload and never extends its deadline.
+        if (kind !== 'uploads' || rest[0] !== 'preview') group.newest = Math.max(group.newest, info.createdAt.getTime());
         if (!info.deletedAt) group.keys.push(info.key);
         groups.set(kind + '/' + id, group);
       }

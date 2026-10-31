@@ -10,6 +10,21 @@ describe('CSV import and duplicate utilities', () => {
       ],
     });
   });
+  it('numbers rows by source line through multiline fields, every line ending and blank lines', () => {
+    const lines = (text: string) => parseCsv(text).rows.map((row) => row.rowNumber);
+    expect(lines('a,b\r\n"x\r\ny",1\r\n\r\n2,3\r\n')).toEqual([2, 5]);
+    expect(lines('a\n"x\ry\rz"\n\n\nlast')).toEqual([2, 7]);
+    expect(lines('a\rb\rc\r')).toEqual([2, 3]);
+    expect(parseCsv('a\n"p""q\n""r"""\n').rows[0]!.values.a).toBe('p"q\n"r"');
+  });
+  it('keeps empty trailing cells, with or without a final line ending', () => {
+    expect(parseCsv('a,b,c\n1,,').rows).toEqual([{ rowNumber: 2, values: { a: '1', b: '', c: '' } }]);
+    expect(parseCsv('a,b\n"",\n').rows[0]!.values).toEqual({ a: '', b: '' });
+  });
+  it('reads long plain and quoted cells intact', () => {
+    const cell = 'x'.repeat(5000), document = parseCsv(`a,b\n${cell},"${cell}"\n`);
+    expect(document.rows[0]!.values).toEqual({ a: cell, b: cell });
+  });
   it.each(['', 'name,name\nx,y', 'name,\nx,y', 'name\n"unclosed', 'name\n"closed"tail', 'name\nqu"ote', 'a,b\nx', 'a\nx,y', 'a\nx\0'])('rejects malformed CSV %j', (csv) => {
     expect(() => parseCsv(csv)).toThrow();
   });
