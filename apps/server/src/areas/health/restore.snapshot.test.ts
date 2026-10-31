@@ -7,10 +7,9 @@ import { registerBackupJobs } from './backups.jobs.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { inventory } from './backups.retention.js';
 import { protectedName, snapshotPrefix } from './backups.format.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { dockerTools, useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() });
+const f = useRestoreFixture();
 const { gymId, clock, blobKey } = f;
 
 describe('install snapshot and restore with real Postgres and S3', () => {

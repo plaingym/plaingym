@@ -5,10 +5,9 @@ import { eq } from 'drizzle-orm';
 import { auditEvents, gyms, paymentAttempts, refunds, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { restoredBilling as billing } from './restore.billing.test-helper.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
+const f = useRestoreFixture({ shared: true });
 const { source, target, clock, gymId } = f;
 let base: string;
 beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id; });

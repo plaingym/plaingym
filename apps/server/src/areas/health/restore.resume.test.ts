@@ -3,10 +3,9 @@ import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { decryptSecret } from '../../core/secrets.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
+const f = useRestoreFixture({ shared: true });
 let base: string;
 beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id; });
 

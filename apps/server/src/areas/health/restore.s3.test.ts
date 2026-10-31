@@ -3,10 +3,9 @@ import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { RestoreService } from './restore.js';
 import { S3Uploads } from '../../infra/storage/index.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
+const f = useRestoreFixture({ shared: true });
 const { clock, gymId } = f;
 const bucketUploads = (bucket = 'uploads') => new S3Uploads({ client: f.client, bucket, gymId, clock });
 const storeRestore = (bucket = 'uploads', checkpoint?: ConstructorParameters<typeof RestoreService>[0]['checkpoint']) =>

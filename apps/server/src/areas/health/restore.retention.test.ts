@@ -4,10 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { backupRuns, uuidv7 } from '@plaingym/db';
 import { inventory } from './backups.retention.js';
 import { snapshotPrefix } from './backups.format.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() });
+const f = useRestoreFixture();
 const { gymId, clock, blobKey } = f;
 
 describe('install snapshot retention and publication with real Postgres and S3', () => {

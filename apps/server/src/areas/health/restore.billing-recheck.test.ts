@@ -3,10 +3,9 @@ import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FakePayments } from '../../infra/payments/index.js';
 import { restoredBilling as billing } from './restore.billing.test-helper.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
+const f = useRestoreFixture({ shared: true });
 let base: string;
 beforeAll(async () => { base = (await f.prepare(() => f.backup().snapshot())).id; });
 const restored = () => billing(f);

@@ -5,11 +5,10 @@ import { gyms, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { generateIdentity } from '../../infra/age/index.js';
 import { snapshotPrefix } from './backups.format.js';
-import { useTestDatabase } from '@plaingym/db/testing/database';
 import { useRestoreFixture } from './restore.fixture.test-helper.js';
 
 // Every test tampers with the shared snapshot's stored objects; the fixture puts them back after each test.
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
+const f = useRestoreFixture({ shared: true });
 const { gymId } = f;
 let base: Awaited<ReturnType<ReturnType<typeof f.backup>['snapshot']>>;
 beforeAll(async () => {

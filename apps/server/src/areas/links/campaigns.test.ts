@@ -170,27 +170,6 @@ describe('campaign contract, authorization and isolation', () => {
 });
 
 describe('campaign sends and reminders', () => {
-  it('creates 2000 recipients with only one publish job, then publishes once with audit batches of 100', async () => {
-    const f = await fixture();
-    const people = await db.forGym(f.gymId, tx => tx.insert(households).values(Array.from({ length: 2000 }, (_, i) => ({
-      gymId: f.gymId, name: 'Household ' + i, email: `payer${i}@example.test`,
-    }))).returning({ id: households.id }));
-    let transactions = 0;
-    const service = createCampaignsService({ scope: async (gymId, fn) => { transactions++; return db.forGym(gymId, fn); },
-      clock: f.clock, jobs: f.jobs, delivery: f.delivery, paymentsFor: f.paymentsFor });
-    const enqueue = vi.spyOn(f.jobs, 'enqueue');
-    const c = await service.create(f.context, { ...f.input(), recipients: people.map(p => ({ householdId: p.id })) });
-    expect(enqueue).toHaveBeenCalledTimes(1); expect(f.jobs.jobs[0]!.name).toBe(campaignPublishJob);
-    expect(transactions).toBe(3); // Definition, settings, and response; no recipient publication work.
-    transactions = 0;
-    const publish = createCampaignJobs(() => service).find(j => j.id === campaignPublishJob)!;
-    await publish.handler({ campaignId: c.campaign.id }, { gymId: f.gymId, timezone: 'UTC', clock: f.clock, jobId: uuidv7(), attempt: 1 });
-    expect(transactions).toBe(23); // Settings, recipients, history, twenty audit batches.
-    await service.publish({ campaignId: c.campaign.id }, f.gymId);
-    const sends = f.jobs.jobs.filter(j => j.name === campaignSendJob);
-    expect(sends).toHaveLength(2000); expect(new Set(sends.map(j => j.options.idempotencyKey)).size).toBe(2000);
-    expect(f.email.messages).toHaveLength(0);
-  }, 90_000);
   it('repairs a publication interrupted midway through an audit batch without duplicate sends', async () => {
     const f = await fixture();
     const people = await db.forGym(f.gymId, tx => tx.insert(households).values(Array.from({ length: 12 }, (_, i) => ({

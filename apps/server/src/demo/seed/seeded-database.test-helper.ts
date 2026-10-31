@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterAll, afterEach, beforeAll, beforeEach, inject } from 'vitest';
-import type { cloneDatabase } from '@plaingym/db/testing/database';
-import type { useTestDatabase } from '@plaingym/db/testing/database';
+import { cloneDatabase, type useTestDatabase } from '@plaingym/db/testing/database';
 
 type Clone = Awaited<ReturnType<typeof cloneDatabase>>;
 export type TestDatabase = ReturnType<typeof useTestDatabase>;
@@ -11,18 +10,17 @@ export type TestDatabase = ReturnType<typeof useTestDatabase>;
  * full sandbox seed takes seconds), and every test then gets its own copy of it, so a test may change what it likes and
  * the next one still starts from the seeded rows. Only the database is copied: anything `seed` keeps in memory
  * (clocks, payment fakes, upload fakes) is not, so tests that need it build it again and share what `seed` returns.
- * The test file passes `cloneDatabase` in, which is also what has Vitest start a PostgreSQL for the file.
  */
-export function useSeededDatabase<Seeded>(clone: typeof cloneDatabase, seed: (database: TestDatabase) => Promise<Seeded>): TestDatabase & { readonly seeded: Seeded } {
+export function useSeededDatabase<Seeded>(seed: (database: TestDatabase) => Promise<Seeded>): TestDatabase & { readonly seeded: Seeded } {
   let template: Clone, copy: Clone | undefined, seeded: Seeded;
   const templateConfig = () => ({ ...inject('testDatabase'), template: template.name });
   beforeAll(async () => {
-    template = await clone(inject('testDatabase'));
+    template = await cloneDatabase(inject('testDatabase'));
     seeded = await seed(accessors(() => template));
     // Postgres copies a database only while nothing is connected to it.
     await template.app.close(); await template.system.close();
   }, 90_000);
-  beforeEach(async () => { copy = await clone(templateConfig()); });
+  beforeEach(async () => { copy = await cloneDatabase(templateConfig()); });
   afterEach(async () => { const finished = copy; copy = undefined; await finished?.cleanup(); });
   afterAll(async () => { await template?.cleanup(); });
   // Not spread: the accessors are getters over the current copy.

@@ -6,20 +6,13 @@ import { auditEvents, emailOutbox, gyms, households, invoiceLineItems, invoices,
 import { createFactories } from '@plaingym/db/testing/factories';
 import type { useTestDatabase } from '@plaingym/db/testing/database';
 import { TestClock } from '../../core/clock.js';
-import { FakePayments, type CreateCharge } from '../../infra/payments/index.js';
+import { chargingPayments } from '../demo-service.test-helper.js';
 import { billingSeed } from './billing.js';
 import { membersSeed } from './members.js';
 
 export function provider(gymId: string, clock: TestClock) {
   const declinedMethods = new Set<string>(), createdCards = new Map<string, string>();
-  class TestPayments extends FakePayments {
-    override async createCharge(input: CreateCharge) {
-      const result = await super.createCharge(input);
-      this.respondNextConfirmation(declinedMethods.has(input.paymentMethodId) ? 'declined' : 'succeeded');
-      return result;
-    }
-  }
-  const payments = new TestPayments(gymId, clock);
+  const payments = new (chargingPayments(id => declinedMethods.has(id)))(gymId, clock);
   const createCustomer = vi.spyOn(payments, 'createCustomer');
   const seedCard = vi.fn(async (customerId: string, householdId: string, declined: boolean) => {
     let id = createdCards.get(householdId);

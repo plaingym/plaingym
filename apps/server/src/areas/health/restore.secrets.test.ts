@@ -3,7 +3,7 @@ import '@hono/zod-openapi';
 import { beforeAll, describe, expect, inject, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { backupRuns, encryptedFields, gyms } from '@plaingym/db';
-import { cloneDatabase, useTestDatabase } from '@plaingym/db/testing/database';
+import { cloneDatabase } from '@plaingym/db/testing/database';
 // Test-only maintenance connection builds the pre-migration restore fixture.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection } from '@plaingym/db/client';
@@ -13,7 +13,7 @@ import { S3Uploads } from '../../infra/storage/index.js';
 import { PostgresMaintenance } from './backups.database.js';
 import { dockerTools, useRestoreFixture } from './restore.fixture.test-helper.js';
 
-const f = useRestoreFixture({ source: useTestDatabase(), target: useTestDatabase() }, { shared: true });
+const f = useRestoreFixture({ shared: true });
 const { gymId, clock } = f;
 let base: Awaited<ReturnType<ReturnType<typeof f.backup>['snapshot']>>;
 beforeAll(async () => { base = await f.prepare(() => f.backup().snapshot()); });

@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { authAccount, gyms, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
-import type { useTestDatabase } from '@plaingym/db/testing/database';
+import { useTestDatabase } from '@plaingym/db/testing/database';
 import { TestClock } from '../../core/clock.js';
 import { encryptSecret } from '../../core/secrets.js';
 import { generateIdentity, identityToRecipient } from '../../infra/age/index.js';
@@ -20,7 +20,6 @@ import type { ToolRunner } from './backups.database.js';
 import { RestoreService } from './restore.js';
 import { RestoreGate } from './restore.gate.js';
 
-type Database = ReturnType<typeof useTestDatabase>;
 type BackupOptions = Partial<ConstructorParameters<typeof BackupService>[0]>;
 type Checkpoint = ConstructorParameters<typeof RestoreService>[0]['checkpoint'];
 type Bucket = Awaited<ReturnType<typeof s3Server>>;
@@ -38,14 +37,14 @@ export const dockerTools: ToolRunner = (tool, env) => ({
 /**
  * The install snapshot and restore tests' shared setup: a source and a target database, a gym with every secret class
  * encrypted under an old app key, and a loopback S3 backup bucket. Every test gets its own directories, a fresh
- * `target/uploads` sentinel and a new clock reading.
+ * `target/uploads` sentinel and a new clock reading. The two databases are the file's own (`source`, `target`).
  *
- * The databases come from the test file (`useTestDatabase()`), which is what has Vitest start a PostgreSQL for it.
- * By default each test also gets its own bucket. With `shared`, the bucket is built once and the file takes the
+ * By default each test gets its own bucket. With `shared`, the bucket is built once and the file takes the
  * snapshots its tests share in its own `beforeAll` through `prepare`; after each test the bucket's objects return to
  * what they were after `prepare`, so tests that only read a snapshot (or tamper with its objects) skip a dump each.
  */
-export function useRestoreFixture({ source, target }: { source: Database; target: Database }, options: { shared?: boolean } = {}) {
+export function useRestoreFixture(options: { shared?: boolean } = {}) {
+  const source = useTestDatabase(), target = useTestDatabase();
   const make = createFactories(source);
   const clock = new TestClock('2026-10-22T12:00:00Z');
   const oldKey = randomBytes(32), currentKey = randomBytes(32), blobKey = randomBytes(32);

@@ -8,14 +8,13 @@ import { FakeUploads } from '../../infra/storage/index.js';
 import { createSeedCommand } from '../seed-cli.js';
 import { portalFixture, studentRows } from './portal.fixture.test-helper.js';
 import { studentClassesPerWeek, studentPromotions, waitlistClass } from './portal.js';
-import { cloneDatabase } from '@plaingym/db/testing/database';
 import { useSeededDatabase } from './seeded-database.test-helper.js';
 
 // One sandbox, created without the shared test account, that every test below starts from in its own copy of the
 // database. The sandbox's uploads live in memory, so the tests share them (the seeds only write them once, and no
 // test below changes them).
 const uploads = new Map<string, FakeUploads>();
-const db = useSeededDatabase(cloneDatabase, async database => {
+const db = useSeededDatabase(async database => {
   const { gymId } = await portalFixture(database, false, undefined, uploads).service.create();
   return { gymId };
 });
