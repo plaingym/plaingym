@@ -2,7 +2,7 @@
 import type { JobRegistration } from '../../../core/registry.js';
 import { z } from 'zod';
 import { dateSchema, instantSchema, idSchema } from '@plaingym/shared/contracts';
-import { dailyRunJob, type ChargeRunner } from './index.js';
+import { chargeFailuresJob, dailyRunJob, retryJob, type ChargeRunner } from './index.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 
@@ -35,7 +35,13 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
       const result = await (await scheduled(context.gymId))?.reconcile(context.gymId);
       if (result?.issues.length) throw new Error('Payment attempts remain unresolved');
     } },
-    { id: 'billing.runner.retry', async handler(payload, context) {
+    // A stopped run's failures that the outage didn't cause. Failing is its whole job: its one attempt shows them with
+    // the gym's failed jobs, and the stopped run's continuation, not a rerun, collects what is left.
+    { id: chargeFailuresJob, async handler(payload) {
+      const { invoiceIds } = z.object({ day: dateSchema, invoiceIds: z.array(idSchema).min(1) }).parse(payload);
+      throw new Error(`${invoiceIds.length} invoice charges of a stopped charge run need reconciliation`);
+    } },
+    { id: retryJob, async handler(payload, context) {
       await required().retry(idSchema.parse((payload as { invoiceId?: unknown } | null)?.invoiceId), context);
     } },
     { id: 'billing.runner.restore', async handler(payload, context) {

@@ -24,7 +24,8 @@ Failures update attempt diagnostics, but cannot reopen paid, refunded or void
 invoices, or change the invoice for an older attempt. A cancellation is a decline
 only when the member could have acted on the payment. Cancelling a still-`pending`
 attempt (its intent was never confirmed) closes it `failed` with `confirm_abandoned`
-and changes nothing else: no invoice status, dunning or retry effects. Cancelling an
+and changes nothing else: no invoice status, dunning or retry effects (on the last
+retry day the runner queues one more retry itself; `../runner/README.md`). Cancelling an
 action-needed attempt records `intent_canceled` and is handled as a failure. Neither
 cancelled intent can later record a success or another outcome. `applyChargeOutcome`
 records a cancelled intent that carries a processor Charge (`latestChargeId`) as a

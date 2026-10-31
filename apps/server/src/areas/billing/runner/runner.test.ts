@@ -13,7 +13,7 @@ import { StripePayments } from '../../../infra/payments/stripe.js';
 import { replayTransport, recordingTransport } from '../../../infra/payments/transport.js';
 import { FixtureRecorder, type Tape } from '../../../infra/payments/recording.js';
 import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
-import { FakeJobs, PostgresJobs } from '../../../infra/jobs/index.js';
+import { FakeJobs, PostgresJobs, PostgresJobStatsQuery } from '../../../infra/jobs/index.js';
 import { FakeEmail } from '../../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createMembershipService } from '../memberships.js';
@@ -21,7 +21,7 @@ import { createPaymentService } from '../payments.js';
 import { createInvoiceTransitions } from '../transitions/index.js';
 import { createTransitionEffects } from '../transitions/effects.js';
 import { createTransitionJobs } from '../transitions/transitions.jobs.js';
-import { createChargeRunner, dailyRunJob } from './index.js';
+import { chargeFailuresJob, createChargeRunner, dailyRunJob } from './index.js';
 import { assignmentInvoiceCondition, isAssignmentInvoice } from './eligibility.js';
 import { createRunnerJobs, runnerBatchJobs } from './runner.jobs.js';
 import { createWebhookInbox, webhookDispatchJob } from '../webhooks/inbox.js';
@@ -929,6 +929,24 @@ describe('retry schedule and Checkout exclusion', () => {
     f.clock.set(queue.jobs[0]!.runAt); await queue.runNext();
     expect((await f.read()).payments).toHaveLength(1);
   });
+  it('retains the continuation when reconciliation abandons the reservation before its intent ID is saved', async () => {
+    const f = await fixture(); f.provider.respondNextConfirmation('declined'); await f.runner.daily(f.gymId);
+    const bill = (await f.read()).invoices[0]!;
+    f.clock.set('2028-03-04T17:00:00Z');
+    const create = f.provider.createCharge.bind(f.provider), confirm = vi.spyOn(f.provider, 'confirmCharge');
+    vi.spyOn(f.provider, 'createCharge').mockImplementationOnce(async request => {
+      f.clock.advance(16 * 60_000); await f.runner.reconcile(f.gymId);
+      return create(request);
+    });
+    await f.runner.retry(bill.id, f.context);
+    expect((await f.read()).attempts[1]!.declineCode).toBe('create_abandoned');
+    expect(confirm).not.toHaveBeenCalled(); // The lost reservation is never confirmed.
+    const queue = f.serviceOptions.jobs;
+    expect(queue.jobs).toMatchObject([{ name: 'billing.runner.retry', payload: { invoiceId: bill.id } }]);
+    for (const job of createRunnerJobs(() => f.runner)) queue.handle(job.id, job.handler);
+    f.clock.set(queue.jobs[0]!.runAt); await queue.runNext();
+    expect((await f.read()).payments).toHaveLength(1);
+  });
   it('reconciles completed pay links before another attempt and refuses uncertain expiry', async () => {
     for (const completed of [true, false]) {
       const f = await fixture(); f.provider.respondNextConfirmation('declined'); await f.runner.daily(f.gymId);
@@ -1123,6 +1141,26 @@ describe('daily run lane and circuit breaker', () => {
     await queue.enqueue(dailyRunJob, {}, { ...gymJob(f), idempotencyKey: 'next day' });
     expect(await queue.runNext()).toBe(true);
     expect((await f.read()).invoices.map(row => row.status)).toEqual(Array(3).fill('paid'));
+  });
+  it('reports the other failures of a stopped run as a failed job, without rerunning the collection', async () => {
+    const f = await fixture(); await addHouseholds(f, 4);
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer');
+    // The first household's charge fails on its own, then the outage stops the run.
+    adopt.mockRejectedValueOnce(new Error('Customer belongs to another gym'));
+    for (let n = 0; n < 3; n++) adopt.mockRejectedValueOnce(outage());
+    const queue = lanes(f), stats = new PostgresJobStatsQuery(db);
+    await queue.enqueue(dailyRunJob, {}, gymJob(f));
+    expect(await queue.runNext()).toBe(true);
+    // The report runs once and fails; the run's own job succeeded, so nothing reruns the collection now.
+    expect(await queue.runNext()).toBe(true);
+    expect(await queue.runNext()).toBe(false);
+    expect(adopt).toHaveBeenCalledTimes(4);
+    expect(await queue.failedJobs(chargeFailuresJob, ['failures:2028-03-01'], { gymId: f.gymId })).toHaveLength(1);
+    expect(await stats.get(f.gymId)).toMatchObject({ failed: 1, succeeded: 1, pending: 1 });
+    // The continuation still collects every invoice an hour later, the refused one included.
+    f.clock.advance(3_600_000); expect(await queue.runNext()).toBe(true);
+    expect((await f.read()).invoices.map(row => row.status)).toEqual(Array(5).fill('paid'));
+    expect(await stats.get(f.gymId)).toMatchObject({ failed: 1, succeeded: 2, pending: 0 });
   });
   it('counts only consecutive provider outages: answers and other errors in between keep the run going', async () => {
     const f = await fixture(); await addHouseholds(f, 7);

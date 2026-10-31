@@ -85,6 +85,19 @@ and retries untouched. This covers the runner's `collection_changed` and
 unconfirmed intent (a confirm that never reached Stripe). Like `create_abandoned`,
 these attempts never block the daily run (`already_attempted`) or consume a retry
 window, so the next daily run, or the next retry day if one remains, collects the invoice.
+A past-due invoice is collected only by its retries, so when a retry on the last retry
+day gives up on the attempt it reserved (`collection_changed` or `billing_disabled`:
+the card was removed or billing paused mid-charge, before or after the intent was
+created), the runner queues one more `billing.runner.retry` at 09:00 the next local
+day. It doesn't for an invoice that was paid, held for review or given a pay link
+meanwhile, nor for a retry that skipped before reserving anything. The
+`billing.runner.retry_extended` audit allows one per invoice, and the key
+(`extend:<invoiceId>:<window>`) keeps a replayed callback from queueing a second job.
+That retry still falls in the unconsumed last window and goes through the normal
+eligibility checks, so a paused gym or a still-removed card stops it, and a decline
+sends that window's dunning email as usual; the runner sends no dunning for the
+abandoned charge. A retry the hourly reconciliation abandons needs nothing extra: its
+continuation (below) retries it.
 Cancelling an action-needed attempt stays a decline (`intent_canceled`), so an
 assignment invoice awaiting authentication isn't charged again every day.
 
@@ -127,7 +140,8 @@ and no new intent is created. Unknown cancellation outcomes block the new attemp
 A retry with a pending attempt commits a `billing.runner.retry` continuation before
 returning, using the injected shared job queue. Provider errors also queue this
 continuation when they leave a pending reservation, or one that reconciliation has
-meanwhile abandoned, then propagate. Default queue
+meanwhile abandoned, then propagate. So does a retry whose reservation reconciliation
+abandoned before its intent ID was saved (`reservation_lost`). Default queue
 retries (three attempts), and the transition effect's twelve attempts with one-second
 exponential backoff, can finish before the stale threshold plus the hourly sweep.
 The continuation runs after the stale threshold plus 61 minutes (76 minutes by
@@ -192,6 +206,14 @@ past local midnight collects only its own day, as that day's run would have, and
 leaves the next day to its own 09:00 run. The charge-run health tile records a
 stopped run as failed until a run completes.
 
+A stopped run's job succeeds, so its failures the outage didn't cause (a refused
+customer, "Charge outcome requires reconciliation") would show only in logs and that
+tile. Such a run also enqueues `billing.runner.charge_failures` with the payload
+`{ day, invoiceIds }`, one attempt and the key `failures:<date>` (`failures:<date>:continued`
+for a continuation). Its handler fails at once, so the invoices appear with the gym's
+failed jobs (the `failed_jobs` health check) without a job retry rerunning the
+collection; the continuation still collects what is left.
+
 The daily run is a batch job (`runnerBatchJobs`). The runtime's worker queue
 lists it in its batch lane (`infra/jobs/README.md`), so the run holds only that
 lane: webhook dispatch (join completion included), transition effects and notices
@@ -210,7 +232,8 @@ run while it collects; a queue without the lane makes them wait for the run.
 3. It calls `configureChargeRunner(runner)` before starting workers; the webhook
    composition already configures transition effects. The billing barrel includes:
    `billing.runner.daily` (09:00 local, and a stopped collection's continuation), `billing.runner.reconcile` (hourly at :17),
-   `billing.runner.retry` (`{ invoiceId }`), and `billing.runner.restore`
+   `billing.runner.retry` (`{ invoiceId }`), `billing.runner.charge_failures` (a stopped
+   run's other failures), and `billing.runner.restore`
    (`{ snapshotAt, restoreId }`; legacy jobs may omit `restoreId`). Restore queues
    one durable job per gym/restore before completing its journal. The normal retry path is the transition effect job callback;
    do not independently schedule another set of retries.
@@ -231,8 +254,15 @@ recorded synthetic Stripe adapter fixtures, customer adoption, catch-up, local
 dates, leap-day anniversaries, assignment invoices, cross-gym isolation, lost
 responses, both cancel/confirm race winners, delayed creation, retry windows and
 Checkout exclusion, transition job composition, restore refunds/disputes, the
-outage stop and its continuation, and a webhook dispatch running while the daily
-run holds the batch lane.
+outage stop and its continuation, a stopped run's other failures, and a webhook dispatch
+running while the daily run holds the batch lane. `concurrency.test.ts` holds the daily
+run inside a confirm on the worker's batch lane and meanwhile runs reconcile (before and
+after Stripe charged the card), retries of the held invoice and of another of the
+household's invoices, and a success webhook with the effects it queues; each asserts the
+run's lease is still live, one payment per invoice and no second charge.
+`last-retry.test.ts` covers a retry that gives up on its own charge on the last retry day
+(card removed, billing paused before or after create), an invoice given a pay link or
+review hold meanwhile, a retry that skips before reserving, and an earlier retry day.
 The service composition test uses `composeBillingWebhooks` and `attachRetry` with
 the real membership, transition, and runner services. `core/runtime.test.ts` covers
 assignment through the API and the configured retry callback. To re-record the local synthetic adapter

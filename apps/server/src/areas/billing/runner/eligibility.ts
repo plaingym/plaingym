@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, isNull } from 'drizzle-orm';
-import { auditEvents, households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
+import { households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { billingRulesSchema } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
-import { abandonedAttempt } from '../transitions/store.js';
+import { abandonedAttempt, recorded } from '../transitions/store.js';
 export { assignmentInvoiceCondition, isAssignmentInvoice } from '../assignment-invoices.js';
 
 export type ChargeMode = 'automatic' | 'retry' | 'staff';
@@ -37,15 +37,7 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
   if (attempts.some(row => row.status === 'pending')) return skipped('pending_attempt');
   if (mode === 'retry') {
     if (invoice.kind !== 'cycle') return skipped('not_auto_collectable');
-    const anchor = (await tx.select().from(auditEvents).where(and(eq(auditEvents.action, 'billing.invoice.dunning_started'),
-      eq(auditEvents.targetId, invoiceId))))[0];
-    if (!anchor) return skipped('outside_retry_window');
-    const firstDate = localDate(anchor.occurredAt, gym.timezone);
-    // Legacy invoices have no saved days; an explicitly empty schedule must stay empty.
-    const saved = (anchor.after as { retryDays?: unknown } | null)?.retryDays;
-    const retryDays = billingRulesSchema.shape.retryDays.parse(saved === undefined ? [3, 7] : saved);
-    const deadlines = retryDays.map(day => zonedInstant(addDays(firstDate, day), '09:00', gym.timezone, { gap: 'shift' })!);
-    const deadline = deadlines.filter(date => date <= clock.now()).at(-1);
+    const deadline = (await retryDeadlines(tx, gym, invoiceId)).filter(date => date <= clock.now()).at(-1);
     if (!deadline || attempts.some(row => row.createdAt >= deadline && !abandonedAttempt(row)))
       return skipped('outside_retry_window');
   } else if (mode === 'automatic' && attempts.some(row => !abandonedAttempt(row))) return skipped('already_attempted');
@@ -56,4 +48,14 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
     eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))))[0];
   if (!home.stripeCustomerId || !method) return skipped('no_saved_card');
   return { status: 'eligible', invoice, latest, payment: { customerId: home.stripeCustomerId, methodId: method.processorId } };
+}
+/** The invoice's retry windows: each saved retry day at 09:00 gym time, counted from its first failure. None before one. */
+export async function retryDeadlines(tx: Transaction, gym: GymSettings, invoiceId: string) {
+  const anchor = await recorded(tx, 'billing.invoice.dunning_started', invoiceId);
+  if (!anchor) return [];
+  const firstDate = localDate(anchor.occurredAt, gym.timezone);
+  // Legacy invoices have no saved days; an explicitly empty schedule must stay empty.
+  const saved = (anchor.after as { retryDays?: unknown } | null)?.retryDays;
+  const retryDays = billingRulesSchema.shape.retryDays.parse(saved === undefined ? [3, 7] : saved);
+  return retryDays.map(day => zonedInstant(addDays(firstDate, day), '09:00', gym.timezone, { gap: 'shift' })!);
 }
