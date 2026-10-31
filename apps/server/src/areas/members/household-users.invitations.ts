@@ -206,7 +206,11 @@ export type PortalInvitationService = ReturnType<typeof createPortalInvitationSe
 
 export const portalInvitationExpiryJob = 'members.portal-invitations.expire';
 /** Each gym's expired portal invitations are deleted hourly, with any invitee identity left holding nothing (no account,
- * link, role, history or other invitation), so it can no longer sign in to a session without access. The runtime registers it. */
-export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire'> = createPortalInvitationStore()): readonly JobRegistration[] {
-  return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) { await store.expire(context.gymId, context.clock); } }];
+ * link, role, history or other invitation), so it can no longer sign in to a session without access. The same run deletes the
+ * install's other expired verification rows, which Better Auth no longer cleans up itself. The runtime registers it. */
+export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire' | 'sweepExpired'> = createPortalInvitationStore()): readonly JobRegistration[] {
+  return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) {
+    await store.expire(context.gymId, context.clock);
+    await store.sweepExpired(context.clock);
+  } }];
 }

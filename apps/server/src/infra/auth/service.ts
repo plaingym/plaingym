@@ -75,6 +75,9 @@ export function createAuthService(options: AuthServiceOptions) {
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
         }, transaction: true }),
+        // Its cleanup deletes every expired row on each lookup, portal invitations included, before their sweep can remove the
+        // identities they provisioned. Expired tokens are still refused; `createPortalInvitationStore().sweepExpired` deletes them.
+        verification: { disableCleanup: true },
         emailAndPassword: { enabled: passwordEnabled, disableSignUp: true, minPasswordLength: 12, maxPasswordLength: 128, password: passwordAdapter },
         session: { additionalFields: { gymId: { type: 'string', required: true, input: false }, householdId: { type: 'string', required: false, input: false } }, cookieCache: { enabled: false } },
         account: { accountLinking: { enabled: true, trustedProviders: ['google'] } },

@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
-// eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs, stored webhooks and gym settings in real PostgreSQL.
-import { attendances, auditEvents, classBookings, classSessions, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, members, memberships, paymentAttempts, paymentMethods, payments, programs, stripeEvents, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs, verification rows, stored webhooks and gym settings in real PostgreSQL.
+import { attendances, auditEvents, authVerification, classBookings, classSessions, emailOutbox, gyms, households, householdUsers, invoices, jobs, kioskDevices, members, memberships, paymentAttempts, paymentMethods, payments, programs, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { floodLimit, poolSize, startRuntime, runCommandLine, type Runtime } from './runtime.js';
@@ -463,6 +463,19 @@ it('schedules daily job retention on the worker queue, keeping billing alert job
   await queue.prune();
   const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, other.id])));
   expect(kept).toEqual([{ id: alert.id }]);
+});
+it('registers the hourly portal invitation sweep, which deletes expired verification rows on the auth pool', async () => {
+  const handler = handlers.get('members.portal-invitations.expire');
+  expect(handler).toBeDefined();
+  const stale = { id: uuidv7(), identifier: `magic-link:${uuidv7()}`, value: '{}', expiresAt: new Date(clock.now().getTime() - 60_000) };
+  const live = { id: uuidv7(), identifier: `magic-link:${uuidv7()}`, value: '{}', expiresAt: new Date(clock.now().getTime() + 600_000) };
+  await database.forSystem(tx => tx.insert(authVerification).values([stale, live]));
+  try {
+    await handler!({}, { gymId: sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
+    const left = await database.forSystem(tx => tx.select({ id: authVerification.id }).from(authVerification)
+      .where(inArray(authVerification.id, [stale.id, live.id])));
+    expect(left).toEqual([{ id: live.id }]);
+  } finally { await database.forSystem(tx => tx.delete(authVerification).where(inArray(authVerification.id, [stale.id, live.id]))); }
 });
 it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane', async () => {
   const queue = workers.at(-1)!, gymId = sandbox.gymId, now = Date.now();

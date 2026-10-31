@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // eslint-disable-next-line database/system-tables -- The race tests read pg_stat_activity to prove each overlap waited on a row lock.
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { authAccount, authSession, authUser, authVerification, householdUsers, uuidv7 } from '@plaingym/db';
 import { closeDatabase, initializeDatabase, systemDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -170,8 +170,9 @@ describe('an acceptance racing a revoke', () => {
 });
 
 describe('magic-link sign-in after the cleanup', () => {
-  it('an invitee deleted with its revoked invitation can no longer sign in by magic link', async () => {
-    const a = await gym(), origin = `https://${a.gymId}.example.test`, delivered: { url: string }[] = [];
+  /** A passwordless gym whose invitees sign in through Better Auth's real magic-link verify. */
+  function magicLinks(a: Gym) {
+    const origin = `https://${a.gymId}.example.test`, delivered: { url: string }[] = [];
     const auth = createAuthService({ config: passwordless, database: systemDatabase, sendMagicLink: async data => { delivered.push(data); } });
     const bound = auth.bind({ gymId: a.gymId, origin, clientIp: '192.0.2.77', smtpConfigured: true });
     const service = createPortalInvitationService({ ...options, config: passwordless, smtpConfigured: async () => true });
@@ -182,6 +183,32 @@ describe('magic-link sign-in after the cleanup', () => {
       const response = await bound.handler(new Request(delivered.at(-1)!.url));
       return response.headers.getSetCookie().find(cookie => cookie.includes('session_token=') && !/session_token=;/.test(cookie)) ?? null;
     };
+    return { service, signIn };
+  }
+
+  it('a sign-in leaves expired invitations to their sweep, which deletes them with their invitees and other expired rows', async () => {
+    const a = await gym(), { service, signIn } = magicLinks(a);
+    // Issued ten days before the test clock, so Better Auth's real clock also sees it expired.
+    const stale = await invite(a, undefined, a.home.id, service, new TestClock('2026-10-20T12:00:00Z'));
+    const fresh = await invite(a, undefined, a.other.id, service);
+    const link = (expiresAt: Date) => ({ id: uuidv7(), identifier: `magic-link:${uuidv7()}`, value: '{}', expiresAt });
+    const oldLink = link(new Date('2026-10-29T00:00:00Z')), liveLink = link(new Date('2026-12-01T00:00:00Z'));
+    await db.system.db.insert(authVerification).values([oldLink, liveLink]);
+    // Better Auth's own cleanup would delete every expired row here, leaving the stale invitee to sign in for good.
+    expect(await signIn(fresh.email)).not.toBeNull();
+    expect(await invitationRows(stale.userId)).toHaveLength(1);
+    const [job] = createPortalInvitationExpiryJobs(store);
+    await job!.handler({}, { jobId: uuidv7(), gymId: a.gymId, timezone: 'UTC', attempt: 1, clock });
+    expect(await exists(stale.userId)).toBe(false);
+    expect(await signIn(stale.email)).toBeNull();
+    const left = await db.system.db.select({ id: authVerification.id }).from(authVerification)
+      .where(inArray(authVerification.id, [oldLink.id, liveLink.id]));
+    expect(left).toEqual([{ id: liveLink.id }]);
+    expect(await invitationRows(fresh.userId)).toHaveLength(1);
+  });
+
+  it('an invitee deleted with its revoked invitation can no longer sign in by magic link', async () => {
+    const a = await gym(), { service, signIn } = magicLinks(a);
     // Before the fix's cleanup, the provisioned invitee signs in to a session with no household access.
     const first = await invite(a, undefined, a.home.id, service);
     expect(await signIn(first.email)).not.toBeNull();

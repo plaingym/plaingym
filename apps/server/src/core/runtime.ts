@@ -23,7 +23,7 @@ import { PostgresJobs, startJobsWorker } from '../infra/jobs/postgres.js';
 import { createPortalAuthorization } from '../areas/portal/auth.permissions.js';
 import { configurePortalAccess } from '../areas/portal/access.routes.js';
 import { createPortalPrincipalLoader } from '../areas/members/household-users.context.js';
-import { createPortalInvitationService } from '../areas/members/household-users.invitations.js';
+import { createPortalInvitationExpiryJobs, createPortalInvitationService } from '../areas/members/household-users.invitations.js';
 import { createPortalConfirmationWidgetProvider } from '../areas/members/household-users.widget.js';
 import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
@@ -316,6 +316,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
+      ...createPortalInvitationExpiryJobs(),
       ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),
       ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
         ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };

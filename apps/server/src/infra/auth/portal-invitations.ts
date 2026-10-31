@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
-import { and, asc, desc, eq, gt, inArray, isNotNull, like, lte, notExists } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, lte, notExists } from 'drizzle-orm';
 import { authVerification, authUser, authAccount, householdUsers, type Transaction } from '@plaingym/db';
 import { scopedDatabase, systemDatabase } from '@plaingym/db/client';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -174,6 +174,19 @@ export function createPortalInvitationStore(database = systemDatabase) {
           return rows.length < batch;
         });
         if (done) return { expired, removed };
+      }
+    },
+    /** Deletes the install's expired verification rows that aren't portal invitations (magic links, staff invitations), in batches,
+     * and returns how many. Better Auth's own cleanup is off (`service.ts`), so expired portal invitations stay until `expire`. */
+    async sweepExpired(clock: Clock, batch = 1000) {
+      assertNoTransaction('auth.sweepVerifications');
+      let removed = 0;
+      for (;;) {
+        const due = database().select({ id: authVerification.id }).from(authVerification)
+          .where(and(isNull(authVerification.householdId), lt(authVerification.expiresAt, clock.now()))).limit(batch);
+        const rows = await database().delete(authVerification).where(inArray(authVerification.id, due)).returning({ id: authVerification.id });
+        removed += rows.length;
+        if (rows.length < batch) return removed;
       }
     },
     /** Runs in the caller's transaction. Replaces outstanding links for the binding and returns the raw token once. */
