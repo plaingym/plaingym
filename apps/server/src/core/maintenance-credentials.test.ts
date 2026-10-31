@@ -10,7 +10,7 @@ import { DurableUploads } from '../infra/storage/common.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { UPLOAD_SWEEP_JOB } from '../areas/health/uploads-sweep.js';
 import { clock } from './clock.js';
-import { assertMaintenanceCredentials, maintenanceVariables } from './maintenance-credentials.js';
+import { assertMaintenanceCredentials, maintenanceVariables, restoreStagingDirectory } from './maintenance-credentials.js';
 import { startRuntime, type Runtime } from './runtime.js';
 
 const secret = 'maintenance:private-password@postgres:5432/plaingym';
@@ -36,6 +36,12 @@ describe('maintenance credentials', () => {
   });
   it('rejects an unknown tenancy mode', () => {
     expect(() => assertMaintenanceCredentials({ ...production, TENANCY: 'shared' })).toThrow('Invalid TENANCY mode');
+  });
+  it('keeps restore staging for single-gym apps only', () => {
+    expect(restoreStagingDirectory({ BACKUP_STAGING_DIR: '/staging' })).toBe('/staging');
+    expect(restoreStagingDirectory({ TENANCY: 'single', BACKUP_STAGING_DIR: '/staging' })).toBe('/staging');
+    expect(restoreStagingDirectory({ TENANCY: 'multi', BACKUP_STAGING_DIR: '/staging' })).toBeUndefined();
+    expect(restoreStagingDirectory({ TENANCY: 'single', BACKUP_STAGING_DIR: '' })).toBeUndefined();
   });
 });
 

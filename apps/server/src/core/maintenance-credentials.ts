@@ -16,3 +16,12 @@ export function assertMaintenanceCredentials(env: NodeJS.ProcessEnv = process.en
   const present = maintenanceVariables.find((name) => env[name]);
   if (present) throw new Error(`${present} must not be set when TENANCY=multi; run migrations as a separate step (gym-app migrate)`);
 }
+
+/**
+ * The restore staging directory, beside which the restore gate keeps its state. Only a single-gym app has one:
+ * restore runs as the `maintenance` role and nothing reopens a closed gate without the entrypoint's resume step,
+ * so in `multi` mode a `BACKUP_STAGING_DIR` set by hand is ignored and setup's restore answers that it isn't configured.
+ */
+export function restoreStagingDirectory(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return tenancyMode(env.TENANCY ?? 'single') === 'single' && env.BACKUP_STAGING_DIR ? env.BACKUP_STAGING_DIR : undefined;
+}

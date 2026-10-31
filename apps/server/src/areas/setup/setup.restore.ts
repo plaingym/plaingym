@@ -6,6 +6,7 @@ import { uuidv7 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { setupRestoreResponseSchema, type SetupRestoreRequest, type SetupRestoreResponse } from '@plaingym/shared/contracts';
 import { clock } from '../../core/clock.js';
+import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.js';
 import { RestoreService } from '../health/restore.js';
@@ -138,7 +139,10 @@ export function defaultSetupRestore(service: {
     if (!value) throw new AppError('unavailable', 'Restore is not configured');
     return value;
   };
-  const stagingDirectory = required('BACKUP_STAGING_DIR'), gate = new RestoreGate(dirname(stagingDirectory));
+  // A multi-gym app never restores: it has no staging directory even when one is set by hand.
+  const stagingDirectory = restoreStagingDirectory(process.env);
+  if (!stagingDirectory) throw new AppError('unavailable', 'Restore is not configured');
+  const gate = new RestoreGate(dirname(stagingDirectory));
   return createSetupRestore({ assertEmpty: () => service.assertEmpty(), claim: (token) => service.reserveRestore(token), onRestored: () => service.markRestored(),
     onInterrupted: (id) => service.releaseRestore(id), gate, journal: join(gate.dataDirectory, 'setup-restore.json'),
     async restore(input) {

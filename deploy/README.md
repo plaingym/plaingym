@@ -198,10 +198,10 @@ time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups and restore.
   the app starts only after it succeeds (`service_completed_successfully`).
   In production (`NODE_ENV=production`, as in the image) the app refuses to
   start when either variable is set, naming the variable. Without the role,
-  multi-gym installs have no in-process backups or restore: their app also
-  leaves `BACKUP_STAGING_DIR` unset, so the setup wizard's restore answers
-  that it isn't configured and no restore gate pauses requests, and the
-  daily upload sweep runs without the backup lock.
+  multi-gym installs have no in-process backups or restore: their app ignores
+  `BACKUP_STAGING_DIR` (the Compose files leave it unset), so the setup
+  wizard's restore answers that it isn't configured and no restore gate
+  pauses requests, and the daily upload sweep runs without the backup lock.
 
 ## Updates and recovery
 

@@ -64,10 +64,13 @@ it('uses kiosk authentication ahead of sessions and blocks uploads in the runnin
   expect((await app.runtime.app.request(sandbox.origin + '/api/settings', { headers: { ...app.headers(sandbox), ...headers } })).status).toBe(404);
   await expect((await app.runtime.uploadsFor(sandbox.gymId)).put(sandbox.gymId + '/photo', new Uint8Array([1]), 'image/png')).rejects.toMatchObject({ code: 'forbidden' });
 });
-it('keeps install sandbox creation behind the restore gate', async () => {
+it('builds no restore gate in multi mode, even with restore staging set by hand', async () => {
+  // demoEnv sets BACKUP_STAGING_DIR; only a single-gym app restores, so a closed restore state blocks nothing here.
   await atomicJson(join(app.directory, 'restore-state.json'), { phase: 'database' });
-  try { expect((await app.post('/api/demo/sandboxes', {})).status).toBe(503); }
-  finally { await atomicJson(join(app.directory, 'restore-state.json'), { phase: 'complete' }); }
+  try {
+    const response = await app.runtime.app.request(app.sandbox.origin + '/api/public/config', { headers: app.headers(app.sandbox) });
+    expect(response.status).toBe(200);
+  } finally { await atomicJson(join(app.directory, 'restore-state.json'), { phase: 'complete' }); }
 });
 it('serves friendly missing links and a present browser asset through the runtime', async () => {
   const headers = app.headers(app.sandbox);

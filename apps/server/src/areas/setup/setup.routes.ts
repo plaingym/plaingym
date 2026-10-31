@@ -2,6 +2,7 @@
 import type { Context } from 'hono';
 import { AppError } from '@plaingym/shared';
 import { setupContracts } from '@plaingym/shared/contracts';
+import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { route } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -21,7 +22,7 @@ export function createSetupRoutes(getService: () => Service = setupService,
   providedRestore?: () => ReturnType<typeof createSetupRestore>, getImportStep: () => ImportStep = importStep) {
   let restore: ReturnType<typeof createSetupRestore> | undefined;
   const getRestore = () => providedRestore?.() ?? (restore ??= defaultSetupRestore(getService()));
-  const recover = async () => { if (providedRestore || process.env.BACKUP_STAGING_DIR) await getRestore().recover(); };
+  const recover = async () => { if (providedRestore || restoreStagingDirectory()) await getRestore().recover(); };
   const { status, start, owner: account, restore: begin, restoreStatus } = setupContracts;
   const response = <T>(schema: T) => ({ 200: { description: 'Setup result', content: { 'application/json': { schema } } } });
   const body = <T>(schema: T) => ({ body: { required: true as const, content: { 'application/json': { schema } } } });

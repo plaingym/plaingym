@@ -8,7 +8,7 @@ import { locales } from '@plaingym/shared/locales';
 import { createApp } from './app.js';
 import { clock } from './clock.js';
 import type { RequestEnvironment } from './context.js';
-import { assertMaintenanceCredentials } from './maintenance-credentials.js';
+import { assertMaintenanceCredentials, restoreStagingDirectory } from './maintenance-credentials.js';
 import { registerModuleJobs } from './modules.js';
 import { clientIp } from './rate-limit.js';
 import { areaContributions } from './registry-areas.js';
@@ -208,8 +208,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     return { gymId, ...await gymMail(gymId) };
   } });
 
-  // Restore state and activity leases live beside the staging directory, as in the maintenance CLI.
-  const gate = env.BACKUP_STAGING_DIR ? new RestoreGate(dirname(env.BACKUP_STAGING_DIR)) : undefined;
+  // Restore state and activity leases live beside the staging directory, as in the maintenance CLI (single mode only).
+  const restoreStaging = restoreStagingDirectory(env);
+  const gate = restoreStaging ? new RestoreGate(dirname(restoreStaging)) : undefined;
   // Charge runs, imports, exports and campaigns run in each gym's batch lane, so webhooks and effects never wait behind them.
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] },
     batch: { jobs: [...runnerBatchJobs, ...importBatchJobs, ...exportBatchJobs, ...campaignBatchJobs] } });
