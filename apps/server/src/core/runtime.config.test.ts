@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
+import { maintenanceVariables } from './maintenance-credentials.js';
 import { floodLimit, poolSize, startRuntime, runCommandLine } from './runtime.js';
 import { demoEnv, origin } from './runtime.fixture.test-helper.js';
 
@@ -27,6 +28,13 @@ it('migrates through the maintenance role from the command line, without the app
     expect(await runCommandLine(['migrate'], io, {})).toBe(0);
     expect(io.stdout).toHaveBeenCalledWith('Database migrated');
   } finally { vi.unstubAllEnvs(); }
+});
+it.each(maintenanceVariables)('refuses %s in production multi mode before opening a database, naming it but never its value', async (name) => {
+  const value = 'postgres://maintenance:private-password@postgres:5432/plaingym';
+  const start = startRuntime({ ...demoEnv('invalid', 'http://127.0.0.1:9', '/staging'), NODE_ENV: 'production', [name]: value });
+  const error = await start.then(() => undefined, (reason: unknown) => reason as Error);
+  expect(error?.message).toContain(`${name} must not be set when TENANCY=multi`);
+  expect(error?.message).not.toContain('private-password');
 });
 it('refuses live keys before trying to open a database', async () => {
   await expect(startRuntime({ ...demoEnv('invalid', 'http://127.0.0.1:9', '/staging'), STRIPE_KEY: 'sk_live_forbidden' })).rejects.toThrow(/live/);

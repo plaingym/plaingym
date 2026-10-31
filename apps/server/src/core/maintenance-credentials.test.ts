@@ -63,7 +63,7 @@ it('starts and serves gyms in multi mode without maintenance credentials, never 
     UPLOADS_S3_BUCKET: 'multi-uploads', UPLOADS_S3_ENDPOINT: 'https://storage.example.test',
     // As in the multi-gym Compose files: no restore staging, so no restore gate.
     UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test' };
-  assertMaintenanceCredentials(env);
+  // startRuntime checks the credentials itself (runtime.config.test.ts covers the refusal).
   runtime = await startRuntime(env);
 
   for (const host of ['a.multi.example.test', 'b.multi.example.test']) {

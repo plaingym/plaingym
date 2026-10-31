@@ -8,6 +8,7 @@ import { locales } from '@plaingym/shared/locales';
 import { createApp } from './app.js';
 import { clock } from './clock.js';
 import type { RequestEnvironment } from './context.js';
+import { assertMaintenanceCredentials } from './maintenance-credentials.js';
 import { registerModuleJobs } from './modules.js';
 import { clientIp } from './rate-limit.js';
 import { areaContributions } from './registry-areas.js';
@@ -165,6 +166,8 @@ export interface Runtime {
   stop(): Promise<void>;
 }
 export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promise<Runtime> {
+  // Only the server refuses the maintenance role in multi mode: `gym-app migrate` is the step that needs it.
+  assertMaintenanceCredentials(env);
   const { key, mode, config: initialConfig, install, smtp } = await prepare(env);
   // Caddy is the only peer that can reach the app in the Compose deployment.
   const trustedProxy = env.TRUST_PROXY === 'true' ? () => true : undefined;
