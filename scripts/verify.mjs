@@ -22,10 +22,13 @@ function base() {
   }
   return null;
 }
-/** Files changed since `since`: committed, staged, unstaged and untracked. */
+/**
+ * Files changed since `since`: committed, staged, unstaged and untracked. Absolute paths with forward slashes,
+ * as Vitest's `moduleId`s are (`resolve` gives backslashes on Windows).
+ */
 function changedFiles(since) {
   const lines = [git('diff', '--name-only', since), git('ls-files', '--others', '--exclude-standard')].join('\n');
-  return [...new Set(lines.split('\n').filter(Boolean))].map((file) => resolve(root, file));
+  return [...new Set(lines.split('\n').filter(Boolean))].map((file) => slash(resolve(root, file)));
 }
 
 // Modules that compose every area (or every demo seed); a test importing one is a whole-app test.
@@ -50,9 +53,9 @@ async function selectTests(since) {
     const all = new Set((await vitest.globTestSpecifications()).map((spec) => spec.moduleId));
     const selected = new Set((await vitest.getRelevantTestSpecifications()).map((spec) => spec.moduleId));
     if (selected.size === all.size) return null; // A rerun trigger changed.
-    const changedDirs = new Set(changed.map((file) => dirname(file)));
+    const changedDirs = new Set(changed.map((file) => slash(dirname(file))));
     return [...selected]
-      .filter((file) => changed.includes(file) || changedDirs.has(dirname(file)) || !isWholeApp(file))
+      .filter((file) => changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
       .map((file) => slash(relative(root, file)))
       .sort();
   } finally { await vitest.close(); }
