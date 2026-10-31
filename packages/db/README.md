@@ -27,6 +27,13 @@ Migration `0012_job_schedule_cursors.sql` adds `job_schedule_cursors`, a system 
 access next to `jobs`: one row per gym and cron schedule, unique on `(gym_id, name)`, holding the
 schedule's expression, timezone and latest enqueued occurrence. It starts empty; the scheduler seeds
 each cursor from the existing job history on its first tick (`infra/jobs/README.md`).
+Migration `0013_portal_invitation_columns.sql` adds nullable `gym_id` (cascading from `gyms`),
+`household_id` and `user_id` (cascading from `auth_user`) to `auth_verification`, set only on portal
+invitation rows, with partial indexes on `(gym_id, household_id, expires_at)` and `(user_id)`. It
+backfills them from existing invitations' identifiers and JSON values; every other row (Better
+Auth's own, whose values aren't JSON, and staff invitations) keeps null, as does an invitation whose
+gym or invitee no longer exists. Upgrade tests outside this package import the helper as
+`@plaingym/db/testing/database-upgrade`.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 Run generation from this package with `pnpm exec drizzle-kit generate --name <name>`.

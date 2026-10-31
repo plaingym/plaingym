@@ -85,6 +85,13 @@
       "when": 1793358973365,
       "tag": "0012_job_schedule_cursors",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793407147671,
+      "tag": "0013_portal_invitation_columns",
+      "breakpoints": true
     }
   ]
 }

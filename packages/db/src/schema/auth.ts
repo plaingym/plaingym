@@ -33,7 +33,14 @@ export const authAccount = pgTable('auth_account', {
   ...systemAccess('auth_account', 'system')]).enableRLS();
 export const authVerification = pgTable('auth_verification', {
   ...identity(), identifier: text('identifier').notNull(), value: text('value').notNull(), expiresAt: instant('expires_at').notNull(),
-}, (t) => [index('auth_verification_identifier_idx').on(t.identifier), ...systemAccess('auth_verification', 'system')]).enableRLS();
+  /** Set only by the portal invitation writer (`infra/auth/portal-invitations.ts`); Better Auth's own rows keep them null. */
+  gymId: uuid('gym_id').references(() => gyms.id, { onDelete: 'cascade' }),
+  householdId: uuid('household_id'),
+  userId: uuid('user_id').references(() => authUser.id, { onDelete: 'cascade' }),
+}, (t) => [index('auth_verification_identifier_idx').on(t.identifier),
+  index('auth_verification_portal_invitation_idx').on(t.gymId, t.householdId, t.expiresAt).where(sql`${t.householdId} is not null`),
+  index('auth_verification_portal_invitee_idx').on(t.userId).where(sql`${t.userId} is not null`),
+  ...systemAccess('auth_verification', 'system')]).enableRLS();
 export const authRateLimit = pgTable('auth_rate_limit', {
   id: uuid('id').primaryKey().$defaultFn(uuidv7), key: text('key').notNull(), count: integer('count').notNull(),
   // Better Auth stores rate-limit time as epoch milliseconds.

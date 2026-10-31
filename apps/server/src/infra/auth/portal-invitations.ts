@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
-import { and, asc, desc, eq, gt, inArray, like } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, like, lte, notExists } from 'drizzle-orm';
 import { authVerification, authUser, authAccount, householdUsers, type Transaction } from '@plaingym/db';
 import { scopedDatabase, systemDatabase } from '@plaingym/db/client';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -31,6 +31,45 @@ const identifier = (gymId: string, token: string) => prefix(gymId) + createHash(
 const invalid = () => new AppError('not_found', 'Invitation is invalid or expired');
 function bindingOf(value: string) {
   try { return portalInvitationBindingSchema.parse(JSON.parse(value)); } catch { throw invalid(); }
+}
+/** This gym's invitation rows. The indexed columns are set only by `issue` (and the upgrade's backfill); the identifier prefix stays the gym check. */
+const invitationsOf = (gymId: string) => and(eq(authVerification.gymId, gymId), isNotNull(authVerification.householdId), like(authVerification.identifier, prefix(gymId) + '%'));
+const foreignKeyViolation = (error: unknown) => [error, error instanceof Error ? error.cause : undefined]
+  .some(value => !!value && typeof value === 'object' && 'code' in value && value.code === '23503');
+/**
+ * Deletes the identities invitations provisioned once nothing else holds them: no account (password or OAuth), no other invitation
+ * row (an expired one still counts until it is swept, so the last removal decides), and no household link, staff role or history.
+ * Runs in the transaction that removed the invitations, after locking the users: an acceptance locks the same user before linking,
+ * so it either commits first and keeps the identity, or finds its invitation gone. Inviting locks it too (`issue`). This gym's links
+ * are checked directly; links, roles and history in other gyms are invisible here, and their foreign keys refuse the delete
+ * instead (they bypass row-level security), which a savepoint absorbs. Returns how many identities were deleted.
+ */
+async function removeOrphanedInvitees(tx: Transaction, userIds: readonly string[]) {
+  const ids = [...new Set(userIds)].sort();
+  if (!ids.length) return 0;
+  // One lock order for every caller, so two gyms' sweeps sharing invitees never wait on each other in a cycle.
+  await tx.select({ id: authUser.id }).from(authUser).where(inArray(authUser.id, ids)).orderBy(asc(authUser.id)).for('update');
+  // The callers' own deletions are already invisible here.
+  const candidates = (await tx.select({ id: authUser.id }).from(authUser).where(and(inArray(authUser.id, ids),
+    notExists(tx.select({ id: authAccount.id }).from(authAccount).where(eq(authAccount.userId, authUser.id))),
+    notExists(tx.select({ id: authVerification.id }).from(authVerification).where(eq(authVerification.userId, authUser.id))),
+    notExists(tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.userId, authUser.id)))))).map(row => row.id);
+  const remove = async (batch: string[]) => {
+    try {
+      await tx.transaction(async savepoint => { await savepoint.delete(authUser).where(inArray(authUser.id, batch)); });
+      return batch.length;
+    } catch (error) {
+      if (foreignKeyViolation(error)) return null;
+      throw error;
+    }
+  };
+  if (!candidates.length) return 0;
+  const all = await remove(candidates);
+  if (all !== null) return all;
+  // Another gym holds at least one of them: try each alone.
+  let removed = 0;
+  for (const id of candidates) removed += await remove([id]) ?? 0;
+  return removed;
 }
 
 /** What a passwordless claim proves by email, before any household link exists. */
@@ -78,9 +117,9 @@ export function createPortalInvitationStore(database = systemDatabase) {
       // Bindings store IDs in lowercase, while a route accepts either case.
       const id = idSchema.parse(householdId).toLowerCase();
       return forGym(gymId, async tx => {
-        // The household ID is a validated UUID, so the substring match only narrows the scan; the parsed binding decides.
-        const rows = await tx.select().from(authVerification).where(and(like(authVerification.identifier, prefix(gymId) + '%'),
-          gt(authVerification.expiresAt, clock.now()), like(authVerification.value, `%"householdId":"${id}"%`)))
+        // Served by `auth_verification_portal_invitation_idx`; the parsed binding decides.
+        const rows = await tx.select().from(authVerification).where(and(invitationsOf(gymId), eq(authVerification.householdId, id),
+          gt(authVerification.expiresAt, clock.now())))
           .orderBy(desc(authVerification.expiresAt), asc(authVerification.id)).limit(100);
         const invitations = rows.flatMap(row => {
           try { return [{ id: row.id, expiresAt: row.expiresAt, binding: bindingOf(row.value) }]; } catch { return []; }
@@ -93,8 +132,18 @@ export function createPortalInvitationStore(database = systemDatabase) {
         });
       });
     },
-    /** Deletes one of the household's unexpired invitations, so accepting it fails. `revoked` runs in the same transaction
-     * (the audit); the invitation must belong to this gym and household, otherwise it is not found. */
+    /** The households of this gym with an unexpired payer invitation (the dashboard's confirmation shortlist leaves them out). */
+    async payerInvitationHouseholds(gymId: string, clock: Clock): Promise<string[]> {
+      return forGym(gymId, async tx => {
+        // `issue` writes each value with JSON.stringify of the strict binding, so the scope is this exact substring.
+        const rows = await tx.selectDistinct({ householdId: authVerification.householdId }).from(authVerification)
+          .where(and(invitationsOf(gymId), gt(authVerification.expiresAt, clock.now()), like(authVerification.value, '%"scope":"payer"%')));
+        return rows.flatMap(row => row.householdId ? [row.householdId] : []);
+      });
+    },
+    /** Deletes one of the household's unexpired invitations, so accepting it fails, and the identity it provisioned if nothing
+     * else holds it (`removeOrphanedInvitees`). `revoked` runs in the same transaction (the audit); the invitation must belong to
+     * this gym and household, otherwise it is not found. */
     async revoke(input: { gymId: string; householdId: string; invitationId: string; clock: Clock },
       revoked: (tx: Transaction, binding: PortalInvitationBinding) => Promise<void>) {
       assertNoTransaction('auth.revokeInvitation');
@@ -105,14 +154,40 @@ export function createPortalInvitationStore(database = systemDatabase) {
         if (binding.householdId !== input.householdId.toLowerCase()) throw invalid();
         await revoked(tx, binding);
         await tx.delete(authVerification).where(eq(authVerification.id, invite.id));
+        await removeOrphanedInvitees(tx, [binding.userId]);
       });
+    },
+    /** Deletes this gym's expired invitations in batches, each with the identities left holding nothing, and returns the counts.
+     * Rows another transaction holds are skipped until the next run. */
+    async expire(gymId: string, clock: Clock, batch = 100) {
+      assertNoTransaction('auth.expireInvitations');
+      let expired = 0, removed = 0;
+      for (;;) {
+        const done = await forGym(gymId, async tx => {
+          const rows = await tx.select({ id: authVerification.id, userId: authVerification.userId }).from(authVerification)
+            .where(and(invitationsOf(gymId), lte(authVerification.expiresAt, clock.now())))
+            .orderBy(asc(authVerification.id)).limit(batch).for('update', { skipLocked: true });
+          if (!rows.length) return true;
+          await tx.delete(authVerification).where(inArray(authVerification.id, rows.map(row => row.id)));
+          expired += rows.length;
+          removed += await removeOrphanedInvitees(tx, rows.flatMap(row => row.userId ? [row.userId] : []));
+          return rows.length < batch;
+        });
+        if (done) return { expired, removed };
+      }
     },
     /** Runs in the caller's transaction. Replaces outstanding links for the binding and returns the raw token once. */
     async issue(tx: Transaction, gymId: string, binding: PortalInvitationBinding, clock: Clock) {
       const token = randomBytes(32).toString('hex'), value = JSON.stringify(portalInvitationBindingSchema.parse(binding));
       const expiresAt = new Date(clock.now().getTime() + lifetime);
-      await tx.delete(authVerification).where(eq(authVerification.value, value));
-      await tx.insert(authVerification).values({ identifier: identifier(gymId, token), value, expiresAt, createdAt: clock.now(), updatedAt: clock.now() });
+      await tx.delete(authVerification).where(and(eq(authVerification.userId, binding.userId), eq(authVerification.householdId, binding.householdId),
+        eq(authVerification.value, value)));
+      // Invitation rows first, then the invitee, as revoking and accepting lock them. A cleanup that deleted the invitee
+      // meanwhile (`removeOrphanedInvitees`) leaves nothing to lock, and staff try again.
+      if (!(await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.id, binding.userId)).for('key share'))[0])
+        throw new AppError('conflict', 'Account changed, try again');
+      await tx.insert(authVerification).values({ identifier: identifier(gymId, token), value, expiresAt, gymId, householdId: binding.householdId,
+        userId: binding.userId, createdAt: clock.now(), updatedAt: clock.now() });
       return { token, expiresAt };
     },
     /** A live invitation and its invitee's login email, without consuming it (passwordless acceptance). */

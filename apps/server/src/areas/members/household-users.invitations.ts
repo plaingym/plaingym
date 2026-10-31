@@ -5,10 +5,11 @@ import { AppError, canStaff, createTranslator, type Clock, type StaffRole } from
 import { locales } from '@plaingym/shared/locales';
 import { portalClaimCompletionRequestSchema, portalClaimRequestSchema, portalInvitationRequestSchema, portalOnboardingClaimRequestSchema, type PortalInvitationRequest } from '@plaingym/shared/contracts';
 import { createAccountService } from '../../infra/auth/accounts.js';
-import { createPortalClaimCodes, createPortalInvitationStore, type PortalInvitationBinding } from '../../infra/auth/portal-invitations.js';
+import { createPortalClaimCodes, createPortalInvitationStore, type PortalInvitationBinding, type PortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import type { Email } from '../../infra/email/index.js';
 import { notFound } from '../../core/interfaces/common.js';
+import type { JobRegistration } from '../../core/registry.js';
 import { assertCanResetPassword } from '../staff/auth.reset.js';
 import { assertPortalLoginTarget } from './household-users.js';
 
@@ -202,3 +203,10 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
   };
 }
 export type PortalInvitationService = ReturnType<typeof createPortalInvitationService>;
+
+export const portalInvitationExpiryJob = 'members.portal-invitations.expire';
+/** Each gym's expired portal invitations are deleted hourly, with any invitee identity left holding nothing (no account,
+ * link, role, history or other invitation), so it can no longer sign in to a session without access. The runtime registers it. */
+export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire'> = createPortalInvitationStore()): readonly JobRegistration[] {
+  return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) { await store.expire(context.gymId, context.clock); } }];
+}

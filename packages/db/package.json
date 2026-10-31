@@ -11,6 +11,7 @@
     "./client": "./src/client.ts",
     "./migrate": "./src/migrate.ts",
     "./testing/database": "./src/testing/database.ts",
+    "./testing/database-upgrade": "./src/testing/database-upgrade.ts",
     "./testing/factories": "./src/testing/factories.ts",
     "./testing/isolation": "./src/testing/isolation.ts"
   },

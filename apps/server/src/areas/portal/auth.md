@@ -65,6 +65,16 @@ transaction. Accepting a revoked invitation fails as for an expired one, whether
 invitee holds the link or a claim code already sent. An invitation of another
 household or gym, an expired one, and any other verification row answer 404.
 
+Inviting provisions an identity for the invitee's address. When an invitation is
+revoked, or the hourly `members.portal-invitations.expire` job deletes it after it
+expires, that identity is deleted too if nothing else holds it: no account (password
+or Google), no other invitation row in any gym (an expired one counts until its own
+gym's job deletes it), and no household link, staff role or history in any gym. It
+is re-checked under a lock on the identity in the same transaction, so an acceptance
+running at the same time either links it first and keeps it, or finds the invitation
+gone. Its sessions go with it, so it can no longer sign in by magic link to a
+session without access.
+
 Acceptance proves the account before linking it:
 
 * **Password login:** the claim page asks for a password. An existing password
@@ -93,6 +103,9 @@ Password-mode installs have no mail to tell staff, so the dashboard does: the
 twenty by name, each linking to the Portal access tab of its first member. It holds no
 address, and the dashboard hides it while nothing is waiting. A household with no
 member left to open, such as one whose members were all anonymized, isn't listed.
+Neither is one whose payer invitation is outstanding, since staff have acted; it
+returns if that invitation is revoked or expires, and its Portal access tab still
+lists the invitation.
 
 ## Onboarding links
 

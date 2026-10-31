@@ -8,6 +8,9 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles } from '@plaingym/shared';
 import { matDashboardResponseSchema } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
+import { FakeEmail } from '../../infra/email/index.js';
+import { authConfig } from '../../infra/auth/config.js';
+import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import type { Principal } from '../../core/context.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { createApp } from '../../app.js';
@@ -18,10 +21,15 @@ import { createRanksService } from '../ranks/ranks.service.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createMembersService } from './members.js';
 import { requestPortalConfirmation } from './household-users.js';
+import { createPortalInvitationService } from './household-users.invitations.js';
 import { createPortalConfirmationWidgetProvider, portalConfirmationWidgetId } from './household-users.widget.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-30T12:00:00Z');
-const provider = () => createPortalConfirmationWidgetProvider({ scope: database.forGym });
+const store = createPortalInvitationStore(() => database.system.db);
+const provider = () => createPortalConfirmationWidgetProvider({ scope: database.forGym, invitations: store });
+const invitations = createPortalInvitationService({ config: authConfig({ AUTH_SECRET: 'widget-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false),
+  database: () => database.system.db, smtpConfigured: async () => false, mailer: async () => new FakeEmail(), loginLink: async () => undefined,
+  scope: database.forGym, householdScope: database.forHousehold });
 const href = (memberId: string) => `/admin/members/${memberId}#memberTabs.portal-access`;
 
 async function gym() {
@@ -49,7 +57,7 @@ describe('portal confirmation widget', () => {
       items: [{ label: 'Adams household', href: href(a.member.id) }, { label: 'Brown household', href: href(b.member.id) }] });
   });
 
-  it('stops listing a household once it has a payer login; a member-only login or an invitation keeps it waiting', async () => {
+  it('stops listing a household once it has a payer login; a member-only login or an invitation audit alone keeps it waiting', async () => {
     const gymId = await gym(), joined = await waiting(gymId, 'Joined household');
     await factory('householdUsers', gymId, { householdId: joined.home.id, scope: 'member', memberId: joined.member.id });
     await database.forGym(gymId, (tx) => writeAudit(tx, { gymId, actorKind: 'system', action: 'household_user.invited', targetType: 'household', targetId: joined.home.id, occurredAt: clock.now() }));
@@ -59,6 +67,31 @@ describe('portal confirmation widget', () => {
     // Revoking the payer login offers confirmation again, as the household's Portal access tab does.
     await database.forGym(gymId, (tx) => tx.delete(householdUsers).where(eq(householdUsers.id, payer.id)));
     expect(await read(gymId)).toHaveProperty('count', 1);
+  });
+
+  it('leaves a household out while its payer invitation is outstanding, and lists it again after a revoke or expiry', async () => {
+    const gymId = await gym(), other = await gym(), owner = await factory('staffRoles', gymId, { role: 'owner' });
+    const theirOwner = await factory('staffRoles', other, { role: 'owner' }), origin = 'https://gym.example.test';
+    const actor = { gymId, userId: owner.userId, clock }, printed = { scope: 'payer' as const, delivery: 'print' as const };
+    const invited = await waiting(gymId, 'Invited household'), adult = await waiting(gymId, 'Adult household');
+    const adultMember = await factory('members', gymId, { householdId: adult.home.id, dateOfBirth: '1990-01-01' });
+    // Another gym's household with the same kind of invitation never changes this gym's widget.
+    const theirs = await waiting(other, 'Their household');
+    await invitations.invite({ gymId: other, userId: theirOwner.userId, clock }, theirs.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    expect(await read(other)).toMatchObject({ count: 0 });
+    expect(await read(gymId)).toMatchObject({ count: 2 });
+    await invitations.invite(actor, invited.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    // A member-scope invitation leaves the household waiting: it never makes a payer login.
+    await invitations.invite(actor, adult.home.id, { scope: 'member', memberId: adultMember.id, delivery: 'print', email: `${uuidv7()}@example.test` }, origin);
+    expect(await read(gymId)).toMatchObject({ count: 1, items: [{ label: 'Adult household' }] });
+    const [row] = (await invitations.outstanding(actor, invited.home.id)).data;
+    await invitations.revokeInvitation(actor, invited.home.id, row!.id);
+    expect(await read(gymId)).toMatchObject({ count: 2 });
+    await invitations.invite(actor, invited.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
+    expect(await read(gymId)).toMatchObject({ count: 1 });
+    const expired = new TestClock('2026-11-06T12:00:01Z');
+    expect(await provider().read({ gymId, roles: ['owner'], clock: expired })).toMatchObject({ count: 2 });
+    expect(await provider().read({ gymId: other, roles: ['owner'], clock: expired })).toMatchObject({ count: 1, items: [{ label: 'Their household' }] });
   });
 
   it('skips households without an address or a member to open, and households that never asked for confirmation', async () => {
