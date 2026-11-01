@@ -22,6 +22,7 @@ import { demoPin } from './members.js';
 import { baseEnv, pinKey, portalFixture, studentRows as rowsOf } from './portal.fixture.test-helper.js';
 import { demoStudent, studentClassesPerWeek, studentPromotions, waitlistClass, waitlistFillers } from './portal.js';
 
+// A second sandbox's student and QR key are checked against the first in `portal.isolation.test.ts`.
 const db = useTestDatabase(), factory = createFactories(db);
 const fixture = (configured: boolean) => portalFixture(db, configured);
 const studentRows = (gymId: string) => rowsOf(db, gymId);
@@ -60,10 +61,6 @@ it('gives the sandbox student bookings, a waitlist place, rank progress, paid in
   const { code } = await codes.read(gymId, rows.member.id);
   expect(code).toMatch(/^pgci1_/);
   expect(await codes.resolve(gymId, code!)).toBe(rows.member.id);
-  // A second sandbox from the same service needs its own student and QR key.
-  const other = await f.service.create();
-  expect(await codes.resolve(other.gymId, code!)).toBeNull();
-  expect((await studentRows(other.gymId)).member.id).not.toBe(rows.member.id);
 
   // The seed command repeats nothing, even on a later day, and leaves billing to the gym once seeded.
   await db.forGym(gymId, tx => tx.update(gyms).set({ billingEnabled: false }).where(eq(gyms.id, gymId)));

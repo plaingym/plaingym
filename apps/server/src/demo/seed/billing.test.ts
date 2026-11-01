@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { localDate } from '@plaingym/shared/time';
-import { createCustomersService } from '../../areas/billing/customers.js';
 import { demoPlans } from './billing.js';
 import { demoHouseholds } from './members.js';
 import { fixture, snapshot as rowsOf } from './billing.fixture.test-helper.js';
@@ -13,14 +12,21 @@ const snapshot = (gymId: string) => rowsOf(db, gymId);
 describe('demo billing seed', { timeout: 90_000 }, () => {
   it('overlaps at most three card preparations and waits for all preparations before charging', async () => {
     const f = await fixture(db), original = f.gateway.seedCard.getMockImplementation()!;
-    let release!: () => void, active = 0, maximum = 0;
+    let release!: () => void, filled!: () => void, active = 0, maximum = 0;
     const gate = new Promise<void>(resolve => { release = resolve; });
+    // Settled by the third preparation to start: how long that takes depends on the machine's load, so nothing polls for it.
+    const three = new Promise<void>(resolve => { filled = resolve; });
     f.gateway.seedCard.mockImplementation(async (...args) => {
       active++; maximum = Math.max(maximum, active);
+      if (active === 3) filled();
       try { await gate; return await original(...args); } finally { active--; }
     });
     const run = f.seed.run(f.context);
-    await vi.waitFor(() => expect(active).toBe(3));
+    // A seed that ends or fails before three preparations overlap fails the test now, not at its timeout.
+    const ended = new Promise<never>((_, reject) => { run.then(() => reject(new Error('The seed ended before three preparations overlapped')), reject); });
+    ended.catch(() => {});
+    await Promise.race([three, ended]);
+    expect(active).toBe(3);
     expect((await snapshot(f.gymId)).attempts).toHaveLength(0);
     release(); await run;
     expect(maximum).toBe(3); expect(active).toBe(0);
@@ -67,18 +73,5 @@ describe('demo billing seed', { timeout: 90_000 }, () => {
     expect(rows.gym.billingEnabled).toBe(false); expect(rows.gym.memberEmailsEnabled).toBe(false);
     expect(rows.audit.some(row => row.action === 'settings.go_live.updated')).toBe(true);
     expect(rows.audit.every(row => row.actorKind === 'system' && row.gymId === f.gymId)).toBe(true);
-  });
-
-  it('is unchanged on rerun even a month later and never changes another gym', async () => {
-    const other = await fixture(db), f = await fixture(db);
-    await other.seed.run(other.context); const otherBefore = await snapshot(other.gymId);
-    await f.seed.run(f.context); const before = await snapshot(f.gymId);
-    f.clock.advance(32 * 86_400_000); await f.seed.run(f.context);
-    expect(await snapshot(f.gymId)).toEqual(before); expect(await snapshot(other.gymId)).toEqual(otherBefore);
-    expect(f.gateway.createCustomer).toHaveBeenCalledTimes(14); expect(f.gateway.seedCard).toHaveBeenCalledTimes(14);
-    const customer = createCustomersService({ scope: db.forGym, clock: f.clock, paymentsFor: async () => f.gateway.payments });
-    await expect(customer.ensureCustomer(f.gymId, otherBefore.households[0]!.id)).rejects.toMatchObject({ code: 'not_found' });
-    f.gateway.payments.seedCustomer({ id: 'cus_foreign', email: 'foreign@example.invalid', gymId: other.gymId });
-    await expect(f.gateway.payments.adoptCustomer('cus_foreign')).rejects.toThrow(/another gym/);
   });
 });

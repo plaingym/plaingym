@@ -64,15 +64,20 @@ they are used, `POST /join/signatures` answers 429.
 
 ## Checks
 
-`portal.test.ts` seeds real sandboxes in real PostgreSQL with FakePayments: the
-student's data, isolation between two sandboxes and reruns on a later day. It
-also routes a signed payment-mode `checkout.session.completed` through the
-install endpoint with the real Stripe adapter, offline. `portal.reruns.test.ts`
-covers the seed without a test account, a failed run's resume, a missing
-waitlist class and the billing switch restore. `portal.runtime.test.ts` starts the production runtime in demo
-mode and walks the full demo through its HTTP routes: the student's portal and QR
-check-in, a join activated by the install webhook, the outbox sign-in link, a new
-QR code at the kiosk, and the signature-image limit.
+`portal.test.ts` seeds a real sandbox in real PostgreSQL with FakePayments: the
+student's data and reruns on a later day. It also routes a signed payment-mode
+`checkout.session.completed` through the install endpoint with the real Stripe
+adapter, offline. `portal.isolation.test.ts` checks that a second sandbox has its
+own student and QR key. `portal.reruns.test.ts` covers the seed without a test
+account, a failed run's resume and a missing waitlist class;
+`portal.reruns.billing.test.ts` and `portal.reruns.failure.test.ts` cover the
+billing switch restore and the reported failure. These four files start from one
+seeded sandbox that each test gets a copy of. `portal.runtime.test.ts` starts the
+production runtime in demo mode and walks the full demo through its HTTP routes:
+the student's portal and QR check-in, a join activated by the install webhook, the
+outbox sign-in link and a new QR code at the kiosk; `portal.runtime.limit.test.ts`
+checks the signature-image limit. Each file seeds its own sandboxes, so they stay
+well under a minute when the whole suite runs together.
 
 With the separate `e2e` dependencies installed and Edge available,
 `node apps/web/src/features/demo/landing.browser-check.mjs` checks the sandbox

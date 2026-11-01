@@ -6,7 +6,7 @@ import { TestClock } from '../../core/clock.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { demoServiceFixture } from '../demo-service.test-helper.js';
 import { demoStudent } from './portal.js';
-import type { TestDatabase } from './seeded-database.test-helper.js';
+import { useSeededDatabase, type TestDatabase } from './seeded-database.test-helper.js';
 
 export const pinKey = new Uint8Array(32).fill(7);
 export const baseEnv = { DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: 'demo.example.test',
@@ -16,6 +16,20 @@ export const baseEnv = { DEMO_MODE: 'true', TENANCY: 'multi', DEMO_DOMAIN: 'demo
 export function portalFixture(db: TestDatabase, configured: boolean, clock = new TestClock('2026-10-26T12:00:00Z'), uploads = new Map<string, FakeUploads>()) {
   const env = { ...baseEnv, ...(configured ? { DEMO_STRIPE_TEST_KEY: 'rk_test_SYNTHETIC', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_SYNTHETIC' } : {}) };
   return demoServiceFixture(db, { env, clock, pinSecret: async () => pinKey, uploads });
+}
+/**
+ * One sandbox, created without the shared test account, that every test of the file starts from in its own copy of
+ * the database (`useSeededDatabase`). The sandbox's uploads live in memory, so `fixture` shares them (the seeds only
+ * write them once, and no test changes them).
+ */
+export function useUnconfiguredSandbox() {
+  const uploads = new Map<string, FakeUploads>();
+  const db = useSeededDatabase(async database => {
+    const { gymId } = await portalFixture(database, false, undefined, uploads).service.create();
+    return { gymId };
+  });
+  const fixture = (configured: boolean, clock?: Parameters<typeof portalFixture>[2]) => portalFixture(db, configured, clock, uploads);
+  return { db, fixture };
 }
 export async function studentRows(db: TestDatabase, gymId: string) {
   return db.forGym(gymId, async tx => {

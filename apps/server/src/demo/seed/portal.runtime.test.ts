@@ -1,89 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { attendances, auditEvents, emailOutbox, households, invoices, members, plans, uuidv7, waiverTemplates } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
-import { clock } from '../../core/clock.js';
-import { startRuntime, type Runtime } from '../../core/runtime.js';
-import { PostgresJobs } from '../../infra/jobs/postgres.js';
-import { FakePayments, type CreateCharge } from '../../infra/payments/index.js';
-import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
-import { demoSignatureLimit, demoSignatureReservation, reserveDemoSignature } from '../waiver-signatures.js';
-import * as seedPayments from './billing-payments.js';
+import { cookiesOf, install, useSandboxRuntime } from './portal.runtime.fixture.test-helper.js';
+import { demoSignatureReservation } from '../waiver-signatures.js';
 import { demoPlans } from './billing.js';
 import { demoStudent, studentClassesPerWeek } from './portal.js';
 import { demoSignaturePng } from './waivers-image.js';
 
-const db = useTestDatabase(), install = 'https://demo.example.test', secret = 'whsec_SYNTHETIC';
-const gateways = new Map<string, FakePayments>();
-const queues: PostgresJobs[] = [];
-let runtime: Runtime, storage: Awaited<ReturnType<typeof s3Server>>, directory: string;
-type Sandbox = { gymId: string; origin: string; kioskToken: string };
-let sandbox: Sandbox, other: Sandbox;
-
-/** One FakePayments per sandbox stands in for the shared Stripe test account; the real test-card path is checked by hand. */
-class TestPayments extends FakePayments {
-  override async createCharge(input: CreateCharge) {
-    const charge = await super.createCharge(input);
-    this.respondNextConfirmation('succeeded');
-    return charge;
-  }
-}
-beforeAll(async () => {
-  // The test drains the runtime's own queue instead of polling it.
-  vi.spyOn(PostgresJobs.prototype, 'start').mockImplementation(function (this: PostgresJobs) { queues.push(this); return { async stop() {} }; });
-  // The seeds resolve the gym key from the process environment, as in production.
-  vi.stubEnv('APP_ENCRYPTION_KEY', 'ab'.repeat(32));
-  vi.spyOn(seedPayments, 'billingSeedPayments').mockImplementation(({ gymId }) => {
-    let payments = gateways.get(gymId);
-    if (!payments) gateways.set(gymId, payments = new TestPayments(gymId, clock, secret));
-    const owned = payments;
-    return { gymId, mode: 'test', payments: owned, async seedCard(customerId) {
-      const id = 'pm_' + uuidv7().replaceAll('-', '');
-      owned.recordPaymentMethod({ id, customerId, last4: '4242', expiresMonth: 12, expiresYear: 2030 });
-      return id;
-    } };
-  });
-  storage = await s3Server();
-  directory = await mkdtemp(join(tmpdir(), 'demo-portal-runtime-'));
-  runtime = await startRuntime({ DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ab'.repeat(32), AUTH_SECRET: 'demo-portal-runtime-secret-with-32-characters',
-    TENANCY: 'multi', DEMO_MODE: 'true', DEMO_DOMAIN: 'demo.example.test', PUBLIC_ORIGIN: install, NODE_ENV: 'production',
-    DEMO_STRIPE_TEST_KEY: 'rk_test_SYNTHETIC', DEMO_STRIPE_WEBHOOK_SECRET: secret,
-    UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: storage.endpoint, UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
-    BACKUP_STAGING_DIR: join(directory, 'staging') });
-  const create = async () => (await (await send(install, '/api/demo/sandboxes', { body: {} })).json()).data as Sandbox;
-  sandbox = await create(); other = await create();
-}, 180_000);
-afterAll(async () => {
-  await runtime?.stop(); await storage?.close();
-  if (directory) await rm(directory, { recursive: true, force: true });
-  vi.restoreAllMocks(); vi.unstubAllEnvs();
-});
-async function drain() {
-  const [queue] = queues;
-  for (let count = 0; count < 200; count++) if (!await queue!.runNext()) return;
-  throw new Error('Job drain exceeded its bound');
-}
-
-function send(base: string, path: string, init: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) {
-  return runtime.app.request(base + path, { method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
-    headers: { host: new URL(base).host, origin: base, ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
-      ...(init.cookie ? { cookie: init.cookie } : {}), ...init.headers },
-    ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
-}
-const cookiesOf = (response: Response) => response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
-/** The kiosk picks the one booked current class, or offers a choice; the visitor then taps open mat. */
-async function checkIn(target: Sandbox, code: string) {
-  const scan = (body: unknown) => send(target.origin, '/api/kiosk/checkin/qr', { body, headers: { authorization: `Bearer ${target.kioskToken}` } });
-  let result = (await (await scan({ code })).json()).data as { status: string; member?: { id: string } };
-  if (result.status === 'select_session') result = (await (await scan({ code, sessionId: null })).json()).data;
-  return result;
-}
+// The signature-image limit is in `portal.runtime.limit.test.ts`, so neither file passes a minute under full-suite load.
+const db = useTestDatabase();
+const app = useSandboxRuntime(db, 2);
+const { send, checkIn, drain } = app;
 
 it('opens a fresh sandbox student portal with bookings, a waitlist place, progress, paid invoices and a QR code for the kiosk', async () => {
+  const { sandbox, other } = app;
   const login = await send(sandbox.origin, '/api/demo/login', { body: { role: 'student' } });
   expect(login.status).toBe(200);
   expect(await login.json()).toEqual({ data: { redirect: '/portal' } });
@@ -118,6 +50,7 @@ it('opens a fresh sandbox student portal with bookings, a waitlist place, progre
 }, 60_000);
 
 it('lets a visitor join with the test card, activates only from the shared webhook, signs in from the outbox and checks in with a new QR code', async () => {
+  const { sandbox, other } = app;
   const page = await send(sandbox.origin, '/join');
   expect(page.status).toBe(200);
   expect(await page.text()).toContain(demoPlans[0].name);
@@ -147,10 +80,10 @@ it('lets a visitor join with the test card, activates only from the shared webho
   expect((await joined()).people.map(row => row.status)).toEqual(['prospect']);
 
   // The install's one webhook endpoint routes the session's event to its sandbox by the gym metadata Checkout carries.
-  const payments = gateways.get(sandbox.gymId)!, finished = payments.completeCheckout(sessionId), eventId = 'evt_' + uuidv7();
+  const payments = app.gateways.get(sandbox.gymId)!, finished = payments.completeCheckout(sessionId), eventId = 'evt_' + uuidv7();
   const body = JSON.stringify({ id: eventId, type: 'checkout.session.completed', gymId: sandbox.gymId, objectId: finished.id, objectKind: 'checkout',
     data: { object: { metadata: { gym_id: sandbox.gymId } } } });
-  const delivered = await runtime.app.request(install + '/webhooks/stripe', { method: 'POST', body,
+  const delivered = await app.runtime.app.request(install + '/webhooks/stripe', { method: 'POST', body,
     headers: { host: 'demo.example.test', 'stripe-signature': payments.signWebhook(new TextEncoder().encode(body)) } });
   expect(delivered.status, await delivered.clone().text()).toBe(200);
   await drain();
@@ -180,17 +113,4 @@ it('lets a visitor join with the test card, activates only from the shared webho
   expect(issued.status, await issued.clone().text()).toBe(200);
   const { code } = (await issued.json()).data as { code: string };
   expect(await checkIn(sandbox, code)).toMatchObject({ status: 'checked_in', member: { id: member.id } });
-}, 60_000);
-
-it('refuses a join once the sandbox has used its signature-image admissions', async () => {
-  const [plan] = await db.forGym(other.gymId, tx => tx.select().from(plans).where(eq(plans.name, demoPlans[0].name)));
-  const [template] = await db.forGym(other.gymId, tx => tx.select().from(waiverTemplates));
-  const [anyone] = await db.forGym(other.gymId, tx => tx.select().from(members).limit(1));
-  for (let used = 0; used < demoSignatureLimit; used++)
-    await reserveDemoSignature(db.forGym, { gymId: other.gymId, actor: { kind: 'system' } }, anyone!.id, clock.now());
-  const person = { firstName: 'Limit', lastName: 'Visitor', dateOfBirth: '1994-05-06' };
-  const admission = await send(other.origin, '/join/signatures', { body: { planId: plan!.id, contact: { name: 'Limit Visitor', email: 'limit@example.invalid' },
-    honeypot: '', members: [{ member: person, signatures: [{ templateId: template!.id, templateVersion: template!.version, pngBase64: demoSignaturePng().toString('base64') }] }] } });
-  expect(admission.status).toBe(429);
-  expect(await admission.json()).toMatchObject({ error: { code: 'rate_limited' } });
 }, 60_000);
