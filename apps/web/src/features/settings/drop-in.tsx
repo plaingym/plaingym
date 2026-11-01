@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { gymSettingsResponseSchema, type ChargeType, type GymSettings } from '@plaingym/shared/contracts';
+import { gymSettingsResponseSchema, type ChargeType } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
 import { api } from '../../lib/api.js';
+import { useGymSettings } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
 import { billingClient } from '../billing/catalog/api.js';
 import { money } from '../billing/catalog/format.js';
@@ -15,44 +16,45 @@ import { ErrorState, LoadingState } from '../../components/ui/states.js';
 const text = (key: string, values?: Record<string, string>) => t('settings/drop-in:' + key, values);
 /** Chooses the charge type whose current price the public drop-in page shows; the price itself stays in the catalog. */
 export function DropInSettings() {
-  const id = useId(), cache = useQueryClient();
-  const [settings, setSettings] = useState<GymSettings | null>(null), [charges, setCharges] = useState<ChargeType[]>([]);
-  const [choice, setChoice] = useState(''), [busy, setBusy] = useState(false), [failed, setFailed] = useState(false);
+  const id = useId(), cache = useQueryClient(), gym = useGymSettings(), settings = gym.settings;
+  const [charges, setCharges] = useState<ChargeType[] | null>(null), [chargesFailed, setChargesFailed] = useState(false);
+  const [choice, setChoice] = useState(''), [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  async function load() {
-    setBusy(true); setFailed(false); setMessage('');
-    try {
-      const [next, list] = await Promise.all([billingClient.settings(), billingClient.charges()]);
-      setSettings(next); setCharges(list); setChoice(next.dropInChargeTypeId ?? '');
-    } catch { setFailed(true); }
-    finally { setBusy(false); }
+  const failed = gym.failed || chargesFailed;
+  async function loadCharges() {
+    setChargesFailed(false);
+    try { setCharges(await billingClient.charges()); } catch { setChargesFailed(true); }
   }
-  useEffect(() => { void load(); }, []);
+  function reload() { setMessage(''); gym.reload(); void loadCharges(); }
+  useEffect(() => { void loadCharges(); }, []);
+  // Show the saved choice whenever the settings or the charge types come from the server; a save in another section
+  // keeps this one. A saved ID that matches no charge type shows, and saves, as no drop-in fee.
+  useEffect(() => {
+    if (settings && charges) setChoice(charges.some((charge) => charge.id === settings.dropInChargeTypeId) ? settings.dropInChargeTypeId ?? '' : '');
+  }, [gym.epoch, charges]);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage('');
-    if (!settings) return;
+    if (!settings || !charges) return;
     // A saved choice that was archived since can't be saved again; the server would refuse it.
     if (choice && !charges.find((charge) => charge.id === choice)?.active) { setMessage(text('archivedChoice')); return; }
     setBusy(true);
     try {
-      // Other sections on this page save the same gym revision. Take the current one unless the drop-in
-      // fee itself changed since this section loaded; the revision still guards the save from here on.
-      const current = await billingClient.settings();
-      if (current.dropInChargeTypeId !== settings.dropInChargeTypeId) { setMessage(text('conflict')); return; }
-      const result = await api.PATCH('/api/settings/drop-in', { body: { revision: current.revision, dropInChargeTypeId: choice || null } });
-      if (!result.response.ok) {
-        setMessage(text(result.response.status === 409 ? 'conflict' : result.response.status === 404 ? 'missing' : 'error'));
+      const result = await gym.save((revision) => api.PATCH('/api/settings/drop-in', { body: { revision, dropInChargeTypeId: choice || null } }));
+      if (result.status >= 300) {
+        // A 409 is a changed revision (the hook reloads the settings) or a charge type archived since, and a 404 a charge
+        // type removed since; reload the list in both.
+        if (result.status === 409 || result.status === 404) void loadCharges();
+        setMessage(text(result.status === 409 ? 'conflict' : result.status === 404 ? 'missing' : 'error'));
         return;
       }
-      const next = gymSettingsResponseSchema.parse(result.data).data;
-      setSettings(next); setChoice(next.dropInChargeTypeId ?? ''); setMessage(text('saved'));
+      setChoice(gymSettingsResponseSchema.parse(result.data).data.dropInChargeTypeId ?? ''); setMessage(text('saved'));
       // Every gym settings save refreshes the shell's cached gym summary, so it never lags a save made here.
       void cache.invalidateQueries({ queryKey: bootstrapKey });
     } catch { setMessage(text('error')); }
     finally { setBusy(false); }
   }
-  if (!settings) return failed
-    ? <ErrorState message={text('error')} onRetry={() => void load()} retryLabel={text('reload')}/>
+  if (!settings || !charges) return failed
+    ? <ErrorState message={text('error')} onRetry={reload} retryLabel={text('reload')}/>
     : <LoadingState label={text('loading')}/>;
   const chosen = charges.find((charge) => charge.id === choice);
   // An archived choice stays visible so the select shows what is saved, but it can't be chosen again.
@@ -60,7 +62,7 @@ export function DropInSettings() {
   return <div className="min-w-0 space-y-4">
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     {message && <p role={message === text('saved') ? 'status' : 'alert'} className="rounded-md border border-border p-3 text-sm">{message}</p>}
-    {failed && <ErrorState message={text('error')} onRetry={() => void load()}/>}
+    {failed && <ErrorState message={text('error')} onRetry={reload}/>}
     <form onSubmit={(event) => void save(event)} aria-label={text('title')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">
         <div className="grid min-w-0 gap-2">
@@ -78,7 +80,7 @@ export function DropInSettings() {
         </div>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button type="submit">{text('save')}</Button>
-          <Button type="button" variant="outline" onClick={() => void load()}>{text('reload')}</Button>
+          <Button type="button" variant="outline" onClick={reload}>{text('reload')}</Button>
         </div>
       </fieldset>
     </form>

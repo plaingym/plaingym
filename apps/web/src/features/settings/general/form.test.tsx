@@ -10,7 +10,7 @@ import { createInvoiceClient } from '../../billing/invoices/api.js';
 import { OneOffEditor } from '../../billing/invoices/editor.js';
 import { GeneralSettingsForm } from './form.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn() }));
-vi.mock('../../../lib/api.js', async (original) => ({ ...await original<typeof import('../../../lib/api.js')>(), createApiClient: () => client }));
+vi.mock('../../../lib/api.js', async (original) => ({ ...await original<typeof import('../../../lib/api.js')>(), api: client, createApiClient: () => client }));
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
 const settings: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {},
   websiteEnabled: false, existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false,
@@ -45,7 +45,7 @@ describe('general settings and the cached shell summary', () => {
     const currency = await screen.findByRole('form', { name: 'Billing currency' });
     fireEvent.change(within(currency).getByLabelText('Billing currency'), { target: { value: 'usd' } });
     fireEvent.click(within(currency).getByRole('button', { name: 'Save changes' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/currency', { body: { revision: 3, currency: 'USD' } });
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings/currency', { body: { revision: 3, currency: 'USD' } }));
     expect(await within(editor).findByLabelText('Amount (USD)')).toBeDefined();
     expect(loadBootstrap).toHaveBeenCalledTimes(2);
 

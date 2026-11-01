@@ -27,6 +27,6 @@
   "saved": "Changes saved.",
   "loading": "Loading settings…",
   "error": "Unable to save or load settings.",
-  "conflict": "Settings changed. Reload and review before saving again.",
+  "conflict": "Settings changed elsewhere. The latest values are shown; review them and try again.",
   "reload": "Reload settings"
 }

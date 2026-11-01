@@ -9,7 +9,7 @@ import { bootstrapKey } from '../../app/context.js';
 import { DropInSettings } from './drop-in.js';
 import { createRegistries } from '../../lib/registries.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn() }));
-const billing = vi.hoisted(() => ({ charges: vi.fn(), settings: vi.fn() }));
+const billing = vi.hoisted(() => ({ charges: vi.fn() }));
 vi.mock('../../lib/api.js', async (original) => ({ ...await original<typeof import('../../lib/api.js')>(), api: client, createApiClient: () => client }));
 vi.mock('../billing/catalog/api.js', async (original) => ({ ...await original<typeof import('../billing/catalog/api.js')>(), billingClient: billing }));
 const id = (n: number) => '01900000-0000-7000-8000-' + String(n).padStart(12, '0');
@@ -26,8 +26,8 @@ let cache: QueryClient;
 const start = () => render(<QueryClientProvider client={cache}><DropInSettings/></QueryClientProvider>);
 const field = async () => await screen.findByRole('combobox', { name: 'Drop-in charge type' }) as HTMLSelectElement;
 beforeEach(() => {
-  client.GET.mockReset(); client.PATCH.mockReset(); billing.charges.mockReset(); billing.settings.mockReset();
-  billing.settings.mockResolvedValue(settings); billing.charges.mockResolvedValue([mat, archived, towel]);
+  client.GET.mockReset(); client.PATCH.mockReset(); billing.charges.mockReset();
+  client.GET.mockResolvedValue(reply(200, { data: settings })); billing.charges.mockResolvedValue([mat, archived, towel]);
   cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
 });
 afterEach(cleanup);
@@ -55,23 +55,46 @@ describe('drop-in fee settings', () => {
     expect((await screen.findByRole('status')).textContent).toBe('Drop-in fee saved.');
     expect(invalidate).toHaveBeenCalledWith({ queryKey: bootstrapKey });
   });
-  it('saves after another section on the page changed the gym revision, but not over a changed drop-in fee', async () => {
-    client.PATCH.mockResolvedValue(reply(200, { data: { ...settings, revision: 6, dropInChargeTypeId: towel.id } }));
+  it('answers a change made elsewhere with a conflict and reloads the settings and the charge types', async () => {
+    client.PATCH.mockResolvedValue(reply(409));
+    client.GET.mockResolvedValueOnce(reply(200, { data: settings })).mockResolvedValueOnce(reply(200, { data: { ...settings, revision: 5, dropInChargeTypeId: towel.id } }));
     const user = userEvent.setup(); start();
-    await user.selectOptions(await field(), towel.id);
-    // Retry days were saved in the billing section after this one loaded.
-    billing.settings.mockResolvedValueOnce({ ...settings, revision: 5, retryDays: [2] });
-    await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { body: { revision: 5, dropInChargeTypeId: towel.id } });
-    // Someone else then chose another drop-in fee: this section's choice would overwrite it unseen.
-    await user.selectOptions(await field(), mat.id);
-    billing.settings.mockResolvedValueOnce({ ...settings, revision: 7, dropInChargeTypeId: archived.id });
+    const select = await field();
+    await user.selectOptions(select, mat.id);
     await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
     expect((await screen.findByRole('alert')).textContent).toContain('changed elsewhere');
-    expect(client.PATCH).toHaveBeenCalledTimes(1);
+    // The other change is shown, not this section's unsaved choice.
+    await vi.waitFor(() => expect(select.value).toBe(towel.id));
+    expect(client.GET).toHaveBeenCalledTimes(2);
+    expect(billing.charges).toHaveBeenCalledTimes(2);
+    client.PATCH.mockResolvedValueOnce(reply(200, { data: { ...settings, revision: 6, dropInChargeTypeId: mat.id } }));
+    await user.selectOptions(select, mat.id);
+    await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
+    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings/drop-in', { body: { revision: 5, dropInChargeTypeId: mat.id } });
+  });
+  it('reloads the charge types when the chosen one is gone, so it is no longer offered', async () => {
+    client.PATCH.mockResolvedValue(reply(404));
+    billing.charges.mockResolvedValueOnce([mat, towel]).mockResolvedValueOnce([mat]);
+    const user = userEvent.setup(); start();
+    const select = await field();
+    await user.selectOptions(select, towel.id);
+    await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('no longer available');
+    await vi.waitFor(() => expect([...select.options].map(option => option.value)).toEqual(['', mat.id]));
+    expect(select.value).toBe('');
+  });
+  it('shows a saved charge type that is not in the list as no drop-in fee, and saves it as none', async () => {
+    client.GET.mockResolvedValue(reply(200, { data: { ...settings, dropInChargeTypeId: id(99) } }));
+    client.PATCH.mockResolvedValue(reply(200, { data: { ...settings, revision: 4 } }));
+    const user = userEvent.setup(); start();
+    expect((await field()).value).toBe('');
+    expect(screen.getByText(contactGym)).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { body: { revision: 3, dropInChargeTypeId: null } });
+    expect((await screen.findByRole('status')).textContent).toBe('Drop-in fee saved.');
   });
   it('clears the fee by saving null', async () => {
-    billing.settings.mockResolvedValue({ ...settings, dropInChargeTypeId: mat.id });
+    client.GET.mockResolvedValue(reply(200, { data: { ...settings, dropInChargeTypeId: mat.id } }));
     client.PATCH.mockResolvedValue(reply(200, { data: { ...settings, revision: 4 } }));
     const user = userEvent.setup(); start();
     const select = await field();
@@ -82,7 +105,7 @@ describe('drop-in fee settings', () => {
     expect(select.value).toBe('');
   });
   it('shows a saved archived charge type as archived and not shown to visitors, and won\'t save it again', async () => {
-    billing.settings.mockResolvedValue({ ...settings, dropInChargeTypeId: archived.id });
+    client.GET.mockResolvedValue(reply(200, { data: { ...settings, dropInChargeTypeId: archived.id } }));
     const user = userEvent.setup(); start();
     const select = await field();
     expect(select.value).toBe(archived.id);

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useState } from 'react';
-import { goLiveChecklistResponseSchema, type GoLiveSwitches } from '@plaingym/shared/contracts';
+import { goLiveChecklistResponseSchema, type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
+import { useGymSettings } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -26,6 +27,16 @@ export function GoLiveSettings() {
   const [reload, setReload] = useState(0);
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState(false);
+  // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
+  const gym = useGymSettings(), settings = gym.settings;
+  const adopt = (data: unknown, current: GymSettings): GymSettings => {
+    const { revision, billingEnabled, memberEmailsEnabled } = parseChecklist(data);
+    return { ...current, revision, billingEnabled, memberEmailsEnabled };
+  };
+  // The readiness items follow the settings: fetch the checklist again when another section's save moved the revision.
+  // Until it arrives the switches and past-due dates on screen are older than the revision they would save, so they wait.
+  const behind = !!settings && !!checklist && settings.revision > checklist.revision, locked = busy || behind;
+  useEffect(() => { if (behind) setReload((value) => value + 1); }, [behind, settings?.revision]);
   useEffect(() => {
     let active = true;
     setBusy(true);
@@ -38,31 +49,30 @@ export function GoLiveSettings() {
     return () => { active = false; };
   }, [reload]);
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
-    if (!checklist || busy) return;
+    if (!checklist || !settings || locked) return;
     if (name === 'billingEnabled' && !checklist.billingEnabled && checklist.pastDueMemberships.length && !confirmDates) {
       setConfirmed(false); setConfirmBilling(true); return;
     }
     setBusy(true); setMessage(null);
     try {
-      const result = await api.PATCH('/api/settings/go-live', { body: { revision: checklist.revision, [name]: !checklist[name],
+      const result = await gym.save((revision) => api.PATCH('/api/settings/go-live', { body: { revision, [name]: !checklist[name],
         ...(confirmDates ? { confirmedPastDueDates: checklist.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) } : {}),
-      } });
-      if (result.response.status === 409) { setConfirmBilling(false); setConfirmed(false); setMessage('changed'); setReload((value) => value + 1); return; }
-      if (!result.response.ok) throw new Error();
+      } }), adopt);
+      if (result.status === 409) { setConfirmBilling(false); setConfirmed(false); setMessage('changed'); setReload((value) => value + 1); return; }
+      if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmed(false);
     } catch { setMessage('error'); }
     finally { setBusy(false); }
   }
   async function rerunReconciliation() {
-    if (!checklist?.restoreReconciliation || busy) return;
+    if (!checklist?.restoreReconciliation || !settings || locked) return;
     setBusy(true); setChecking(true); setCheckError(false); setMessage(null);
     try {
-      const result = await api.POST('/api/settings/go-live/reconciliation', { body: {
-        revision: checklist.revision, restoreId: checklist.restoreReconciliation.restoreId,
-      } });
-      if (result.response.status === 409) { setMessage('changed'); setReload(value => value + 1); return; }
-      if (!result.response.ok) throw new Error();
+      const restoreId = checklist.restoreReconciliation.restoreId;
+      const result = await gym.save((revision) => api.POST('/api/settings/go-live/reconciliation', { body: { revision, restoreId } }), adopt);
+      if (result.status === 409) { setMessage('changed'); setReload(value => value + 1); return; }
+      if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
     } catch { setCheckError(true); setReload(value => value + 1); }
     finally { setBusy(false); setChecking(false); }
@@ -70,15 +80,17 @@ export function GoLiveSettings() {
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
-    {message && <Alert>{label(message)}{message === 'error' && !checklist &&
+    {message && <Alert>{label(message)}{message === 'error' && (!checklist || behind) &&
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={() => { setMessage(null); setReload((value) => value + 1); }}>{label('retry')}</Button>}</Alert>}
-    {!checklist ? busy && <LoadingState label={label('loading')}/> : <>
+    {gym.failed && !settings && <Alert>{label('error')}
+      <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={gym.reload}>{label('retry')}</Button></Alert>}
+    {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');
         return <li key={name} className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0"><p className="font-medium">{label(name)}: <span>{label(on ? 'on' : 'off')}</span></p>
             <p className="text-sm text-muted-foreground">{label(name === 'billingEnabled' ? 'billingHelp' : 'memberEmailsHelp')}</p></div>
-          <Button className="shrink-0" variant={on ? 'outline' : 'default'} disabled={busy} aria-pressed={on}
+          <Button className="shrink-0" variant={on ? 'outline' : 'default'} disabled={locked} aria-pressed={on}
             aria-label={label('toggleNamed', { action, name: label(name) })} onClick={() => void toggle(name)}>{action}</Button>
         </li>;
       })}</ul>
@@ -97,7 +109,7 @@ export function GoLiveSettings() {
           : label('reconcilePending')}</p>
         {checkError && <Alert>{label('reconcileError')}</Alert>}
         {checklist.billingEnabled && <p className="text-sm text-muted-foreground">{label('reconcilePause')}</p>}
-        <Button variant="outline" disabled={busy || checklist.billingEnabled || !checklist.restoreReconciliation.snapshotAt}
+        <Button variant="outline" disabled={locked || checklist.billingEnabled || !checklist.restoreReconciliation.snapshotAt}
           onClick={() => void rerunReconciliation()}>{label('reconcileRerun')}</Button>
       </div>}
       {!!checklist.pastDueMemberships.length && <div className="space-y-3" aria-label={label('pastDueTitle')}>
@@ -115,7 +127,7 @@ export function GoLiveSettings() {
           {message === 'error' && <Alert>{label('error')}</Alert>}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" disabled={busy} onClick={() => setConfirmBilling(false)}>{label('cancel')}</Button>
-            <Button disabled={busy || !confirmed} onClick={() => void toggle('billingEnabled', true)}>{label('confirmEnable')}</Button>
+            <Button disabled={locked || !confirmed} onClick={() => void toggle('billingEnabled', true)}>{label('confirmEnable')}</Button>
           </div>
         </div>
       </Dialog>}

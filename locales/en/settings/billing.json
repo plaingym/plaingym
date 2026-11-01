@@ -9,7 +9,7 @@
   "save": "Save retry schedule",
   "reload": "Reload saved schedule",
   "saved": "Retry schedule saved.",
-  "conflict": "Settings changed elsewhere. Reload the saved schedule and review your changes before saving again.",
+  "conflict": "Settings changed elsewhere. The latest saved schedule is shown; review it and try again.",
   "error": "The request failed. Please try again.",
   "loading": "Loading billing settings…"
 }
