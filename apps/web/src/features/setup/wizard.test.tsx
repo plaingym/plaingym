@@ -169,6 +169,8 @@ describe('setup wizard', () => {
       ['uses a valid host zone', 'America/Vancouver', 'America/Vancouver'],
       ['falls back to UTC when the host reports no zone', undefined, 'UTC'],
       ['falls back to UTC when the host zone is unknown', 'Mars/Olympus_Mons', 'UTC'],
+      // Intl knows `CET`, but the gym step's request refuses a zone without a region.
+      ['falls back to UTC when the gym step would refuse the host zone', 'CET', 'UTC'],
     ])('%s', async (_name, zone, expected) => {
       hostZone(zone);
       start(2);
