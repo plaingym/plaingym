@@ -82,6 +82,7 @@ import { createPinLimitWidgetProvider } from '../areas/kiosk/pin-limit.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createStripeHealthProvider } from '../areas/health/stripe.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../areas/health/charge-run.js';
+import { configureChargeFailures } from '../areas/health/charge-run.routes.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
 import { configureRanks } from '../areas/ranks/ranks.routes.js';
 import { createAttendanceQueries } from '../areas/attendance/attendance.js';
@@ -298,7 +299,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     jobs: queue, payments: requirePayments, clock, disputeAlerts: alerts });
   billing.attachRetry(runner.retry);
   // Only daily is monitored. Retry, assignment callbacks and staff collection keep the original runner.
-  configureChargeRunner(monitorChargeRunner(runner, { clock, settings }));
+  const monitored = monitorChargeRunner(runner, { clock, settings });
+  configureChargeRunner(monitored);
+  // The charge-run tile lists and dismisses the reports of the same runner the worker runs.
+  configureChargeFailures(monitored);
   const memberships = createMembershipService({ clock, settings, onAssigned: runner.onAssigned });
   configureMemberships(memberships, { assigned: runner.collectAssigned });
   const detachCard = async (gymId: string, id: string) => (await requirePayments(gymId)).detachPaymentMethod(id);

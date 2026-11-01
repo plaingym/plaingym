@@ -9,6 +9,8 @@ import { StripeFixtures } from '../infra/payments/stripe-fixtures.js';
 import { clock, TestClock } from './clock.js';
 import { setLogSink } from './log.js';
 import { demoStripeEnv, useDemoRuntime } from './runtime.fixture.test-helper.js';
+// After the runtime helper, which loads the OpenAPI extension of Zod before the route modules this one imports.
+import { reportChargeFailures } from '../areas/billing/runner/failures.js';
 
 const app = useDemoRuntime({ sandbox: true }), { database, factory } = app;
 
@@ -150,3 +152,22 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     await app.restart();
   }
 }, 90_000);
+
+it('lists and dismisses charge failure reports through the runtime charge runner', async () => {
+  const sandbox = app.sandbox, cookie = await app.login('owner'), headers = app.headers(sandbox, cookie), runId = uuidv7();
+  const home = await factory('households', sandbox.gymId);
+  const invoice = await factory('invoices', sandbox.gymId, { householdId: home.id, status: 'open', number: 9041 });
+  await database.forGym(sandbox.gymId, tx => reportChargeFailures(tx, { gymId: sandbox.gymId, actor: { kind: 'system' } }, clock, runId,
+    clock.now().toISOString().slice(0, 10), [{ invoiceId: invoice.id, cause: 'unexpected' }]));
+  const list = async () => {
+    const response = await app.runtime.app.request(sandbox.origin + '/api/health/charge-failures', { headers });
+    // Unconfigured routes answer 503; the runtime passes them its charge runner.
+    expect(response.status, await response.clone().text()).toBe(200);
+    return (await response.json()).data.filter((report: { runId: string }) => report.runId === runId);
+  };
+  expect(await list()).toMatchObject([{ runId, failures: [{ invoiceId: invoice.id, number: 9041, cause: 'unexpected' }] }]);
+  const dismissed = await app.post('/api/health/charge-failures/dismiss', { runId }, sandbox.origin, { cookie });
+  expect(dismissed.status, await dismissed.clone().text()).toBe(200);
+  expect((await dismissed.json()).data).toEqual({ dismissed: [invoice.id] });
+  expect(await list()).toEqual([]);
+});
