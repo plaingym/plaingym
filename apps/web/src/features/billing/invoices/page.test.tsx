@@ -2,6 +2,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ShellServicesContext } from '../../../app/context.js';
 import { createShellServices } from '../../../app/services.js';
@@ -9,6 +10,7 @@ import type { ShellBootstrap } from '@plaingym/shared/contracts';
 import { canStaff } from '@plaingym/shared';
 import { InvoiceList } from './page.js';
 import { InvoiceDetails } from './detail.js';
+import { OneOffEditor } from './editor.js';
 import { createInvoiceClient } from './api.js';
 import { registration } from './registrations.js';
 import type { Invoice, InvoiceDetail, MaskedPaymentMethod, GymSettings, Payment } from '@plaingym/shared/contracts';
@@ -157,6 +159,26 @@ describe('invoice and household payment UI', () => {
     const dialog = screen.getByRole('dialog');
     fireEvent.change(await within(dialog).findByLabelText('Charge type'), { target: { value: charge.id } });
     expect(within(dialog).queryByText('No charge types are set up. Ask an owner or admin to add one.')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add one-off charge' }));
+    await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/one-off'))).toBe(true));
+    const sent = f.fetcher.mock.calls.find(([path]) => String(path).endsWith('/one-off'));
+    expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ source: 'charge_type', householdId: home, dueOn: expect.any(String), chargeTypeId: charge.id });
+  });
+  it('posts a catalog charge when custom-amount access is lost after choosing a custom amount', async () => {
+    const f = transport(), charge = { id: id(20), createdAt, name: 'Mat fee', amountCents: 1000, currency: 'USD', active: true, revision: 1, taxRateIds: [] };
+    const client = createInvoiceClient(async (path, options) => String(path).startsWith('/api/billing/charge-types')
+      ? Response.json({ data: [charge], pagination: { limit: 100, offset: 0, total: 1 } }) : f.fetcher(path, options));
+    function Editor() {
+      const [custom, setCustom] = useState(true);
+      return <><button type="button" onClick={() => setCustom(false)}>Lose access</button>
+        <OneOffEditor gymId={gymId} householdId={home} custom={custom} client={client} close={() => {}} created={() => {}}/></>;
+    }
+    start(<Editor/>);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(await within(dialog).findByLabelText('Charge source'), { target: { value: 'custom' } });
+    expect(within(dialog).getByLabelText('Amount (USD)')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Lose access' }));
+    fireEvent.change(within(dialog).getByLabelText('Charge type'), { target: { value: charge.id } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add one-off charge' }));
     await waitFor(() => expect(f.fetcher.mock.calls.some(([path]) => String(path).endsWith('/one-off'))).toBe(true));
     const sent = f.fetcher.mock.calls.find(([path]) => String(path).endsWith('/one-off'));

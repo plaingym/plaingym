@@ -20,7 +20,9 @@ export function OneOffEditor({ gymId, householdId, custom, client, close, create
   const bootstrap = useBootstrap();
   const gym = bootstrap.data?.gym;
   const [search, setSearch] = useState(''), [chosen, setChosen] = useState(householdId ?? '');
-  const [source, setSource] = useState('charge_type'), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [chosenSource, setSource] = useState('charge_type'), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  // Without payments.custom the editor offers (and posts) only catalog charge types, even if the role changes mid-edit.
+  const source = custom ? chosenSource : 'charge_type';
   const setup = useQuery({ queryKey: ['billing', gymId, 'invoice-editor'], queryFn: async () => {
     const [charges, taxes] = await Promise.all([client.charges(), client.taxes()]); return { charges, taxes };
   } });
@@ -48,7 +50,7 @@ export function OneOffEditor({ gymId, householdId, custom, client, close, create
           <p className="text-sm text-muted-foreground">{text('householdSearchHelp')}</p>
         </>}
         {custom && <Label className="block">{text('source')}<Select value={source} onChange={event => setSource(event.target.value)}><option value="charge_type">{text('chargeType')}</option><option value="custom">{text('custom')}</option></Select></Label>}
-        {source === 'charge_type' || !custom ? <Label className="block">{text('chargeType')}<Select name="chargeTypeId" required><option value="">{text('chooseCharge')}</option>
+        {source === 'charge_type' ? <Label className="block">{text('chargeType')}<Select name="chargeTypeId" required><option value="">{text('chooseCharge')}</option>
           {setup.data.charges.filter(c => c.active).map(c => <option key={c.id} value={c.id}>{c.name} · {money(c.amountCents, c.currency)}</option>)}</Select></Label>
           : <>
             <Label className="block">{text('description')}<Input name="description" required/></Label>
