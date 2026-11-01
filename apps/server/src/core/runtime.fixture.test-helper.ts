@@ -8,7 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { startRuntime, type Runtime } from './runtime.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
-import type { JobHandler } from '../infra/jobs/index.js';
+import type { JobHandler, SystemJobHandler } from '../infra/jobs/index.js';
 import { s3Server } from '../infra/storage/s3-server.test-helper.js';
 
 export const origin = 'https://demo.example.test';
@@ -34,7 +34,7 @@ export const demoEnv = (databaseUrl: string, storageEndpoint: string, stagingDir
  */
 export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
   const database = useTestDatabase(), factory = createFactories(database);
-  const handlers = new Map<string, JobHandler>(), workers: PostgresJobs[] = [];
+  const handlers = new Map<string, JobHandler>(), systemHandlers = new Map<string, SystemJobHandler>(), workers: PostgresJobs[] = [];
   let runtime: Runtime, directory: string, storage: Awaited<ReturnType<typeof s3Server>>, sandbox: Sandbox;
   const env = () => demoEnv(database.appUrl, storage.endpoint, join(directory, 'staging'));
   const post = (path: string, body: unknown, base = origin, extra: Record<string, string> = {}) => runtime.app.request(base + path, {
@@ -46,6 +46,10 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
     const handle = PostgresJobs.prototype.handle;
     vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
       handlers.set(name, handler); handle.call(this, name, handler);
+    });
+    const handleSystem = PostgresJobs.prototype.handleSystem;
+    vi.spyOn(PostgresJobs.prototype, 'handleSystem').mockImplementation(function (this: PostgresJobs, name, handler) {
+      systemHandlers.set(name, handler); handleSystem.call(this, name, handler);
     });
     vi.spyOn(PostgresJobs.prototype, 'start').mockImplementation(function (this: PostgresJobs) { workers.push(this); return { async stop() {} }; });
     directory = await mkdtemp(join(tmpdir(), 'runtime-demo-'));
@@ -60,7 +64,7 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
     return (await response.json()).data;
   }
   return {
-    database, factory, handlers, workers, env, post, cookieOf, createSandbox,
+    database, factory, handlers, systemHandlers, workers, env, post, cookieOf, createSandbox,
     get runtime() { return runtime; },
     get directory() { return directory; },
     get sandbox() { return sandbox; },

@@ -78,6 +78,38 @@ it('registers the hourly per-gym portal invitation sweep, which leaves the insta
     expect(left.map(row => row.id).sort()).toEqual([stale.id, live.id].sort());
   } finally { await database.forSystem(tx => tx.delete(authVerification).where(inArray(authVerification.id, [stale.id, live.id]))); }
 });
+it('registers the install\'s verification sweep, which leaves portal invitations and onboarding claim holds alone', async () => {
+  const handler = app.systemHandlers.get('auth.verifications.sweep');
+  expect(handler).toBeDefined();
+  const gymId = app.sandbox.gymId, past = new Date(clock.now().getTime() - 60_000), future = new Date(clock.now().getTime() + 600_000);
+  const stale = { id: uuidv7(), identifier: `magic-link:${uuidv7()}`, value: '{}', expiresAt: past };
+  const live = { id: uuidv7(), identifier: `magic-link:${uuidv7()}`, value: '{}', expiresAt: future };
+  const invitation = { id: uuidv7(), identifier: `portal-invitation:${gymId}:${uuidv7()}`, value: '{}', expiresAt: past, gymId, householdId: uuidv7() };
+  const hold = { id: uuidv7(), identifier: `portal-claim:${gymId}:${uuidv7()}`, value: '{}', expiresAt: past, gymId, householdId: uuidv7() };
+  const ids = [stale.id, live.id, invitation.id, hold.id];
+  await database.forSystem(tx => tx.insert(authVerification).values([stale, live, invitation, hold]));
+  try {
+    await handler!({}, { gymId: null, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
+    const left = await database.forSystem(tx => tx.select({ id: authVerification.id }).from(authVerification)
+      .where(inArray(authVerification.id, ids)));
+    expect(left.map(row => row.id).sort()).toEqual([live.id, invitation.id, hold.id].sort());
+  } finally { await database.forSystem(tx => tx.delete(authVerification).where(inArray(authVerification.id, ids))); }
+});
+it('schedules one verification sweep an hour for the install, however many runtimes start', async () => {
+  const sweeps = () => database.forSystem(tx => tx.select({ gymId: jobs.gymId, runAt: jobs.runAt }).from(jobs)
+    .where(eq(jobs.name, 'auth.verifications.sweep')));
+  const hour = () => new Date(Math.floor(clock.now().getTime() / 3_600_000) * 3_600_000).toISOString();
+  expect((await sweeps()).map(job => job.gymId)).toContain(null);
+  await database.forSystem(tx => tx.delete(jobs).where(eq(jobs.name, 'auth.verifications.sweep')));
+  // Two more starts against the same database: each schedules the current hour, which its idempotency key collapses.
+  const before = hour();
+  await app.restart(); await app.restart();
+  const after = hour(), queued = await sweeps(), hours = queued.map(job => job.runAt.toISOString());
+  expect(queued.every(job => job.gymId === null)).toBe(true);
+  expect(new Set(hours).size).toBe(hours.length);
+  expect(hours).toContain(after);
+  expect(hours.every(at => at === before || at === after)).toBe(true);
+});
 it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane', async () => {
   const queue = app.queue, gymId = app.sandbox.gymId, now = Date.now();
   const job = (name: string, value: object, runAt: Date) => ({ id: uuidv7(), gymId, name, status: 'pending', attempts: 0, maxAttempts: 3,

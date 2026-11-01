@@ -24,7 +24,7 @@ import { PostgresJobs, startJobsWorker } from '../infra/jobs/postgres.js';
 import { createPortalAuthorization } from '../areas/portal/auth.permissions.js';
 import { configurePortalAccess } from '../areas/portal/access.routes.js';
 import { createPortalPrincipalLoader } from '../areas/members/household-users.context.js';
-import { createPortalInvitationExpiryJobs, createPortalInvitationService } from '../areas/members/household-users.invitations.js';
+import { createPortalInvitationExpiryJobs, createPortalInvitationService, registerVerificationSweep } from '../areas/members/household-users.invitations.js';
 import { createPortalConfirmationWidgetProvider } from '../areas/members/household-users.widget.js';
 import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
@@ -215,6 +215,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Charge runs, imports, exports and campaigns run in each gym's batch lane, so webhooks and effects never wait behind them.
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] },
     batch: { jobs: [...runnerBatchJobs, ...importBatchJobs, ...exportBatchJobs, ...campaignBatchJobs] } });
+  // Expired magic links and staff invitations are swept by one install job an hour, in either tenancy mode.
+  const verificationSweep = registerVerificationSweep(queue, clock);
   const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock,
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });
   configureBookingJobs(bookingDelivery);
@@ -387,6 +389,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     backupTimer.unref();
     schedule().catch(report);
   }
+  const sweep = async () => {
+    if (gate) { if (!await gate.isClosed()) await gate.activity(() => verificationSweep.scheduleDue()); }
+    else await verificationSweep.scheduleDue();
+  };
+  const sweepTimer = setInterval(() => { sweep().catch(report); }, 60_000);
+  sweepTimer.unref();
+  await sweep().catch(report);
   const worker = startJobsWorker(queue, { onError: report,
     ...(gate ? { paused: () => gate.isClosed(), around: (execute: () => Promise<void>) => gate.activity(execute) } : {}) });
 
@@ -406,6 +415,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     stopping = true;
     if (backupTimer) clearInterval(backupTimer);
     if (demoTimer) clearInterval(demoTimer);
+    clearInterval(sweepTimer);
     try { await worker.stop(); await endpointCheck; } finally { uploads.close(); await closeDatabase(); }
   } };
 }

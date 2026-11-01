@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
+import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Assembly test inspects the install's queued system jobs in real PostgreSQL.
+import { jobs } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { setupContracts } from '@plaingym/shared/contracts';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
@@ -30,4 +33,8 @@ it('serves first-boot setup on a fresh install with the runtime\'s own key, orig
   expect(response.status, await response.clone().text()).toBe(200);
   const { data } = setupContracts.status.response.parse(await response.json());
   expect(data).toMatchObject({ currentStep: 0, completed: false });
+});
+it('schedules the install\'s verification sweep in a single-gym install too, as one system job', async () => {
+  const queued = await database.forSystem(tx => tx.select({ gymId: jobs.gymId }).from(jobs).where(eq(jobs.name, 'auth.verifications.sweep')));
+  expect(queued).toEqual([{ gymId: null }]);
 });
