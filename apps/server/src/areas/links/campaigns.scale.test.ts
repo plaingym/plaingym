@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
-import { households, uuidv7 } from '@plaingym/db';
+import { households, uuidv7, type Transaction } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createTranslator } from '@plaingym/shared';
@@ -14,12 +14,12 @@ import { createCampaignsService, campaignPublishJob, campaignSendJob } from './c
 import { createCampaignJobs } from './campaigns.jobs.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
 
-// Creating 2000 recipients takes seconds, so this test has a file of its own, apart from the campaign tests that share a fixture.
+// Seeding and publishing 2000 recipients takes seconds, so this test has a file of its own, apart from the campaign tests that share a fixture.
 const db = useTestDatabase(), factory = createFactories(db);
 const origin = 'https://gym.example.test';
 const messages = JSON.parse(await readFile(new URL('../../../../../locales/en/links/service.json', import.meta.url), 'utf8')) as Record<string, string>;
 
-it('creates 2000 recipients with only one publish job, then publishes once with audit batches of 100', async () => {
+it('creates 2000 recipients in chunked multi-row inserts with only one publish job, then publishes once with audit batches of 100', async () => {
   const gymId = uuidv7(), clock = new TestClock('2026-10-26T12:00:00Z');
   await factory('gyms', gymId, { memberEmailsEnabled: true, billingEnabled: true, timezone: 'America/Los_Angeles' });
   const jobs = new FakeJobs(clock), email = new FakeEmail(), provider = new FakePayments(gymId, clock);
@@ -32,8 +32,14 @@ it('creates 2000 recipients with only one publish job, then publishes once with 
   const people = await db.forGym(gymId, tx => tx.insert(households).values(Array.from({ length: 2000 }, (_, i) => ({
     gymId, name: 'Household ' + i, email: `payer${i}@example.test`,
   }))).returning({ id: households.id }));
-  let transactions = 0;
-  const service = createCampaignsService({ scope: async (id, fn) => { transactions++; return db.forGym(id, fn); },
+  let transactions = 0, inserts = 0;
+  // Counts insert statements, so creation cannot fall back to a round trip per recipient.
+  const counted = (tx: Transaction) => new Proxy(tx, { get(target, key) {
+    if (key === 'insert') inserts++;
+    const value = Reflect.get(target, key) as unknown;
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const service = createCampaignsService({ scope: async (id, fn) => { transactions++; return db.forGym(id, tx => fn(counted(tx))); },
     clock, jobs, delivery, paymentsFor });
   const enqueue = vi.spyOn(jobs, 'enqueue');
   const context = { gymId, actor: { kind: 'system' as const } };
@@ -41,6 +47,7 @@ it('creates 2000 recipients with only one publish job, then publishes once with 
     reminderSchedule: [3, 7], recipients: people.map(p => ({ householdId: p.id })) });
   expect(enqueue).toHaveBeenCalledTimes(1); expect(jobs.jobs[0]!.name).toBe(campaignPublishJob);
   expect(transactions).toBe(3); // Definition, settings, and response; no recipient publication work.
+  expect(inserts).toBe(10); // The campaign, four chunks of 500 links and their audits, and the campaign audit.
   transactions = 0;
   const publish = createCampaignJobs(() => service).find(j => j.id === campaignPublishJob)!;
   await publish.handler({ campaignId: c.campaign.id }, { gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });

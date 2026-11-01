@@ -11,7 +11,7 @@ import type { MutationContext } from '../../core/interfaces/common.js';
 import type { JobRecovery, Jobs } from '../../infra/jobs/index.js';
 import type { Payments } from '../../infra/payments/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
-import { createSignedLinksService } from './service.js';
+import { createSignedLinksIn } from './service.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
 import { campaignDetail, campaignRecipient } from './campaigns.model.js';
 import { deliverCampaignLink } from './campaigns.delivery.js';
@@ -113,16 +113,9 @@ export function createCampaignsService(options: CampaignsOptions) {
         const [row] = await tx.insert(linkCampaigns).values({ gymId: context.gymId, name: request.name,
           purpose: request.purpose, reminderSchedule: request.reminderSchedule, createdAt: clock.now(),
           createdBy: context.actor.kind === 'user' ? context.actor.userId : null }).returning();
-        // Reuse the signed-link service's resource validation and auditing inside this existing transaction.
-        const links = createSignedLinksService({ clock, scope: async (gymId, fn) => {
-          if (gymId !== context.gymId) throw new Error('Campaign scope mismatch');
-          return fn(tx);
-        } });
-        for (const recipient of request.recipients) {
-          const link = { purpose: request.purpose, expiresAt: request.expiresAt, campaignId: row!.id,
-            ...recipient } as CreateSignedLinkRequest;
-          await links.create(context, link);
-        }
+        // The signed-link checks and audits, batched in this transaction instead of a round trip per recipient.
+        await createSignedLinksIn(tx, context, request.recipients.map(recipient => ({ purpose: request.purpose,
+          expiresAt: request.expiresAt, campaignId: row!.id, ...recipient }) as CreateSignedLinkRequest), clock.now());
         await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
           ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
           action: 'link_campaign.created', targetType: 'link_campaign', targetId: row!.id,
