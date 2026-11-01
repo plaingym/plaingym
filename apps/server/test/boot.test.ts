@@ -39,20 +39,22 @@ it('boots a relocated bundle with its font and notice, independently of the work
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stderr = '';
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     try {
       const address = await new Promise<string>((resolve, reject) => {
-        let stdout = '';
         const timer = setTimeout(() => reject(new Error('Server startup timed out: ' + stderr)), 10_000);
         child.once('error', (error) => { clearTimeout(timer); reject(error); });
         child.once('exit', (code) => {
           clearTimeout(timer);
           reject(new Error(`Server exited ${code}: ${stderr}`));
         });
-        child.stdout.on('data', (chunk: Buffer) => {
-          stdout += chunk.toString();
-          const match = stdout.match(/http:\/\/127\.0\.0\.1:(\d+)/);
-          if (match?.[0]) { clearTimeout(timer); resolve(match[0]); }
+        // The server reports its address as a structured `server.listening` log line.
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+          for (const line of stderr.split('\n').slice(0, -1)) {
+            if (!line.includes('"server.listening"')) continue;
+            const { host, port } = JSON.parse(line) as { host: string; port: number };
+            clearTimeout(timer); resolve(`http://${host}:${port}`);
+          }
         });
       });
       const response = await fetch(address + '/healthz');
