@@ -36,6 +36,7 @@ import { createStaffInvitationService, smtpMailer } from '../areas/staff/profile
 import { configureDashboard } from '../areas/dashboard/dashboard.routes.js';
 import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js';
 import { configureImportStep } from '../areas/setup/import-step.js';
+import { createSetupRoutes } from '../areas/setup/setup.routes.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
 import { configureCheckinCodes } from '../areas/members/checkin-code.routes.js';
@@ -316,8 +317,12 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   const receiptKey = new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32));
   configureLinkPages({ waivers, portalInvitations, checkout, receiptKey });
   configurePortalBilling({ checkout, receiptKey, uploadsFor: uploads.forGym });
+  // Setup takes the runtime's key, origin and environment; the registry's unconfigured copies are replaced.
+  const setupRoutes = install ? createSetupRoutes({ config: { key, origin: install, env } }) : [];
+  const replaced = new Set(setupRoutes.map(r => r.id));
   const contributions = { ...areaContributions,
-    routes: [...areaContributions.routes ?? [], ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
+    routes: [...(areaContributions.routes ?? []).filter(r => !replaced.has(r.id)), ...setupRoutes,
+      ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
       ...createPortalInvitationExpiryJobs(),

@@ -16,7 +16,7 @@ const origin = 'https://install.multi.example.test', setupToken = 'multi-runtime
 let runtime: Runtime | undefined, directory: string | undefined;
 afterAll(async () => {
   await runtime?.stop();
-  vi.restoreAllMocks(); vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
@@ -34,8 +34,6 @@ it('builds no restore gate in multi mode and answers setup restore as unavailabl
     SETUP_TOKEN: setupToken, SMTP_HOST: 'smtp.example.test', SMTP_FROM: 'gym@example.test', BACKUP_STAGING_DIR: staging,
     UPLOADS_S3_BUCKET: 'multi-uploads', UPLOADS_S3_ENDPOINT: 'https://storage.example.test',
     UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test' };
-  // Setup's restore reads the process environment, which is the runtime's own in production.
-  for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
   runtime = await startRuntime(env);
 
   const gym = await runtime.app.request('https://gym.multi.example.test/api/public/config', { headers: { host: 'gym.multi.example.test' } });
