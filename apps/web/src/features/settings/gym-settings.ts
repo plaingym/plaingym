@@ -33,9 +33,14 @@ export function useGymSettings() {
   /**
    * Sends one save with the current revision, one at a time so each save sees the revision the one before it produced.
    * A success updates the shared settings with `adopt(response data, settings now)`; a 409 reloads them first, so the
-   * next save sees the reloaded revision. Throws on a network or parse failure, and when the shared settings are out of
-   * date because their last reload failed (nothing is sent then); the caller maps any other status.
+   * next save sees the reloaded revision. A save asked for from settings older than the ones fetched last (another
+   * section's 409, or a reload, came between) answers 409 without being sent: its values were read before the reload, and
+   * sending them with the reloaded revision would overwrite the change that caused it. That age is the epoch the section
+   * rendered with, since a click can land after the reload but before the section shows its values. Throws on a network
+   * or parse failure, and when the shared settings are out of date because their last reload failed (nothing is sent
+   * then); the caller maps any other status.
    */
+  const rendered = query.data?.epoch;
   const save = useCallback((send: (revision: number) => Promise<Sent>, adopt: (data: unknown, current: GymSettings) => GymSettings = fromResponse): Promise<SaveResult> => {
     const refetch = async () => {
       await cache.refetchQueries({ queryKey: gymSettingsKey, exact: true });
@@ -44,6 +49,7 @@ export function useGymSettings() {
     const run = async () => {
       const current = cache.getQueryData<Loaded>(gymSettingsKey);
       if (!current || cache.getQueryState(gymSettingsKey)?.status === 'error') throw new Error('The settings are not loaded');
+      if (current.epoch !== rendered) return { status: 409, data: undefined };
       const result = await send(current.settings.revision), { ok, status } = result.response;
       if (status === 409) await refetch();
       else if (ok) {
@@ -58,6 +64,6 @@ export function useGymSettings() {
     const done = (queues.get(cache) ?? Promise.resolve()).then(run);
     queues.set(cache, done.catch(() => undefined));
     return done;
-  }, [cache]);
+  }, [cache, rendered]);
   return { settings: query.data?.settings, epoch: query.data?.epoch ?? 0, loading: query.isPending, failed: query.isError, reload, save };
 }

@@ -117,16 +117,24 @@ describe('settings sections on one page', () => {
     expect(await screen.findByRole('button', { name: 'Turn off: Member emails' })).toBeDefined();
     expect(bodies()).toEqual([['/api/settings/go-live', 3], ['/api/settings/go-live', 4]]);
   });
-  it('reloads after a conflict before the next queued save, so a second section saves against the reloaded revision', async () => {
+  it('refuses a save queued behind a conflict, so its values from before the reload never overwrite the other tab\'s change', async () => {
     const user = userEvent.setup(); sections();
-    const days = await field('Retry days');
+    const days = await field('Retry days'), name = await field('Gym name');
     await user.clear(days); await user.type(days, '5');
-    await user.selectOptions(await screen.findByRole('combobox', { name: 'Drop-in charge type' }), mat.id);
-    gym = { ...gym, bookingWindowDays: 30, revision: 4 };
-    await Promise.all([user.click(screen.getByRole('button', { name: 'Save retry schedule' })), user.click(screen.getByRole('button', { name: 'Save drop-in fee' }))]);
-    // The drop-in section's inputs reset with the reload, so it sends its reloaded choice (none) at the reloaded revision.
-    await vi.waitFor(() => expect(bodies()).toEqual([['/api/settings/billing', 3], ['/api/settings/drop-in', 4]]));
-    expect(gym.revision).toBe(5);
+    // Another tab renamed the gym after this page loaded; this page's gym details form still holds the old name.
+    gym = { ...gym, name: 'Renamed elsewhere', revision: 4 };
+    const details = screen.getByRole('form', { name: 'Gym details' });
+    await Promise.all([user.click(screen.getByRole('button', { name: 'Save retry schedule' })), user.click(within(details).getByRole('button', { name: 'Save changes' }))]);
+    await vi.waitFor(() => expect(screen.getAllByText(/changed elsewhere/)).toHaveLength(2));
+    // Only the first save reached the server, and it got the 409; the queued one was answered without being sent.
+    expect(server.PATCH).toHaveBeenCalledTimes(1);
+    expect(gym).toMatchObject({ name: 'Renamed elsewhere', retryDays: [3, 7], revision: 4 });
+    await vi.waitFor(() => expect((screen.getByRole('textbox', { name: 'Gym name' }) as HTMLInputElement).value).toBe('Renamed elsewhere'));
+    expect(name.isConnected).toBe(false);
+    // Saved again from the reloaded values, it goes through.
+    await user.click(within(screen.getByRole('form', { name: 'Gym details' })).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(gym.revision).toBe(5));
+    expect(gym.name).toBe('Renamed elsewhere');
   });
   it('refuses to save over settings whose reload failed, and saves again after a reload', async () => {
     const user = userEvent.setup(); sections();
