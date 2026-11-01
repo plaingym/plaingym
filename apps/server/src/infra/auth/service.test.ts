@@ -254,6 +254,14 @@ describe('session middleware and atomic protected-account resets', () => {
       expect(await displayName(app, f.origin, firstSession)).toBe('Mia Member');
       expect(await displayName(app, f.otherOrigin, await f.signIn(f.b, f.otherOrigin))).toBe('Owner Beta');
     });
+    it('falls back to the login\'s own name when the linked member was erased', async () => {
+      const f = await fixture();
+      await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'front_desk' });
+      const household = await factory('households', f.gymId);
+      const erased = await factory('members', f.gymId, { householdId: household.id, firstName: 'Anonymized', lastName: 'Member', anonymizedAt: testClock.now() });
+      await factory('householdUsers', f.gymId, { userId: f.user.id, householdId: household.id, memberId: erased.id, scope: 'member' });
+      expect(await displayName(routeApp(f), f.origin, await f.signIn())).toBe(f.user.name);
+    });
   });
   it('sets staff roles from the resolved gym and rejects foreign cookies before handlers', async () => {
     const f = await fixture();

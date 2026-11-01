@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import { forGym, householdUsers, members, staffProfiles, staffRoles } from '@plaingym/db';
 import { AppError, staffRoles as validRoles } from '@plaingym/shared';
 import { shellContracts, type ShellBootstrap } from '@plaingym/shared/contracts';
@@ -41,11 +41,12 @@ export function createAuthBootstrapRoutes(options: {
         const links = await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.userId, principal.userId)).limit(1);
         // This gym's own records come first, so a login in two gyms is known by each gym's name for it.
         const [profile] = await tx.select({ name: staffProfiles.displayName }).from(staffProfiles).where(eq(staffProfiles.userId, principal.userId)).limit(1);
-        // A payer link with no member (the payer is not a person on the roster) has no name here and falls back to the login's own.
+        // A payer link with no member (the payer is not a person on the roster), or one to an erased member, has no name
+        // here and falls back to the login's own.
         const portal = principal.kind === 'member' ? principal.scope : undefined;
         const [linked] = profile ? [] : await tx.select({ firstName: members.firstName, lastName: members.lastName }).from(householdUsers)
           .innerJoin(members, and(eq(members.gymId, householdUsers.gymId), eq(members.id, householdUsers.memberId)))
-          .where(and(eq(householdUsers.userId, principal.userId), portal ? eq(householdUsers.householdId, portal.householdId) : undefined,
+          .where(and(eq(householdUsers.userId, principal.userId), isNull(members.anonymizedAt), portal ? eq(householdUsers.householdId, portal.householdId) : undefined,
             portal?.memberId ? eq(householdUsers.memberId, portal.memberId) : undefined))
           .orderBy(asc(householdUsers.createdAt), asc(householdUsers.id)).limit(1);
         const displayName = [profile?.name, linked && `${linked.firstName} ${linked.lastName}`, loginName].map(value => value?.trim()).find(Boolean) ?? principal.userId;
