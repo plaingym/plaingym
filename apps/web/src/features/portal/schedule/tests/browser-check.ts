@@ -11,7 +11,7 @@ const output = resolve('coverage/portal/schedule-browser'), dist = resolve('apps
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const gym = id(1), household = id(2), parent = id(3), child = id(4), userId = id(5), program = id(6), first = id(7), second = id(8);
 const bootstrap = { gym: { id: gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] },
-  session: { userId, roles: [], member: true }, login: { password: true, magicLink: false } };
+  session: { userId, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } };
 const day = 86_400_000, start = Math.ceil(Date.now() / day) * day;
 const at = (offset: number) => new Date(start + offset).toISOString();
 let role: 'payer' | 'member' = 'payer';

@@ -11,8 +11,8 @@ export async function buildLinkStyles(destination) {
   const cssPath = fileURLToPath(new URL('../../../../web/src/app/styles.css', import.meta.url));
   const css = await readFile(cssPath, 'utf8');
   const compiler = await compile(css, { base: dirname(cssPath), onDependency() {} });
-  const source = await readFile(new URL('./page.ts', import.meta.url), 'utf8');
-  const candidates = source.match(/[A-Za-z0-9_:!./%[\]()-]+/g) ?? [];
+  const sources = await Promise.all(['./page.ts', '../pages/join.page.ts'].map(file => readFile(new URL(file, import.meta.url), 'utf8')));
+  const candidates = sources.flatMap(source => source.match(/[A-Za-z0-9_:!./%[\]()-]+/g) ?? []);
   await mkdir(dirname(destination), { recursive: true });
   await writeFile(destination, compiler.build(candidates));
 }

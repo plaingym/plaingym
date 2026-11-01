@@ -55,9 +55,9 @@ describe('shell projections', () => {
     await expect(createBootstrapLoader(fetcher)()).rejects.toThrow();
   });
   it('prioritizes staff access for a user who is also a member', () => {
-    expect(sessionDestination({ userId: 'a', roles: ['coach'], member: true })).toBe('/admin');
-    expect(sessionDestination({ userId: 'a', roles: [], member: true })).toBe('/portal');
-    expect(sessionDestination({ userId: 'a', roles: [], member: false })).toBeNull();
+    expect(sessionDestination({ userId: 'a', displayName: 'Test User', roles: ['coach'], member: true })).toBe('/admin');
+    expect(sessionDestination({ userId: 'a', displayName: 'Test User', roles: [], member: true })).toBe('/portal');
+    expect(sessionDestination({ userId: 'a', displayName: 'Test User', roles: [], member: false })).toBeNull();
   });
   it('uses loaded locale namespaces and supports overrides, placeholders and missing keys', () => {
     const translate = createShellTranslator({ 'shell/shell': { title: 'Hello {name}' }, 'gym/name': { title: 'Academy' } });

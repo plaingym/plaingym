@@ -51,6 +51,8 @@ function portalClaimCallback(value: string | null, origin: URL): string | null {
 export interface BoundSession extends Session {
   readonly sessionId: string;
   readonly householdId: string | null;
+  /** The login's own name (its address when the name is blank); a gym may know the person by another. */
+  readonly userName: string;
 }
 export const authEndpoints = [
   'POST /sign-in/email', 'POST /sign-in/magic-link', 'GET /magic-link/verify', 'GET /get-session', 'POST /sign-out',
@@ -141,7 +143,8 @@ export function createAuthService(options: AuthServiceOptions) {
           if (session && session.session.gymId !== gym.gymId) throw new Error('session_gym_mismatch');
           if (!session) return null;
           const householdId = (session.session as { householdId?: unknown }).householdId;
-          return { userId: session.user.id, sessionId: session.session.id, householdId: typeof householdId === 'string' ? householdId : null };
+          return { userId: session.user.id, sessionId: session.session.id, householdId: typeof householdId === 'string' ? householdId : null,
+            userName: session.user.name.trim() || session.user.email };
         },
         async handler(request: Request): Promise<Response> {
           assertNoTransaction('auth.handler');

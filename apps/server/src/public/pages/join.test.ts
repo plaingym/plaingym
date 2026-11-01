@@ -217,7 +217,19 @@ describe('public join pages through the production registrations', () => {
 
     for (const path of ['/join/return', '/join/cancelled']) expect(await (await f.get(path, cookie)).text()).not.toContain('Welcome');
     const confirming = await f.get('/join/return', cookie);
-    expect(confirming.headers.get('refresh')).toBe('5'); expect(await confirming.text()).toContain('Confirming your payment');
+    expect(confirming.headers.get('refresh')).toBe('5');
+    const progress = await confirming.text();
+    expect(progress).toContain('Confirming your payment'); expect(progress).toContain('This page updates automatically');
+    expect(progress).toContain('Waiting for your payment to be confirmed'); expect(progress).toContain('aria-live="polite"');
+    // The poll is one external script that /join/return itself serves state to: no inline script, no new route, and the no-JS link stays.
+    expect(progress).toContain('data-join-confirming'); expect(progress).toContain('src="/join/client.js"'); expect(progress).toContain('href="/join/return"');
+    expect(progress).not.toMatch(/<script(?![^>]*\bsrc=)/);
+    expect(confirming.headers.get('content-security-policy')).toContain("script-src 'self'");
+    // The stalled message and its hidden state are in the page for the script to reveal after its limit.
+    expect(progress).toContain('This is taking longer than usual');
+    // The poll is anonymous-safe: with no join cookie it reads nothing, and the answer carries no confirming marker.
+    const noCookie = await f.get('/join/return');
+    expect(await noCookie.text()).not.toContain('data-join-confirming'); expect(noCookie.headers.get('refresh')).toBeNull();
     expect(await (await f.get('/join/cancelled', cookie)).text()).toContain('Nothing was charged');
     const redirect = await f.get('/join/checkout', cookie);
     expect(redirect.status).toBe(303);
@@ -244,6 +256,8 @@ describe('public join pages through the production registrations', () => {
     expect(state.logins).toEqual([]);
     const welcome = await (await f.get('/join/return', cookie)).text();
     expect(welcome).toContain('We sent a sign-in link'); expect(welcome).not.toContain('payer@example.invalid');
+    // Once settled, the same URL no longer carries the marker, which is what ends the script's polling.
+    expect(welcome).not.toContain('data-join-confirming');
     expect(await (await f.post('/join/sign-in', undefined, cookie)).text()).toContain('Use the newest email');
     expect(f.sent).toHaveLength(2);
     expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');

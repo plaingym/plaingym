@@ -36,7 +36,8 @@ export function HouseholdPicker({ households, onChoose, pending = false, failed 
       </Button></li>)}</ul>
   </Page>;
 }
-export function PortalLayout({ name, entries, children, onSignOut, signingOut = false, switcher }: { name: string; entries: readonly NavigationEntry[]; children: ReactNode; onSignOut(): void; signingOut?: boolean; switcher?: ReactNode }) {
+export function PortalLayout({ name, person, scope, entries, children, onSignOut, signingOut = false, switcher }:
+  { name: string; person?: string; scope?: PortalContext['role']; entries: readonly NavigationEntry[]; children: ReactNode; onSignOut(): void; signingOut?: boolean; switcher?: ReactNode }) {
   const [open, setOpen] = useState(false), [online, setOnline] = useState(navigator.onLine);
   const pathname = useRouterState({ select: state => state.location.pathname });
   useEffect(() => setOpen(false), [pathname]);
@@ -48,7 +49,13 @@ export function PortalLayout({ name, entries, children, onSignOut, signingOut = 
   return <div className="flex min-h-dvh min-w-0 flex-col">
     <header className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
       <Button variant="outline" className="md:hidden" aria-expanded={open} aria-controls="portal-navigation" onClick={() => setOpen(!open)}>{text('menu')}</Button>
-      <p className="min-w-0 flex-1 truncate font-semibold">{name}</p>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-semibold" title={name}>{name}</p>
+        {/* A long name gives way to its ellipsis; the scope stays. */}
+        {person && <p className="flex min-w-0 text-xs text-muted-foreground" data-testid="signed-in-identity">
+          <span className="truncate font-medium text-foreground">{person}</span>{scope && <span className="shrink-0 whitespace-pre"> · {text(scope === 'payer' ? 'rolePayer' : 'roleMember')}</span>}
+        </p>}
+      </div>
       {switcher && <div className="order-last flex w-full min-w-0 sm:order-none sm:w-auto">{switcher}</div>}
       <Button variant="ghost" onClick={onSignOut} disabled={signingOut}>{text('signOut')}</Button>
     </header>
@@ -75,6 +82,8 @@ function AuthenticatedPortal() {
       // Nothing from the previous household may remain on screen or in the cache.
       await cache.cancelQueries();
       await cache.resetQueries({ predicate: query => query.queryKey[0] !== bootstrapKey[0] });
+      // The session keeps its data (the shell stays up), but the name the gym knows the person by follows the open household.
+      await cache.invalidateQueries({ queryKey: bootstrapKey });
       await navigate({ to: '/portal', replace: true });
     },
   });
@@ -93,7 +102,7 @@ function AuthenticatedPortal() {
   if (households.isError) return failed(() => void households.refetch());
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
-    return <PortalLayout name={bootstrap.data.gym.name} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
+    return <PortalLayout name={bootstrap.data.gym.name} person={session.displayName} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
       <HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
@@ -101,7 +110,7 @@ function AuthenticatedPortal() {
   if (context.isError) return failed(() => { void households.refetch(); void context.refetch(); });
   const switcher = households.data.households.length > 1
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;
-  return <PortalLayout name={bootstrap.data.gym.name} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher}>
+  return <PortalLayout name={bootstrap.data.gym.name} person={session.displayName} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher}>
     {(signOut.isError || choose.isError) && <Alert>{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet />
   </PortalLayout>;
 }

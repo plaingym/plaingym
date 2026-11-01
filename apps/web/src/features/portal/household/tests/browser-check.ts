@@ -10,7 +10,7 @@ const { default: AxeBuilder } = await import(pathToFileURL(resolve('e2e/node_mod
 const output = resolve('coverage/portal/household-browser'), dist = resolve('apps/web/dist'); await mkdir(output, { recursive: true });
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const ids = { gym: id(1), user: id(2), household: id(3), payer: id(4), child: id(5), adult: id(6), invoice: id(7), paid: id(8), template: id(9), signature: id(10) };
-const bootstrap = { gym: { id: ids.gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, roles: [], member: true }, login: { password: true, magicLink: false } };
+const bootstrap = { gym: { id: ids.gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } };
 const person = (memberId: string, firstName: string, dateOfBirth: string | null) => ({ id: memberId, firstName, lastName: 'Rivera-Montgomery', email: firstName.toLowerCase() + '.a.long.address@example.test',
   phone: '555-0100', dateOfBirth, photoKey: null, status: 'active', emergencyContacts: [{ name: 'Grandparent with a long name', relationship: null, phone: '555-0101' }], revision: 1 });
 // Jordan is an imported adult with no recorded birth date: shown, but the payer may not edit or sign for them.

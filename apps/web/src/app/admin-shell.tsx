@@ -14,6 +14,7 @@ export function visibleAdminNavigation(
   return entries.filter((entry) => entry.enabled && (!entry.moduleId || enabledModules.includes(entry.moduleId))
     && entry.permission.kind === 'staff' && canStaff(session.roles, entry.permission.capability));
 }
+const roleNames = (session: ShellSession) => session.roles.map((role) => t('staff/profiles:' + role)).join(', ');
 /** Closes an open popover on Escape (returning focus to its trigger) or on a press outside it. */
 function useDismiss(open: boolean, close: () => void, refs: RefObject<HTMLElement | null>[], trigger: RefObject<HTMLButtonElement | null>) {
   useEffect(() => {
@@ -40,7 +41,7 @@ function AccountMenu({ session, onSignOut, signingOut }: { session: ShellSession
     <div ref={panel} id="account-menu" hidden={!open}
       className="absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
       <p className="px-3 pb-2 pt-1 text-sm text-muted-foreground">
-        {t('shell/shell:signedInAs')} <span className="font-medium text-foreground">{session.roles.map((role) => t('staff/profiles:' + role)).join(', ')}</span>
+        {t('shell/shell:signedInAs')} <span className="break-words font-medium text-foreground">{session.displayName}</span>{session.roles.length > 0 && ` (${roleNames(session)})`}
       </p>
       <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
@@ -70,7 +71,12 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
         </Button>
         <div className="min-w-0 flex-1 px-1">
           <p className="truncate font-semibold" title={state.gym.name}>{state.gym.name}</p>
-          <p className="hidden truncate text-xs text-muted-foreground sm:block">{t('shell/shell:admin')}</p>
+          {/* A long name gives way to its ellipsis; the roles stay. */}
+          <p className="flex min-w-0 text-xs text-muted-foreground" data-testid="signed-in-identity">
+            <span className="hidden shrink-0 whitespace-pre sm:inline">{t('shell/shell:admin')} · </span>
+            <span className="truncate font-medium text-foreground">{state.session.displayName}</span>
+            {state.session.roles.length > 0 && <span className="shrink-0 whitespace-pre"> · {roleNames(state.session)}</span>}
+          </p>
         </div>
         <AccountMenu session={state.session} onSignOut={onSignOut} signingOut={signingOut} />
       </div>

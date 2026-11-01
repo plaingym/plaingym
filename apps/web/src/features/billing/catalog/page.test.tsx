@@ -28,7 +28,7 @@ function client() {
 }
 function start(view: React.ReactNode) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={queryClient}><ShellServicesContext.Provider value={createShellServices(async () => ({ gym: { id: id(1), name: 'Gym', timezone: settings.timezone, currency: settings.currency, enabledModules: [] }, session: { userId: id(9), roles: ['admin'], member: false }, login: { password: true, magicLink: false } }))}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
+  return render(<QueryClientProvider client={queryClient}><ShellServicesContext.Provider value={createShellServices(async () => ({ gym: { id: id(1), name: 'Gym', timezone: settings.timezone, currency: settings.currency, enabledModules: [] }, session: { userId: id(9), displayName: 'Test User', roles: ['admin'], member: false }, login: { password: true, magicLink: false } }))}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }
 afterEach(cleanup);
 describe('catalog and member billing screens', () => {

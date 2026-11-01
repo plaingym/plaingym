@@ -8,6 +8,8 @@ import type { EndpointContract } from './definition.js';
 /** Host-resolved public gym details and only the current login's access. */
 export const shellSessionSchema = z.strictObject({
   userId: idSchema,
+  /** The name this gym knows the login by (staff profile, else the linked member), else the login's own name. */
+  displayName: z.string().min(1),
   roles: z.array(staffRoleNameSchema).readonly(),
   member: z.boolean(),
 });

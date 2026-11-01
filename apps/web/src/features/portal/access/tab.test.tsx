@@ -31,7 +31,7 @@ function stubFetch() {
   }));
 }
 function start() {
-  const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: memberId, roles: ['front_desk'], member: false }, login: { password: true, magicLink: false } };
+  const data: ShellBootstrap = { gym: { id: homeId, name: 'Test gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: memberId, displayName: 'Test User', roles: ['front_desk'], member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], initialData: data, queryFn: async () => data }).getCurrentResult());
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><PortalAccessTab memberId={memberId}/></QueryClientProvider>);
 }

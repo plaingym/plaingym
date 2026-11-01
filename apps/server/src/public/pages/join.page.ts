@@ -5,7 +5,7 @@ import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/share
 import { button, publicLayout } from './page.js';
 import { maxJoinMembers } from './join.service.js';
 
-// Only classes already compiled into the shared public stylesheet.
+// The shared public stylesheet is built from the classes in this file and the signed-link page (`links/styles.build.mjs`).
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const link = 'inline-flex min-h-11 items-center underline';
@@ -86,9 +86,14 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) 
   const text = joinText(input.t), state = input.state;
   const action = (path: string, label: string) => h('form', { method: 'post', action: path }, h('button', { type: 'submit', class: button }, text(label)));
   const start = h('a', { href: '/join', class: link }, text('startOver'));
+  // The script polls /join/return and replaces this page once it settles; without it the Refresh header and this link keep working.
+  const progress = h('div', { class: 'flex items-center gap-3', 'data-join-progress': true },
+    h('span', { 'aria-hidden': 'true', class: 'inline-block size-6 shrink-0 animate-spin rounded-full border-4 border-border border-t-foreground motion-reduce:animate-none' }),
+    h('span', null, text('confirmingProgress')));
+  const stalled = h('p', { hidden: true, 'data-join-stalled': true }, text('confirmingStalled'));
   const [title, body, ...next] = {
     continue: ['continueTitle', 'continueBody', h('a', { href: '/join/checkout', class: button }, text('pay'))],
-    confirming: ['confirmingTitle', 'confirmingBody', h('a', { href: '/join/return', class: link }, text('checkAgain'))],
+    confirming: ['confirmingTitle', 'confirmingBody', progress, stalled, h('a', { href: '/join/return', class: link }, text('checkAgain'))],
     welcomeEmail: ['welcomeTitle', 'welcomeEmail', action('/join/sign-in', 'resend')],
     resent: ['welcomeTitle', 'resent', action('/join/sign-in', 'resend')],
     // Password mode: no account and no password until staff confirm the person and issue a printed invitation.
@@ -100,5 +105,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) 
     failed: ['title', 'failed', start],
     tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],
   }[state] as [string, string, ...ReturnType<typeof h>[]];
-  return layout(input, text(title), h('section', { class: panel, role: 'status' }, h('p', null, text(body)), ...next));
+  const waiting = state === 'confirming';
+  return layout(input, text(title), h('section', { class: panel, role: 'status', ...(waiting ? { 'aria-live': 'polite', 'data-join-confirming': true } : {}) },
+    h('p', null, text(body)), ...next), waiting);
 }

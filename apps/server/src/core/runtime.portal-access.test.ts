@@ -47,23 +47,23 @@ it('keeps a signed-in session without staff roles or household links, so the adm
   const get = async (path: string, cookie: string) => (await runtime!.app.request(origin + path, { headers: headers(cookie) })).status;
 
   const unlinkedCookie = await signIn('unlinked@example.test', 'unlinked-user-password');
-  expect(await bootstrap(unlinkedCookie)).toEqual({ userId: unlinked.userId, roles: [], member: false });
+  expect(await bootstrap(unlinkedCookie)).toEqual({ userId: unlinked.userId, displayName: 'Unlinked', roles: [], member: false });
   expect(await get('/api/members', unlinkedCookie)).toBe(403);
   expect(await get('/api/portal/context', unlinkedCookie)).toBe(404);
 
   // A revoked household login keeps its session but loses access, rather than looping back to login.
   const memberCookie = await signIn('member@example.test', 'linked-member-password');
-  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, roles: [], member: true });
+  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: true });
   expect(await get('/api/portal/context', memberCookie)).toBe(200);
   await db.forGym(gymId, tx => tx.delete(householdUsers).where(eq(householdUsers.id, login.id)));
-  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, roles: [], member: false });
+  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: false });
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
   expect(await get('/api/members', memberCookie)).toBe(403);
 
   // A login with several households keeps its session and is offered the picker, never the first household.
   const first = await factory('households', gymId, { name: 'First household' }), second = await factory('households', gymId, { name: 'Second household' });
   for (const household of [first, second]) await factory('householdUsers', gymId, { householdId: household.id, userId: member.userId, scope: 'payer', memberId: null });
-  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, roles: [], member: true });
+  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: true });
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
   const choices = await (await runtime!.app.request(origin + '/api/portal/households', { headers: headers(memberCookie) })).json();
   expect(choices).toEqual({ data: { current: null, households: [
@@ -83,6 +83,26 @@ it('keeps a signed-in session without staff roles or household links, so the adm
   // A revoked choice is never honored: with one link left, the session opens that household.
   await db.forGym(gymId, tx => tx.delete(householdUsers).where(and(eq(householdUsers.householdId, first.id), eq(householdUsers.userId, member.userId))));
   expect(await context()).toEqual({ data: { role: 'payer', householdId: second.id, memberId: null } });
+});
+it('names a portal login by the member it is linked to in the open household, else by its own name, never another gym\'s', async () => {
+  const user = await accounts.createPasswordUser(gymId, 'named@example.test', 'Login Name', 'named-user-password', clock);
+  const first = await factory('households', gymId, { name: 'Named first' }), second = await factory('households', gymId, { name: 'Named second' });
+  const mia = await factory('members', gymId, { householdId: first.id, firstName: 'Mia', lastName: 'First' });
+  const noa = await factory('members', gymId, { householdId: second.id, firstName: 'Noa', lastName: 'Second' });
+  await factory('householdUsers', gymId, { userId: user.userId, householdId: first.id, scope: 'member', memberId: mia.id });
+  await factory('householdUsers', gymId, { userId: user.userId, householdId: second.id, scope: 'member', memberId: noa.id });
+  const cookie = await signIn('named@example.test', 'named-user-password');
+  const name = async () => (await (await runtime!.app.request(origin + '/api/auth/bootstrap', { headers: headers(cookie) })).json()).data.session.displayName;
+  const choose = (householdId: string) => runtime!.app.request(origin + '/api/portal/households/current', { method: 'POST', headers: headers(cookie), body: JSON.stringify({ householdId }) });
+  // Before choosing, no household is open: the earliest link names the person; once one is open, its member does.
+  expect(['Mia First', 'Noa Second']).toContain(await name());
+  expect((await choose(second.id)).status).toBe(200);
+  expect(await name()).toBe('Noa Second');
+  expect((await choose(first.id)).status).toBe(200);
+  expect(await name()).toBe('Mia First');
+  // With no linked member left, the login's own name is used.
+  await db.forGym(gymId, tx => tx.delete(householdUsers).where(eq(householdUsers.userId, user.userId)));
+  expect(await name()).toBe('Login Name');
 });
 it('shows the owner, never a coach, the households awaiting portal confirmation on the dashboard', async () => {
   const owner = await accounts.createPasswordUser(gymId, 'owner@example.test', 'Owner', 'owner-user-password', clock);

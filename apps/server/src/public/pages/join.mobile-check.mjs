@@ -90,6 +90,19 @@ try {
     await fill(page, true); await check(page, width + '-form-signed');
     await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await page.waitForURL('**/join/return');
     await check(page, width + '-confirming');
+    await expect(page.locator('[data-join-progress]')).toBeVisible(); await expect(page.locator('main')).toContainText('This page updates automatically');
+    expect(await page.locator('[data-join-progress] span[aria-hidden]').evaluate(e => getComputedStyle(e).animationName)).toBe('spin');
+    // The page keeps its Refresh header, but the script cancels the pending reload once loaded, so only polling moves it to Welcome once the join settles.
+    const loads = []; page.on('request', request => { if (request.isNavigationRequest() && new URL(request.url()).pathname === '/join/return') loads.push(request.url()); });
+    await page.goto(base + '/join/return'); await expect(page.locator('[data-join-confirming]')).toBeVisible(); await page.waitForTimeout(6500); expect(loads).toHaveLength(1);
+    state = 'active'; await expect(page.locator('main')).toContainText('We sent a sign-in link', { timeout: 6000 });
+    expect(await page.locator('[data-join-confirming]').count()).toBe(0);
+    // It gives up after its limit (about 90 s on the page's clock) and leaves Check again.
+    state = 'pending'; const slow = await context.newPage();
+    await slow.clock.install(); await slow.goto(base + '/join/return'); await expect(slow.locator('[data-join-confirming]')).toBeVisible();
+    for (let i = 0; i < 50; i++) { await slow.clock.runFor(2100); await slow.waitForTimeout(30); }
+    await expect(slow.locator('[data-join-stalled]')).toBeVisible(); await expect(slow.locator('[data-join-progress]')).toBeHidden();
+    await expect(slow.locator('a', { hasText: 'Check again' })).toBeVisible(); await check(slow, width + '-confirming-stalled'); await slow.close();
     await page.goto(base + '/join/cancelled'); await check(page, width + '-cancelled');
     state = 'active'; await page.goto(base + '/join/return'); await check(page, width + '-welcome-email');
     await page.locator('button', { hasText: 'Send the sign-in link again' }).click(); await page.waitForURL('**/join/sign-in'); await check(page, width + '-resent');
@@ -120,5 +133,5 @@ try {
   expect(joins.every(c => c.body.members.length === 2 && c.body.members[1].waivers.every(w => w.signer.kind === 'guardian' && w.signer.relationship === 'Parent'))).toBe(true);
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members.every(m => m.signatures.every(s => s.pngBase64.startsWith('iVBOR'))))).toBe(true);
   expect(calls.filter(c => c.kind === 'checkout')).toHaveLength(3);
-  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming, cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
+  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming (spinner, the script cancelling the Refresh reload and polling on to Welcome, stalled after its limit), cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
 } finally { await browser.close(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }

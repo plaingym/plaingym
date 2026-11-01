@@ -51,7 +51,7 @@ function transport(initial: Partial<InvoiceDetail> = {}) {
   });
   return { fetcher, client: createInvoiceClient(fetcher), detail };
 }
-const bootstrap: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: settings.timezone, currency: 'USD', enabledModules: [] }, session: { userId: id(10), roles: ['front_desk'], member: false }, login: { password: true, magicLink: false } };
+const bootstrap: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: settings.timezone, currency: 'USD', enabledModules: [] }, session: { userId: id(10), displayName: 'Test User', roles: ['front_desk'], member: false }, login: { password: true, magicLink: false } };
 function start(view: React.ReactNode) {
   return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}><ShellServicesContext.Provider value={createShellServices(async () => bootstrap)}>{view}</ShellServicesContext.Provider></QueryClientProvider>);
 }

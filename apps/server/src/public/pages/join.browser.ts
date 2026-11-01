@@ -1,9 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { joinBodyBytes } from './join.service.js';
 
+export const joinPollIntervalMs = 2000;
+export const joinPollLimit = 45;
+
 /** Plain browser JavaScript, independent of server bundler helpers. No hydration: without it the native form posts files. */
 export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0-only
 (() => {
+  // The confirming page: ask for /join/return about every 2 s and reload once it no longer says it is confirming. The reload
+  // (not the polled body) renders the result, so the page never trusts what the poll returns. It gives up after about 90 s.
+  if (document.querySelector('[data-join-confirming]')) {
+    // The Refresh header would reload the page every five seconds and restart this bounded poll. Once the page has loaded,
+    // cancel that pending reload (best effort: a browser that keeps it just reloads, and the poll starts over).
+    const keep = () => window.stop();
+    if (document.readyState === 'complete') keep(); else window.addEventListener('load', keep);
+    let polls = 0;
+    const poll = async () => {
+      polls += 1;
+      try {
+        const response = await fetch('/join/return', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'text/html' } });
+        // A redirect (or any answer that is not this page) is not a settled join; only the page's own marker going away is.
+        if (response.ok && !response.redirected && !(await response.text()).includes('data-join-confirming')) { window.location.reload(); return; }
+      } catch { /* a dropped request is just another wait */ }
+      if (polls < ${joinPollLimit}) { setTimeout(poll, ${joinPollIntervalMs}); return; }
+      document.querySelector('[data-join-progress]')?.setAttribute('hidden', '');
+      document.querySelector('[data-join-stalled]')?.removeAttribute('hidden');
+    };
+    setTimeout(poll, ${joinPollIntervalMs});
+    return;
+  }
   const form = document.querySelector('[data-join-form]');
   if (!form) return;
   const feedback = document.getElementById('feedback');

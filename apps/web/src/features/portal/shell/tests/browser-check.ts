@@ -13,14 +13,14 @@ const { OpenAPIHono } = await import(pathToFileURL(require.resolve('@hono/zod-op
 const { createPortalPwaRoutes } = await import(pathToFileURL(resolve('apps/server/src/areas/portal/auth.pwa.ts')).href);
 const output = resolve('coverage/portal/browser'), dist = resolve('apps/web/dist'); await mkdir(output, { recursive: true });
 const gym = '00000000-0000-7000-8000-000000000001', household = '00000000-0000-7000-8000-000000000002', member = '00000000-0000-7000-8000-000000000003', userId = '00000000-0000-7000-8000-000000000004';
-const bootstrap = { gym: { id: gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, roles: [], member: true }, login: { password: true, magicLink: false } };
+const bootstrap = { gym: { id: gym, name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, displayName: 'A person with a very long display name that must truncate', roles: [], member: true }, login: { password: true, magicLink: false } };
 const person = { id: member, householdId: household, firstName: 'Alex', lastName: 'Example', email: 'alex@example.test', phone: null, photoKey: null, dateOfBirth: '1990-01-01', status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1, createdAt: '2026-10-28T12:00:00Z' };
 const login = { id: gym, householdId: household, userId, scope: 'member', memberId: member, createdAt: person.createdAt, email: person.email };
 const second = '00000000-0000-7000-8000-000000000005';
 const choices = [{ householdId: household, name: 'A household with a long name that wraps on a phone', role: 'payer' }, { householdId: second, name: 'Second household', role: 'member' }];
 const invitation = { id: '00000000-0000-7000-8000-000000000006', scope: 'member', memberId: member, memberName: 'Alex Example', email: 'a-long-invited-address-that-wraps-on-a-phone@example.test', expiresAt: '2026-11-04T12:00:00.000Z' };
 const waiting = { id: 'members.portal-confirmations', kind: 'count', titleKey: 'portal/access:waitingTitle', status: 'ready', count: 22, items: [{ label: 'A household with a long name that must wrap on a phone', href: '/admin/members/' + member + '#memberTabs.portal-access' }, { label: 'Second household', href: '/admin/members/' + second + '#memberTabs.portal-access' }] };
-let revoked = false, awaiting = false, pending = false, current: string | null = null;
+let revoked = false, awaiting = false, pending = false, staff = false, current: string | null = null;
 const bundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {QueryClient,QueryClientProvider} from '@tanstack/react-query'; import {ShellServicesContext} from './src/app/context.tsx'; import {PortalAccessTab} from './src/features/portal/access/tab.tsx'; const services={loadBootstrap:async()=>(${JSON.stringify({ ...bootstrap, session: { userId, roles: ['front_desk'], member: false } })})}; createRoot(document.getElementById('root')).render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><ShellServicesContext.Provider value={services}><main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Alex Example</h1><PortalAccessTab memberId="${member}"/></main></ShellServicesContext.Provider></QueryClientProvider>);`, resolveDir: resolve('apps/web'), sourcefile: 'portal-access-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
 await writeFile(resolve(output, 'access.js'), bundle.outputFiles[0]!.text);
 const dashboardBundle = await build({ stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {DashboardWidgets} from './src/features/dashboard/widgets.tsx'; createRoot(document.getElementById('root')).render(<main className="mx-auto max-w-4xl p-4"><h1 className="text-2xl font-semibold">Dashboard</h1><DashboardWidgets roles={['front_desk']} widgets={[${JSON.stringify(waiting)}, ${JSON.stringify({ ...waiting, id: 'members.hidden', count: 0, items: [] })}]}/></main>);`, resolveDir: resolve('apps/web'), sourcefile: 'dashboard-browser.tsx', loader: 'tsx' }, bundle: true, write: false, format: 'esm', platform: 'browser', jsx: 'automatic' });
@@ -35,7 +35,7 @@ const server = createServer(async (req, res) => {
   if (path.startsWith('/api/')) {
     res.setHeader('Content-Type', 'application/json');
     if (path === '/api/demo') { res.end(JSON.stringify({ data: { mode: 'disabled' } })); return; }
-    if (path === '/api/auth/bootstrap') { res.end(JSON.stringify({ data: bootstrap })); return; }
+    if (path === '/api/auth/bootstrap') { res.end(JSON.stringify({ data: staff ? { ...bootstrap, session: { userId, displayName: 'Dana Owner', roles: ['owner', 'coach'], member: false } } : bootstrap })); return; }
     if (path === '/api/portal/households') { res.end(JSON.stringify({ data: { current, households: choices } })); return; }
     if (path === '/api/portal/households/current') { let body = ''; for await (const chunk of req) body += chunk; current = (JSON.parse(body) as { householdId: string }).householdId; res.end(JSON.stringify({ data: null })); return; }
     if (path === '/api/portal/context') {
@@ -78,6 +78,12 @@ try {
     await check('picker');
     await page.getByRole('button', { name: /Second household/ }).click(); await expect(page.getByRole('heading', { name: 'Welcome to your member portal' })).toBeVisible();
     await expect(page.getByRole('combobox', { name: 'Household' })).toHaveValue(second); await check('switcher');
+    // The header names the person and their scope in the open household beside the gym, inside the viewport with the menu closed.
+    const identity = page.getByTestId('signed-in-identity');
+    await expect(identity).toContainText('A person with a very long display name'); await expect(identity).toContainText('Member');
+    const portalBox = (await identity.boundingBox())!; expect(portalBox.x).toBeGreaterThanOrEqual(0); expect(portalBox.x + portalBox.width).toBeLessThanOrEqual(width);
+    if (width === 360) expect(await identity.locator('.truncate').evaluate((element: HTMLElement) => element.scrollWidth > element.clientWidth)).toBe(true);
+    expect(portalBox.height).toBeLessThan(24); await expect(identity.locator('span').last()).toBeInViewport();
     await page.getByRole('combobox', { name: 'Household' }).selectOption(household); await expect(page.getByRole('combobox', { name: 'Household' })).toHaveValue(household);
     expect(current).toBe(household);
     if (width === 360) { await page.getByRole('button', { name: 'Menu' }).click(); await expect(page.getByRole('navigation')).toBeVisible(); }
@@ -86,6 +92,12 @@ try {
     const cdp = await page.context().newCDPSession(page); const manifest = await cdp.send('Page.getAppManifest'); expect(manifest.errors).toEqual([]);
     expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
     expect(await page.evaluate(() => caches.keys())).toEqual([]);
+    // The admin header shows the name and every role on the page itself, not inside the account popover or the phone menu.
+    staff = true; await page.goto(origin + '/admin'); const who = page.getByTestId('signed-in-identity');
+    await expect(who).toBeVisible(); await expect(who).toContainText('Dana Owner · Owner, Coach'); await expect(page.locator('#account-menu')).toBeHidden();
+    const adminBox = (await who.boundingBox())!; expect(adminBox.x).toBeGreaterThanOrEqual(0); expect(adminBox.x + adminBox.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: resolve(output, `admin-header-${width}.png`), fullPage: false }); staff = false;
     await page.goto(origin + '/portal/claim#' + 'a'.repeat(64)); await expect(page.getByRole('heading', { name: 'Set up your portal login' })).toBeVisible();
     await expect(page).not.toHaveURL(/#/); await check('claim');
     await page.getByLabel('Password (12–128 characters)').fill('browser-password-123'); await page.getByRole('button', { name: 'Accept invitation' }).click();

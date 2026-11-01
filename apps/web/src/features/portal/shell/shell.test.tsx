@@ -25,10 +25,15 @@ it('loads member context, renders the portal, and clears access when signing out
     : path === '/api/portal/households' ? { data: { current: householdId, households: [{ householdId, name: 'Only household', role: 'payer' }] } }
     : { data: { role: 'payer', householdId, memberId: null } }));
   vi.stubGlobal('fetch', fetcher);
-  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: userId, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: userId, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const router = createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] })); render(<App services={services} router={router} />);
   expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
   expect(fetcher).toHaveBeenCalledWith('/api/portal/context', expect.objectContaining({ credentials: 'same-origin' }));
+  // The header names the gym, then the signed-in person and their scope in this household, outside the collapsed menu.
+  const identity = screen.getByTestId('signed-in-identity');
+  expect(identity.textContent).toBe('Test User · Account holder');
+  expect(identity.closest('header')?.textContent).toContain('Test Gym');
+  expect(identity.closest('nav')).toBeNull(); expect(screen.getByText('Test User').className).toContain('truncate');
   // A single household needs no picker or switcher.
   expect(screen.queryByRole('combobox')).toBeNull();
   const user = userEvent.setup(); await user.click(screen.getByRole('button', { name: 'Menu' }));
@@ -51,7 +56,7 @@ function portal(initial: string | null) {
     return new Response(null, { status: 404 });
   });
   vi.stubGlobal('fetch', fetcher);
-  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: current === ids.second ? 'Noa Second' : 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }))} />);
   const selections = () => fetcher.mock.calls.filter(([path]) => path === '/api/portal/households/current').map(([, init]) => JSON.parse(String(init!.body)));
   return { fetcher, selections };
@@ -69,11 +74,15 @@ it('asks a login with several households to choose one before showing the portal
 it('switches households from the header and reloads the portal for the new household only', async () => {
   const f = portal(ids.first), user = userEvent.setup();
   expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
+  await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Test User · Account holder'));
   const contextCalls = () => f.fetcher.mock.calls.filter(([path]) => path === '/api/portal/context').length, before = contextCalls();
   await user.selectOptions(screen.getByRole('combobox'), ids.second);
   await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.second));
   expect(f.selections()).toEqual([{ householdId: ids.second }]);
   expect(contextCalls()).toBeGreaterThan(before);
+  // The scope follows the household that is open: the same person is only a member of the second one.
+  // and so does the name, which the server derives from the open household, not a cached copy from the first one.
+  await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Noa Second · Member'));
 });
 it('completes a claim from the login-link callback and removes its code from the address bar', async () => {
   vi.stubGlobal('scrollTo', vi.fn());
@@ -81,7 +90,7 @@ it('completes a claim from the login-link callback and removes its code from the
   vi.stubGlobal('location', { ...window.location, pathname: '/portal/claim', search: '?claim=' + code, hash: '', assign });
   const fetcher = vi.fn(async (path: string) => Response.json(path === '/api/demo' ? { data: { mode: 'disabled' } } : { data: null }));
   vi.stubGlobal('fetch', fetcher);
-  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, roles: [], member: false }, login: { password: false, magicLink: true } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: 'Test User', roles: [], member: false }, login: { password: false, magicLink: true } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal/claim?claim=' + code] }))} />);
   await waitFor(() => expect(assign).toHaveBeenCalledWith('/portal'));
   const call = fetcher.mock.calls.find(([path]) => path === '/api/portal/claims/complete') as unknown as [string, RequestInit];

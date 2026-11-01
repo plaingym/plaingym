@@ -227,6 +227,34 @@ describe('session middleware and atomic protected-account resets', () => {
     expect(await anonymous.json()).toMatchObject({ data: { gym: { id: f.otherGymId }, session: null } });
     expect((await app.request(f.otherOrigin + '/api/auth/bootstrap', { headers: { cookie } })).status).toBe(403);
   });
+  describe('bootstrap display name', () => {
+    const displayName = async (app: ReturnType<typeof routeApp>, origin: string, response: Response) =>
+      (await (await app.request(origin + '/api/auth/bootstrap', { headers: { cookie: cookies(response) } })).json()).data.session.displayName;
+    it('names a login in two gyms by each gym\'s own staff profile', async () => {
+      const f = await fixture();
+      await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'coach' });
+      await factory('staffProfiles', f.gymId, { userId: f.user.id, displayName: 'Coach Alpha' });
+      await factory('staffRoles', f.otherGymId, { userId: f.user.id, role: 'owner' });
+      await factory('staffProfiles', f.otherGymId, { userId: f.user.id, displayName: 'Owner Beta' });
+      const app = routeApp(f);
+      expect(await displayName(app, f.origin, await f.signIn())).toBe('Coach Alpha');
+      expect(await displayName(app, f.otherOrigin, await f.signIn(f.b, f.otherOrigin))).toBe('Owner Beta');
+    });
+    it('uses the linked member\'s name, else the login\'s own name, and never another gym\'s profile', async () => {
+      const f = await fixture();
+      // Gym B knows the login by a staff profile; gym A only by the member it is linked to.
+      await factory('staffRoles', f.otherGymId, { userId: f.user.id, role: 'owner' });
+      await factory('staffProfiles', f.otherGymId, { userId: f.user.id, displayName: 'Owner Beta' });
+      await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'front_desk' });
+      const app = routeApp(f), firstSession = await f.signIn();
+      expect(await displayName(app, f.origin, firstSession)).toBe(f.user.name);
+      const household = await factory('households', f.gymId);
+      const member = await factory('members', f.gymId, { householdId: household.id, firstName: 'Mia', lastName: 'Member' });
+      await factory('householdUsers', f.gymId, { userId: f.user.id, householdId: household.id, memberId: member.id, scope: 'member' });
+      expect(await displayName(app, f.origin, firstSession)).toBe('Mia Member');
+      expect(await displayName(app, f.otherOrigin, await f.signIn(f.b, f.otherOrigin))).toBe('Owner Beta');
+    });
+  });
   it('sets staff roles from the resolved gym and rejects foreign cookies before handlers', async () => {
     const f = await fixture();
     await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'owner' });

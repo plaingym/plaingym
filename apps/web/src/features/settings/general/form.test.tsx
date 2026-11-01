@@ -25,7 +25,7 @@ describe('general settings and the cached shell summary', () => {
     let saved = settings;
     const loadBootstrap = vi.fn(async (): Promise<ShellBootstrap> => ({
       gym: { id: settings.id, name: saved.name, timezone: saved.timezone, currency: saved.currency, enabledModules: [] },
-      session: { userId: id(2), roles: ['owner'], member: false }, login: { password: true, magicLink: false } }));
+      session: { userId: id(2), displayName: 'Test User', roles: ['owner'], member: false }, login: { password: true, magicLink: false } }));
     client.GET.mockResolvedValue(reply(200, { data: settings }));
     client.PATCH.mockImplementation(async (path: string, { body }: { body: Partial<GymSettings> }) => {
       saved = { ...saved, ...body, revision: saved.revision + 1 };

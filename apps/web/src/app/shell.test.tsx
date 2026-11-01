@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
@@ -45,7 +45,7 @@ describe('login', () => {
   });
   it('signs in with a password, reloads the principal and sends staff to admin', async () => {
     const service = services();
-    const staff = { ...anonymous, session: { userId: 'owner', roles: ['owner'] as const, member: false } };
+    const staff = { ...anonymous, session: { userId: 'owner', displayName: 'Test User', roles: ['owner'] as const, member: false } };
     vi.mocked(service.loadBootstrap).mockResolvedValueOnce(anonymous).mockResolvedValue(staff);
     const router = start(service);
     const user = userEvent.setup();
@@ -117,7 +117,7 @@ describe('login', () => {
     expect(document.body.textContent).not.toContain('private details');
   });
   it('sends a signed-in member to their portal', async () => {
-    const router = start(services({ ...anonymous, session: { userId: 'member', roles: [], member: true } }));
+    const router = start(services({ ...anonymous, session: { userId: 'member', displayName: 'Test User', roles: [], member: true } }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/portal'));
   });
 });
@@ -131,13 +131,13 @@ const nav: NavigationEntry[] = [
 ];
 describe('admin shell', () => {
   it('filters enabled items by module and all of the principal roles', () => {
-    const coach = { userId: 'coach', roles: ['coach'] as const, member: false };
+    const coach = { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false };
     expect(visibleAdminNavigation(nav, coach, []).map((x) => x.id)).toEqual(['members']);
     expect(visibleAdminNavigation(nav, coach, ['website']).map((x) => x.id)).toEqual(['members', 'website']);
     expect(visibleAdminNavigation(nav, { ...coach, roles: ['coach', 'admin'] }, []).map((x) => x.id)).toEqual(['members', 'settings']);
   });
   it('renders navigation links and toggles the mobile menu with accessible state', async () => {
-    const state = { ...anonymous, session: { userId: 'coach', roles: ['coach'] as const, member: false } };
+    const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
     const signOut = vi.fn();
     const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={signOut}><p>Child content</p></AdminShell> });
     const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) });
@@ -165,12 +165,23 @@ describe('admin shell', () => {
     const account = screen.getByRole('button', { name: 'Account' });
     expect(account.getAttribute('aria-expanded')).toBe('false');
     await user.click(account);
-    expect(screen.getByText('Coach')).toBeDefined();
+    expect(screen.getByText(/Signed in as/).textContent).toBe('Signed in as Test User (Coach)');
     await user.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(signOut).toHaveBeenCalledOnce();
   });
+  it('shows who is signed in, with every role, in the header outside the collapsed menus on every page', async () => {
+    const state = { ...anonymous, session: { userId: 'owner', displayName: 'Dana Owner', roles: ['owner', 'coach'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+    render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+    const identity = await screen.findByTestId('signed-in-identity');
+    expect(identity.textContent).toContain('Dana Owner · Owner, Coach');
+    // Neither the phone navigation nor the account popover has to be opened to see it, and it stays on one truncated line.
+    expect(identity.closest('header')).not.toBeNull();
+    expect(identity.closest('nav, #account-menu')).toBeNull();
+    expect(within(identity).getByText('Dana Owner').className).toContain('truncate');
+  });
   it('closes the phone menu after navigating', async () => {
-    const state = { ...anonymous, session: { userId: 'coach', roles: ['coach'] as const, member: false } };
+    const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
     const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
     const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) });
     render(<RouterProvider router={router} />);
@@ -186,11 +197,11 @@ describe('admin shell', () => {
     await screen.findByLabelText('Email address');
   });
   it('redirects member-only sessions away from admin', async () => {
-    const router = start(services({ ...anonymous, session: { userId: 'member', roles: [], member: true } }), '/admin');
+    const router = start(services({ ...anonymous, session: { userId: 'member', displayName: 'Test User', roles: [], member: true } }), '/admin');
     await waitFor(() => expect(router.state.location.pathname).toBe('/portal'));
   });
   it('shows a staff-access denial for a principal without roles or membership', async () => {
-    start(services({ ...anonymous, session: { userId: 'unlinked', roles: [], member: false } }), '/admin');
+    start(services({ ...anonymous, session: { userId: 'unlinked', displayName: 'Test User', roles: [], member: false } }), '/admin');
     expect((await screen.findByRole('alert')).textContent).toContain('does not have staff access');
   });
 });

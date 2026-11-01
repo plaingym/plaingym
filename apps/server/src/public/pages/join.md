@@ -58,8 +58,18 @@ passwordless mode the sign-in link goes out. The webhook's `afterCheckout(gymId,
 does the same for any recorded Checkout of the joined household once the invoice is paid.
 Both lock the household and check `public.join.completed`, so together, retried or
 concurrent, they complete a join once and send one sign-in link. `/join/return` grants
-nothing: it shows "confirming" (refreshing every five seconds) until the invoice is paid,
-the memberships are active and the join is complete. A cancelled or expired Checkout
+nothing: it shows "confirming" until the invoice is paid, the memberships are active and
+the join is complete. The confirming page has a spinner with `aria-live` text and says it
+updates automatically. `/join/client.js` (the page's only script, `'self'`, no inline
+script) asks `/join/return` itself with the join cookie about every two seconds and
+reloads the page once the answer no longer says it is confirming, so no status route
+exists and nothing but the visitor's own cookie is read; after 45 polls (about 90
+seconds) it stops, hides the spinner and shows "taking longer than usual" beside the
+**Check again** link. Without JavaScript the `Refresh: 5` header reloads the page every
+five seconds, and the link works as before. With JavaScript the script calls
+`window.stop()` once the page has loaded, which cancels that pending reload (it would
+restart the bounded poll every five seconds); a browser that keeps the reload still
+reaches Welcome, as the poll starts over on each load. A cancelled or expired Checkout
 leaves the people prospects and the memberships pending; the daily runner neither charges
 nor activates them and holds the invoice for review after seven days. A browser without
 the cookie is told what happens next and can do nothing more.
