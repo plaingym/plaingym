@@ -21,6 +21,12 @@ export const gyms = pgTable('gyms', {
   bookingWindowDays: integer('booking_window_days').notNull().default(14),
   cancellationCutoffMinutes: integer('cancellation_cutoff_minutes').notNull().default(60),
   openMatCountsAsClass: boolean('open_mat_counts_as_class').notNull().default(false),
+  /**
+   * The charge type whose current price the public drop-in page shows; null shows no price. A foreign key would make
+   * this module and billing.ts import each other, so settings checks it under the gym's row-level security instead,
+   * and the reader matches it on gym_id too.
+   */
+  dropInChargeTypeId: uuid('drop_in_charge_type_id'),
   settings: jsonb('settings').notNull().default({}), revision: integer('revision').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -40,6 +40,11 @@ backfill for invitations still missing a column: those a process on the release 
 after it ran (no gym, household or invitee), and those a process on the 0013 release wrote (no scope).
 Migration `0015_refund_canceled.sql` widens `refunds_status_check` to allow `canceled`, for a refund
 cancelled at the processor before it completed. Every existing row already satisfies the new check.
+Migration `0016_drop_in_charge_type.sql` adds nullable `gyms.drop_in_charge_type_id`, the charge type
+whose price the public drop-in page shows. Existing gyms keep null. It has no foreign key: one would
+make the `gyms` and `charge_types` schema modules import each other, which breaks loading them in some
+orders. Instead, the settings service accepts only a charge type visible under the gym's row-level
+security, and the drop-in fee reader also matches it on `gym_id`, so a stale or foreign ID shows no fee.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

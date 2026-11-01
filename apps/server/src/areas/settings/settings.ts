@@ -3,7 +3,8 @@ import { and, eq } from 'drizzle-orm';
 import { databaseCode, forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { billingRulesSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
-  type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest } from '@plaingym/shared/contracts';
+  updateDropInSettingsRequestSchema, type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest,
+  type UpdateDropInSettingsRequest } from '@plaingym/shared/contracts';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -14,7 +15,7 @@ const projection = {
   bookingWindowDays: gyms.bookingWindowDays, cancellationCutoffMinutes: gyms.cancellationCutoffMinutes,
   openMatCountsAsClass: gyms.openMatCountsAsClass,
   billingEnabled: gyms.billingEnabled, memberEmailsEnabled: gyms.memberEmailsEnabled,
-  retryDays: gyms.retryDays,
+  retryDays: gyms.retryDays, dropInChargeTypeId: gyms.dropInChargeTypeId,
   revision: gyms.revision, createdAt: gyms.createdAt, updatedAt: gyms.updatedAt,
 };
 type Row = { createdAt: Date; updatedAt: Date } & Record<string, unknown>;
@@ -31,6 +32,9 @@ export async function readBookingRules(tx: Transaction, gymId: string) {
   if (!row) throw new AppError('not_found', 'Gym not found');
   return row;
 }
+/** Each settings kind saves through its own request schema; the kind also names the audit action. */
+const updateSchemas = { general: updateGymSettingsRequestSchema, booking: updateBookingRulesRequestSchema,
+  billing: updateBillingRulesRequestSchema, currency: updateGymCurrencyRequestSchema, drop_in: updateDropInSettingsRequestSchema } as const;
 export function createSettingsService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {
@@ -41,10 +45,9 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
         return present(row);
       });
     },
-    async update(context: MutationContext, kind: 'general' | 'booking' | 'billing' | 'currency', input: UpdateGymSettingsRequest | UpdateBookingRulesRequest | UpdateBillingRulesRequest | UpdateGymCurrencyRequest) {
-      const schema = kind === 'general' ? updateGymSettingsRequestSchema : kind === 'booking' ? updateBookingRulesRequestSchema
-        : kind === 'billing' ? updateBillingRulesRequestSchema : updateGymCurrencyRequestSchema;
-      const { revision, ...changes } = schema.parse(input);
+    async update(context: MutationContext, kind: keyof typeof updateSchemas,
+      input: UpdateGymSettingsRequest | UpdateBookingRulesRequest | UpdateBillingRulesRequest | UpdateGymCurrencyRequest | UpdateDropInSettingsRequest) {
+      const { revision, ...changes } = updateSchemas[kind].parse(input);
       try {
         return await scope(context.gymId, async (tx) => {
           const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
@@ -54,6 +57,13 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
               const existing = await tx.select({ id: table.id }).from(table).where(eq(table.gymId, context.gymId)).limit(1);
               if (existing.length) throw new AppError('conflict', 'Currency cannot change after billing records exist');
             }
+          }
+          if (kind === 'drop_in' && 'dropInChargeTypeId' in changes && changes.dropInChargeTypeId) {
+            // Row-level security hides other gyms' charge types, so their IDs are not found; the share lock holds off an archive until commit.
+            const [chargeType] = await tx.select({ active: chargeTypes.active }).from(chargeTypes)
+              .where(eq(chargeTypes.id, changes.dropInChargeTypeId)).for('share');
+            if (!chargeType) throw new AppError('not_found', 'Charge type not found');
+            if (!chargeType.active) throw new AppError('conflict', 'Choose an active charge type');
           }
           const guard = revisionGuard(gyms.revision, revision);
           const after = assertRevised(await tx.update(gyms).set({ ...changes, revision: guard.next, updatedAt: clock.now() })

@@ -12,11 +12,12 @@ const billingFieldErrors: MiddlewareHandler<RequestEnvironment> = async (c, next
     throw new AppError('invalid_request', 'The request is invalid.', { retryDays: ['invalid_retry_days'] });
   await next();
 };
+const kinds = { updateGeneral: 'general', updateBookingRules: 'booking', updateBillingRules: 'billing', updateCurrency: 'currency', updateDropIn: 'drop_in' } as const;
 export function createSettingsRoutes(service = createSettingsService()) {
   const get = settingsContracts.get;
   return [route({ ...get, responses: { 200: { description: 'Gym settings', content: { 'application/json': { schema: get.response } } } } },
     async (c) => c.json({ data: await service.get(c.get('context').gym.gymId) }, 200)),
-    ...(['updateGeneral', 'updateBookingRules', 'updateBillingRules', 'updateCurrency'] as const).map((name) => {
+    ...(['updateGeneral', 'updateBookingRules', 'updateBillingRules', 'updateCurrency', 'updateDropIn'] as const).map((name) => {
       const contract = settingsContracts[name];
       return route({ ...contract,
         ...(name === 'updateBillingRules' ? { middleware: billingFieldErrors } : {}),
@@ -27,7 +28,7 @@ export function createSettingsRoutes(service = createSettingsService()) {
         if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId)
           throw new AppError('not_found', 'Gym not found');
         const data = await service.update({ gymId: context.gym.gymId, actor: { kind: 'user', userId: context.principal.userId } },
-          name === 'updateGeneral' ? 'general' : name === 'updateBookingRules' ? 'booking' : name === 'updateBillingRules' ? 'billing' : 'currency', c.req.valid('json'));
+          kinds[name], c.req.valid('json'));
         return c.json({ data }, 200);
       });
     }),

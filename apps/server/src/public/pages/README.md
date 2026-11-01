@@ -2,7 +2,10 @@
 # Core public pages
 
 `configurePublicPages` supplies the real waiver service, gym uploads, a staff
-notifier and an optional `dropInFeeFor(gymId)` projection. `createPublicStaffNotices`
+notifier and an optional `dropInFeeFor(gymId)` projection: `createDropInFee()`
+(`areas/settings/drop-in-fee.ts`) reads the gym's chosen drop-in charge type at its
+current price on each page load, and gives null (so the page asks visitors to contact
+the gym) when none is chosen or the charge type is archived. `createPublicStaffNotices`
 queues trial and drop-in staff notices: pass its `publish` as `notifyStaff` and give
 its `send` to the `public.pages.staff_notice` job through `configurePublicStaffNotices`.
 `publish` runs after the intake commits and enqueues only the kind and member ID,

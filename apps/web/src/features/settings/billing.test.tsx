@@ -11,7 +11,7 @@ vi.mock('../../lib/api.js', () => ({ api: client, createApiClient: () => client 
 const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001', name: 'Gym', slug: 'gym',
   timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
-  memberEmailsEnabled: false, retryDays: [3, 7], revision: 3, createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' };
+  memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-10-26T12:00:00Z', updatedAt: '2026-10-26T12:00:00Z' };
 const reply = (status: number, data?: unknown) => ({ response: { ok: status < 300, status }, data });
 beforeEach(() => { client.GET.mockReset(); client.PATCH.mockReset(); client.GET.mockResolvedValue(reply(200, { data: settings })); });
 afterEach(cleanup);

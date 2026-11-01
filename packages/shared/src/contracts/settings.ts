@@ -31,14 +31,18 @@ export const billingRulesSchema = z.strictObject({
     'Use strictly increasing retry days',
   ).describe('Up to four strictly increasing whole days from 1 to 28 after the first failure. Empty means no automatic retries.'),
 });
+/** The public drop-in page shows this charge type's current price; null (or an archived charge type) shows none. */
+export const dropInSettingsSchema = z.strictObject({
+  dropInChargeTypeId: idSchema.nullable().describe('One of the gym\'s own charge types, or null for no listed drop-in fee.'),
+});
 export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean() });
 /** An allowlist projection: credentials, PIN/QR keys, and opaque settings never leave the service. */
 export const gymSettingsSchema = z.strictObject({
   id: idSchema, name, slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), timezone: gymTimezoneSchema,
   address: gymAddressSchema, branding: gymBrandingSchema,
   websiteEnabled: z.boolean(), existingSiteUrl: z.url({ protocol: /^https?$/ }).nullable(),
-  currency: currencySchema, ...bookingRulesSchema.shape, ...billingRulesSchema.shape, ...goLiveSwitchesSchema.shape,
-  revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
+  currency: currencySchema, ...bookingRulesSchema.shape, ...billingRulesSchema.shape, ...dropInSettingsSchema.shape,
+  ...goLiveSwitchesSchema.shape, revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
 });
 export const updateGymSettingsRequestSchema = gymSettingsSchema.pick({
   name: true, timezone: true, address: true, branding: true, websiteEnabled: true, existingSiteUrl: true,
@@ -47,6 +51,8 @@ export const updateGymSettingsRequestSchema = gymSettingsSchema.pick({
 export const updateBookingRulesRequestSchema = bookingRulesSchema.partial().extend({ revision: revisionSchema })
   .refine((value) => Object.keys(value).length > 1, 'Supply at least one change');
 export const updateBillingRulesRequestSchema = billingRulesSchema.extend({ revision: revisionSchema });
+/** The service refuses a charge type the gym doesn't have (404) or has archived (409). */
+export const updateDropInSettingsRequestSchema = dropInSettingsSchema.extend({ revision: revisionSchema });
 /** The service returns conflict if any billing record already references the currency. */
 export const updateGymCurrencyRequestSchema = z.strictObject({ revision: revisionSchema, currency: currencySchema });
 /** A confirmation binds the reviewed dates to the membership revisions the owner saw. */
@@ -82,6 +88,8 @@ export const settingsContracts = {
     body: updateBillingRulesRequestSchema, response: gymSettingsResponseSchema },
   updateCurrency: { method: 'patch', path: '/api/settings/currency', permission: manage,
     body: updateGymCurrencyRequestSchema, response: gymSettingsResponseSchema },
+  updateDropIn: { method: 'patch', path: '/api/settings/drop-in', permission: manage,
+    body: updateDropInSettingsRequestSchema, response: gymSettingsResponseSchema },
   updateGoLive: { method: 'patch', path: '/api/settings/go-live', permission: goLive,
     body: updateGoLiveRequestSchema, response: goLiveChecklistResponseSchema },
   goLiveChecklist: { method: 'get', path: '/api/settings/go-live', permission: goLive,
@@ -100,5 +108,7 @@ export type UpdateGymSettingsRequest = z.infer<typeof updateGymSettingsRequestSc
 export type UpdateBookingRulesRequest = z.infer<typeof updateBookingRulesRequestSchema>;
 export type UpdateBillingRulesRequest = z.infer<typeof updateBillingRulesRequestSchema>;
 export type UpdateGymCurrencyRequest = z.infer<typeof updateGymCurrencyRequestSchema>;
+export type DropInSettings = z.infer<typeof dropInSettingsSchema>;
+export type UpdateDropInSettingsRequest = z.infer<typeof updateDropInSettingsRequestSchema>;
 export type UpdateGoLiveRequest = z.infer<typeof updateGoLiveRequestSchema>;
 export type GoLiveChecklistItem = z.infer<typeof goLiveChecklistItemSchema>;

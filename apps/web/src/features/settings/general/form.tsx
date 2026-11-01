@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { gymSettingsResponseSchema, type GymSettings } from '@plaingym/shared/contracts';
+import { bootstrapKey } from '../../../app/context.js';
 import { createApiClient } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
@@ -14,6 +16,7 @@ function Field({ label, className, children }: { label: string; className?: stri
   return <Label className={'grid min-w-0 gap-2 ' + (className ?? '')}>{label}{children}</Label>;
 }
 export function GeneralSettingsForm() {
+  const cache = useQueryClient();
   const [settings, setSettings] = useState<GymSettings | null>(null);
   const [message, setMessage] = useState(''), [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -48,6 +51,8 @@ export function GeneralSettingsForm() {
       else result = await client.PATCH('/api/settings/currency', { body: { revision, currency: value('currency').toUpperCase() } });
       if (!result.response.ok) { setMessage(text(result.response.status === 409 ? 'conflict' : 'error')); return; }
       setSettings(gymSettingsResponseSchema.parse(result.data).data); setMessage(text('saved'));
+      // Screens read the gym's currency and timezone from the cached shell summary; refetch it now, not after its stale time.
+      void cache.invalidateQueries({ queryKey: bootstrapKey });
     } catch { setMessage(text('error')); }
     finally { setBusy(false); }
   }
