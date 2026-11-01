@@ -36,8 +36,8 @@ it('routes all browser link actions and webhook completion through startRuntime 
   // Runtime consumes the Payments contract; exercise both implementations at this resolver boundary.
   const resolve = vi.spyOn(stripeStep, 'createPaymentsResolver').mockReturnValue(async () => provider as StripePayments);
   const register = PostgresJobs.prototype.handle;
-  const handle = vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
-    handlers.set(name, handler); register.call(this, name, handler);
+  const handle = vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
+    handlers.set(name, handler); register.call(this, name, handler, options);
   });
   const worker = vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const directory = await mkdtemp(join(tmpdir(), 'plaingym-checkout-runtime-'));

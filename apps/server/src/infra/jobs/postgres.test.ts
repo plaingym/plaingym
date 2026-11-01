@@ -443,6 +443,30 @@ describe('batch lane', () => {
     expect(await q.runNext()).toBe(true);
     expect(seen.at(-1)).toBe('batch A');
   });
+  it('puts a job registered with the batch lane in it, scheduled or not, and leaves one registered without in the default lane', async () => {
+    const q = queue(), held = latch(), seen: string[] = [];
+    q.handle('batch', async () => { seen.push('batch'); await held.promise; }, { lane: 'batch' });
+    q.schedule('scan', '7 * * * *', async () => { seen.push('scan'); }, { lane: 'batch' });
+    q.handle('work', async () => { seen.push('work'); }); q.handle('other', async () => { seen.push('other'); });
+    for (const name of ['batch', 'scan', 'work', 'other']) await q.enqueue(name, {}, options);
+    const first = q.runNext(); await until(async () => seen.length === 1);
+    try {
+      // The held batch job fills the gym's batch lane, so the scan waits and the default lane's first job runs; that job
+      // has finished by then, so the second default-lane job runs as well.
+      expect(await q.runNext()).toBe(true);
+      expect(await q.runNext()).toBe(true);
+      expect(await q.runNext()).toBe(false);
+      expect(seen).toEqual(['batch', 'work', 'other']);
+    } finally { held.resolve(); await first; }
+    expect(await q.runNext()).toBe(true);
+    expect(seen.at(-1)).toBe('scan');
+  });
+  it('records the batch lane registrations of the fake queue', () => {
+    const fake = new FakeJobs(clock);
+    fake.handle('batch', async () => {}, { lane: 'batch' }); fake.schedule('scan', '7 * * * *', async () => {}, { lane: 'batch' });
+    fake.handle('work', async () => {});
+    expect([...fake.batchJobs].sort()).toEqual(['batch', 'scan']);
+  });
   it('keeps a worker slot for other jobs while batch jobs could fill them all', async () => {
     const q = queue({ batch: { jobs: ['batch'] } }), held = latch(); const batches: string[] = [], dispatched: string[] = [];
     q.handle('batch', async (_, c) => { batches.push(c.gymId); await held.promise; });

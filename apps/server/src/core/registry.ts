@@ -10,7 +10,7 @@ import {
   type WebContribution,
 } from '@plaingym/shared';
 import type { RequestEnvironment } from './context.js';
-import type { JobContext, JobHandler, Jobs } from '../infra/jobs/index.js';
+import type { JobContext, JobHandler, JobLane, Jobs } from '../infra/jobs/index.js';
 
 export type PermissionMiddleware = (permission: RoutePermission) => MiddlewareHandler<RequestEnvironment>;
 export interface RouteAuthorization {
@@ -48,6 +48,8 @@ export function route<const C extends RouteConfig>(
 export interface JobRegistration extends RegistryEntry {
   readonly handler: JobHandler;
   readonly cron?: string;
+  /** `batch` for long work that must not hold up the gym's other jobs (`infra/jobs/README.md`, Batch lane). */
+  readonly lane?: JobLane;
 }
 export interface RenderedEmail {
   readonly subject: string;
@@ -112,8 +114,9 @@ export function createServerRegistry(contributions: ServerContributions) {
           const active = typeof enabled === 'function' ? await enabled(context) : enabled;
           if (!entry.moduleId || active.has(entry.moduleId)) await entry.handler(payload, context);
         };
-        if (entry.cron) worker.schedule(entry.id, entry.cron, handler);
-        else worker.handle(entry.id, handler);
+        const options = entry.lane ? { lane: entry.lane } : {};
+        if (entry.cron) worker.schedule(entry.id, entry.cron, handler, options);
+        else worker.handle(entry.id, handler, options);
       }
     },
   };

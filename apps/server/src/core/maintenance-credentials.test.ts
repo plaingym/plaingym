@@ -55,8 +55,8 @@ afterAll(async () => {
 it('starts and serves gyms in multi mode without maintenance credentials, never opening the maintenance role', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
-  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
-    handlers.set(name, handler); register.call(this, name, handler);
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
+    handlers.set(name, handler); register.call(this, name, handler, options);
   });
   const locked = vi.spyOn(PostgresMaintenance.prototype, 'locked');
   const sweep = vi.spyOn(DurableUploads.prototype, 'sweep').mockResolvedValue([]);

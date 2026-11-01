@@ -198,6 +198,18 @@ describe('route declarations and server composition', () => {
     registry.mount(disabled, allow, new Set());
     expect((await disabled.request('/optional')).status).toBe(404);
   });
+  it('hands a job registration\'s lane to the queue, for plain, scheduled and module jobs alike', () => {
+    const handler = async () => {};
+    const registry = createServerRegistry({
+      jobs: [{ id: 'plain.batch', lane: 'batch', handler }, { id: 'plain.default', handler },
+        { id: 'scheduled.batch', cron: '7 * * * *', lane: 'batch', handler }, { id: 'scheduled.default', cron: '8 * * * *', handler }],
+      modules: [{ id: 'website', schemaFile: null, routes: [], emails: [], web: {},
+        jobs: [{ id: 'module.batch', lane: 'batch', handler }, { id: 'module.default', handler }] }],
+    });
+    const worker = new FakeJobs(new TestClock('2026-01-01'));
+    registry.registerJobs(worker, new Set(['website']));
+    expect([...worker.batchJobs].sort()).toEqual(['module.batch', 'plain.batch', 'scheduled.batch']);
+  });
   it('rejects duplicate route and module identities', () => {
     expect(() => createServerRegistry({ routes: [fixture(), fixture()] })).toThrow('Duplicate');
     const module = { id: 'website', schemaFile: null, routes: [], jobs: [], emails: [], web: {} };

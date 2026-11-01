@@ -44,8 +44,8 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
   beforeAll(async () => {
     // Keep production registrations and database jobs; drive their handlers explicitly without polling races.
     const handle = PostgresJobs.prototype.handle;
-    vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
-      handlers.set(name, handler); handle.call(this, name, handler);
+    vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
+      handlers.set(name, handler); handle.call(this, name, handler, options);
     });
     const handleSystem = PostgresJobs.prototype.handleSystem;
     vi.spyOn(PostgresJobs.prototype, 'handleSystem').mockImplementation(function (this: PostgresJobs, name, handler) {

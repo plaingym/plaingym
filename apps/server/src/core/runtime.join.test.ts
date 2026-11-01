@@ -33,9 +33,9 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
   let queue: PostgresJobs | undefined;
-  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- Drains the runtime's own queue, as its stopped worker would.
-    queue = this; handlers.set(name, handler); register.call(this, name, handler);
+    queue = this; handlers.set(name, handler); register.call(this, name, handler, options);
   });
   // The runtime's payment service, so staff can record cash for a join as the payments route would.
   let paymentService: PaymentService | undefined;

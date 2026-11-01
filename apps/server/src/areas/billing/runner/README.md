@@ -233,10 +233,10 @@ report lists an invoice, the charge-run health tile is an error naming the invoi
 (`areas/health/charge-run.README.md`). Nothing fails on purpose, so the gym's
 `failed_jobs` check stays clear; the continuation still collects what is left.
 
-The daily run is a batch job (`runnerBatchJobs`). The runtime's worker queue
-lists it in its batch lane (`infra/jobs/README.md`), so the run holds only that
-lane: webhook dispatch (join completion included), transition effects and notices
-run while it collects; a queue without the lane makes them wait for the run.
+The daily run is a batch job: its registration in `runner.jobs.ts` names the batch
+lane (`infra/jobs/README.md`), so the run holds only that lane: webhook dispatch
+(join completion included), transition effects and notices run while it collects; a
+queue that registers it without the lane makes them wait for the run.
 
 `core/runtime.ts` composes billing before starting the job worker:
 

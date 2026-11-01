@@ -3,13 +3,14 @@ import '@hono/zod-openapi';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { zonedInstant } from '@plaingym/shared/time';
+import { createServerRegistry } from '../../../core/registry.js';
 import { PostgresJobs } from '../../../infra/jobs/index.js';
 import { clearJobs, workflowFixture, type Workflow } from '../scenarios/workflow-fixture.js';
 import { effectCreated, type TransitionEffect } from '../transitions/store.js';
 import { createTransitionJobs } from '../transitions/transitions.jobs.js';
 import { createWebhookInboxJobs } from '../webhooks/inbox.jobs.js';
 import { dailyRunJob, retryJob } from './index.js';
-import { createRunnerJobs, runnerBatchJobs } from './runner.jobs.js';
+import { createRunnerJobs } from './runner.jobs.js';
 
 const db = useTestDatabase();
 beforeEach(() => clearJobs(db));
@@ -19,9 +20,9 @@ beforeEach(() => clearJobs(db));
  * outlasts the clock jumps below (reconcile's fifteen-minute stale threshold), so the run is never reclaimed.
  */
 function worker(f: Workflow) {
-  const queue = new PostgresJobs({ database: db, clock: f.clock, batch: { jobs: runnerBatchJobs }, leaseMs: 4 * 3_600_000 });
-  for (const job of [...createWebhookInboxJobs(f.inbox), ...createTransitionJobs(() => f.billing.effects),
-    ...createRunnerJobs(() => f.runner, f.settings)]) queue.handle(job.id, job.handler);
+  const queue = new PostgresJobs({ database: db, clock: f.clock, leaseMs: 4 * 3_600_000 });
+  createServerRegistry({ jobs: [...createWebhookInboxJobs(f.inbox), ...createTransitionJobs(() => f.billing.effects),
+    ...createRunnerJobs(() => f.runner, f.settings)] }).registerJobs(queue, new Set());
   return queue;
 }
 const gymJob = (f: Workflow) => ({ gymId: f.gymId, timezone: f.timezone });

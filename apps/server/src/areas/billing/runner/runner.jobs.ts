@@ -6,8 +6,6 @@ import { chargeFailuresJob, dailyRunJob, retryJob, type ChargeRunner } from './i
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 
-/** Runs in the jobs batch lane, so webhook dispatch and transition effects never wait behind a collection. */
-export const runnerBatchJobs = [dailyRunJob] as const;
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
 /** Used by go-live's explicit rerun; resolves the same runner configured for the worker. */
@@ -24,8 +22,9 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     return runner;
   }
   return [
-    // Also runs a stopped collection's continuation, whose payload names the day it continues.
-    { id: dailyRunJob, cron: '0 9 * * *', async handler(payload, context) {
+    // Also runs a stopped collection's continuation, whose payload names the day it continues. In the batch lane, so
+    // webhook dispatch and transition effects never wait behind a collection.
+    { id: dailyRunJob, cron: '0 9 * * *', lane: 'batch', async handler(payload, context) {
       const { continues } = z.object({ continues: dateSchema.optional() }).parse(payload);
       // The queue's job IDs key a stopped run's failure report, so a replayed run keeps one.
       const runId = idSchema.safeParse(context.jobId).data;

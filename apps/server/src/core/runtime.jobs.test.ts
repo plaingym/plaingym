@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects gym settings, queued jobs, verification rows and stored webhooks in real PostgreSQL.
 import { authVerification, emailOutbox, gyms, jobs, stripeEvents, uuidv7 } from '@plaingym/db';
 import * as stripeAdapter from '../infra/payments/stripe.js';
@@ -126,4 +126,40 @@ it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane
       .where(inArray(jobs.id, [waiting.id, dispatch.id])));
     expect(Object.fromEntries(rows.map(row => [row.id, row.status]))).toEqual({ [waiting.id]: 'pending', [dispatch.id]: 'succeeded' });
   } finally { await database.forSystem(tx => tx.delete(jobs).where(inArray(jobs.id, [running.id, waiting.id, dispatch.id]))); }
+});
+// The jobs that run in the batch lane: each registers itself with `lane: 'batch'`, and the runtime lists none.
+const batchLaneJobs = ['billing.runner.daily', 'imports.pipeline', 'imports.export',
+  'links.campaigns.scan', 'links.campaigns.publish', 'links.campaigns.send'];
+/** A pending or leased job of the sandbox gym; due at `runAt`, so the earliest ones are claimed first. */
+function leaseOf(name: string, runAt: Date, running: boolean) {
+  return { id: uuidv7(), gymId: app.sandbox.gymId, name, status: running ? 'running' : 'pending', attempts: running ? 1 : 0, maxAttempts: 3,
+    payload: { version: 1, timezone: 'UTC', value: name === 'billing.webhooks.dispatch' ? { eventId: uuidv7() } : {} },
+    idempotencyKey: `unique:${uuidv7()}`, runAt, createdAt: runAt,
+    ...(running ? { lockedUntil: new Date(Date.now() + 600_000), lockToken: uuidv7() } : {}) };
+}
+/** Leaves the gym one running job, one waiting job of the same name and one webhook dispatch, then claims once. */
+async function claimBeside(name: string) {
+  const gymId = app.sandbox.gymId;
+  await database.forSystem(tx => tx.delete(jobs).where(and(eq(jobs.gymId, gymId), eq(jobs.status, 'pending'))));
+  const running = leaseOf(name, new Date('2000-01-01T00:00:00Z'), true), waiting = leaseOf(name, new Date('2000-01-01T00:00:00Z'), false),
+    dispatch = leaseOf('billing.webhooks.dispatch', new Date('2000-01-01T00:00:01Z'), false);
+  await database.forSystem(tx => tx.insert(jobs).values([running, waiting, dispatch]));
+  try {
+    await app.queue.runNext();
+    const rows = await database.forSystem(tx => tx.select({ id: jobs.id, status: jobs.status }).from(jobs)
+      .where(inArray(jobs.id, [waiting.id, dispatch.id])));
+    const status = Object.fromEntries(rows.map(row => [row.id, row.status]));
+    return { waiting: status[waiting.id], dispatch: status[dispatch.id] };
+  } finally { await database.forSystem(tx => tx.delete(jobs).where(inArray(jobs.id, [running.id, waiting.id, dispatch.id]))); }
+}
+it.each(batchLaneJobs)('runs %s in the gym\'s batch lane: a second one waits and a webhook dispatch does not', async (name) => {
+  expect(await claimBeside(name)).toEqual({ waiting: 'pending', dispatch: 'succeeded' });
+});
+it('runs a job registered without a lane in the default lane, where it holds up the gym\'s webhook dispatch', async () => {
+  // The hourly reconcile sits in the charge runner's registrations beside the daily run, but names no lane.
+  expect(app.handlers.has('billing.runner.reconcile')).toBe(true);
+  expect(await claimBeside('billing.runner.reconcile')).toMatchObject({ waiting: 'pending', dispatch: 'pending' });
+});
+it('registers every batch lane job, so each one the lane test names has a handler', () => {
+  for (const name of batchLaneJobs) expect(app.handlers.has(name), name).toBe(true);
 });

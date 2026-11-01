@@ -31,8 +31,8 @@ afterAll(async () => {
 it('redacts an erased household\'s Stripe customer through the runtime\'s payments wiring', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const handlers = new Map<string, JobHandler>(), register = PostgresJobs.prototype.handle;
-  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
-    handlers.set(name, handler); register.call(this, name, handler);
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
+    handlers.set(name, handler); register.call(this, name, handler, options);
   });
   directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
   const gymId = uuidv7(); await factory('gyms', gymId);

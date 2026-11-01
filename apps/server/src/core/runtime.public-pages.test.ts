@@ -48,9 +48,9 @@ const notices = () => db.forGym(gymId, tx => tx.select().from(jobs).where(eq(job
 beforeAll(async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   const register = PostgresJobs.prototype.handle;
-  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler) {
+  vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- Drains the runtime's own queue, as its stopped worker would.
-    queue = this; register.call(this, name, handler);
+    queue = this; register.call(this, name, handler, options);
   });
   directory = await mkdtemp(join(tmpdir(), 'plaingym-public-runtime-'));
   await factory('gyms', gymId, { memberEmailsEnabled: false, websiteEnabled: false });

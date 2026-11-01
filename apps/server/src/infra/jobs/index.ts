@@ -18,10 +18,15 @@ export interface JobContext {
   readonly clock: Clock;
 }
 export type JobHandler = (payload: unknown, context: JobContext) => Promise<void>;
+/** `batch` runs long batch work in the gym's batch lane, apart from its other jobs. */
+export type JobLane = 'batch';
+export interface HandleOptions {
+  readonly lane?: JobLane;
+}
 export interface Jobs {
   enqueue(name: string, payload: unknown, options: JobOptions): Promise<{ jobId: string }>;
-  handle(name: string, handler: JobHandler): void;
-  schedule(name: string, cron: string, handler: JobHandler): void;
+  handle(name: string, handler: JobHandler, options?: HandleOptions): void;
+  schedule(name: string, cron: string, handler: JobHandler, options?: HandleOptions): void;
 }
 /** A job that used up its attempts, found by the caller's own idempotency key. */
 export interface FailedJob {
@@ -50,6 +55,7 @@ export class FakeJobs implements Jobs, JobRecovery {
   readonly #jobs: FakeJob[] = [];
   readonly #handlers = new Map<string, JobHandler>();
   readonly #schedules = new Map<string, string>();
+  readonly #batch = new Set<string>();
   readonly #keys = new Map<string, string>();
   constructor(readonly clock: Clock = systemClock, readonly perGymConcurrency = 1) {
     if (!Number.isSafeInteger(perGymConcurrency) || perGymConcurrency < 1) throw new Error('Invalid concurrency cap');
@@ -60,13 +66,18 @@ export class FakeJobs implements Jobs, JobRecovery {
   get schedules(): ReadonlyMap<string, string> {
     return new Map(this.#schedules);
   }
-  handle(name: string, handler: JobHandler): void {
+  /** Names registered for the batch lane. The fake keeps one cap for every job, so it only records them. */
+  get batchJobs(): ReadonlySet<string> {
+    return new Set(this.#batch);
+  }
+  handle(name: string, handler: JobHandler, options: HandleOptions = {}): void {
     if (!name || this.#handlers.has(name)) throw new Error(`Duplicate or empty job handler: ${name}`);
     this.#handlers.set(name, handler);
+    if (options.lane === 'batch') this.#batch.add(name);
   }
-  schedule(name: string, cron: string, handler: JobHandler): void {
+  schedule(name: string, cron: string, handler: JobHandler, options: HandleOptions = {}): void {
     if (cron.trim().split(/\s+/).length !== 5) throw new Error('Expected a five-field cron expression');
-    this.handle(name, handler);
+    this.handle(name, handler, options);
     this.#schedules.set(name, cron);
   }
   async enqueue(name: string, payload: unknown, options: JobOptions): Promise<{ jobId: string }> {

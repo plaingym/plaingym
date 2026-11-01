@@ -3,9 +3,10 @@ import '@hono/zod-openapi';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { invoices, uuidv7 } from '@plaingym/db';
+import { createServerRegistry } from '../../../core/registry.js';
 import { PostgresJobs, PostgresJobStatsQuery } from '../../../infra/jobs/index.js';
 import { chargeFailuresJob, createChargeRunner, dailyRunJob } from './index.js';
-import { createRunnerJobs, runnerBatchJobs } from './runner.jobs.js';
+import { createRunnerJobs } from './runner.jobs.js';
 import { webhookDispatchJob } from '../webhooks/inbox.js';
 import { setLogSink } from '../../../core/log.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../../health/charge-run.js';
@@ -23,10 +24,10 @@ describe('daily run lane and circuit breaker', () => {
    * runtime, the scheduled jobs get the monitored runner, which records each run for the health tile.
    */
   function lanes(f: Fixture) {
-    const queue = new PostgresJobs({ database: db, clock: f.clock, batch: { jobs: runnerBatchJobs } });
+    const queue = new PostgresJobs({ database: db, clock: f.clock });
     const runner = monitorChargeRunner(createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, jobs: queue,
       payments: async () => f.provider }), { scope: db.forGym, clock: f.clock, settings: f.settings });
-    for (const job of createRunnerJobs(() => runner, f.settings)) queue.handle(job.id, job.handler);
+    createServerRegistry({ jobs: createRunnerJobs(() => runner, f.settings) }).registerJobs(queue, new Set());
     return queue;
   }
   it('runs a webhook dispatch while the daily run holds the batch lane, where one shared lane would wait', async () => {

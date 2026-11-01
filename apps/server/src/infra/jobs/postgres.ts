@@ -10,7 +10,7 @@ import type { Id } from '@plaingym/shared/contracts';
 import { instantSchema, idSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
 import { describeError, logError } from '../../core/log.js';
-import type { Jobs, JobOptions, JobHandler, JobContext, JobRecovery, FailedJob } from './index.js';
+import type { Jobs, JobOptions, JobHandler, HandleOptions, JobContext, JobRecovery, FailedJob } from './index.js';
 import { cronOccurrences, occurrenceKey, validateCron } from './cron.js';
 
 type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
@@ -31,8 +31,8 @@ export interface JobRetentionOptions {
 }
 /** Long batch work runs in its own per-gym lane, so the gym's other jobs never wait behind it. */
 export interface BatchLaneOptions {
-  /** Job names that run in the batch lane; every other job runs in the default lane. */
-  readonly jobs: readonly string[];
+  /** Further job names for the batch lane, besides those registered with `{ lane: 'batch' }`. */
+  readonly jobs?: readonly string[];
   /** Batch jobs one gym runs at once. Default one. */
   readonly perGymConcurrency?: number;
 }
@@ -47,7 +47,7 @@ export interface PostgresJobsOptions {
   readonly maxScheduledPerTick?: number;
   /** Registers the daily `jobs.retention` install job; without it every row is kept. */
   readonly retention?: JobRetentionOptions;
-  /** Without it every job runs in the default lane. */
+  /** Tunes the batch lane; jobs registered with `{ lane: 'batch' }` run in it with or without this option. */
   readonly batch?: BatchLaneOptions;
 }
 export interface WorkerOptions {
@@ -94,7 +94,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
   readonly #listGyms: PostgresJobsOptions['listGyms'];
   readonly #maxScheduled: number;
   readonly #retention: Required<JobRetentionOptions> | undefined;
-  readonly #batch: ReadonlySet<string>;
+  readonly #batch: Set<string>;
   readonly #batchCap: number;
   readonly #handlers = new Map<string, JobHandler>();
   readonly #systemHandlers = new Map<string, SystemJobHandler>();
@@ -118,17 +118,18 @@ export class PostgresJobs implements Jobs, JobRecovery {
       this.handleSystem(retentionJob, async () => { await this.prune(); });
     }
   }
-  handle(name: string, handler: JobHandler): void {
+  handle(name: string, handler: JobHandler, options: HandleOptions = {}): void {
     if (!name || this.#handlers.has(name)) throw new Error(`Duplicate or empty job handler: ${name}`);
     this.#handlers.set(name, handler);
+    if (options.lane === 'batch') this.#batch.add(name);
   }
   handleSystem(name: string, handler: SystemJobHandler): void {
     if (!name || this.#systemHandlers.has(name)) throw new Error(`Duplicate or empty system handler: ${name}`);
     this.#systemHandlers.set(name, handler);
   }
-  schedule(name: string, cron: string, handler: JobHandler): void {
+  schedule(name: string, cron: string, handler: JobHandler, options: HandleOptions = {}): void {
     validateCron(cron);
-    this.handle(name, handler);
+    this.handle(name, handler, options);
     this.#schedules.set(name, cron);
   }
   async enqueue(name: string, payload: unknown, options: JobOptions): Promise<{ jobId: string }> {

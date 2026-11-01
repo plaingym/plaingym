@@ -4,10 +4,9 @@ import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
 import { IMPORT_JOB, type ImportPipeline } from './pipeline.js';
 const payloadSchema = z.strictObject({ id: idSchema });
-/** Imports run in the jobs batch lane, so the gym's webhooks and notices never wait behind one. */
-export const importBatchJobs = [IMPORT_JOB] as const;
 export function createPipelineJobs(service: ImportPipeline): JobRegistration[] {
-  return [{ id: IMPORT_JOB, handler: async (payload, context) => service.run(context.gymId, payloadSchema.parse(payload).id, context.attempt) }];
+  // An import runs in the jobs batch lane, so the gym's webhooks and notices never wait behind one.
+  return [{ id: IMPORT_JOB, lane: 'batch', handler: async (payload, context) => service.run(context.gymId, payloadSchema.parse(payload).id, context.attempt) }];
 }
 
 export const jobs: readonly JobRegistration[] = [];
