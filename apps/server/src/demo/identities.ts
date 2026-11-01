@@ -11,6 +11,8 @@ import { requireDemo, type DemoConfig } from './config.js';
 export const demoEmail = (gymId: string, role: DemoRole) => `${role}.${gymId}@example.invalid`;
 /** The one-click student's household and member; the portal seed finds them by these names. */
 export const demoStudent = { household: 'Demo student', firstName: 'Alex', lastName: 'Student' } as const;
+/** The name each one-click login is known by: the staff logins have no staff profile, so the shell shows this name. */
+export const demoLoginNames: Record<DemoRole, string> = { owner: 'Sam Owner', coach: 'Jordan Coach', student: `${demoStudent.firstName} ${demoStudent.lastName}` };
 /** One-click logins per client address; the login route enforces it, and the internal sign-in uses the same rule. */
 export const demoLoginRateLimit = { window: 60, max: 20 } as const;
 export function createDemoIdentities(options: {
@@ -23,7 +25,7 @@ export function createDemoIdentities(options: {
   return { async seed(gymId: string) {
     requireDemo(options.config);
     for (const role of ['owner', 'coach', 'student'] as const) {
-      await accounts.provisionUser(gymId, demoEmail(gymId, role), role, options.clock, async (tx, userId) => {
+      await accounts.provisionUser(gymId, demoEmail(gymId, role), demoLoginNames[role], options.clock, async (tx, userId) => {
         if (role !== 'student') await tx.insert(staffRoles).values({ gymId, userId, role, createdAt: options.clock.now() })
           .onConflictDoNothing({ target: [staffRoles.gymId, staffRoles.userId] });
         else {

@@ -103,6 +103,16 @@ describe('demo boundaries and sandbox lifecycle', () => {
     await f.seed({ gymId: sandbox.gymId, timezone: 'UTC', enabledModules: new Set() });
     expect((await db.forGym(sandbox.gymId, (tx) => tx.select().from(programs))).length).toBe(rows.programs.length);
   });
+  it('names the one-click logins as people, since the shell names a login without a staff profile by its own name', async () => {
+    const f = fixture(), sandbox = await f.service.create(), real = accounts(), names: Record<string, string> = {};
+    const recording = { ...real, provisionUser: ((gymId, email, name, ...rest) => {
+      names[email.split('.')[0]!] = name;
+      return real.provisionUser(gymId, email, name, ...rest);
+    }) as typeof real.provisionUser };
+    // Seeding again is a no-op for the existing accounts, and passes each login's name as when the sandbox was created.
+    await createDemoIdentities({ config, authConfig: authentication, clock: f.time, accounts: recording, scope: db.forGym, authFactory }).seed(sandbox.gymId);
+    expect(names).toEqual({ owner: 'Sam Owner', coach: 'Jordan Coach', student: 'Alex Student' });
+  });
   it('uses the real auth service for host-only sessions that fail on the other sandbox', async () => {
     const f = fixture(), a = await f.service.create(), b = await f.service.create();
     for (const role of ['owner', 'coach', 'student'] as const) {
