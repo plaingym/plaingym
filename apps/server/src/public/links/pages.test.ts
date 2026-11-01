@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createTranslator } from '@plaingym/shared';
 import { linkPage } from './page.js';
 import { checkoutReceipts } from './receipt.js';
+import { setLogSink } from '../../core/log.js';
 import { cachedLinkAsset } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
 const t = createTranslator({ 'public/links': messages });
@@ -51,13 +52,19 @@ describe('signed-link presentation and return receipts', () => {
     expect(page).toContain('25 octobre 2026'); expect(page).not.toContain('2026-10-25');
   });
   it('reads assets once, and logs a missing asset once with an explicit unavailable error', async () => {
-    const read = vi.fn(async () => 'built asset'), log = vi.fn();
-    const asset = cachedLinkAsset('links.css', read, log);
-    expect(await Promise.all([asset(), asset()])).toEqual(['built asset', 'built asset']);
-    expect(read).toHaveBeenCalledTimes(1); expect(log).not.toHaveBeenCalled();
-    const missing = vi.fn(async (): Promise<string> => { throw new Error('ENOENT'); });
-    const broken = cachedLinkAsset('links.js', missing, log);
-    for (let i = 0; i < 2; i++) await expect(broken()).rejects.toMatchObject({ code: 'unavailable' });
-    expect(missing).toHaveBeenCalledTimes(1); expect(log).toHaveBeenCalledTimes(1);
+    const read = vi.fn(async () => 'built asset'), log = vi.fn(), previous = setLogSink(log);
+    try {
+      const asset = cachedLinkAsset('links.css', read);
+      expect(await Promise.all([asset(), asset()])).toEqual(['built asset', 'built asset']);
+      expect(read).toHaveBeenCalledTimes(1); expect(log).not.toHaveBeenCalled();
+      // The read error quotes a path, a database URL and a secret; none may reach the log line.
+      const missing = vi.fn(async (): Promise<string> => { throw new Error('ENOENT: open /srv/SECRETPATH/links.js postgres://app:DBPASSWORD@db.invalid/gym token=rk_test_SECRETKEY'); });
+      const broken = cachedLinkAsset('/srv/SECRETPATH/links.js', missing);
+      for (let i = 0; i < 2; i++) await expect(broken()).rejects.toMatchObject({ code: 'unavailable' });
+      expect(missing).toHaveBeenCalledTimes(1); expect(log).toHaveBeenCalledTimes(1);
+      const line = log.mock.calls[0]![0];
+      expect(JSON.parse(line)).toMatchObject({ level: 'error', event: 'links.asset_unavailable', asset: 'links.js', error: { name: 'Error' } });
+      expect(line).not.toMatch(/SECRETPATH|postgres:|DBPASSWORD|rk_test_SECRETKEY/);
+    } finally { setLogSink(previous); }
   });
 });

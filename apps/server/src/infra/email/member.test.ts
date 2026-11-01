@@ -6,6 +6,7 @@ import { isInTransaction } from '@plaingym/shared/transaction';
 import { useTestDatabase } from '../../../../../packages/db/src/testing/database.js';
 import { createFactories } from '../../../../../packages/db/src/testing/factories.js';
 import { FakeGymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { setLogSink } from '../../core/log.js';
 import { FakeEmail, MemberEmail, SmtpEmail } from './index.js';
 import { captureSmtp } from './test-smtp.js';
 
@@ -56,6 +57,18 @@ describe('member-targeted suppression', () => {
     expect(capture.connections).toBe(before);
     expect(log.mock.calls).toHaveLength(logsBefore + 1);
     expect(log).toHaveBeenLastCalledWith({ event: 'email.suppressed', gymId: gymA, memberId: memberA, reason });
+  });
+
+  it('logs a suppression through the structured logger by default, with identifiers and the reason only', async () => {
+    setEnabled(gymA, false);
+    const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+    try {
+      const bound = new MemberEmail({ gymId: gymA, memberId: memberA, settings, email: new FakeEmail(), forGym: database.forGym });
+      expect(await bound.sendEmail(message)).toEqual({ status: 'suppressed', reason: 'disabled' });
+    } finally { setLogSink(previous); }
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toEqual({ time: expect.any(String), level: 'info', event: 'email.suppressed', gymId: gymA, memberId: memberA, reason: 'disabled' });
+    expect(lines[0]).not.toContain(message.to);
   });
 
   it('reloads changed switches and flags on the same instance, then sends outside the transaction', async () => {

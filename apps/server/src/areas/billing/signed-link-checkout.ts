@@ -5,7 +5,7 @@ import type { Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { Payments, CheckoutSession } from '../../infra/payments/index.js';
 import { clock as defaultClock } from '../../core/clock.js';
-import { describeError } from '../../core/log.js';
+import { logError } from '../../core/log.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { createCustomersService, CustomerUnavailable } from './customers.js';
 import { isAssignmentInvoice } from './assignment-invoices.js';
@@ -30,13 +30,11 @@ export interface SignedCheckoutOptions {
   scope?: typeof forGym;
   clock?: Clock;
   paymentsFor(gymId: string): Promise<Payments>;
-  log?: (line: string) => void;
   /** Trusted configured origin, never the request Host. */
   originFor(gymId: string): Promise<string>;
 }
 export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const log = options.log ?? console.error;
   const customers = createCustomersService({ scope, clock, paymentsFor: options.paymentsFor });
   const settings = createGymSettingsAccessor({ scope, clock });
   const cards = createCardHandlers({ scope, clock });
@@ -187,9 +185,8 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       catch (error) { throw new CustomerUnavailable('stripe_not_configured', error); }
     } catch (error) {
       if (error instanceof AppError && error.code === 'not_found') throw error;
-      log(JSON.stringify({ event: 'billing.customer.unavailable', gymId, householdId: prepared.link.householdId,
-        purpose: prepared.link.purpose, reason: error instanceof CustomerUnavailable ? error.reason : error instanceof Error ? error.name : typeof error,
-        error: describeError(error) }));
+      logError('billing.customer.unavailable', { gymId, householdId: prepared.link.householdId, purpose: prepared.link.purpose,
+        reason: error instanceof CustomerUnavailable ? error.reason : error instanceof Error ? error.name : typeof error }, error);
       throw new CustomerNotLinked(error);
     }
     let session: CheckoutSession;

@@ -125,10 +125,10 @@ it('never dispatches, replays, or exposes health for another gym, even with forg
   await inbox.dispatch({ eventId: 'evt_test', replay: true }, context(gymB)); expect(handler).not.toHaveBeenCalled();
   await expect(inbox.replay(gymB, 'evt_test')).rejects.toMatchObject({ code: 'not_found' });
   expect(await database.forGym(gymB, (tx) => tx.select().from(stripeEvents))).toEqual([]);
-  expect(await createWebhookHealthQuery(database.forGym).get(gymB)).toEqual({
-    lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0,
+  expect(await createWebhookHealthQuery(database.forGym, clock).get(gymB)).toEqual({
+    lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0,
   });
-  expect(await createWebhookHealthQuery(database.forGym).get(gymA)).toMatchObject({ pendingCount: 1, failedCount: 0 });
+  expect(await createWebhookHealthQuery(database.forGym, clock).get(gymA)).toMatchObject({ pendingCount: 1, failedCount: 0, recentFailedCount: 0 });
 });
 it('drops a provider result for the wrong gym and globally deduplicates event IDs without exposing the other row', async () => {
   const untrusted = vi.spyOn(fake, 'parseWebhook').mockResolvedValueOnce(event('evt_wrong', gymB));
@@ -216,13 +216,13 @@ it('routes untagged demo refunds through provider ownership lookups and rejects 
   expect(await rows()).toHaveLength(1);
 });
 it('health counts only this gym and follows processing, failure, and recovery', async () => {
-  const health = createWebhookHealthQuery(database.forGym);
-  await deliver(); expect(await health.get(gymA)).toEqual({ lastReceivedAt: clock.now().toISOString(), lastProcessedAt: null, pendingCount: 1, failedCount: 0 });
+  const health = createWebhookHealthQuery(database.forGym, clock);
+  await deliver(); expect(await health.get(gymA)).toEqual({ lastReceivedAt: clock.now().toISOString(), lastProcessedAt: null, pendingCount: 1, failedCount: 0, recentFailedCount: 0 });
   let fail = true;
   inbox.register('payment_intent.succeeded', async () => { if (fail) throw new Error('failure'); }); await jobs.runNext();
-  expect(await health.get(gymA)).toMatchObject({ pendingCount: 0, failedCount: 1 });
+  expect(await health.get(gymA)).toMatchObject({ pendingCount: 0, failedCount: 1, recentFailedCount: 1 });
   fail = false; clock.advance(1000); await jobs.runNext();
-  expect(await health.get(gymA)).toEqual({ lastReceivedAt: '2026-10-24T12:00:00.000Z', lastProcessedAt: clock.now().toISOString(), pendingCount: 0, failedCount: 0 });
+  expect(await health.get(gymA)).toEqual({ lastReceivedAt: '2026-10-24T12:00:00.000Z', lastProcessedAt: clock.now().toISOString(), pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
 });
 it('deduplicates and retries through the real persistent Postgres queue', async () => {
   const queue = new PostgresJobs({ database, clock }), service = createWebhookInbox({

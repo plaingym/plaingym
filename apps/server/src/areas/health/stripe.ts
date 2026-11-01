@@ -14,9 +14,12 @@ export function createStripeHealthProvider(options: {
     if (!await options.configured(context.gymId)) return { id: 'stripe_webhooks', status: 'not_configured',
       checkedAt, details: null, message: t('health/stripe:missing') };
     const health = await options.webhooks.get(context.gymId);
-    const status = health.failedCount ? 'error' : health.pendingCount ? 'warning' : health.lastReceivedAt ? 'healthy' : 'warning';
-    return { id: 'stripe_webhooks', status, checkedAt, message: t('health/stripe:' +
-      (health.failedCount ? 'failed' : health.pendingCount ? 'pending' : health.lastReceivedAt ? 'healthy' : 'waiting')),
+    // A failure from the last 7 days needs attention now; an older one that nobody replayed is a reminder, not an alarm.
+    const message = health.recentFailedCount ? 'failed' : health.failedCount ? 'failedOlder'
+      : health.pendingCount ? 'pending' : health.lastReceivedAt ? 'healthy' : 'waiting';
+    const status = health.recentFailedCount ? 'error' : health.failedCount || health.pendingCount || !health.lastReceivedAt ? 'warning' : 'healthy';
+    return { id: 'stripe_webhooks', status, checkedAt, message: t('health/stripe:' + message,
+      { count: health.recentFailedCount || health.failedCount }),
       details: { lastReceivedAt: health.lastReceivedAt, lastProcessedAt: health.lastProcessedAt,
         pending: health.pendingCount, failed: health.failedCount } };
   });

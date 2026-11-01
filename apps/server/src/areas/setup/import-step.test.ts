@@ -23,7 +23,7 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 import { createImportStep, type ImportRuns } from './import-step.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-22T12:00:00Z');
-const setup = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'http://gym.localhost', clock, scope: database.forGym });
+const setup = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'http://gym.localhost', env: {}, clock, scope: database.forGym });
 let gymA: string, gymB: string, ownerA: string, ownerB: string;
 const runs = new Map<string, ImportJob>();
 const imports: ImportRuns = { async get(gymId, id) {
@@ -62,7 +62,7 @@ function server(role: StaffRole | 'anonymous', userId = ownerA, gymId = gymA) {
     await next();
   });
   app.onError(errorHandler);
-  createServerRegistry({ routes: createSetupRoutes(() => setup, undefined, () => step) })
+  createServerRegistry({ routes: createSetupRoutes({ service: () => setup, importStep: () => step }) })
     .mount(app, authorize, new Set());
   return app;
 }

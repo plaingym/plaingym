@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { FakeGymSettingsAccessor } from './gym-settings.js';
 import { FakeJobStatsQuery } from './job-stats.js';
+import { TestClock } from '../clock.js';
 import { FakeWebhookHealthQuery } from './webhook-health.js';
 import { gym, otherGym } from './test-fixtures.js';
 const settings = { gymId: gym, timezone: 'America/Vancouver', currency: 'CAD', billingEnabled: false,
@@ -40,8 +41,10 @@ describe('Operational read interfaces', () => {
       { gymId: gym, receivedAt: '2026-10-21T11:00:00Z', processedAt: null, failed: false },
       { gymId: otherGym, receivedAt: '2026-10-22T12:00:00Z', processedAt: null, failed: true },
       { gymId: null, receivedAt: '2026-10-22T12:00:00Z', processedAt: null, failed: true },
-    ]);
-    expect(await fake.get(gym)).toEqual({ lastReceivedAt: '2026-10-21T12:00:00Z', lastProcessedAt: '2026-10-20T13:00:00Z', pendingCount: 1, failedCount: 1 });
-    expect(await new FakeWebhookHealthQuery().get(gym)).toEqual({ lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0 });
+      // Received more than 7 days before the clock below: still unresolved, but not recent.
+      { gymId: gym, receivedAt: '2026-10-10T12:00:00Z', processedAt: null, failed: true },
+    ], new TestClock('2026-10-22T12:00:00Z'));
+    expect(await fake.get(gym)).toEqual({ lastReceivedAt: '2026-10-21T12:00:00Z', lastProcessedAt: '2026-10-20T13:00:00Z', pendingCount: 1, failedCount: 2, recentFailedCount: 1 });
+    expect(await new FakeWebhookHealthQuery().get(gym)).toEqual({ lastReceivedAt: null, lastProcessedAt: null, pendingCount: 0, failedCount: 0, recentFailedCount: 0 });
   });
 });

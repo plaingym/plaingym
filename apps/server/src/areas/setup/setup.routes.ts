@@ -6,7 +6,7 @@ import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { route } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
-import { setupService, type createSetupService } from './setup.js';
+import { createSetupService } from './setup.js';
 import { defaultSetupRestore, type createSetupRestore } from './setup.restore.js';
 import { importStep, type ImportStep } from './import-step.js';
 
@@ -17,12 +17,29 @@ function owner(c: Context<RequestEnvironment>): MutationContext {
   if (!principal.roles.includes('owner')) throw new AppError('forbidden', 'Owner access required');
   return { gymId: gym.gymId, actor: { kind: 'user', userId: principal.userId } };
 }
+/** What the runtime knows about this install: its encryption key, public origin and environment. */
+export interface SetupConfig { key: Buffer; origin: string; env: NodeJS.ProcessEnv }
+export interface SetupRoutesOptions {
+  /** The runtime's own values. Without them (and without a `service`), every setup route answers that setup is not configured. */
+  config?: SetupConfig;
+  /** Tests and the runtime may supply built parts instead of having them made from `config`. */
+  service?: () => Service; restore?: () => ReturnType<typeof createSetupRestore>; importStep?: () => ImportStep;
+}
 /** Finishing (step 8) goes through the import step, which hands fresh starts back to the setup service. */
-export function createSetupRoutes(getService: () => Service = setupService,
-  providedRestore?: () => ReturnType<typeof createSetupRestore>, getImportStep: () => ImportStep = importStep) {
-  let restore: ReturnType<typeof createSetupRestore> | undefined;
-  const getRestore = () => providedRestore?.() ?? (restore ??= defaultSetupRestore(getService()));
-  const recover = async () => { if (providedRestore || restoreStagingDirectory()) await getRestore().recover(); };
+export function createSetupRoutes(options: SetupRoutesOptions = {}) {
+  const { config, restore: providedRestore, importStep: getImportStep = importStep } = options;
+  let built: Service | undefined, restore: ReturnType<typeof createSetupRestore> | undefined;
+  const getService = (): Service => {
+    if (options.service) return options.service();
+    if (!config) throw new AppError('unavailable', 'Setup is not configured');
+    return built ??= createSetupService(config);
+  };
+  const getRestore = () => {
+    if (providedRestore) return providedRestore();
+    if (!config) throw new AppError('unavailable', 'Restore is not configured');
+    return restore ??= defaultSetupRestore(getService(), config.env);
+  };
+  const recover = async () => { if (providedRestore || (config && restoreStagingDirectory(config.env))) await getRestore().recover(); };
   const { status, start, owner: account, restore: begin, restoreStatus } = setupContracts;
   const response = <T>(schema: T) => ({ 200: { description: 'Setup result', content: { 'application/json': { schema } } } });
   const body = <T>(schema: T) => ({ body: { required: true as const, content: { 'application/json': { schema } } } });
@@ -51,4 +68,5 @@ export function createSetupRoutes(getService: () => Service = setupService,
     }),
   ];
 }
+/** Registered unconfigured so the route table is complete; the runtime passes `createSetupRoutes({ config })` in its place. */
 export const routes = createSetupRoutes();

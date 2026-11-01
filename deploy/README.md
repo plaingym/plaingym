@@ -203,6 +203,33 @@ time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups and restore.
   wizard's restore answers that it isn't configured and no restore gate
   pauses requests, and the daily upload sweep runs without the backup lock.
 
+## Logs
+
+The app writes one JSON object per line to its container's standard error
+(`sudo docker compose logs app`): a `time`, a `level`, an `event` name and
+identifiers such as the gym ID. Error lines carry the error's name, code and
+stack frames, never its message, because messages can quote submitted values,
+credentials, file paths or database URLs. Docker rotates the logs.
+
+### Access log
+
+Caddy's access log is **off by default**: a gym's visitors aren't tracked
+unless the owner chooses it. To turn it on, add this line to `.env` and run
+`sudo docker compose up -d`:
+
+```sh
+CADDY_ACCESS_LOG=stderr
+```
+
+Each request then adds one JSON line to `sudo docker compose logs caddy`, in
+the same rotating container log: time, client address, method, host, path,
+status, response size, duration and the request headers (such as the user
+agent). It records no query string and no request body, Caddy masks the
+`Cookie` and `Authorization` headers as `REDACTED`, the setup token header is
+removed, and a signed link's token (`/l/<token>`) is cut from the path. Client addresses are personal data
+in many places; keep the log only as long as you need it. Remove the line (or
+set `CADDY_ACCESS_LOG=discard`) and run the same command to turn it off again.
+
 ## Updates and recovery
 
 Generate an age key pair on your own computer (`age-keygen -o backup.key`).

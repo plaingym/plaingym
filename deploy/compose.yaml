@@ -101,6 +101,8 @@ services:
     environment:
       GYM_HOSTNAME: ${GYM_HOSTNAME:?required}
       ACME_EMAIL: ${ACME_EMAIL:?required}
+      # Access log: `discard` (off) or `stderr` (deploy/README.md, "Access log").
+      CADDY_ACCESS_LOG: ${CADDY_ACCESS_LOG:-discard}
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, expect, it, vi } from 'vitest';
+import { beforeAll, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { auditEvents, gyms, uuidv7 } from '@plaingym/db';
@@ -88,9 +88,8 @@ it('validates outside transactions, encrypts both secrets, audits, and advances 
 it('rejects stale revisions and demo-mode live keys before network I/O', async () => {
   const context = { gymId, actor: { kind: 'user', userId: ownerId } } as const, count = checks.length;
   await expect(service.configure(context, { choice: 'configure', revision: 1, restrictedKey: 'rk_test_SYNTHETIC' })).rejects.toThrow();
-  vi.stubEnv('DEMO_MODE', 'true');
-  try { await expect(service.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_live_SYNTHETIC' })).rejects.toMatchObject({ code: 'invalid_request' }); }
-  finally { vi.unstubAllEnvs(); }
+  const demo = createStripeStep({ key, origin: 'https://gym.invalid', clock, scope: database.forGym, provisioner, demoMode: true });
+  await expect(demo.configure(context, { choice: 'configure', revision: 2, restrictedKey: 'rk_live_SYNTHETIC' })).rejects.toMatchObject({ code: 'invalid_request' });
   expect(checks.length).toBe(count);
 });
 it('does not save credentials if the revision changes while registering the endpoint', async () => {

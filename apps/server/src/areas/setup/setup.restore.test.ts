@@ -10,6 +10,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
 import type { SetupRestoreRequest } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createApp } from '../../core/app.js';
 import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.js';
 import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
@@ -37,8 +38,22 @@ let server: Awaited<ReturnType<typeof s3Server>>;
 beforeAll(async () => { root = await mkdtemp(join(tmpdir(), 'setup-restore-')); server = await s3Server(); });
 afterAll(async () => { await server.close(); await rm(root, { recursive: true, force: true }); });
 describe('setup restore coordinator', () => {
+  it('logs a failed restore through the logger, without the message that can quote a key, a path or a database URL', async () => {
+    const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+    try {
+      const coordinator = createSetupRestore({ assertEmpty: async () => {}, restore: async () => {
+        throw new Error('open /srv/SECRETPATH/backup.age failed: AGE-SECRET-KEY-1PRIVATEKEY at postgres://maintenance:DBPASSWORD@db.invalid/gym');
+      } });
+      const job = await coordinator.start({ choice: 'restore', source: { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'backups', accessKeyId: 'access', secretAccessKey: 'SECRETACCESS' },
+        snapshotPrefix: uuidv7(), privateKey: 'AGE-SECRET-KEY-1PRIVATEKEY' });
+      await expect.poll(async () => (await coordinator.status(job.jobId)).status).toBe('failed');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ level: 'error', event: 'setup.restore_failed', error: { name: 'Error' } });
+      expect(lines[0]).not.toMatch(/SECRETPATH|PRIVATEKEY|postgres:|DBPASSWORD|SECRETACCESS/);
+    } finally { setLogSink(previous); }
+  });
   it('reserves first boot across service instances and releases it after verification failure', async () => {
-    const options = { key, origin: 'http://gym.localhost', scope: reservations.forGym, system: reservations.forSystem, clock };
+    const options = { key, origin: 'http://gym.localhost', env: {}, scope: reservations.forGym, system: reservations.forSystem, clock };
     const service = createSetupService(options), peer = createSetupService(options);
     const reservation = await service.reserveRestore();
     await expect(peer.reserveRestore()).rejects.toMatchObject({ code: 'not_found' });
@@ -68,7 +83,7 @@ describe('setup restore coordinator', () => {
       const snapshot = await new BackupService({ database: new PostgresMaintenance(source.maintenanceUrl, tools), store, clock, recipient, blobKey: Buffer.alloc(32, 9),
         appEncryptionKey: key, stagingDirectory: join(root, 'source'), scope: source, uploads: async () => new Map() }).snapshot();
       const gate = new RestoreGate(join(root, 'target'));
-      const service = createSetupService({ key: newKey, origin: 'http://gym.localhost', scope: target.forGym, system: target.forSystem, clock });
+      const service = createSetupService({ key: newKey, origin: 'http://gym.localhost', env: {}, scope: target.forGym, system: target.forSystem, clock });
       let blockedProbe: Promise<Response> | undefined;
       const restore = createSetupRestore({ clock, assertEmpty: () => service.assertEmpty(), claim: (token) => service.reserveRestore(token), onRestored: () => service.markRestored(), gate, journal: join(root, 'target', 'setup-restore.json'),
         restore: (input) => new RestoreService({ database: new PostgresMaintenance(target.maintenanceUrl, tools), store, clock,
@@ -78,7 +93,7 @@ describe('setup restore coordinator', () => {
       });
       const tenancy = vi.fn(async () => { throw new Error('Tenant lookup must be gated'); });
       const setupToken = 'private-restore-token-at-least-32-characters';
-      const app = createApp({ clock, setupToken, installOrigin: 'http://gym.localhost', contributions: { routes: createSetupRoutes(() => service, () => restore) },
+      const app = createApp({ clock, setupToken, installOrigin: 'http://gym.localhost', contributions: { routes: createSetupRoutes({ service: () => service, restore: () => restore }) },
         resolveGym: tenancy, session: async (_c, next) => { await next(); }, authorize: () => async (_c, next) => { await next(); }, restoreGate: gate.middleware() });
       const input: SetupRestoreRequest = { choice: 'restore', source: { endpoint: server.endpoint, region: 'auto', bucket: 'backups', accessKeyId: 'fixture', secretAccessKey: 'private-fixture' },
         snapshotPrefix: 'snapshots/' + snapshot.id + '/', privateKey: identity };

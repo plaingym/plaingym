@@ -9,6 +9,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { isInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { jobsContract, infraContractGyms } from '../../core/registry-infra-contracts.js';
 import { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
 import { cronOccurrences, occurrenceKey } from './cron.js';
@@ -153,6 +154,16 @@ describe('worker leases, caps, and lifecycle', () => {
     finally { await Promise.all([worker1.stop(), worker2.stop()]); }
     expect(errors).toEqual([]); expect(seen.size).toBe(40);
     expect((await rows()).every((r) => r.attempts === 1)).toBe(true);
+  });
+  it('logs a worker infrastructure error through the logger by default, without its message', async () => {
+    const q = queue(), lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+    q.handle('work', async () => {});
+    await q.enqueue('work', {}, options);
+    const worker = startJobsWorker(q, { pollMs: 2,
+      around: async () => { throw new Error('lost /srv/SECRETPATH/socket connecting to postgres://app:DBPASSWORD@db.invalid/gym with rk_test_SECRETKEY'); } });
+    try { await until(async () => lines.length > 0); } finally { await worker.stop(); setLogSink(previous); }
+    expect(JSON.parse(lines[0]!)).toMatchObject({ level: 'error', event: 'jobs.worker_error', error: { name: 'Error' } });
+    for (const line of lines) expect(line).not.toMatch(/SECRETPATH|postgres:|DBPASSWORD|rk_test_SECRETKEY/);
   });
   it('lets gym B run while gym A holds its cap despite an older A backlog', async () => {
     const q1 = queue(), q2 = queue(); const held = latch(), started = latch();

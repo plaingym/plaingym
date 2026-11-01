@@ -5,5 +5,17 @@
 }
 {$GYM_HOSTNAME} {
 	encode zstd gzip
+	# Access log: off unless CADDY_ACCESS_LOG=stderr (see "Access log" in deploy/README.md). The filter drops every query
+	# string, the token in a signed-link path and the setup token header (Caddy itself masks Cookie and Authorization).
+	log {
+		output {$CADDY_ACCESS_LOG:discard}
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "^(/l/)[^/?]*|\?.*$" "$1"
+				request>headers>X-Setup-Token delete
+			}
+		}
+	}
 	reverse_proxy app:3000
 }

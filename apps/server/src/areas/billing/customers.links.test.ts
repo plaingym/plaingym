@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 import { allocateInvoiceNumber, households, invoiceLineItems, invoices, paymentAttempts, paymentMethods, payments, uuidv7 } from '@plaingym/db';
@@ -7,6 +7,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { membersContracts, portalSignedLinkContracts, type SignedLinkPurposeName } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createApp } from '../../app.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { authorize } from '../staff/auth.permissions.js';
@@ -29,6 +30,9 @@ import { FakeJobs } from '../../infra/jobs/index.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const origin = 'https://gym.example.test';
+// Each fixture captures log lines; the first fixture's previous sink is the real one.
+let previousSink: ((line: string) => void) | undefined;
+afterEach(() => { if (previousSink) setLogSink(previousSink); previousSink = undefined; });
 async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', invoiceKind: 'cycle' | 'assignment' | 'one_off' = 'cycle') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-26T12:00:00Z');
   await factory('gyms', gymId, { currency: 'CAD', billingEnabled: true });
@@ -59,7 +63,9 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', invoiceKi
   const provider = new FakePayments(gymId, clock);
   const paymentsFor = vi.fn(async () => provider);
   const log = vi.fn<(line: string) => void>();
-  const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor, originFor: async () => origin, log });
+  const previous = setLogSink(log);
+  previousSink ??= previous;
+  const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor, originFor: async () => origin });
   const links = createSignedLinksService({ scope: db.forGym, clock });
   const link = await links.create({ gymId, actor: { kind: 'system' } }, { householdId,
     expiresAt: new Date(clock.now().getTime() + 7 * 86400000).toISOString(),
@@ -235,7 +241,7 @@ describe('new household billing through production route registrations', () => {
     expect(line).not.toMatch(/payer@example|New Household|Private Changed Household|rk_test_/);
   });
   it('logs unexpected provider errors by name and preserves the original cause', async () => {
-    const f = await fixture('update_card'), error = new TypeError('payer@example.invalid rk_test_SECRET');
+    const f = await fixture('update_card'), error = new TypeError('payer@example.invalid rk_test_SECRET /srv/SECRETPATH/app.js postgres://app:DBPASSWORD@db.invalid/gym');
     vi.spyOn(f.provider, 'createCustomer').mockRejectedValue(error);
     await expect(f.checkout.start(f.gymId, f.link.link.id)).rejects.toMatchObject({ cause: error });
     const response = await f.request();
@@ -244,7 +250,7 @@ describe('new household billing through production route registrations', () => {
     expect(f.log).toHaveBeenCalledTimes(2);
     for (const [line] of f.log.mock.calls) {
       expect(JSON.parse(line)).toMatchObject({ reason: 'TypeError', gymId: f.gymId, householdId: f.householdId, purpose: 'update_card' });
-      expect(line).not.toMatch(/payer@example|rk_test_/);
+      expect(line).not.toMatch(/payer@example|rk_test_|SECRETPATH|postgres:|DBPASSWORD/);
     }
   });
   it('logs database failure names while retaining the safe member response type', async () => {
@@ -252,7 +258,7 @@ describe('new household billing through production route registrations', () => {
     let calls = 0;
     const checkout = createSignedLinkCheckout({ clock: f.clock, paymentsFor: f.paymentsFor, originFor: async () => origin,
       // Call 1 reads the billing switch, call 2 prepares the link; fail the customer reservation.
-      log: f.log, scope: (gymId, fn) => { if (++calls === 3) throw error; return db.forGym(gymId, fn); } });
+      scope: (gymId, fn) => { if (++calls === 3) throw error; return db.forGym(gymId, fn); } });
     await expect(checkout.start(f.gymId, f.link.link.id)).rejects.toBeInstanceOf(CustomerNotLinked);
     expect(JSON.parse(f.log.mock.calls[0]![0])).toMatchObject({ reason: 'Error', gymId: f.gymId, householdId: f.householdId });
     expect(f.log.mock.calls[0]![0]).not.toContain('payer@example');

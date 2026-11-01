@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, eq, isNotNull, isNull, max } from 'drizzle-orm';
+import { and, count, eq, gte, isNotNull, isNull, max } from 'drizzle-orm';
 import { forGym, forSystem, stripeEvents, uuidv7 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
-import type { WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
+import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/interfaces/webhook-health.js';
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
@@ -89,8 +89,9 @@ export function createWebhookInbox(options: {
 export type WebhookInbox = ReturnType<typeof createWebhookInbox>;
 
 /** System-table ownership stays in the inbox; consumers receive safe per-gym aggregates only. */
-export function createWebhookHealthQuery(scope: typeof forGym = forGym): WebhookHealthQuery {
+export function createWebhookHealthQuery(scope: typeof forGym = forGym, clock: Clock = systemClock): WebhookHealthQuery {
   return { async get(gymId) {
+    const since = new Date(clock.now().getTime() - recentWebhookFailureMs);
     return scope(gymId, async (tx) => {
       const [times] = await tx.select({ received: max(stripeEvents.receivedAt), processed: max(stripeEvents.processedAt) })
         .from(stripeEvents).where(eq(stripeEvents.gymId, gymId));
@@ -98,8 +99,10 @@ export function createWebhookHealthQuery(scope: typeof forGym = forGym): Webhook
         .where(and(eq(stripeEvents.gymId, gymId), isNull(stripeEvents.processedAt), isNull(stripeEvents.error)));
       const [failed] = await tx.select({ total: count() }).from(stripeEvents)
         .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error)));
+      const [recent] = await tx.select({ total: count() }).from(stripeEvents)
+        .where(and(eq(stripeEvents.gymId, gymId), isNotNull(stripeEvents.error), gte(stripeEvents.receivedAt, since)));
       return { lastReceivedAt: times?.received?.toISOString() ?? null, lastProcessedAt: times?.processed?.toISOString() ?? null,
-        pendingCount: pending?.total ?? 0, failedCount: failed?.total ?? 0 };
+        pendingCount: pending?.total ?? 0, failedCount: failed?.total ?? 0, recentFailedCount: recent?.total ?? 0 };
     });
   } };
 }

@@ -48,8 +48,8 @@ beforeAll(async () => {
   await writeFile(join(directory, 'assets', 'app.js'), 'export {};');
 });
 afterAll(async () => { await closeDatabase(); await rm(directory, { recursive: true, force: true }); });
-const app = () => createApp({ clock, installOrigin: origin, origin, publicDirectory: directory, setupToken,
-  contributions: { routes: [...createSetupRoutes(() => service), ...createContentPackRoutes()] },
+const app = (setupRoutes = createSetupRoutes({ service: () => service })) => createApp({ clock, installOrigin: origin, origin, publicDirectory: directory, setupToken,
+  contributions: { routes: [...setupRoutes, ...createContentPackRoutes()] },
   resolveGym: createTenantResolver(), authorize,
   session: sessionMiddleware({ auth, smtpConfigured: (gymId) => smtp.configured(gymId), resolve: (c) => ({
     gymId: c.get('context').gym.gymId, origin, clientIp: '127.0.0.1',
@@ -70,6 +70,26 @@ describe('first-boot setup', () => {
     const body = { name: 'Owner', email: 'owner@example.org', password: 'x'.repeat(129) };
     expect((await app().request(origin + '/api/setup/owner', { method: 'POST', headers: { origin, 'content-type': 'application/json', 'x-setup-token': setupToken }, body: JSON.stringify(body) })).status).toBe(400);
     expect(await service.status()).toMatchObject({ currentStep: 0 });
+  });
+  it('takes its key, origin and environment from the runtime options, and answers unavailable without them', async () => {
+    const restore = { choice: 'restore', snapshotPrefix: 'snapshots/one', privateKey: 'AGE-SECRET-KEY-1ABC',
+      source: { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'backups', accessKeyId: 'access', secretAccessKey: 'secret' } };
+    const start = (server: ReturnType<typeof app>) => server.request(origin + '/api/setup/restore', { method: 'POST',
+      headers: { origin, 'content-type': 'application/json', 'x-setup-token': setupToken }, body: JSON.stringify(restore) });
+    const configured = app(createSetupRoutes({ config: { key, origin, env: {} } }));
+    expect(await (await configured.request(origin + '/api/setup')).json()).toMatchObject({ data: { currentStep: 0 } });
+    // Its environment is the one it was given: a multi-gym environment hides setup, and restore has no staging directory.
+    expect((await app(createSetupRoutes({ config: { key, origin, env: { TENANCY: 'multi' } } })).request(origin + '/api/setup')).status).toBe(404);
+    const noStaging = await start(configured);
+    expect(noStaging.status).toBe(503);
+    expect(JSON.stringify(await noStaging.json())).toContain('Restore is not configured');
+    const unconfigured = app(createSetupRoutes());
+    const status = await unconfigured.request(origin + '/api/setup');
+    expect(status.status).toBe(503);
+    expect(JSON.stringify(await status.json())).toContain('Setup is not configured');
+    const refused = await start(unconfigured);
+    expect(refused.status).toBe(503);
+    expect(JSON.stringify(await refused.json())).toContain('Restore is not configured');
   });
   it('completes a fresh wizard with real owner authentication, packs, SMTP and compatible backups', async () => {
     const server = app();

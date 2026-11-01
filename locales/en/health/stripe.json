@@ -1,7 +1,8 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "missing": "Stripe is not configured.",
-  "failed": "Stripe webhook processing needs attention.",
+  "failed": "{count} Stripe webhook events from the last 7 days failed to process. Queue each again with the replay command once the cause is fixed.",
+  "failedOlder": "{count} Stripe webhook events older than 7 days were never processed. Queue each again with the replay command (gym-app replay --gym <gym-id> <event-id>).",
   "pending": "Stripe webhooks are waiting to be processed.",
   "healthy": "Stripe webhooks are processing normally.",
   "waiting": "Waiting for the first Stripe webhook."

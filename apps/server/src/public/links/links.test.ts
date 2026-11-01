@@ -8,6 +8,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, type SignedLinkPurposeName } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createApp } from '../../app.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
@@ -187,15 +188,17 @@ describe('signed-link pages through production registrations', () => {
     }
   });
   it('returns a controlled unavailable response for missing built assets, logging each failure once', async () => {
-    const f = await fixture(), log = vi.fn();
+    const f = await fixture(), log = vi.fn(), previous = setLogSink(log);
     const read = vi.fn(async (): Promise<string> => { throw new Error('ENOENT'); });
-    configureLinkPages({ scope: db.forHousehold, waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
-      stylesheet: cachedLinkAsset('links.css', read, log), browserScript: cachedLinkAsset('links.js', read, log) });
-    for (const path of ['/l/styles.css', '/l/client.js']) for (let i = 0; i < 2; i++) {
-      const response = await f.app().request(path); expect(response.status).toBe(503);
-      expect(await response.text()).toContain('Signed-link assets are unavailable');
-    }
-    expect(log).toHaveBeenCalledTimes(2); expect(read).toHaveBeenCalledTimes(2);
+    try {
+      configureLinkPages({ scope: db.forHousehold, waivers: f.waivers, checkout: f.checkout, links: f.links, receiptKey: new Uint8Array(32).fill(7),
+        stylesheet: cachedLinkAsset('links.css', read), browserScript: cachedLinkAsset('links.js', read) });
+      for (const path of ['/l/styles.css', '/l/client.js']) for (let i = 0; i < 2; i++) {
+        const response = await f.app().request(path); expect(response.status).toBe(503);
+        expect(await response.text()).toContain('Signed-link assets are unavailable');
+      }
+      expect(log).toHaveBeenCalledTimes(2); expect(read).toHaveBeenCalledTimes(2);
+    } finally { setLogSink(previous); }
   });
   it('exposes only invoice A; selectors cannot widen it to invoice B or another household', async () => {
     const f = await fixture();

@@ -23,6 +23,30 @@ describe('Stripe health', () => {
     expect(await read(a)).toMatchObject({ status: 'warning', details: { pending: 1 } });
     await expect(provider.read({ gymId: a, roles: ['front_desk'], clock })).rejects.toMatchObject({ code: 'not_found' });
   });
+  it('shows a failure from the last 7 days as an error, an older unresolved one as a warning with the replay hint, and a replayed one as healthy', async () => {
+    const [fresh, old, replayed, other] = [uuidv7(), uuidv7(), uuidv7(), uuidv7()];
+    for (const gymId of [fresh, old, replayed, other]) await factory('gyms', gymId);
+    const daysAgo = (days: number) => new Date(clock.now().getTime() - days * 86_400_000);
+    await factory('stripeEvents', fresh, { receivedAt: daysAgo(1), error: 'handler_failed' });
+    await factory('stripeEvents', old, { receivedAt: daysAgo(8), error: 'handler_failed' });
+    await factory('stripeEvents', old, { receivedAt: daysAgo(9), processedAt: daysAgo(9) });
+    // A replay that succeeds clears the failure, whatever the event's age.
+    await factory('stripeEvents', replayed, { receivedAt: daysAgo(8), processedAt: daysAgo(2), error: null });
+    // Another gym's fresh failure changes nothing here.
+    await factory('stripeEvents', other, { receivedAt: daysAgo(1), error: 'handler_failed' });
+    const provider = createStripeHealthProvider({ webhooks: createWebhookHealthQuery(db.forGym, clock), configured: async () => true });
+    const read = (gymId: string) => provider.read({ gymId, roles: ['owner'], clock });
+    expect(await read(fresh)).toMatchObject({ status: 'error', details: { failed: 1 }, message: expect.stringContaining('1 Stripe webhook events from the last 7 days') });
+    const warning = await read(old);
+    expect(warning).toMatchObject({ status: 'warning', details: { failed: 1 } });
+    expect(warning.message).toContain('1 Stripe webhook events older than 7 days');
+    expect(warning.message).toContain('replay');
+    expect(await read(replayed)).toMatchObject({ status: 'healthy', details: { failed: 0, pending: 0 } });
+    // The same failure turns into the older kind once 7 days have passed since it was received.
+    const later = new TestClock('2026-11-03T12:00:00Z');
+    const aged = createStripeHealthProvider({ webhooks: createWebhookHealthQuery(db.forGym, later), configured: async () => true });
+    expect(await aged.read({ gymId: fresh, roles: ['owner'], clock: later })).toMatchObject({ status: 'warning' });
+  });
   it('distinguishes unconfigured Stripe, no traffic, and provider failure', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     for (const configured of [false, true]) {

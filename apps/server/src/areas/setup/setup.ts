@@ -6,7 +6,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
-import { parseEncryptionKey, encryptSecret } from '../../core/secrets.js';
+import { encryptSecret } from '../../core/secrets.js';
 import { reserveGym } from '../../core/tenancy-bootstrap.js';
 import { createOwnerService, type ProvisionOwner } from '../staff/auth.owner.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
@@ -37,14 +37,15 @@ function present(gym?: Gym) {
 const missing = () => new AppError('not_found', 'Setup is unavailable');
 
 export function createSetupService(options: {
-  key: Buffer; origin: string; clock?: Clock; scope?: typeof forGym; system?: typeof forSystem;
+  /** The runtime's own key, origin and environment; setup reads nothing from the process environment. */
+  key: Buffer; origin: string; env: NodeJS.ProcessEnv; clock?: Clock; scope?: typeof forGym; system?: typeof forSystem;
   provisionOwner?: ProvisionOwner; sendTest?: (config: SmtpConfig, message: EmailMessage) => Promise<void>;
-  env?: NodeJS.ProcessEnv; stripeProvisioner?: Parameters<typeof createStripeStep>[0]['provisioner'];
+  stripeProvisioner?: Parameters<typeof createStripeStep>[0]['provisioner'];
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem, clock = options.clock ?? defaultClock;
-  const stripeStep = createStripeStep({ key: options.key, origin: options.origin, clock, scope,
+  const env = options.env;
+  const stripeStep = createStripeStep({ key: options.key, origin: options.origin, clock, scope, demoMode: env.DEMO_MODE === 'true',
     ...(options.stripeProvisioner ? { provisioner: options.stripeProvisioner } : {}) });
-  const env = options.env ?? process.env;
   async function install() {
     if ((env.TENANCY ?? 'single') !== 'single' || env.DEMO_MODE === 'true') throw missing();
     const rows = await system((tx) => tx.select().from(gyms).limit(2));
@@ -247,10 +248,4 @@ export function createSetupService(options: {
       return { completed: true as const, billingEnabled: false as const, memberEmailsEnabled: false as const, revision: gym.revision };
     },
   };
-}
-
-let defaultService: ReturnType<typeof createSetupService> | undefined;
-export function setupService() {
-  return defaultService ??= createSetupService({ key: parseEncryptionKey(process.env.APP_ENCRYPTION_KEY ?? ''),
-    origin: process.env.PUBLIC_ORIGIN ?? `https://${process.env.GYM_HOSTNAME}` });
 }

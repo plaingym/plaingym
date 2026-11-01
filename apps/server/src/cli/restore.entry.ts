@@ -3,6 +3,7 @@
 // eslint-disable-next-line no-restricted-imports
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { maintenanceCommand } from './restore.js';
+import { reportMaintenanceFailure } from './restore.failure.js';
 
 const args = process.argv.slice(2);
 try {
@@ -12,7 +13,7 @@ try {
     await initializeDatabase(process.env.DATABASE_URL, 1, 1);
   }
   await maintenanceCommand(args);
-} catch {
-  console.error('Maintenance command failed; check configuration and restore state');
+} catch (error) {
+  reportMaintenanceFailure(args, error);
   process.exitCode = 1;
 } finally { await closeDatabase(); }

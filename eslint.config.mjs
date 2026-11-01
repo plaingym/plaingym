@@ -94,6 +94,12 @@ export default defineConfig(
     rules: { 'no-restricted-syntax': ['error', ...staticImports] },
   },
   {
+    // Server code logs through core/log.ts, which redacts; benchmarks, test helpers and the browser-check scripts (.mjs) keep the console.
+    files: ['apps/server/src/**'],
+    ignores: ['**/*.{test,spec,bench}.*', '**/{test,tests,__tests__}/**', '**/*.test-helper.*', '**/*.mjs'],
+    rules: { 'no-console': 'error' },
+  },
+  {
     files: ['apps/server/src/infra/**'],
     rules: { 'no-restricted-imports': ['error', { patterns: [temporal, driver] }] },
   },

@@ -6,6 +6,7 @@ import { uuidv7 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { setupRestoreResponseSchema, type SetupRestoreRequest, type SetupRestoreResponse } from '@plaingym/shared/contracts';
 import { clock } from '../../core/clock.js';
+import { logError } from '../../core/log.js';
 import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.js';
@@ -64,8 +65,8 @@ export function createSetupRestore(options: {
             active = false;
             await publish({ status: 'restored', jobId: pollingId, billingEnabled: false, next: 'login' });
           } catch (error) {
-            // Operators need the cause; the owner-facing status stays generic. Never log the input or its key.
-            console.error('Setup restore failed:', error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error');
+            // Operators need the cause; the owner-facing status stays generic. The logger drops the message, which can quote the source or key.
+            logError('setup.restore_failed', {}, error);
             await publish({ status: 'failed', jobId: pollingId, message: 'Restore failed. Check the source and private key, or resume a verified restore.' });
           } finally {
             // A verified but interrupted restore retains its reservation until maintenance resumes it.
@@ -130,17 +131,18 @@ export function createSetupRestore(options: {
   };
 }
 
+/** Restore reads its configuration from `env`, which the runtime passes in; it never reads the process environment. */
 export function defaultSetupRestore(service: {
   assertEmpty(): Promise<void>; reserveRestore(token: string): Promise<{ reservationId: string; release(): Promise<void> }>;
   releaseRestore(reservationId: string): Promise<void>; markRestored(): Promise<void>;
-}) {
+}, env: NodeJS.ProcessEnv) {
   const required = (name: string) => {
-    const value = process.env[name];
+    const value = env[name];
     if (!value) throw new AppError('unavailable', 'Restore is not configured');
     return value;
   };
   // A multi-gym app never restores: it has no staging directory even when one is set by hand.
-  const stagingDirectory = restoreStagingDirectory(process.env);
+  const stagingDirectory = restoreStagingDirectory(env);
   if (!stagingDirectory) throw new AppError('unavailable', 'Restore is not configured');
   const gate = new RestoreGate(dirname(stagingDirectory));
   return createSetupRestore({ assertEmpty: () => service.assertEmpty(), claim: (token) => service.reserveRestore(token), onRestored: () => service.markRestored(),
@@ -150,7 +152,7 @@ export function defaultSetupRestore(service: {
         credentials: { accessKeyId: input.source.accessKeyId, secretAccessKey: input.source.secretAccessKey } });
       const appEncryptionKey = parseEncryptionKey(required('APP_ENCRYPTION_KEY'));
       // Files go back wherever this install keeps uploads: its directory or its S3 bucket.
-      const uploads = createRuntimeUploads(process.env, appEncryptionKey, async () => 'https://restore.invalid');
+      const uploads = createRuntimeUploads(env, appEncryptionKey, async () => 'https://restore.invalid');
       try {
         await new RestoreService({ store: new S3BackupObjectStore({ client, bucket: input.source.bucket, clock }),
           database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')), clock,

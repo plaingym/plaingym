@@ -17,7 +17,7 @@ it.each([null, '#2563eb'])('keeps setup branding readable by settings with color
   await database.forGym(gymId, (tx) => tx.update(gyms).set({ settings: {
     setup: { ownerId: owner.id, completedSteps: [0, 1], completed: false },
   } }).where(eq(gyms.id, gymId)));
-  const service = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'https://gym.example.test', scope: database.forGym });
+  const service = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'https://gym.example.test', env: {}, scope: database.forGym });
   const result = await service.gym({ gymId, actor: { kind: 'user', userId: owner.id } }, {
     name: 'Academy', timezone: 'UTC', currency: 'USD', address: {},
     branding: { logoKey: null, primaryColor }, revision: gym.revision,

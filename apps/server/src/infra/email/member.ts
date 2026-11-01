@@ -3,6 +3,7 @@ import { forGym, members } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { logInfo } from '../../core/log.js';
 import { DeliveryError, type Email, type EmailMessage, type EmailResult } from './index.js';
 
 export type SuppressionReason = Extract<EmailResult, { status: 'suppressed' }>['reason'];
@@ -61,7 +62,7 @@ export class MemberEmail implements Email {
       : member.optOut ? 'opt_out' : !member.deliverable ? 'undeliverable' : undefined;
     if (reason) {
       const event: EmailSuppression = { event: 'email.suppressed', gymId, memberId, reason };
-      (this.#options.logSuppression ?? ((entry) => console.info(entry)))(event);
+      (this.#options.logSuppression ?? (({ event: name, ...fields }) => logInfo(name, fields)))(event);
     }
     return reason;
   }

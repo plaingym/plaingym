@@ -20,7 +20,7 @@ const database = useTestDatabase(), factory = createFactories(database), clock =
 const gymA = uuidv7(), gymB = uuidv7();
 let userA: string, userB: string;
 const service = createSetupService({ key: parseEncryptionKey('ab'.repeat(32)), origin: 'http://gym.localhost',
-  scope: database.forGym, system: database.forSystem, clock });
+  env: {}, scope: database.forGym, system: database.forSystem, clock });
 beforeAll(async () => {
   await factory('gyms', gymA); await factory('gyms', gymB);
   userA = (await factory('authUser', gymA)).id; userB = (await factory('authUser', gymB)).id;
@@ -31,7 +31,7 @@ function app(principal: Principal, gymId = gymA) {
   const app = new OpenAPIHono<RequestEnvironment>({ defaultHook: (result, c) => { if (!result.success) return respondError(c, result.error); } });
   app.onError(errorHandler);
   app.use('*', async (c, next) => { c.set('context', { principal, gym: { gymId, timezone: 'UTC', enabledModules: new Set() }, clock, requestId: 'test' }); await next(); });
-  for (const entry of createSetupRoutes(() => service)) entry.mount(app, (permission) => async (c, next) => {
+  for (const entry of createSetupRoutes({ service: () => service })) entry.mount(app, (permission) => async (c, next) => {
     if (permission.kind === 'public') return next();
     if (principal.kind === 'anonymous') return c.json({}, 401);
     // The handler itself must reject a principal from another gym even with capability approval.

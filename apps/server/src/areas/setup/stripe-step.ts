@@ -26,7 +26,8 @@ export function readStripeConfig(key: Buffer, encrypted: string | null, gymId: s
   } catch (error) { logError('payments.stored_config_unreadable', { gymId }, error); return null; }
 }
 export function createStripeStep(options: { key: Buffer; origin: string; clock?: Clock; scope?: typeof forGym;
-  provisioner?: (key: string) => StripeProvisioner }) {
+  /** A sandbox accepts test-mode keys only. */
+  demoMode?: boolean; provisioner?: (key: string) => StripeProvisioner }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
   async function current(context: MutationContext, revision: number) {
     return scope(context.gymId, async (tx) => {
@@ -47,7 +48,7 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
       if (input.choice === 'configure') {
         if (!/^rk_(test|live)_[A-Za-z0-9]+$/.test(input.restrictedKey)) throw new AppError('invalid_request', 'A restricted Stripe key is required');
         const mode = input.restrictedKey.startsWith('rk_test_') ? 'test' : 'live';
-        if (mode === 'live' && process.env.DEMO_MODE === 'true') throw new AppError('invalid_request', 'Demo mode requires a test-mode key');
+        if (mode === 'live' && options.demoMode) throw new AppError('invalid_request', 'Demo mode requires a test-mode key');
         const provisioner = provisionerFor(options.provisioner, input.restrictedKey, mode);
         await provisioner.validate();
         // The signing secret exists only at creation, so a stored endpoint the new key can still see is kept (and its events

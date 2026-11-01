@@ -9,7 +9,7 @@ import type { JobStatsQuery, JobStats } from '../../core/interfaces/job-stats.js
 import type { Id } from '@plaingym/shared/contracts';
 import { instantSchema, idSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
-import { describeError } from '../../core/log.js';
+import { describeError, logError } from '../../core/log.js';
 import type { Jobs, JobOptions, JobHandler, JobContext, JobRecovery, FailedJob } from './index.js';
 import { cronOccurrences, occurrenceKey, validateCron } from './cron.js';
 
@@ -383,7 +383,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const abort = new AbortController();
     const running = new Set<Promise<void>>();
     let batchRunning = 0;
-    const report = (error: unknown) => { if (options.onError) options.onError(error); else console.error('Jobs worker infrastructure error', error); };
+    const report = (error: unknown) => { if (options.onError) options.onError(error); else logError('jobs.worker_error', {}, error); };
     let scheduledMinute: number | undefined;
     const loop = (async () => {
       while (!abort.signal.aborted) {
