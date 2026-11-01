@@ -208,13 +208,22 @@ describe('stored import previews', () => {
     for (const key of planKeys) expect((await uploads.head(key))?.deletedAt).toBeInstanceOf(Date);
     expect(after).toHaveLength(6);
   });
-  it('lets previews of different plans be computed at the same time without destroying each other', async () => {
-    const calls = { analyze: 0 }, { pipeline } = setup(new MapperRegistry([fixtureMapper(calls)]));
+  it('computes previews of different plans requested at once one after the other, without destroying each other', async () => {
+    const calls = { analyze: 0 }, base = fixtureMapper(calls), plans: string[] = [];
+    let active = 0, most = 0;
+    const tracked: CsvMapper = { ...base, async analyze(tx, rows, plan, context) {
+      active++; most = Math.max(most, active); plans.push(plan.mapping[0]!.targetField);
+      try { await new Promise<void>((resolve) => setImmediate(resolve)); return await base.analyze(tx, rows, plan, context); } finally { active--; }
+    } };
+    const { pipeline } = setup(new MapperRegistry([tracked]));
     const upload = await pipeline.upload(actorA, new File([csv(120)], 'people.csv'));
     const [name, email] = await Promise.all([pipeline.preview(actorA, planFor(upload.id), { limit: 5, offset: 0 }, 'UTC'),
       pipeline.preview(actorA, planFor(upload.id, 'Email', 'email'), { limit: 5, offset: 0 }, 'UTC')]);
     expect(name.data[0]!.values.field).toBe('firstName'); expect(email.data[0]!.values.field).toBe('email');
     expect(calls.analyze).toBe(4);
+    // One computation per process at a time: each holds its parsed file and the mapper's index.
+    // Either plan may reach its computation first; its two chunks run before the other plan's.
+    expect(most).toBe(1); expect(plans[0]).toBe(plans[1]); expect(plans[2]).toBe(plans[3]); expect(plans[0]).not.toBe(plans[2]);
     expect((await pipeline.preview(actorA, planFor(upload.id), { limit: 100, offset: 50 }, 'UTC')).data).toHaveLength(70);
     expect((await pipeline.preview(actorA, planFor(upload.id, 'Email', 'email'), { limit: 100, offset: 50 }, 'UTC')).data).toHaveLength(70);
     expect(calls.analyze).toBe(4);

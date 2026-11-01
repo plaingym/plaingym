@@ -6,17 +6,50 @@ import type { ImportIssue, ImportPlanRequest, ImportPreviewRow } from '@plaingym
 import { t } from '../pipeline.messages.js';
 import type { CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
-import { detectDateOrder, householdKey, knownKeys, lookupKeys, mapPerson, tagKey, type MemberStatus, type Person } from './people.parse.js';
+import { detectDateOrder, householdKey, knownKeys, lookupKeys, mapPerson, tagKey, type DateOrder, type MemberStatus, type Person } from './people.parse.js';
 
-/** Household values shared by every row of a family, taken from its first row that has each one. */
+/**
+ * Household values shared by every row of a family, taken from its first row that has each one, and what finds the family's
+ * existing members: its last names and lookup keys, each once, in row order.
+ */
 interface Family {
-  key: string; people: Person[]; name: string; email: string | null; phone: string | null;
-  billingDay: number | null; stripeCustomerId: string | null;
+  key: string; name: string; email: string | null; phone: string | null; billingDay: number | null; stripeCustomerId: string | null;
+  lastNames: string[]; lookups: string[];
 }
-interface FileIndex { people: Map<number, Person>; families: Map<string, Family>; familyKeys: Map<number, string> }
+/** Issues the whole file decides for a row, besides an in-file duplicate, in the order they are reported. */
+const fileIssues = [
+  { field: 'householdName', code: 'invalid_value', key: 'familyMismatch' }, { field: 'billingDay', code: 'invalid_value', key: 'familyMismatch' },
+  { field: 'stripeCustomerId', code: 'invalid_value', key: 'familyMismatch' }, { field: 'stripeCustomerId', code: 'conflict', key: 'usedByOtherFamily' },
+  { field: 'stripePaymentMethodId', code: 'conflict', key: 'usedByOtherFamily' },
+] as const;
+// Each row keeps these as bits of one byte.
+if (fileIssues.length > 8) throw new Error('File issues must fit in one byte');
+/**
+ * What the whole file decides for each row, by its position in the source: no mapped row is kept, so a chunk maps its own rows
+ * again. `families` holds families of several rows, and families of one whose key isn't the row's own household key; any
+ * other row (`familyOf` -1) is a family of one, read from the row itself.
+ */
+interface FileIndex {
+  dateOrder: DateOrder; familyOf: Int32Array; families: Family[];
+  /** Bit `i` set: `fileIssues[i]` applies to the row. */
+  issues: Uint8Array;
+  /** Position of a repeated identity → the row number of its first occurrence. */
+  earlier: Map<number, number>;
+}
 type Reader = Pick<Transaction, 'select'>;
 const message = (key: string, values?: Record<string, string | number>) => t('imports/people:' + key, values);
 const search = (value: string) => value.replace(/[\\%_]/g, '\\$&');
+const unique = <T>(values: Iterable<T>) => [...new Set(values)];
+
+/** A family's shared values from its rows, in row order. */
+function family(key: string, people: readonly Person[]): Family {
+  const first = <T>(read: (person: Person) => T | null) => people.map(read).find((value) => value !== null) ?? null;
+  const head = people[0]!;
+  return { key, name: first((person) => person.householdName) ?? ([head.firstName, head.lastName].filter(Boolean).join(' ') || message('unnamedHousehold')),
+    email: first((person) => person.email), phone: first((person) => person.phone), billingDay: first((person) => person.billingDay),
+    stripeCustomerId: first((person) => person.stripeCustomerId),
+    lastNames: unique(people.flatMap((person) => person.lastName ? [person.lastName] : [])), lookups: unique(people.flatMap(lookupKeys)) };
+}
 
 /**
  * The run's source rows are immutable and complete, so a run analyzes its whole file once.
@@ -29,71 +62,76 @@ function fileIndex(source: readonly CsvRow[], plan: ImportPlanRequest, today: st
   if (cached) return cached;
   const birthColumn = plan.mapping.find((item) => item.targetField === 'dateOfBirth')?.sourceColumn;
   const dateOrder = detectDateOrder(birthColumn === undefined ? [] : source.map((row) => row.values[birthColumn] ?? ''));
-  const people = new Map<number, Person>(), families = new Map<string, Family>(), firstSeen = new Map<string, number>();
-  for (const row of source) {
-    const person = mapPerson(row, plan.mapping, { dateOrder, today });
-    people.set(row.rowNumber, person);
+  // The mapped rows live only while the index is built.
+  const people = source.map((row) => mapPerson(row, plan.mapping, { dateOrder, today }));
+  const earlier = new Map<number, number>(), firstSeen = new Map<string, number>();
+  people.forEach((person, position) => {
     // Within-file duplicates: the later row is reported; the first occurrence stays importable.
-    const earlier = lookupKeys(person).map((key) => firstSeen.get(key)).find((rowNumber) => rowNumber !== undefined);
-    if (earlier !== undefined) person.issues.push({ rowNumber: row.rowNumber, column: null, code: 'duplicate', message: message('duplicateInFile', { row: earlier }) });
-    for (const key of knownKeys(person)) if (!firstSeen.has(key)) firstSeen.set(key, row.rowNumber);
-  }
+    const first = lookupKeys(person).map((key) => firstSeen.get(key)).find((rowNumber) => rowNumber !== undefined);
+    if (first !== undefined) earlier.set(position, first);
+    for (const key of knownKeys(person)) if (!firstSeen.has(key)) firstSeen.set(key, person.rowNumber);
+  });
+  // The closure above keeps the map alive until this function returns: release its keys for the rest of the build.
+  firstSeen.clear();
   // Explicit family references take precedence. A shared customer can also group people
   // whose export gives each member an ID but no separate household reference.
-  const references = new Set([...people.values()].flatMap((person) => person.householdExternalId ? [person.householdExternalId] : []));
+  const references = new Set(people.flatMap((person) => person.householdExternalId ? [person.householdExternalId] : []));
   const anchored = (person: Person) => person.householdExternalId !== null || person.externalId !== null && references.has(person.externalId);
   const customerFamilies = new Map<string, Set<string>>();
-  for (const person of people.values()) if (person.stripeCustomerId && anchored(person)) {
+  for (const person of people) if (person.stripeCustomerId && anchored(person)) {
     const keys = customerFamilies.get(person.stripeCustomerId) ?? new Set<string>();
     keys.add(householdKey(person)); customerFamilies.set(person.stripeCustomerId, keys);
   }
-  const familyKeys = new Map<number, string>();
-  for (const person of people.values()) {
+  const groups = new Map<string, number[]>();
+  people.forEach((person, position) => {
     const customerKeys = person.stripeCustomerId ? customerFamilies.get(person.stripeCustomerId) : undefined;
     const key = anchored(person) || !person.stripeCustomerId ? householdKey(person)
       : customerKeys?.size === 1 ? [...customerKeys][0]! : JSON.stringify(['customer', person.stripeCustomerId]);
-    familyKeys.set(person.rowNumber, key);
-    const family = families.get(key);
-    if (family) family.people.push(person);
-    else families.set(key, { key, people: [person], name: '', email: null, phone: null, billingDay: null, stripeCustomerId: null });
-  }
+    const group = groups.get(key);
+    if (group) group.push(position); else groups.set(key, [position]);
+  });
+  const index: FileIndex = { dateOrder, familyOf: new Int32Array(people.length).fill(-1), families: [], issues: new Uint8Array(people.length), earlier };
   const customers = new Map<string, string>(), methods = new Map<string, string>();
-  for (const family of families.values()) {
-    const first = <T>(read: (person: Person) => T | null) => family.people.map(read).find((value) => value !== null) ?? null;
-    const head = family.people[0]!;
-    family.name = first((person) => person.householdName)
-      ?? ([head.firstName, head.lastName].filter(Boolean).join(' ') || message('unnamedHousehold'));
-    family.email = first((person) => person.email); family.phone = first((person) => person.phone);
-    family.billingDay = first((person) => person.billingDay); family.stripeCustomerId = first((person) => person.stripeCustomerId);
-    for (const person of family.people) {
-      const disagree = (field: 'householdName' | 'billingDay' | 'stripeCustomerId', own: unknown, shared: unknown) => {
-        if (own !== null && own !== shared) person.issues.push({ rowNumber: person.rowNumber, column: plan.mapping.find((item) => item.targetField === field)?.sourceColumn ?? null,
-          code: 'invalid_value', message: message('familyMismatch') });
-      };
-      disagree('householdName', person.householdName, family.name);
-      disagree('billingDay', person.billingDay, family.billingDay);
-      disagree('stripeCustomerId', person.stripeCustomerId, family.stripeCustomerId);
+  for (const [key, positions] of groups) {
+    const members = positions.map((position) => people[position]!);
+    // A row alone in its family agrees with it; analyze reads that family from the row unless its key is a shared one.
+    const shared = members.length > 1 || key !== householdKey(members[0]!) ? family(key, members) : undefined;
+    if (shared) {
+      for (const position of positions) index.familyOf[position] = index.families.length;
+      index.families.push(shared);
+    }
+    positions.forEach((position, i) => {
+      const person = members[i]!, flag = (bit: number) => { index.issues[position]! |= 1 << bit; };
+      if (shared && person.householdName !== null && person.householdName !== shared.name) flag(0);
+      if (shared && person.billingDay !== null && person.billingDay !== shared.billingDay) flag(1);
+      if (shared && person.stripeCustomerId !== null && person.stripeCustomerId !== shared.stripeCustomerId) flag(2);
       // A Stripe customer or saved payment method belongs to one household.
-      const claim = (owners: Map<string, string>, id: string | null, field: 'stripeCustomerId' | 'stripePaymentMethodId') => {
+      const claim = (owners: Map<string, string>, id: string | null, bit: number) => {
         if (id === null) return;
         const owner = owners.get(id);
-        if (owner === undefined) owners.set(id, family.key);
-        else if (owner !== family.key) person.issues.push({ rowNumber: person.rowNumber,
-          column: plan.mapping.find((item) => item.targetField === field)?.sourceColumn ?? null, code: 'conflict', message: message('usedByOtherFamily') });
+        if (owner === undefined) owners.set(id, key); else if (owner !== key) flag(bit);
       };
-      claim(customers, person.stripeCustomerId, 'stripeCustomerId');
-      claim(methods, person.stripePaymentMethodId, 'stripePaymentMethodId');
-    }
+      claim(customers, person.stripeCustomerId, 3);
+      claim(methods, person.stripePaymentMethodId, 4);
+    });
   }
-  const index = { people, families, familyKeys };
   if (!fileIndexes.has(source)) fileIndexes.set(source, new Map());
   fileIndexes.get(source)!.set(cacheKey, index);
   return index;
 }
+/** The row's position in the source, which lists rows in file order (`parseCsv`); -1 if it isn't there. */
+function positionOf(source: readonly CsvRow[], row: CsvRow): number {
+  let low = 0, high = source.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1, rowNumber = source[middle]!.rowNumber;
+    if (rowNumber === row.rowNumber) return middle;
+    if (rowNumber < row.rowNumber) low = middle + 1; else high = middle - 1;
+  }
+  return -1;
+}
 
 interface Existing { id: string; householdId: string }
-async function existingMembers(tx: Reader, people: readonly Person[]): Promise<Map<string, Existing[]>> {
-  const lastNames = [...new Set(people.flatMap((person) => person.lastName ? [person.lastName] : []))];
+async function existingMembers(tx: Reader, lastNames: readonly string[]): Promise<Map<string, Existing[]>> {
   const found = new Map<string, Existing[]>();
   if (!lastNames.length) return found;
   // Anonymized members are never matched or updated. Every identity includes the last name.
@@ -110,36 +148,45 @@ function matches(found: Map<string, Existing[]>, person: Person): Existing[] {
 }
 
 async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequest, context: MapperContext): Promise<PlannedRow[]> {
-  const today = context.clock.now().toISOString().slice(0, 10), file = fileIndex(context.sourceRows, plan, today);
-  const chunk = rows.map((row) => file.people.get(row.rowNumber) ?? mapPerson(row, plan.mapping, { dateOrder: null, today }));
-  const familyFor = (person: Person) => file.families.get(file.familyKeys.get(person.rowNumber)!)!;
-  const families = [...new Set(chunk.map(familyFor))];
-  const found = await existingMembers(tx, families.flatMap((family) => family.people));
+  const today = context.clock.now().toISOString().slice(0, 10), source = context.sourceRows, file = fileIndex(source, plan, today);
+  const column = (field: string) => plan.mapping.find((item) => item.targetField === field)?.sourceColumn ?? null;
+  const chunk = rows.map((row) => {
+    const position = positionOf(source, row);
+    if (position < 0) throw new Error('Mapper rows must come from the run source, in file order');
+    const person = mapPerson(row, plan.mapping, { dateOrder: file.dateOrder, today }), earlier = file.earlier.get(position);
+    if (earlier !== undefined) person.issues.push({ rowNumber: row.rowNumber, column: null, code: 'duplicate', message: message('duplicateInFile', { row: earlier }) });
+    fileIssues.forEach(({ field, code, key }, bit) => {
+      if (file.issues[position]! & 1 << bit) person.issues.push({ rowNumber: row.rowNumber, column: column(field), code, message: message(key) });
+    });
+    const index = file.familyOf[position]!;
+    return { person, family: index < 0 ? family(householdKey(person), [person]) : file.families[index]! };
+  });
+  const families = unique(chunk.map((entry) => entry.family));
+  const found = await existingMembers(tx, unique(families.flatMap((family) => family.lastNames)));
   const customers = [...new Set(families.flatMap((family) => family.stripeCustomerId ? [family.stripeCustomerId] : []))];
   const customerHouseholds = new Map((customers.length ? await tx.select({ id: households.id, customer: households.stripeCustomerId })
     .from(households).where(inArray(households.stripeCustomerId, customers)) : []).map((row) => [row.customer!, row.id]));
   // Every existing identity and the saved customer must agree on one household.
   const familyHouseholds = new Map(families.map((family) => {
-    const candidates = new Set(family.people.flatMap((person) => matches(found, person).map((member) => member.householdId)));
+    const candidates = new Set(family.lookups.flatMap((key) => found.get(key) ?? []).map((member) => member.householdId));
     const customerHome = family.stripeCustomerId ? customerHouseholds.get(family.stripeCustomerId) : undefined;
     if (customerHome) candidates.add(customerHome);
     return [family.key, [...candidates]];
   }));
-  const targets = chunk.map((person) => {
+  const targets = chunk.map(({ person, family }) => {
     const duplicates = matches(found, person);
     // An update stays in the member's own household; moving members is a staff decision.
-    return { person, duplicates, householdId: duplicates.length === 1 ? duplicates[0]!.householdId
-      : duplicates.length ? null : familyHouseholds.get(familyFor(person).key)?.[0] ?? null };
+    return { person, family, duplicates, householdId: duplicates.length === 1 ? duplicates[0]!.householdId
+      : duplicates.length ? null : familyHouseholds.get(family.key)?.[0] ?? null };
   });
   const householdIds = [...new Set(targets.flatMap((target) => target.householdId ? [target.householdId] : []))];
   const householdCustomers = new Map((householdIds.length ? await tx.select({ id: households.id, customer: households.stripeCustomerId })
     .from(households).where(inArray(households.id, householdIds)) : []).map((row) => [row.id, row.customer]));
-  const methodIds = [...new Set(chunk.flatMap((person) => person.stripePaymentMethodId ? [person.stripePaymentMethodId] : []))];
+  const methodIds = [...new Set(chunk.flatMap(({ person }) => person.stripePaymentMethodId ? [person.stripePaymentMethodId] : []))];
   const methodOwners = new Map((methodIds.length ? await tx.select({ id: paymentMethods.processorId, householdId: paymentMethods.householdId })
     .from(paymentMethods).where(inArray(paymentMethods.processorId, methodIds)) : []).map((row) => [row.id, row.householdId]));
-  const column = (field: string) => plan.mapping.find((item) => item.targetField === field)?.sourceColumn ?? null;
-  return targets.map(({ person, duplicates, householdId }) => {
-    const family = familyFor(person), issues: ImportIssue[] = [...person.issues];
+  return targets.map(({ person, family, duplicates, householdId }) => {
+    const issues: ImportIssue[] = [...person.issues];
     const issue = (field: string, code: ImportIssue['code'], key: string) => issues.push({ rowNumber: person.rowNumber, column: column(field), code, message: message(key) });
     if ((familyHouseholds.get(family.key)?.length ?? 0) > 1) issue('householdExternalId', 'conflict', 'ambiguousFamily');
     const customer = family.stripeCustomerId, current = householdId ? householdCustomers.get(householdId) ?? null : null;

@@ -36,7 +36,9 @@ plan, so a warm page in that process reads only `meta.json` and the row files.
 A preview is served for `PREVIEW_LIFETIME` from when its computation finished, so
 one slower than that is still served for the full lifetime. Two requests for one
 preview in a process share one pass; each plan keeps its own preview while it is
-fresh.
+fresh. A process computes one preview at a time, since each computation holds its
+parsed file and the mapper's whole-file index: a request for another plan or upload
+waits for the running computation to finish.
 
 The import revision changes whenever a real (not dry-run) import run of the gym
 is created or completes, or retention removes runs: one aggregate over the gym's
@@ -65,6 +67,10 @@ the job parses it when it runs, and fails the run if the file's row count differ
 the run's. Parsing slices each cell out of the text rather than
 appending character by character, and a preview or run holds the parsed document and
 the mapper's whole-file index, never every planned row.
+
+An upload reads the file's bytes into a buffer only to decode them, so they are
+released before the text is parsed; it keeps only the header and row count, and
+streams the stored `source.csv` from the uploaded file itself.
 
 `MapperRegistry` takes one implementation per mapper ID: people, mat and
 memberships.

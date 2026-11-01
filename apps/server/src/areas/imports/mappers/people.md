@@ -36,6 +36,12 @@ update policy. Existing duplicates use the pipeline's error/skip/update policy;
 multiple existing matches cannot be updated. Identical reimports create no new
 members. Indexes cover the immutable full file, including families and repeated
 identities spanning chunks; database matches always use the supplied gym scope.
+The whole-file index keeps no mapped row: for each row only its family and the
+issues the file decides (a repeated identity, a family mismatch, a customer or
+payment method another family uses), and for each family of several rows, or
+of one row grouped by a shared customer, its shared values, last names and
+lookup keys; any other row is a family of one, read from the row itself. Each
+chunk maps its own rows again, with the date order the file decided.
 
 Updates lock the current member or household and check its revision. Audit
 payloads contain only the import run ID, with no names, contact details or

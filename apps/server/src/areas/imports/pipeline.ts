@@ -40,6 +40,20 @@ function runJob(run: Run): ImportJob {
     totalRows: run.totalRows, processedRows: run.processedRows, committedRows: run.committedRows, errorCount: run.errorCount,
     createdAt: run.createdAt.toISOString(), completedAt: run.completedAt?.toISOString() ?? null };
 }
+/**
+ * Checks an upload as UTF-8 CSV and answers its header and row count. The file's bytes are read into a buffer only for the
+ * decode, so they are released before parsing, and the text and parsed rows when this returns.
+ */
+async function readShape(file: File): Promise<{ columns: string[]; rowCount: number }> {
+  const document = parseCsv(await decode(file));
+  return { columns: document.columns, rowCount: document.rows.length };
+}
+/** A read failure is the server's; only bytes that aren't UTF-8 make the CSV invalid. */
+async function decode(file: File): Promise<string> {
+  const bytes = await file.arrayBuffer();
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch { throw new AppError('invalid_request', t('imports/pipeline:invalidCsv')); }
+}
 export interface PipelineOptions { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock; mappers?: MapperRegistry }
 export function createImportPipeline(options: PipelineOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
@@ -164,6 +178,9 @@ export function createImportPipeline(options: PipelineOptions) {
   }
   const immutable = (error: unknown) => error instanceof Error && error.message === 'Upload keys are immutable';
   const computing = new Map<string, Promise<StoredPreview>>();
+  // One preview computation at a time in this process: each holds its parsed file and the mapper's whole-file index, and two of a
+  // large file together nearly fill a 256 MB heap. A request for a preview already computing shares that pass instead of queueing.
+  let previewTurn: Promise<unknown> = Promise.resolve();
   /**
    * Computes and stores a preview, answering the stored preview to page from; the caller has checked the upload's metadata.
    * Two requests for one preview in this process share one pass; when another process stored the same bucket's summary first,
@@ -174,7 +191,7 @@ export function createImportPipeline(options: PipelineOptions) {
   function computePreview(context: MutationContext, plan: ImportPlanRequest, timezone: string, prefix: string): Promise<StoredPreview> {
     const running = computing.get(prefix);
     if (running) return running;
-    const task = (async (): Promise<StoredPreview> => {
+    const task = previewTurn.then(async (): Promise<StoredPreview> => {
       const { gymId } = context, uploads = await options.uploadsFor(gymId), generation = uuidv7(), startedAt = clock.now();
       const document = await loadSource(gymId, plan.uploadId), written: string[] = [];
       const mapperContext: MapperContext = { ...context, clock, runId: uuidv7(), timezone, sourceRows: document.rows };
@@ -212,7 +229,8 @@ export function createImportPipeline(options: PipelineOptions) {
       // Best effort once the preview is stored: retention removes whatever this leaves with the upload.
       await removePrevious(uploads, prefix, bucketOf(new Date(stored.createdAt))).catch(() => undefined);
       return stored;
-    })().finally(() => computing.delete(prefix));
+    }).finally(() => computing.delete(prefix));
+    previewTurn = task.catch(() => undefined);
     computing.set(prefix, task);
     return task;
   }
@@ -292,15 +310,12 @@ export function createImportPipeline(options: PipelineOptions) {
   return {
     async upload(context: MutationContext, file: File): Promise<ImportUpload> {
       if (!file.size || file.size > MAX_CSV_BYTES) throw new AppError('invalid_request', t('imports/pipeline:invalidCsv'));
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let text: string;
-      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-      catch { throw new AppError('invalid_request', t('imports/pipeline:invalidCsv')); }
-      const document = parseCsv(text), id = uuidv7(), mapping = autoMatch(document.columns);
+      const { columns, rowCount } = await readShape(file), id = uuidv7(), mapping = autoMatch(columns);
       const data: ImportUpload = { id, filename: file.name.replace(/[^\p{L}\p{N} ._-]/gu, '_').slice(0, 255) || 'import.csv',
-        rowCount: document.rows.length, columns: document.columns, suggestedMapping: mapping.length ? mapping : null,
+        rowCount, columns, suggestedMapping: mapping.length ? mapping : null,
         expiresAt: new Date(clock.now().getTime() + LIFETIME).toISOString() };
-      await (await options.uploadsFor(context.gymId)).put(store.key(context.gymId, 'uploads', id, 'source.csv'), bytes, 'text/csv');
+      // The stored bytes stream from the file itself, after its text and parsed rows are released.
+      await (await options.uploadsFor(context.gymId)).put(store.key(context.gymId, 'uploads', id, 'source.csv'), file.stream(), 'text/csv');
       await store.put(context.gymId, store.key(context.gymId, 'uploads', id, 'meta.json'), data);
       await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
         ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'imports.uploaded', targetType: 'import', targetId: id,

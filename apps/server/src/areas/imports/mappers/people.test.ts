@@ -107,6 +107,35 @@ describe('people mapper through the real import pipeline', () => {
     expect(data.households).toHaveLength(1); expect(new Set(data.members.map((member) => member.householdId)).size).toBe(1);
     expect(data.methods).toHaveLength(1); expect(data.households[0]).toMatchObject({ stripeCustomerId: 'cus_Family' });
   });
+  it('analyzes chunks in any order exactly as one pass over the whole file', async () => {
+    const existing = await factory('households', gymA, { stripeCustomerId: 'cus_Seen' });
+    await factory('members', gymA, { householdId: existing.id, firstName: 'Old', lastName: 'Lake', email: 'old@example.test' });
+    const rows = parseCsv(csvLine(['Member ID', 'First Name', 'Last Name', 'Email', 'Household External ID', 'Household Name', 'Billing Day',
+      'Stripe Customer ID', 'Stripe Payment Method ID'])
+      + csvLine(['p1', 'Pat', 'Lake', 'pat@example.test', '', 'Lake home', '5', 'cus_Lake', 'pm_Lake'])
+      + csvLine(['p2', 'Sol', 'Lake', '', 'p1', 'Other name', '9', 'cus_Wrong', ''])
+      + csvLine(['q1', 'Ira', 'Moss', 'ira@example.test', 'moss', '', '', 'cus_Lake', 'pm_Lake'])
+      + csvLine(['', 'Pat', 'Lake', 'pat@example.test', '', '', '', '', ''])
+      + csvLine(['solo', 'Una', 'Fern', '', '', '', '', 'cus_Solo', ''])
+      + csvLine(['', 'Old', 'Lake', 'old@example.test', 'p1', '', '', '', ''])
+      + csvLine(['', 'Ana', 'Reed', '', '', '', '', 'cus_Seen', 'pm_Reed'])).rows;
+    const plan: ImportPlanRequest = { uploadId: uuidv7(), mapper: 'people', duplicatePolicy: 'error', mapping: autoMatch(Object.keys(rows[0]!.values)) };
+    // Each pass gets its own copy of the rows, as each run parses its own file, so the chunked pass builds its own index.
+    const context = (sourceRows: typeof rows): MapperContext => ({ gymId: gymA, actor: { kind: 'system' }, runId: uuidv7(), clock, timezone: 'UTC', sourceRows });
+    const whole = await database.forGym(gymA, (tx) => peopleMapper.analyze(tx, rows, plan, context(rows)));
+    const chunked = context([...rows]), parts = [];
+    for (const start of [6, 4, 2, 0]) parts.unshift(await database.forGym(gymA, (tx) => peopleMapper.analyze(tx, rows.slice(start, start + 2), plan, chunked)));
+    expect(parts.flat()).toEqual(whole);
+    const codes = whole.map((row) => row.issues.map((issue) => issue.code + ':' + issue.column));
+    // The family finds the existing household through Old Lake, which has another customer.
+    expect(codes[0]).toEqual(['conflict:Stripe Customer ID']);
+    expect(codes[1]).toEqual(['invalid_value:Household Name', 'invalid_value:Billing Day', 'invalid_value:Stripe Customer ID', 'conflict:Stripe Customer ID']);
+    expect(codes[2]).toEqual(['conflict:Stripe Customer ID', 'conflict:Stripe Payment Method ID']);
+    expect(codes[3]).toEqual(['duplicate:null']);
+    expect(whole[4]).toMatchObject({ action: 'create', values: { familyKey: JSON.stringify(['customer', 'cus_Solo']), householdName: 'Una Fern' } });
+    expect(whole[5]).toMatchObject({ duplicateIds: [expect.any(String)], values: { householdId: existing.id } });
+    expect(whole[6]).toMatchObject({ values: { householdId: existing.id, stripeCustomerId: 'cus_Seen' } });
+  });
   it('groups a shared customer despite distinct member IDs and keeps customer IDs case-sensitive', async () => {
     const source = await services().load('Member ID,First Name,Last Name,Stripe Customer ID\n1,One,Family,cus_Abc\n2,Two,Family,cus_Abc\n3,Three,Family,cus_abc\n');
     expect((await source.run()).job).toMatchObject({ status: 'succeeded', committedRows: 3 });

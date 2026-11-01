@@ -183,6 +183,17 @@ describe('import pipeline using Postgres and immutable uploads', () => {
     const job = await pipeline.start(actor, { ...input, dryRun: false }, 'UTC'); await jobs.runNext();
     expect(await pipeline.get(gymA, job.id)).toMatchObject({ committedRows: duplicatePolicy === 'update' ? 1 : 0, errorCount: duplicatePolicy === 'error' ? 1 : 0 });
   });
+  it('stores the uploaded bytes unchanged, byte order mark and line endings included', async () => {
+    const { pipeline } = services(), text = '﻿First Name,Email\r\nZoë,zoe@example.test\r\n"Ana\nMaría",ana@example.test\n';
+    const bytes = new TextEncoder().encode(text), data = await pipeline.upload(actor, new File([bytes], 'people.csv'));
+    expect(data).toMatchObject({ rowCount: 2, columns: ['First Name', 'Email'] });
+    const stored = await (await uploadsFor(gymA)).get(`${gymA}/imports/uploads/${data.id}/source.csv`);
+    expect(new Uint8Array(await new Response(stored).arrayBuffer())).toEqual(bytes);
+    // A body that can't be read is not an invalid CSV.
+    const unreadable = new File(['First Name\r\nJo\r\n'], 'people.csv');
+    unreadable.arrayBuffer = () => Promise.reject(new Error('Upload body read failed'));
+    await expect(pipeline.upload(actor, unreadable)).rejects.toThrow('Upload body read failed');
+  });
   it('rejects missing columns, expired uploads and malformed UTF-8', async () => {
     const { pipeline } = services(), data = await upload(pipeline);
     await expect(pipeline.preview(actor, { ...plan(data.id), mapping: [{ sourceColumn: 'nonexistent', targetField: 'email' }] }, { limit: 50, offset: 0 }, 'UTC')).rejects.toMatchObject({ code: 'invalid_request' });
