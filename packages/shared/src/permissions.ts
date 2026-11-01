@@ -24,6 +24,7 @@ export const staffPermissions = {
   'tags.manage': desk,
   'links.send': desk,
   'payments.record': desk,
+  'payments.custom': managers,
   'billing.read': desk,
   'medical.read': coaches,
   'emergency_contacts.read': staffRoles,

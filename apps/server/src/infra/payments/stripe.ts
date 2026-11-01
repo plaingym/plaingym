@@ -380,9 +380,12 @@ export class StripePayments implements Payments {
     // As adoptCustomer: an untagged customer (imported or made in the dashboard) is the gym's own; another gym's is refused.
     const owner = data(customer.metadata ?? {}).gym_id;
     if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
-    if (customer.name === ERASED_CUSTOMER_NAME && !customer.email) return;
-    // An empty string clears the email; the customer's metadata, payments and disputes are unchanged.
-    await this.#post(path, { name: ERASED_CUSTOMER_NAME, email: '' }, 'customer:' + customerId + ':redact');
+    const personal = [customer.email, customer.phone, customer.address, customer.shipping, customer.description];
+    if (customer.name === ERASED_CUSTOMER_NAME && personal.every((value) => !value)) return;
+    // An empty string clears a field (the email, phone, address, shipping details and description a dashboard customer may hold);
+    // the customer's metadata, payments and disputes are unchanged. Setting the same empty values twice is harmless, so there is
+    // no idempotency key: a reused key would replay a cached answer and skip details a dashboard edit added since.
+    await this.#post(path, { name: ERASED_CUSTOMER_NAME, email: '', phone: '', address: '', shipping: '', description: '' });
   }
   async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
     assertNoTransaction('payments.adoptCustomer');

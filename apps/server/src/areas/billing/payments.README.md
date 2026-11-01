@@ -45,6 +45,12 @@ with a null reason can resume after a crash and save the requested reason.
 Manual refunds record money already returned to the payer. Routes restrict refunds to owners and
 admins; front desk may collect payments and remove a card.
 
+A one-off from a charge type needs only `payments.record`. A custom-amount one-off
+(`source: 'custom'`) also needs `payments.custom`, held by owners and admins: without it
+the route answers 403 and creates nothing, and the invoice editor hides the custom
+amount. Charging an existing invoice is unchanged. Front desk therefore bills
+catalog charge types, which managers price.
+
 Removing a card first revokes it locally and clears its default flag, then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
 remain visible so staff can retry removal after an outage. No processor IDs leave

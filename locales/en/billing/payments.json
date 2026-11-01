@@ -13,6 +13,7 @@
   "chargeType": "Charge type",
   "custom": "Custom amount",
   "chooseCharge": "Choose a charge type",
+  "noChargeTypes": "No charge types are set up. Ask an owner or admin to add one.",
   "description": "Description",
   "amount": "Amount",
   "taxes": "Tax rates",

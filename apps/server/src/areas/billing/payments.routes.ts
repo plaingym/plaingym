@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { AppError, canStaff } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { billingMutation, billingRoute } from './catalog.routes.js';
 import { createPaymentService, type PaymentService } from './payments.js';
@@ -10,7 +11,13 @@ export function createPaymentRoutes(service?: PaymentService) {
   return [
     billingRoute(c.billingContracts.listInvoices, (ctx, _p, q) => read().listInvoices(ctx.gym.gymId, q)),
     billingRoute(c.billingContracts.getInvoice, async (ctx, p) => ({ data: await read().getInvoice(ctx.gym.gymId, p.invoiceId!) })),
-    billingRoute(c.billingContracts.createOneOffInvoice, async (ctx, _p, _q, b) => ({ data: await read().createOneOff(billingMutation(ctx), c.createOneOffInvoiceRequestSchema.parse(b)) })),
+    billingRoute(c.billingContracts.createOneOffInvoice, async (ctx, _p, _q, b) => {
+      const request = c.createOneOffInvoiceRequestSchema.parse(b);
+      // Front desk bills catalog charge types (priced by managers); any other amount needs the custom-amount capability.
+      if (request.source === 'custom' && !(ctx.principal.kind === 'staff' && canStaff(ctx.principal.roles, 'payments.custom')))
+        throw new AppError('forbidden', 'Access denied');
+      return { data: await read().createOneOff(billingMutation(ctx), request) };
+    }),
     billingRoute(c.billingContracts.chargeInvoice, async (ctx, p) => ({ data: await read().charge(billingMutation(ctx), p.invoiceId!) })),
     billingRoute(c.releaseInvoiceHoldContract, async (ctx, p) => ({ data: await read().releaseHold(billingMutation(ctx), p.invoiceId!) })),
     billingRoute(c.billingContracts.recordManualPayment, async (ctx, p, _q, b) => ({ data: await read().manualPayment(billingMutation(ctx), p.invoiceId!, c.recordManualPaymentRequestSchema.parse(b)) })),

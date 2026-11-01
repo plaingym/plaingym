@@ -316,7 +316,8 @@ describe('members and households', () => {
     const { home, person } = await routeFixture(gymA), customerId = 'cus_redact_' + uuidv7().replaceAll('-', '');
     await database.forGym(gymA, tx => tx.update(households).set({ stripeCustomerId: customerId }).where(eq(households.id, home.id)));
     const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
-    payments.seedCustomer({ id: customerId, email: 'payer@example.test' });
+    const details = { phone: '+15555550100', description: 'Payer, Tuesday class', address: { line1: '1 Mat Road' }, shipping: { name: 'Payer' } };
+    payments.seedCustomer({ id: customerId, email: 'payer@example.test', ...details });
     const redactCustomer = vi.fn(async (gymId: string, id: string) => {
       expect(gymId).toBe(gymA);
       // Redaction runs only after the erasure, which cleared the local customer ID, has committed.
@@ -330,9 +331,11 @@ describe('members and households', () => {
       expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(failure && !queued ? 500 : 200);
     } finally { setLogSink(previousLog); }
     expect(redactCustomer).toHaveBeenCalledExactlyOnceWith(gymA, customerId);
-    expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test' } : { name: 'Erased member', email: null });
+    const cleared = { phone: null, description: null, address: null, shipping: null };
+    expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test', ...details }
+      : { name: 'Erased member', email: null, ...cleared });
     expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload }))).toEqual(queued ? [{ name: redactCustomerJob, payload: { customerId } }] : []);
-    // The retry waits a minute, past the inline attempt, so the two don't race on one idempotency key.
+    // The retry waits a minute, after the inline attempt, which it then finds already redacted.
     if (queued) expect(jobs.jobs[0]!.runAt.getTime()).toBe(clock.now().getTime() + 60_000);
     expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.redact_failed'))
       .toEqual(failure && queued ? [expect.objectContaining({ gymId: gymA, memberId: person.id })] : []);
@@ -344,7 +347,9 @@ describe('members and households', () => {
     // The retry needs only the job's payload: the household no longer stores the customer ID. It is safe to repeat.
     const [job] = createErasureJobs({ redactCustomer: (_gymId, id) => payments.redactCustomer(id) });
     for (let run = 1; run <= 2; run++) await job!.handler(jobs.jobs[0]!.payload, { jobId: 'redact', gymId: gymA, timezone: 'UTC', attempt: run, clock });
-    expect(payments.customer(customerId)).toEqual({ name: 'Erased member', email: null });
+    expect(payments.customer(customerId)).toEqual({ name: 'Erased member', email: null, ...cleared });
+    // A customer already deleted at the provider (or never there) counts as redacted.
+    await expect(job!.handler({ customerId: 'cus_gone' }, { jobId: 'redact', gymId: gymA, timezone: 'UTC', attempt: 1, clock })).resolves.toBeUndefined();
     for (const payload of [{}, { customerId: '../cus_x' }]) await expect(job!.handler(payload,
       { jobId: 'redact', gymId: gymA, timezone: 'UTC', attempt: 1, clock })).rejects.toThrow();
   });

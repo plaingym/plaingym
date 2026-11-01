@@ -14,8 +14,8 @@ import { Select, CheckboxField } from '../../../components/ui/select.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { LoadingState, ErrorState } from '../../../components/ui/states.js';
 
-export function OneOffEditor({ gymId, householdId, client, close, created }: {
-  gymId: string; householdId?: string; client: InvoiceClient; close: () => void; created: (invoiceId: string) => void;
+export function OneOffEditor({ gymId, householdId, custom, client, close, created }: {
+  gymId: string; householdId?: string; custom: boolean; client: InvoiceClient; close: () => void; created: (invoiceId: string) => void;
 }) {
   const bootstrap = useBootstrap();
   const gym = bootstrap.data?.gym;
@@ -47,8 +47,8 @@ export function OneOffEditor({ gymId, householdId, client, close, created }: {
           {homes.isPending && <LoadingState/>}{homes.isError && <ErrorState onRetry={() => void homes.refetch()}/>}
           <p className="text-sm text-muted-foreground">{text('householdSearchHelp')}</p>
         </>}
-        <Label className="block">{text('source')}<Select value={source} onChange={event => setSource(event.target.value)}><option value="charge_type">{text('chargeType')}</option><option value="custom">{text('custom')}</option></Select></Label>
-        {source === 'charge_type' ? <Label className="block">{text('chargeType')}<Select name="chargeTypeId" required><option value="">{text('chooseCharge')}</option>
+        {custom && <Label className="block">{text('source')}<Select value={source} onChange={event => setSource(event.target.value)}><option value="charge_type">{text('chargeType')}</option><option value="custom">{text('custom')}</option></Select></Label>}
+        {source === 'charge_type' || !custom ? <Label className="block">{text('chargeType')}<Select name="chargeTypeId" required><option value="">{text('chooseCharge')}</option>
           {setup.data.charges.filter(c => c.active).map(c => <option key={c.id} value={c.id}>{c.name} · {money(c.amountCents, c.currency)}</option>)}</Select></Label>
           : <>
             <Label className="block">{text('description')}<Input name="description" required/></Label>
@@ -56,6 +56,7 @@ export function OneOffEditor({ gymId, householdId, client, close, created }: {
             <fieldset><legend className="text-sm font-medium">{text('taxes')}</legend>{setup.data.taxes.filter(t => t.active).map(t => <CheckboxField key={t.id} name="taxRateIds" value={t.id} label={t.name}/>)}</fieldset>
           </>}
         <Label className="block">{text('dueOn')}<Input name="dueOn" type="date" required defaultValue={localDate(new Date(), gym.timezone)}/></Label>
+        {!custom && !setup.data.charges.some(c => c.active) && <Alert role="status">{text('noChargeTypes')}</Alert>}
         <p className="text-sm text-muted-foreground">{text('createHelp')}</p>
         <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'saving' : 'create')}</Button>
       </fieldset>

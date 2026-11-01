@@ -35,7 +35,7 @@ before attempting either call; the redaction job is queued first, to run a minut
 later (after the inline attempt), and the
 `household.anonymized` audit event records the cleared customer ID. The Stripe
 Customer is kept for the books: its name
-becomes `Erased member` and its email is cleared. A failed attempt is logged with
+becomes `Erased member` and its email, phone, address, shipping details and description are cleared. A failed attempt is logged with
 identifiers only and the erasure still succeeds, since the job retries it.
 Failed file cleanup returns an error.
 Unused households can be deleted; referenced households return a conflict.

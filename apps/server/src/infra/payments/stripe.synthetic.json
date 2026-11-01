@@ -2039,9 +2039,12 @@
             "path": "/v1/customers/cus_1",
             "params": {
               "name": "Erased member",
-              "email": ""
-            },
-            "idempotencyKey": "customer:cus_1:redact"
+              "email": "",
+              "phone": "",
+              "address": "",
+              "shipping": "",
+              "description": ""
+            }
           },
           "output": {
             "id": "cus_1",
@@ -2053,7 +2056,11 @@
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "household_id": "invoice_fixture"
-            }
+            },
+            "phone": null,
+            "address": null,
+            "shipping": null,
+            "description": null
           }
         },
         {
@@ -2072,7 +2079,11 @@
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "household_id": "invoice_fixture"
-            }
+            },
+            "phone": null,
+            "address": null,
+            "shipping": null,
+            "description": null
           }
         },
         {
@@ -2106,7 +2117,11 @@
             "metadata": {
               "gym_id": "00000000-0000-7000-8000-000000000001",
               "household_id": "invoice_fixture"
-            }
+            },
+            "phone": null,
+            "address": null,
+            "shipping": null,
+            "description": null
           }
         },
         {

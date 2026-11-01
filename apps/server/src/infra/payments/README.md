@@ -201,10 +201,11 @@ card revocation remains in place while the queued detach job retries.
 `redactCustomer(id)` serves member erasure. It refuses a customer tagged for another
 gym and, as `adoptCustomer` does, treats an untagged one (an imported ID) as the gym's; it then
 [updates the Customer](https://docs.stripe.com/api/customers/update) so its name
-is `Erased member` and its email is cleared (an empty string clears it). The
-Customer, its metadata and its payment and dispute history stay, because the gym
+is `Erased member` and its email, phone, address, shipping details and description
+are cleared (an empty string clears each). A customer adopted from the dashboard may
+hold any of them. The Customer, its ID, its metadata and its payment and dispute history stay, because the gym
 keeps them for disputes and tax; the adapter never deletes a Customer. Missing,
-deleted and already redacted customers succeed without a write, so the call is
+deleted and already redacted customers (name, email and all other details cleared) succeed without a write, so the call is
 safe to repeat. Erasing a household's last member commits first, then calls it
 with the customer ID the erasure cleared; a durable `members.erasure.redact_customer`
 job carries that ID and retries when Stripe is unreachable. It uses the Customers

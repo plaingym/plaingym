@@ -116,7 +116,7 @@ export class StripeFixtures implements PaymentTransport {
         const { metadata, ...rest } = params;
         Object.assign(object, rest, { metadata: { ...object.metadata as ObjectData, ...metadata as ObjectData } });
         // Stripe clears a field sent as an empty string.
-        if (object.email === '') object.email = null;
+        for (const field of ['email', 'phone', 'address', 'shipping', 'description']) if (object[field] === '') object[field] = null;
         return object;
       }
       if (action === 'confirm') {

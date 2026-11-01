@@ -168,8 +168,9 @@ export interface Payments {
   /** Detach a gym-owned card; missing and already detached methods succeed. */
   detachPaymentMethod(processorId: string): Promise<void>;
   /**
-   * Erasure: renames the gym's customer (tagged for this gym or untagged) to "Erased member" and clears its email. The customer and its payment
-   * history stay. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
+   * Erasure: renames the gym's customer (tagged for this gym or untagged) to "Erased member" and clears its email, phone, address,
+   * shipping details and description. The customer, its metadata and its payment history stay. Idempotent; missing and deleted
+   * customers succeed; refuses another gym's customer.
    */
   redactCustomer(customerId: string): Promise<void>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
@@ -252,6 +253,14 @@ const released = (refund: Refund) => refund.status === 'failed' || refund.status
 /** The name an erased household's customer keeps at the provider. */
 export const ERASED_CUSTOMER_NAME = 'Erased member';
 
+/** The personal details a dashboard-made customer may hold besides its name and email; erasure clears all of them. */
+export interface CustomerDetails {
+  phone?: string | null;
+  address?: Record<string, string> | null;
+  shipping?: Record<string, unknown> | null;
+  description?: string | null;
+}
+
 export class FakePayments implements Payments {
   readonly #charges = new Map<string, StoredCharge>();
   readonly #checkouts = new Map<string, CheckoutSession>();
@@ -261,7 +270,7 @@ export class FakePayments implements Payments {
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
-  readonly #customers: { id: string; email: string | null; gymId: string; name?: string; householdId?: string }[] = [];
+  readonly #customers: ({ id: string; email: string | null; gymId: string; name?: string; householdId?: string } & CustomerDetails)[] = [];
   readonly #changes: ChangeRecord[] = [];
   readonly #idempotency = new Map<string, IdempotentRecord>();
   readonly #uncertain = new Set<string>();
@@ -291,7 +300,7 @@ export class FakePayments implements Payments {
     if (uncertain) this.#uncertain.add(id);
     else this.#uncertain.delete(id);
   }
-  seedCustomer(customer: { id: string; email: string; gymId?: string }): void {
+  seedCustomer(customer: { id: string; email: string; gymId?: string } & CustomerDetails): void {
     this.#customers.push({ ...customer, gymId: customer.gymId ?? this.gymId });
   }
   recordPaymentMethod(method: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date }): void {
@@ -701,10 +710,11 @@ export class FakePayments implements Payments {
     await this.adoptCustomer(method.customerId);
     this.#detached.add(processorId);
   }
-  /** The stored name and email, as the provider would show them. */
-  customer(customerId: string): { name: string | null; email: string | null } | undefined {
+  /** The stored name, email and personal details, as the provider would show them. */
+  customer(customerId: string): ({ name: string | null; email: string | null } & Required<CustomerDetails>) | undefined {
     const customer = this.#customers.find((item) => item.id === customerId);
-    return customer && { name: customer.name ?? null, email: customer.email };
+    return customer && { name: customer.name ?? null, email: customer.email, phone: customer.phone ?? null,
+      address: customer.address ?? null, shipping: customer.shipping ?? null, description: customer.description ?? null };
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
@@ -713,6 +723,7 @@ export class FakePayments implements Payments {
     if (!customer) return;
     if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
     customer.name = ERASED_CUSTOMER_NAME; customer.email = null;
+    customer.phone = null; customer.address = null; customer.shipping = null; customer.description = null;
   }
   signWebhook(body: Uint8Array): string {
     return createHmac('sha256', this.webhookSecret).update(body).digest('hex');

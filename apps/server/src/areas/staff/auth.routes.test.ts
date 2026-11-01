@@ -95,9 +95,10 @@ describe('registered staff password reset', () => {
   });
 });
 
-it('lets front desk read bootstrap billing fields and plan names and create an invoice while settings stay restricted', async () => {
+it('lets front desk read bootstrap billing fields and plan names and create a catalog invoice while settings and custom amounts stay restricted', async () => {
   const f = await fixture('front_desk'), other = await fixture(), server = app(f);
   const plan = await factory('plans', f.gymId, { name: 'Unlimited classes' });
+  const charge = await factory('chargeTypes', f.gymId, { name: 'Mat fee', amountCents: 1029, currency: 'CAD' });
   await factory('plans', other.gymId, { name: 'Private foreign plan' });
   const response = await server.request('/api/auth/bootstrap');
   expect(response.status).toBe(200);
@@ -108,9 +109,15 @@ it('lets front desk read bootstrap billing fields and plan names and create an i
   const plans = await server.request('/api/billing/plans');
   expect(plans.status).toBe(200);
   expect((await plans.json()).data).toEqual([expect.objectContaining({ id: plan.id, name: plan.name })]);
-  const body = { source: 'custom', householdId: f.target.householdId, description: 'Equipment', amountCents: 1029, currency: bootstrap.gym.currency, dueOn: '2026-10-27', taxRateIds: [] };
+  // A custom amount needs payments.custom (owner, admin): front desk is refused and nothing is created.
+  const invoices = async () => (await (await server.request('/api/billing/invoices?limit=100')).json()).pagination.total;
+  const custom = { source: 'custom', householdId: f.target.householdId, description: 'Equipment', amountCents: 1029, currency: bootstrap.gym.currency, dueOn: '2026-10-27', taxRateIds: [] };
+  expect((await post(server, '/api/billing/invoices/one-off', custom)).status).toBe(403);
+  expect(await invoices()).toBe(0);
+  const body = { source: 'charge_type', householdId: f.target.householdId, chargeTypeId: charge.id, dueOn: '2026-10-27' };
   const created = await post(server, '/api/billing/invoices/one-off', body);
   expect(created.status).toBe(201);
-  expect((await created.json()).data).toMatchObject({ householdId: f.target.householdId, amountCents: 1029, currency: 'CAD' });
+  expect((await created.json()).data).toMatchObject({ householdId: f.target.householdId, amountCents: charge.amountCents, currency: charge.currency });
+  expect(await invoices()).toBe(1);
   expect((await post(server, '/api/billing/invoices/one-off', { ...body, householdId: other.target.householdId })).status).toBe(404);
 });

@@ -45,7 +45,7 @@ export function InvoiceList({ gymId, householdId, access, client = invoiceClient
       <span>{Math.min(offset + 1, rows.data.pagination.total)}–{Math.min(offset + 25, rows.data.pagination.total)} / {rows.data.pagination.total}</span>
       <Button variant="outline" disabled={offset + 25 >= rows.data.pagination.total} onClick={() => setOffset(v => v + 25)}>{text('next')}</Button>
     </div>}
-    {create && <OneOffEditor gymId={gymId} {...(householdId ? { householdId } : {})} client={client} close={() => setCreate(false)} created={invoiceId => {
+    {create && <OneOffEditor gymId={gymId} {...(householdId ? { householdId } : {})} custom={access.custom} client={client} close={() => setCreate(false)} created={invoiceId => {
       setCreate(false); setSelected(invoiceId); void cache.invalidateQueries({ queryKey: ['billing', gymId] });
     }}/>}
     {selected && <Dialog size="wide" title={text('invoice')} closeLabel={text('close')} onClose={() => setSelected(null)}>
@@ -61,6 +61,7 @@ function useInvoiceAccess() {
   const bootstrap = useBootstrap(), roles = bootstrap.data?.session?.roles ?? [];
   return { bootstrap, allowed: canStaff(roles, 'billing.read'), access: {
     record: canStaff(roles, 'payments.record'), refund: canStaff(roles, 'refunds.create'), links: canStaff(roles, 'links.send'),
+    custom: canStaff(roles, 'payments.custom'),
   } };
 }
 export function InvoicePage({ invoiceId }: { invoiceId?: string }) {

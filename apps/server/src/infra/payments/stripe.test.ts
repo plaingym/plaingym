@@ -434,15 +434,24 @@ it.each(['concurrent', 'lost_response', 'missing', 'permission', 'failure'] as c
 it('redacts a customer of this gym or an untagged one, keeping its metadata, and treats deleted or missing customers as done', async () => {
   const { payments, transport } = fixture();
   transport.objects.set('cus_erased', { id: 'cus_erased', object: 'customer', name: 'Pat Payer', email: 'pat@example.invalid',
+    phone: '+15555550100', description: 'Pat, Tuesday class', address: { line1: '1 Mat Road', city: 'Austin', country: 'US' },
+    shipping: { name: 'Pat Payer', phone: '+15555550100', address: { line1: '2 Gi Lane', country: 'US' } },
     metadata: { gym_id: gymId, household_id: 'household_fixture' } });
   await payments.redactCustomer('cus_erased');
-  expect(transport.objects.get('cus_erased')).toMatchObject({ name: 'Erased member', email: null,
-    metadata: { gym_id: gymId, household_id: 'household_fixture' } });
+  // Every personal field is cleared; the ID and the metadata stay.
+  expect(transport.objects.get('cus_erased')).toEqual({ id: 'cus_erased', object: 'customer', name: 'Erased member', email: null,
+    phone: null, description: null, address: null, shipping: null, metadata: { gym_id: gymId, household_id: 'household_fixture' } });
   expect(transport.requests.filter((request) => request.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/customers/cus_erased',
-    params: { name: 'Erased member', email: '' }, idempotencyKey: 'customer:cus_erased:redact' }]);
+    params: { name: 'Erased member', email: '', phone: '', address: '', shipping: '', description: '' } }]);
   // A finished redaction is not written again.
   await payments.redactCustomer('cus_erased');
   expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  // A customer whose name and email were cleared by an earlier release still gets its other details cleared.
+  transport.objects.set('cus_partial', { id: 'cus_partial', object: 'customer', name: 'Erased member', email: null, phone: '+15555550101',
+    metadata: { gym_id: gymId } });
+  await payments.redactCustomer('cus_partial');
+  expect(transport.objects.get('cus_partial')).toMatchObject({ name: 'Erased member', phone: null, metadata: { gym_id: gymId } });
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
   transport.objects.set('cus_foreign', { id: 'cus_foreign', object: 'customer', name: 'Other', email: 'other@example.invalid', metadata: { gym_id: 'other' } });
   transport.objects.set('cus_untagged', { id: 'cus_untagged', object: 'customer', name: 'Dashboard', email: 'dash@example.invalid', metadata: {} });
   await expect(payments.redactCustomer('cus_foreign')).rejects.toThrow('another gym');
@@ -453,17 +462,19 @@ it('redacts a customer of this gym or an untagged one, keeping its metadata, and
   await expect(payments.redactCustomer('cus_deleted')).resolves.toBeUndefined();
   await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
   await expect(payments.redactCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
-  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(3);
   expect(transport.objects.get('cus_foreign')).toMatchObject({ name: 'Other', email: 'other@example.invalid' });
 });
 it('redacts a fake customer like the provider and refuses another gym', async () => {
   const payments = new FakePayments(gymId);
-  payments.seedCustomer({ id: 'cus_seeded', email: 'seeded@example.invalid' });
-  payments.seedCustomer({ id: 'cus_other', email: 'other@example.invalid', gymId: 'other-gym' });
+  payments.seedCustomer({ id: 'cus_seeded', email: 'seeded@example.invalid', phone: '+15555550100', description: 'Seeded',
+    address: { line1: '1 Mat Road' }, shipping: { name: 'Seeded', address: { line1: '2 Gi Lane' } } });
+  payments.seedCustomer({ id: 'cus_other', email: 'other@example.invalid', gymId: 'other-gym', phone: '+15555550102' });
   await payments.redactCustomer('cus_seeded');
-  expect(payments.customer('cus_seeded')).toEqual({ name: 'Erased member', email: null });
+  expect(payments.customer('cus_seeded')).toEqual({ name: 'Erased member', email: null, phone: null, address: null, shipping: null, description: null });
+  await payments.redactCustomer('cus_seeded');
   await expect(payments.redactCustomer('cus_other')).rejects.toThrow('another gym');
-  expect(payments.customer('cus_other')).toEqual({ name: null, email: 'other@example.invalid' });
+  expect(payments.customer('cus_other')).toEqual({ name: null, email: 'other@example.invalid', phone: '+15555550102', address: null, shipping: null, description: null });
   await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
   await runInTransaction(async () => { await expect(payments.redactCustomer('cus_seeded')).rejects.toThrow('transaction'); });
 });

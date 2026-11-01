@@ -13,7 +13,8 @@ pagination. A created one-off invoice opens its detail so staff can choose cash 
 check, the saved card, or a signed pay link. Currency comes from the bootstrap gym summary;
 decimal input converts to integer cents without floating-point rounding.
 
-Collection controls use `payments.record`, pay links use `links.send`, and refund
+The one-off editor offers a custom amount only with `payments.custom` (owner, admin);
+without it, staff pick a catalog charge type. Collection controls use `payments.record`, pay links use `links.send`, and refund
 and review-release controls use `refunds.create`. Server routes enforce the same permissions. A
 failed charge reports that the invoice remains open; unresolved outcomes tell
 staff to check the invoice before collecting another payment. Save errors stay in

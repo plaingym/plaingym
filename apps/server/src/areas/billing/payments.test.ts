@@ -104,7 +104,9 @@ describe('payment route permissions and tenant isolation', () => {
   for (const operation of operations) {
     for (const role of ['owner', 'admin', 'coach', 'front_desk'] as const) it(`${operation}: ${role}`, async () => {
       const f = await fixture(), contract = contracts[operation], response = await request(app(f, staff(f, role)), operation, f);
-      expect(response.status, await response.clone().text()).toBe(canStaff([role], contract.permission.capability) ? contract.successStatus : 403);
+      // The matrix request is a custom-amount one-off, which also needs payments.custom.
+      const capability = operation === 'createOneOffInvoice' ? 'payments.custom' : contract.permission.capability;
+      expect(response.status, await response.clone().text()).toBe(canStaff([role], capability) ? contract.successStatus : 403);
       const awaitValue = response.ok ? await response.json() : null;
       if (response.ok) expect(() => contract.response.parse(awaitValue)).not.toThrow();
     });
@@ -132,6 +134,29 @@ describe('payment route permissions and tenant isolation', () => {
     expect(response.status).toBe(201); expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('paid');
     expect((await request(server, 'createRefund', f)).status).toBe(403);
+  });
+  it('limits front desk to catalog charge types and existing invoices, while owner and admin may bill a custom amount', async () => {
+    const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 1000, name: 'Mat fee', currency: 'USD' });
+    const post = (server: ReturnType<typeof app>, path: string, body: unknown) => server.request(origin + path, { method: 'POST',
+      headers: { 'content-type': 'application/json', origin }, body: JSON.stringify(body) });
+    const custom = { source: 'custom', householdId: f.home.id, dueOn: '2026-10-25', description: 'Any amount', amountCents: 2_000_000, currency: 'USD' };
+    const catalog = { source: 'charge_type', householdId: f.home.id, chargeTypeId: charge.id, dueOn: '2026-10-25' };
+    const count = async () => (await f.service.listInvoices(f.gymId, { limit: 100, offset: 0 })).pagination.total;
+    const before = await count(), desk = app(f, staff(f, 'front_desk'));
+    const refused = await post(desk, '/api/billing/invoices/one-off', custom);
+    expect(refused.status).toBe(403);
+    expect(await count()).toBe(before);
+    const catalogInvoice = await post(desk, '/api/billing/invoices/one-off', catalog);
+    expect(catalogInvoice.status).toBe(201);
+    expect((await catalogInvoice.json()).data).toMatchObject({ amountCents: 1000 });
+    // Charging an existing invoice stays with front desk.
+    expect((await post(desk, `/api/billing/invoices/${f.invoice.id}/charge`, {})).status).toBe(200);
+    for (const role of ['owner', 'admin'] as const) {
+      const created = await post(app(f, staff(f, role)), '/api/billing/invoices/one-off', custom);
+      expect(created.status, role).toBe(201);
+      expect((await created.json()).data).toMatchObject({ amountCents: 2_000_000 });
+    }
+    expect((await post(app(f, staff(f, 'coach')), '/api/billing/invoices/one-off', catalog)).status).toBe(403);
   });
 });
 

@@ -15,7 +15,7 @@ import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js
 import { PageSection } from '../../../components/ui/page.js';
 import { LoadingState, ErrorState, EmptyState } from '../../../components/ui/states.js';
 
-export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean }
+export interface InvoiceAccess { record: boolean; refund: boolean; links: boolean; custom: boolean }
 type Action = { kind: 'cash' | 'charge' | 'link' | 'receipt' | 'viewReceipt' | 'releaseHold' } | { kind: 'refund'; payment: Payment } | { kind: 'revoke' | 'default'; card: MaskedPaymentMethod };
 export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClient }: {
   gymId: string; invoiceId: string; access: InvoiceAccess; client?: InvoiceClient;
