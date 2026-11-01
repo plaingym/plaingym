@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { invoices, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createApp } from '../../core/app.js';
@@ -8,6 +9,7 @@ import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { createChargeRunner } from '../billing/runner/index.js';
+import { reportChargeFailures } from '../billing/runner/failures.js';
 import { createRunnerJobs } from '../billing/runner/runner.jobs.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
@@ -81,6 +83,23 @@ describe('durable daily charge-run health', () => {
     await monitorChargeRunner(paused.runner, paused.options).daily(paused.gymId);
     expect(await paused.read()).toMatchObject({ status: 'not_configured', details: { result: 'never_run' } });
   });
+  it('words a charge failure report with and without invoice numbers', async () => {
+    const f = await fixture(), home = await factory('households', f.gymId);
+    const invoice = (status: string, number?: number) => factory('invoices', f.gymId, { householdId: home.id, status, ...(number ? { number } : {}) });
+    const report = (ids: readonly string[]) => db.forGym(f.gymId, tx => reportChargeFailures(tx, { gymId: f.gymId, actor: { kind: 'system' } },
+      f.clock, uuidv7(), '2026-10-26', ids.map(invoiceId => ({ invoiceId, cause: 'unexpected' as const }))));
+    // A report keeps the numbers its invoices had when it was written: none, for invoices numbered afterwards.
+    const unnumbered = [await invoice('draft'), await invoice('draft')];
+    await report(unnumbered.map(row => row.id));
+    await db.forGym(f.gymId, tx => Promise.all(unnumbered.map((row, index) =>
+      tx.update(invoices).set({ status: 'open', number: 10 + index }).where(eq(invoices.id, row.id)))));
+    expect(await f.read()).toMatchObject({ status: 'error',
+      message: 'Invoices with failed charges in a stopped charge run: 2. They stay listed until each invoice is collected or closed.' });
+    await report([(await invoice('open', 41)).id]);
+    expect(await f.read()).toMatchObject({ status: 'error',
+      message: 'Invoices with failed charges in a stopped charge run: 3 (#41). They stay listed until each invoice is collected or closed.' });
+  });
+
   it('does not let an older concurrent run completion hide the newer run', async () => {
     const f = await fixture();
     let release!: () => void;

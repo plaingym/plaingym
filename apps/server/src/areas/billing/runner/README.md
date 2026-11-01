@@ -227,7 +227,7 @@ with `{ day, failures: [{ invoiceId, number, cause }] }`. A replayed run keeps i
 first report, and a second stopped run on the same day (a rerun) has its own. An
 invoice leaves its report once it is no longer open or past due, or once a later
 charge of it gets the provider's answer (paid, declined or awaiting authentication);
-staff dismiss what is left (`billing.runner.charge_failures.dismissed`), and a report
+`dismissChargeFailures` dismisses what is left (`billing.runner.charge_failures.dismissed`), and a report
 older than 90 days drops off, as the failed jobs that listed these before did. While a
 report lists an invoice, the charge-run health tile is an error naming the invoices
 (`areas/health/charge-run.README.md`). Nothing fails on purpose, so the gym's

@@ -115,7 +115,7 @@ describe('daily run lane and circuit breaker', () => {
     expect(await f.runner.chargeFailures(f.gymId)).toEqual([{ runId: jobId, day: '2028-03-01', reportedAt: f.clock.now(),
       failures: [{ invoiceId: refused.id, number: refused.number, cause: 'unexpected' }] }]);
     expect(await stats.get(f.gymId)).toMatchObject({ failed: 0, succeeded: 1, pending: 1 });
-    expect(await tile(f)).toMatchObject({ status: 'error', message: expect.stringContaining(`invoices #${refused.number} (1 in all)`) });
+    expect(await tile(f)).toMatchObject({ status: 'error', message: expect.stringContaining(`: 1 (#${refused.number})`) });
     // The continuation collects every invoice an hour later, the refused one included, which clears the report.
     f.clock.advance(3_600_000); expect(await queue.runNext()).toBe(true);
     expect((await f.read()).invoices.map(row => row.status)).toEqual(Array(5).fill('paid'));
@@ -138,7 +138,7 @@ describe('daily run lane and circuit breaker', () => {
     expect(reports[0]!.failures).toEqual(reports[1]!.failures);
     // The tile names the invoice once, and staff dismiss both reports together.
     const refused = await refusedInvoice(f);
-    expect(await tile(f)).toMatchObject({ status: 'error', message: expect.stringContaining(`invoices #${refused.number} (1 in all)`) });
+    expect(await tile(f)).toMatchObject({ status: 'error', message: expect.stringContaining(`: 1 (#${refused.number})`) });
     const user = await factory('authUser', f.gymId);
     expect(await f.runner.dismissChargeFailures({ gymId: f.gymId, actor: { kind: 'user', userId: user.id } }))
       .toEqual({ dismissed: [refused.id] });

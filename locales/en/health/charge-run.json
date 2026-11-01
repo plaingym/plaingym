@@ -6,5 +6,6 @@
   "succeeded": "The last daily charge run completed.",
   "failed": "The daily charge run needs attention.",
   "stale": "The daily charge run is overdue or has stopped reporting.",
-  "chargeFailures": "Charges that failed in a stopped charge run need staff: invoices {invoices} ({count} in all)."
+  "chargeFailures": "Invoices with failed charges in a stopped charge run: {count} ({invoices}). They stay listed until each invoice is collected or closed.",
+  "chargeFailuresUnnumbered": "Invoices with failed charges in a stopped charge run: {count}. They stay listed until each invoice is collected or closed."
 }

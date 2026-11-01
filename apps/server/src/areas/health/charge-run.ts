@@ -62,7 +62,8 @@ export function createChargeRunHealthProvider(options: Pick<ChargeRunOptions, 's
     const failures = new Map(reports.flatMap(report => report.failures.map(failure => [failure.invoiceId, failure.number])));
     const numbers = [...failures.values()].flatMap(number => number === null ? [] : ['#' + number]);
     if (state !== 'disabled' && failures.size) return { id: 'last_charge_run', checkedAt, details, status: 'error',
-      message: t('health/charge-run:chargeFailures', { count: failures.size, invoices: numbers.slice(0, 5).join(', ') }) };
+      message: numbers.length ? t('health/charge-run:chargeFailures', { count: failures.size, invoices: numbers.slice(0, 5).join(', ') })
+        : t('health/charge-run:chargeFailuresUnnumbered', { count: failures.size }) };
     return { id: 'last_charge_run', checkedAt, details,
       status: state === 'disabled' ? 'not_configured' : state === 'failed' ? 'error' : state === 'succeeded' ? 'healthy' : 'warning',
       message: t('health/charge-run:' + state) };

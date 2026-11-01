@@ -29,8 +29,9 @@ completion cannot hide a newer run.
 An enabled gym with no recorded run gets a warning; paused billing is reported as
 not configured. Failed runs are errors. So is a stopped run's failure report while it
 lists an invoice (`billing/runner/README.md`), whatever later runs recorded: the
-message names up to five invoice numbers and the count, and the tile clears once each
-invoice is collected or staff dismiss the report. A run still reporting running after two
+message gives the count and up to five invoice numbers (the count alone when no
+invoice has a number yet), and the tile clears once each invoice is collected or
+closed, or the report is dismissed through the runner's `dismissChargeFailures`. A run still reporting running after two
 hours or a completed run started more than 26 hours ago gets a warning. A crash
 leaves its start record visible until another run records progress. The runtime
 passes the monitored runner to the scheduled jobs. Its retry attachment,
