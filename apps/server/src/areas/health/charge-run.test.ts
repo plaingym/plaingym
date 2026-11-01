@@ -76,7 +76,7 @@ describe('durable daily charge-run health', () => {
   });
   it('records partial collection errors and respects paused billing', async () => {
     const f = await fixture(), paused = await fixture(false);
-    await monitorChargeRunner({ ...f.runner, async daily() { return { generatedPeriods: 3, attempted: 2, errors: [{ invoiceId: uuidv7(), message: 'private' }], stopped: false }; } }, f.options).daily(f.gymId);
+    await monitorChargeRunner({ ...f.runner, async daily() { return { generatedPeriods: 3, attempted: 2, errors: [{ invoiceId: uuidv7(), cause: 'unexpected' as const, message: 'private' }], stopped: false }; } }, f.options).daily(f.gymId);
     expect(await f.read()).toMatchObject({ status: 'error', details: { invoicesProcessed: 2, failures: 1 } });
     await monitorChargeRunner(paused.runner, paused.options).daily(paused.gymId);
     expect(await paused.read()).toMatchObject({ status: 'not_configured', details: { result: 'never_run' } });

@@ -57,5 +57,9 @@ export async function retryDeadlines(tx: Transaction, gym: GymSettings, invoiceI
   // Legacy invoices have no saved days; an explicitly empty schedule must stay empty.
   const saved = (anchor.after as { retryDays?: unknown } | null)?.retryDays;
   const retryDays = billingRulesSchema.shape.retryDays.parse(saved === undefined ? [3, 7] : saved);
-  return retryDays.map(day => zonedInstant(addDays(firstDate, day), '09:00', gym.timezone, { gap: 'shift' })!);
+  return retryDays.map(day => retryAt(firstDate, day, gym.timezone));
+}
+/** Retries run at 09:00 gym time, `days` after the local `date`; a 09:00 lost to a DST gap moves to the next valid time. */
+export function retryAt(date: string, days: number, timezone: string) {
+  return zonedInstant(addDays(date, days), '09:00', timezone, { gap: 'shift' })!;
 }

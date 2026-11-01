@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, inArray, lte } from 'drizzle-orm';
-import { allocateInvoiceNumber, households, invoiceLineItems, invoices, memberships, plans, planTaxRates,
+import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
+import { allocateInvoiceNumber, households, invoiceLineItems, invoices, memberships, paymentAttempts, plans, planTaxRates,
   taxRates, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
@@ -19,6 +19,11 @@ export async function audit(tx: Transaction, context: MutationContext, clock: Cl
   await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
     ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
     action, targetType, targetId, after, ...(before === undefined ? {} : { before }), occurredAt: clock.now(), createdAt: clock.now() });
+}
+/** The invoice's newest payment attempt, if any. */
+export async function latestAttempt(tx: Transaction, invoiceId: string) {
+  return (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId))
+    .orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0];
 }
 export async function issue(tx: Transaction, context: MutationContext, clock: Clock, calculated: CalculatedInvoice,
   needsReview = false) {

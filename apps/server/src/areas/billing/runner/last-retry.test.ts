@@ -54,6 +54,20 @@ async function lastDayAbandoned(f: Workflow, path: Path) {
   expect(f.email.messages).toHaveLength(2);
   return state;
 }
+/**
+ * Declines March 1 and on day 3, then stops at 09:00 on day 7 (the last retry day), with a working card, before the
+ * day-7 retry runs. Its queued effect is removed: tests call `runner.retry` themselves, as that callback would.
+ */
+async function lastDay(f: Workflow) {
+  await declined(f);
+  f.clock.set(nine(f, '2028-03-04')); await f.drain();
+  await f.setCard('pm_4242');
+  f.clock.set(nine(f, '2028-03-08'));
+  await clearJobs(db);
+  return { ...f, invoiceId: (await f.read()).invoices[0]!.id };
+}
+/** One retry callback's job context; its replays keep the job ID. */
+const callback = (f: Workflow) => ({ jobId: uuidv7(), gymId: f.gymId, timezone: f.timezone, attempt: 1, clock: f.clock });
 const retries = (state: Awaited<ReturnType<Workflow['read']>>) => state.jobs.filter(job => job.name === retryJob);
 const extensions = (state: Awaited<ReturnType<Workflow['read']>>) =>
   state.audits.filter(row => row.action === 'billing.runner.retry_extended');
@@ -143,6 +157,115 @@ describe('a retry that cancels its own charge on the last retry day', () => {
     expect(extensions(state)).toEqual([]);
     // Only the first retry's continuation is queued, not a retry the next morning.
     expect(retries(state).map(job => job.runAt)).not.toContainEqual(nine(f, '2028-03-09'));
+  });
+
+  it('queues the extra retry when a callback replays after failing past its abandoned charge', async () => {
+    const f = await lastDay(await workflowFixture(db, { card: 'pm_0341' })), context = callback(f);
+    abandonNextCharge(f, 'billing paused');
+    // Once the charge is cancelled, settings can't be read (the transition's publish logs it), so the callback fails.
+    const cancel = f.provider.cancelCharge.bind(f.provider);
+    vi.spyOn(f.provider, 'cancelCharge').mockImplementationOnce(async id => {
+      const outcome = await cancel(id);
+      vi.spyOn(f.settings, 'get').mockRejectedValue(new Error('Settings unavailable'));
+      return outcome;
+    });
+    await expect(f.runner.retry(f.invoiceId, context)).rejects.toThrow('Settings unavailable');
+    vi.mocked(f.settings.get).mockRestore();
+    expect(retries(await f.read())).toEqual([]);
+    // Its replay, a minute later, skips before reserving: billing is still paused.
+    f.clock.advance(60_000); await f.runner.retry(f.invoiceId, { ...context, attempt: 2 });
+    const state = await f.read();
+    expect(state.attempts.map(row => row.declineCode)).toEqual([null, null, 'confirm_abandoned']);
+    expect(retries(state)).toMatchObject([{ status: 'pending', runAt: nine(f, '2028-03-09') }]);
+    expect(extensions(state)).toHaveLength(1);
+  });
+
+  it('queues none for a concurrent staff charge that cancels its own charge on the last day', async () => {
+    const f = await lastDay(await workflowFixture(db, { card: 'pm_0341' }));
+    const get = f.settings.get.bind(f.settings);
+    // While the retry starts, staff charge the invoice and billing is paused mid-charge; the retry then skips.
+    vi.spyOn(f.settings, 'get').mockImplementationOnce(async gymId => {
+      abandonNextCharge(f, 'billing paused');
+      expect(await f.runner.charge(f.gymId, f.invoiceId, { mode: 'staff', context: f.context }))
+        .toEqual({ status: 'skipped', reason: 'billing_disabled' });
+      return get(gymId);
+    });
+    await f.runner.retry(f.invoiceId, callback(f));
+    const state = await f.read();
+    expect(state.attempts.map(row => row.declineCode)).toEqual([null, null, 'confirm_abandoned']);
+    expect(retries(state)).toEqual([]);
+    expect(extensions(state)).toEqual([]);
+  });
+
+  it('queues the extra retry on replay when its enqueue failed after the extension was recorded', async () => {
+    const f = await lastDay(await workflowFixture(db, { card: 'pm_0341' })), context = callback(f);
+    abandonNextCharge(f, 'billing paused');
+    const enqueue = f.queue.enqueue.bind(f.queue);
+    vi.spyOn(f.queue, 'enqueue').mockImplementation(async (name, payload, options) => {
+      if (name === retryJob) throw new Error('Queue unavailable');
+      return enqueue(name, payload, options);
+    });
+    await expect(f.runner.retry(f.invoiceId, context)).rejects.toThrow('Queue unavailable');
+    expect(extensions(await f.read())).toHaveLength(1);
+    vi.mocked(f.queue.enqueue).mockRestore();
+    f.clock.advance(60_000);
+    await f.runner.retry(f.invoiceId, { ...context, attempt: 2 });
+    await f.runner.retry(f.invoiceId, { ...context, attempt: 3 });
+    const state = await f.read();
+    // The stored run time, once: the replays don't move it or queue a second job.
+    expect(retries(state)).toMatchObject([{ status: 'pending', runAt: nine(f, '2028-03-09') }]);
+    expect(extensions(state)).toHaveLength(1);
+  });
+
+  it.each(['card removed', 'billing paused'] as const)(
+    '%s, then the cancel answers unknown: queues a continuation, which collects the invoice once it can', async path => {
+      const f = await lastDay(await workflowFixture(db, { card: 'pm_0341' }));
+      abandonNextCharge(f, path);
+      vi.spyOn(f.provider, 'cancelCharge').mockImplementationOnce(async id => ({ status: 'unknown', reference: { kind: 'charge', id } }));
+      await f.runner.retry(f.invoiceId, callback(f));
+      let state = await f.read();
+      expect(state.attempts.at(-1)).toMatchObject({ status: 'pending', resolvedAt: null });
+      const [continuation] = retries(state);
+      expect(continuation).toMatchObject({ status: 'pending', runAt: new Date(nine(f, '2028-03-08').getTime() + 76 * 60_000) });
+      expect(extensions(state)).toEqual([]);
+      // The hourly reconcile cancels the intent; the continuation then charges in the unused last window.
+      await resume(f, path);
+      f.clock.advance(16 * 60_000); await f.runner.reconcile(f.gymId);
+      f.clock.set(continuation!.runAt); await f.queue.runNext();
+      state = await f.read();
+      expect(state.attempts.map(row => row.declineCode)).toEqual([null, null, 'confirm_abandoned', null]);
+      expect(state.invoices).toMatchObject([{ status: 'paid' }]);
+      expect(state.payments).toHaveLength(1);
+    });
+
+  it.each(['card removed', 'billing paused'] as const)(
+    '%s, then the cancel answers unknown, and it still is when reconciled: the continuation queues the extra retry', async path => {
+      const f = await lastDay(await workflowFixture(db, { card: 'pm_0341' }));
+      abandonNextCharge(f, path);
+      vi.spyOn(f.provider, 'cancelCharge').mockImplementationOnce(async id => ({ status: 'unknown', reference: { kind: 'charge', id } }));
+      await f.runner.retry(f.invoiceId, callback(f));
+      const [continuation] = retries(await f.read());
+      f.clock.advance(16 * 60_000); await f.runner.reconcile(f.gymId);
+      // The continuation acts for the retry whose charge it carries on with, so that attempt still earns the extra day.
+      f.clock.set(continuation!.runAt); await f.queue.runNext();
+      const state = await f.read();
+      expect(state.attempts.map(row => row.declineCode)).toEqual([null, null, 'confirm_abandoned']);
+      expect(retries(state).toSorted((a, b) => a.runAt.getTime() - b.runAt.getTime()))
+        .toMatchObject([{ status: 'succeeded' }, { status: 'pending', runAt: nine(f, '2028-03-09') }]);
+      expect(extensions(state)).toHaveLength(1);
+    });
+
+  it('queues nothing for a retry billing stops before it reserves, beside another caller\'s pending attempt', async () => {
+    const f = await lastDay(await workflowFixture(db, { card: 'pm_0341' }));
+    // A staff charge whose confirm answer was lost waits for reconciliation; then billing is paused.
+    vi.spyOn(f.provider, 'confirmCharge').mockRejectedValueOnce(new Error('Confirmation response lost'));
+    await expect(f.runner.charge(f.gymId, f.invoiceId, { mode: 'staff', context: f.context })).rejects.toThrow('lost');
+    await f.enable(false);
+    await f.runner.retry(f.invoiceId, callback(f));
+    const state = await f.read();
+    expect(state.attempts.at(-1)).toMatchObject({ status: 'pending' });
+    expect(retries(state)).toEqual([]);
+    expect(extensions(state)).toEqual([]);
   });
 
   it.each(paths)('%s on an earlier retry day: nothing extra is queued, and the next retry day collects it', async path => {

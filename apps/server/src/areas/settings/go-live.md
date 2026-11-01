@@ -82,7 +82,7 @@ switches with real PostgreSQL and fake payment/email providers.
 
 | Entry path | Switch behavior / coverage |
 | --- | --- |
-| Daily/catch-up, retry, staff one-off/invoice, assignment proration/sign-up fee, zero settlement | Runner checks `billingEnabled`; `runner/runner.test.ts` and `go-live.switches.test.ts` |
+| Daily/catch-up, retry, staff one-off/invoice, assignment proration/sign-up fee, zero settlement | Runner checks `billingEnabled`; `runner/runner.*.test.ts` and `go-live.switches.test.ts` |
 | Signed pay links: cycle/assignment/one-off Checkout and lazy customer creation | Refuses paused billing before customer creation or Checkout reservation; also checks before provider Checkout and exposing new/reused URLs |
 | Card/onboarding setup and lazy customer creation | Allowed with billing paused; setup does not charge. Cycle/assignment pay links save cards, ordinary one-off pay links do not |
 | Existing provider results, saved-card webhooks, reconciliation | Continue accounting for payments already started while billing is paused; never create a new charge |

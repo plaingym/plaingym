@@ -1,33 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, desc, eq, inArray, isNull, lt, lte, notExists, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, lte, notExists, or } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, memberships, paymentAttempts, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
+import { addDays, localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
-import { isProviderOutage, type Payments } from '../../../infra/payments/index.js';
+import type { Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
-import { assignmentInvoices, audit, generateCycle, system } from './store.js';
+import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
-import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryDeadlines, skipped, type ChargeMode,
+import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryAt, retryDeadlines, skipped, type ChargeMode,
   type Skipped } from './eligibility.js';
 import { abandonedAttempt, createAbandoned, recorded } from '../transitions/store.js';
 import { releaseActionNeeded, releaseCheckout } from './releases.js';
+import { dismissChargeFailures, failureCause, openChargeFailures, ReconciliationRequired, reportChargeFailures,
+  type ChargeFailureCause } from './failures.js';
+export type { ChargeFailureCause, ChargeFailureReport } from './failures.js';
 export { releaseActionNeeded, releaseCheckout } from './releases.js';
 
-export type ChargeOptions = { mode?: 'automatic' | 'retry' } | { mode: 'staff'; context: MutationContext };
+/** A retry names its callback's job, so the job and its replays recognize the attempts it reserved. */
+export type ChargeOptions = { mode?: 'automatic' } | { mode: 'retry'; jobId?: string } | { mode: 'staff'; context: MutationContext };
 export type ChargeResult = Skipped | { status: 'succeeded' | 'failed' | 'action_required' | 'pending' | 'unknown' | 'settled_zero' };
-export interface CollectionError { invoiceId: string; }
+export interface CollectionError { invoiceId: string; cause: ChargeFailureCause; }
 /** The daily run's job. A stopped collection enqueues it again as its continuation. */
 export const dailyRunJob = 'billing.runner.daily';
-/** Reports a stopped run's charges that failed for reasons other than the outage; it fails at once, so it shows as a failed job. */
+/** The previous release's report of a stopped run's other failures; a queued one becomes the run's failure report. */
 export const chargeFailuresJob = 'billing.runner.charge_failures';
 export const retryJob = 'billing.runner.retry';
-const retryExtended = 'billing.runner.retry_extended';
+const reserved = 'billing.runner.reserved', retryExtended = 'billing.runner.retry_extended';
 /** Consecutive provider outage errors that stop the daily collection, and how long its continuation waits. */
 const outageLimit = 3, continueAfterMs = 3_600_000;
 
@@ -46,7 +50,8 @@ export interface RunnerOptions {
 export function createChargeRunner(options: RunnerOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const reconciliation = createReconciliation({ ...options, scope, clock });
-  async function reserve(context: MutationContext, invoiceId: string, mode: ChargeMode, expiredSession: string | null) {
+  async function reserve(context: MutationContext, invoiceId: string, mode: ChargeMode, expiredSession: string | null,
+    jobId: string | undefined) {
     const { gymId } = context;
     const gym = await options.settings.get(gymId);
     return scope(gymId, async tx => {
@@ -61,8 +66,8 @@ export function createChargeRunner(options: RunnerOptions) {
         attemptNumber: (latest?.attemptNumber ?? 0) + 1, amountCents: invoice.amountCents,
         currency: invoice.currency, stripeCustomerId: payment.customerId, savedPaymentMethod: payment.methodId,
         status: 'pending', createdAt: clock.now() }).returning())[0]!;
-      await audit(tx, context, clock, 'billing.runner.reserved', 'payment_attempt', attempt.id,
-        { invoiceId, attemptNumber: attempt.attemptNumber, mode });
+      await audit(tx, context, clock, reserved, 'payment_attempt', attempt.id,
+        { invoiceId, attemptNumber: attempt.attemptNumber, mode, ...(jobId ? { jobId } : {}) });
       return { status: 'reserved' as const, attempt };
     });
   }
@@ -90,7 +95,7 @@ export function createChargeRunner(options: RunnerOptions) {
       if (released === 'paid') return skipped('not_payable');
       if (released === 'changed') return skipped('checkout_changed');
     }
-    const reservation = await reserve(context, invoiceId, mode, null);
+    const reservation = await reserve(context, invoiceId, mode, null, request.mode === 'retry' ? request.jobId : undefined);
     if (reservation.status === 'skipped') return reservation;
     const { attempt } = reservation;
     let createStarted = false;
@@ -141,12 +146,12 @@ export function createChargeRunner(options: RunnerOptions) {
     const outcome = await provider.confirmCharge(intent.id, { idempotencyKey: `${key}:confirm` });
     const applied = await reconciliation.apply(gymId, outcome, context);
     if (!applied && outcome.status !== 'unknown' && outcome.status !== 'pending')
-      throw new Error('Charge outcome requires reconciliation');
+      throw new ReconciliationRequired();
     return { status: outcome.status };
   }
   /** With `stopAfter`, that many consecutive provider outage errors stop the collection; the rest stays uncollected. */
   async function collect(gymId: string, due: readonly { id: string }[], stopAfter = Infinity) {
-    const errors: CollectionError[] = [], others: CollectionError[] = [];
+    const errors: CollectionError[] = [];
     let attempted = 0, outages = 0, stopped = false;
     for (const invoice of due) {
       try {
@@ -156,15 +161,15 @@ export function createChargeRunner(options: RunnerOptions) {
         if (status !== 'skipped') attempted++;
         if (status !== 'skipped' && status !== 'settled_zero') outages = 0;
       } catch (error) {
-        errors.push({ invoiceId: invoice.id });
-        logError('billing.runner.charge_failed', { gymId, invoiceId: invoice.id }, error);
-        if (!isProviderOutage(error)) others.push({ invoiceId: invoice.id });
-        outages = isProviderOutage(error) ? outages + 1 : 0;
+        const cause = failureCause(error);
+        errors.push({ invoiceId: invoice.id, cause });
+        logError('billing.runner.charge_failed', { gymId, invoiceId: invoice.id, cause }, error);
+        outages = cause === 'provider_outage' ? outages + 1 : 0;
         // Each remaining charge would wait out the provider's whole timeout and fail the same way.
         if (outages >= stopAfter) { stopped = true; break; }
       }
     }
-    return { attempted, errors, stopped, others };
+    return { attempted, errors, stopped };
   }
   async function collectAssigned(gymId: string, householdId: string) {
     const due = await scope(gymId, async tx => {
@@ -182,9 +187,10 @@ export function createChargeRunner(options: RunnerOptions) {
   /**
    * Generates due cycles and collects due invoices. After three consecutive provider outage errors it stops
    * (`stopped`) and enqueues one continuation an hour later, keyed by its gym-local date. A continuation (`continues`
-   * names the stopped run's date) that stops again queues nothing: the next daily run collects the rest.
+   * names the stopped run's date) that stops again queues nothing: the next daily run collects the rest. `runId` keys
+   * a stopped run's failure report; its job's ID, so a replayed run keeps one report.
    */
-  async function daily(gymId: string, run: { continues?: string } = {}) {
+  async function daily(gymId: string, run: { continues?: string; runId?: string } = {}) {
     const gym = await options.settings.get(gymId);
     if (!gym.billingEnabled) return { generatedPeriods: 0, attempted: 0, errors: [] as CollectionError[], stopped: false };
     const now = localDate(clock.now(), gym.timezone);
@@ -210,7 +216,7 @@ export function createChargeRunner(options: RunnerOptions) {
     const due = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.status, 'open'),
       eq(invoices.needsReview, false), lte(invoices.dueOn, today), or(eq(invoices.kind, 'cycle'), assignmentInvoiceCondition(tx))))
       .orderBy(asc(invoices.dueOn), asc(invoices.id)));
-    const { others, ...result } = await collect(gymId, due, outageLimit);
+    const result = await collect(gymId, due, outageLimit);
     if (result.stopped) {
       // The continuation collects what is left, including these abandoned creates. The key makes a replayed run
       // reuse it; a continuation, even one delayed past midnight, never takes the next day's.
@@ -220,22 +226,30 @@ export function createChargeRunner(options: RunnerOptions) {
       logInfo('billing.runner.collection_stopped', { gymId, failures: result.errors.length,
         continuesAt: continuesAt?.toISOString() ?? null });
       // The stopped run's job succeeds, so a retry never reruns the collection into the outage. Failures the outage
-      // didn't cause still need staff: a report job that fails at once shows them with the gym's failed jobs.
-      if (others.length) await options.jobs.enqueue(chargeFailuresJob, { day: today, invoiceIds: others.map(row => row.invoiceId) },
-        { gymId, timezone: gym.timezone, maxAttempts: 1, idempotencyKey: `failures:${today}${run.continues ? ':continued' : ''}` });
+      // didn't cause still need staff: the run's report shows them on the charge run health tile until each is
+      // collected or staff dismiss it.
+      const failures = result.errors.filter(error => error.cause !== 'provider_outage');
+      if (failures.length) await reportFailures(gymId, run.runId ?? uuidv7(), today, failures);
     }
     return { generatedPeriods, ...result };
   }
-  async function deferPendingRetry(invoiceId: string, context: JobContext) {
-    const latest = await scope(context.gymId, async tx => (await tx.select({ status: paymentAttempts.status,
-      declineCode: paymentAttempts.declineCode }).from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId))
-      .orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0]);
+  /** The job a retry's attempt was reserved for, from its reservation audit. */
+  async function reservedBy(tx: Transaction, attemptId: string) {
+    return ((await recorded(tx, reserved, attemptId))?.after as { jobId?: string } | undefined)?.jobId;
+  }
+  async function reportFailures(gymId: string, runId: string, day: string, failures: readonly CollectionError[]) {
+    await scope(gymId, tx => reportChargeFailures(tx, system(gymId), clock, runId, day, failures));
+  }
+  /** `owner`, when given, is the job whose attempt the continuation carries on with (see `retry`). */
+  async function deferPendingRetry(invoiceId: string, context: JobContext, owner?: string,
+    latest?: Awaited<ReturnType<typeof latestAttempt>>) {
+    latest ??= await scope(context.gymId, tx => latestAttempt(tx, invoiceId));
     // Reconciliation may have abandoned the reservation, or cancelled its unconfirmed intent, between charge() and this read.
     if (!latest || latest.status !== 'pending' && !abandonedAttempt(latest)) return;
     // Queue backoff can exhaust before the stale threshold plus the hourly sweep.
     // Commit a continuation before acknowledging this callback. Replays of the same
     // source job reuse it; a continuation can defer again if reconciliation is delayed.
-    await options.jobs.enqueue(retryJob, { invoiceId }, {
+    await options.jobs.enqueue(retryJob, { invoiceId, ...(owner ? { owner } : {}) }, {
       gymId: context.gymId, timezone: context.timezone,
       runAt: new Date(clock.now().getTime() + (options.staleAfterMs ?? 15 * 60_000) + 61 * 60_000),
       idempotencyKey: `pending:${invoiceId}:${context.jobId}`, maxAttempts: 12,
@@ -246,44 +260,65 @@ export function createChargeRunner(options: RunnerOptions) {
    * last retry day a later one collects the invoice; on the last day it gets one more retry the next day, at most once
    * per invoice. That retry goes through the normal eligibility checks, so a paused gym or a removed card stops it.
    */
-  async function retryNextDay(invoiceId: string, context: JobContext, startedAt: Date) {
+  async function retryNextDay(invoiceId: string, context: JobContext, owner: string) {
     const { gymId } = context, gym = await options.settings.get(gymId);
     const last = await scope(gymId, async tx => {
-      const latest = (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId))
-        .orderBy(desc(paymentAttempts.attemptNumber)).limit(1))[0];
-      // Only an attempt this retry reserved and gave up on; a skip before reserving cancelled nothing.
-      if (!latest || !abandonedAttempt(latest) || latest.createdAt < startedAt) return null;
       // Paid, held for review or given a pay link meanwhile: staff or the member collect it, not another retry.
       const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)).for('update'))[0];
       if (invoice?.status !== 'past_due' || invoice.needsReview || invoice.checkoutSessionId) return null;
+      // Only an attempt this job reserved and gave up on, which its replays find too. The invoice lock keeps it the
+      // latest: a staff charge reserved meanwhile is the latest instead, and isn't this job's.
+      const latest = await latestAttempt(tx, invoiceId);
+      if (!latest || !abandonedAttempt(latest) || await reservedBy(tx, latest.id) !== owner) return null;
       const deadline = (await retryDeadlines(tx, gym, invoiceId)).at(-1);
-      if (!deadline || deadline > clock.now() || latest.createdAt < deadline || await recorded(tx, retryExtended, invoiceId))
-        return null;
-      const runAt = zonedInstant(addDays(localDate(clock.now(), gym.timezone), 1), '09:00', gym.timezone, { gap: 'shift' })!;
+      if (!deadline || deadline > clock.now() || latest.createdAt < deadline) return null;
+      const extended = (await recorded(tx, retryExtended, invoiceId))?.after as { window: string; runAt: string } | undefined;
+      // One extra retry per invoice. A replay whose enqueue failed after this audit committed queues it again, as stored.
+      if (extended) return extended.window === deadline.toISOString() ? { deadline, runAt: new Date(extended.runAt) } : null;
+      const runAt = retryAt(localDate(clock.now(), gym.timezone), 1, gym.timezone);
       await audit(tx, system(gymId), clock, retryExtended, 'invoice', invoiceId,
         { window: deadline.toISOString(), runAt: runAt.toISOString() });
       return { deadline, runAt };
     });
-    // The audit allows one extra retry per invoice. If this enqueue fails, the callback fails and its replay retries the
-    // charge itself (the last window is still unconsumed); the key keeps a replayed enqueue from queueing a second job.
+    // The key keeps a replayed enqueue, or the extra retry abandoning its own charge in turn, from queueing a second job.
     if (last) await options.jobs.enqueue(retryJob, { invoiceId }, { gymId, timezone: gym.timezone, runAt: last.runAt,
       idempotencyKey: `extend:${invoiceId}:${last.deadline.toISOString()}`, maxAttempts: 12 });
   }
-  async function retry(invoiceId: string, context: JobContext) {
-    const startedAt = clock.now();
+  /**
+   * `owner` is the job whose attempts this retry carries on with: its own, unless it is the continuation of a charge a
+   * retry gave up on whose cancel answered `unknown`. That continuation acts for the retry, so the attempt can still
+   * earn the extra retry day once reconciliation settles it.
+   */
+  async function retry(invoiceId: string, context: JobContext, owner = context.jobId) {
+    const carried = owner === context.jobId ? undefined : owner;
     let result: ChargeResult;
-    try { result = await charge(context.gymId, invoiceId, { mode: 'retry' }); }
+    try { result = await charge(context.gymId, invoiceId, { mode: 'retry', jobId: owner }); }
     catch (error) {
-      await deferPendingRetry(invoiceId, context);
+      await deferPendingRetry(invoiceId, context, carried);
       throw error;
     }
     // Reconciliation can also abandon the reservation before its intent ID is saved (`reservation_lost`).
     if (result.status === 'pending' || result.status === 'unknown' || result.status === 'skipped'
-      && (result.reason === 'pending_attempt' || result.reason === 'reservation_lost')) await deferPendingRetry(invoiceId, context);
-    else if (result.status === 'skipped' && (result.reason === 'collection_changed' || result.reason === 'billing_disabled'))
-      await retryNextDay(invoiceId, context, startedAt);
+      && (result.reason === 'pending_attempt' || result.reason === 'reservation_lost')) await deferPendingRetry(invoiceId, context, carried);
+    else if (result.status === 'skipped') {
+      // Any skip: a replay of a callback that failed after abandoning its charge skips before reserving. Only this job's
+      // attempts count, never a staff charge's or another retry's.
+      const latest = await scope(context.gymId, async tx => {
+        const row = await latestAttempt(tx, invoiceId);
+        return row && await reservedBy(tx, row.id) === owner ? row : undefined;
+      });
+      // A charge given up on whose cancel answered `unknown` stays pending until reconciliation settles it.
+      if (latest?.status === 'pending' && (result.reason === 'collection_changed' || result.reason === 'billing_disabled'))
+        await deferPendingRetry(invoiceId, context, owner, latest);
+      else if (latest && abandonedAttempt(latest)) await retryNextDay(invoiceId, context, owner);
+    }
   }
   return { daily, charge, collectAssigned, retry, reconcile: reconciliation.pending, postRestore: reconciliation.postRestore,
-    onAssigned: assignmentInvoices(clock) };
+    onAssigned: assignmentInvoices(clock), reportFailures,
+    /** Stopped runs' failure reports, with only the invoices that still need staff. */
+    chargeFailures: (gymId: string) => scope(gymId, tx => openChargeFailures(tx, clock.now())),
+    /** Staff dismiss what one stopped run's report, or without `runId` every open report, still lists. */
+    dismissChargeFailures: (context: MutationContext, runId?: string) =>
+      scope(context.gymId, tx => dismissChargeFailures(tx, context, clock, runId)) };
 }
 export type ChargeRunner = ReturnType<typeof createChargeRunner>;

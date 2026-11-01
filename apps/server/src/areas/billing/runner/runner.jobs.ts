@@ -27,7 +27,10 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     // Also runs a stopped collection's continuation, whose payload names the day it continues.
     { id: dailyRunJob, cron: '0 9 * * *', async handler(payload, context) {
       const { continues } = z.object({ continues: dateSchema.optional() }).parse(payload);
-      const result = await (await scheduled(context.gymId))?.daily(context.gymId, continues ? { continues } : {});
+      // The queue's job IDs key a stopped run's failure report, so a replayed run keeps one.
+      const runId = idSchema.safeParse(context.jobId).data;
+      const result = await (await scheduled(context.gymId))?.daily(context.gymId,
+        { ...(continues ? { continues } : {}), ...(runId ? { runId } : {}) });
       // A stopped collection queued its continuation; failing would rerun it into the same outage at once.
       if (result?.errors.length && !result.stopped) throw new Error('Some invoice charges need reconciliation');
     } },
@@ -35,14 +38,15 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
       const result = await (await scheduled(context.gymId))?.reconcile(context.gymId);
       if (result?.issues.length) throw new Error('Payment attempts remain unresolved');
     } },
-    // A stopped run's failures that the outage didn't cause. Failing is its whole job: its one attempt shows them with
-    // the gym's failed jobs, and the stopped run's continuation, not a rerun, collects what is left.
-    { id: chargeFailuresJob, async handler(payload) {
-      const { invoiceIds } = z.object({ day: dateSchema, invoiceIds: z.array(idSchema).min(1) }).parse(payload);
-      throw new Error(`${invoiceIds.length} invoice charges of a stopped charge run need reconciliation`);
+    // Queued by the previous release for a stopped run's other failures: it records them as that run's report.
+    { id: chargeFailuresJob, async handler(payload, context) {
+      const { day, invoiceIds } = z.object({ day: dateSchema, invoiceIds: z.array(idSchema).min(1) }).parse(payload);
+      await required().reportFailures(context.gymId, context.jobId, day,
+        invoiceIds.map(invoiceId => ({ invoiceId, cause: 'unexpected' as const })));
     } },
     { id: retryJob, async handler(payload, context) {
-      await required().retry(idSchema.parse((payload as { invoiceId?: unknown } | null)?.invoiceId), context);
+      const { invoiceId, owner } = z.object({ invoiceId: idSchema, owner: z.string().min(1).optional() }).parse(payload);
+      await required().retry(invoiceId, context, owner);
     } },
     { id: 'billing.runner.restore', async handler(payload, context) {
       const result = await required().postRestore(context.gymId,

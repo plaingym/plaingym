@@ -7,12 +7,14 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 
 | Entry point | Behavior |
 | --- | --- |
-| `daily(gymId)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, each failed invoice's ID, and whether an outage stopped the collection (`stopped`). Logs contain identifiers and safe error classifications, without raw error messages. |
+| `daily(gymId, run?)` | Generate household/date cycle invoices oldest first, then collect eligible cycles and assignment one-offs. Returns generated-period and collection counts, each failed invoice's ID and cause (`provider_outage`, `needs_reconciliation` or `unexpected`), and whether an outage stopped the collection (`stopped`). Logs contain identifiers and safe error classifications, without raw error messages. `run.runId` keys a stopped run's failure report (the job passes its ID). |
 | `charge(gymId, invoiceId, options?)` | Collect an eligible issued invoice. Returns an outcome object, or `{ status: 'skipped', reason }`. Provider errors propagate and leave any committed reservation for reconciliation. |
 | `collectAssigned(gymId, householdId)` | Immediately collect that household's open, unattempted assignment one-offs after the assignment transaction commits. Returns collection counts and errors; never call it from `onAssigned`. |
 | `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the invoice's saved retry windows at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
 | `reconcile(gymId)` | Reconcile stale pending attempts by ID. Returns unresolved references. Works while billing is disabled. |
 | `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview` and unresolved references; record the report in an immutable audit event. Never enable billing. |
+| `chargeFailures(gymId)` | The last 90 days' stopped-run failure reports, oldest first, each with only the invoices that still need staff. |
+| `dismissChargeFailures(context, runId?)` | Staff (a user actor) dismiss what that report, or without `runId` every open report, still lists, with an audit per report; another gym's or an unknown report is `not_found`. |
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
 
 Generation locks one household and its due memberships in each short transaction.
@@ -90,9 +92,14 @@ day gives up on the attempt it reserved (`collection_changed` or `billing_disabl
 the card was removed or billing paused mid-charge, before or after the intent was
 created), the runner queues one more `billing.runner.retry` at 09:00 the next local
 day. It doesn't for an invoice that was paid, held for review or given a pay link
-meanwhile, nor for a retry that skipped before reserving anything. The
-`billing.runner.retry_extended` audit allows one per invoice, and the key
-(`extend:<invoiceId>:<window>`) keeps a replayed callback from queueing a second job.
+meanwhile, nor for a retry that skipped before reserving anything. A retry's
+`billing.runner.reserved` audit names its callback's job, so only an attempt that job
+reserved counts, never a concurrent staff charge's; a replay of a callback that failed
+after abandoning its charge (a settings read or lock error) skips before reserving and
+still finds it. The `billing.runner.retry_extended` audit allows one per invoice and
+stores the run time: a replay whose enqueue failed after the audit committed queues
+the job again with it, and the key (`extend:<invoiceId>:<window>`) keeps a replayed
+callback from queueing a second job.
 That retry still falls in the unconsumed last window and goes through the normal
 eligibility checks, so a paused gym or a still-removed card stops it, and a decline
 sends that window's dunning email as usual; the runner sends no dunning for the
@@ -141,7 +148,13 @@ A retry with a pending attempt commits a `billing.runner.retry` continuation bef
 returning, using the injected shared job queue. Provider errors also queue this
 continuation when they leave a pending reservation, or one that reconciliation has
 meanwhile abandoned, then propagate. So does a retry whose reservation reconciliation
-abandoned before its intent ID was saved (`reservation_lost`). Default queue
+abandoned before its intent ID was saved (`reservation_lost`), and a retry that gave
+up on its charge (`collection_changed` or `billing_disabled`) when the cancel answered
+`unknown`, leaving the attempt pending. That continuation carries the retry's job ID
+(`{ invoiceId, owner }`) and acts for it, so once reconciliation settles the attempt as
+`confirm_abandoned`, a continuation that finds billing still paused or the card still
+removed can queue the extra retry day. A skip beside someone else's pending attempt
+queues nothing. Default queue
 retries (three attempts), and the transition effect's twelve attempts with one-second
 exponential backoff, can finish before the stale threshold plus the hourly sweep.
 The continuation runs after the stale threshold plus 61 minutes (76 minutes by
@@ -206,13 +219,19 @@ past local midnight collects only its own day, as that day's run would have, and
 leaves the next day to its own 09:00 run. The charge-run health tile records a
 stopped run as failed until a run completes.
 
-A stopped run's job succeeds, so its failures the outage didn't cause (a refused
-customer, "Charge outcome requires reconciliation") would show only in logs and that
-tile. Such a run also enqueues `billing.runner.charge_failures` with the payload
-`{ day, invoiceIds }`, one attempt and the key `failures:<date>` (`failures:<date>:continued`
-for a continuation). Its handler fails at once, so the invoices appear with the gym's
-failed jobs (the `failed_jobs` health check) without a job retry rerunning the
-collection; the continuation still collects what is left.
+A stopped run's job succeeds, so no job retry reruns the collection into the outage,
+and its failures the outage didn't cause (a refused customer, a charge outcome that needs
+reconciliation) go in the run's failure report (`failures.ts`): one
+`billing.runner.charge_failures.reported` audit per run, targeting the run's job ID,
+with `{ day, failures: [{ invoiceId, number, cause }] }`. A replayed run keeps its
+first report, and a second stopped run on the same day (a rerun) has its own. An
+invoice leaves its report once it is no longer open or past due, or once a later
+charge of it gets the provider's answer (paid, declined or awaiting authentication);
+staff dismiss what is left (`billing.runner.charge_failures.dismissed`), and a report
+older than 90 days drops off, as the failed jobs that listed these before did. While a
+report lists an invoice, the charge-run health tile is an error naming the invoices
+(`areas/health/charge-run.README.md`). Nothing fails on purpose, so the gym's
+`failed_jobs` check stays clear; the continuation still collects what is left.
 
 The daily run is a batch job (`runnerBatchJobs`). The runtime's worker queue
 lists it in its batch lane (`infra/jobs/README.md`), so the run holds only that
@@ -233,7 +252,7 @@ run while it collects; a queue without the lane makes them wait for the run.
    composition already configures transition effects. The billing barrel includes:
    `billing.runner.daily` (09:00 local, and a stopped collection's continuation), `billing.runner.reconcile` (hourly at :17),
    `billing.runner.retry` (`{ invoiceId }`), `billing.runner.charge_failures` (a stopped
-   run's other failures), and `billing.runner.restore`
+   run's other failures, queued by the previous release; it records them as that run's report), and `billing.runner.restore`
    (`{ snapshotAt, restoreId }`; legacy jobs may omit `restoreId`). Restore queues
    one durable job per gym/restore before completing its journal. The normal retry path is the transition effect job callback;
    do not independently schedule another set of retries.
@@ -249,13 +268,17 @@ run while it collects; a queue without the lane makes them wait for the run.
    while billing is paused, using `rerunRestoreReconciliation`, which resolves the
    same configured runner as the worker. Rerunning never enables billing.
 
-The PostgreSQL suite covers reservation visibility, replay, concurrent runs,
+The PostgreSQL suite is split by concern over `runner.fixture.test-helper.ts`:
+`runner.collection.test.ts` (reservation visibility, replay, concurrent runs,
 recorded synthetic Stripe adapter fixtures, customer adoption, catch-up, local
-dates, leap-day anniversaries, assignment invoices, cross-gym isolation, lost
-responses, both cancel/confirm race winners, delayed creation, retry windows and
-Checkout exclusion, transition job composition, restore refunds/disputes, the
-outage stop and its continuation, a stopped run's other failures, and a webhook dispatch
-running while the daily run holds the batch lane. `concurrency.test.ts` holds the daily
+dates, leap-day anniversaries, cross-gym isolation), `runner.assignment.test.ts`
+(assignment invoices and review holds), `runner.review.test.ts` (eligibility
+changes mid-charge, Checkout identity, staff charges, job configuration),
+`runner.reconciliation.test.ts` (lost responses, both cancel/confirm race winners,
+delayed creation, restore refunds/disputes), `runner.retry.test.ts` (retry windows,
+Checkout exclusion and transition job composition) and `runner.breaker.test.ts` (the
+outage stop and its continuation, a stopped run's failure reports, and a webhook dispatch
+running while the daily run holds the batch lane). `concurrency.test.ts` holds the daily
 run inside a confirm on the worker's batch lane and meanwhile runs reconcile (before and
 after Stripe charged the card), retries of the held invoice and of another of the
 household's invoices, and a success webhook with the effects it queues; each asserts the
@@ -266,5 +289,5 @@ review hold meanwhile, a retry that skips before reserving, and an earlier retry
 The service composition test uses `composeBillingWebhooks` and `attachRetry` with
 the real membership, transition, and runner services. `core/runtime.test.ts` covers
 assignment through the API and the configured retry callback. To re-record the local synthetic adapter
-tapes, set `RECORD_RUNNER_FIXTURES=1` when running `runner.test.ts`. Ordinary runs
+tapes, set `RECORD_RUNNER_FIXTURES=1` when running `runner.collection.test.ts`. Ordinary runs
 strictly replay the tapes with no network fallback.

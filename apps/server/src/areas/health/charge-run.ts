@@ -5,6 +5,7 @@ import { createTranslator, type Clock } from '@plaingym/shared';
 import { chargeRunHealthDetailsSchema } from '@plaingym/shared/contracts';
 import type { ChargeRunHealthDetails } from '@plaingym/shared/contracts';
 import type { ChargeRunner } from '../billing/runner/index.js';
+import { openChargeFailures } from '../billing/runner/failures.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import messages from '../../../../../locales/en/health/charge-run.json' with { type: 'json' };
 import { healthProvider } from './status.js';
@@ -43,10 +44,13 @@ export function createChargeRunHealthProvider(options: Pick<ChargeRunOptions, 's
   const scope = options.scope ?? forGym;
   return healthProvider('last_charge_run', async context => {
     const checkedAt = context.clock.now().toISOString(), gym = await options.settings.get(context.gymId);
-    const rows = await scope(context.gymId, tx => tx.select({ after: auditEvents.after }).from(auditEvents)
-      .where(and(inArray(auditEvents.action, [started, completed]), eq(auditEvents.targetType, 'charge_run')))
-      // Completion sorts before start even when the injected clock has not advanced.
-      .orderBy(desc(auditEvents.targetId), asc(auditEvents.action)).limit(1));
+    const { rows, reports } = await scope(context.gymId, async tx => ({
+      rows: await tx.select({ after: auditEvents.after }).from(auditEvents)
+        .where(and(inArray(auditEvents.action, [started, completed]), eq(auditEvents.targetType, 'charge_run')))
+        // Completion sorts before start even when the injected clock has not advanced.
+        .orderBy(desc(auditEvents.targetId), asc(auditEvents.action)).limit(1),
+      reports: await openChargeFailures(tx, context.clock.now()),
+    }));
     const details = rows.length ? chargeRunHealthDetailsSchema.parse(rows[0]!.after) : {
       lastStartedAt: null, lastCompletedAt: null, result: 'never_run' as const, invoicesProcessed: 0, failures: 0,
     };
@@ -54,6 +58,11 @@ export function createChargeRunHealthProvider(options: Pick<ChargeRunOptions, 's
     const stale = details.lastStartedAt !== null && context.clock.now().getTime() - Date.parse(details.lastStartedAt)
       > (details.result === 'running' ? 2 : 26) * 3_600_000;
     const state = !gym.billingEnabled ? 'disabled' : details.result === 'failed' ? 'failed' : stale ? 'stale' : details.result;
+    // A stopped run's failures stay until each invoice is collected or staff dismiss them, whatever later runs did.
+    const failures = new Map(reports.flatMap(report => report.failures.map(failure => [failure.invoiceId, failure.number])));
+    const numbers = [...failures.values()].flatMap(number => number === null ? [] : ['#' + number]);
+    if (state !== 'disabled' && failures.size) return { id: 'last_charge_run', checkedAt, details, status: 'error',
+      message: t('health/charge-run:chargeFailures', { count: failures.size, invoices: numbers.slice(0, 5).join(', ') }) };
     return { id: 'last_charge_run', checkedAt, details,
       status: state === 'disabled' ? 'not_configured' : state === 'failed' ? 'error' : state === 'succeeded' ? 'healthy' : 'warning',
       message: t('health/charge-run:' + state) };

@@ -2,7 +2,7 @@
 import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
 import { auditEvents, forGym, invoiceLineItems, paymentAttempts, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
+import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { notFound } from '../../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../../core/interfaces/invoice-transitions.js';
@@ -11,6 +11,7 @@ import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.
 import type { Jobs, JobContext } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
+import { retryAt } from '../runner/eligibility.js';
 import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal,
   type TransitionEffect } from './store.js';
 
@@ -47,8 +48,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       .orderBy(asc(auditEvents.id)).limit(100));
     for (const row of rows) {
       const work = row.after as TransitionEffect;
-      const runAt = work.kind === 'retry' ? zonedInstant(addDays(localDate(row.occurredAt, gym.timezone), work.retryDay!),
-        '09:00', gym.timezone, { gap: 'shift' })! : clock.now();
+      const runAt = work.kind === 'retry' ? retryAt(localDate(row.occurredAt, gym.timezone), work.retryDay!, gym.timezone)
+        : clock.now();
       await options.jobs.enqueue(effectJob, { effectId: row.targetId },
         { gymId, timezone: gym.timezone, runAt, idempotencyKey: row.targetId, maxAttempts: 12 });
       await scope(gymId, async tx => {

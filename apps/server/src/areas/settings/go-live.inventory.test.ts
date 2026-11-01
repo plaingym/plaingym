@@ -28,16 +28,16 @@ const boundaries = {
 
 // Routes and job callbacks share the boundary above; keep each entry path explicit.
 const chargePaths = [
-  ['daily membership collection and catch-up', 'areas/billing/runner/runner.test.ts', 'does nothing with billing disabled'],
-  ['queued dunning retries', 'areas/billing/runner/runner.test.ts', 'including direct charges and retry callbacks'],
-  ['staff invoice and one-off saved-card charges', 'areas/billing/runner/runner.test.ts', 'allows an audited staff charge'],
-  ['assignment proration and sign-up fees', 'areas/billing/runner/runner.test.ts', 'collects assignment proration and sign-up fees'],
-  ['zero-value settlement', 'areas/billing/runner/runner.test.ts', 'zero settlement respects enablement'],
+  ['daily membership collection and catch-up', 'areas/billing/runner/runner.collection.test.ts', 'does nothing with billing disabled'],
+  ['queued dunning retries', 'areas/billing/runner/runner.collection.test.ts', 'including direct charges and retry callbacks'],
+  ['staff invoice and one-off saved-card charges', 'areas/billing/runner/runner.review.test.ts', 'allows an audited staff charge'],
+  ['assignment proration and sign-up fees', 'areas/billing/runner/runner.assignment.test.ts', 'collects assignment proration and sign-up fees'],
+  ['zero-value settlement', 'areas/billing/runner/runner.review.test.ts', 'zero settlement respects enablement'],
   ['signed pay links: cycle, assignment and one-off Checkout', 'areas/settings/go-live.switches.test.ts', 'paused billing must refuse'],
   ['pay-link customer creation and cycle/assignment card saving', 'areas/billing/customers.links.test.ts', 'saves its card through the webhook'],
   ['card and onboarding setup, customer creation, no charge', 'areas/settings/go-live.switches.test.ts', 'card setup with billing off'],
-  ['existing Checkout/PaymentIntent completion while paused', 'areas/billing/runner/runner.test.ts', 'including with billing off'],
-  ['restore and unknown-outcome reconciliation, no new charges', 'areas/billing/runner/runner.test.ts', 'keeps unmatched payments paused'],
+  ['existing Checkout/PaymentIntent completion while paused', 'areas/billing/runner/runner.reconciliation.test.ts', 'including with billing off'],
+  ['restore and unknown-outcome reconciliation, no new charges', 'areas/billing/runner/runner.reconciliation.test.ts', 'keeps unmatched payments paused'],
   ['cash/check accounting and refunds, no new card charges', 'areas/billing/transitions/transitions.test.ts', 'records manual payments idempotently'],
 ] as const;
 const emailPaths = [
