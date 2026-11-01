@@ -116,3 +116,14 @@ it('sends public intake notices only to owner/admin staff even with member email
   const config = await runtime.app.request(origin + '/api/public/config');
   expect((await config.json()).data.dropInFee).toBeNull();
 });
+it('shows the chosen drop-in charge type at its current price on the public config, and none without a choice', async () => {
+  const dropInFee = async () => (await (await runtime.app.request(origin + '/api/public/config')).json()).data.dropInFee;
+  const choose = (id: string | null) => db.forGym(gymId, tx => tx.update(gyms).set({ dropInChargeTypeId: id }).where(eq(gyms.id, gymId)));
+  const mat = await factory('chargeTypes', gymId, { name: 'Mat fee', amountCents: 2500, currency: 'USD' });
+  expect(await dropInFee()).toBeNull();
+  try {
+    await choose(mat.id);
+    expect(await dropInFee()).toEqual({ amountCents: 2500, currency: 'USD' });
+  } finally { await choose(null); }
+  expect(await dropInFee()).toBeNull();
+});

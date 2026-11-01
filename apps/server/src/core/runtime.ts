@@ -29,6 +29,7 @@ import { createPortalConfirmationWidgetProvider } from '../areas/members/househo
 import { configureLoginMethods } from '../areas/staff/auth.bootstrap.js';
 import { createGymSettingsAccessor, createSettingsService } from '../areas/settings/settings.js';
 import { createGymKeyResolver } from '../areas/settings/gym-keys.js';
+import { createDropInFee } from '../areas/settings/drop-in-fee.js';
 import { configureMembers } from '../areas/members/members.routes.js';
 import { createMembersService } from '../areas/members/members.js';
 import { configureStaffProfiles } from '../areas/staff/profiles.routes.js';
@@ -255,7 +256,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     // Ordinary installs can accept intake before SMTP is configured (the notice is then skipped); demos use the outbox.
     prepare: async gymId => (!demo && !await smtpConfigured(gymId)) ? null : gymMail(gymId) });
   configurePublicStaffNotices(publicNotices);
-  configurePublicPages({ clock, waivers, uploadsFor: uploads.forGym, notifyStaff: publicNotices.publish });
+  // The public drop-in page shows the price of the charge type the gym chose in settings.
+  configurePublicPages({ clock, waivers, uploadsFor: uploads.forGym, notifyStaff: publicNotices.publish, dropInFeeFor: createDropInFee() });
   const importPipeline = createImportPipeline({ uploadsFor: uploads.forGym, jobs: queue, clock });
   const exportService = createExportService({ uploadsFor: uploads.forGym, jobs: queue, clock });
   // Setup step 8 finishes with a committed run from this pipeline.
