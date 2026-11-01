@@ -62,7 +62,7 @@ Third-party services are only ever accessed through these internal modules. Neve
 | Module | Interface |
 | :--- | :--- |
 | `auth` | `getSession(req) → { userId } \| null` (roles live in our `staff_roles` / household tables) |
-| `jobs` | `enqueue(name, payload, opts)`, `handle(name, fn)`, `schedule(name, cron, fn)` |
+| `jobs` | `enqueue(name, payload, opts)`, `handle(name, fn, opts?)`, `schedule(name, cron, fn, opts?)` (`opts.lane: 'batch'` runs long batch work apart from the gym's other jobs; a job registration sets it with `lane`) |
 | `email` | `sendEmail({ to, subject, html, text, replyTo })` |
 | `payments` | `createCustomer`, `createCharge` (unconfirmed PaymentIntent), `confirmCharge`, `cancelCharge`, `findCharge`, `listRefunds`, `readPaymentObject`, `listChangesSince`, `refund`, `createCheckout`, `expireCheckout`, `findCustomerByEmail`, `adoptCustomer`, `detachPaymentMethod`, `redactCustomer`, `parseWebhook` (webhook verification lives in the provider, not the inbox) |
 | `pdf` (`infra/pdf`) | `renderPdf` renders bounded documents with pinned fonts; `missingGlyphs` reports unsupported code points |
