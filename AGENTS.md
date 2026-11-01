@@ -150,4 +150,5 @@ Prefer Web-standard APIs (`fetch`, `Request`/`Response`, WebCrypto, Web Streams)
 * Ensure all linter rules pass: `pnpm lint`.
 * Ensure tests pass: `pnpm test` (Vitest, against a real PostgreSQL).
 * Provide clear, atomic commit messages following conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`).
+* GitHub workflows use only the actions `CONTRIBUTING.md` allows, each pinned to a full commit SHA.
 * Do not add AI session trailers or attribution links (e.g., `Claude-Session:` lines or claude.ai session URLs) to commit messages or PR descriptions.

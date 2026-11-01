@@ -30,6 +30,7 @@ Before your first pull request can be merged, you sign our [Contributor License 
 * Make sure strict type checking, lint, tests, and compliance pass: `pnpm verify` runs all four, with the tests your changes affect (`pnpm verify --full` runs every test). CI runs the full suite on your pull request.
 * Start every new source file with an SPDX header: `// SPDX-License-Identifier: AGPL-3.0-only`.
 * New dependencies must use a license on the allowlist in `AGENTS.md`. The CI license check blocks anything else.
+* Workflows use only GitHub-owned actions and three others: `pnpm/action-setup`, `docker/setup-buildx-action` and `docker/build-push-action`. Pin each one to a full commit SHA, with its version in a comment. The repository's Actions settings enforce both, so a workflow that uses another action fails to start until a maintainer allows it.
 * Every new member-facing route needs a cross-member access test (member A gets 403/404 on member B's data).
 * **Never report security issues in public issues or pull requests.** See [`SECURITY.md`](SECURITY.md).
 

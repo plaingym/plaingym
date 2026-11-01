@@ -54,8 +54,10 @@ so the next build downloads the packages again but keeps every layer.
 
 CI builds on runners that start with an empty cache. Image checks and the weekly
 image scan use the GitHub Actions cache backend (`type=gha`) for the Dockerfile's
-layers, so a rerun of a branch skips the dependency install when the manifests
-and lockfile are unchanged. The scope is one per architecture (`image-amd64`,
+layers, through Docker's `setup-buildx-action` and `build-push-action`: the
+backend needs a BuildKit container builder and the cache service's token, which
+only an action receives. A rerun of a branch then skips the dependency install
+when the manifests and lockfile are unchanged. The scope is one per architecture (`image-amd64`,
 `image-arm64`); the scan shares `image-amd64`. A branch reads its own cache and
 the default branch's, and Image checks builds on `main` only when it finds no
 passing run for the same commit (it normally reuses the integration branch's
