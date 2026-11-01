@@ -207,12 +207,15 @@ describe('invoice and household payment UI', () => {
     await waitFor(() => expect(f.fetcher.mock.calls.filter(([path]) => String(path).includes('/payment-methods')).length).toBe(2));
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
-  it('shows the remaining refundable amount after pending and successful refunds', async () => {
+  it('shows the remaining refundable amount after pending and successful refunds, releasing failed and canceled ones', async () => {
     const f = transport({ invoice: { ...invoice, status: 'paid', paidAt: createdAt }, payments: [payment], refunds: [
       { id: id(20), createdAt, paymentId: payment.id, amountCents: 500, currency: 'USD', reason: null, resolvedAt: createdAt, status: 'succeeded' },
       { id: id(21), createdAt, paymentId: payment.id, amountCents: 300, currency: 'USD', reason: null, resolvedAt: null, status: 'pending' },
+      { id: id(22), createdAt, paymentId: payment.id, amountCents: 400, currency: 'USD', reason: null, resolvedAt: createdAt, status: 'failed' },
+      { id: id(23), createdAt, paymentId: payment.id, amountCents: 600, currency: 'USD', reason: null, resolvedAt: createdAt, status: 'canceled' },
     ] });
     start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
+    expect(await screen.findByText('$6.00 · Canceled')).toBeDefined();
     fireEvent.click(await screen.findByRole('button', { name: 'Refund' }));
     expect(screen.getByText('Remaining refundable amount: $17.00')).toBeDefined();
     expect((within(screen.getByRole('region')).getByLabelText('Amount') as HTMLInputElement).value).toBe('17.00');

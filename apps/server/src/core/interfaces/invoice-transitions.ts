@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Id, IsoInstant, Money } from '@plaingym/shared/contracts';
-import { moneySchema } from '@plaingym/shared/contracts';
+import { moneySchema, refundReleased } from '@plaingym/shared/contracts';
 import { conflict, instant, notFound, requireMoney, scopedKey } from './common.js';
 import { clock as defaultClock, type Clock } from '../clock.js';
 import type { MutationContext } from './common.js';
@@ -45,7 +45,9 @@ export interface RefundTransition extends Money {
   readonly paymentId: Id;
   readonly refundId: Id;
   readonly processorId?: string;
-  readonly status: 'pending' | 'succeeded' | 'failed';
+  /** canceled: cancelled at the processor before it completed (by staff, so no notice); failed: it did not reach the
+   * payer. Both are final and release the amount. */
+  readonly status: 'pending' | 'succeeded' | 'failed' | 'canceled';
 }
 export interface InvoiceTransitionResult {
   readonly outcome: 'applied' | 'ignored' | 'duplicate_payment';
@@ -59,7 +61,8 @@ export interface InvoiceTransitionResult {
  * not enter dunning. Payment outcomes never reopen paid, refunded or void invoices. The one backward move is a
  * processor refund that fails after it succeeded (same processor refund ID): its amount is released, the invoice's
  * refund status is recomputed (back to partially refunded or paid) and staff are notified. Staff are notified once for
- * every processor refund that ends failed: first recorded failed, pending to failed, or reversed.
+ * every processor refund that ends failed: first recorded failed, pending to failed, or reversed. A canceled refund is
+ * recorded as canceled and released like a failed one, without a notice; it never reverses a successful refund.
  */
 export interface InvoiceTransitions {
   settleZero(context: MutationContext, request: { invoiceId: Id }): Promise<InvoiceTransitionResult>;
@@ -233,6 +236,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (payment.invoiceId !== invoice.id) notFound();
     moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
     if (request.amountCents <= 0 || request.currency !== payment.currency) conflict('Invalid refund money');
+    if (request.status === 'canceled' && request.processorId === undefined) conflict('Only a processor refund can be canceled');
     const key = scopedKey(context.gymId, request.refundId);
     const existing = this.#refunds.get(key)?.request;
     if (existing && JSON.stringify([existing.paymentId, existing.amountCents, existing.currency, existing.processorId])
@@ -247,12 +251,13 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       if (other !== undefined && other !== key) conflict('Processor refund already recorded');
     }
     const reserved = [...this.#refunds.entries()].filter(([otherKey, { gymId, request: other }]) => otherKey !== key
-      && gymId === context.gymId && other.paymentId === payment.id && other.status !== 'failed')
+      && gymId === context.gymId && other.paymentId === payment.id && !refundReleased(other))
       .reduce((sum, [, { request: other }]) => sum + other.amountCents, 0);
-    if (request.status !== 'failed' && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
+    if (!refundReleased(request) && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
     this.#refunds.set(key, { gymId: context.gymId, request: structuredClone(request) });
     if (processorKey !== undefined) this.#processorRefunds.set(processorKey, key);
-    // A failed refund never moves again, so each processor refund that ends failed notifies staff once.
+    // A failed refund never moves again, so each processor refund that ends failed notifies staff once. A canceled one
+    // was cancelled on purpose and sends nothing.
     if (request.status === 'failed' && request.processorId !== undefined)
       this.#effect(context.gymId, invoice.id, 'staff_notice', payment.id);
     if (!(request.status === 'succeeded' || (reversed && ['partially_refunded', 'refunded'].includes(invoice.status)))

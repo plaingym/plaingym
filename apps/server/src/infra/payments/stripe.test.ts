@@ -42,7 +42,8 @@ fullPaymentsContract('FakePayments', async (card = '4242') => {
   for (const [id, customerId] of [[detach.owned, 'cus_fixture'], [detach.foreign, 'cus_foreign']] as const)
     payments.recordPaymentMethod({ id, customerId, brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
   payments.respondNextConfirmation(card === '0341' ? 'declined' : card === '3184' ? 'authentication_required' : 'succeeded');
-  return { payments, charge, checkout, detach, completeCheckout: (id: string) => { payments.completeCheckout(id); } };
+  return { payments, charge, checkout, detach, completeCheckout: (id: string) => { payments.completeCheckout(id); },
+    refundCancel: { holdNext: () => { payments.respondNextRefund('pending'); }, cancel: (id: string) => { payments.setRefundStatus(id, 'canceled'); } } };
 });
 function fixture(card: Card = '4242') {
   const transport = new StripeFixtures(gymId), recorder = new FixtureRecorder(gymId);
@@ -51,7 +52,9 @@ function fixture(card: Card = '4242') {
   const payments = new StripePayments(gymId, { transport: recordingTransport(transport, recorder), webhookSecret: 'fixture-signing-secret',
     clock: new TestClock('2026-10-23T12:00:00Z') });
   return { payments, charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, transport, recorder,
-    completeCheckout: (id: string) => transport.completeCheckout(id), since: new Date('2026-10-23T00:00:00Z') };
+    completeCheckout: (id: string) => transport.completeCheckout(id), since: new Date('2026-10-23T00:00:00Z'),
+    refundCancel: { holdNext: () => { transport.nextRefundStatus = 'requires_action'; },
+      cancel: (id: string) => { transport.objects.get(id)!.status = 'canceled'; } } };
 }
 const recordings = new Map<string, FixtureRecorder>();
 const recordName = 'StripePayments with synthetic API fixtures', replayName = 'StripePayments with recorded API replay';
@@ -69,7 +72,8 @@ if (process.env.PAYMENTS_WRITE_SYNTHETIC_FIXTURES === '1') {
     const tape = stored.tapes[caseName()];
     if (!tape) throw new Error('No recorded scenario: ' + caseName());
     return { payments: new StripePayments(gymId, { transport: replayTransport(tape, gymId), webhookSecret: 'fixture-signing-secret', clock: new TestClock('2026-10-23T12:00:00Z') }),
-      charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, since: new Date('2026-10-23T00:00:00Z') };
+      charge: { ...charge, paymentMethodId: 'pm_' + card }, checkout, detach, since: new Date('2026-10-23T00:00:00Z'),
+      refundCancel: { holdNext: () => {}, cancel: () => {} } };
   });
 }
 
@@ -185,6 +189,24 @@ it('classifies the SDK errors that mean the provider could not serve any request
     new Error('Payment object belongs to another gym'), undefined, 'timeout'];
   expect(outages.map(isProviderOutage)).toEqual(outages.map(() => true));
   expect(others.map(isProviderOutage)).toEqual(others.map(() => false));
+});
+it('moves fake refunds only as the processor can', async () => {
+  const payments = new FakePayments(gymId), intent = await payments.createCharge(charge);
+  await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  const refund = await payments.refund({ chargeId: intent.id, amount: 40, idempotencyKey: 'refund' });
+  expect(() => payments.setRefundStatus(refund.id, 'canceled')).toThrow('cannot move');
+  expect(payments.setRefundStatus(refund.id, 'failed')).toMatchObject({ status: 'failed' });
+  expect(() => payments.setRefundStatus(refund.id, 'succeeded')).toThrow('cannot move');
+});
+it('keeps a cancelled refund apart from a failed one and reads an action-needed refund as pending', async () => {
+  const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
+  await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  const statuses = { succeeded: 'succeeded', pending: 'pending', requires_action: 'pending', failed: 'failed', canceled: 'canceled' };
+  for (const [stripe, status] of Object.entries(statuses)) {
+    const id = 're_' + stripe;
+    transport.objects.set(id, { id, object: 'refund', payment_intent: intent.id, amount: 10, currency: 'usd', status: stripe, metadata: {} });
+    expect(await payments.readPaymentObject({ kind: 'refund', id })).toMatchObject({ status: 'found', value: { object: { status } } });
+  }
 });
 it('reconciles untagged dashboard refunds and disputes through Charge -> PaymentIntent', async () => {
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);

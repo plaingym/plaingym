@@ -2,7 +2,7 @@
 import { and, desc, eq, or } from 'drizzle-orm';
 import { forGym, invoices, paymentAttempts, payments, refunds, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { idSchema, moneySchema } from '@plaingym/shared/contracts';
+import { idSchema, moneySchema, refundReleased } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { conflict, instant, notFound, requireMoney, type MutationContext } from '../../../core/interfaces/common.js';
 import type { CardSuccess, CardFailure, ManualPayment, RefundTransition, InvoiceTransitions, InvoiceTransitionResult } from '../../../core/interfaces/invoice-transitions.js';
@@ -148,7 +148,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
     },
     async refund(context: MutationContext, request: RefundTransition) {
       idSchema.parse(request.refundId); moneySchema.parse({ amountCents: request.amountCents, currency: request.currency });
-      if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed'].includes(request.status)) conflict('Invalid refund');
+      if (request.amountCents <= 0 || !['pending', 'succeeded', 'failed', 'canceled'].includes(request.status)) conflict('Invalid refund');
+      if (request.status === 'canceled' && request.processorId === undefined) conflict('Only a processor refund can be canceled');
       return scope(context.gymId, async tx => {
         const invoice = await lockInvoice(tx, request.invoiceId);
         const payment = (await tx.select().from(payments).where(eq(payments.id, request.paymentId)))[0] ?? notFound();
@@ -158,7 +159,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         if (previous && (previous.paymentId !== request.paymentId || previous.amountCents !== request.amountCents
           || previous.currency !== request.currency || (previous.processorId !== null && previous.processorId !== request.processorId)))
           conflict('Refund ID reused with different parameters');
-        // The one backward move: the processor reports that a refund it reported as successful has failed.
+        // The one backward move: the processor reports that a refund it reported as successful has failed. A processor
+        // only cancels a refund before it completes, so a canceled report for a successful one is ignored like any other.
         const reversed = previous?.status === 'succeeded' && request.status === 'failed'
           && previous.processorId !== null && previous.processorId === request.processorId;
         if (previous && !reversed && (previous.status === request.status && (previous.processorId !== null || request.processorId === undefined)
@@ -168,9 +170,9 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           if (other && other.id !== request.refundId) conflict('Processor refund already recorded');
         }
         const existing = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
-        const reserved = existing.filter(row => row.id !== request.refundId && row.status !== 'failed')
+        const reserved = existing.filter(row => row.id !== request.refundId && !refundReleased(row))
           .reduce((sum, row) => sum + row.amountCents, 0);
-        if (request.status !== 'failed' && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
+        if (!refundReleased(request) && reserved + request.amountCents > payment.amountCents) conflict('Refund exceeds payment');
         const values = { status: request.status, processorId: request.processorId ?? null,
           resolvedAt: request.status === 'pending' ? null : clock.now() };
         if (previous) await tx.update(refunds).set(values).where(eq(refunds.id, request.refundId));
@@ -185,7 +187,9 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         else await audit(tx, context, clock, 'billing.refund.reversed', 'refund', request.refundId, recordedRefund,
           { status: 'succeeded', resolvedAt: previous?.resolvedAt ?? null });
         // Staff hear about every processor refund that ends failed: the payer wasn't refunded. A failed refund never
-        // moves again, so a replayed webhook or reconciliation is ignored above and queues no second notice.
+        // moves again, so a replayed webhook or reconciliation is ignored above and queues no second notice. A canceled
+        // refund is just as final and releases its amount the same way, but someone cancelled it on purpose (usually staff
+        // in the processor's dashboard), so it sends no notice.
         if (request.status === 'failed' && values.processorId !== null)
           await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_failed', invoiceId: invoice.id,
             paymentId: payment.id, refundId: request.refundId });

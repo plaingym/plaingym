@@ -279,7 +279,8 @@ export class StripePayments implements Payments {
   async #refund(object: ObjectData): Promise<Refund> {
     const parent = await this.#parentIntent(object);
     return { id: id(object.id), chargeId: id(parent.id), amount: Number(object.amount), currency: String(object.currency),
-      status: object.status === 'succeeded' ? 'succeeded' : object.status === 'pending' || object.status === 'requires_action' ? 'pending' : 'failed',
+      status: object.status === 'succeeded' ? 'succeeded' : object.status === 'canceled' ? 'canceled'
+        : object.status === 'pending' || object.status === 'requires_action' ? 'pending' : 'failed',
       metadata: this.#metadata(parent) };
   }
   async refund(request: { chargeId: string; amount: number; idempotencyKey: string }): Promise<Refund> {

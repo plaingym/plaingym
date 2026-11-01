@@ -34,6 +34,28 @@ describe('refunds, disputes and access through composed billing services', () =>
     expect(f.email.messages.filter(m => m.subject.startsWith('Receipt'))).toHaveLength(1);
   });
 
+  it('a dashboard refund staff cancel is recorded canceled without a notice, while a failed one notifies staff once', async () => {
+    const f = await workflowFixture(db); await f.runJob('billing.runner.daily');
+    const paid = (await f.read()).payments[0]!;
+    const notices = () => f.email.messages.filter(m => m.subject.startsWith('Refund failed'));
+    for (const [id, final] of [['re_canceled', 'canceled'], ['re_failed', 'failed']] as const) {
+      // Each refund is pending first (a dashboard refund awaiting action), then reaches its final status by webhook.
+      for (const status of ['pending', final]) {
+        f.transport.objects.set(id, { id, object: 'refund', charge: paid.chargeId,
+          amount: 6000, currency: 'usd', status, metadata: {}, created: f.transport.now });
+        const event = await f.deliver('refund.updated', id); await f.drain();
+        await f.inbox.replay(f.gymId, event); await f.drain();
+        expect((await f.read()).refunds.find(r => r.processorId === id)).toMatchObject({ status });
+      }
+      expect(notices()).toHaveLength(final === 'failed' ? 1 : 0);
+      expect((await f.read()).invoices[0]!.status).toBe('paid');
+    }
+    expect(notices()).toMatchObject([{ to: 'owner@example.invalid', subject: 'Refund failed for invoice 1' }]);
+    // Neither returned money, so the whole payment is still refundable.
+    await f.service.refund(f.context, paid.id, { amountCents: 10000, currency: 'USD', reason: null }); await f.drain();
+    expect((await f.read()).invoices[0]!.status).toBe('refunded');
+  });
+
   it('dispute webhook replay sends one owner email, shows one alert and cannot regress a terminal outcome', async () => {
     const f = await workflowFixture(db); await f.runJob('billing.runner.daily');
     await f.factory('staffRoles', f.gymId, { userId: f.user.id, role: 'owner' });

@@ -150,5 +150,5 @@ export const refunds = pgTable('refunds', {
   foreignKey({ name: 'refunds_payment_fk', columns: [t.gymId, t.paymentId, t.currency], foreignColumns: [payments.gymId, payments.id, payments.currency] }),
   unique('refunds_processor_key').on(t.gymId, t.processorId),
   index('refunds_payment_idx').on(t.gymId, t.paymentId),
-  choice('refunds_status_check', t.status, ['pending', 'succeeded', 'failed']),
+  choice('refunds_status_check', t.status, ['pending', 'succeeded', 'failed', 'canceled']),
   currencyCheck('refunds_currency_check', t.currency), check('refunds_amount_check', sql`${t.amountCents} > 0`)]).enableRLS();

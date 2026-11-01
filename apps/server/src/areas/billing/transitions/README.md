@@ -111,25 +111,28 @@ automatic refund is recorded as failed, which queues the failed-refund staff
 notice below, and the effect completes. A pending processor refund is stored for
 subsequent webhook/reconciliation updates.
 Refunds of excess payments never reduce the original invoice's paid balance.
-Pending refunds reserve their amounts, failed reservations release them, and
-successful refunds advance accepted payments to partial/full refund.
+Pending refunds reserve their amounts, failed and canceled reservations release
+them, and successful refunds advance accepted payments to partial/full refund.
 Refund states move forward only, with one exception: when the processor reports
 that a refund it reported as successful has failed (the stored refund has the same
 processor ID), the refund moves from `succeeded` to `failed`, releasing its amount.
 The invoice status is recomputed from its remaining successful refunds (back to
 `paid` or `partially_refunded`) and audited as `billing.invoice.refund_reversed`;
 the refund change is audited as `billing.refund.reversed`. A refund without a
-processor ID (a cash or check refund) never reverses, and a failed refund never
-moves again.
+processor ID (a cash or check refund) never reverses, and a failed or canceled
+refund never moves again. A processor cancels a refund only before it completes,
+so a canceled report for a successful refund is ignored.
 Every processor refund that ends `failed` (recorded failed from the start, moved
 from `pending`, or reversed after success) queues one `staff_notice` effect with
 `notice: 'refund_failed'` in the same transaction, which tells the gym's staff
 recipients (owners and admins at runtime) that the payer was not refunded; a
-reversal's email says the refund had been reported successful. The Stripe adapter
-reports a canceled refund as `failed`, so the email asks staff to check the
-payment's refunds before refunding the payer another way. Because a failed
+reversal's email says the refund had been reported successful. Because a failed
 refund never moves again, a replayed webhook or rerun reconciliation queues no
-second notice.
+second notice. A refund cancelled at the processor (usually by staff in its
+dashboard; the Stripe adapter reports it as `canceled`) is recorded as `canceled`
+and released like a failed one, with no notice: cancelling it was deliberate, not
+a failure. A canceled automatic duplicate-payment refund completes its effect the
+same way.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
 links, and staff notices (a duplicate card payment, or a failed processor refund).

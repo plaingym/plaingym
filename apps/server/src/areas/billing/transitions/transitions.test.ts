@@ -398,7 +398,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(duplicate.email.messages.slice(sent)).toMatchObject([{ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1' }]);
   });
   const failedNotice = (cents: number) => ({ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1',
-    text: `A refund of CA$${(cents / 100).toFixed(2)} for invoice 1 failed or was canceled, so the payer did not receive it. `
+    text: `A refund of CA$${(cents / 100).toFixed(2)} for invoice 1 failed, so the payer did not receive it. `
       + 'Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.' });
   const refundNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
     .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_failed')
@@ -432,6 +432,47 @@ describe('invoice transitions with real PostgreSQL', () => {
     await cash.drain();
     expect(refundNotices(await cash.read())).toEqual([]);
     expect(cash.email.messages).toHaveLength(staff);
+  });
+  it('records a refund staff cancel as canceled, releases its amount and sends no notice', async () => {
+    const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
+    const base = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, currency: 'CAD' };
+    // A staff card refund is reserved without a processor ID; staff then cancel it in the processor's dashboard.
+    const reserved = { ...base, refundId: uuidv7(), amountCents: 6000, status: 'pending' as const };
+    const canceled = { ...base, refundId: uuidv7(), processorId: 're_canceled', amountCents: 4000, status: 'canceled' as const };
+    await f.transitions.refund(f.context, reserved);
+    const sent = f.email.messages.length;
+    for (const request of [{ ...reserved, processorId: 're_reserved', status: 'canceled' as const }, canceled]) {
+      expect(await f.transitions.refund(f.context, request)).toMatchObject({ outcome: 'applied', invoice: { status: 'paid' } });
+      for (const replay of [request, { ...request, status: 'failed' as const }, { ...request, status: 'succeeded' as const },
+        { ...request, status: 'pending' as const }])
+        expect((await f.transitions.refund(f.context, replay)).outcome).toBe('ignored');
+    }
+    await f.drain(); await f.drain();
+    const rows = await f.read();
+    expect(rows.refunds.map(row => [row.processorId, row.status, row.resolvedAt]).sort())
+      .toEqual([['re_canceled', 'canceled', f.clock.now()], ['re_reserved', 'canceled', f.clock.now()]]);
+    expect(rows.audits.filter(row => row.action === 'billing.refund.recorded' && (row.after as { status: string }).status === 'canceled')
+      .map(row => row.targetId).sort()).toEqual([reserved.refundId, canceled.refundId].sort());
+    expect(refundNotices(rows)).toEqual([]);
+    expect(f.email.messages.slice(sent)).toEqual([]);
+    expect(rows.invoice.status).toBe('paid');
+    // Both amounts are released: the whole payment can still be refunded.
+    expect((await f.transitions.refund(f.context, { ...base, refundId: uuidv7(), processorId: 're_full', amountCents: 10000,
+      status: 'succeeded' })).invoice.status).toBe('refunded');
+  });
+  it('completes the duplicate-payment refund job without a refund notice when the refund is canceled', async () => {
+    const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual); await succeed(f); await f.drain();
+    const create = f.provider.refund.bind(f.provider);
+    vi.spyOn(f.provider, 'refund').mockImplementation(async request => ({ ...await create(request), status: 'canceled' }));
+    const before = (await f.read()).invoice, sent = f.email.messages.length;
+    expect((await f.transitions.cardSucceeded(f.context, f.success)).outcome).toBe('duplicate_payment');
+    await f.drain(); await f.drain();
+    const rows = await f.read();
+    expect(rows.refunds).toMatchObject([{ status: 'canceled', reason: 'duplicate_payment', processorId: expect.stringMatching(/^re_/) }]);
+    expect(rows.invoice).toEqual(before);
+    expect(refundNotices(rows)).toEqual([]);
+    expect(f.jobs.jobs.filter(job => job.status !== 'completed')).toEqual([]);
+    expect(f.email.messages.slice(sent).map(m => m.subject)).toEqual(['Duplicate payment for invoice 1']);
   });
   it('records a failed automatic duplicate-payment refund and notifies staff instead of failing its job', async () => {
     const f = await fixture(); await f.transitions.manualPayment(f.context, f.manual); await succeed(f); await f.drain();

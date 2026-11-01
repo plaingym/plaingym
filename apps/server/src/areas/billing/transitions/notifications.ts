@@ -16,7 +16,7 @@ export interface TransitionNotice {
   payment?: typeof payments.$inferSelect;
 }
 /** Staff are told about a duplicate card payment (the default) or a processor refund that failed; `reversed` when it
- * failed after it was reported successful. */
+ * failed after it was reported successful. A canceled refund was cancelled on purpose and has no notice. */
 export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' }
   | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect; reversed?: boolean });
 export interface TransitionNotifications {

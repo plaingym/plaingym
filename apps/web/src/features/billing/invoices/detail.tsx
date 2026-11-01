@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { InvoiceDetail, MaskedPaymentMethod, Payment } from '@plaingym/shared/contracts';
+import { refundReleased, type InvoiceDetail, type MaskedPaymentMethod, type Payment } from '@plaingym/shared/contracts';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, decimalAmount, decimalUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
@@ -91,7 +91,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
     <PageSection title={text('payments')}>
       {!data.payments.length && <EmptyState title={text('noPayments')}/>}
       <StackedList>{data.payments.map(payment => {
-        const reserved = data.refunds.filter(r => r.paymentId === payment.id && r.status !== 'failed').reduce((sum, r) => sum + r.amountCents, 0);
+        const reserved = data.refunds.filter(r => r.paymentId === payment.id && !refundReleased(r)).reduce((sum, r) => sum + r.amountCents, 0);
         return <StackedItem key={payment.id}><span>{text(payment.method)} · {money(payment.amountCents, payment.currency)}</span>
           <span className="text-sm text-muted-foreground">{new Date(payment.paidAt).toLocaleString()}</span>
           {payment.reference && <p className="break-words">{payment.reference}</p>}
@@ -146,7 +146,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   </div>;
 }
 function refundable(data: InvoiceDetail, payment: Payment) {
-  return payment.amountCents - data.refunds.filter(r => r.paymentId === payment.id && r.status !== 'failed').reduce((sum, r) => sum + r.amountCents, 0);
+  return payment.amountCents - data.refunds.filter(r => r.paymentId === payment.id && !refundReleased(r)).reduce((sum, r) => sum + r.amountCents, 0);
 }
 function LineItems({ data }: { data: InvoiceDetail }) {
   return <StackedList>{data.lineItems.map(line => <StackedItem key={line.id}>

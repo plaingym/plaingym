@@ -4,6 +4,8 @@ import type { ObjectData, PaymentTransport, ProviderRequest } from './transport.
 /** Synthetic API fixtures, never represented as recordings of a real Stripe account. */
 export class StripeFixtures implements PaymentTransport {
   readonly objects = new Map<string, ObjectData>();
+  /** The status the next created refund gets instead of succeeded, such as requires_action. */
+  nextRefundStatus: string | undefined;
   readonly requests: ProviderRequest[] = [];
   readonly #keys = new Map<string, { request: ProviderRequest; result: ObjectData }>();
   readonly #changes: ObjectData[] = [];
@@ -150,7 +152,8 @@ export class StripeFixtures implements PaymentTransport {
     }
     if (resource === 'refunds') {
       if (!this.objects.has(String(params.payment_intent))) throw Object.assign(new Error('No intent'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
-      return this.#store('re', { object: 'refund', ...params, currency: 'usd', status: 'succeeded' });
+      const status = this.nextRefundStatus ?? 'succeeded'; this.nextRefundStatus = undefined;
+      return this.#store('re', { object: 'refund', ...params, currency: 'usd', status });
     }
     if (resource === 'webhook_endpoints') return this.#store('we', { object: 'webhook_endpoint', ...params, secret: 'fixture-signing-secret' });
     throw new Error('Unexpected fixture endpoint ' + input.path);

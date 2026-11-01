@@ -109,7 +109,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     else if (work.kind === 'refund_duplicate') {
       if (!payment || !work.refundId || !payment.paymentIntentId) throw new Error('Duplicate payment has no processor identity');
       const reservation = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.id, work.refundId!)))[0] ?? notFound());
-      // A failed refund is final: the transition that recorded it queued the staff notice, so this work is done.
+      // A failed or canceled refund is final (the transition that recorded a failure queued the staff notice), so this
+      // work is done.
       if (reservation.status === 'pending') {
         const provider = await options.payments(gymId);
         let refund: Refund | undefined;

@@ -8,6 +8,9 @@ export interface ContractHarness {
   detach: { owned: string; foreign: string };
   since?: Date;
   completeCheckout?: (id: string) => void;
+  /** Holds the next refund pending, then cancels it at the processor, as staff can in its dashboard; absent where the
+   * provider can't (card refunds in a live test account complete at once). A replayed recording passes no-ops. */
+  refundCancel?: { holdNext(): void; cancel(id: string): void };
 }
 /** Both provider implementations and the opt-in test-API run use these exact scenarios. */
 export function fullPaymentsContract(name: string, create: (card?: Card) => Promise<ContractHarness>) {
@@ -101,6 +104,21 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       expect(refund).toMatchObject({ chargeId: intent.id, status: 'succeeded', amount: charge.amount });
       expect(await payments.refund(request)).toEqual(refund);
       expect(await payments.readPaymentObject({ kind: 'refund', id: refund.id })).toEqual({ status: 'found', value: { kind: 'refund', object: refund } });
+    });
+    it('reads a refund cancelled at the processor as canceled, not failed, and refunds its amount again', async ({ skip }) => {
+      const { payments, charge, refundCancel } = await create();
+      if (!refundCancel) return skip('This provider cannot cancel a refund');
+      const intent = await payments.createCharge(charge);
+      await payments.confirmCharge(intent.id, { idempotencyKey: charge.idempotencyKey + ':confirm' });
+      refundCancel.holdNext();
+      const refund = await payments.refund({ chargeId: intent.id, amount: charge.amount, idempotencyKey: charge.idempotencyKey + ':refund' });
+      expect(refund).toMatchObject({ status: 'pending', amount: charge.amount });
+      refundCancel.cancel(refund.id);
+      const canceled = { ...refund, status: 'canceled' };
+      expect(await payments.readPaymentObject({ kind: 'refund', id: refund.id })).toEqual({ status: 'found', value: { kind: 'refund', object: canceled } });
+      expect(await payments.listRefunds(intent.id)).toEqual([canceled]);
+      expect(await payments.refund({ chargeId: intent.id, amount: charge.amount, idempotencyKey: charge.idempotencyKey + ':refund:again' }))
+        .toMatchObject({ status: 'succeeded', amount: charge.amount });
     });
     it('creates and expires setup mode; an unresolved expiry is uncertain', async () => {
       const { payments, checkout } = await create();

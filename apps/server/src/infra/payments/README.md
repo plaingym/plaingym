@@ -75,6 +75,15 @@ refunds, and refuses a mismatched parent. It never scans events or unrelated
 payment intents/disputes. Refunds can be refreshed individually with
 `readPaymentObject` before applying invoice transitions.
 
+Refund status is normalized to `succeeded`, `pending` (including
+`requires_action`), `failed`, or `canceled`. A canceled refund was cancelled at
+the processor before it completed, usually by staff in the dashboard; it is kept
+apart from `failed` so the app doesn't report it as a failure. Neither returns
+money, so `FakePayments` lets the charge be refunded again. `respondNextRefund`
+creates the next fake refund with another status (such as `pending`), and
+`setRefundStatus` moves a stored fake refund as a later processor report can: a
+pending one to any status, a successful one to `failed`.
+
 Dispute status is normalized to `open`, `won`, `lost`, or `closed`.
 `warning_closed`, legacy `charge_refunded`, and `prevented` map to `closed`,
 without claiming a win or loss. Consumers preserve terminal states on stale

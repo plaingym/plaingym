@@ -34,6 +34,7 @@
   "pending": "Pending",
   "succeeded": "Succeeded",
   "failed": "Failed",
+  "canceled": "Canceled",
   "recordCash": "Record cash or check",
   "chargeCard": "Charge saved card",
   "payLink": "Send or share pay link",

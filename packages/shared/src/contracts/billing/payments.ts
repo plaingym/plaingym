@@ -51,7 +51,9 @@ export const recordManualPaymentRequestSchema = moneySchema.extend({
   paidAt: instantSchema,
 });
 
-export const refundStatusSchema = z.enum(['pending', 'succeeded', 'failed']);
+export const refundStatusSchema = z.enum(['pending', 'succeeded', 'failed', 'canceled']);
+/** A failed or canceled refund returned nothing and never moves again, so its amount can be refunded again. */
+export const refundReleased = (refund: { readonly status: string }) => refund.status === 'failed' || refund.status === 'canceled';
 export const refundSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,

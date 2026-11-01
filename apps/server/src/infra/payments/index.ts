@@ -82,7 +82,9 @@ export interface Refund {
   readonly chargeId: string;
   readonly amount: number;
   readonly currency: string;
-  readonly status: 'succeeded' | 'pending' | 'failed';
+  /** canceled: someone cancelled it at the processor before it completed (never after success); failed: it was
+   * attempted and did not reach the payer. Neither returns money, and neither moves again. */
+  readonly status: 'succeeded' | 'pending' | 'failed' | 'canceled';
   readonly metadata: PaymentMetadata;
 }
 export interface Dispute {
@@ -244,6 +246,9 @@ function money(amount: number, currency: string): void {
   }
 }
 
+// The API contract's refundReleased; the payments module stays independent of the API contracts.
+const released = (refund: Refund) => refund.status === 'failed' || refund.status === 'canceled';
+
 /** The name an erased household's customer keeps at the provider. */
 export const ERASED_CUSTOMER_NAME = 'Erased member';
 
@@ -261,6 +266,7 @@ export class FakePayments implements Payments {
   readonly #idempotency = new Map<string, IdempotentRecord>();
   readonly #uncertain = new Set<string>();
   #confirmation: Confirmation | { error: unknown } = 'succeeded';
+  #nextRefund: Refund['status'] = 'succeeded';
   #loseResponse: 'createCustomer' | 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund' | undefined;
   #nextId = 0;
   readonly #customerCreationsInFlight = new Set<string>();
@@ -274,6 +280,8 @@ export class FakePayments implements Payments {
   respondNextConfirmation(result: Confirmation | { error: unknown }): void {
     this.#confirmation = result;
   }
+  /** The status the next new refund gets instead of succeeded, such as pending for one awaiting action. */
+  respondNextRefund(status: Refund['status']): void { this.#nextRefund = status; }
   /** Hold one create request so simultaneous uses of its key see the provider's conflict. */
   holdNextCustomerCreation(until: Promise<void>): void { this.#nextCustomerCreation = until; }
   loseNextResponse(operation: 'createCustomer' | 'createCharge' | 'confirmCharge' | 'createCheckout' | 'refund'): void {
@@ -593,7 +601,7 @@ export class FakePayments implements Payments {
           throw new Error('Only successful charges can be refunded');
         money(request.amount, charge.currency);
         const refunded = [...this.#refunds.values()]
-          .filter((refund) => refund.chargeId === charge.id && refund.status !== 'failed')
+          .filter((refund) => refund.chargeId === charge.id && !released(refund))
           .reduce((sum, refund) => sum + refund.amount, 0);
         if (refunded + request.amount > charge.amount) throw new Error('Refund exceeds charge');
         const refund: Refund = {
@@ -602,14 +610,26 @@ export class FakePayments implements Payments {
           amount: request.amount,
           currency: charge.currency,
           metadata: charge.metadata,
-          status: 'succeeded',
+          status: this.#nextRefund,
         };
+        this.#nextRefund = 'succeeded';
         this.#refunds.set(refund.id, refund);
         this.#record('refund', refund.id);
         return refund;
       },
     );
     return this.#reply('refund', result);
+  }
+  /** Moves a stored refund as the processor can later: a pending one to any status (a dashboard cancel), a successful
+   * one to failed. Failed and canceled are final. */
+  setRefundStatus(id: string, status: Refund['status']): Refund {
+    const refund = this.#refunds.get(id);
+    if (!refund) throw new Error('Unknown refund');
+    if (released(refund) || refund.status === 'succeeded' && status !== 'failed') throw new Error('Refund status cannot move');
+    const next = { ...refund, status };
+    this.#refunds.set(id, next);
+    this.#record('refund', id);
+    return structuredClone(next);
   }
   recordDispute(dispute: Dispute): void {
     if (!this.#charges.has(dispute.chargeId)) throw new Error('Unknown disputed charge');

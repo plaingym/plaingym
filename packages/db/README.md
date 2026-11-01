@@ -38,6 +38,8 @@ Migration `0014_portal_invitation_scope.sql` adds a nullable `scope` to `auth_ve
 (`payer` or `member`, checked), set only on portal invitation rows. It repeats 0013's guarded
 backfill for invitations still missing a column: those a process on the release before 0013 wrote
 after it ran (no gym, household or invitee), and those a process on the 0013 release wrote (no scope).
+Migration `0015_refund_canceled.sql` widens `refunds_status_check` to allow `canceled`, for a refund
+cancelled at the processor before it completed. Every existing row already satisfies the new check.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

@@ -33,7 +33,9 @@ are implemented here.
   after it succeeded (same processor ID) releases its amount, recomputes the
   invoice's refund status (back to partially refunded or paid) and notifies staff.
   Every processor refund that ends failed (first recorded failed, pending to failed,
-  or reversed) notifies staff once. Cash and check refunds never reverse. `invoice-transitions.contract.ts` runs the
+  or reversed) notifies staff once. A canceled refund (cancelled at the processor
+  before it completed, usually by staff) is final like a failed one and releases
+  its amount, but sends no notice. Cash and check refunds never reverse. `invoice-transitions.contract.ts` runs the
   same cancellation and refund cases against the fake and the real transitions.
 - `MemberHouseholdContext` accepts authenticated user/gym IDs and a selected
   household, then reloads the link. Payers may see the household; non-payers see
