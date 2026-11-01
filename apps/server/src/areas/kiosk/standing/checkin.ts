@@ -9,7 +9,7 @@ import {
 import { clock as defaultClock } from '../../../core/clock.js';
 import type { Uploads } from '../../../infra/storage/index.js';
 import { createKioskCheckinHelpers, type KioskMemberRow } from '../checkin.js';
-import type { KioskPinCheck } from '../devices.auth.js';
+import type { KioskPinCheck } from '../pin-check.js';
 import { verifyHouseholdPin, type HouseholdPinSecret } from '../../members/pin.js';
 import { createBillingStanding } from '../../billing/kiosk-standing.js';
 import { createStandingChecks, inactiveStanding, waiverStanding, type StandingChecks } from './standing.js';

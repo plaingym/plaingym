@@ -10,7 +10,7 @@ import type { MiddlewareHandler } from 'hono';
 import { createKioskDeviceService } from './devices.js';
 import { createKioskDeviceRoutes } from './devices.routes.js';
 import { createKioskAuthMiddleware, markKioskPinChecked, type KioskAuthOptions } from './devices.auth.js';
-import { createPinLimitAudit, pinLimitReachedAction } from './pin-limit.js';
+import { createPinLimitAudit, pinLimitReachedAction, type PinLimitReached } from './pin-limit.js';
 import { createApp } from '../../core/app.js';
 import { route } from '../../core/registry.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
@@ -39,6 +39,9 @@ async function checkPin(request: Request, name: string) {
   if (name === 'Nobody') return markKioskPinChecked(request, 'skipped');
   if (name === 'Broken') throw new AppError('unavailable', 'Kiosk PIN check-in is not configured');
   if (name === 'Silent') return;
+  // A wrong PIN followed by later reports of other outcomes in the same request.
+  if (name === 'Overwritten') { markKioskPinChecked(request, 'compared'); markKioskPinChecked(request, 'skipped'); return markKioskPinChecked(request, 'verified'); }
+  if (name === 'SlowWrong') { verificationStarted?.(); await verificationGate; return markKioskPinChecked(request, 'compared'); }
   if (name !== 'Verified') return markKioskPinChecked(request, 'compared');
   verificationStarted?.(); await verificationGate;
   markKioskPinChecked(request, 'verified');
@@ -183,6 +186,59 @@ describe('kiosk authentication middleware', () => {
     for (let i = 0; i < 2; i++) expect((await request(app, kioskContracts.lookup.path, token, { ...pinBody, name: 'Silent' })).status).toBe(200);
     expect(pinLimitReached).toHaveBeenCalledTimes(1);
     expect((await request(app)).status).toBe(429);
+  });
+  it('keeps a wrong PIN counted when a later report in the same request says skipped or verified', async () => {
+    const pinLimitReached = vi.fn(async () => {});
+    const { app } = server({ pinLimit: 1, pinLimitReached });
+    expect((await request(app, kioskContracts.lookup.path, token, { ...pinBody, name: 'Overwritten' })).status).toBe(200);
+    expect(pinLimitReached).toHaveBeenCalledTimes(1);
+    expect((await request(app)).status).toBe(429);
+  });
+  it('ignores the failure of a request whose bucket was evicted meanwhile, leaving no report for it', async () => {
+    const pinLimitReached = vi.fn(async () => {});
+    let peer = '192.0.2.70';
+    const { app } = server({ pinLimit: 1, maxBuckets: 2, pinLimitReached, peerAddress: () => peer });
+    let release!: () => void;
+    verificationGate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const slow = request(app, bodies[0][0], token, { ...pinBody, name: 'SlowWrong' });
+    try {
+      await started;
+      // Another device at another address needs room in the full table, so it evicts the slow request's buckets.
+      peer = '192.0.2.71';
+      expect((await request(app, bodies[0][0], secondToken, { ...pinBody, name: 'Nobody' })).status).toBe(200);
+    } finally { release(); verificationStarted = undefined; verificationGate = undefined; }
+    expect((await slow).status).toBe(200);
+    expect(pinLimitReached).not.toHaveBeenCalled();
+  });
+  it('does not report a used-up budget for a wrong PIN that settles after its window ended', async () => {
+    const pinLimitReached = vi.fn(async () => {});
+    const { app } = server({ pinLimit: 1, pinLimitReached, peerAddress: () => '192.0.2.80' });
+    let release!: () => void;
+    verificationGate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const slow = request(app, bodies[0][0], token, { ...pinBody, name: 'SlowWrong' });
+    try { await started; clock.advance(60_000); } finally { release(); verificationStarted = undefined; verificationGate = undefined; }
+    expect((await slow).status).toBe(200);
+    expect(pinLimitReached).not.toHaveBeenCalled();
+  });
+  it('reports a device and an address budget that run out together with their own window ends', async () => {
+    const register = (name: string) => service.register({ gymId: gymA, actor: { kind: 'system' } }, { name });
+    const first = await register('Early device'), second = await register('Late device');
+    const pinLimitReached = vi.fn(async (_event: PinLimitReached) => {});
+    let peer = '203.0.113.1';
+    const { app } = server({ pinLimit: 2, pinLimitReached, peerAddress: () => peer });
+    const start = clock.now().getTime();
+    expect((await request(app, bodies[0][0], first.token)).status).toBe(200);
+    clock.advance(30_000);
+    peer = '203.0.113.2';
+    expect((await request(app, bodies[0][0], second.token)).status).toBe(200);
+    // The first device's window ends 60 s after its first guess, the new address's 30 s later.
+    expect((await request(app, bodies[0][0], first.token)).status).toBe(200);
+    expect(pinLimitReached.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ budgets: ['device'], windowEndsAt: new Date(start + 60_000) }),
+      expect.objectContaining({ budgets: ['address'], windowEndsAt: new Date(start + 90_000) })]);
+    clock.advance(60_000);
   });
   it('reserves in-flight attempts so concurrent requests cannot bypass the PIN limit', async () => {
     const { app } = server({ pinLimit: 1 });

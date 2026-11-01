@@ -6,19 +6,16 @@ import type { RequestEnvironment } from '../../core/context.js';
 import { logError } from '../../core/log.js';
 import { clientIp, clientKey, RateBuckets, type ClientIpOptions } from '../../core/rate-limit.js';
 import { createKioskDeviceService } from './devices.js';
+import type { KioskPinCheck } from './pin-check.js';
 import { createPinLimitAudit, type PinBudget, type PinLimitReached } from './pin-limit.js';
 
 const checkins = [kioskContracts.lookup, kioskContracts.checkinNamePin, kioskContracts.checkinQr];
 const pinPaths = new Set<string>([kioskContracts.lookup.path, kioskContracts.checkinNamePin.path]);
-/**
- * What the check-in service learned of a PIN guess: `skipped` when no household or too many matched the name, so no
- * PIN was compared; `compared` for a wrong PIN; `verified` when it matched exactly one household.
- */
-export type KioskPinCheck = 'skipped' | 'compared' | 'verified';
 const pinAttempts = new WeakMap<Request, { check?: KioskPinCheck }>();
+/** A wrong PIN stays reported: a later report in the same request never clears it. */
 export function markKioskPinChecked(request: Request, check: KioskPinCheck): void {
   const attempt = pinAttempts.get(request);
-  if (attempt) attempt.check = check;
+  if (attempt && attempt.check !== 'compared') attempt.check = check;
 }
 export interface KioskAuthOptions extends ClientIpOptions {
   readonly service?: ReturnType<typeof createKioskDeviceService>;
@@ -86,14 +83,18 @@ export function createKioskAuthMiddleware(options: KioskAuthOptions = {}): Middl
             if (--bucket.count === 0) buckets.delete(key);
           }
         } else {
-          // The device and the shared address budget are each reported once per window, in one event when both run out together.
-          const reached = reservations.filter(({ bucket }) => ++bucket.failures >= limit && !bucket.reported);
+          // The device and the shared address budget are each reported once per window, in one event when both run out together
+          // and their windows end together. A bucket evicted, replaced or expired mid-request has no live window to add to.
+          const occurredAt = current.clock.now();
+          const reached = reservations.filter(({ key, bucket }) => buckets.holds(key, bucket) && bucket.resetAt > occurredAt.getTime()
+            && ++bucket.failures >= limit && !bucket.reported);
           for (const { bucket } of reached) bucket.reported = true;
           // Recording is best effort: it never changes the answer the kiosk gets.
-          if (reached.length) await pinLimitReached({ gymId: principal.gymId, deviceId: principal.deviceId, limit,
-            budgets: reached.map(({ budget }) => budget), occurredAt: current.clock.now(),
-            windowEndsAt: new Date(Math.max(...reached.map(({ bucket }) => bucket.resetAt))) })
-            .catch((error: unknown) => logError('kiosk.pin_limit.audit_failed', { gymId: principal.gymId }, error));
+          await Promise.all([...new Set(reached.map(({ bucket }) => bucket.resetAt))].map((resetAt) =>
+            pinLimitReached({ gymId: principal.gymId, deviceId: principal.deviceId, limit,
+              budgets: reached.filter(({ bucket }) => bucket.resetAt === resetAt).map(({ budget }) => budget),
+              occurredAt, windowEndsAt: new Date(resetAt) })
+              .catch((error: unknown) => logError('kiosk.pin_limit.audit_failed', { gymId: principal.gymId }, error))));
         }
       }
       return;
