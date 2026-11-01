@@ -15,6 +15,7 @@ import { useShellServices, bootstrapKey } from '../../app/context.js';
 import { createRegistries } from '../../lib/registries.js';
 import { setupClient, type createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
+import { hostTimezone } from './host-timezone.js';
 
 type Client = ReturnType<typeof createSetupClient>;
 const key = ['setup', 'status'];
@@ -130,7 +131,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         {step === 2 && <Form action={async (data) => {
           await client.call('gym', { name: text(data, 'gymName'), timezone: text(data, 'timezone'), currency: text(data, 'currency').toUpperCase(),
             address: text(data, 'address').trim() ? { line1: text(data, 'address').trim() } : {}, branding: { logoKey: null, primaryColor: text(data, 'primaryColor') || null }, revision }); await refresh();
-        }}><Field name="gymName" /><Field name="timezone" value={Intl.DateTimeFormat().resolvedOptions().timeZone} />
+        }}><Field name="gymName" /><Field name="timezone" value={hostTimezone()} />
           <Field name="currency" value="USD" maxLength={3} /><Field name="address" required={false} /><Field name="primaryColor" type="color" value="#2563eb" /></Form>}
         {step === 3 && <Form action={async (data) => {
           const selected = data.getAll('packs').map(String);

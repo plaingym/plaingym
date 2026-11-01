@@ -152,6 +152,29 @@ describe('setup wizard', () => {
     const call = blank.fetcher.mock.calls.find(([path]) => path === '/api/setup/gym');
     expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ address: {} });
   });
+  describe('timezone field', () => {
+    const real = Intl.DateTimeFormat;
+    // Only the zone the no-argument call reports is replaced; the formatter is otherwise real, as are those the gym timezone schema builds.
+    let spy: { mockRestore: () => void } | undefined;
+    const hostZone = (timeZone: string | undefined) => {
+      spy = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (...args: unknown[]) {
+        const formatter = new (real as unknown as new (...a: unknown[]) => Intl.DateTimeFormat)(...args);
+        if (args.length) return formatter;
+        const options = formatter.resolvedOptions();
+        return Object.assign(formatter, { resolvedOptions: () => ({ ...options, timeZone: timeZone as string }) });
+      } as unknown as typeof Intl.DateTimeFormat);
+    };
+    afterEach(() => spy?.mockRestore());
+    it.each([
+      ['uses a valid host zone', 'America/Vancouver', 'America/Vancouver'],
+      ['falls back to UTC when the host reports no zone', undefined, 'UTC'],
+      ['falls back to UTC when the host zone is unknown', 'Mars/Olympus_Mons', 'UTC'],
+    ])('%s', async (_name, zone, expected) => {
+      hostZone(zone);
+      start(2);
+      expect(((await screen.findByLabelText('IANA timezone')) as HTMLInputElement).value).toBe(expected);
+    });
+  });
   it('returns from step 8 to the backup step when backups were deferred', async () => {
     start(7);
     await userEvent.click(await screen.findByRole('button', { name: 'Set up later' }));
