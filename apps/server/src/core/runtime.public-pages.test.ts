@@ -123,7 +123,7 @@ it('shows the chosen drop-in charge type at its current price on the public conf
   expect(await dropInFee()).toBeNull();
   try {
     await choose(mat.id);
-    expect(await dropInFee()).toEqual({ amountCents: 2500, currency: 'USD' });
+    expect(await dropInFee()).toEqual({ amountCents: 2500, currency: 'USD', plusTax: false });
   } finally { await choose(null); }
   expect(await dropInFee()).toBeNull();
 });

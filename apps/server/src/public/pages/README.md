@@ -54,6 +54,8 @@ Failed or abandoned admissions remain prospects for staff review; they grant no
 portal access or membership. No payment provider, invoice or card operation runs.
 The fee is informational and is collected by staff as a one-off charge. If no fee
 is configured, the page directs the visitor to ask the gym; it never assumes zero.
+The price is the charge type's catalog price, followed by "+ tax" when a tax rate
+attached to it is active, exclusive and above zero (`plusTax`); no total or tax amount is shown.
 
 Submission and upload budgets are separate, each ten per gym/IP per fifteen
 minutes, shared across JSON/native forms, enforced before validation. They use the

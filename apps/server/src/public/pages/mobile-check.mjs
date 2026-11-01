@@ -23,7 +23,7 @@ const templates = [{ id: '01900000-0000-7000-8000-000000000002', name: 'Particip
   body: 'Read these terms before training.\n' + 'LongWord'.repeat(40), retiredAt: null, createdAt: '2026-10-29T12:00:00Z' }];
 const calls = [];
 const service = {
-  async config() { return { data: { gym: { name: 'North Community Academy', revision: 1, logoKey: null, primaryColor: '#ffff00' }, dropInFee: { amountCents: 2500, currency: 'CAD' } } }; },
+  async config() { return { data: { gym: { name: 'North Community Academy', revision: 1, logoKey: null, primaryColor: '#ffff00' }, dropInFee: { amountCents: 2500, currency: 'CAD', plusTax: true } } }; },
   async required() { return templates; },
   async trial(_gym, body) { calls.push({ kind: 'trial', body }); return { data: { status: 'received' } }; },
   async admit(_gym, body) { calls.push({ kind: 'admit', body }); return { data: body.signatures.map(s => ({ templateId: s.templateId, templateVersion: s.templateVersion,

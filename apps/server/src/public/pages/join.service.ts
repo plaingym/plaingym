@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { createGymSettingsAccessor, createSettingsService } from '../../areas/settings/settings.js';
+import { addsTaxOnTop } from '../../areas/settings/drop-in-fee.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { needsGuardian, validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
@@ -69,9 +70,21 @@ function invalid(message: string): never { throw new AppError('invalid_request',
 function changed(): never { throw new AppError('conflict', 'Review the current membership and waivers before submitting'); }
 const snapshot = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, ...row }: typeof memberships.$inferSelect) => c.membershipSchema.parse({ ...row,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null });
-const plan = (row: typeof plans.$inferSelect) => c.publicPlanSchema.parse({ id: row.id, name: row.name, amountCents: row.amountCents,
-  currency: row.currency, interval: row.interval, signupFeeCents: row.signupFeeCents, trialDays: row.trialDays,
+const plan = (row: typeof plans.$inferSelect, plusTax: boolean) => c.publicPlanSchema.parse({ id: row.id, name: row.name, amountCents: row.amountCents,
+  currency: row.currency, interval: row.interval, plusTax, signupFeeCents: row.signupFeeCents, trialDays: row.trialDays,
   commitmentMonths: row.commitmentMonths, revision: row.revision });
+/**
+ * The plans among `ids` that invoicing adds tax to: an attached rate that is exclusive and above zero. Every
+ * attached rate counts, archived or not, as the join and cycle invoices read `plan_tax_rates` without filtering
+ * them. The first period and the sign-up fee share these rates.
+ */
+async function plansPlusTax(tx: Transaction, ids: readonly string[]) {
+  if (!ids.length) return new Set<string>();
+  const rows = await tx.selectDistinct({ planId: planTaxRates.planId }).from(planTaxRates)
+    .innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId))
+    .where(and(inArray(planTaxRates.planId, [...ids]), addsTaxOnTop));
+  return new Set(rows.map(row => row.planId));
+}
 /** Plans a visitor can pay for now: a trial or a free first period has no Checkout payment to collect. */
 const joinable = (currency: string) => and(eq(plans.active, true), eq(plans.trialDays, 0), gt(plans.amountCents, 0), eq(plans.currency, currency));
 async function recorded<T extends z.ZodType>(tx: Transaction, action: string, householdId: string, schema: T): Promise<z.infer<T> | null> {
@@ -98,10 +111,16 @@ export function createJoinService(options: JoinOptions) {
     if (contact.name.length > 200 || contact.email.length > 254 || (contact.phone?.length ?? 0) > 100
       || people.some(p => p.dateOfBirth > today || p.firstName.length > 200 || p.lastName.length > 200)) invalid('Invalid applicant');
   }
-  async function joinablePlan(gymId: string, planId: string) {
+  /** The plan row when it can be paid for online; a submission needs no tax lookup. */
+  async function joinableRow(gymId: string, planId: string) {
     const gym = await settings.get(gymId);
     const [row] = await scope(gymId, tx => tx.select().from(plans).where(and(eq(plans.id, planId), joinable(gym.currency))));
-    return row ? plan(row) : missing();
+    return row ?? missing();
+  }
+  /** The plan as the join page shows it, with whether invoicing adds tax on top. */
+  async function joinablePlan(gymId: string, planId: string) {
+    const row = await joinableRow(gymId, planId);
+    return scope(gymId, async tx => plan(row, (await plansPlusTax(tx, [row.id])).has(row.id)));
   }
   /** Billing on, a payment provider, and one to eight current documents, all before anything is written. */
   async function ready(gymId: string) {
@@ -237,7 +256,8 @@ export function createJoinService(options: JoinOptions) {
       return scope(gymId, async tx => {
         const where = joinable(gym.currency), total = await tx.$count(plans, where);
         const rows = await tx.select().from(plans).where(where).orderBy(asc(plans.name), asc(plans.id)).limit(query.limit).offset(query.offset);
-        return c.publicPlanListResponseSchema.parse({ data: rows.map(plan), pagination: { ...query, total } });
+        const taxed = await plansPlusTax(tx, rows.map(row => row.id));
+        return c.publicPlanListResponseSchema.parse({ data: rows.map(row => plan(row, taxed.has(row.id))), pagination: { ...query, total } });
       });
     },
     async branding(gymId: string) {
@@ -248,7 +268,7 @@ export function createJoinService(options: JoinOptions) {
     async admit(gymId: string, body: unknown, timezone: string) {
       const input = joinAdmissionSchema.parse(body);
       applicants(input.contact, input.members.map(m => m.member), timezone);
-      await joinablePlan(gymId, input.planId);
+      await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.signatures));
       const images = input.members.map(m => m.signatures.map(s => Buffer.from(s.pngBase64, 'base64')));
@@ -281,7 +301,7 @@ export function createJoinService(options: JoinOptions) {
       const input = c.publicJoinRequestSchema.parse(body);
       if (input.members.length > maxJoinMembers) invalid('Too many members');
       applicants(input.contact, input.members.map(m => m.member), timezone);
-      await joinablePlan(gymId, input.planId);
+      await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.waivers));
       const found = await admission(gymId, input), today = found.joinedOn;

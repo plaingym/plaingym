@@ -26,7 +26,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
 }
 export interface IntakePageInput {
   kind: 'trial' | 'drop-in'; gym: PublicBranding; t: Translator; templates?: WaiverTemplate[];
-  dropInFee: { amountCents: number; currency: string } | null; locale?: string;
+  dropInFee: { amountCents: number; currency: string; plusTax: boolean } | null; locale?: string;
   state?: 'received' | 'failed' | 'unavailable';
 }
 export function intakePage(input: IntakePageInput) {
@@ -35,7 +35,7 @@ export function intakePage(input: IntakePageInput) {
     h('label', { for: name, class: 'block space-y-1' }, text(label),
       h('input', { id: name, name, type, required, autocomplete, maxlength: max, class: inputClass }));
   const fee = input.kind === 'drop-in' ? h('p', { class: 'font-semibold' }, input.dropInFee
-    ? text('fee', { amount: new Intl.NumberFormat(input.locale ?? 'en', { style: 'currency', currency: input.dropInFee.currency }).format(input.dropInFee.amountCents / 100) }) : text('feeUnknown')) : null;
+    ? text(input.dropInFee.plusTax ? 'feePlusTax' : 'fee', { amount: new Intl.NumberFormat(input.locale ?? 'en', { style: 'currency', currency: input.dropInFee.currency }).format(input.dropInFee.amountCents / 100) }) : text('feeUnknown')) : null;
   const content = h('section', { class: 'space-y-4' }, fee,
     input.state ? h('section', { class: panel, role: 'status' }, h('p', null, text(input.state === 'received' ? 'receivedBody' : input.state)))
       : h('form', { method: 'post', action: '/' + input.kind, enctype: input.kind === 'drop-in' ? 'multipart/form-data' : 'application/x-www-form-urlencoded',

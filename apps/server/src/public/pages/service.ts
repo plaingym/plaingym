@@ -25,7 +25,7 @@ export interface PublicPagesOptions {
   settings?: Pick<ReturnType<typeof createSettingsService>, 'get'>;
   waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign'>;
   uploadsFor?: (gymId: string) => Promise<Uploads>;
-  dropInFeeFor?: (gymId: string) => Promise<{ amountCents: number; currency: string } | null>;
+  dropInFeeFor?: (gymId: string) => Promise<{ amountCents: number; currency: string; plusTax: boolean } | null>;
   /** Called after the intake commits, with identifiers only; the runtime queues the staff notice. */
   notifyStaff: (gymId: string, intake: { kind: 'trial' | 'drop-in'; memberId: string }) => Promise<void>;
 }

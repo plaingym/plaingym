@@ -36,7 +36,7 @@ describe('core public page contracts', () => {
     for (const field of ['paymentMethodId', 'amountCents', 'checkoutSessionId']) {
       expect(publicDropInRequestSchema.safeParse({ ...dropIn, [field]: 'secret' }).success).toBe(false);
     }
-    expect(publicPageConfigResponseSchema.parse({ data: { gym: { name: 'Academy', revision: 1, logoKey: null, primaryColor: '#123456' }, dropInFee: { amountCents: 2000, currency: 'CAD' } } }).data.dropInFee?.amountCents).toBe(2000);
+    expect(publicPageConfigResponseSchema.parse({ data: { gym: { name: 'Academy', revision: 1, logoKey: null, primaryColor: '#123456' }, dropInFee: { amountCents: 2000, currency: 'CAD', plusTax: true } } }).data.dropInFee?.plusTax).toBe(true);
   });
   it('uses exactly the same neutral acknowledgement for all three submissions', () => {
     const acknowledgement = { data: { status: 'received' } };
@@ -50,13 +50,14 @@ describe('core public page contracts', () => {
     }
   });
   it('exposes public plans with currency and revision, with no processor configuration', () => {
-    const plan = { id, name: 'Monthly', amountCents: 10000, currency: 'CAD', interval: 'monthly', signupFeeCents: 0, trialDays: 7, commitmentMonths: null, revision: 1 };
+    const plan = { id, name: 'Monthly', amountCents: 10000, currency: 'CAD', interval: 'monthly', plusTax: false, signupFeeCents: 0, trialDays: 7, commitmentMonths: null, revision: 1 };
     expect(publicPlanSchema.safeParse(plan).success).toBe(true);
     expect(publicPlanSchema.safeParse({ ...plan, currency: 'cad' }).success).toBe(false);
     expect(publicPlanSchema.safeParse({ ...plan, amountCents: 1.5 }).success).toBe(false);
     expect(publicPlanSchema.safeParse({ ...plan, processorId: 'price_fake' }).success).toBe(false);
     expect(publicPlanSchema.safeParse({ ...plan, commitmentMonths: 0 }).success).toBe(false);
-    expectTypeOf<Exclude<keyof PublicPlan, keyof typeof plans.$inferSelect>>().toEqualTypeOf<never>();
+    expectTypeOf<Exclude<keyof PublicPlan, keyof typeof plans.$inferSelect>>().toEqualTypeOf<'plusTax'>();
+    expect(publicPlanSchema.safeParse({ ...plan, plusTax: undefined }).success).toBe(false);
     expectTypeOf<Pick<PublicPlan, 'id' | 'name' | 'amountCents' | 'currency' | 'signupFeeCents' | 'trialDays' | 'commitmentMonths' | 'revision'>>().toEqualTypeOf<Pick<typeof plans.$inferSelect, 'id' | 'name' | 'amountCents' | 'currency' | 'signupFeeCents' | 'trialDays' | 'commitmentMonths' | 'revision'>>();
   });
   it('makes anonymous access explicit for each core public endpoint', () => {

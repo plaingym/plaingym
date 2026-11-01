@@ -14,6 +14,8 @@ export const publicBrandingSchema = z.strictObject({
 export const publicPlanSchema = z.strictObject({
   id: idSchema, name: z.string().min(1), amountCents: amountCentsSchema.nonnegative(),
   currency: currencySchema, interval: z.enum(['monthly', 'annual']),
+  // True when invoicing adds tax on top of the price and sign-up fee: the page says "+ tax" beside them.
+  plusTax: z.boolean(),
   signupFeeCents: amountCentsSchema.nonnegative(), trialDays: z.int32().nonnegative(),
   commitmentMonths: z.int32().positive().nullable(), revision: revisionSchema,
 });
@@ -22,7 +24,7 @@ export const publicWaiverTemplatesResponseSchema = listResponseSchema(waiverTemp
 export const publicPageConfigResponseSchema = z.strictObject({ data: z.strictObject({
   gym: publicBrandingSchema,
   // No processor IDs or payment controls: the mat fee is paid at the front desk.
-  dropInFee: z.strictObject({ amountCents: amountCentsSchema.nonnegative(), currency: currencySchema }).nullable(),
+  dropInFee: z.strictObject({ amountCents: amountCentsSchema.nonnegative(), currency: currencySchema, plusTax: z.boolean() }).nullable(),
 }) });
 export const publicApplicantSchema = z.strictObject({
   firstName: z.string().trim().min(1), lastName: z.string().trim().min(1), dateOfBirth: dateSchema,

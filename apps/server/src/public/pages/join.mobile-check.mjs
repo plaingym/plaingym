@@ -23,8 +23,8 @@ const css = await readFile(new URL('styles.css', output), 'utf8');
 const gymId = '01900000-0000-7000-8000-000000000001', linkId = '01900000-0000-7000-8000-000000000009';
 const gym = { name: 'North Community Academy', revision: 1, logoKey: null, primaryColor: '#ffff00' };
 const plans = [
-  { id: '01900000-0000-7000-8000-000000000004', name: 'Adult unlimited monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', signupFeeCents: 5000, trialDays: 0, commitmentMonths: 12, revision: 1 },
-  { id: '01900000-0000-7000-8000-000000000005', name: 'Youth annual', amountCents: 90000, currency: 'CAD', interval: 'annual', signupFeeCents: 0, trialDays: 0, commitmentMonths: null, revision: 1 },
+  { id: '01900000-0000-7000-8000-000000000004', name: 'Adult unlimited monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', plusTax: true, signupFeeCents: 5000, trialDays: 0, commitmentMonths: 12, revision: 1 },
+  { id: '01900000-0000-7000-8000-000000000005', name: 'Youth annual', amountCents: 90000, currency: 'CAD', interval: 'annual', plusTax: false, signupFeeCents: 0, trialDays: 0, commitmentMonths: null, revision: 1 },
 ];
 const templates = ['Participation waiver', 'Code of conduct'].map((name, i) => ({ id: `01900000-0000-7000-8000-00000000000${i + 2}`, name, kind: 'waiver', version: 1,
   body: 'Read these terms before training.\n' + 'LongWord'.repeat(40), retiredAt: null, createdAt: '2026-10-29T12:00:00Z' }));

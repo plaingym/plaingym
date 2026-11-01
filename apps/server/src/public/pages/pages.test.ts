@@ -42,7 +42,7 @@ async function fixture(demo = false) {
   const notices: { gymId: string; kind: string; memberId: string }[] = [];
   const service = configurePublicPages({ scope: db.forGym, clock, waivers, uploadsFor,
     settings: createSettingsService({ scope: db.forGym, clock }), stylesheet: async () => '/* shared css */',
-    dropInFeeFor: async id => id === gymId ? { amountCents: 2500, currency: 'CAD' } : null,
+    dropInFeeFor: async id => id === gymId ? { amountCents: 2500, currency: 'CAD', plusTax: false } : null,
     notifyStaff: async (id, intake) => { notices.push({ gymId: id, kind: intake.kind, memberId: intake.memberId }); } });
   const app = (resolved = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ skipSetup: true, clock, authorize,
     contributions: areaContributions, origin, rateLimit: { limit: 10_000 },
@@ -88,7 +88,7 @@ describe('core public pages through the production registrations', () => {
     expect((await f.server.request(origin + '/public/pages/logo/2')).status).toBe(404);
     expect(await (await f.server.request(origin + '/trial')).text()).toContain('src="/public/pages/logo/1"');
     const config = await (await f.server.request(origin + '/api/public/config')).json();
-    expect(publicContracts.config.response.parse(config).data.dropInFee).toEqual({ amountCents: 2500, currency: 'CAD' });
+    expect(publicContracts.config.response.parse(config).data.dropInFee).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
     const page = await (await f.server.request(origin + '/api/public/waivers?limit=1&offset=1')).json();
     expect(publicContracts.waivers.response.parse(page).pagination).toEqual({ limit: 1, offset: 1, total: 2 });
     expect(JSON.stringify(config)).not.toMatch(/stripe|smtp|billingEnabled/);

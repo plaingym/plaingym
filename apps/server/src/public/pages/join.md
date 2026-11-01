@@ -2,7 +2,10 @@
 # Public join
 
 `/join` lists the plans a visitor can pay for online: active plans in the gym's
-currency with a price and no free trial. Choosing one opens a form for the
+currency with a price and no free trial. A plan's price and sign-up fee are shown
+as listed, followed by "+ tax" when a tax rate attached to the plan is exclusive and
+above zero (`plusTax`), whether or not the rate is archived, as the invoices apply
+every attached rate; no total is shown. Choosing one opens a form for the
 payer's contact details and one to six people, each signing every current
 document (a parent or legal guardian signs for anyone under 18). It works with
 the website module off, keeps the shared public layout, `t()` strings and the

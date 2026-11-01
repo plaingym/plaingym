@@ -5,7 +5,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
-import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, members, memberships, paymentMethods, signedLinks,
+import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, members, memberships, paymentMethods, plans, signedLinks,
   waiverSignatures, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -170,7 +170,7 @@ describe('public join pages through the production registrations', () => {
   it('lists only plans payable online, renders the join form with the website off, and projects nothing from another gym', async () => {
     const f = await fixture(), list = await f.get('/join'), html = await list.text();
     expect(list.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;'); expect(html).toContain('href="/source"');
-    expect(html).toContain('Adult monthly'); expect(html).toContain('Annual'); expect(html).toContain('$150.00 per month'); expect(html).toMatch(/Sign-up fee: [A-Z]*\$50\.00/);
+    expect(html).toContain('Adult monthly'); expect(html).toContain('Annual'); expect(html).toContain('$150.00\u00a0+\u00a0tax per month'); expect(html).toMatch(/Sign-up fee: [A-Z]*\$50\.00\u00a0\+\u00a0tax/);
     for (const hidden of ['Trial plan', 'Free plan', 'Retired plan', 'Private other plan', 'Private']) expect(html).not.toContain(hidden);
     expect(list.headers.get('content-security-policy')).toContain("form-action 'self'"); expect(list.headers.get('cache-control')).toBe('no-store');
     const form = await (await f.get(`/join?plan=${f.plan.id}&members=2`)).text();
@@ -189,6 +189,52 @@ describe('public join pages through the production registrations', () => {
     expect((await f.get('/join/client.js')).headers.get('content-type')).toContain('text/javascript');
     f.paymentsConfigured.mockResolvedValue(false);
     expect(await (await f.get('/join')).text()).toContain('Online joining is not available right now');
+  });
+
+  it('says "+ tax" beside a plan price and sign-up fee only when invoicing adds tax on top, with this gym\'s rates alone', async () => {
+    const f = await fixture(), noteFor = (html: string, name: string) => {
+      const item = html.split('<li').find(part => part.includes(`>${name}</h2>`)) ?? '';
+      return { month: item.match(/\$[\d,.]+(\u00a0\+\u00a0tax)? per month/)?.[0], fee: item.match(/Sign-up fee: [A-Z]*\$[\d,.]+(\u00a0\+\u00a0tax)?/)?.[0] };
+    };
+    const tax = (name: string, rateMillionths: number, inclusive: boolean, active = true) => factory('taxRates', f.gymId, { name, rateMillionths, inclusive, active });
+    const planWith = async (name: string, rates: { id: string }[]) => {
+      const row = await factory('plans', f.gymId, { name, amountCents: 8000, currency: 'CAD', interval: 'monthly', signupFeeCents: 2000 });
+      for (const rate of rates) await factory('planTaxRates', f.gymId, { planId: row.id, taxRateId: rate.id });
+      return row;
+    };
+    const inclusive = await tax('QST included', 99_750, true), exclusive = await tax('PST', 70_000, false);
+    await planWith('Plain', []);
+    await planWith('Inclusive only', [inclusive]);
+    const both = await planWith('Both rates', [inclusive, exclusive]);
+    // Invoicing reads every attached rate, archived or not, so an archived exclusive rate still adds tax.
+    await planWith('Archived exclusive', [await tax('Old PST', 70_000, false, false)]);
+    // A zero rate adds nothing to the invoice, so the page has nothing to announce.
+    await planWith('Zero rate', [await tax('Zero', 0, false)]);
+    await factory('plans', f.otherGym, { name: 'Plain', amountCents: 8000, currency: 'CAD', signupFeeCents: 2000 });
+    const html = await (await f.get('/join')).text();
+    const plus = '\u00a0+\u00a0tax';
+    expect(noteFor(html, 'Plain')).toEqual({ month: '$80.00 per month', fee: expect.stringMatching(/^Sign-up fee: [A-Z]*\$20\.00$/) });
+    expect(noteFor(html, 'Inclusive only').month).toBe('$80.00 per month');
+    expect(noteFor(html, 'Inclusive only').fee).not.toContain('tax');
+    expect(noteFor(html, 'Both rates').month).toBe(`$80.00${plus} per month`);
+    expect(noteFor(html, 'Both rates').fee).toMatch(/\$20\.00\u00a0\+\u00a0tax$/);
+    expect(noteFor(html, 'Archived exclusive').month).toBe(`$80.00${plus} per month`);
+    expect(noteFor(html, 'Zero rate').month).toBe('$80.00 per month');
+    expect(noteFor(html, 'Annual').month).toBeUndefined();
+    expect(html).toContain('$1,500.00 per year'); expect(html).not.toContain('$1,500.00' + plus);
+    // The form's summary and the API carry the same flag.
+    const form = await (await f.get(`/join?plan=${both.id}`)).text();
+    expect(form).toContain(`$80.00${plus} per month`); expect(form).toMatch(/Sign-up fee: [A-Z]*\$20\.00\u00a0\+\u00a0tax/);
+    const api = publicContracts.plans.response.parse(await (await f.get('/api/public/plans?limit=100&offset=0')).json());
+    expect(Object.fromEntries(api.data.map(p => [p.name, p.plusTax]))).toEqual({ 'Adult monthly': true, Annual: false, Plain: false,
+      'Inclusive only': false, 'Both rates': true, 'Archived exclusive': true, 'Zero rate': false });
+    // The other gym's exclusive rate on its own plan leaves this gym's plain plan alone, and shows only on its page.
+    const foreignRate = await factory('taxRates', f.otherGym, { name: 'Other GST', rateMillionths: 50_000, inclusive: false });
+    const [foreign] = await db.forGym(f.otherGym, tx => tx.select().from(plans).where(eq(plans.name, 'Plain')));
+    await factory('planTaxRates', f.otherGym, { planId: foreign!.id, taxRateId: foreignRate.id });
+    expect(noteFor(await (await f.get('/join')).text(), 'Plain').month).toBe('$80.00 per month');
+    const otherApi = publicContracts.plans.response.parse(await (await f.get('/api/public/plans', '', f.app(f.otherGym))).json());
+    expect(Object.fromEntries(otherApi.data.map(p => [p.name, p.plusTax]))).toEqual({ Plain: true, 'Private other plan': false });
   });
 
   it('activates a family only through the paid Checkout webhook, bills on the join-date anniversary and creates the portal login by email proof', async () => {

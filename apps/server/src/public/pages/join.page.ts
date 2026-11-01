@@ -19,8 +19,9 @@ function layout(input: JoinPageInput, title: string, content: ReturnType<typeof 
 }
 function price(input: JoinPageInput, plan: PublicPlan) {
   const text = joinText(input.t);
-  return [h('p', { class: 'font-semibold' }, text(plan.interval, { amount: money(plan.amountCents, plan.currency, input.locale) })),
-    plan.signupFeeCents ? h('p', null, text('signupFee', { amount: money(plan.signupFeeCents, plan.currency, input.locale) })) : null,
+  const tax = plan.plusTax ? 'PlusTax' : '';
+  return [h('p', { class: 'font-semibold' }, text(plan.interval + tax, { amount: money(plan.amountCents, plan.currency, input.locale) })),
+    plan.signupFeeCents ? h('p', null, text('signupFee' + tax, { amount: money(plan.signupFeeCents, plan.currency, input.locale) })) : null,
     plan.commitmentMonths ? h('p', null, text('commitment', { months: plan.commitmentMonths })) : null];
 }
 /** Plans a visitor can join online, or where to turn when online joining is off. */

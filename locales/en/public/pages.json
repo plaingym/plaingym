@@ -5,6 +5,7 @@
   "trialHelp": "Tell us who will be training. Our team will contact you to arrange a trial.",
   "drop-inHelp": "Complete the waivers before your visit. Pay the mat fee at the front desk when you arrive.",
   "fee": "Drop-in mat fee: {amount}",
+  "feePlusTax": "Drop-in mat fee: {amount}\u00a0+\u00a0tax",
   "feeUnknown": "Contact the gym to confirm the mat fee before visiting.",
   "firstName": "Participant first name",
   "lastName": "Participant last name",

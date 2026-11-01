@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, chargeTypes, gyms, uuidv7 } from '@plaingym/db';
+import { auditEvents, chargeTypes, gyms, taxRates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { gymSettingsResponseSchema, publicContracts } from '@plaingym/shared/contracts';
@@ -80,12 +80,12 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     const [audit] = await database.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.drop_in.updated')));
     expect(audit).toMatchObject({ actorKind: 'user', targetType: 'gym', targetId: f.gymId,
       before: { dropInChargeTypeId: null }, after: { dropInChargeTypeId: f.mat.id } });
-    expect(await f.config()).toEqual({ amountCents: 2500, currency: 'CAD' });
+    expect(await f.config()).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
     expect(await f.page()).toContain('Drop-in mat fee: CA$25.00');
 
     // The setting names the charge type, not a copied price: a catalog price change shows on the next load.
     await f.catalog.updateChargeType({ gymId: f.gymId, actor: { kind: 'system' } }, f.mat.id, { revision: 1, amountCents: 3000 });
-    expect(await f.config()).toEqual({ amountCents: 3000, currency: 'CAD' });
+    expect(await f.config()).toEqual({ amountCents: 3000, currency: 'CAD', plusTax: false });
     expect(await f.page()).toContain('Drop-in mat fee: CA$30.00');
   });
 
@@ -110,7 +110,7 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     expect(refused.status).toBe(409);
     // Restoring the charge type shows its price again without saving the setting.
     await f.archive(f.mat.id, true);
-    expect(await f.config()).toEqual({ amountCents: 2500, currency: 'CAD' });
+    expect(await f.config()).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
   });
 
   it('refuses another gym\'s charge type, unknown IDs and stale revisions without changing the setting', async () => {
@@ -143,14 +143,62 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     expect(await f.dropInFeeFor(f.otherGym)).toBeNull();
     const other = await f.patch({ revision: await f.revision(f.otherGym), dropInChargeTypeId: f.foreign.id }, 'owner', { gymId: f.otherGym, userId: f.otherUser }, f.otherGym);
     expect(other.status).toBe(200);
-    expect(await f.dropInFeeFor(f.otherGym)).toEqual({ amountCents: 1500, currency: 'CAD' });
-    expect(await f.dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD' });
+    expect(await f.dropInFeeFor(f.otherGym)).toEqual({ amountCents: 1500, currency: 'CAD', plusTax: false });
+    expect(await f.dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
   });
 
   it.each(staffRoles)('requires settings.manage for %s', async (role) => {
     const f = await fixture();
     const response = await f.patch({ revision: await f.revision(), dropInChargeTypeId: f.mat.id }, role);
     expect(response.status).toBe(['owner', 'admin'].includes(role) ? 200 : 403);
+  });
+
+  it('adds "+ tax" to the fee only when an exclusive rate above zero is attached to the charge type', async () => {
+    const f = await fixture(), plus = '\u00a0+\u00a0tax';
+    const attach = async (rate: { id: string }, chargeTypeId = f.mat.id, gymId = f.gymId) =>
+      factory('chargeTypeTaxRates', gymId, { chargeTypeId, taxRateId: rate.id });
+    const rate = (name: string, rateMillionths: number, inclusive: boolean, active = true, gymId = f.gymId) =>
+      factory('taxRates', gymId, { name, rateMillionths, inclusive, active });
+    await f.choose(f.mat.id);
+    // No rate: the catalog price stands alone.
+    expect(await f.dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
+    expect(await f.page()).toContain('Drop-in mat fee: CA$25.00<');
+    // A tax-inclusive rate is already in the price.
+    await attach(await rate('QST included', 99_750, true));
+    expect(await f.config()).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
+    expect(await f.page()).not.toContain(plus);
+    // A zero exclusive rate adds nothing to an invoice.
+    await attach(await rate('Zero', 0, false));
+    expect((await f.dropInFeeFor(f.gymId))?.plusTax).toBe(false);
+    // An exclusive rate beside the inclusive one: the page shows the catalog price and the note, never a total.
+    const gst = await rate('GST', 149_750, false);
+    await attach(gst);
+    expect(await f.config()).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: true });
+    const html = await f.page();
+    expect(html).toContain(`Drop-in mat fee: CA$25.00${plus}<`);
+    expect(html).not.toContain('28.74'); expect(html).not.toContain('CA$26');
+    // Invoicing refuses an archived rate on a one-off charge and never applies it, so the note goes with it.
+    await database.forGym(f.gymId, tx => tx.update(taxRates).set({ active: false }).where(eq(taxRates.id, gst.id)));
+    expect(await f.page()).not.toContain(plus);
+    expect((await f.dropInFeeFor(f.gymId))?.plusTax).toBe(false);
+    // Archiving the charge type still hides the fee altogether.
+    await f.archive(f.mat.id);
+    expect(await f.dropInFeeFor(f.gymId)).toBeNull();
+  });
+
+  it('reads only the choosing gym\'s tax rates', async () => {
+    const f = await fixture();
+    // The other gym taxes its own mat fee. Its rate and attachment are invisible to this gym, and to its reader.
+    const foreignRate = await factory('taxRates', f.otherGym, { name: 'Other GST', rateMillionths: 50_000, inclusive: false });
+    await factory('chargeTypeTaxRates', f.otherGym, { chargeTypeId: f.foreign.id, taxRateId: foreignRate.id });
+    await f.choose(f.mat.id);
+    const other = await f.patch({ revision: await f.revision(f.otherGym), dropInChargeTypeId: f.foreign.id }, 'owner', { gymId: f.otherGym, userId: f.otherUser }, f.otherGym);
+    expect(other.status).toBe(200);
+    expect(await f.dropInFeeFor(f.otherGym)).toEqual({ amountCents: 1500, currency: 'CAD', plusTax: true });
+    expect(await f.dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
+    expect(await f.page()).not.toMatch(/\+\s*tax/);
+    // This gym's reader, run as another gym's scope, finds neither the charge type nor its rate.
+    expect(await createDropInFee({ scope: (_gymId, fn) => database.forGym(f.otherGym, fn) })(f.gymId)).toBeNull();
   });
 
   it('still deletes a gym whose drop-in fee names one of its charge types', async () => {
