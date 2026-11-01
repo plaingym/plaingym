@@ -37,12 +37,13 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
   directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
   const gymId = uuidv7(); await factory('gyms', gymId);
   const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
-  fake.seedCustomer({ id: 'cus_erased', email: 'payer@example.invalid' });
+  fake.seedCustomer({ id: 'cus_erased', email: 'payer@example.invalid', phone: '+15555550100', description: 'Payer',
+    address: { line1: '1 Mat Road' }, shipping: { name: 'Payer' } });
   vi.spyOn(stripeStep, 'createPaymentsResolver').mockReturnValue(async () => fake as unknown as StripePayments);
   runtime = await startRuntime(env(directory));
   // The retry job the erasure route queues after commit reaches the gym's own provider.
   await handlers.get(redactCustomerJob)!({ customerId: 'cus_erased' }, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
-  expect(fake.customer('cus_erased')).toEqual({ name: ERASED_CUSTOMER_NAME, email: null });
+  expect(fake.customer('cus_erased')).toEqual({ name: ERASED_CUSTOMER_NAME, email: null, phone: null, address: null, shipping: null, description: null });
 });
 
 it('reports images from the uploads bucket\'s origin under the report-only policy', async () => {
