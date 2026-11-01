@@ -30,8 +30,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      # Shares the amd64 cache scope with Image checks (deploy/README.md). Image checks never builds on main, so
-      # the weekly run on main is what leaves a cache that every other branch can start from.
+      # Shares the amd64 cache scope with Image checks (deploy/README.md). Image checks builds on main only when no
+      # passing run exists for the commit, so the weekly run on main is what leaves a cache that every other branch
+      # can start from.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build the runtime image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7

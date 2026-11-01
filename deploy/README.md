@@ -57,9 +57,10 @@ image scan use the GitHub Actions cache backend (`type=gha`) for the Dockerfile'
 layers, so a rerun of a branch skips the dependency install when the manifests
 and lockfile are unchanged. The scope is one per architecture (`image-amd64`,
 `image-arm64`); the scan shares `image-amd64`. A branch reads its own cache and
-the default branch's, and Image checks does not build on `main` (it reuses the
-integration branch's result), so the scan's weekly run on `main` is what seeds
-the amd64 cache for new branches. The pnpm store mount is a cache mount, not a
+the default branch's, and Image checks builds on `main` only when it finds no
+passing run for the same commit (it normally reuses the integration branch's
+result), so the scan's weekly run on `main` is what seeds the amd64 cache for
+new branches. The pnpm store mount is a cache mount, not a
 layer, so the GitHub cache does not hold it; a changed lockfile downloads its
 packages again, as on a fresh runner today. The cache keeps every build stage
 (`mode=max`), so each commit adds its source and build-output layers, about
