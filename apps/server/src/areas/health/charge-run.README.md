@@ -31,7 +31,7 @@ not configured. Failed runs are errors. So is a stopped run's failure report whi
 lists an invoice (`billing/runner/README.md`), whatever later runs recorded: the
 message gives the count and up to five invoice numbers (the count alone when no
 invoice has a number yet), and the tile clears once each invoice is collected or
-closed, or the report is dismissed through the runner's `dismissChargeFailures`. A run still reporting running after two
+closed, or staff dismiss the report (below). A run still reporting running after two
 hours or a completed run started more than 26 hours ago gets a warning. A crash
 leaves its start record visible until another run records progress. The runtime
 passes the monitored runner to the scheduled jobs. Its retry attachment,
@@ -40,3 +40,22 @@ only `daily` is monitored. All times come from the injected clock.
 
 Both providers use the health framework's `settings.manage` permission (owner or
 admin). Its error boundary turns failed reads into a safe unavailable tile.
+
+## Charge failure routes
+
+`charge-run.routes.ts` serves the reports behind the charge-run tile, with the same
+`settings.manage` permission:
+
+* `GET /api/health/charge-failures` lists the open reports, oldest first: run ID,
+  local day, report time, and for each invoice that still needs staff its ID, number
+  (null if it had none yet) and cause. It is the runner's `chargeFailures`, so an
+  invoice that was collected or closed is already gone.
+* `POST /api/health/charge-failures/dismiss` takes `{ "runId"?: uuid }` and calls the
+  runner's `dismissChargeFailures` as the signed-in user, which writes one
+  `billing.runner.charge_failures.dismissed` audit per report. Without `runId` it
+  dismisses every open report. It answers the invoice IDs those reports still listed;
+  the invoices are unchanged. A run that never reported, or another gym's, is 404;
+  dismissing a report twice is a harmless 200 that lists nothing.
+
+The runtime passes the runner to the routes with `configureChargeFailures(runner)`.
+Until it does, both routes answer 503.

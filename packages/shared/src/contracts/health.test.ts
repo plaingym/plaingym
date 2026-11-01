@@ -1,6 +1,7 @@
 ﻿// SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts } from './index.js';
+import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts, chargeFailureReportSchema, chargeFailuresResponseSchema,
+  dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
 
 const now = '2026-10-21T20:00:00Z';
@@ -43,5 +44,30 @@ describe('health contracts', () => {
   });
   it('limits the system health page to managers', () => {
     for (const role of staffRoles) expect(canStaff([role], healthContracts.get.permission.capability)).toBe(['owner', 'admin'].includes(role));
+  });
+  it('limits the charge failure reports and their dismissal to managers, like the page that shows them', () => {
+    for (const contract of [healthContracts.listChargeFailures, healthContracts.dismissChargeFailures]) {
+      expect(contract.permission).toEqual(healthContracts.get.permission);
+      for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(['owner', 'admin'].includes(role));
+    }
+  });
+  it('accepts a dismissal of one run or of all runs and nothing else', () => {
+    const runId = '0198a000-0000-7000-8000-000000000001';
+    expect(dismissChargeFailuresRequestSchema.parse({})).toEqual({});
+    expect(dismissChargeFailuresRequestSchema.parse({ runId })).toEqual({ runId });
+    for (const body of [{ runId: 'run-1' }, { runId: null }, { runId, all: true }, []])
+      expect(dismissChargeFailuresRequestSchema.safeParse(body).success).toBe(false);
+  });
+  it('describes a report by run, day and the invoices that still need staff', () => {
+    const failure = { invoiceId: '0198a000-0000-7000-8000-000000000002', number: 41, cause: 'needs_reconciliation' };
+    const report = { runId: '0198a000-0000-7000-8000-000000000001', day: '2026-10-26', reportedAt: now, failures: [failure] };
+    expect(chargeFailuresResponseSchema.safeParse({ data: [report] }).success).toBe(true);
+    expect(chargeFailuresResponseSchema.safeParse({ data: [] }).success).toBe(true);
+    expect(chargeFailureReportSchema.safeParse({ ...report, failures: [{ ...failure, number: null, cause: 'unexpected' }] }).success).toBe(true);
+    // An emptied report is not listed, and a cause or extra field outside the contract is refused.
+    for (const bad of [{ ...report, failures: [] }, { ...report, failures: [{ ...failure, cause: 'declined' }] },
+      { ...report, failures: [{ ...failure, number: 0 }] }, { ...report, extra: true }, { ...report, day: 'yesterday' }])
+      expect(chargeFailureReportSchema.safeParse(bad).success).toBe(false);
+    expect(dismissChargeFailuresResponseSchema.safeParse({ data: { dismissed: [failure.invoiceId] } }).success).toBe(true);
   });
 });

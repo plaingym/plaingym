@@ -94,10 +94,10 @@ describe('durable daily charge-run health', () => {
     await db.forGym(f.gymId, tx => Promise.all(unnumbered.map((row, index) =>
       tx.update(invoices).set({ status: 'open', number: 10 + index }).where(eq(invoices.id, row.id)))));
     expect(await f.read()).toMatchObject({ status: 'error',
-      message: 'Invoices with failed charges in a stopped charge run: 2. They stay listed until each invoice is collected or closed.' });
+      message: 'Invoices with failed charges in a stopped charge run: 2. They stay listed until each invoice is collected or closed, or staff dismiss them.' });
     await report([(await invoice('open', 41)).id]);
     expect(await f.read()).toMatchObject({ status: 'error',
-      message: 'Invoices with failed charges in a stopped charge run: 3 (#41). They stay listed until each invoice is collected or closed.' });
+      message: 'Invoices with failed charges in a stopped charge run: 3 (#41). They stay listed until each invoice is collected or closed, or staff dismiss them.' });
   });
 
   it('does not let an older concurrent run completion hide the newer run', async () => {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
-import { instantSchema } from './common.js';
+import { dateSchema, idSchema, instantSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 
 /** Every built-in tile is present even while its provider is not configured. */
@@ -61,10 +61,25 @@ export const healthResponseSchema = z.strictObject({ data: z.strictObject({
     'Include every health tile exactly once',
   ),
 }) });
+/** Why a charge threw. A stopped run reports every cause but an outage; the list accepts all three. */
+export const chargeFailureCauseSchema = z.enum(['provider_outage', 'needs_reconciliation', 'unexpected']);
+/** One stopped charge run's invoices that still need staff. `number` is null for an invoice that had none when the run stopped. */
+export const chargeFailureReportSchema = z.strictObject({
+  runId: idSchema, day: dateSchema, reportedAt: instantSchema,
+  failures: z.array(z.strictObject({ invoiceId: idSchema, number: z.int().positive().nullable(), cause: chargeFailureCauseSchema })).min(1),
+});
+export const chargeFailuresResponseSchema = z.strictObject({ data: z.array(chargeFailureReportSchema) });
+/** Without `runId` every open report is dismissed. */
+export const dismissChargeFailuresRequestSchema = z.strictObject({ runId: idSchema.optional() });
+/** The invoices the dismissed reports still listed; the invoices themselves are unchanged. */
+export const dismissChargeFailuresResponseSchema = z.strictObject({ data: z.strictObject({ dismissed: z.array(idSchema) }) });
+const manageSettings = { kind: 'staff', capability: 'settings.manage' } satisfies RoutePermission;
 export const healthContracts = {
-  get: { method: 'get', path: '/api/health',
-    permission: { kind: 'staff', capability: 'settings.manage' } satisfies RoutePermission,
-    response: healthResponseSchema },
+  get: { method: 'get', path: '/api/health', permission: manageSettings, response: healthResponseSchema },
+  listChargeFailures: { method: 'get', path: '/api/health/charge-failures', permission: manageSettings,
+    response: chargeFailuresResponseSchema },
+  dismissChargeFailures: { method: 'post', path: '/api/health/charge-failures/dismiss', permission: manageSettings,
+    body: dismissChargeFailuresRequestSchema, response: dismissChargeFailuresResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type HealthTileId = z.infer<typeof healthTileIdSchema>;
@@ -76,6 +91,8 @@ export type FailedJobsHealthDetails = z.infer<typeof failedJobsHealthDetailsSche
 export type SmtpHealthDetails = z.infer<typeof smtpHealthDetailsSchema>;
 export type DiskHealthDetails = z.infer<typeof diskHealthDetailsSchema>;
 export type WebhookHealthDetails = z.infer<typeof webhookHealthDetailsSchema>;
+export type ChargeFailureCause = z.infer<typeof chargeFailureCauseSchema>;
+export type ChargeFailureReport = z.infer<typeof chargeFailureReportSchema>;
 export type ChargeRunHealthDetails = z.infer<typeof chargeRunHealthDetailsSchema>;
 export type AutomaticUpdatesHealthDetails = z.infer<typeof automaticUpdatesHealthDetailsSchema>;
 export type UpdateAvailableHealthDetails = z.infer<typeof updateAvailableHealthDetailsSchema>;

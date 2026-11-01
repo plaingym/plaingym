@@ -18,7 +18,7 @@ const matrix: Record<string, Role[]> = {
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$))/.test(path)
-  || ['/api/dashboard', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
+  || ['/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
   || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 // Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.

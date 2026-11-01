@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useQuery } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { healthContracts, healthResponseSchema, healthTileIds, type HealthTile } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
@@ -8,6 +9,7 @@ import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
+import { ChargeFailures } from './charge-failures.js';
 
 const label = (key: string) => t('health/status:' + key);
 function detailValue(key: string, value: unknown) {
@@ -19,7 +21,7 @@ function detailValue(key: string, value: unknown) {
   return String(value);
 }
 /** Every tile uses the same presentation, including tiles supplied by other providers. */
-export function HealthTiles({ tiles }: { tiles: readonly HealthTile[] }) {
+export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>> }) {
   const byId = new Map(tiles.map((tile) => [tile.id, tile]));
   return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{healthTileIds.map((id) => {
     const tile = byId.get(id);
@@ -31,19 +33,22 @@ export function HealthTiles({ tiles }: { tiles: readonly HealthTile[] }) {
       {tile.details && <dl className="mt-4 space-y-2 text-sm">{Object.entries(tile.details).filter(([key]) => key !== 'keyReminder').map(([key, value]) =>
         <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{label('field.' + key)}</dt><dd className="break-all">{detailValue(key, value)}</dd></div>)}</dl>}
       {tile.details && 'keyReminder' in tile.details && tile.details.keyReminder && <p className="mt-4 text-sm font-medium">{label('keyReminder')}</p>}
+      {extras[id]}
       {tile.checkedAt && <p className="mt-4 text-xs text-muted-foreground">{label('checkedAt')}: <time dateTime={tile.checkedAt}>{new Date(tile.checkedAt).toLocaleString()}</time></p>}
     </Card>;
   })}</div>;
 }
 function HealthPanel({ gymId }: { gymId: string }) {
+  // Refresh reads the tiles and the charge failure list together: both sit under this key.
+  const cache = useQueryClient();
   const query = useQuery({ queryKey: ['health', gymId], queryFn: async ({ signal }) => {
     const result = await api.GET(healthContracts.get.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Health check failed');
     return healthResponseSchema.parse(result.data).data;
   }, refetchInterval: 60_000 });
   return <main className="mx-auto max-w-7xl space-y-6 p-6">
-    <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1><Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>{label('refresh')}</Button></div>
-    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles}/>}
+    <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1><Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button></div>
+    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} extras={{ last_charge_run: <ChargeFailures gymId={gymId}/> }}/>}
   </main>;
 }
 export function HealthPage() {

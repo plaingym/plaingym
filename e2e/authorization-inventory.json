@@ -154,6 +154,22 @@
   },
   {
     "method": "GET",
+    "path": "/api/health/charge-failures",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/health/charge-failures/dismiss",
+    "permission": {
+      "kind": "staff",
+      "capability": "settings.manage"
+    }
+  },
+  {
+    "method": "GET",
     "path": "/api/exports/{id}",
     "permission": {
       "kind": "staff",
