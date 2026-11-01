@@ -6,11 +6,13 @@ import { authAccount, authSession, authUser, authVerification, householdUsers, u
 import { closeDatabase, initializeDatabase, systemDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { createPortalInvitationExpiryJobs, createPortalInvitationService, portalInvitationExpiryJob } from '../../areas/members/household-users.invitations.js';
+import { createPortalInvitationExpiryJobs, createPortalInvitationService, portalInvitationExpiryJob, registerVerificationSweep } from '../../areas/members/household-users.invitations.js';
+import { createGymDeleteService } from '../../areas/settings/gym-delete.js';
 import { TestClock } from '../../core/clock.js';
+import { PostgresJobs } from '../jobs/postgres.js';
 import { FakeEmail } from '../email/index.js';
 import { authConfig } from './config.js';
-import { createPortalInvitationStore } from './portal-invitations.js';
+import { createPortalInvitationStore, removeGymInvitees } from './portal-invitations.js';
 import { createAuthService } from './service.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-30T12:00:00Z');
@@ -24,9 +26,9 @@ const invitations = createPortalInvitationService(options), store = createPortal
 beforeAll(() => initializeDatabase(db.appUrl)); afterAll(() => closeDatabase());
 
 async function gym() {
-  const gymId = uuidv7(); await factory('gyms', gymId);
+  const gymId = uuidv7(), { revision } = await factory('gyms', gymId);
   const owner = await factory('staffRoles', gymId, { role: 'owner' });
-  return { gymId, actor: { gymId, userId: owner.userId, clock }, home: await factory('households', gymId), other: await factory('households', gymId) };
+  return { gymId, revision, actor: { gymId, userId: owner.userId, clock }, home: await factory('households', gymId), other: await factory('households', gymId) };
 }
 type Gym = Awaited<ReturnType<typeof gym>>;
 async function invite(g: Gym, email = `${uuidv7()}@example.test`, householdId = g.home.id, service = invitations, at = clock) {
@@ -110,20 +112,190 @@ describe('invitee identities left without an invitation', () => {
   });
 });
 
-describe('an acceptance racing a revoke', () => {
-  /** Resolves once another backend waits on a row lock, so each race below is a real overlap. */
-  async function lockWait() {
-    for (let attempt = 0; attempt < 200; attempt++) {
-      // eslint-disable-next-line database/system-tables -- Reads only the lock-wait count of this isolated test database.
-      const [row] = await db.app.db.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_stat_activity
-        where datname = current_database() and wait_event_type = 'Lock'`);
-      if (row && row.waiting > 0) return;
-      await new Promise(resolve => setTimeout(resolve, 25));
-    }
-    throw new Error('No transaction waited on a lock');
+describe('the cleanup\'s locks and batches', () => {
+  /** Runs `work` while another transaction holds a share lock on the user, and fails instead of waiting if `work` needs a stronger one. */
+  async function withoutWaiting(userId: string, work: () => Promise<unknown>) {
+    const held = gate(), release = gate();
+    const sharing = db.system.db.transaction(async tx => {
+      await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.id, userId)).for('share');
+      held.open(); await release.opened;
+    });
+    await held.opened;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([work(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('The cleanup waited on a kept invitee')), 5000); })]);
+    } finally { clearTimeout(timer); release.open(); await sharing; }
   }
-  const gate = () => { let open!: () => void; const opened = new Promise<void>(resolve => { open = resolve; }); return { open, opened }; };
 
+  it.each(holders.slice(0, 2))('never locks an invitee it keeps for %s', async (_name, hold) => {
+    const a = await gym(), b = await gym(), revoked = await invite(a), swept = await invite(a), orphan = await invite(a);
+    for (const kept of [revoked, swept]) await hold(a, b, kept.userId, kept.email);
+    // A share lock stands in for anything that holds the user meanwhile: the cleanup's own lock would wait on it.
+    await withoutWaiting(revoked.userId, () => revoke(a, revoked));
+    await withoutWaiting(swept.userId, () => store.expire(a.gymId, expired));
+    expect(await exists(revoked.userId)).toBe(true);
+    expect(await exists(swept.userId)).toBe(true);
+    expect(await exists(orphan.userId)).toBe(false);
+  });
+
+  it('deletes every other identity of a batch in which several are held in other gyms', async () => {
+    const a = await gym(), b = await gym(), invited = [];
+    for (let index = 0; index < 7; index++) invited.push(await invite(a));
+    const held = [invited[1]!, invited[4]!, invited[5]!];
+    for (const invitation of held) await factory('staffRoles', b.gymId, { userId: invitation.userId, role: 'coach' });
+    expect(await store.expire(a.gymId, expired)).toEqual({ expired: 7, removed: 4 });
+    for (const invitation of invited) expect(await exists(invitation.userId)).toBe(held.includes(invitation));
+  });
+});
+
+describe('deleting a gym', () => {
+  it('removes the identities invited only there, and keeps those linked there, invited elsewhere or linked elsewhere', async () => {
+    const a = await gym(), b = await gym();
+    const only = await invite(a), linked = await invite(a), invitedElsewhere = await invite(a), linkedElsewhere = await invite(a);
+    await factory('householdUsers', a.gymId, { householdId: a.other.id, userId: linked.userId, scope: 'payer', memberId: null });
+    const theirs = await invite(b, invitedElsewhere.email);
+    await factory('householdUsers', b.gymId, { householdId: b.home.id, userId: linkedElsewhere.userId, scope: 'payer', memberId: null });
+    const deletion = createGymDeleteService({ clock, scope: db.forGym, system: db.forSystem, removeUploads: async () => undefined });
+    await deletion.remove(a.gymId, a.revision);
+    expect(await exists(only.userId)).toBe(false);
+    for (const kept of [linked, invitedElsewhere, linkedElsewhere]) expect(await exists(kept.userId)).toBe(true);
+    expect((await invitations.outstanding(b.actor, b.home.id)).data.map(row => row.id)).toEqual([theirs.invitationId]);
+    expect(await db.system.db.select({ id: authVerification.id }).from(authVerification).where(eq(authVerification.gymId, a.gymId))).toEqual([]);
+  });
+
+  it('leaves an identity another gym holds unlocked for the rest of the deletion', async () => {
+    const a = await gym(), b = await gym(), only = await invite(a), linkedElsewhere = await invite(a);
+    await factory('householdUsers', b.gymId, { householdId: b.home.id, userId: linkedElsewhere.userId, scope: 'payer', memberId: null });
+    const rollback = new Error('rollback');
+    // The deletion's system transaction, stopped after the cleanup, where the gym's cascade would follow.
+    await expect(db.system.db.transaction(async tx => {
+      expect(await removeGymInvitees(tx, a.gymId)).toBe(1);
+      const probe = (userId: string) => db.forSystem(other => other.select({ id: authUser.id }).from(authUser).where(eq(authUser.id, userId)).for('update', { noWait: true }));
+      expect(await probe(linkedElsewhere.userId)).toHaveLength(1);
+      await expect(probe(only.userId)).rejects.toThrow();
+      throw rollback;
+    })).rejects.toBe(rollback);
+  });
+});
+
+describe('the install sweep', () => {
+  it('runs once an hour for the whole install, while each of three gyms runs its own invitation sweep', async () => {
+    const three = [await gym(), await gym(), await gym()], tick = new TestClock('2026-11-02T12:00:00Z'), expiring: string[] = [];
+    let sweeps = 0;
+    const queue = new PostgresJobs({ database: db, clock: tick, listGyms: async () => three.map(g => ({ gymId: g.gymId, timezone: 'UTC' })) });
+    for (const job of createPortalInvitationExpiryJobs({ async expire(gymId) { expiring.push(gymId); return { expired: 0, removed: 0 }; } }))
+      queue.schedule(job.id, job.cron!, job.handler);
+    const sweep = registerVerificationSweep(queue, tick, { async sweepExpired() { sweeps++; return 0; } });
+    // Two processes check every ten minutes from 12:00 to 14:00: three hours for the install sweep, two minute-53s for each gym.
+    for (let minute = 0; minute <= 120; minute += 10, tick.advance(600_000)) {
+      for (let worker = 0; worker < 2; worker++) { await queue.scheduleDue(); await sweep.scheduleDue(); }
+      while (await queue.runNext()) { /* drain */ }
+    }
+    expect(sweeps).toBe(3);
+    expect(expiring.sort()).toEqual([...three, ...three].map(g => g.gymId).sort());
+  });
+});
+
+/** Resolves once another backend waits on a row lock, so each race below is a real overlap. */
+async function lockWait() {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    // eslint-disable-next-line database/system-tables -- Reads only the lock-wait count of this isolated test database.
+    const [row] = await db.app.db.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_stat_activity
+      where datname = current_database() and wait_event_type = 'Lock'`);
+    if (row && row.waiting > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error('No transaction waited on a lock');
+}
+const gate = () => { let open!: () => void; const opened = new Promise<void>(resolve => { open = resolve; }); return { open, opened }; };
+
+describe('an onboarding claim for an invited address', () => {
+  const codes: string[] = [];
+  const claims = createPortalInvitationService({ ...options, config: passwordless, smtpConfigured: async () => true,
+    loginLink: async ({ claim }) => { codes.push(claim); } });
+  const onboarding = (g: Gym, householdId = g.other.id) => factory('signedLinks', g.gymId, { householdId, purpose: 'onboarding', invoiceId: null,
+    memberId: null, expiresAt: new Date('2026-11-01T00:00:00Z') });
+  /** Asks for a passwordless onboarding claim and returns the claim code the login link carries. */
+  async function claim(g: Gym, email: string, householdId = g.other.id) {
+    const link = await onboarding(g, householdId);
+    expect(await claims.claimOnboarding(g.gymId, link.id, { email }, clock)).toEqual({ data: { status: 'email_sent' } });
+    return codes.at(-1)!;
+  }
+  /** Stands in for a cleanup that already decided to delete the identity: it holds the user's lock until `release`, then deletes it. */
+  function deleting(userId: string) {
+    const held = gate(), release = gate();
+    const done = db.system.db.transaction(async tx => {
+      await tx.select({ id: authUser.id }).from(authUser).where(eq(authUser.id, userId)).for('update');
+      held.open(); await release.opened;
+      await tx.delete(authUser).where(eq(authUser.id, userId));
+    });
+    return { held: held.opened, release: release.open, done };
+  }
+
+  it('a revoke while the claim is pending keeps the identity, and the claim completes', async () => {
+    const a = await gym(), invitation = await invite(a), code = await claim(a, invitation.email);
+    await revoke(a, invitation);
+    expect(await exists(invitation.userId)).toBe(true);
+    expect(await claims.completeClaim(a.gymId, invitation.userId, { claim: code }, clock)).toBe(a.other.id);
+    // Completion deletes the claim's hold; the household link keeps the identity from now on.
+    expect(await invitationRows(invitation.userId)).toEqual([]);
+  });
+
+  it('an invitation expiring while the claim is pending keeps the identity, and the claim completes', async () => {
+    const a = await gym();
+    // Issued seven days before the claim, so the sweep at claim time finds it expired.
+    const invitation = await invite(a, undefined, a.home.id, invitations, new TestClock('2026-10-23T11:00:00Z')), code = await claim(a, invitation.email);
+    expect(await store.expire(a.gymId, clock)).toEqual({ expired: 1, removed: 0 });
+    expect(await exists(invitation.userId)).toBe(true);
+    expect(await claims.completeClaim(a.gymId, invitation.userId, { claim: code }, clock)).toBe(a.other.id);
+  });
+
+  it('asking again replaces the hold, and an abandoned claim\'s hold expires with the sweep, taking the identity it kept', async () => {
+    const a = await gym(), email = `${uuidv7()}@example.test`, link = await onboarding(a);
+    await claims.claimOnboarding(a.gymId, link.id, { email }, clock);
+    await claims.claimOnboarding(a.gymId, link.id, { email }, clock);
+    const [user] = await db.system.db.select({ id: authUser.id }).from(authUser).where(eq(authUser.email, email));
+    expect(await invitationRows(user!.id)).toHaveLength(1);
+    // The hold lasts as long as the claim code: one hour.
+    expect(await store.expire(a.gymId, new TestClock('2026-10-30T12:59:59Z'))).toEqual({ expired: 0, removed: 0 });
+    expect(await store.expire(a.gymId, new TestClock('2026-10-30T13:00:00Z'))).toEqual({ expired: 1, removed: 1 });
+    expect(await exists(user!.id)).toBe(false);
+  });
+
+  it('a claim whose user is gone answers not found, never a foreign-key error', async () => {
+    const a = await gym(), invitation = await invite(a), code = await claim(a, invitation.email);
+    // A code issued before holds existed: nothing kept the identity when its invitation went.
+    await db.system.db.delete(authUser).where(eq(authUser.id, invitation.userId));
+    await expect(claims.completeClaim(a.gymId, invitation.userId, { claim: code }, clock)).rejects.toMatchObject({ code: 'not_found' });
+    expect(await db.forGym(a.gymId, tx => tx.select().from(householdUsers).where(eq(householdUsers.householdId, a.other.id)))).toEqual([]);
+  });
+
+  it('a completion waiting on a cleanup that deletes its user answers not found', async () => {
+    const a = await gym(), invitation = await invite(a), code = await claim(a, invitation.email);
+    await db.system.db.delete(authVerification).where(eq(authVerification.userId, invitation.userId));
+    const cleanup = deleting(invitation.userId);
+    await cleanup.held;
+    const completing = claims.completeClaim(a.gymId, invitation.userId, { claim: code }, clock);
+    await lockWait();
+    cleanup.release(); await cleanup.done;
+    await expect(completing).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('a claim waiting on a cleanup that deletes its user answers conflict, and asking again succeeds', async () => {
+    const a = await gym(), invitation = await invite(a), link = await onboarding(a);
+    const cleanup = deleting(invitation.userId);
+    await cleanup.held;
+    const claiming = claims.claimOnboarding(a.gymId, link.id, { email: invitation.email }, clock);
+    await lockWait();
+    cleanup.release(); await cleanup.done;
+    await expect(claiming).rejects.toMatchObject({ code: 'conflict' });
+    expect(await claims.claimOnboarding(a.gymId, link.id, { email: invitation.email }, clock)).toEqual({ data: { status: 'email_sent' } });
+    const [user] = await db.system.db.select({ id: authUser.id }).from(authUser).where(eq(authUser.email, invitation.email));
+    expect(await claims.completeClaim(a.gymId, user!.id, { claim: codes.at(-1)! }, clock)).toBe(a.other.id);
+  });
+});
+
+describe('an acceptance racing a revoke', () => {
   it('an acceptance holding the invitation wins: the revoke then finds nothing, and the linked identity stays', async () => {
     const a = await gym(), invitation = await invite(a), held = gate(), release = gate();
     const accepting = store.redeem({ gymId: a.gymId, invitationId: invitation.invitationId, userId: invitation.userId, clock }, async (tx, binding) => {
@@ -201,9 +373,13 @@ describe('magic-link sign-in after the cleanup', () => {
     await job!.handler({}, { jobId: uuidv7(), gymId: a.gymId, timezone: 'UTC', attempt: 1, clock });
     expect(await exists(stale.userId)).toBe(false);
     expect(await signIn(stale.email)).toBeNull();
-    const left = await db.system.db.select({ id: authVerification.id }).from(authVerification)
-      .where(inArray(authVerification.id, [oldLink.id, liveLink.id]));
-    expect(left).toEqual([{ id: liveLink.id }]);
+    const links = () => db.system.db.select({ id: authVerification.id }).from(authVerification).where(inArray(authVerification.id, [oldLink.id, liveLink.id]));
+    // The gym's sweep leaves the install's other rows to the install sweep, which runs as a system job.
+    expect(await links()).toHaveLength(2);
+    const queue = new PostgresJobs({ database: db, clock }), sweep = registerVerificationSweep(queue, clock, store);
+    await sweep.scheduleDue();
+    expect(await queue.runNext()).toBe(true);
+    expect(await links()).toEqual([{ id: liveLink.id }]);
     expect(await invitationRows(fresh.userId)).toHaveLength(1);
   });
 

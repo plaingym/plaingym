@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { and, asc, count, eq } from 'drizzle-orm';
 import {
   forGym, installedPacks, rankSystems, ranks, programs, classTags,
-  uuidv7, writeAudit,
+  databaseCode, uuidv7, writeAudit,
 } from '@plaingym/db';
 import { AppError, contentPackSchema, type Clock } from '@plaingym/shared';
 import {
@@ -25,11 +25,6 @@ function entityId(installation: string, ...path: string[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 const present = <T extends { createdAt: Date }>(row: T) => ({ ...row, createdAt: row.createdAt.toISOString() });
-function databaseCode(error: unknown): string | undefined {
-  if (!(error instanceof Error)) return undefined;
-  if ('code' in error && typeof error.code === 'string') return error.code;
-  return databaseCode(error.cause);
-}
 
 export function createContentPackService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;

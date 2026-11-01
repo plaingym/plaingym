@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, exists, isNotNull, isNull, notExists } from 'drizzle-orm';
-import { auditEvents, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
+import { auditEvents, databaseCode, forGym, householdUsers, households, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { createHouseholdUserRequestSchema, householdUserSchema, type CreateHouseholdUserRequest, type Pagination } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -74,8 +74,7 @@ export function createHouseholdUsersService(options: { scope?: typeof forGym; cl
           await audit(tx, context, 'household_user.created', row.id);
           return record(row);
         } catch (error) {
-          const cause = error instanceof Error && 'cause' in error ? error.cause : error;
-          if (cause && typeof cause === 'object' && 'code' in cause && cause.code === '23503') notFound();
+          if (databaseCode(error) === '23503') notFound();
           throw error;
         }
       });

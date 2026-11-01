@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gt, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
-  invoices, paymentMethods, classBookings, classSessions, staffProfiles, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  invoices, paymentMethods, classBookings, classSessions, staffProfiles, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -29,11 +29,6 @@ const link = (row: Record<string, unknown>) => c.memberTagLinkSchema.parse({ ...
 function missing<T>(row: T | undefined): T { if (!row) throw new AppError('not_found', 'Resource not found'); return row; }
 function editable(row: { anonymizedAt: Date | null }) {
   if (row.anonymizedAt) throw new AppError('conflict', 'Anonymized profiles cannot be edited');
-}
-function databaseCode(error: unknown): string | undefined {
-  if (!(error instanceof Error)) return undefined;
-  if ('code' in error && typeof error.code === 'string') return error.code;
-  return databaseCode(error.cause);
 }
 const search = (value: string) => '%' + value.replace(/[\\%_]/g, '\\$&') + '%';
 /** `pinSecret` resolves the gym's random key (`areas/settings/gym-keys.ts`); without it, setting a PIN fails closed. */

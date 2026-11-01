@@ -65,7 +65,7 @@ it('schedules daily job retention on the worker queue, keeping billing alert job
   const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, other.id])));
   expect(kept).toEqual([{ id: alert.id }]);
 });
-it('registers the hourly portal invitation sweep, which deletes expired verification rows on the auth pool', async () => {
+it('registers the hourly per-gym portal invitation sweep, which leaves the install\'s other verification rows to the install sweep', async () => {
   const handler = app.handlers.get('members.portal-invitations.expire');
   expect(handler).toBeDefined();
   const stale = { id: uuidv7(), identifier: `magic-link:${uuidv7()}`, value: '{}', expiresAt: new Date(clock.now().getTime() - 60_000) };
@@ -75,7 +75,7 @@ it('registers the hourly portal invitation sweep, which deletes expired verifica
     await handler!({}, { gymId: app.sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 });
     const left = await database.forSystem(tx => tx.select({ id: authVerification.id }).from(authVerification)
       .where(inArray(authVerification.id, [stale.id, live.id])));
-    expect(left).toEqual([{ id: live.id }]);
+    expect(left.map(row => row.id).sort()).toEqual([stale.id, live.id].sort());
   } finally { await database.forSystem(tx => tx.delete(authVerification).where(inArray(authVerification.id, [stale.id, live.id]))); }
 });
 it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane', async () => {

@@ -4,6 +4,7 @@ import { forGym, forSystem, gyms, writeAudit, revisionGuard, assertRevised, Revi
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { deleteDemoIdentities } from '../../infra/auth/demo-cleanup.js';
+import { removeGymInvitees } from '../../infra/auth/portal-invitations.js';
 import { sandboxSettings } from '../../demo/config.js';
 
 export function createGymDeleteService(options: {
@@ -28,6 +29,8 @@ export function createGymDeleteService(options: {
     });
     await options.removeUploads(gymId);
     await system(async (tx) => {
+      // Before the gym row, whose cascade would take its invitation rows without removing the identities they provisioned.
+      await removeGymInvitees(tx, gymId);
       const removed = await tx.delete(gyms).where(and(eq(gyms.id, gymId), eq(gyms.revision, suspendedRevision.revision), eq(gyms.status, 'suspended'))).returning({ id: gyms.id });
       if (removed.length !== 1) throw new RevisionConflictError();
       if (suspendedRevision.sandbox) await deleteDemoIdentities(tx, gymId);

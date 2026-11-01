@@ -2,7 +2,7 @@
 import { and, asc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 import {
   forGym, programs, rankSystems, ranks, memberRanks, members, staffProfiles,
-  uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError,
+  databaseCode, uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError,
 } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
@@ -38,11 +38,6 @@ function page<T>(data: T[], input: PaginationInput) {
   // List queries carry filters too; the strict pagination schema takes only its own keys.
   const { limit, offset } = paginationSchema.parse({ limit: input.limit, offset: input.offset });
   return { data: data.slice(offset, offset + limit), pagination: { limit, offset, total: data.length } };
-}
-function databaseCode(error: unknown): string | undefined {
-  if (!(error instanceof Error)) return undefined;
-  if ('code' in error && typeof error.code === 'string') return error.code;
-  return databaseCode(error.cause);
 }
 async function safe<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); } catch (error) {

@@ -69,11 +69,18 @@ Inviting provisions an identity for the invitee's address. When an invitation is
 revoked, or the hourly `members.portal-invitations.expire` job deletes it after it
 expires, that identity is deleted too if nothing else holds it: no account (password
 or Google), no other invitation row in any gym (an expired one counts until its own
-gym's job deletes it), and no household link, staff role or history in any gym. It
-is re-checked under a lock on the identity in the same transaction, so an acceptance
-running at the same time either links it first and keeps it, or finds the invitation
-gone. Its sessions go with it, so it can no longer sign in by magic link to a
-session without access.
+gym's job deletes it), no pending passwordless onboarding claim, and no household
+link, staff role or history in any gym. It is re-checked under a lock on the identity
+in the same transaction, so an acceptance running at the same time either links it
+first and keeps it, or finds the invitation gone. Its sessions go with it, so it can
+no longer sign in by magic link to a session without access. Deleting a gym runs the
+same cleanup for that gym's invitations.
+
+A passwordless onboarding claim keeps its identity for as long as its claim code is
+valid (one hour at most), even if an invitation for the same address is revoked or
+expires meanwhile; an abandoned claim's identity is deleted with the gym's next hourly
+job if nothing else holds it. A claim completed after its identity is gone anyway
+answers 404, and the person starts again from the onboarding link.
 
 Acceptance proves the account before linking it:
 

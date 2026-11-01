@@ -34,7 +34,14 @@ backfills them from existing invitations' identifiers and JSON values; every oth
 Auth's own, whose values aren't JSON, and staff invitations) keeps null, as does an invitation whose
 gym or invitee no longer exists. Upgrade tests outside this package import the helper as
 `@plaingym/db/testing/database-upgrade`.
+Migration `0014_portal_invitation_scope.sql` adds a nullable `scope` to `auth_verification`
+(`payer` or `member`, checked), set only on portal invitation rows. It repeats 0013's guarded
+backfill for invitations still missing a column: those a process on the release before 0013 wrote
+after it ran (no gym, household or invitee), and those a process on the 0013 release wrote (no scope).
 Keep the SQL file name, journal tag, index and snapshot name aligned.
+
+`databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
+error as a cause.
 
 Run generation from this package with `pnpm exec drizzle-kit generate --name <name>`.
 Commit the generated SQL and metadata together. Add an SPDX SQL comment to generated

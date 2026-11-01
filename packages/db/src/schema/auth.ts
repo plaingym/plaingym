@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, index, integer, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { uuidv7 } from '../id.js';
 import { systemAccess } from './access.js';
-import { instant } from './common.js';
+import { choice, instant } from './common.js';
 import { gyms } from './gyms.js';
 const identity = () => ({
   id: uuid('id').primaryKey().$defaultFn(uuidv7),
@@ -33,11 +33,15 @@ export const authAccount = pgTable('auth_account', {
   ...systemAccess('auth_account', 'system')]).enableRLS();
 export const authVerification = pgTable('auth_verification', {
   ...identity(), identifier: text('identifier').notNull(), value: text('value').notNull(), expiresAt: instant('expires_at').notNull(),
-  /** Set only by the portal invitation writer (`infra/auth/portal-invitations.ts`); Better Auth's own rows keep them null. */
+  /** Set only by the portal invitation writer (`infra/auth/portal-invitations.ts`: invitations and onboarding claim holds);
+   * Better Auth's own rows keep them null. */
   gymId: uuid('gym_id').references(() => gyms.id, { onDelete: 'cascade' }),
   householdId: uuid('household_id'),
   userId: uuid('user_id').references(() => authUser.id, { onDelete: 'cascade' }),
+  /** The household login an invitation grants (its binding's scope); null on every other row. */
+  scope: text('scope'),
 }, (t) => [index('auth_verification_identifier_idx').on(t.identifier),
+  choice('auth_verification_scope_check', t.scope, ['payer', 'member']),
   index('auth_verification_portal_invitation_idx').on(t.gymId, t.householdId, t.expiresAt).where(sql`${t.householdId} is not null`),
   index('auth_verification_portal_invitee_idx').on(t.userId).where(sql`${t.userId} is not null`),
   ...systemAccess('auth_verification', 'system')]).enableRLS();

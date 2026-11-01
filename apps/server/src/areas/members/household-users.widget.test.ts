@@ -2,7 +2,9 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { householdUsers, households, members, uuidv7, writeAudit } from '@plaingym/db';
+import { auditEvents, householdUsers, households, members, uuidv7, writeAudit } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- The scale test writes a thousand invitees and their invitations in one statement each.
+import { authUser, authVerification } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles } from '@plaingym/shared';
@@ -20,7 +22,7 @@ import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createMembersService } from './members.js';
-import { requestPortalConfirmation } from './household-users.js';
+import { confirmationRequested, requestPortalConfirmation } from './household-users.js';
 import { createPortalInvitationService } from './household-users.invitations.js';
 import { createPortalConfirmationWidgetProvider, portalConfirmationWidgetId } from './household-users.widget.js';
 
@@ -92,6 +94,43 @@ describe('portal confirmation widget', () => {
     const expired = new TestClock('2026-11-06T12:00:01Z');
     expect(await provider().read({ gymId, roles: ['owner'], clock: expired })).toMatchObject({ count: 2 });
     expect(await provider().read({ gymId: other, roles: ['owner'], clock: expired })).toMatchObject({ count: 1, items: [{ label: 'Their household' }] });
+  });
+
+  it('leaves out a thousand payer-invited households in one statement, never sending their list back', async () => {
+    const gymId = await gym(), size = 1000;
+    const homes = Array.from({ length: size + 2 }, (_, index) => ({ id: uuidv7(), gymId, name: `Household ${String(index).padStart(4, '0')}`,
+      email: `${uuidv7()}@example.invalid` }));
+    const people = homes.map(home => ({ id: uuidv7(), gymId, householdId: home.id, firstName: 'Test', lastName: 'Member' }));
+    await database.forGym(gymId, async tx => {
+      await tx.insert(households).values(homes);
+      await tx.insert(members).values(people);
+      await tx.insert(auditEvents).values(homes.map(home => ({ gymId, actorKind: 'system', action: confirmationRequested,
+        targetType: 'household', targetId: home.id, occurredAt: clock.now() })));
+    });
+    const invitees = homes.slice(0, size).map(() => ({ id: uuidv7(), name: 'Invitee', email: `${uuidv7()}@example.test` }));
+    await database.system.db.insert(authUser).values(invitees);
+    // The rows `issue` writes, in one statement.
+    const bindings = invitees.map((invitee, index) => ({ userId: invitee.id, householdId: homes[index]!.id, scope: 'payer' as const, memberId: null }));
+    await database.system.db.insert(authVerification).values(bindings.map(binding => ({ value: JSON.stringify(binding),
+      identifier: `portal-invitation:${gymId}:${'a'.repeat(32)}${uuidv7().replaceAll('-', '')}`, expiresAt: new Date('2026-11-06T12:00:00Z'),
+      gymId, householdId: binding.householdId, userId: binding.userId, scope: binding.scope })));
+    // The real writer replaces the first one with a row of the same shape.
+    await store.withPayerInvitations(gymId, clock, tx => store.issue(tx, gymId, bindings[0]!, clock));
+    expect(await database.system.db.select().from(authVerification).where(eq(authVerification.userId, bindings[0]!.userId))).toMatchObject([{
+      value: JSON.stringify(bindings[0]), gymId, householdId: bindings[0]!.householdId, userId: bindings[0]!.userId, scope: 'payer' }]);
+    const statements = { auth: [] as { text: string; parameters: unknown[] }[], app: [] as { text: string; parameters: unknown[] }[] };
+    database.system.sql.options.debug = (_connection, text, parameters) => { statements.auth.push({ text, parameters }); };
+    database.app.sql.options.debug = (_connection, text, parameters) => { statements.app.push({ text, parameters }); };
+    let widget;
+    try { widget = await read(gymId); } finally { database.system.sql.options.debug = false; database.app.sql.options.debug = false; }
+    expect(widget).toMatchObject({ count: 2, items: [{ label: 'Household 1000', href: href(people[size]!.id) }, { label: 'Household 1001', href: href(people[size + 1]!.id) }] });
+    const queries = (pool: { text: string; parameters: unknown[] }[]) => pool.filter(entry => !/^(begin|commit|rollback)/i.test(entry.text));
+    // On the authentication pool, the gym and the shortlist with its count; on the app pool, the gym and the listed households' members.
+    expect(queries(statements.auth)).toHaveLength(2);
+    expect(queries(statements.auth).filter(entry => entry.text.includes('"auth_verification"'))).toHaveLength(1);
+    expect(queries(statements.app)).toHaveLength(2);
+    // A fixed handful of parameters each, never one per invited household.
+    for (const entry of [...queries(statements.auth), ...queries(statements.app)]) expect(entry.parameters.length).toBeLessThan(50);
   });
 
   it('skips households without an address or a member to open, and households that never asked for confirmation', async () => {

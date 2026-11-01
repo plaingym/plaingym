@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
-import { forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
+import { databaseCode, forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { billingRulesSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
   type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest } from '@plaingym/shared/contracts';
@@ -66,7 +66,7 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
         });
       } catch (error) {
         // A concurrent billing insert is also protected by the database currency foreign keys.
-        if (error instanceof Error && 'cause' in error && typeof error.cause === 'object' && error.cause !== null && 'code' in error.cause && error.cause.code === '23503')
+        if (databaseCode(error) === '23503')
           throw new AppError('conflict', 'Currency cannot change after billing records exist');
         throw error;
       }

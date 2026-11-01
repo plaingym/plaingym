@@ -92,6 +92,13 @@
       "when": 1793407147671,
       "tag": "0013_portal_invitation_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793507658084,
+      "tag": "0014_portal_invitation_scope",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, desc, eq, count, inArray, isNull } from 'drizzle-orm';
-import { forGym, members, signedLinks, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
+import { databaseCode, forGym, members, signedLinks, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
@@ -100,7 +100,7 @@ export function createWaiversService(options: WaiverOptions) {
         const [row] = await tx.insert(waiverTemplates).values({ ...base(ctx.gymId), ...parsed, version: 1 }).returning();
         await audit(tx, ctx, 'waiver.template.created', row!.id); return template(row!);
       }); } catch (error) {
-        if (error instanceof Error && error.cause && typeof error.cause === 'object' && 'code' in error.cause && error.cause.code === '23505') conflict('Template family already exists');
+        if (databaseCode(error) === '23505') conflict('Template family already exists');
         throw error;
       }
     },

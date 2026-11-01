@@ -6,6 +6,7 @@ export type { HouseholdScope } from './household.js';
 export { uuidv7 } from './id.js';
 export { advisoryLockNamespace, advisoryLocks } from './locks.js';
 export { writeAudit } from './audit.js';
+export { databaseCode } from './errors.js';
 export { allocateInvoiceNumber } from './invoice-numbers.js';
 export { assertRevised, revisionGuard, RevisionConflictError } from './revision.js';
 export { encryptedFields, encryptedFieldFor } from './encrypted-fields.js';

@@ -10,6 +10,7 @@ import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import type { Email } from '../../infra/email/index.js';
 import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
+import type { PostgresJobs } from '../../infra/jobs/postgres.js';
 import { assertCanResetPassword } from '../staff/auth.reset.js';
 import { assertPortalLoginTarget } from './household-users.js';
 
@@ -171,6 +172,8 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
         const link = await lockOnboardingLink(tx, linkId, clock);
         await assertPortalLoginTarget(tx, link.householdId, null, 'payer', clock);
         if (link.expiresAt < expiresAt) expiresAt = link.expiresAt;
+        // Keeps the identity until the code expires, even if an invitation for the same address is revoked or expires meanwhile.
+        await store.holdClaim(tx, gymId, { userId, householdId: link.householdId, linkId }, expiresAt, clock);
       });
       await sender({ gymId, email: input.email.trim().toLowerCase(), claim: codes.seal({ kind: 'onboarding', gymId, userId: user.id, linkId, expiresAt }) });
       return { data: { status: 'email_sent' as const } };
@@ -189,9 +192,10 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
           householdId = binding.householdId;
         });
       } else {
-        await scope(gymId, async tx => {
+        await store.completeOnboarding({ gymId, userId, linkId: claim.linkId }, async (tx, settle) => {
           await refuseStaff(tx, userId);
           const link = await lockOnboardingLink(tx, claim.linkId, clock);
+          await settle();
           await assertPortalLoginTarget(tx, link.householdId, null, 'payer', clock, timezone);
           const login = await grant(tx, gymId, { userId, householdId: link.householdId, scope: 'payer', memberId: null }, clock);
           await writeAudit(tx, { gymId, actorKind: 'user', actorUserId: userId, action: 'household_user.onboarding_claimed', targetType: 'household_user', targetId: login.id, occurredAt: clock.now() });
@@ -205,12 +209,27 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
 export type PortalInvitationService = ReturnType<typeof createPortalInvitationService>;
 
 export const portalInvitationExpiryJob = 'members.portal-invitations.expire';
-/** Each gym's expired portal invitations are deleted hourly, with any invitee identity left holding nothing (no account,
- * link, role, history or other invitation), so it can no longer sign in to a session without access. The same run deletes the
- * install's other expired verification rows, which Better Auth no longer cleans up itself. The runtime registers it. */
-export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire' | 'sweepExpired'> = createPortalInvitationStore()): readonly JobRegistration[] {
+/** Each gym's expired portal invitations and onboarding claim holds are deleted hourly, with any invitee identity left holding
+ * nothing (no account, link, role, history or other invitation), so it can no longer sign in to a session without access. The
+ * runtime registers it. */
+export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire'> = createPortalInvitationStore()): readonly JobRegistration[] {
   return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) {
     await store.expire(context.gymId, context.clock);
-    await store.sweepExpired(context.clock);
   } }];
+}
+
+export const verificationSweepJob = 'auth.verifications.sweep';
+/** The install's other expired verification rows (magic links, staff invitations), which Better Auth no longer cleans up itself,
+ * are deleted once an hour for the whole install, not once per gym: an explicit system job, as backups and job retention are. */
+export function registerVerificationSweep(queue: Pick<PostgresJobs, 'handleSystem' | 'enqueueSystem'>, clock: Clock,
+  store: Pick<PortalInvitationStore, 'sweepExpired'> = createPortalInvitationStore()) {
+  queue.handleSystem(verificationSweepJob, async (_payload, context) => { await store.sweepExpired(context.clock); });
+  return {
+    /** Call once a minute or so. The hour's idempotency key collapses repeated calls and competing processes into one run. */
+    async scheduleDue(): Promise<void> {
+      const hour = new Date(Math.floor(clock.now().getTime() / 3_600_000) * 3_600_000);
+      await queue.enqueueSystem(verificationSweepJob, {}, { timezone: 'UTC', runAt: hour,
+        idempotencyKey: 'sweep:' + hour.toISOString(), maxAttempts: 3 });
+    },
+  };
 }
