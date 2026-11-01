@@ -47,7 +47,25 @@ list in the Dockerfile. pnpm's store sits in a BuildKit cache mount
 lockfile only downloads the packages the store lacks. Each rebuild still leaves
 the new build output and server bundle in Docker's build cache; `docker buildx du`
 shows what it holds, and pruning it (`docker builder prune`) also clears the
-pnpm store.
+pnpm store. The store itself only grows between lockfile changes and is never
+pruned on its own. `docker buildx du --filter type=exec.cachemount` shows its
+size, and `docker buildx prune --filter type=exec.cachemount` clears it alone,
+so the next build downloads the packages again but keeps every layer.
+
+CI builds on runners that start with an empty cache. Image checks and the weekly
+image scan use the GitHub Actions cache backend (`type=gha`) for the Dockerfile's
+layers, so a rerun of a branch skips the dependency install when the manifests
+and lockfile are unchanged. The scope is one per architecture (`image-amd64`,
+`image-arm64`); the scan shares `image-amd64`. A branch reads its own cache and
+the default branch's, and Image checks does not build on `main` (it reuses the
+integration branch's result), so the scan's weekly run on `main` is what seeds
+the amd64 cache for new branches. The pnpm store mount is a cache mount, not a
+layer, so the GitHub cache does not hold it; a changed lockfile downloads its
+packages again, as on a fresh runner today. The cache keeps every build stage
+(`mode=max`), so each commit adds its source and build-output layers, about
+110 MB per architecture, to the repository's 10 GB Actions cache quota; the
+install layer (about 420 MB) is stored once per lockfile. Old entries are
+evicted least recently used first. `gh cache list` shows them by scope.
 
 The image workflow builds and tests on native amd64 and arm64 runners, exports
 both tested images, and assembles their manifest in an ephemeral loopback

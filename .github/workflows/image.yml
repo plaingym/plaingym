@@ -71,10 +71,27 @@ jobs:
         run: sudo sh deploy/test/update.sh
       - name: Test install and bootstrap checks
         run: sudo sh deploy/test/install.sh
+      # The GitHub cache backend needs the docker-container driver. The cache holds the Dockerfile's layers
+      # (the dependency install above all), one scope per architecture. It is per branch, with the default
+      # branch's cache as the fallback: a branch's first run starts cold unless the weekly image scan has
+      # filled the amd64 scope on main, and later runs on the branch reuse the install layer. The pnpm store
+      # mount is not part of it. A cache failure never fails the build.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build on the native CPU
-        run: |
-          docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=$SOURCE_URL" --build-arg "REVISION=$REVISION" --build-arg "VERSION=$VERSION" -t "$IMAGE" .
-          test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: |
+            SOURCE_URL=${{ env.SOURCE_URL }}
+            REVISION=${{ env.REVISION }}
+            VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,scope=image-${{ matrix.arch }},mode=max,ignore-error=true
+      - name: Check the built architecture
+        run: test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
       - name: Test the production stack
         run: node deploy/test/smoke.mjs "$IMAGE"
       - name: Export tested image

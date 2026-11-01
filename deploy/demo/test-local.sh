@@ -6,7 +6,7 @@ SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 [ "$(id -u)" -eq 0 ] || { echo 'Run the local smoke as root.' >&2; exit 1; }
 export PYTHONDONTWRITEBYTECODE=1
 cd "$SOURCE"
-python3 -m unittest -v test_config.py test_bootstrap.py test_snapshots.py
+python3 -m unittest -v test_config.py test_bootstrap.py test_snapshots.py test_compose.py
 grep -q 'export DEBIAN_FRONTEND=noninteractive' ../host.sh
 # shellcheck disable=SC2016
 grep -q 'install -d -m 0700 "$ROOT"' ../install.sh

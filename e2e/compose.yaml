@@ -14,6 +14,16 @@ x-postgres: &postgres
     interval: 2s
     timeout: 3s
     retries: 30
+# The production hardening of ../deploy/compose.yaml's app, for the one-shot step that runs the image's
+# own migrate entrypoint, so the specs fail if it ever writes outside /tmp or needs a capability.
+x-hardening: &hardening
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 512m
+  pids_limit: 128
+  tmpfs: ["/tmp:size=32m,mode=1777,noexec,nosuid"]
 x-app-env: &app-env
   POSTGRES_DB: plaingym
   APP_PASSWORD: ${E2E_APP_PASSWORD:?required}
@@ -43,6 +53,7 @@ services:
   # Multi-gym mode: only this one-shot step holds the maintenance role. It checks the roles and
   # migrates the demo database, then exits before the demo app starts without the role.
   demo-migrate:
+    <<: *hardening
     image: ${E2E_IMAGE:?required}
     entrypoint: [/app/deploy/database.sh, prepare]
     healthcheck: {disable: true}

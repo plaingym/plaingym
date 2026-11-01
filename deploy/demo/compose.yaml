@@ -1,18 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Overlay on ../compose.yaml; the installer copies both into its own directory.
+# The container hardening the app gets from ../compose.yaml (a different file, so an anchor can't
+# reach it), kept in one block for the one-shot steps. test_compose.py checks it matches the app's.
+x-hardening: &hardening
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: ${APP_MEMORY_LIMIT:-512m}
+  pids_limit: 128
+  tmpfs: ["/tmp:size=32m,mode=1777,noexec,nosuid"]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
 services:
   # Multi-gym mode: only this one-shot step holds the maintenance role (BYPASSRLS). It checks the
   # database roles and applies migrations, then exits before the app starts; the app refuses the role.
   migrate:
+    <<: *hardening
     image: ${APP_IMAGE:?set an explicit version or digest}
     restart: 'no'
-    init: true
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    mem_limit: ${APP_MEMORY_LIMIT:-512m}
-    pids_limit: 128
-    tmpfs: ["/tmp:size=32m,mode=1777,noexec,nosuid"]
     # It exits once migrated; the image's server healthcheck never applies.
     healthcheck: {disable: true}
     entrypoint: [/app/deploy/database.sh, prepare]
@@ -24,9 +31,6 @@ services:
       MAINTENANCE_DATABASE_URL: postgres://maintenance:${MAINTENANCE_PASSWORD:?required}@postgres:5432/${POSTGRES_DB:-plaingym}
     depends_on:
       postgres: {condition: service_healthy}
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
     networks: [database]
   app:
     depends_on:

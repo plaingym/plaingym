@@ -30,10 +30,21 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      # Shares the amd64 cache scope with Image checks (deploy/README.md). Image checks never builds on main, so
+      # the weekly run on main is what leaves a cache that every other branch can start from.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build the runtime image
-        run: |
-          docker build -f deploy/Dockerfile --build-arg "SOURCE_URL=${{ github.server_url }}/${{ github.repository }}" -t "$IMAGE" .
-          docker save "$IMAGE" -o "$RUNNER_TEMP/image.tar"
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha,scope=image-amd64
+          cache-to: type=gha,scope=image-amd64,mode=max,ignore-error=true
+      - name: Save the image for the scan
+        run: docker save "$IMAGE" -o "$RUNNER_TEMP/image.tar"
       - name: List every high and critical advisory
         run: |
           docker run --rm -v "$RUNNER_TEMP:/scan" -v "$PWD/deploy:/policy:ro" "$TRIVY_IMAGE" image --input /scan/image.tar \

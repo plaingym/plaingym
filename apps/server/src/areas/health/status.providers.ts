@@ -5,6 +5,7 @@ import { forGym } from '@plaingym/db';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import type { JobStatsQuery } from '../../core/interfaces/job-stats.js';
 import { sourceUrl } from '../../core/source-link.js';
+import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { healthProvider, statusMessage } from './status.js';
@@ -35,8 +36,10 @@ export function createStatusProviders(options: StatusOptions = {}) {
         details: { configured, lastTestAt: null }, message: statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
     }),
     healthProvider('disk', async (context) => {
-      if (!env.UPLOADS_DIR || !env.BACKUP_STAGING_DIR) return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskMissing') };
-      const volumes = await Promise.all([env.UPLOADS_DIR, env.BACKUP_STAGING_DIR].map(async (path) => {
+      // Multi-gym apps hold no restore staging (even if the variable is set by hand), so there the uploads volume alone is checked.
+      const paths = [env.UPLOADS_DIR, restoreStagingDirectory(env)].filter((path): path is string => !!path);
+      if (!env.UPLOADS_DIR) return { id: 'disk', status: 'not_configured', checkedAt: context.clock.now().toISOString(), details: null, message: statusMessage('diskMissing') };
+      const volumes = await Promise.all(paths.map(async (path) => {
         const stats = await disk(path), totalBytes = stats.blocks * stats.bsize, availableBytes = stats.bavail * stats.bsize;
         if (!Number.isSafeInteger(totalBytes) || !Number.isSafeInteger(availableBytes) || totalBytes <= 0 || availableBytes < 0 || availableBytes > totalBytes) throw new Error('Invalid disk statistics');
         return { totalBytes, availableBytes };
@@ -44,11 +47,11 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const critical = (bytes: number) => bytes < 128 * 1024 * 1024;
       const low = (volume: typeof volumes[number]) => volume.availableBytes / volume.totalBytes < 0.1 || volume.availableBytes < 1024 * 1024 * 1024;
       // TODO: expose separate volumes in the contract. Details carry the volume with least available space;
-      // the message includes both configured directories, without exposing filesystem paths.
+      // the message includes each configured directory, without exposing filesystem paths.
       const details = [...volumes].sort((a, b) => a.availableBytes - b.availableBytes)[0]!;
       return { id: 'disk', checkedAt: context.clock.now().toISOString(), details,
         status: volumes.some((v) => critical(v.availableBytes)) ? 'error' : volumes.some(low) ? 'warning' : 'healthy',
-        message: statusMessage('diskFree', { uploads: Math.floor(volumes[0]!.availableBytes / 1048576), staging: Math.floor(volumes[1]!.availableBytes / 1048576) }) };
+        message: statusMessage(volumes[1] ? 'diskFree' : 'diskFreeUploads', { uploads: Math.floor(volumes[0]!.availableBytes / 1048576), staging: volumes[1] ? Math.floor(volumes[1].availableBytes / 1048576) : 0 }) };
     }),
     healthProvider('version', async (context) => {
       const version = env.APP_VERSION ?? release.version;
