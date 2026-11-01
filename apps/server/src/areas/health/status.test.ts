@@ -72,7 +72,7 @@ describe('health permissions and isolation against PostgreSQL', () => {
 describe('built-in providers', () => {
   it('reports install SMTP fallback and prefers the gym settings', async () => {
     const fallback = { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
-    expect(await tile('smtp', gymB, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining('install�s') });
+    expect(await tile('smtp', gymB, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining("install's") });
     expect(await tile('smtp', gymA, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining('own SMTP') });
   });
   it('surfaces corrupt encrypted SMTP as unavailable without leaking its contents', async () => {
