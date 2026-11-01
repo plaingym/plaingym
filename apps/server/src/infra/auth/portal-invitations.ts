@@ -103,8 +103,9 @@ export type PortalClaim =
   | { readonly kind: 'onboarding'; readonly gymId: string; readonly userId: string; readonly linkId: string; readonly expiresAt: Date }
   | { readonly kind: 'invitation'; readonly gymId: string; readonly userId: string; readonly invitationId: string; readonly expiresAt: Date };
 const claimSchema = z.strictObject({ k: z.enum(['onboarding', 'invitation']), g: z.uuid(), u: z.uuid(), r: z.uuid(), x: z.int().positive() });
-/** Signed, stateless claim codes carried by the magic-link callback. Nothing is stored for a pending claim:
- * completion needs the signed-in session of the same user and rechecks the link or invitation the code names. */
+/** Signed, stateless claim codes carried by the magic-link callback. The code itself is not stored (an onboarding claim
+ * writes only a hold that keeps its identity, `holdClaim`): completion needs the signed-in session of the same user and
+ * rechecks the link or invitation the code names. */
 export function createPortalClaimCodes(secret: string) {
   const key = new Uint8Array(hkdfSync('sha256', secret, new Uint8Array(0), 'plaingym portal claim v1', 32));
   const mac = (payload: string) => createHmac('sha256', key).update(payload).digest('base64url');

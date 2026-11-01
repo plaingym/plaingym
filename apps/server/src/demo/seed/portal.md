@@ -71,8 +71,8 @@ adapter, offline. `portal.isolation.test.ts` checks that a second sandbox has it
 own student and QR key. `portal.reruns.test.ts` covers the seed without a test
 account, a failed run's resume and a missing waitlist class;
 `portal.reruns.billing.test.ts` and `portal.reruns.failure.test.ts` cover the
-billing switch restore and the reported failure. These four files start from one
-seeded sandbox that each test gets a copy of. `portal.runtime.test.ts` starts the
+billing switch restore and the reported failure. Each of these four files seeds
+one sandbox before its tests and gives each test a copy of it. `portal.runtime.test.ts` starts the
 production runtime in demo mode and walks the full demo through its HTTP routes:
 the student's portal and QR check-in, a join activated by the install webhook, the
 outbox sign-in link and a new QR code at the kiosk; `portal.runtime.limit.test.ts`
