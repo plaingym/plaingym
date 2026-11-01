@@ -20,8 +20,9 @@ Local disk uses private directories and files (0700/0600 on systems supporting
 POSIX permissions), a SHA-256 directory name per gym and per logical key, and
 streamed writes to a temporary file. The body is renamed into place before its
 metadata is published. Logical keys remain `gymId/path`; they are never interpreted
-as filesystem paths. Preserve the entire root directory when moving or restoring
-uploads, including reservation records and deletion markers. The storage root is
+as filesystem paths; the key index (`index/`) and listable sweep markers (`swept/`)
+sit beside the record directories. Preserve the entire root directory when moving or
+restoring uploads, including reservation records, deletion markers, and the index. The storage root is
 application-owned and must not be writable by other users.
 
 Both upload adapters reserve keys atomically across processes. Reservations are
@@ -35,17 +36,40 @@ only while holding the backup lock and pass all keys protected by the snapshot.
 An interrupted sweep is retried on its next run. Failed writes can leave private,
 unpublished objects; never reuse or manually remove their reservations.
 
+Both upload adapters keep a key index: one empty entry per reserved key that isn't
+swept, named by the hex of the key's bytes after the gym prefix (a long or
+ill-formed key gets the hex of its first 80 bytes and its digest). `put()` writes the
+entry before the reservation, so every reserved key has one, and removes it again
+when the reservation fails with nothing reserved or the key is swept; `sweep()`
+removes it after the sweep marker and the blob, and `restore()` writes it again. `list(prefix)`
+reads only the entries under the prefix and their records, so it costs in proportion
+to the keys under the prefix, and swept keys cost nothing. Entries without a
+published, unswept record of the gym (a crash before or after the reservation) are
+skipped. The first `list()` of a store in each process, and every `sweep()`,
+reconciles the index: it lists the entries, the records and the listable
+sweep markers, and indexes every record that has no entry and isn't swept, reading
+only those; it also removes the blob a sweep by an older release left behind. A
+store written before the index existed, or by an older release after it, lists
+correctly with no owner step; its first listing waits for this backfill. A key a
+sweep's own reconciliation indexes is not removed until the next sweep, because the
+caller's protected keys came from a listing that could not include it. Another
+process running a release from before the index can write keys that this process
+lists only after its next sweep or restart, so don't run both releases side by side.
+On S3, the reconciliation lists without reading objects (1,000 names a request), a
+sweep reads only records with a deletion marker, a record and its markers are read
+together, and up to 16 keys are read at a time.
+
 `createS3Client(config)` defaults to region `auto` and path-style addressing, and
 sets request and response checksum policies to `WHEN_REQUIRED`. Pass an endpoint
 and explicit credentials for an S3-compatible provider. `S3Uploads` takes
 `{ client, bucket, gymId, clock? }`; `S3BackupObjectStore` takes
 `{ client, bucket, clock? }`. Close the client with `client.destroy()` on shutdown.
-Upload records, deletion markers, sweep markers, and immutable blobs live below
-`gymId/.storage/`. Use a separate backup bucket so retention cannot remove upload
+Upload records, deletion markers, sweep markers, index entries, and immutable blobs
+live below `gymId/.storage/`. Use a separate backup bucket so retention cannot remove upload
 reservations. S3 upload URLs use the AWS SDK presigner and expire within seven days.
 The bucket must support conditional `PutObject` with `If-None-Match: *` and strong
-read-after-write consistency. Do not apply lifecycle deletion to reservations or
-markers. Bucket permissions must permit object get/head/list/put/delete, multipart
+read-after-write consistency. Do not apply lifecycle deletion to reservations,
+markers, or index entries. Bucket permissions must permit object get/head/list/put/delete, multipart
 create/upload/complete/abort, and the conditional writes.
 
 Backup objects use one multipart request at a time, with fixed 8 MiB parts by
@@ -61,3 +85,6 @@ uncertain outcome; callers should inspect the key before retrying a publication.
 S3 SDK requests to a loopback HTTP protocol fixture. It also verifies atomic
 reservations across clients and restarts, transaction guards inside real `forGym`
 transactions, pagination, signed downloads, fixed part sizes, and failure cleanup.
+`storage.index.test.ts` covers the key index on both adapters: stores written before
+it, interrupted backfills, crashes around the reservation, restore, other gyms, long
+and ill-formed keys, and the S3 requests a listing and a sweep make.

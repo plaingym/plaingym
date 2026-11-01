@@ -111,7 +111,8 @@ it('reuses one demo PDF across concurrent downloads and service recreation, with
     const before = f.s3.methods.length;
     const links = await Promise.all((await Promise.all([pdfRequest(f), pdfRequest(f, f.gyms[0], '192.0.2.2')])).map(link));
     expect(f.render).toHaveBeenCalledTimes(1);
-    expect(writes(f.s3.methods.slice(before))).toEqual(['PUT', 'POST', 'PUT', 'POST', 'PUT']);
+    // One upload: index entry, reservation, multipart create, part and complete, then the record.
+    expect(writes(f.s3.methods.slice(before))).toEqual(['PUT', 'PUT', 'POST', 'PUT', 'POST', 'PUT']);
     const cached = f.s3.methods.length;
     for (let i = 0; i < 4; i++) await link(await pdfRequest(f));
     const recreated = createWaiversService({ scope: db.forGym, clock: f.clock, uploadsFor: f.uploads.forGym,
@@ -152,7 +153,7 @@ it('falls back to fresh tombstoned PDFs after a cached upload leaves an unreadab
     expect(await uploads.head(cached)).toBeNull();
     const before = f.s3.methods.length;
     const second = await link(await pdfRequest(f));
-    expect(writes(f.s3.methods.slice(before))).toHaveLength(7);
+    expect(writes(f.s3.methods.slice(before))).toHaveLength(9);
     expect(f.render).toHaveBeenCalledTimes(2);
     expect(new URL(first.url).pathname).not.toBe(new URL(second.url).pathname);
     for (const data of [first, second]) {

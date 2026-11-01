@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { decodeRecord, digest, DurableUploads, encodeRecord, gymKey, validGym } from './common.js';
+import { decodeRecord, digest, DurableUploads, encodeRecord, gymKey, recordId, validGym } from './common.js';
 import type { UploadBackend, UploadRecord } from './common.js';
 import type { ObjectInfo } from './index.js';
 
@@ -19,13 +19,25 @@ export interface LocalUploadsOptions {
   readonly clock?: Clock;
 }
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+function exists(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'EEXIST'; }
+async function names(directory: string): Promise<string[]> {
+  try { return await readdir(directory); } catch (error) { if (missing(error)) return []; throw error; }
+}
+/** Writes an empty marker file once; a second write is a no-op. */
+async function mark(directory: string, name: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  try { await writeFile(join(directory, name), '', { flag: 'wx', mode: 0o600 }); } catch (error) { if (!exists(error)) throw error; }
+}
+const localStores = {};
 class LocalBackend implements UploadBackend {
   readonly root: string;
   readonly signingKey: Buffer;
   readonly downloadUrl: URL;
+  readonly identity: readonly [object, string];
   constructor(readonly options: LocalUploadsOptions, readonly clock: Clock) {
     validGym(options.gymId);
     this.root = join(resolve(options.root), digest(options.gymId));
+    this.identity = [localStores, this.root];
     this.signingKey = Buffer.from(options.signingKey);
     if (this.signingKey.length < 32) throw new Error('Storage signing key must have at least 32 bytes');
     this.downloadUrl = new URL(options.downloadUrl);
@@ -34,6 +46,9 @@ class LocalBackend implements UploadBackend {
       throw new Error('Invalid download URL');
   }
   path(key: string, file: string): string { return join(this.root, digest(key), file); }
+  // The key index and the listable swept markers sit beside the record directories, which are all digests.
+  get indexDirectory(): string { return join(this.root, 'index'); }
+  get sweptDirectory(): string { return join(this.root, 'swept'); }
   async reserve(key: string): Promise<void> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     try { await mkdir(join(this.root, digest(key)), { mode: 0o700 }); }
@@ -43,15 +58,17 @@ class LocalBackend implements UploadBackend {
     }
     await this.save({ key });
   }
-  async record(key: string): Promise<UploadRecord | null> {
+  async record(key: string): Promise<UploadRecord | null> { return this.recordAt(digest(key)); }
+  async recordAt(id: string): Promise<UploadRecord | null> {
+    const directory = join(this.root, id);
     let record: UploadRecord;
-    try { record = decodeRecord(await readFile(this.path(key, 'record.json'), 'utf8')); }
+    try { record = decodeRecord(await readFile(join(directory, 'record.json'), 'utf8')); }
     catch (error) { if (missing(error)) return null; throw error; }
     if (record.info) {
-      try { record.info = { ...record.info, deletedAt: new Date(await readFile(this.path(key, 'deleted'), 'utf8')) }; }
+      try { record.info = { ...record.info, deletedAt: new Date(await readFile(join(directory, 'deleted'), 'utf8')) }; }
       catch (error) { if (!missing(error)) throw error; }
     }
-    try { await readFile(this.path(key, 'swept')); record.swept = true; }
+    try { await readFile(join(directory, 'swept')); record.swept = true; }
     catch (error) { if (!missing(error)) throw error; }
     return record;
   }
@@ -61,7 +78,8 @@ class LocalBackend implements UploadBackend {
       try {
         await writeFile(this.path(record.key, record.swept ? 'swept' : 'deleted'),
           record.swept ? '' : record.info!.deletedAt!.toISOString(), { flag: 'wx', mode: 0o600 });
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      } catch (error) { if (!exists(error)) throw error; }
+      if (record.swept) await mark(this.sweptDirectory, digest(record.key));
       return;
     }
     const temporary = this.path(record.key, randomUUID() + '.tmp');
@@ -70,21 +88,15 @@ class LocalBackend implements UploadBackend {
       await rename(temporary, this.path(record.key, 'record.json'));
     } finally { await rm(temporary, { force: true }); }
   }
-  async records(): Promise<readonly UploadRecord[]> {
-    let entries: string[];
-    try { entries = await readdir(this.root); } catch (error) { if (missing(error)) return []; throw error; }
-    const records: UploadRecord[] = [];
-    for (const entry of entries) {
-      if (!/^[a-f0-9]{64}$/.test(entry)) continue;
-      try {
-        const base = decodeRecord(await readFile(join(this.root, entry, 'record.json'), 'utf8'));
-        const record = await this.record(base.key);
-        if (record) records.push(record);
-      }
-      catch (error) { if (!missing(error)) throw error; }
-    }
-    return records;
+  async index(name: string): Promise<void> { await mark(this.indexDirectory, name); }
+  async unindex(name: string): Promise<void> { await rm(join(this.indexDirectory, name), { force: true }); }
+  async entries(prefix: string): Promise<readonly string[]> {
+    return (await names(this.indexDirectory)).filter((name) => name.startsWith(prefix));
   }
+  async recordIds(): Promise<readonly string[]> { return (await names(this.root)).filter((name) => recordId.test(name)); }
+  async sweptIds(): Promise<ReadonlySet<string>> { return new Set((await names(this.sweptDirectory)).filter((name) => recordId.test(name))); }
+  async deletedIds(): Promise<undefined> { return undefined; }
+  async blobIds(): Promise<undefined> { return undefined; }
   async put(key: string, body: ReadableStream<Uint8Array>, contentType: string): Promise<ObjectInfo> {
     const temporary = this.path(key, 'body.part');
     // Only the reservation holder writes a key; a part left by a crash is never published.

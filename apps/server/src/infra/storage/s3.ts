@@ -9,7 +9,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { decodeRecord, digest, DurableUploads, encodeRecord, validGym, validKey } from './common.js';
+import { decodeRecord, digest, DurableUploads, encodeRecord, recordId, validGym, validKey } from './common.js';
 import type { UploadBackend, UploadRecord } from './common.js';
 import type { BackupObjectStore, ObjectInfo, PutObjectOptions } from './index.js';
 
@@ -128,6 +128,15 @@ export class S3BackupObjectStore implements BackupObjectStore {
     assertNoTransaction('storage.listObjects');
     if (prefix) validKey(prefix);
     const objects: ObjectInfo[] = [];
+    for (const key of await this.listKeys(prefix)) {
+      const metadata = await this.headObject(key);
+      if (metadata) objects.push(metadata);
+    }
+    return objects.sort((a, b) => a.key.localeCompare(b.key));
+  }
+  /** Lists the keys under a prefix without reading the objects: one request per page of up to 1,000. */
+  async listKeys(prefix: string): Promise<string[]> {
+    const keys: string[] = [];
     let token: string | undefined;
     do {
       const page = await this.options.client.send(new ListObjectsV2Command({
@@ -135,14 +144,14 @@ export class S3BackupObjectStore implements BackupObjectStore {
       }));
       for (const object of page.Contents ?? []) {
         if (!object.Key) throw new Error('S3 list entry has no key');
-        const metadata = await this.headObject(object.Key);
-        if (metadata) objects.push(metadata);
+        if (!object.Key.startsWith(prefix)) throw new Error('S3 list entry is outside its prefix');
+        keys.push(object.Key);
       }
       if (page.IsTruncated && (!page.NextContinuationToken || page.NextContinuationToken === token))
         throw new Error('Invalid S3 pagination token');
       token = page.IsTruncated ? page.NextContinuationToken : undefined;
     } while (token);
-    return objects.sort((a, b) => a.key.localeCompare(b.key));
+    return keys;
   }
   async deleteObject(key: string): Promise<void> {
     assertNoTransaction('storage.deleteObject'); validKey(key);
@@ -153,10 +162,12 @@ export class S3BackupObjectStore implements BackupObjectStore {
 class S3UploadBackend implements UploadBackend {
   readonly store: S3BackupObjectStore;
   readonly prefix: string;
+  readonly identity: readonly [object, string];
   constructor(readonly options: S3StoreOptions & { gymId: string }) {
     validGym(options.gymId);
     this.store = new S3BackupObjectStore(options);
     this.prefix = options.gymId + '/.storage/';
+    this.identity = [options.client, options.bucket + '/' + options.gymId];
   }
   recordKey(key: string): string { return this.prefix + 'records/' + digest(key); }
   blobKey(key: string): string { return this.prefix + 'blobs/' + digest(key); }
@@ -168,15 +179,16 @@ class S3UploadBackend implements UploadBackend {
       }));
     } catch (error) { if (precondition(error)) throw new Error('Upload keys are immutable', { cause: error }); throw error; }
   }
-  async record(key: string): Promise<UploadRecord | null> {
-    const body = await this.store.getObject(this.recordKey(key));
-    if (!body) return null;
-    const record = decodeRecord(await new Response(body).text());
-    if (record.info) {
-      const deleted = await this.store.getObject(this.prefix + 'deleted/' + digest(key));
-      if (deleted) record.info = { ...record.info, deletedAt: new Date(await new Response(deleted).text()) };
-    }
-    if (await this.store.headObject(this.prefix + 'swept/' + digest(key))) record.swept = true;
+  async record(key: string): Promise<UploadRecord | null> { return this.recordAt(digest(key)); }
+  async recordAt(id: string): Promise<UploadRecord | null> {
+    // The record and its markers are separate objects, so read them together.
+    const text = async (key: string) => { const body = await this.store.getObject(key); return body && new Response(body).text(); };
+    const [json, deleted, swept] = await Promise.all([text(this.prefix + 'records/' + id), text(this.prefix + 'deleted/' + id),
+      this.store.headObject(this.prefix + 'swept/' + id)]);
+    if (json === null) return null;
+    const record = decodeRecord(json);
+    if (record.info && deleted !== null) record.info = { ...record.info, deletedAt: new Date(deleted) };
+    if (swept) record.swept = true;
     return record;
   }
   async save(record: UploadRecord): Promise<void> {
@@ -191,17 +203,20 @@ class S3UploadBackend implements UploadBackend {
     await this.options.client.send(new PutObjectCommand({ Bucket: this.options.bucket,
       Key: this.recordKey(record.key), Body: encodeRecord(record), ContentType: 'application/json' }));
   }
-  async records(): Promise<readonly UploadRecord[]> {
-    const records: UploadRecord[] = [];
-    for (const object of await this.store.listObjects(this.prefix + 'records/')) {
-      const body = await this.store.getObject(object.key);
-      if (body) {
-        const base = decodeRecord(await new Response(body).text());
-        const record = await this.record(base.key);
-        if (record) records.push(record);
-      }
-    }
-    return records;
+  async index(name: string): Promise<void> {
+    await this.options.client.send(new PutObjectCommand({ Bucket: this.options.bucket, Key: this.prefix + 'index/' + name,
+      Body: '', ContentType: 'application/octet-stream' }));
+  }
+  async unindex(name: string): Promise<void> { await this.store.deleteObject(this.prefix + 'index/' + name); }
+  async entries(prefix: string): Promise<readonly string[]> { return this.names('index/' + prefix); }
+  async recordIds(): Promise<readonly string[]> { return (await this.names('records/')).filter((id) => recordId.test(id)); }
+  async sweptIds(): Promise<ReadonlySet<string>> { return new Set((await this.names('swept/')).filter((id) => recordId.test(id))); }
+  async deletedIds(): Promise<ReadonlySet<string>> { return new Set((await this.names('deleted/')).filter((id) => recordId.test(id))); }
+  async blobIds(): Promise<ReadonlySet<string>> { return new Set((await this.names('blobs/')).filter((id) => recordId.test(id))); }
+  /** Names of the objects under a folder of this store, without the folder (`index/<name prefix>` lists entries). */
+  async names(folder: string): Promise<string[]> {
+    const start = this.prefix + folder.slice(0, folder.lastIndexOf('/') + 1);
+    return (await this.store.listKeys(this.prefix + folder)).map((key) => key.slice(start.length));
   }
   async put(key: string, body: ReadableStream<Uint8Array>, contentType: string): Promise<ObjectInfo> {
     return this.store.putObject(this.blobKey(key), body, { contentType });

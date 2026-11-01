@@ -15,12 +15,20 @@ export async function s3Server() {
   const objects = new Map<string, Stored>();
   const uploads = new Map<string, Multipart>();
   const state = { aborted: 0, failPart: 0, failComplete: false, failAbort: false,
-    completedPartSizes: [] as number[][], requests: 0 };
+    completedPartSizes: [] as number[][], requests: 0,
+    /** Keys per list page; real S3 returns up to 1,000. Two exercises pagination. */
+    pageSize: 2,
+    /** While set, each request is logged as `METHOD key` (`LIST prefix` for listings). */
+    log: undefined as string[] | undefined,
+    /** Answers 500 to each request it matches, before handling it. */
+    fail: undefined as ((method: string, key: string) => boolean) | undefined };
   const xml = (response: ServerResponse, body: string, status = 200) => {
     response.writeHead(status, { 'Content-Type': 'application/xml' }); response.end(body);
   };
-  const failure = (response: ServerResponse, code: string, status: number) => xml(response,
-    `<Error><Code>${code}</Code><Message>${code}</Message></Error>`, status);
+  // S3 answers a failed HEAD without a body; a body there makes the SDK drop the connection.
+  const failure = (response: ServerResponse, code: string, status: number) => response.req.method === 'HEAD'
+    ? (response.writeHead(status, { 'Content-Length': '0' }), response.end())
+    : xml(response, `<Error><Code>${code}</Code><Message>${code}</Message></Error>`, status);
   async function handle(request: IncomingMessage, response: ServerResponse) {
     state.requests++;
     const url = new URL(request.url!, 'http://localhost');
@@ -32,6 +40,9 @@ export async function s3Server() {
     const type = request.headers['content-type'] ?? 'application/octet-stream';
     const id = url.searchParams.get('uploadId');
     const upload = id ? uploads.get(id) : undefined;
+    const listing = url.searchParams.has('list-type');
+    state.log?.push(listing ? 'LIST ' + bucket + '/' + (url.searchParams.get('prefix') ?? '') : request.method + ' ' + key);
+    if (!listing && state.fail?.(request.method!, key)) { failure(response, 'InternalError', 500); return; }
     if (url.searchParams.has('uploads') && request.method === 'POST') {
       const uploadId = randomUUID(); uploads.set(uploadId, { key, contentType: type, parts: new Map() });
       xml(response, `<InitiateMultipartUploadResult><Bucket>storage</Bucket><Key>${escape(key)}</Key><UploadId>${uploadId}</UploadId></InitiateMultipartUploadResult>`); return;
@@ -65,12 +76,13 @@ export async function s3Server() {
         xml(response, `<CompleteMultipartUploadResult><Bucket>storage</Bucket><Key>${escape(key)}</Key><ETag>${escape(object.etag)}</ETag></CompleteMultipartUploadResult>`); return;
       }
     }
-    if (url.searchParams.has('list-type')) {
+    if (listing) {
       const prefix = bucket + '/' + (url.searchParams.get('prefix') ?? '');
       const offset = Number(url.searchParams.get('continuation-token') ?? 0);
+      const size = Math.min(state.pageSize, Number(url.searchParams.get('max-keys') ?? Infinity));
       const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
-      const page = keys.slice(offset, offset + 2); const more = offset + 2 < keys.length;
-      xml(response, `<ListBucketResult><Name>storage</Name><IsTruncated>${more}</IsTruncated>${more ? `<NextContinuationToken>${offset + 2}</NextContinuationToken>` : ''}${page.map((key) => {
+      const page = keys.slice(offset, offset + size); const more = offset + size < keys.length;
+      xml(response, `<ListBucketResult><Name>storage</Name><IsTruncated>${more}</IsTruncated>${more ? `<NextContinuationToken>${offset + size}</NextContinuationToken>` : ''}${page.map((key) => {
         const object = objects.get(key)!;
         return `<Contents><Key>${escape(key.slice(bucket.length + 1))}</Key><LastModified>${new Date(object.modified).toISOString()}</LastModified><ETag>${escape(object.etag)}</ETag><Size>${object.bytes.length}</Size></Contents>`;
       }).join('')}</ListBucketResult>`); return;
