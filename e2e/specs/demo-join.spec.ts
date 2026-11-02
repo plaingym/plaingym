@@ -241,6 +241,8 @@ test("the portal schedule wraps a class name with no break opportunity inside a 
   const heading = page.getByText(name, { exact: true }), loading = page.getByText('Loading classes…', { exact: true });
   await expect(loading).toHaveCount(0);
   await expect(heading).toBeVisible();
+  // The member's own name, not the generic "Member" label, so its wrapping is what the layout check sees.
+  await expect(page.getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
   await accessibleLayout(page, info, 'portal-schedule-long-name');
 });
 

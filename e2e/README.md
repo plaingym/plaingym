@@ -102,8 +102,8 @@ The checks cover:
   installs (manifest, service worker, no installability errors), books a class, waits
   on a full class and is promoted when staff free the place, shows a QR code that the
   kiosk reads from its camera (frames drawn from the portal's own image), and the
-  coach's roster shows the check-in. A class and a household member with 56-character names that have
-  no break opportunity stay inside the portal schedule at 360 px. Two tests are marked `test.fail` for open
+  coach's roster shows the check-in. A 56-character class name and a household member's 55-character last name, neither with a
+  break opportunity, stay inside the portal schedule at 360 px. Two tests are marked `test.fail` for open
   findings (the payment-mode Checkout start, and the schedule actions' accessible
   names); each fails until its fix lands, then must be unmarked.
 * Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
