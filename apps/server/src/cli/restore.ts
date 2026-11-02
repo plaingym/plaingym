@@ -38,7 +38,7 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
 }
 /** The snapshot command's answer when the owner hasn't set up backups; `update.sh` prints it and changes nothing. */
 export class BackupsNotSetUpError extends Error {
-  constructor() { super('Backups are not set up: set them up in Settings → Backups, then run the update again'); this.name = 'BackupsNotSetUpError'; }
+  constructor() { super('Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again'); this.name = 'BackupsNotSetUpError'; }
 }
 async function maintenance(args: readonly string[], environment: ReturnType<typeof maintenanceEnvironment>): Promise<void> {
   if (args[0] === 'snapshot') {

@@ -26,12 +26,12 @@ beforeAll(async () => {
 });
 afterAll(async () => { vi.unstubAllEnvs(); await closeDatabase(); await rm(directory, { recursive: true, force: true }); });
 
-it('tells the person running an update to set up backups in Settings → Backups when none are configured', async () => {
+it('tells the person running an update to set up backups in Settings → Email, payments and backups when none are configured', async () => {
   const failure = await maintenanceCommand(['snapshot', 'pre-upgrade']).then(() => null, (error: unknown) => error);
   expect(failure).toBeInstanceOf(BackupsNotSetUpError);
   const lines: string[] = [], messages: string[] = [], previous = setLogSink((line) => lines.push(line));
   try { reportMaintenanceFailure(['snapshot', 'pre-upgrade'], failure, (line) => messages.push(line)); } finally { setLogSink(previous); }
-  expect(messages).toEqual(['Backups are not set up: set them up in Settings → Backups, then run the update again']);
+  expect(messages).toEqual(['Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again']);
   expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'cli.maintenance_failed', command: 'snapshot', error: { name: 'BackupsNotSetUpError' } });
 });
 it('keeps the generic line for every other failure', () => {

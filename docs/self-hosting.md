@@ -227,8 +227,8 @@ The updater:
 
 1. pulls the new image while the app keeps running;
 2. stops the app and takes a pre-upgrade backup. If backups aren't set up, it
-   says so ("Backups are not set up: set them up in Settings → Backups, then run
-   the update again"), changes nothing and restarts the current version;
+   says so ("Backups are not set up: set them up in Settings → Email, payments
+   and backups, then run the update again"), changes nothing and restarts the current version;
 3. starts the new image, which applies its database migrations before it reports
    healthy;
 4. records the new image in `.env` only once the new version is healthy.

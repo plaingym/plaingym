@@ -271,8 +271,8 @@ coordinated, encrypted install snapshot to the gym's backup destination, kept
 under the backup retention's pre-upgrade rule
 (`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
 the snapshot and the start of the target image. Without configured backups the
-snapshot exits with "Backups are not set up: set them up in Settings → Backups,
-then run the update again", and the updater says nothing was changed and restarts
+snapshot exits with "Backups are not set up: set them up in Settings → Email,
+payments and backups, then run the update again", and the updater says nothing was changed and restarts
 the current image. Any other snapshot failure prints a generic line (its cause goes
 to the log without its message), with the same outcome. It then starts the target image, which applies its migrations before
 reporting healthy, runs the health check, and changes the persisted image pin
