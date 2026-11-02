@@ -46,7 +46,7 @@ pnpm cli setup-link
 ```
 
 The token is required to create the first owner or restore a backup. Backups
-can be deferred with **Set up later**. Use `pnpm seed <gym-uuid>` to apply sample content.
+can be deferred with **Set up later** and added in **Settings → Email, payments and backups**. Use `pnpm seed <gym-uuid>` to apply sample content.
 `pnpm cli <command>` runs any server command with the root `.env`, as `gym-app <command>`
 does in a deployed container.
 

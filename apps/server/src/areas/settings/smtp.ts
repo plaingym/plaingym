@@ -2,7 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
-import type { SmtpConfig } from '../../infra/email/index.js';
+import { SmtpEmail, type EmailMessage, type SmtpConfig } from '../../infra/email/index.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 
 /** The gym's own sending service, stored encrypted in `gyms.smtp_config_encrypted`. */
@@ -19,6 +19,22 @@ export function encryptSmtpConfig(key: Buffer, config: StoredSmtpConfig): string
 function fromStored(config: StoredSmtpConfig): SmtpConfig {
   return { host: config.host, port: config.port, security: config.security, from: config.from,
     auth: { user: config.username, pass: config.password } };
+}
+/** Submitted settings (setup and Settings → Email) in their stored form: `secure` is implicit TLS, otherwise STARTTLS. */
+export function storedSmtpFromRequest(input: { host: string; port: number; secure: boolean; username: string; password: string; from: string }): StoredSmtpConfig {
+  return { host: input.host, port: input.port, security: input.secure ? 'tls' : 'starttls', username: input.username, password: input.password, from: input.from };
+}
+export type SendSmtpTest = (config: SmtpConfig, message: EmailMessage) => Promise<void>;
+/**
+ * Sends `message` through these settings, outside any transaction, and answers whether the server accepted it. A
+ * failure is never raised or logged: its message can quote the submitted host, user or password.
+ */
+export async function sendSmtpTest(config: StoredSmtpConfig, message: EmailMessage, send?: SendSmtpTest): Promise<boolean> {
+  try {
+    if (send) await send(fromStored(config), message);
+    else { const email = new SmtpEmail(fromStored(config)); try { await email.verifyTestSend(message); } finally { email.close(); } }
+    return true;
+  } catch { return false; }
 }
 
 /** Install-wide fallback from `SMTP_*`, used by any gym without its own sending service. */

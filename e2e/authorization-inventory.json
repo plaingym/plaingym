@@ -735,6 +735,54 @@
     }
   },
   {
+    "method": "GET",
+    "path": "/api/settings/integrations",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/settings/integrations/backups",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/settings/integrations/backups/confirm",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/settings/integrations/email",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/settings/integrations/email",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/settings/integrations/stripe",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
     "method": "POST",
     "path": "/api/setup/finish",
     "permission": {

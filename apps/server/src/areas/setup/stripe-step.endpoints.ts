@@ -10,7 +10,7 @@ import { provisionerFor, readStripeConfig, type StripeConfig, type StripeProvisi
 /**
  * Keeps each gym's stored webhook endpoint in line with this release: the subscribed events, and the pinned API version.
  * Stripe cannot change an endpoint's API version, so a different version replaces the endpoint and stores its new
- * signing secret. An endpoint deleted in the Stripe dashboard is recreated the same way, since the key is only saved in setup. Stripe being unreachable is logged and retried at the next start or Stripe settings save.
+ * signing secret. An endpoint deleted in the Stripe dashboard is recreated the same way, since the key is saved only in setup or Settings. Stripe being unreachable is logged and retried at the next start or Stripe settings save.
  */
 export function createStripeEndpointCheck(options: { key: Buffer; gyms: () => Promise<readonly { gymId: string }[]>;
   origin: (gymId: string) => Promise<string>; clock?: Clock; scope?: typeof forGym; provisioner?: (key: string) => StripeProvisioner;

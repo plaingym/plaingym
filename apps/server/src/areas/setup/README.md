@@ -19,7 +19,15 @@ and activates the destination only after the owner pastes the matching identity.
 The saved fields are read directly by `loadBackupConfig`; the default budget is 8 GB.
 Credential values never enter progress or audits.
 **Set up later** explicitly finishes without backups, clears any unconfirmed
-destination, and leaves the health tile at not configured.
+destination, and leaves the health tile at not configured until the owner adds
+them in Settings.
+
+Email, Stripe and backups stay changeable after setup through
+`areas/settings/integrations.ts`, which shares these steps' parts rather than
+copying them: `sendSmtpTest` and `storedSmtpFromRequest` (`settings/smtp.ts`),
+`createStripeConnection` (the key probe and webhook endpoint lifecycle, in
+`stripe-step.ts`), and `backup-key.ts` (key pair, key check, stored destination,
+blob key).
 
 Restore runs through `RestoreService`, outside the HTTP activity lease. The small
 external setup journal stores the random polling ID, snapshot ID, and safe status;

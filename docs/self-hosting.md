@@ -101,9 +101,41 @@ After setup, billing and member emails are still paused. Turn them on in
 **Settings → Go live** once its checklist is clear: payments configured, cards on
 file for paid memberships, current waivers signed, email and backups set up.
 
-Email, Stripe and backups are set in the wizard only; the admin's **Settings**
-covers the gym's details, booking rules, billing rules, currency, drop-in fee and
-go-live.
+The admin's **Settings** covers the gym's details, booking rules, billing rules,
+currency, drop-in fee and go-live. Its **Email, payments and backups** section
+(owners only) changes what the wizard set up, or adds what was skipped, through
+the same steps: see [After setup](#after-setup).
+
+## After setup
+
+Owners change email, Stripe and backups in **Settings → Email, payments and
+backups**. Saved passwords, keys and the webhook signing secret are never shown
+again, and every change is recorded in the audit log without them.
+
+* **Email** shows the SMTP host, port, encryption and sender the gym uses, or that
+  it uses the install's `SMTP_*` settings. New settings are saved only after a test
+  email to an address you choose is accepted. **Remove** goes back to the
+  install's settings, or to no email. Either change can switch how people sign in
+  (`AUTH_PASSWORD_LOGIN=auto`: emailed links with email, passwords without); the
+  page says how before you save. Removing email is refused while it is your only
+  way to sign in (your account has no password).
+* **Payments** shows the Stripe mode (test or live) and whether the webhook
+  endpoint is registered. A new restricted key is checked and its webhook endpoint
+  kept or replaced exactly as in setup. Once any household has a Stripe customer,
+  a card is saved or a card payment exists, the new key must be for the same Stripe
+  account and the same mode: those customers, cards and payments belong to it.
+  That includes test mode: once a test card or customer exists, a live key is
+  refused.
+* **Backups** sets up backups skipped in setup, or moves them to another bucket,
+  or replaces the backup key. As in setup, the app shows a new private key **once**,
+  and nothing changes until you paste it back to prove you saved it; until then,
+  snapshots keep using the current bucket and key. A new bucket is checked with its
+  credentials before the key is made. A snapshot with the new settings starts
+  right after you confirm. Snapshots under the old key stay readable only with
+  that key until retention removes them, so keep the old key until then. After a
+  move, the app no longer manages the old bucket: its snapshots stay there until
+  you delete them. The section also shows the last restorable
+  snapshot and the retention budget.
 
 ## Stripe
 
@@ -122,7 +154,8 @@ Stripe dashboard, create a restricted key with:
 | Events | Read |
 | Disputes | Read |
 
-Paste it into the wizard's payment step. The app checks each permission without
+Paste it into the wizard's payment step (or, later, **Settings → Email, payments
+and backups**). The app checks each permission without
 moving money (a missing one is named), then registers its webhook endpoint at
 `https://gym.example.org/webhooks/stripe`. Use a test key (`rk_test_…`) to try
 billing first; a live key (`rk_live_…`) takes real payments. Members enter cards
@@ -158,8 +191,8 @@ pre-upgrade snapshots from the last 30 days, within an 8 GB budget. Files that
 didn't change are stored once and shared between snapshots. The **Health** page
 in the admin shows the last successful backup and any failure.
 
-**Keep the private key safe.** It is shown once, during setup. Without it, the
-backups can't be opened by anyone.
+**Keep the private key safe.** It is shown once, in setup or when you replace it
+under **Settings**. Without it, the backups can't be opened by anyone.
 
 ### Restore
 
@@ -193,8 +226,9 @@ sudo ./update.sh ghcr.io/plaingym/app:vX.Y.Z
 The updater:
 
 1. pulls the new image while the app keeps running;
-2. stops the app and takes a pre-upgrade backup (it stops here, and restarts the
-   current version, if backups aren't set up);
+2. stops the app and takes a pre-upgrade backup. If backups aren't set up, it
+   says so ("Backups are not set up: set them up in Settings → Backups, then run
+   the update again"), changes nothing and restarts the current version;
 3. starts the new image, which applies its database migrations before it reports
    healthy;
 4. records the new image in `.env` only once the new version is healthy.

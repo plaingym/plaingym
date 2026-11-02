@@ -25,10 +25,57 @@ export function readStripeConfig(key: Buffer, encrypted: string | null, gymId: s
     return config;
   } catch (error) { logError('payments.stored_config_unreadable', { gymId }, error); return null; }
 }
+/** The mode a restricted key belongs to, or a 400 for anything but a restricted key (a sandbox accepts test mode only). */
+export function restrictedKeyMode(restrictedKey: string, demoMode = false): 'test' | 'live' {
+  if (!/^rk_(test|live)_[A-Za-z0-9]+$/.test(restrictedKey)) throw new AppError('invalid_request', 'A restricted Stripe key is required');
+  const mode = restrictedKey.startsWith('rk_test_') ? 'test' : 'live';
+  if (mode === 'live' && demoMode) throw new AppError('invalid_request', 'Demo mode requires a test-mode key');
+  return mode;
+}
+/**
+ * The Stripe key lifecycle shared by setup step 6 and Settings → Payments: `connect` probes a new restricted key's
+ * permissions and registers (or reuses) the gym's webhook endpoint, all outside any transaction; the caller saves the
+ * result, then calls `retireStale`.
+ */
+export function createStripeConnection(options: { provisioner?: ((key: string) => StripeProvisioner) | undefined; demoMode?: boolean | undefined }) {
+  return {
+    /** `checked` runs after the permission probe and before any endpoint is registered (Settings checks the account there). */
+    async connect(gymId: string, origin: string, revision: number, restrictedKey: string, previous: StripeConfig | null,
+      checked?: () => Promise<void>): Promise<{ config: StripeConfig; reused: boolean }> {
+      const mode = restrictedKeyMode(restrictedKey, options.demoMode);
+      const provisioner = provisionerFor(options.provisioner, restrictedKey, mode);
+      await provisioner.validate();
+      await checked?.();
+      // The signing secret exists only at creation, so a stored endpoint the new key can still see is kept (and its events
+      // brought up to date); otherwise a new one is created. Nothing is deleted until the new settings are saved.
+      const endpoint = await provisioner.register(gymId, origin, revision,
+        previous ? { endpointId: previous.endpointId, webhookSecret: previous.webhookSecret } : undefined);
+      return { config: { apiKey: restrictedKey, mode, endpointId: endpoint.endpointId, webhookSecret: endpoint.webhookSecret }, reused: endpoint.reused };
+    },
+    /** After the new settings are saved: delete this gym's other endpoints, then the old one if the key moved to another account. Failures are logged, never raised. */
+    async retireStale(gymId: string, origin: string, previous: StripeConfig | null, config: StripeConfig | null, kept: boolean): Promise<void> {
+      if (config) {
+        try {
+          const retired = await provisionerFor(options.provisioner, config.apiKey, config.mode).retire(gymId, origin, config.endpointId);
+          if (retired.deleted.length) logInfo('payments.webhook_endpoints_retired', { gymId, count: retired.deleted.length });
+          for (const failure of retired.failures) logError('payments.webhook_endpoint_retire_failed', { gymId }, failure);
+        } catch (error) { logError('payments.webhook_endpoint_retire_failed', { gymId }, error); }
+      }
+      if (previous && !kept) {
+        try {
+          // The previous key may belong to another account, or no longer be accepted.
+          if (await provisionerFor(options.provisioner, previous.apiKey, previous.mode).remove(gymId, origin, previous.endpointId))
+            logInfo('payments.webhook_endpoints_retired', { gymId, count: 1 });
+        } catch (error) { logError('payments.webhook_endpoint_remove_failed', { gymId }, error); }
+      }
+    },
+  };
+}
 export function createStripeStep(options: { key: Buffer; origin: string; clock?: Clock; scope?: typeof forGym;
   /** A sandbox accepts test-mode keys only. */
   demoMode?: boolean; provisioner?: (key: string) => StripeProvisioner }) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
+  const connection = createStripeConnection({ provisioner: options.provisioner, demoMode: options.demoMode });
   async function current(context: MutationContext, revision: number) {
     return scope(context.gymId, async (tx) => {
       const [gym] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId));
@@ -45,19 +92,8 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
       const before = await current(context, input.revision);
       const previous = readStripeConfig(options.key, before.stripeConfig, context.gymId);
       let config: StripeConfig | null = null, reused = false;
-      if (input.choice === 'configure') {
-        if (!/^rk_(test|live)_[A-Za-z0-9]+$/.test(input.restrictedKey)) throw new AppError('invalid_request', 'A restricted Stripe key is required');
-        const mode = input.restrictedKey.startsWith('rk_test_') ? 'test' : 'live';
-        if (mode === 'live' && options.demoMode) throw new AppError('invalid_request', 'Demo mode requires a test-mode key');
-        const provisioner = provisionerFor(options.provisioner, input.restrictedKey, mode);
-        await provisioner.validate();
-        // The signing secret exists only at creation, so a stored endpoint the new key can still see is kept (and its events
-        // brought up to date); otherwise a new one is created. Nothing is deleted until the new settings are saved.
-        const endpoint = await provisioner.register(context.gymId, options.origin, input.revision,
-          previous ? { endpointId: previous.endpointId, webhookSecret: previous.webhookSecret } : undefined);
-        config = { apiKey: input.restrictedKey, mode, endpointId: endpoint.endpointId, webhookSecret: endpoint.webhookSecret };
-        reused = endpoint.reused;
-      }
+      if (input.choice === 'configure')
+        ({ config, reused } = await connection.connect(context.gymId, options.origin, input.revision, input.restrictedKey, previous));
       // Registration is idempotent. A failed CAS leaves an unreferenced endpoint, never active credentials; the next
       // successful save deletes it with the gym's other stale endpoints.
       const saved = await scope(context.gymId, async (tx) => {
@@ -78,27 +114,10 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
           after: { configured: !!config, mode: config?.mode ?? null, endpointId: config?.endpointId ?? null, endpointReused: reused }, occurredAt: clock.now() });
         return { configured: !!config, mode: config?.mode ?? null, webhookRegistered: !!config, revision: updated.revision };
       });
-      await retireStale(context.gymId, previous, config, reused);
+      await connection.retireStale(context.gymId, options.origin, previous, config, reused);
       return saved;
     },
   };
-  /** After the new settings are saved: delete this gym's other endpoints, then the old one if the key moved to another account. Failures are logged, never raised. */
-  async function retireStale(gymId: string, previous: StripeConfig | null, config: StripeConfig | null, kept: boolean): Promise<void> {
-    if (config) {
-      try {
-        const retired = await provisionerFor(options.provisioner, config.apiKey, config.mode).retire(gymId, options.origin, config.endpointId);
-        if (retired.deleted.length) logInfo('payments.webhook_endpoints_retired', { gymId, count: retired.deleted.length });
-        for (const failure of retired.failures) logError('payments.webhook_endpoint_retire_failed', { gymId }, failure);
-      } catch (error) { logError('payments.webhook_endpoint_retire_failed', { gymId }, error); }
-    }
-    if (previous && !kept) {
-      try {
-        // The previous key may belong to another account, or no longer be accepted.
-        if (await provisionerFor(options.provisioner, previous.apiKey, previous.mode).remove(gymId, options.origin, previous.endpointId))
-          logInfo('payments.webhook_endpoints_retired', { gymId, count: 1 });
-      } catch (error) { logError('payments.webhook_endpoint_remove_failed', { gymId }, error); }
-    }
-  }
 }
 export function createPaymentsResolver(options: { key: Buffer; scope?: typeof forGym; clock?: Clock }) {
   const scope = options.scope ?? forGym;

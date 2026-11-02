@@ -4,8 +4,9 @@
 PlainGym reads its configuration from environment variables. A self-hosted
 install keeps its values in `/opt/plaingym/.env` (mode 0600), which the installer
 writes. Gym settings are not environment variables: the owner sets email, Stripe
-and backups in the setup wizard, and the gym's details, booking and billing rules
-in the admin's **Settings**. They are stored in the database, encrypted where
+and backups in the setup wizard (and changes them later in the admin's
+**Settings → Email, payments and backups**), and the gym's details, booking and
+billing rules in the admin's **Settings**. They are stored in the database, encrypted where
 secret.
 
 `deploy/compose.yaml` has no `env_file`: the app container gets only the variables
@@ -79,20 +80,24 @@ change an existing database: the roles keep the password they were created with.
 
 ## Backups
 
-Backups are set up in the setup wizard's backup step: the destination bucket and
-its credentials are stored encrypted in the database, not in `.env`.
+Backups are set up in the setup wizard's backup step, or later (and changed) in
+**Settings → Email, payments and backups**, single-gym mode only: the destination
+bucket and its credentials are stored encrypted in the database, not in `.env`.
+Updates refuse to run until backups are set up (see
+[self-hosting.md](self-hosting.md#updates)).
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `BACKUP_STAGING_DIR` | unset | Local scratch space where a backup is written and encrypted before upload, and where a restore is unpacked. Compose uses `/var/lib/plaingym/staging`. Single-gym mode only, and the image's single-gym start-up (the restore check before migrations) requires it; multi-gym mode ignores it. A server run outside the image without it has no backups or restore. |
 
 `BACKUP_RECIPIENT`, which the installer still writes to `.env` as an empty line,
-is not read: backups use the key created in the setup wizard.
+is not read: backups use the key created in the setup wizard or in **Settings**.
 
 ## Email
 
-A gym's own SMTP settings, entered in the setup wizard, take precedence over
-these install-wide values. Use a sending service (Postmark, Brevo, Amazon SES or
+A gym's own SMTP settings, entered in the setup wizard or in **Settings → Email,
+payments and backups**, take precedence over these install-wide values; removing
+them there falls back to these. Use a sending service (Postmark, Brevo, Amazon SES or
 similar): mail sent directly from a server usually lands in spam.
 
 | Variable | Default | Meaning |

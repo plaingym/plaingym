@@ -17,7 +17,8 @@ case "$*" in
   'image inspect '*) echo sha256:previous; exit 0 ;;
   *' ps --status running --services') echo app ;;
   *' pull app') [ "${FAIL_AT:-}" != pull ] ;;
-  *' snapshot pre-upgrade') [ "${FAIL_AT:-}" != snapshot ] ;;
+  *' snapshot pre-upgrade')
+    [ "${FAIL_AT:-}" != snapshot ] || { echo 'Backups are not set up: set them up in Settings → Backups, then run the update again' >&2; exit 1; } ;;
   *'up -d '*)
     if [ "${APP_IMAGE:-}" != sha256:previous ]; then [ "${FAIL_AT:-}" != startup ]; fi ;;
   *' node /app/deploy/healthcheck.mjs') [ "${FAIL_AT:-}" != health ] ;;
@@ -47,6 +48,10 @@ for stage in pull snapshot startup health; do
   fi
   grep -qx APP_IMAGE=example:v1.0.0 "$case_dir/.env"
   if grep -q private-test-value "$temporary/output"; then exit 1; fi
+  if [ "$stage" = snapshot ]; then
+    grep -q "set them up in Settings → Backups" "$temporary/output"
+    grep -q "Nothing was changed" "$temporary/output"
+  fi
   if [ "$stage" != pull ]; then
     tail -n 1 "$CALLS" | grep 'up -d .* IMAGE=sha256:previous' >/dev/null
   else

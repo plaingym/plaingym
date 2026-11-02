@@ -123,7 +123,9 @@ keeps these tables in step with it.
 | `promotions.manage` | yes | yes | yes | |
 | `kiosk_devices.manage` | yes | yes | | |
 
-`integrations.manage` covers Stripe, SMTP and backups (and the setup wizard).
+`integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
+**Settings → Email, payments and backups** after it, whose responses and audits
+never contain a password, key, signing secret or storage credential.
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
 

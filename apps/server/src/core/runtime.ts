@@ -39,6 +39,7 @@ import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js'
 import { configureImportStep } from '../areas/setup/import-step.js';
 import { createSetupRoutes } from '../areas/setup/setup.routes.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
+import { configureIntegrations } from '../areas/settings/integrations.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
 import { configureCheckinCodes } from '../areas/members/checkin-code.routes.js';
 import { createCheckinCodeService } from '../areas/members/checkin-code.js';
@@ -265,6 +266,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Normal installs use stored gym credentials; sandboxes resolve the shared test account.
   const paymentsFor = demo?.payments.paymentsFor ?? createPaymentsResolver({ key, clock });
   configureGoLive({ clock, smtpConfigured, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)) });
+  // Settings → Email, Payments and Backups reuse the setup steps' services with the runtime's key, auth rules and gym origins.
+  // A confirmed backup change queues one snapshot through the backup job registered below (installs that take snapshots).
+  configureIntegrations({ key, env, config, origin: gymOrigin, hasPassword: (userId) => accounts.hasPassword(userId), sandbox: Boolean(demo), clock,
+    ...(gate && env.MAINTENANCE_DATABASE_URL ? { requestSnapshot: async (change: string) => { await queue.enqueueSystem('health.backup', { kind: 'manual' },
+      { timezone: 'UTC', runAt: clock.now(), idempotencyKey: 'snapshot:' + change, maxAttempts: 3 }); } } : {}) });
   configureHealthStatus({ env, providers: [
     createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
     createChargeRunHealthProvider({ settings }),

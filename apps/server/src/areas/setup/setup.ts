@@ -1,19 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { randomBytes } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { forGym, forSystem, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
-import { encryptSecret } from '../../core/secrets.js';
 import { reserveGym } from '../../core/tenancy-bootstrap.js';
 import { createOwnerService, type ProvisionOwner } from '../staff/auth.owner.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
-import { createSmtpResolver, encryptSmtpConfig } from '../settings/smtp.js';
-import { SmtpEmail, type SmtpConfig, type EmailMessage } from '../../infra/email/index.js';
-import { generateIdentity, identityToRecipient } from '../../infra/age/index.js';
+import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, storedSmtpFromRequest, type SendSmtpTest } from '../settings/smtp.js';
+import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from './backup-key.js';
 import { loadContentPacks } from '../ranks/packs.loader.js';
 import { createContentPackService } from '../ranks/packs.js';
 import { setupTestMessage } from '../../emails/setup/setup.js';
@@ -39,7 +36,7 @@ const missing = () => new AppError('not_found', 'Setup is unavailable');
 export function createSetupService(options: {
   /** The runtime's own key, origin and environment; setup reads nothing from the process environment. */
   key: Buffer; origin: string; env: NodeJS.ProcessEnv; clock?: Clock; scope?: typeof forGym; system?: typeof forSystem;
-  provisionOwner?: ProvisionOwner; sendTest?: (config: SmtpConfig, message: EmailMessage) => Promise<void>;
+  provisionOwner?: ProvisionOwner; sendTest?: SendSmtpTest;
   stripeProvisioner?: Parameters<typeof createStripeStep>[0]['provisioner'];
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem, clock = options.clock ?? defaultClock;
@@ -203,17 +200,9 @@ export function createSetupService(options: {
         const gym = await save(context, input.revision, 5);
         return { configured: await createSmtpResolver({ key: options.key, env, scope }).configured(context.gymId), test: 'not_sent' as const, revision: gym.revision };
       }
-      const stored = { host: input.host, port: input.port, security: input.secure ? 'tls' as const : 'starttls' as const,
-        username: input.username, password: input.password, from: input.from };
-      const config: SmtpConfig = { host: stored.host, port: stored.port, security: stored.security, from: stored.from,
-        auth: { user: stored.username, pass: stored.password } };
-      try {
-        const message = setupTestMessage(input.testTo);
-        if (options.sendTest) await options.sendTest(config, message);
-        else { const email = new SmtpEmail(config); try { await email.verifyTestSend(message); } finally { email.close(); } }
-      } catch {
+      const stored = storedSmtpFromRequest(input);
+      if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest))
         return { configured: false, test: 'failed' as const, revision: input.revision };
-      }
       const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, stored) });
       return { configured: true, test: 'sent' as const, revision: gym.revision };
     },
@@ -221,20 +210,19 @@ export function createSetupService(options: {
     stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },
     async backups(context: MutationContext, input: SetupBackupRequest) {
       const { state } = await current(context, input.revision, 7);
-      const privateKey = await generateIdentity(), publicKey = await identityToRecipient(privateKey);
-      const { accessKeyId, secretAccessKey, ...destination } = input.destination;
+      const { privateKey, publicKey } = await backupKeyPair();
+      const { destination, s3Config } = backupColumns(options.key, input.destination);
       // Do not activate backups until the owner proves they saved the matching private key.
       const gym = await save(context, input.revision, 7, {
-        backupDestination: destination, s3Config: encryptSecret(options.key, 's3_config', JSON.stringify({ accessKeyId, secretAccessKey })),
-        backupPublicKey: null, backupBlobKey: encryptSecret(options.key, 'backup_blob_key', randomBytes(32).toString('hex')),
+        backupDestination: destination, s3Config,
+        backupPublicKey: null, backupBlobKey: newBlobKey(options.key),
         backupRetentionBytes: 8_000_000_000n,
       }, { completedSteps: state.completedSteps.filter((step) => step !== 7), backupRecipient: publicKey });
       return { privateKey, publicKey, revision: gym.revision };
     },
     async confirmBackupKey(context: MutationContext, input: SetupBackupConfirmRequest) {
       const { gym } = await current(context, input.revision, 7);
-      let publicKey: string;
-      try { publicKey = await identityToRecipient(input.privateKey); } catch { throw new AppError('invalid_request', 'Invalid backup key'); }
+      const publicKey = await recipientOf(input.privateKey);
       const pending = (gym.settings as { setup: { backupRecipient?: string } }).setup.backupRecipient;
       if (!pending || pending !== publicKey) throw new AppError('invalid_request', 'Backup key does not match');
       const saved = await save(context, input.revision, 7, { backupPublicKey: publicKey });

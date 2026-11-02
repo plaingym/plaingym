@@ -190,7 +190,8 @@ sudo docker compose exec -T app gym-app setup-link
 For manual Compose installs, generate `SETUP_TOKEN` independently with
 `openssl rand -hex 32` before starting. Existing installs must add it to `.env`
 when updating their Compose file. Backups can be configured in the wizard or
-deferred with **Set up later**; the health page reports them as not configured.
+deferred with **Set up later**; the health page reports them as not configured
+until the owner adds them in **Settings → Email, payments and backups**.
 
 `cloud-init.yaml` automates the same installer from a reviewed public commit.
 Replace its commit, hostname, email, and image placeholders before supplying
@@ -253,8 +254,9 @@ set `CADDY_ACCESS_LOG=discard`) and run the same command to turn it off again.
 
 ## Updates and recovery
 
-Updates need backups configured in the setup wizard: the updater takes a
-pre-upgrade backup through them. Then run:
+Updates need backups configured, in the setup wizard or in **Settings → Email,
+payments and backups**: the updater takes a pre-upgrade backup through them. Then
+run:
 
 ```sh
 cd /opt/plaingym
@@ -269,8 +271,10 @@ coordinated, encrypted install snapshot to the gym's backup destination, kept
 under the backup retention's pre-upgrade rule
 (`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
 the snapshot and the start of the target image. Without configured backups the
-snapshot fails, and the updater restarts the current image without changing
-anything. It then starts the target image, which applies its migrations before
+snapshot exits with "Backups are not set up: set them up in Settings → Backups,
+then run the update again", and the updater says nothing was changed and restarts
+the current image. Any other snapshot failure prints a generic line (its cause goes
+to the log without its message), with the same outcome. It then starts the target image, which applies its migrations before
 reporting healthy, runs the health check, and changes the persisted image pin
 in `.env` only on success. A failed image start or check restarts the exact
 previous local image (by image ID), so keep those images available. Restore a

@@ -39,7 +39,9 @@ stopped=true
 compose stop app
 # One coordinated install snapshot: stored age recipient, encrypted recovery bundle,
 # immutable upload references, multipart retry/abort, retention, and backup_runs.
-compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade
+# Its own message above says why it failed, such as backups that aren't set up yet (Settings → Backups).
+compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade \
+  || fail 'The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting.'
 stopped=false
 changed=true
 APP_IMAGE="$target" compose up -d --no-deps --pull never --wait --wait-timeout 90 app

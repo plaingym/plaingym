@@ -38,6 +38,7 @@ import { registration as part33 } from '../features/portal/waivers/registrations
 import { registration as part34 } from '../features/portal/household/registrations.js';
 import { registration as part35 } from '../features/website/registrations.js';
 import { registration as part36 } from '../features/settings/billing.registrations.js';
+import { registration as part37 } from '../features/settings/integrations/registrations.js';
 
 export interface ExtensionViewProps {
   memberId?: string;
@@ -83,6 +84,7 @@ export const webContributions: readonly WebRegistration[] = [
   part34,
   part35,
   part36,
+  part37,
 ];
 export function createRegistries(additional: readonly WebRegistration[] = []) {
   return createWebRegistries([...webContributions, ...additional]);

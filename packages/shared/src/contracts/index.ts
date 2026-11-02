@@ -21,5 +21,6 @@ export * from './dashboard.js';
 export * from './health.js';
 export * from './imports.js';
 export * from './settings.js';
+export * from './integrations.js';
 export * from './demo.js';
 export * from './checkin-code.js';

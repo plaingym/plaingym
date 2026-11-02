@@ -36,9 +36,15 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
   const environment = maintenanceEnvironment();
   try { await maintenance(args, environment); } finally { environment.uploads.close(); }
 }
+/** The snapshot command's answer when the owner hasn't set up backups; `update.sh` prints it and changes nothing. */
+export class BackupsNotSetUpError extends Error {
+  constructor() { super('Backups are not set up: set them up in Settings → Backups, then run the update again'); this.name = 'BackupsNotSetUpError'; }
+}
 async function maintenance(args: readonly string[], environment: ReturnType<typeof maintenanceEnvironment>): Promise<void> {
   if (args[0] === 'snapshot') {
-    const config = await loadBackupConfig(environment.appEncryptionKey);
+    const config = await loadBackupConfig(environment.appEncryptionKey).catch((error: unknown) => {
+      throw error instanceof Error && error.message === 'Backup destination and public key are not configured' ? new BackupsNotSetUpError() : error;
+    });
     const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
     try { await backup.service.snapshot(args[1] === 'pre-upgrade' ? 'pre_upgrade' : 'manual'); }
     finally { backup.client.destroy(); }
