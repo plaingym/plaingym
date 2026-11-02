@@ -24,12 +24,10 @@ EXPECTED_DIFFERENCES = {
     "restart": "the app restarts; the one-shot step exits",
     "healthcheck": "the one-shot step exits before the image's server healthcheck could apply",
     "environment": "only the one-shot step holds the maintenance role",
-    "depends_on": "each step waits for its own database service",
-    "networks": "the steps join only the database network",
-    "ports": "the app publishes none to the host in the demo, and the step has none",
-    "volumes": "the app mounts its data; the step has no state",
     "labels": "the step does not carry the app's labels",
 }
+# Keys that differ legitimately but are checked on their own by `unsafe_step`, not exempted.
+CHECKED_ON_THEIR_OWN = ("volumes", "networks", "ports", "depends_on")
 DEMO_ENV = dict(APP_IMAGE="plaingym:v0.0.0-test", CADDY_IMAGE="plaingym-caddy:v0.0.0-test", POSTGRES_PASSWORD="x",
                 APP_PASSWORD="x", MAINTENANCE_PASSWORD="x", APP_ENCRYPTION_KEY="x", AUTH_SECRET="x", SETUP_TOKEN="x",
                 GYM_HOSTNAME="demo.example.test", ACME_EMAIL="test@example.test", CLOUDFLARE_API_TOKEN="x",
@@ -43,7 +41,26 @@ E2E_ENV = dict(E2E_IMAGE="plaingym:v0.0.0-test", E2E_POSTGRES_PASSWORD="x", E2E_
 def unexpected_differences(app, step, also=()):
     """Keys on which the one-shot step's rendered service differs from the app's, outside the expected list."""
     return {key: (app.get(key), step.get(key)) for key in sorted(set(app) | set(step))
-            if key not in EXPECTED_DIFFERENCES and key not in also and app.get(key) != step.get(key)}
+            if key not in EXPECTED_DIFFERENCES and key not in CHECKED_ON_THEIR_OWN and key not in also
+            and app.get(key) != step.get(key)}
+
+
+def unsafe_step(step, database, networks=("database",)):
+    """What a rendered one-shot step must not have: any mount (it has no state, and a Docker socket or
+    host path would be worse), a published port, a network besides `networks` (the app's public one
+    in particular), or a dependency besides its database service."""
+    problems = {}
+    if step.get("volumes"):
+        problems["volumes"] = step["volumes"]
+    if step.get("ports"):
+        problems["ports"] = step["ports"]
+    extra = sorted(set(step.get("networks") or {}) - set(networks))
+    if extra:
+        problems["networks"] = extra
+    others = sorted(set(step.get("depends_on") or {}) - {database})
+    if others:
+        problems["depends_on"] = others
+    return problems
 
 
 def stub(path, body):
@@ -81,6 +98,7 @@ class ComposeVersionTests(unittest.TestCase):
         if existing:
             self.install_root.mkdir()
             (self.install_root / ".env").write_text("APP_IMAGE=x\n")
+            shutil.copy(DEPLOY / "lib.sh", self.install_root / "base-lib.sh")
         return subprocess.run(["sh", str(HERE / "install.sh"), "--directory", str(self.install_root), *args],
                               capture_output=True, text=True, env=self.env())
 
@@ -118,7 +136,7 @@ class ComposeVersionTests(unittest.TestCase):
                     if mode == "install":
                         self.assertFalse(self.install_root.exists())
                     if mode == "reinstall":
-                        self.assertEqual(os.listdir(self.install_root), [".env"])
+                        self.assertEqual(sorted(os.listdir(self.install_root)), [".env", "base-lib.sh"])
 
     def test_names_the_version_found_and_the_version_needed(self):
         self.docker("v2.23.3")
@@ -174,11 +192,99 @@ class ComposeVersionTests(unittest.TestCase):
         self.assertIn("Docker Compose is not installed", result.stderr)
         self.assertEqual(self.host_calls(), [])
 
+    def test_a_missing_base_lib_is_named_unless_the_installer_is_running(self):
+        self.docker("2.30.0")
+        # The installer copies base-lib.sh itself, so it runs again to restore a lost copy.
+        self.run_install("--check-only", existing=True)
+        (self.install_root / "base-lib.sh").unlink()
+        self.assertEqual(self.run_install("--check-only").returncode, 0)
+        # Anything else that loads the installed lib.sh needs the copy beside it.
+        self.run_update()
+        (self.install_root / "base-lib.sh").unlink()
+        update = subprocess.run(["bash", str(self.install_root / "update.sh")], capture_output=True, text=True, env=self.env())
+        self.assertNotEqual(update.returncode, 0)
+        self.assertIn(f"{self.install_root}/base-lib.sh is missing", update.stderr)
+        self.assertNotIn("not found", update.stderr)
+        # A caller that does not say it is the installer gets the same message for a directory with no .env.
+        shutil.rmtree(self.install_root)
+        self.install_root.mkdir()
+        shutil.copy(HERE / "update.sh", self.install_root / "update.sh")
+        shutil.copy(HERE / "lib.sh", self.install_root / "lib.sh")
+        bare = subprocess.run(["bash", str(self.install_root / "update.sh")], capture_output=True, text=True, env=self.env())
+        self.assertIn("base-lib.sh is missing", bare.stderr)
+
+    def bundle(self, after_host_setup):
+        """A copy of the installer whose host.sh is a fake that records its run and then sets Compose to
+        `after_host_setup` ('' installs nothing), with the OS check reading an Ubuntu 24.04 fixture."""
+        bundle = self.root / "bundle"
+        (bundle / "demo").mkdir(parents=True)
+        shutil.copy(DEPLOY / "lib.sh", bundle / "lib.sh")
+        shutil.copy(HERE / "lib.sh", bundle / "demo" / "lib.sh")
+        release = self.root / "os-release"
+        release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+        install = (HERE / "install.sh").read_text()
+        self.assertIn(". /etc/os-release", install)
+        (bundle / "demo" / "install.sh").write_text(install.replace(". /etc/os-release", f". '{release}'"))
+        (bundle / "demo" / "host.sh").write_text(
+            f"echo host.sh >> '{self.log}'\n"
+            + (f"printf '%s\\n' '{after_host_setup}' > '{self.root / 'compose-version'}'\n" if after_host_setup else ""))
+        return bundle / "demo" / "install.sh"
+
+    def host_without_compose(self):
+        """Root on Ubuntu with a docker that has Compose only once the fake host setup writes its version."""
+        version = self.root / "compose-version"
+        stub(self.bin / "docker", f"echo \"docker $*\" >> '{self.log}'\n[ -f '{version}' ] || exit 1\n"
+             "case \"$*\" in 'compose version') exit 0 ;; 'compose version --short') cat " f"'{version}' ;; *) exit 2 ;; esac")
+        stub(self.bin / "id", "echo 0")
+        stub(self.bin / "dpkg", f"echo \"dpkg $*\" >> '{self.log}'\necho amd64")
+
+    def test_the_install_refuses_after_a_host_setup_that_left_no_compose(self):
+        self.host_without_compose()
+        result = subprocess.run(["sh", str(self.bundle("")), "--directory", str(self.install_root)],
+                                capture_output=True, text=True, env=self.env())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Docker Compose is not installed", result.stderr)
+        # The host setup has run, so the message no longer promises that nothing changed.
+        self.assertNotIn("Nothing was changed", result.stderr)
+        self.assert_stopped_after_the_host_setup()
+
+    def test_the_install_refuses_after_a_host_setup_that_left_an_old_compose(self):
+        self.host_without_compose()
+        result = subprocess.run(["sh", str(self.bundle("2.23.3")), "--directory", str(self.install_root)],
+                                capture_output=True, text=True, env=self.env())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Docker Compose 2.23.3 is too old", result.stderr)
+        self.assertNotIn("Nothing was changed", result.stderr)
+        self.assert_stopped_after_the_host_setup()
+
+    def assert_stopped_after_the_host_setup(self):
+        calls = [line for line in self.log.read_text().splitlines() if not line.startswith("docker compose version")]
+        self.assertIn("host.sh", calls)
+        # Nothing was installed, locked or started afterwards: no directory, lock, image or container call.
+        after = calls[calls.index("host.sh") + 1:]
+        self.assertEqual(after, [])
+        self.assertFalse(self.install_root.exists())
+
+
+def interpolated_names(text):
+    """Names a Compose file interpolates, as `${NAME}`, `${NAME:-default}` or a bare `$NAME` (`$$` is a literal)."""
+    return set(re.findall(r"(?<!\$)\$\{?(\w+)", text))
+
+
+def clean_environment():
+    """The caller's environment without the variables the Compose files interpolate (braced or bare) or
+    that Compose and the Docker CLI read themselves (COMPOSE_*, DOCKER_*), so an exported
+    APP_MEMORY_LIMIT, E2E_IMAGE or COMPOSE_FILE cannot change the render; the tests pass what it needs."""
+    names = set().union(*(interpolated_names(file.read_text()) for file in COMPOSE_FILES))
+    return {key: value for key, value in os.environ.items()
+            if key not in names and not key.startswith(("COMPOSE_", "DOCKER_"))}
+
 
 def compose_available():
+    """Whether Compose works in the environment the renders use, so a setup that needs DOCKER_* skips the tests."""
     if not shutil.which("docker"):
         return False
-    return subprocess.run(["docker", "compose", "version"], capture_output=True).returncode == 0
+    return subprocess.run(["docker", "compose", "version"], capture_output=True, env=clean_environment()).returncode == 0
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX shell test")
@@ -195,19 +301,19 @@ class ComposeAvailabilityTests(unittest.TestCase):
 
 @unittest.skipUnless(compose_available(), "needs the docker compose plugin")
 class HardeningTests(unittest.TestCase):
-    @staticmethod
-    def clean_environment():
-        """The caller's environment without the variables the Compose files interpolate, so an exported
-        APP_MEMORY_LIMIT or E2E_IMAGE cannot change the render; the tests pass what the render needs."""
-        names = {name for file in COMPOSE_FILES for name in re.findall(r"\$\{(\w+)", file.read_text())}
-        names |= {"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_ENV_FILES"}
-        return {key: value for key, value in os.environ.items() if key not in names}
+    interpolated_names = staticmethod(interpolated_names)
+    clean_environment = staticmethod(clean_environment)
 
-    def render(self, files, env, caller=None):
+    def render(self, files, env, caller=None, extra=None):
+        """Render the files; `extra` is the text of one more Compose file merged over them."""
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / ".env"
             env_file.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
             command = ["docker", "compose", "--env-file", str(env_file)]
+            files = list(files)
+            if extra:
+                (Path(directory) / "extra.yaml").write_text(extra)
+                files.append(Path(directory) / "extra.yaml")
             for file in files:
                 command += ["-f", str(file)]
             result = subprocess.run(command + ["config", "--format", "json"], capture_output=True, text=True,
@@ -221,6 +327,7 @@ class HardeningTests(unittest.TestCase):
     def test_demo_migrate_step_is_hardened_like_the_app(self):
         services = self.render([DEPLOY / "compose.yaml", HERE / "compose.yaml"], DEMO_ENV)
         self.assertEqual(unexpected_differences(services["app"], services["migrate"]), {})
+        self.assertEqual(unsafe_step(services["migrate"], "postgres"), {})
         self.assertTrue(services["migrate"]["read_only"])
         self.assertEqual(services["migrate"]["cap_drop"], ["ALL"])
 
@@ -228,6 +335,7 @@ class HardeningTests(unittest.TestCase):
         services = self.render([DEPLOY.parent / "e2e" / "compose.yaml"], E2E_ENV)
         # The throwaway End-to-end stack has no log rotation.
         self.assertEqual(unexpected_differences(self.demo_app(), services["demo-migrate"], also=("logging",)), {})
+        self.assertEqual(unsafe_step(services["demo-migrate"], "demo-postgres", networks=("default",)), {})
         # The app services themselves are not hardened in End-to-end.
         self.assertNotIn("read_only", services["demo"])
 
@@ -238,14 +346,37 @@ class HardeningTests(unittest.TestCase):
                 app = {**copy.deepcopy(services["app"]), key: value}
                 self.assertIn(key, unexpected_differences(app, services["migrate"]))
 
+    def test_a_migrate_step_given_a_socket_a_host_path_a_port_or_the_public_network_is_unsafe(self):
+        files = [DEPLOY / "compose.yaml", HERE / "compose.yaml"]
+        for name, extra, problem in (
+                ("socket", "volumes: ['/var/run/docker.sock:/var/run/docker.sock']", "volumes"),
+                ("host path", "volumes: ['/etc:/host-etc:ro']", "volumes"),
+                ("the app's data volume", "volumes: ['appdata:/var/lib/plaingym']", "volumes"),
+                ("port", "ports: ['127.0.0.1:8080:3000']", "ports"),
+                ("public network", "networks: [database, web]", "networks"),
+                ("another dependency", "depends_on: {sidecar: {condition: service_started}}", "depends_on")):
+            with self.subTest(name):
+                extra = f"services:\n  sidecar: {{image: busybox}}\n  migrate:\n    {extra}\n"
+                step = self.render(files, DEMO_ENV, extra=extra)["migrate"]
+                self.assertIn(problem, unsafe_step(step, "postgres"))
+
     def test_an_exported_memory_limit_does_not_change_the_render(self):
         expected = self.demo_app()
+        # The premise: the variable does change a render that lets it through.
+        self.assertNotEqual(self.demo_app({"APP_MEMORY_LIMIT": "64m"}), expected)
         with mock.patch.dict(os.environ, {"APP_MEMORY_LIMIT": "64m"}):
-            # The caller's value is real (it changes a render that does not strip it), yet the test's render ignores it.
             self.assertNotIn("APP_MEMORY_LIMIT", self.clean_environment())
             self.assertEqual(self.demo_app(), expected)
             services = self.render([DEPLOY / "compose.yaml", HERE / "compose.yaml"], DEMO_ENV)
         self.assertEqual(unexpected_differences(services["app"], services["migrate"]), {})
+
+    def test_the_clean_environment_drops_bare_variables_and_compose_and_docker_settings(self):
+        self.assertEqual(self.interpolated_names("a: ${BRACED:-x} $BARE $$ESCAPED ${OTHER}"), {"BRACED", "BARE", "OTHER"})
+        with mock.patch.dict(os.environ, {"COMPOSE_FILE": "x", "COMPOSE_PROFILES": "y", "DOCKER_HOST": "z",
+                                          "DOCKER_CONTEXT": "c", "KEPT_BY_THE_TESTS": "1"}):
+            environment = self.clean_environment()
+        self.assertEqual(sorted(set(environment) & {"COMPOSE_FILE", "COMPOSE_PROFILES", "DOCKER_HOST", "DOCKER_CONTEXT"}), [])
+        self.assertIn("KEPT_BY_THE_TESTS", environment)
 
 
 if __name__ == "__main__":

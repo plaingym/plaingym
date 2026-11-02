@@ -3,8 +3,14 @@
 # Host-side only. No Docker socket is mounted into the app.
 # shellcheck source=deploy/lib.sh
 # Before the first install there is no base-lib.sh beside this file; install.sh has sourced the shared
-# helpers itself. Once installed, the copy beside it is always the one that wins.
-if [ -f "$ROOT/base-lib.sh" ]; then . "$ROOT/base-lib.sh"; fi
+# helpers itself and says so with DEMO_FIRST_INSTALL=true (it also repairs a lost copy). Every other
+# caller needs the copy beside this file, and a missing one is named.
+if [ -f "$ROOT/base-lib.sh" ]; then
+  . "$ROOT/base-lib.sh"
+elif [ "${DEMO_FIRST_INSTALL:-}" != true ]; then
+  printf '%s\n' "$ROOT/base-lib.sh is missing, so the demo cannot run. Run install.sh again from the demo bundle, which restores it." >&2
+  exit 1
+fi
 # The overlay's `!reset` (it keeps the maintenance credentials out of the app) needs Compose 2.24;
 # an older Compose fails on the file, or ignores the tag and passes the credentials on.
 # Call it before anything on the host changes. `missing-ok` lets the installer's host setup add a

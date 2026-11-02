@@ -7,6 +7,10 @@ DEPLOY=$(CDPATH='' cd -- "$SOURCE/.." && pwd)
 # shellcheck source=deploy/lib.sh
 . "$DEPLOY/lib.sh"
 ROOT=/opt/plaingym-demo
+# The installer has sourced the shared helpers itself and copies base-lib.sh into $ROOT, so it never needs
+# the installed copy: a first install that failed after writing .env, or a re-install whose copy was lost,
+# can run again and repair it. Any other caller of the installed lib.sh needs the file.
+export DEMO_FIRST_INSTALL=true
 export DEMO_LOCAL_TEST=false
 check_only=false
 while [ "$#" -gt 0 ]; do

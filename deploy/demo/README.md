@@ -174,8 +174,17 @@ The demo needs Docker Compose 2.24 or later (its overlay uses `!reset`). `instal
 first, before the host setup or any write, and stop with the version found if
 it is older or unreadable; upgrade Compose the way it was installed (the
 `docker-compose-plugin` package or your distribution's Compose package). A first
-install on a host with no Compose gets one from the host setup; a re-install,
-`--local-test` and `update.sh` refuse without it.
+install on a host with no Compose gets one from the host setup, and `install.sh`
+checks again once that setup has run (stopping before it writes or starts
+anything if Compose is still missing or too old); a re-install, `--local-test`
+and `update.sh` refuse without it. `install.sh --check-only` makes the same check
+as the install it previews, so it needs Compose too, except where a first install
+would add it.
+
+`lib.sh` loads the shared helpers from `base-lib.sh` beside it. Only `install.sh`
+may run without that copy (it carries the helpers itself and copies the file in,
+so running it again restores a lost one); `update.sh` and anything else that loads
+the installed `lib.sh` stops with a message naming the missing file.
 
 ## Local validation
 
