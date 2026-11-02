@@ -83,6 +83,7 @@ class PreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / ".env"
             with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "dns_check", side_effect=ValueError("DNS failed")), \
+                    patch.object(config, "has_terminal", return_value=False), \
                     patch.object(config.sys, "argv", ["config.py", "--existing", str(output), "--output", str(output)]), \
                     self.assertRaises(ValueError):
                 config.main()
@@ -95,6 +96,7 @@ class PreflightTests(unittest.TestCase):
             args = ["config.py", "--existing", str(existing), "--output", str(output)]
             with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "dns_check"), \
                     patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                    patch.object(config, "has_terminal", return_value=False), \
                     patch.object(config.sys, "argv", args), contextlib.redirect_stdout(io.StringIO()):
                 config.main()
                 existing.write_bytes(output.read_bytes())
@@ -151,6 +153,21 @@ class BillingInputTests(unittest.TestCase):
             output, asked = self.run_main(directory, terminal=False, existing=False)
             self.assertEqual(asked, [])
             self.assertNotIn("DEMO_STRIPE", output.read_text())
+
+    def test_billing_variables_in_the_environment_answer_the_question(self):
+        # A scripted run with a terminal (an SSH session, test-local.sh) sets the variables, empty to skip billing.
+        for env in ({"DEMO_STRIPE_TEST_KEY": ""}, {"DEMO_STRIPE_TEST_KEY": "", "DEMO_STRIPE_WEBHOOK_SECRET": ""}):
+            with self.subTest(env=env), tempfile.TemporaryDirectory() as directory:
+                output, asked = self.run_main(directory, env=env, existing=False)
+                self.assertEqual(asked, [])
+                self.assertNotIn("DEMO_STRIPE", output.read_text())
+
+    def test_chosen_billing_with_nothing_entered_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError) as caught:
+                self.run_main(directory, answers=["y", "", ""], existing=False)
+            self.assertIn("no key or secret was entered", str(caught.exception))
+            self.assertFalse((Path(directory) / "next").exists())
 
     def test_prompts_read_both_values_hidden(self):
         with tempfile.TemporaryDirectory() as directory:

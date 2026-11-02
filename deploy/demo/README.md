@@ -40,10 +40,13 @@ after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/READM
 use a full member name and PIN `2468`.
 
 Demo billing is optional ([the environment template](.env.example) lists the
-values). After the required inputs, an interactive install asks once whether to set
-it up (default no). If yes, it reads `DEMO_STRIPE_TEST_KEY` and
-`DEMO_STRIPE_WEBHOOK_SECRET` with hidden prompts; an unattended install takes both
-from the environment and never asks. Use a secret or restricted **test** key
+values). After the required inputs, an install run from a terminal asks once
+whether to set it up (default no). If yes, it reads `DEMO_STRIPE_TEST_KEY` and
+`DEMO_STRIPE_WEBHOOK_SECRET` with hidden prompts, and refuses to go on if both are
+left empty. An install without a terminal never asks, and neither does one with
+either variable set in the environment: it takes both from there, or skips
+billing when they are empty (`DEMO_STRIPE_TEST_KEY=` for a scripted install over
+SSH). Use a secret or restricted **test** key
 (`sk_test_…` or `rk_test_…`) and the `whsec_…` signing secret for one test-account
 endpoint at `https://<GYM_HOSTNAME>/webhooks/stripe`; subscribe to
 [`webhookEvents`](../../apps/server/src/infra/payments/setup.ts). A live key is

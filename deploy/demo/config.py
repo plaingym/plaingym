@@ -106,15 +106,22 @@ def prompt(label, secret=False):
 
 
 def billing_inputs(config, ask):
-    """Keep saved values; else take both from the environment; else (interactive only) ask once, default no."""
+    """Keep saved values; else take both from the environment; else (interactive only) ask once, default no.
+
+    A billing variable set in the environment, even empty, answers the question, so a scripted run with a terminal
+    (an SSH session, test-local.sh) never stops at it: set both values, or DEMO_STRIPE_TEST_KEY= to skip billing.
+    """
     if config.get(BILLING_KEY):
         return
     values = {name: os.environ.get(name, "") for name in (BILLING_KEY, BILLING_SECRET)}
     if not any(values.values()):
-        if not ask or not has_terminal() or prompt("Set up demo billing with a Stripe test key? [y/N]").lower() not in ("y", "yes"):
+        if any(name in os.environ for name in values) or not ask or not has_terminal() \
+                or prompt("Set up demo billing with a Stripe test key? [y/N]").lower() not in ("y", "yes"):
             return
         values = {BILLING_KEY: prompt("Stripe test secret key (sk_test_ or rk_test_)", True).strip(),
                   BILLING_SECRET: prompt("Stripe webhook signing secret (whsec_)", True).strip()}
+        if not any(values.values()):
+            raise ValueError("Demo billing was chosen but no key or secret was entered; nothing was written")
     config.update(values)
 
 

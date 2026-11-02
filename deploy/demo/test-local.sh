@@ -51,6 +51,8 @@ s3_port=$(docker port "$s3_name" 5000 | head -n 1 | sed 's/.*://')
 export GYM_HOSTNAME=demo.localhost ACME_EMAIL=test@example.invalid CLOUDFLARE_API_TOKEN=local-standin
 export UPLOADS_S3_ENDPOINT="http://127.0.0.1:$s3_port" UPLOADS_S3_BUCKET=demo-test
 export UPLOADS_S3_REGION=us-east-1 UPLOADS_S3_ACCESS_KEY_ID=local-test UPLOADS_S3_SECRET_ACCESS_KEY=local-secret
+# Empty billing values answer the installer's billing question, so a run from a terminal never stops at it.
+export DEMO_STRIPE_TEST_KEY='' DEMO_STRIPE_WEBHOOK_SECRET=''
 attempt=0
 until curl --noproxy '*' --fail --silent "$UPLOADS_S3_ENDPOINT/" >/dev/null; do
   attempt=$((attempt + 1)); [ "$attempt" -lt 30 ] || exit 1; sleep 1
