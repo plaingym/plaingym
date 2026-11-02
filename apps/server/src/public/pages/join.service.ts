@@ -120,7 +120,7 @@ export function createJoinService(options: JoinOptions) {
     const [row] = await tx.select().from(plans).where(and(eq(plans.id, planId), joinable(currency)));
     return row ?? missing();
   }
-  /** The plan as the join page shows it, with whether invoicing adds tax on top; the plan and its rates come from one snapshot. */
+  /** The plan as the join page shows it, with whether invoicing adds tax on top; the currency, the plan and its rates are read in one transaction. */
   async function joinablePlan(gymId: string, planId: string) {
     return scope(gymId, async tx => {
       const gym = await readGymSettings(tx, gymId);
