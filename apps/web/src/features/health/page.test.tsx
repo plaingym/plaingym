@@ -181,6 +181,22 @@ describe('charge failure reports on the charge-run tile', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss all' }));
     expect(within(await screen.findByRole('dialog')).queryByRole('alert')).toBeNull();
   });
+  it('forgets an open Dismiss all when the tile stops reporting failures', async () => {
+    let open = reports(); serve(() => open);
+    const view = start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss all' }));
+    await screen.findByRole('dialog');
+    // Dismissed elsewhere: the tile turns quiet and the list goes, with its dialog.
+    open = [];
+    await view.client.invalidateQueries({ queryKey: ['health', 'gym-a'] });
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Failed charges' })).toBeNull());
+    // A later report brings the list back without the old confirmation and its run IDs.
+    open = [reports()[1]!];
+    await view.client.invalidateQueries({ queryKey: ['health', 'gym-a'] });
+    await screen.findByText('Charge run of 2026-10-26');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(POST).not.toHaveBeenCalled();
+  });
   it('dismisses only the reports on screen when the dialog opened, not one that arrived while it was open', async () => {
     let open = [reports()[0]!]; serve(() => open);
     POST.mockImplementation(async () => ok({ data: { dismissed: [uuid(10)] } }));

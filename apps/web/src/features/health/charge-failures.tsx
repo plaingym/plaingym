@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { chargeFailuresResponseSchema, dismissChargeFailuresResponseSchema, healthContracts } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -35,6 +35,9 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
   const reports = query.data ?? [];
   // Close the confirmation and forget a failed attempt, so its error doesn't outlive the dialog it came from.
   const closeConfirm = () => { dismiss.reset(); setConfirming(null); };
+  // A quiet tile hides the list, and with it any open dialog or failed attempt: neither comes back with a later report.
+  const { reset } = dismiss;
+  useEffect(() => { if (!reporting) { reset(); setConfirming(null); } }, [reporting, reset]);
   if (!reporting) return null;
   if (query.isError) return <p role="status" className="mt-4 text-sm">{label('loadFailed')}</p>;
   if (query.isPending) return <p role="status" className="mt-4 text-sm">{label('loading')}</p>;
