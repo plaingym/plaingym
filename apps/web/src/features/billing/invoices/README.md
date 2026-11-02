@@ -14,7 +14,7 @@ check, the saved card, or a signed pay link. Currency comes from the bootstrap g
 decimal input converts to integer cents without floating-point rounding.
 
 The one-off editor offers a custom amount only with `payments.custom` (owner, admin);
-without it, staff pick a catalog charge type. When the gym has no active charge type, the editor says so: owners and admins are told to add one in settings or use a custom amount, and other staff are told to ask an owner or admin. Collection controls use `payments.record`, pay links use `links.send`, and refund
+without it, staff pick a catalog charge type. When the gym has no active charge type, the editor says so: owners and admins are told to add one in the billing catalog (`plans.manage`, which owners and admins have) or use a custom amount, and other staff are told to ask an owner or admin. Collection controls use `payments.record`, pay links use `links.send`, and refund
 and review-release controls use `refunds.create`. Server routes enforce the same permissions. A
 failed charge reports that the invoice remains open; unresolved outcomes tell
 staff to check the invoice before collecting another payment. Save errors stay in

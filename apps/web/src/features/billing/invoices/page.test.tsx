@@ -155,10 +155,10 @@ describe('invoice and household payment UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     await within(dialog).findByLabelText('Charge type');
-    expect(within(dialog).getByText('No charge types are set up. Add one in settings, or use a custom amount.')).toBeDefined();
+    expect(within(dialog).getByText('No charge types are set up. Add one in the billing catalog, or use a custom amount.')).toBeDefined();
     expect(within(dialog).queryByText('No charge types are set up. Ask an owner or admin to add one.')).toBeNull();
     fireEvent.change(within(dialog).getByLabelText('Charge source'), { target: { value: 'custom' } });
-    expect(within(dialog).queryByText('No charge types are set up. Add one in settings, or use a custom amount.')).toBeNull();
+    expect(within(dialog).queryByText('No charge types are set up. Add one in the billing catalog, or use a custom amount.')).toBeNull();
   });
   it('lets front desk create a one-off from a catalog charge type', async () => {
     const f = transport(), charge = { id: id(20), createdAt, name: 'Mat fee', amountCents: 1000, currency: 'USD', active: true, revision: 1, taxRateIds: [] };
