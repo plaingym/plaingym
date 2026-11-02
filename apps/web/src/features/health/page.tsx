@@ -48,7 +48,7 @@ function HealthPanel({ gymId }: { gymId: string }) {
   }, refetchInterval: 60_000 });
   return <main className="mx-auto max-w-7xl space-y-6 p-6">
     <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1><Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button></div>
-    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} extras={{ last_charge_run: <ChargeFailures gymId={gymId}/> }}/>}
+    {query.isPending ? <p role="status">{label('loading')}</p> : query.isError ? <Alert>{label('loadFailed')}</Alert> : <HealthTiles tiles={query.data.tiles} extras={{ last_charge_run: <ChargeFailures gymId={gymId} reporting={query.data.tiles.some((tile) => tile.id === 'last_charge_run' && tile.status === 'error')}/> }}/>}
   </main>;
 }
 export function HealthPage() {

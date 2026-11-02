@@ -141,7 +141,7 @@ describe('daily run lane and circuit breaker', () => {
     const refused = await refusedInvoice(f);
     expect(await tile(f)).toMatchObject({ status: 'error', message: expect.stringContaining(`: 1 (#${refused.number})`) });
     const user = await factory('authUser', f.gymId);
-    expect(await f.runner.dismissChargeFailures({ gymId: f.gymId, actor: { kind: 'user', userId: user.id } }))
+    expect(await f.runner.dismissChargeFailures({ gymId: f.gymId, actor: { kind: 'user', userId: user.id } }, reports.map(report => report.runId)))
       .toEqual({ dismissed: [refused.id] });
     expect(await f.runner.chargeFailures(f.gymId)).toEqual([]);
   });
@@ -161,8 +161,8 @@ describe('daily run lane and circuit breaker', () => {
     const staff = async (g: Fixture) => ({ gymId: g.gymId, actor: { kind: 'user' as const, userId: (await factory('authUser', g.gymId)).id } });
     expect(await other.runner.chargeFailures(other.gymId)).toEqual([]);
     expect(await tile(other)).toMatchObject({ status: 'warning', details: { result: 'never_run' } });
-    await expect(other.runner.dismissChargeFailures(await staff(other), jobId)).rejects.toMatchObject({ code: 'not_found' });
-    expect(await f.runner.dismissChargeFailures(await staff(f), jobId)).toEqual({ dismissed: [refused.id] });
+    await expect(other.runner.dismissChargeFailures(await staff(other), [jobId])).rejects.toMatchObject({ code: 'not_found' });
+    expect(await f.runner.dismissChargeFailures(await staff(f), [jobId])).toEqual({ dismissed: [refused.id] });
     expect(await f.runner.chargeFailures(f.gymId)).toEqual([]);
     expect(await tile(f)).toMatchObject({ status: 'healthy' });
     expect((await f.read()).audits.filter(row => row.action === 'billing.runner.charge_failures.dismissed'))

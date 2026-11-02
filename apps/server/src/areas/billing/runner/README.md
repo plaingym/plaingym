@@ -14,7 +14,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `reconcile(gymId)` | Reconcile stale pending attempts by ID. Returns unresolved references. Works while billing is disabled. |
 | `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview` and unresolved references; record the report in an immutable audit event. Never enable billing. |
 | `chargeFailures(gymId)` | The last 90 days' stopped-run failure reports, oldest first, each with only the invoices that still need staff. |
-| `dismissChargeFailures(context, runId?)` | Staff (a user actor) dismiss what that report, or without `runId` every open report, still lists, with an audit per report; another gym's or an unknown report is `not_found`. |
+| `dismissChargeFailures(context, runIds)` | Staff (a user actor) dismiss what the named reports still list, with an audit per report; a report written after the caller read the list is not named, so it stays open. The gym's dismissals run one at a time (a transaction-level advisory lock), so two at once write one audit per report. Another gym's or an unknown report is `not_found`, and nothing is dismissed. |
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
 
 Generation locks one household and its due memberships in each short transaction.

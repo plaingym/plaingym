@@ -12,7 +12,7 @@ import { api } from '../../lib/api.js';
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn(), POST: vi.fn() } }));
 const checkedAt = '2026-10-22T12:00:00Z';
-const tiles = (): HealthTile[] => healthTileIds.map((id) => ({ id, status: 'not_configured', details: null, checkedAt: null, message: 'Not set up' }));
+const tiles = (failing = false): HealthTile[] => healthTileIds.map((id) => ({ id, status: failing && id === 'last_charge_run' ? 'error' : 'not_configured', details: null, checkedAt: null, message: 'Not set up' }));
 function bootstrap(roles: StaffRole[] = ['owner'], gymId = 'gym-a') {
   const data: ShellBootstrap = { gym: { id: gymId, name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: 'owner', displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
@@ -24,9 +24,9 @@ function start() {
 }
 const ok = (data: unknown) => ({ response: new Response(), data }) as never;
 const GET = vi.mocked(api.GET) as unknown as ReturnType<typeof vi.fn>, POST = vi.mocked(api.POST) as unknown as ReturnType<typeof vi.fn>;
-/** Serve the tiles, and the open charge failure reports from `reports` (read again after every dismissal). */
+/** Serve the tiles, and the open charge failure reports from `reports` (read again after every dismissal); the charge-run tile reports failures while any report is open. */
 function serve(reports: () => unknown[] = () => []) {
-  GET.mockImplementation(async (path: string) => ok(path === '/api/health/charge-failures' ? { data: reports() } : { data: { generatedAt: checkedAt, tiles: tiles() } }));
+  GET.mockImplementation(async (path: string) => ok(path === '/api/health/charge-failures' ? { data: reports() } : { data: { generatedAt: checkedAt, tiles: tiles(reports().length > 0) } }));
 }
 const healthCalls = () => GET.mock.calls.filter(([path]) => path === '/api/health').length;
 beforeEach(() => { bootstrap(); serve(); });
@@ -100,10 +100,24 @@ describe('charge failure reports on the charge-run tile', () => {
     expect(document.querySelectorAll('[aria-label="Failed charges"]')).toHaveLength(1);
     expect(GET).toHaveBeenCalledWith('/api/health/charge-failures', expect.objectContaining({ cache: 'no-store' }));
   });
-  it('shows no list when no report is open', async () => {
-    serve(); start();
-    await screen.findByRole('heading', { name: 'Last charge run' });
-    await waitFor(() => expect(GET).toHaveBeenCalledWith('/api/health/charge-failures', expect.anything()));
+  const listCalls = () => GET.mock.calls.filter(([path]) => path === '/api/health/charge-failures').length;
+  it('shows no list, and never reads or polls it, while the tile reports no failures', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      serve(); start();
+      await screen.findByRole('heading', { name: 'Last charge run' });
+      // The tiles poll every minute; the list would too if it were enabled.
+      await vi.advanceTimersByTimeAsync(130_000);
+      await waitFor(() => expect(healthCalls()).toBeGreaterThanOrEqual(3));
+      expect(listCalls()).toBe(0);
+      expect(screen.queryByRole('region', { name: 'Failed charges' })).toBeNull();
+      expect(screen.queryByRole('button', { name: /Dismiss/ })).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+  it('reads the list while the tile reports failures and shows nothing when no report is open', async () => {
+    GET.mockImplementation(async (path: string) => ok(path === '/api/health/charge-failures' ? { data: [] } : { data: { generatedAt: checkedAt, tiles: tiles(true) } }));
+    start();
+    await waitFor(() => expect(listCalls()).toBe(1));
     expect(screen.queryByRole('region', { name: 'Failed charges' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Dismiss/ })).toBeNull();
   });
@@ -134,7 +148,7 @@ describe('charge failure reports on the charge-run tile', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Dismiss all' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Failed charges' })).toBeNull());
     expect(POST).toHaveBeenCalledOnce();
-    expect(POST).toHaveBeenCalledWith('/api/health/charge-failures/dismiss', { body: {} });
+    expect(POST).toHaveBeenCalledWith('/api/health/charge-failures/dismiss', { body: { runIds: [uuid(1), uuid(2)] } });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(healthCalls()).toBe(2);
   });
@@ -153,6 +167,33 @@ describe('charge failure reports on the charge-run tile', () => {
     expect(screen.getByRole('dialog')).toBe(dialog);
     expect(screen.getByText('Charge run of 2026-10-24')).toBeDefined();
   });
+  it.each(['Cancel', 'Close'])('clears a failed Dismiss all when the dialog is closed with %s', async (closer) => {
+    serve(reports);
+    POST.mockResolvedValue({ response: new Response(null, { status: 500 }), data: undefined } as never);
+    start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss all' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Dismiss all' }));
+    expect((await within(screen.getByRole('dialog')).findByRole('alert')).textContent).toContain('Unable to dismiss');
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: closer }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // The error belonged to the dialog: it neither stays under the list nor comes back when the dialog reopens.
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss all' }));
+    expect(within(await screen.findByRole('dialog')).queryByRole('alert')).toBeNull();
+  });
+  it('dismisses only the reports on screen when the dialog opened, not one that arrived while it was open', async () => {
+    let open = [reports()[0]!]; serve(() => open);
+    POST.mockImplementation(async () => ok({ data: { dismissed: [uuid(10)] } }));
+    const view = start();
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss all' }));
+    const dialog = await screen.findByRole('dialog');
+    open = reports();
+    await view.client.invalidateQueries({ queryKey: ['health', 'gym-a', 'charge-failures'] });
+    await screen.findByText('Charge run of 2026-10-26');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss all' }));
+    await waitFor(() => expect(POST).toHaveBeenCalledOnce());
+    expect(POST).toHaveBeenCalledWith('/api/health/charge-failures/dismiss', { body: { runIds: [uuid(1)] } });
+  });
   it('reads the list again when the page is refreshed', async () => {
     let open = [reports()[0]!]; serve(() => open); start();
     await screen.findByText('Charge run of 2026-10-24');
@@ -164,7 +205,7 @@ describe('charge failure reports on the charge-run tile', () => {
   it('says when the reports cannot be loaded and still shows every tile', async () => {
     GET.mockImplementation(async (path: string) => {
       if (path === '/api/health/charge-failures') throw new Error('private SQL password');
-      return ok({ data: { generatedAt: checkedAt, tiles: tiles() } });
+      return ok({ data: { generatedAt: checkedAt, tiles: tiles(true) } });
     });
     start();
     expect((await screen.findByText(/Unable to load the failed charges/)).textContent).not.toContain('private SQL');

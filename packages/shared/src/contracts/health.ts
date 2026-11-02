@@ -69,8 +69,16 @@ export const chargeFailureReportSchema = z.strictObject({
   failures: z.array(z.strictObject({ invoiceId: idSchema, number: z.int().positive().nullable(), cause: chargeFailureCauseSchema })).min(1),
 });
 export const chargeFailuresResponseSchema = z.strictObject({ data: z.array(chargeFailureReportSchema) });
-/** Without `runId` every open report is dismissed. */
-export const dismissChargeFailuresRequestSchema = z.strictObject({ runId: idSchema.optional() });
+/** The most reports one dismissal names: the list holds at most 90 days of reports. */
+export const maxDismissedChargeRuns = 500;
+/**
+ * Name the reports to dismiss: one `runId`, or the `runIds` the list showed. Exactly one form is accepted, so
+ * a body that names nothing is refused instead of dismissing every report, including one written after the list loaded.
+ */
+export const dismissChargeFailuresRequestSchema = z.union([
+  z.strictObject({ runId: idSchema }),
+  z.strictObject({ runIds: z.array(idSchema).min(1).max(maxDismissedChargeRuns) }),
+]);
 /** The invoices the dismissed reports still listed; the invoices themselves are unchanged. */
 export const dismissChargeFailuresResponseSchema = z.strictObject({ data: z.strictObject({ dismissed: z.array(idSchema) }) });
 const manageSettings = { kind: 'staff', capability: 'settings.manage' } satisfies RoutePermission;

@@ -317,8 +317,8 @@ export function createChargeRunner(options: RunnerOptions) {
     onAssigned: assignmentInvoices(clock), reportFailures,
     /** Stopped runs' failure reports, with only the invoices that still need staff. */
     chargeFailures: (gymId: string) => scope(gymId, tx => openChargeFailures(tx, clock.now())),
-    /** Staff dismiss what one stopped run's report, or without `runId` every open report, still lists. */
-    dismissChargeFailures: (context: MutationContext, runId?: string) =>
-      scope(context.gymId, tx => dismissChargeFailures(tx, context, clock, runId)) };
+    /** Staff dismiss what the named stopped runs' reports still list. */
+    dismissChargeFailures: (context: MutationContext, runIds: readonly string[]) =>
+      scope(context.gymId, tx => dismissChargeFailures(tx, context, clock, runIds)) };
 }
 export type ChargeRunner = ReturnType<typeof createChargeRunner>;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- The test reads the database's lock table to know the second dismissal is waiting; it touches no gym data.
+import { and, eq, sql } from 'drizzle-orm';
 import { auditEvents, invoices, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -99,7 +100,7 @@ describe('charge failure routes', () => {
     const again = await f.request('admin', '/api/health/charge-failures/dismiss', { runId: one });
     expect(again.status).toBe(200);
     expect(dismissChargeFailuresResponseSchema.parse(await again.json()).data.dismissed).toEqual([]);
-    const all = await f.request('admin', '/api/health/charge-failures/dismiss', {});
+    const all = await f.request('admin', '/api/health/charge-failures/dismiss', { runIds: [two, three] });
     expect(dismissChargeFailuresResponseSchema.parse(await all.json()).data.dismissed.sort()).toEqual([b.id, c.id].sort());
     expect(await f.list()).toEqual([]);
     expect(await f.tile()).toMatchObject({ status: 'healthy', details: { failures: 0 } });
@@ -111,9 +112,63 @@ describe('charge failure routes', () => {
     const f = await fixture(), runId = uuidv7();
     await f.report(runId, [(await f.invoice(5)).id]);
     expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: uuidv7() })).status).toBe(404);
-    for (const body of [{ runId: 'nope' }, { runId, extra: true }, { runId: null }])
+    for (const body of [{ runId: 'nope' }, { runId, extra: true }, { runId: null }, { runIds: ['nope'] }, { runIds: [] }, { runId, runIds: [runId] }])
       expect((await f.request('owner', '/api/health/charge-failures/dismiss', body)).status).toBe(400);
     expect((await f.list()).map(report => report.runId)).toEqual([runId]);
+  });
+  it('leaves a report written after the list loaded open when staff dismiss the runs they saw', async () => {
+    const f = await fixture(), seen = uuidv7(), later = uuidv7();
+    const [a, b] = [await f.invoice(1), await f.invoice(2)];
+    await f.report(seen, [a.id]);
+    const onScreen = (await f.list()).map(report => report.runId);
+    f.clock.advance(60_000);
+    await f.report(later, [b.id]);
+    const response = await f.request('owner', '/api/health/charge-failures/dismiss', { runIds: onScreen });
+    expect(dismissChargeFailuresResponseSchema.parse(await response.json()).data.dismissed).toEqual([a.id]);
+    expect((await f.list()).map(report => report.runId)).toEqual([later]);
+    expect(await f.tile()).toMatchObject({ status: 'error' });
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, dismissed)));
+    expect(audits.map(row => row.targetId)).toEqual([seen]);
+  });
+  it('dismisses several named runs, once each however often they are named', async () => {
+    const f = await fixture(), one = uuidv7(), two = uuidv7();
+    const [a, b] = [await f.invoice(1), await f.invoice(2)];
+    await f.report(one, [a.id]); await f.report(two, [b.id]);
+    const response = await f.request('owner', '/api/health/charge-failures/dismiss', { runIds: [one, two, one] });
+    expect(dismissChargeFailuresResponseSchema.parse(await response.json()).data.dismissed.sort()).toEqual([a.id, b.id].sort());
+    expect(await f.list()).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(2);
+  });
+  it('writes one audit when two dismissals of one report run at once', async () => {
+    const f = await fixture(), runId = uuidv7(), id = (await f.invoice(8)).id;
+    await f.report(runId, [id]);
+    // The first dismissal finishes its work and holds its transaction open until the second is waiting on it.
+    let hold = true; const inside = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const scope: typeof db.forGym = (gymId, work) => {
+      const mine = hold; hold = false;
+      return db.forGym(gymId, async (tx) => {
+        const result = await work(tx);
+        if (mine) { inside.resolve(); await release.promise; }
+        return result;
+      });
+    };
+    const runner = createChargeRunner({ ...f.options, scope, transitions: createInvoiceTransitions(f.options),
+      payments: async () => new FakePayments(f.gymId, f.clock) });
+    const context = { gymId: f.gymId, actor: { kind: 'user' as const, userId: f.user.id } };
+    const first = runner.dismissChargeFailures(context, [runId]);
+    await inside.promise;
+    const second = runner.dismissChargeFailures(context, [runId]);
+    const done = second.then(() => true, () => true);
+    // Wait on the database's own state, with no timer: the second dismissal is either waiting for the lock or already finished.
+    // The probe uses the system connection (the two dismissals hold both connections of the gym pool) and counts only this test database's locks.
+    // eslint-disable-next-line database/system-tables -- The same lock-table probe.
+    const waiting = async () => (await db.system.db.execute(sql`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())`))[0]!.n as number > 0;
+    for (let tries = 0; tries < 5_000 && !await Promise.race([done, waiting()]); tries++);
+    release.resolve();
+    const results = await Promise.all([first, second]);
+    expect(results.map(result => result.dismissed)).toEqual([[id], []]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(1);
+    expect(await f.list()).toEqual([]);
   });
   it('shows gym B nothing of gym A and answers its dismissal of gym A\'s run 404', async () => {
     const a = await fixture(), b = await fixture(), runId = uuidv7();
@@ -123,9 +178,10 @@ describe('charge failure routes', () => {
     expect(await b.list('admin')).toEqual([]);
     expect((await b.request('owner', '/api/health/charge-failures/dismiss', { runId })).status).toBe(404);
     expect(await b.tile()).toMatchObject({ status: 'healthy' });
-    // Dismissing everything as gym B leaves gym A's report alone.
-    const all = await b.request('owner', '/api/health/charge-failures/dismiss', {});
-    expect(dismissChargeFailuresResponseSchema.parse(await all.json()).data.dismissed).toEqual([]);
+    // Naming gym A's run among its own as gym B refuses the whole request and leaves gym A's report alone.
+    const own = uuidv7(); await b.report(own, [(await b.invoice(8)).id]);
+    expect((await b.request('owner', '/api/health/charge-failures/dismiss', { runIds: [own, runId] })).status).toBe(404);
+    expect((await b.list()).map(report => report.runId)).toEqual([own]);
     expect((await a.list()).map(report => report.runId)).toEqual([runId]);
     expect(await a.tile()).toMatchObject({ status: 'error' });
   });

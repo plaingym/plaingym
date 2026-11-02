@@ -28,8 +28,9 @@ export function createChargeFailureRoutes(runner?: FailureRunner): readonly Rout
       responses: { 200: { description: 'Dismissed invoices', content: { 'application/json': { schema: dismiss.response } } } } }, async (c) => {
       const context = c.get('context'), principal = context.principal;
       if (principal.kind !== 'staff' || principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Gym not found');
-      const { runId } = c.req.valid('json');
-      const result = await read().dismissChargeFailures({ gymId: context.gym.gymId, actor: { kind: 'user', userId: principal.userId } }, runId);
+      const body = c.req.valid('json');
+      const result = await read().dismissChargeFailures({ gymId: context.gym.gymId, actor: { kind: 'user', userId: principal.userId } },
+        'runIds' in body ? body.runIds : [body.runId]);
       c.header('Cache-Control', 'no-store');
       return c.json({ data: { dismissed: result.dismissed } }, 200);
     }),

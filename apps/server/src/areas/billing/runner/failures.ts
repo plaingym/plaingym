@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, inArray, isNotNull, notInArray } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- The per-gym advisory lock that serializes dismissals is one fixed statement; it reads and writes no table.
+import { and, asc, eq, gte, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import { auditEvents, invoices, paymentAttempts, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { notFound, type MutationContext } from '../../../core/interfaces/common.js';
@@ -58,11 +59,23 @@ export async function openChargeFailures(tx: Transaction, now: Date): Promise<Ch
   }).filter(report => report.failures.length);
 }
 
-/** Staff dismiss what one report, or without `runId` every open report, still lists; the invoices are unchanged. */
-export async function dismissChargeFailures(tx: Transaction, context: MutationContext, clock: Clock, runId?: string) {
+/**
+ * Staff dismiss what the named reports still list; the invoices are unchanged. A report written after staff loaded
+ * the list isn't named, so it stays open. Every dismissal of the gym takes one transaction-level advisory lock first
+ * (an audit row can't be locked: the app role may not update `audit_events`), so two dismissals of one report run
+ * one after the other, and the second finds it dismissed and writes no audit.
+ */
+export async function dismissChargeFailures(tx: Transaction, context: MutationContext, clock: Clock, runIds: readonly string[]) {
   if (context.actor.kind !== 'user') throw new Error('Dismissing a charge failure report requires a user actor');
-  if (runId !== undefined && !await recorded(tx, reported, runId)) notFound();
-  const reports = (await openChargeFailures(tx, clock.now())).filter(row => runId === undefined || row.runId === runId);
+  const named = [...new Set(runIds)], wanted = new Set(named);
+  // eslint-disable-next-line database/system-tables -- The same advisory lock: no table, and the key is the caller's own gym.
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'billing.runner.charge_failures:' + context.gymId}, 0))`);
+  if (named.length) {
+    const known = await tx.select({ id: auditEvents.targetId }).from(auditEvents)
+      .where(and(eq(auditEvents.action, reported), inArray(auditEvents.targetId, named)));
+    if (new Set(known.map(row => row.id)).size !== named.length) notFound();
+  }
+  const reports = (await openChargeFailures(tx, clock.now())).filter(row => wanted.has(row.runId));
   for (const report of reports) await audit(tx, context, clock, dismissed, 'charge_run', report.runId,
     { invoiceIds: report.failures.map(failure => failure.invoiceId) });
   return { dismissed: [...new Set(reports.flatMap(report => report.failures.map(failure => failure.invoiceId)))] };

@@ -50,12 +50,16 @@ admin). Its error boundary turns failed reads into a safe unavailable tile.
   local day, report time, and for each invoice that still needs staff its ID, number
   (null if it had none yet) and cause. It is the runner's `chargeFailures`, so an
   invoice that was collected or closed is already gone.
-* `POST /api/health/charge-failures/dismiss` takes `{ "runId"?: uuid }` and calls the
+* `POST /api/health/charge-failures/dismiss` takes `{ "runId": uuid }` or
+  `{ "runIds": [uuid, …] }` (one to 500; exactly one of the two) and calls the
   runner's `dismissChargeFailures` as the signed-in user, which writes one
-  `billing.runner.charge_failures.dismissed` audit per report. Without `runId` it
-  dismisses every open report. It answers the invoice IDs those reports still listed;
-  the invoices are unchanged. A run that never reported, or another gym's, is 404;
-  dismissing a report twice is a harmless 200 that lists nothing.
+  `billing.runner.charge_failures.dismissed` audit per report. The page's **Dismiss all**
+  sends the run IDs it listed, so a report written after the list loaded stays open.
+  A body that names no run is 400: there is no dismiss-everything call. It answers the
+  invoice IDs those reports still listed; the invoices are unchanged. A run that never
+  reported, or another gym's, is 404 and nothing is dismissed; dismissing a report
+  twice is a harmless 200 that lists nothing, and two dismissals at once write one audit.
+  The charge-run tile's page reads the list only while the tile is an error.
 
 The runtime passes the runner to the routes with `configureChargeFailures(runner)`.
 Until it does, both routes answer 503.

@@ -9,33 +9,40 @@ import { Button } from '../../components/ui/button.js';
 import { Dialog } from '../../components/ui/dialog.js';
 
 const label = (key: string, values?: Record<string, string | number>) => t('health/status:failures.' + key, values);
-/** The invoices a stopped charge run couldn't settle, with the staff actions that clear them from the charge-run tile. */
-export function ChargeFailures({ gymId }: { gymId: string }) {
-  const cache = useQueryClient(), [confirming, setConfirming] = useState(false);
+/**
+ * The invoices a stopped charge run couldn't settle, with the staff actions that clear them from the charge-run tile.
+ * `reporting` is whether the tile is an error: only then is the list read (and polled), and **Dismiss all** names the
+ * runs on screen when its dialog opened, so a report written since stays open.
+ */
+export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting: boolean }) {
+  const cache = useQueryClient(), [confirming, setConfirming] = useState<readonly string[] | null>(null);
   // Under the health query's key, so one invalidation refreshes the tiles and this list together.
   const query = useQuery({ queryKey: ['health', gymId, 'charge-failures'], queryFn: async ({ signal }) => {
     const result = await api.GET(healthContracts.listChargeFailures.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Charge failures failed');
     return chargeFailuresResponseSchema.parse(result.data).data;
-  }, refetchInterval: 60_000 });
+  }, refetchInterval: 60_000, enabled: reporting });
   const dismiss = useMutation({
-    mutationFn: async (runId?: string) => {
-      const result = await api.POST(healthContracts.dismissChargeFailures.path, { body: runId ? { runId } : {} });
+    mutationFn: async (named: string | readonly string[]) => {
+      const result = await api.POST(healthContracts.dismissChargeFailures.path, { body: typeof named === 'string' ? { runId: named } : { runIds: [...named] } });
       if (!result.response.ok) throw new Error('Dismiss failed');
       return dismissChargeFailuresResponseSchema.parse(result.data).data;
     },
     // A report that is already gone (dismissed elsewhere) is also settled by reading the list again.
     onSettled: () => cache.invalidateQueries({ queryKey: ['health', gymId] }),
-    onSuccess: () => setConfirming(false),
+    onSuccess: () => setConfirming(null),
   });
   const reports = query.data ?? [];
+  // Close the confirmation and forget a failed attempt, so its error doesn't outlive the dialog it came from.
+  const closeConfirm = () => { dismiss.reset(); setConfirming(null); };
+  if (!reporting) return null;
   if (query.isError) return <p role="status" className="mt-4 text-sm">{label('loadFailed')}</p>;
   if (query.isPending) return <p role="status" className="mt-4 text-sm">{label('loading')}</p>;
   if (!reports.length) return null;
   return <section aria-label={label('title')} className="mt-4 space-y-3 border-t border-border pt-4">
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       <h3 className="font-medium">{label('title')}</h3>
-      <Button variant="outline" className="w-full sm:w-auto" disabled={dismiss.isPending} onClick={() => { dismiss.reset(); setConfirming(true); }}>{label('dismissAll')}</Button>
+      <Button variant="outline" className="w-full sm:w-auto" disabled={dismiss.isPending} onClick={() => { dismiss.reset(); setConfirming(reports.map((report) => report.runId)); }}>{label('dismissAll')}</Button>
     </div>
     {dismiss.isError && !confirming && <Alert>{label('dismissFailed')}</Alert>}
     <ul className="space-y-3">{reports.map((report) => <li key={report.runId} className="space-y-2 rounded-md border border-border p-3">
@@ -49,12 +56,12 @@ export function ChargeFailures({ gymId }: { gymId: string }) {
         <span className="text-muted-foreground">{label('cause.' + failure.cause)}</span>
       </li>)}</ul>
     </li>)}</ul>
-    {confirming && <Dialog title={label('confirmTitle')} closeLabel={label('close')} onClose={() => setConfirming(false)} dismissible={!dismiss.isPending}>
+    {confirming && <Dialog title={label('confirmTitle')} closeLabel={label('close')} onClose={closeConfirm} dismissible={!dismiss.isPending}>
       <div className="space-y-4"><p>{label('confirmHelp')}</p>
         {dismiss.isError && <Alert>{label('dismissFailed')}</Alert>}
         <div className="flex flex-col gap-3 sm:flex-row">
-          <Button disabled={dismiss.isPending} onClick={() => dismiss.mutate(undefined)}>{label(dismiss.isPending ? 'working' : 'confirm')}</Button>
-          <Button variant="outline" disabled={dismiss.isPending} onClick={() => setConfirming(false)}>{label('cancel')}</Button></div></div>
+          <Button disabled={dismiss.isPending} onClick={() => dismiss.mutate(confirming)}>{label(dismiss.isPending ? 'working' : 'confirm')}</Button>
+          <Button variant="outline" disabled={dismiss.isPending} onClick={closeConfirm}>{label('cancel')}</Button></div></div>
     </Dialog>}
   </section>;
 }

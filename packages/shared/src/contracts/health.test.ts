@@ -1,7 +1,7 @@
 ﻿// SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts, chargeFailureReportSchema, chargeFailuresResponseSchema,
-  dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema } from './index.js';
+  dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
 
 const now = '2026-10-21T20:00:00Z';
@@ -51,12 +51,16 @@ describe('health contracts', () => {
       for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(['owner', 'admin'].includes(role));
     }
   });
-  it('accepts a dismissal of one run or of all runs and nothing else', () => {
-    const runId = '0198a000-0000-7000-8000-000000000001';
-    expect(dismissChargeFailuresRequestSchema.parse({})).toEqual({});
+  it('accepts a dismissal of one run or of the named runs, and refuses one that names none', () => {
+    const runId = '0198a000-0000-7000-8000-000000000001', other = '0198a000-0000-7000-8000-000000000002';
     expect(dismissChargeFailuresRequestSchema.parse({ runId })).toEqual({ runId });
-    for (const body of [{ runId: 'run-1' }, { runId: null }, { runId, all: true }, []])
+    expect(dismissChargeFailuresRequestSchema.parse({ runIds: [runId, other] })).toEqual({ runIds: [runId, other] });
+    const tooMany = Array.from({ length: maxDismissedChargeRuns + 1 }, (_, n) => `0198a000-0000-7000-8000-${String(n).padStart(12, '0')}`);
+    // An empty body used to dismiss every report, including ones written after the list loaded.
+    for (const body of [{}, { runIds: [] }, { runId, runIds: [other] }, { runId: 'run-1' }, { runId: null }, { runIds: ['run-1'] },
+      { runIds: tooMany }, { runIds: null }, { runId, all: true }, []])
       expect(dismissChargeFailuresRequestSchema.safeParse(body).success).toBe(false);
+    expect(dismissChargeFailuresRequestSchema.safeParse({ runIds: tooMany.slice(0, maxDismissedChargeRuns) }).success).toBe(true);
   });
   it('describes a report by run, day and the invoices that still need staff', () => {
     const failure = { invoiceId: '0198a000-0000-7000-8000-000000000002', number: 41, cause: 'needs_reconciliation' };
