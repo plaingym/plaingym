@@ -77,6 +77,30 @@ describe('Settings → Email', () => {
     expect(client.DELETE).toHaveBeenCalledWith('/api/settings/integrations/email', { body: { revision: 3 } });
     expect((await screen.findByRole('status')).textContent).toContain('removed');
   });
+  it('names only the action in progress, and forgets a removed host', async () => {
+    current = gymEmail;
+    let sent: (value: unknown) => void = () => {};
+    client.PUT.mockReturnValue(new Promise((resolve) => { sent = resolve; }));
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Change SMTP settings' }));
+    const form = screen.getByRole('form', { name: 'Change SMTP settings' });
+    expect((within(form).getByLabelText('SMTP host') as HTMLInputElement).value).toBe('smtp.gym.test');
+    await user.type(within(form).getByLabelText('SMTP username'), 'user');
+    await user.type(within(form).getByLabelText('SMTP password'), 'smtp-secret');
+    await user.type(within(form).getByLabelText('Send the test email to'), 'owner@gym.test');
+    await user.click(within(form).getByRole('button', { name: 'Send test email and save' }));
+    expect(await within(form).findByRole('button', { name: 'Sending test email…' })).toBeDefined();
+    // The test email is being sent, not the settings removed.
+    const remove = screen.getByRole('button', { name: 'Remove (the gym will have no email)' }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+    sent(reply(200, { data: { test: 'failed', integrations: gymEmail } }));
+    expect((await screen.findByRole('alert')).textContent).toContain('nothing was saved');
+    client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5 } }));
+    await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
+    expect((await screen.findByRole('status')).textContent).toContain('removed');
+    const replace = screen.getByRole('form', { name: 'Use your own SMTP service' });
+    expect((within(replace).getByLabelText('SMTP host') as HTMLInputElement).value).toBe('');
+  });
   it('won’t remove email while it is the owner’s only way to sign in', async () => {
     current = { ...gymEmail, email: { ...gymEmail.email, removeBlocked: true } };
     renderSection();

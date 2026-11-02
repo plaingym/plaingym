@@ -24,14 +24,14 @@ function Field({ name, type = 'text', value, required = true, onChange }: { name
 }
 /** The gym's sending service: shown without its password, replaced only after a test email is accepted, or removed. */
 export function EmailIntegrationSection({ email, state }: { email: EmailIntegration; state: ReturnType<typeof useIntegrations> }) {
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState<Message | null>(null);
+  const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null);
   const [host, setHost] = useState(email.source === 'gym' ? email.host ?? '' : ''), [open, setOpen] = useState(false);
   const saveChangesSignIn = !same(email.signIn, email.signInAfterSave);
   const removeChangesSignIn = email.signInAfterRemove !== null && !same(email.signIn, email.signInAfterRemove);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage(null);
     const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '');
-    setBusy(true);
+    setBusy('save');
     try {
       const reply = await state.change((revision) => api.PUT('/api/settings/integrations/email', { body: { revision, host: field('host').trim(),
         port: Number(field('port')), secure: form.has('secure'), username: field('username'), password: field('password'),
@@ -43,17 +43,17 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
       else if (reply.result === 'failed') setMessage({ kind: 'alert', text: label('testFailed') });
       else setMessage({ kind: 'alert', text: reply.reason === 'port_not_allowed' ? label('portNotAllowed') : text(reply.status === 409 ? 'conflict' : 'error') });
     } catch { setMessage({ kind: 'alert', text: text('error') }); }
-    finally { setBusy(false); }
+    finally { setBusy(null); }
   }
   async function remove() {
-    setMessage(null); setBusy(true);
+    setMessage(null); setBusy('remove');
     try {
       const reply = await state.change((revision) => api.DELETE('/api/settings/integrations/email', { body: { revision } }), integrationsOf);
-      if (reply.status < 300) setMessage({ kind: 'status', text: label('removed') });
+      if (reply.status < 300) { setMessage({ kind: 'status', text: label('removed') }); setHost(''); }
       else setMessage({ kind: 'alert', text: reply.reason === 'only_sign_in' ? label('onlySignIn') : reply.reason === 'not_configured' ? label('notConfigured')
         : text(reply.status === 409 ? 'conflict' : 'error') });
     } catch { setMessage({ kind: 'alert', text: text('error') }); }
-    finally { setBusy(false); }
+    finally { setBusy(null); }
   }
   return <div className="grid min-w-0 gap-4">
     <h3 className="text-base font-semibold">{label('title')}</h3>
@@ -66,12 +66,12 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
       {email.source === 'gym' && <div className="grid min-w-0 gap-2">
         {email.removeBlocked ? <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>
           : removeChangesSignIn && <p className="text-sm">{text('email.signInChangesOnRemove', { methods: methods(email.signInAfterRemove!) })}</p>}
-        <div><Button type="button" variant="outline" disabled={busy || email.removeBlocked} onClick={() => void remove()}>
-          {label(busy ? 'removing' : email.signInAfterRemove?.magicLink ? 'remove' : 'removeNone')}</Button></div>
+        <div><Button type="button" variant="outline" disabled={busy !== null || email.removeBlocked} onClick={() => void remove()}>
+          {label(busy === 'remove' ? 'removing' : email.signInAfterRemove?.magicLink ? 'remove' : 'removeNone')}</Button></div>
       </div>}
       {!open ? <div><Button type="button" variant="outline" onClick={() => { setMessage(null); setOpen(true); }}>{label(email.source === 'gym' ? 'change' : 'replace')}</Button></div>
       : <form onSubmit={(event) => void save(event)} aria-label={label(email.source === 'gym' ? 'change' : 'replace')}>
-        <fieldset disabled={busy} className="grid min-w-0 gap-4">
+        <fieldset disabled={busy !== null} className="grid min-w-0 gap-4">
           <p className="text-sm text-muted-foreground">{label('hint')}</p>
           <div className="grid min-w-0 gap-2">
             <Label htmlFor="integrations-email-preset">{label('preset')}</Label>
@@ -98,7 +98,7 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
             <CheckboxField required label={label('confirmSignIn')}/>
           </>}
           <div className="flex flex-col gap-3 sm:flex-row">
-            <Button type="submit">{label(busy ? 'saving' : 'save')}</Button>
+            <Button type="submit">{label(busy === 'save' ? 'saving' : 'save')}</Button>
           </div>
         </fieldset>
       </form>}
