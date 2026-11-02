@@ -2,18 +2,32 @@
 # Configuration
 
 PlainGym reads its configuration from environment variables. A self-hosted
-install keeps them in `/opt/plaingym/.env` (mode 0600), which the installer writes
-and `deploy/compose.yaml` passes to the containers. Gym settings are not
-environment variables: the owner sets email, Stripe and backups in the setup
-wizard, and the gym's details, booking and billing rules in the admin's
-**Settings**. They are stored in the database, encrypted where secret.
+install keeps its values in `/opt/plaingym/.env` (mode 0600), which the installer
+writes. Gym settings are not environment variables: the owner sets email, Stripe
+and backups in the setup wizard, and the gym's details, booking and billing rules
+in the admin's **Settings**. They are stored in the database, encrypted where
+secret.
+
+`deploy/compose.yaml` has no `env_file`: the app container gets only the variables
+its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
+settings, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
+`POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD` and `NODE_OPTIONS`; it fixes
+`NODE_ENV`, `HOST`, `PORT`, `TENANCY=single`, `TRUST_PROXY`, `DATABASE_URL`,
+`MAINTENANCE_DATABASE_URL`, `UPLOADS_DIR` and `BACKUP_STAGING_DIR` itself; and it
+reads the Compose and Caddy variables at the end of this page. The other variables
+here (such as `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `DATABASE_POOL_MAX`,
+`PUBLIC_ORIGIN`, `PACKS_DIR` and `UPLOADS_S3_*`) are read by the server but not
+passed by the shipped Compose file, so setting them in `.env` has no effect on a
+standard install. They apply when you run the server some other way, such as in
+development or with your own Compose file.
 
 After changing `.env`, run `sudo docker compose up -d` in the install directory.
 The app checks its configuration on start and refuses to start with a clear
 message when a value is missing or invalid.
 
 A test (`apps/server/src/core/configuration.docs.test.ts`) fails when the server
-reads a variable, or `deploy/compose.yaml` uses one, that this page doesn't list.
+or the image's start-up scripts read a variable, or `deploy/compose.yaml` uses
+one, that this page doesn't list.
 
 ## Required
 
@@ -40,6 +54,8 @@ reads a variable, or `deploy/compose.yaml` uses one, that this page doesn't list
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `MAINTENANCE_DATABASE_URL` | none | The `maintenance` role's connection URL, for migrations, backups and restore. Single-gym installs give it to the app container; multi-gym installs give it only to the one-shot `migrate` service, and the app refuses to start in production if it is set. |
+| `PGHOST` | `postgres` | The database host the image's start-up scripts wait for and prepare roles on, before the app connects with `DATABASE_URL`. Change it with the URLs when PostgreSQL runs elsewhere. |
+| `PGPORT` | `5432` | The database port the image's start-up scripts use, as `PGHOST`. |
 | `DATABASE_POOL_MAX` | `8` | The app's connection pool, 1 to 100. The default fits the shipped PostgreSQL settings (`max_connections=20`). |
 | `POSTGRES_DB` | `plaingym` | The database name. |
 | `POSTGRES_PASSWORD` | none | The PostgreSQL bootstrap superuser's password. Used only to create the database and roles on first start. |
@@ -53,10 +69,10 @@ change an existing database: the roles keep the password they were created with.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `UPLOADS_DIR` | none | Where uploads and exports are stored on disk. Required unless `UPLOADS_S3_BUCKET` is set. Compose uses `/var/lib/plaingym/uploads` on the app's data volume. |
+| `UPLOADS_DIR` | none | Where uploads and exports are stored on disk. The server needs it unless `UPLOADS_S3_BUCKET` is set, but the image's single-gym start-up (the restore check before migrations) always requires it. Compose uses `/var/lib/plaingym/uploads` on the app's data volume. |
 | `UPLOADS_S3_BUCKET` | unset | Store uploads in this S3-compatible bucket instead of on disk. Required in multi-gym mode. |
 | `UPLOADS_S3_ENDPOINT` | AWS | The bucket's endpoint, for providers other than AWS (Cloudflare R2, MinIO, Backblaze B2 and others). |
-| `UPLOADS_S3_REGION` | `auto` | The bucket's region. |
+| `UPLOADS_S3_REGION` | `auto` | The bucket's region. `auto` suits Cloudflare R2 and most S3-compatible providers; AWS S3 needs the bucket's region set here. |
 | `UPLOADS_S3_ACCESS_KEY_ID` | unset | Access key for the bucket. Without the key pair, the SDK's default credential chain is used. |
 | `UPLOADS_S3_SECRET_ACCESS_KEY` | unset | Secret key for the bucket. |
 | `PACKS_DIR` | bundled | A directory of content packs (rank systems, programs, class tags) to use instead of the bundled `packs/`. |
@@ -68,7 +84,7 @@ its credentials are stored encrypted in the database, not in `.env`.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `BACKUP_STAGING_DIR` | unset | Local scratch space where a backup is written and encrypted before upload, and where a restore is unpacked. Compose uses `/var/lib/plaingym/staging`. Single-gym mode only: without it the install has no backups or restore, and multi-gym mode ignores it. |
+| `BACKUP_STAGING_DIR` | unset | Local scratch space where a backup is written and encrypted before upload, and where a restore is unpacked. Compose uses `/var/lib/plaingym/staging`. Single-gym mode only, and the image's single-gym start-up (the restore check before migrations) requires it; multi-gym mode ignores it. A server run outside the image without it has no backups or restore. |
 
 `BACKUP_RECIPIENT`, which the installer still writes to `.env` as an empty line,
 is not read: backups use the key created in the setup wizard.
@@ -110,7 +126,7 @@ similar): mail sent directly from a server usually lands in spam.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `NODE_ENV` | `production` in the image | `production` turns on `Strict-Transport-Security`, production sign-in behavior, and the multi-gym check that the app holds no maintenance credentials. |
+| `NODE_ENV` | `production` in the image | `production` turns on `Strict-Transport-Security`, production sign-in behavior, and the server's own multi-gym check that it holds no maintenance credentials. The image's entrypoint makes that check in multi-gym mode whatever `NODE_ENV` is. |
 | `APP_VERSION` | the image's version | The release shown on the health page. |
 | `NODE_OPTIONS` | `--max-old-space-size=256` | Node's options; the default caps the JavaScript heap at 256 MiB. |
 

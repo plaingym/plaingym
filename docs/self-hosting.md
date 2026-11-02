@@ -132,8 +132,10 @@ only on Stripe's hosted pages.
 
 * **With email** (the gym's own SMTP, or the install-wide `SMTP_*` settings), staff
   and members sign in with a link emailed to them.
-* **Without email**, staff sign in with a password. `AUTH_PASSWORD_LOGIN=on` keeps
-  passwords even with email; `off` removes them.
+* **Without email**, staff sign in with a password. Once the gym has email,
+  passwords stop working and everyone signs in with emailed links
+  (`AUTH_PASSWORD_LOGIN=auto`; the shipped Compose file doesn't pass a different
+  value from `.env`, see [configuration.md](configuration.md)).
 * **Locked out?** Reset the owner's password on the server:
 
   ```sh

@@ -20,9 +20,10 @@ function serverVariables(): Set<string> {
   }
   return names;
 }
-/** Variables the deployment Compose file interpolates. */
+/** Variables the deployment Compose file interpolates, and those the image's start-up scripts read. */
 function composeVariables(): Set<string> {
-  return new Set([...read('deploy/compose.yaml').matchAll(/\$\{([A-Z][A-Z0-9_]+)/g)].map(([, name]) => name!));
+  const sources = ['deploy/compose.yaml', ...globSync('deploy/container/*.sh', { cwd: root })];
+  return new Set(sources.flatMap((file) => [...read(file).matchAll(/\$\{([A-Z][A-Z0-9_]+)/g)].map(([, name]) => name!)));
 }
 /** The variables named in the first column of configuration.md's tables. */
 function documentedVariables(): Set<string> {
