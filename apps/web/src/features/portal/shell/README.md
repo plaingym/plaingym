@@ -4,15 +4,21 @@
 The portal first loads the signed-in user's households. A login with one
 household goes straight in; a login with several sees a household picker and,
 once one is chosen, a switcher in the header. Choosing or switching stores the
-household with the session on the server, discards every cached portal query (waiting for the
-household lists it refetches), asks for the bootstrap again and returns to the portal home without
-waiting for that refetch, so data from two households is never shown together.
+household with the session on the server, resets the portal (cancelling its loads in flight, then
+clearing every cached query under `['portal']` and waiting for the household lists it refetches), asks
+for the bootstrap again and returns to the portal home without waiting for that refetch, so data from
+two households is never shown together. The reset reaches only `['portal']`: the bootstrap, the shell's
+own entries and root queries such as demo discovery stay. The previous household's context query is
+removed rather than refetched, and a context answer for a household other than the one its key names is
+never stored (the household lists are read again instead). Once the server has stored the switch, a later
+step that fails (the reset, going home) doesn't report a failed switch: the portal shows the new household.
 Whenever the open household changes any other way, such as the server falling back to another one
-because a link was revoked, the shell refetches the bootstrap too, so the name follows it. The household
+because a link was revoked, the shell does the same: it resets the portal (keeping the household lists
+it was just told about) and refetches the bootstrap, so the pages and the name follow it. The household
 the name was last settled for is kept in the query cache, not in the layout, so a layout that remounts
 (or whose household lists were collected) still notices a change made while it was away.
-If the bootstrap refetch fails, the portal stays up and the header shows the generic "Signed in" label
-until a load succeeds, never the previous household's name.
+From a change until the bootstrap refetch it asks for has finished, and after one that fails, the header
+shows the generic "Signed in" label, never the previous household's name beside the new scope.
 The header shows the gym's name and, under it, the signed-in person's name and their
 scope in the open household (account holder or member), so switching logins or
 households never loses track of who is signed in; a long name truncates, the scope stays.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type Query, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
 import { portalAccessContracts, portalContextResponseSchema, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
 import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/context.js';
@@ -25,11 +25,63 @@ const scopeLabel = (role: PortalContext['role']) => text(role === 'payer' ? 'rol
  */
 const openHouseholdKey = (userId: string) => ['shell', 'portal-household', userId] as const;
 const readOpenHousehold = (cache: QueryClient, userId: string) => cache.getQueryData<string | null>(openHouseholdKey(userId));
-const keepsHouseholds = new WeakSet<QueryClient>();
+const keepsEntries = new WeakSet<QueryClient>();
+/** Entries under these prefixes are never collected; the defaults are set once per client. */
+function keepShellEntries(cache: QueryClient) {
+  if (keepsEntries.has(cache)) return;
+  cache.setQueryDefaults(['shell', 'portal-household'], { gcTime: Infinity });
+  cache.setQueryDefaults(['shell', 'portal-name'], { gcTime: Infinity });
+  keepsEntries.add(cache);
+}
 function rememberOpenHousehold(cache: QueryClient, userId: string, householdId: string | null) {
-  // Entries under this prefix are never collected; the defaults are set once per client.
-  if (!keepsHouseholds.has(cache)) { cache.setQueryDefaults(['shell', 'portal-household'], { gcTime: Infinity }); keepsHouseholds.add(cache); }
+  keepShellEntries(cache);
   cache.setQueryData(openHouseholdKey(userId), householdId);
+}
+/**
+ * Present from the moment the open household changed until the bootstrap has been asked for again, one entry per login, holding
+ * the change that set it. While it is present the name in the cached bootstrap may be the previous household's. It sits under the
+ * bootstrap's own prefix, so a portal reset leaves it alone, and the layout reads it from the cache, so a layout that remounts
+ * meanwhile still knows.
+ */
+const staleNameKey = (userId: string) => ['shell', 'portal-name', userId] as const;
+function markNameStale(cache: QueryClient, userId: string) {
+  keepShellEntries(cache);
+  const change = Symbol('household change');
+  cache.setQueryData(staleNameKey(userId), change);
+  return change;
+}
+/**
+ * Asks for the bootstrap again, cancelling a load already under way (it may carry the previous name), and lifts the mark once a
+ * load has finished. A load that failed lifts it too: the header then falls back to the generic label until one succeeds
+ * (`isRefetchError`). A bootstrap nobody is watching stays invalidated, so the mark waits for the load that its next observer starts.
+ */
+async function refreshName(cache: QueryClient, userId: string, change: symbol) {
+  await cache.invalidateQueries({ queryKey: bootstrapKey });
+  const mine = () => cache.getQueryData(staleNameKey(userId)) === change;
+  const settled = () => { const state = cache.getQueryState(bootstrapKey); return state?.fetchStatus === 'idle' && (!state.isInvalidated || state.status === 'error'); };
+  const lift = () => cache.removeQueries({ queryKey: staleNameKey(userId), exact: true });
+  if (!mine()) return;
+  if (settled()) return lift();
+  const stop = cache.getQueryCache().subscribe(() => { if (!mine()) stop(); else if (settled()) { stop(); lift(); } });
+}
+/** The context answer was for another household than the key it was asked under; the household lists are being read again. */
+class HouseholdMoved extends Error {}
+const portalKey = ['portal'] as const;
+/**
+ * The one reset of everything the portal cached, for a household switch and for a household-list refetch that notices a change.
+ * It reaches only `['portal']`; the bootstrap, the open-household entries and root queries such as demo discovery stay. In-flight
+ * portal loads are cancelled first, so nothing started for the previous household can still write. The shell's own context
+ * query for the previous household is removed, not refetched: it is keyed by household, so refetching it would put the new
+ * household's answer under the old key. Two things stay: the context query of the household now open, which only ever stores
+ * that household's own answer (it is checked against its key), and with `keepHouseholds` the household lists (the caller just
+ * loaded them).
+ */
+async function resetPortal(cache: QueryClient, base: readonly unknown[], previous: string | null, opened: string | null, keepHouseholds = false) {
+  const reached = ({ queryKey: key }: Query) => !((keepHouseholds && key[3] === 'households')
+    || (opened !== null && key.length === 5 && key[3] === 'context' && key[4] === opened && key[1] === base[1] && key[2] === base[2]));
+  await cache.cancelQueries({ queryKey: portalKey, predicate: reached });
+  cache.removeQueries({ queryKey: [...base, 'context', previous], exact: true });
+  await cache.resetQueries({ queryKey: portalKey, predicate: reached });
 }
 export function portalNavigation(entries: readonly NavigationEntry[], role: PortalContext['role'], modules: readonly string[]) {
   return entries.filter(entry => entry.enabled && (!entry.moduleId || modules.includes(entry.moduleId)) && entry.permission.kind === 'member' && canMember(role, entry.permission.capability));
@@ -86,40 +138,58 @@ export function PortalLayout({ name, person, scope, entries, children, onSignOut
 function AuthenticatedPortal() {
   const bootstrap = useBootstrap(), services = useShellServices(), cache = useQueryClient(), navigate = useNavigate();
   const session = bootstrap.data?.session, member = !!session?.member && session.roles.length === 0;
-  const base = ['portal', bootstrap.data?.gym.id, session?.userId] as const;
+  const gymId = bootstrap.data?.gym.id, base = ['portal', gymId, session?.userId] as const;
   const households = useQuery({ queryKey: [...base, 'households'], enabled: member,
     queryFn: async () => portalAccessContracts.households.response.parse(await createJsonTransport()('/api/portal/households')).data, retry: false, staleTime: 0 });
   const current = households.data?.current ?? null;
   const context = useQuery({ queryKey: [...base, 'context', current], enabled: member && !!current,
-    queryFn: async () => portalContextResponseSchema.parse(await createJsonTransport()('/api/portal/context')).data, retry: false, staleTime: 0 });
+    queryFn: async () => {
+      const answer = portalContextResponseSchema.parse(await createJsonTransport()('/api/portal/context')).data;
+      // The server answers for the household it has open. If the lists this key came from name another one, the server moved
+      // on (a revoked link fell back to another household) and this answer is the new household's: it is never stored under
+      // the old household's key. The lists are read again (joining a load already under way), and the reset that follows
+      // removes this query.
+      if (answer.householdId !== current) { void cache.refetchQueries({ queryKey: [...base, 'households'] }, { cancelRefetch: false }); throw new HouseholdMoved(); }
+      return answer;
+    }, retry: false, staleTime: 0 });
   const userId = session?.userId;
+  // While the name may still be the previous household's, the header says nothing about who is signed in.
+  const nameStale = useSyncExternalStore(useCallback(notify => cache.getQueryCache().subscribe(notify), [cache]),
+    () => userId !== undefined && cache.getQueryData(staleNameKey(userId)) !== undefined);
   const choose = useMutation({
     mutationFn: async (householdId: string) => {
       await createJsonTransport()('/api/portal/households/current', { householdId });
-      // The name is now stale whatever else happens, so say so before anything below can be interrupted.
-      if (userId) rememberOpenHousehold(cache, userId, householdId);
-      // Nothing from the previous household may remain on screen or in the cache. Resetting clears it at once, and the
-      // household lists it refetches are waited for, so every switch finishes in order. The bootstrap is not among them.
+      // From here the server has the switch, so whatever a later step does, the portal is the new household's. The name is
+      // stale now, whatever else happens, so say so before anything below can be interrupted.
+      const change = userId ? (rememberOpenHousehold(cache, userId, householdId), markNameStale(cache, userId)) : undefined;
       try {
-        await cache.cancelQueries();
-        await cache.resetQueries({ predicate: query => query.queryKey[0] !== bootstrapKey[0] });
+        // Nothing from the previous household may remain on screen or in the cache. Resetting clears it at once, and the
+        // household lists it refetches are waited for, so every switch finishes in order. The bootstrap is not among them.
+        await resetPortal(cache, base, current, householdId);
         await navigate({ to: '/portal', replace: true });
+      } catch {
+        // A step failed after the server stored the switch: not a failed switch. Whatever the reset left is read again.
+        void cache.invalidateQueries({ queryKey: portalKey });
       } finally {
-        // The switch is stored on the server, so the name is asked for again whatever stopped the steps above, and the switch
-        // goes home without waiting for it. This runs even if the layout that asked for the switch has gone.
-        void cache.invalidateQueries({ queryKey: bootstrapKey });
+        // The name is asked for again whatever stopped the steps above, and the switch goes home without waiting for it.
+        // This runs even if the layout that asked for the switch has gone.
+        if (userId && change) void refreshName(cache, userId, change); else void cache.invalidateQueries({ queryKey: bootstrapKey });
       }
     },
   });
   // The name the gym knows the person by follows the open household, however it changed: a switch here, or the server
   // falling back to another household when a link was revoked. The session keeps its data meanwhile (the shell stays up).
+  // A noticed change resets the portal as a switch does, but keeps the household lists it was just told about.
   const loaded = households.data !== undefined;
   useEffect(() => {
     if (!loaded || !userId) return;
     const seen = readOpenHousehold(cache, userId);
-    if (seen !== undefined && seen !== current) void cache.invalidateQueries({ queryKey: bootstrapKey });
     rememberOpenHousehold(cache, userId, current);
-  }, [loaded, current, userId, cache]);
+    if (seen === undefined || seen === current) return;
+    const change = markNameStale(cache, userId);
+    void resetPortal(cache, base, seen, current, true).catch(() => cache.invalidateQueries({ queryKey: portalKey }));
+    void refreshName(cache, userId, change);
+  }, [loaded, current, userId, gymId, cache]);
   const signOut = useMutation({ mutationFn: async () => { await services.signOut(); await cache.cancelQueries(); cache.clear(); location.assign('/login'); } });
   useEffect(() => {
     const manifest = document.createElement('link'); manifest.rel = 'manifest'; manifest.href = '/portal/manifest.webmanifest'; document.head.append(manifest);
@@ -130,18 +200,24 @@ function AuthenticatedPortal() {
   if (!bootstrap.data) return bootstrap.isError ? <ErrorState onRetry={() => void bootstrap.refetch()} /> : <LoadingState />;
   if (session?.roles.length) return <Navigate to="/admin" replace />;
   if (!session?.member) return <Navigate to="/login" replace />;
-  // After a failed refetch the name is the previous household's (or an older load's), so the generic label stands in until one succeeds.
-  const person = sessionName(bootstrap.isRefetchError ? { displayName: null } : session);
+  // While the refetch after a change is pending, and after one that failed, the name is the previous household's (or an older
+  // load's), so the generic label stands in until one succeeds.
+  const person = sessionName(bootstrap.isRefetchError || nameStale ? { displayName: null } : session);
   const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={retry} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button></Page>;
+  // The lists name a household other than the one the name and pages were settled for: nothing of the previous one is shown
+  // for the render before the effect above resets the portal.
+  const moved = loaded && userId !== undefined && readOpenHousehold(cache, userId) !== undefined && readOpenHousehold(cache, userId) !== current;
   if (households.isPending || choose.isPending) return <LoadingState />;
   if (households.isError) return failed(() => void households.refetch());
+  if (moved) return <LoadingState />;
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
     return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
       <HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
-  if (context.isPending) return <LoadingState />;
+  // A context answer for another household waits only for the lists being read again; if they still name this one, it is an error.
+  if (context.isPending || (context.error instanceof HouseholdMoved && households.isFetching)) return <LoadingState />;
   if (context.isError) return failed(() => { void households.refetch(); void context.refetch(); });
   const switcher = households.data.households.length > 1
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;

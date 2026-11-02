@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
-import { focusManager, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { focusManager, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
@@ -90,7 +90,7 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
   // What the server does on its own, such as falling back to another household when a link is revoked.
   const serverOpens = (householdId: string) => { current = householdId; };
   const release = () => { released = true; for (const held of [...bootstrapGates, ...householdGates]) held.settle(); };
-  return { fetcher, selections, router, release, serverOpens, bootstrapGates, householdGates, cache };
+  return { fetcher, selections, router, release, serverOpens, bootstrapGates, householdGates, cache, server: () => current };
 }
 const identity = () => screen.getByTestId('signed-in-identity').textContent;
 it('asks a login with several households to choose one before showing the portal', async () => {
@@ -131,9 +131,10 @@ it('navigates a household switch home before the name refetch settles', async ()
   await screen.findByRole('combobox');
   expect(f.router.state.location.pathname).toBe('/portal/schedule');
   await user.selectOptions(screen.getByRole('combobox'), ids.second);
-  // The bootstrap refetch is held, yet the switch has already gone home.
+  // The bootstrap refetch is held, yet the switch has already gone home. Until it answers, the name is not the previous one's.
   await waitFor(() => expect(f.router.state.location.pathname).toBe('/portal'));
-  expect(screen.getByTestId('signed-in-identity').textContent).toContain('Test User');
+  await waitFor(() => expect(identity()).toBe('Signed in · Member'));
+  expect(document.body.textContent).not.toContain('Test User');
   f.release();
   await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Noa Second · Member'));
 });
@@ -198,6 +199,9 @@ it('refetches the name even when going home fails after the switch was stored', 
   vi.spyOn(f.router, 'navigate').mockRejectedValueOnce(new Error('navigation refused'));
   await user.selectOptions(screen.getByRole('combobox'), ids.second);
   await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  // The server has the switch, so the portal is the new household's, not an error about a switch that happened.
+  expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.second);
+  expect(screen.queryByText(/couldn’t open that household/)).toBeNull();
   f.bootstrapGates[0]!.settle();
   await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
 });
@@ -217,6 +221,124 @@ it('shows the generic label, not the previous household\'s member name, when the
   await waitFor(() => expect(f.bootstrapGates).toHaveLength(2));
   f.bootstrapGates[1]!.settle();
   await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+});
+const fetchCount = (f: ReturnType<typeof portal>, path: string) => f.fetcher.mock.calls.filter(([called]) => called === path).length;
+const base = ['portal', ids.user, ids.user] as const;
+it('resets only the portal queries on a switch, and refetches nothing under the old household\'s key', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  // Root queries and the shell's own entries are not the portal's.
+  // (The fixture's discovery answer doesn't satisfy the real schema, so the test gives the query a settled answer of its own.)
+  f.cache.setQueryData(['demo', 'discovery', window.location.origin], { data: { mode: 'disabled' } });
+  const discovery = f.cache.getQueryCache().findAll({ queryKey: ['demo', 'discovery'] })[0];
+  expect(discovery?.state.status).toBe('success');
+  const discoveryLoaded = discovery!.state.dataUpdatedAt, discoveryCalls = fetchCount(f, '/api/demo'), contextCalls = fetchCount(f, '/api/portal/context');
+  const oldContext = [...base, 'context', ids.first];
+  expect(f.cache.getQueryData(oldContext)).toBeDefined();
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(f.cache.getQueryCache().findAll({ queryKey: ['demo', 'discovery'] })).toEqual([discovery]);
+  expect(discovery!.state.status).toBe('success'); expect(discovery!.state.dataUpdatedAt).toBe(discoveryLoaded);
+  expect(fetchCount(f, '/api/demo')).toBe(discoveryCalls);
+  // The previous household's context is gone, and the only context asked for since is the new household's.
+  expect(f.cache.getQueryCache().find({ queryKey: oldContext, exact: true })).toBeUndefined();
+  expect(f.cache.getQueryData([...base, 'context', ids.second])).toEqual({ role: 'member', householdId: ids.second, memberId: ids.member });
+  expect(fetchCount(f, '/api/portal/context')).toBe(contextCalls + 1);
+  expect(f.cache.getQueryData(['shell', 'portal-household', ids.user])).toBe(ids.second);
+});
+// H: the household lists answer, which is when the change is noticed. A: a page load that started for the previous household
+// answers. B: the bootstrap refetch answers. P: the page load the reset asked for answers. Only H comes first among H, B and P.
+it.each(['AHBP', 'AHPB', 'HABP', 'HAPB', 'HBAP', 'HBPA', 'HPAB', 'HPBA'])('shows nothing of the previous household once the server opened another on its own, whatever the answering order (%s)', async order => {
+  const f = portal(ids.first, { hold: true, holdHouseholds: true });
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  // A portal page, as its mounted query: it answers for the household the server has open when it is asked.
+  const asked: Gate[] = [], shown: string[] = [];
+  const page = new QueryObserver(f.cache, { queryKey: [...base, 'billing', 'invoices', 0], staleTime: 60_000, queryFn: async () => {
+    const answer = f.server(), held = gate(); asked.push(held); await held.wait; return answer;
+  } });
+  const stop = page.subscribe(result => { if (result.data) shown.push(result.data); });
+  const identities: string[] = [];
+  const watch = new MutationObserver(() => { const text = document.querySelector('[data-testid="signed-in-identity"]')?.textContent; if (text) identities.push(text); });
+  watch.observe(document.body, { subtree: true, childList: true, characterData: true });
+  try {
+    await waitFor(() => expect(asked).toHaveLength(1)); asked[0]!.settle();
+    await waitFor(() => expect(page.getCurrentResult().data).toBe(ids.first));
+    // A load for the previous household is in flight when the server opens the other one and the lists are read again.
+    void page.refetch(); await waitFor(() => expect(asked).toHaveLength(2));
+    f.serverOpens(ids.second);
+    act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+    await waitFor(() => expect(f.householdGates.length).toBeGreaterThan(0));
+    let noticed = -1;
+    for (const event of order) {
+      if (event === 'A') asked[1]!.settle();
+      if (event === 'H') {
+        for (const held of f.householdGates) held.settle();
+        // The reset asks for the page again, and the name.
+        await waitFor(() => expect(asked).toHaveLength(3)); await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+        noticed = shown.length;
+      }
+      if (event === 'B') f.bootstrapGates[0]!.settle();
+      if (event === 'P') asked[2]!.settle();
+      await act(async () => { await Promise.resolve(); });
+      if (noticed >= 0) expect(page.getCurrentResult().data).not.toBe(ids.first);
+    }
+    await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+    await waitFor(() => expect(page.getCurrentResult().data).toBe(ids.second));
+    // Nothing of the previous household was shown after the change: not by the page, and not as its name beside the new scope.
+    expect(shown.slice(noticed)).toEqual([ids.second]);
+    expect(identities).not.toContain('Test User · Member');
+  } finally { watch.disconnect(); stop(); }
+});
+it('shows the switched portal, not an error, when the reset fails after the server stored the switch', async () => {
+  const f = portal(ids.first, { hold: true }), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  vi.spyOn(f.cache, 'resetQueries').mockRejectedValueOnce(new Error('reset refused'));
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.second));
+  expect(screen.queryByText(/couldn’t open that household/)).toBeNull();
+  expect(f.selections()).toEqual([{ householdId: ids.second }]);
+  // The name is asked for again, and the new household's scope shows meanwhile.
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  expect(identity()).toBe('Signed in · Member');
+  f.bootstrapGates[0]!.settle();
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+});
+it('offers a retry, not a spinner, when the switch was stored but the household lists cannot be read again', async () => {
+  const f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  let failLists = false; const answer = f.fetcher;
+  vi.stubGlobal('fetch', (path: string, init?: RequestInit) => failLists && path === '/api/portal/households' ? Promise.resolve(new Response(null, { status: 500 })) : answer(path, init));
+  vi.spyOn(f.cache, 'resetQueries').mockRejectedValueOnce(new Error('reset refused'));
+  failLists = true;
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  // The lists still name the first household while the second is open: the page says so and offers a retry.
+  const message = await screen.findByText(/couldn.t load your portal/);
+  failLists = false;
+  await user.click(within(message.parentElement!.parentElement!).getByRole('button', { name: 'Try again' }));
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+});
+it('never stores the new household\'s context under the old household\'s key when the server moved before the lists did', async () => {
+  const f = portal(ids.first, { hold: true, holdHouseholds: true });
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  const contextCalls = fetchCount(f, '/api/portal/context');
+  f.serverOpens(ids.second);
+  act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  // The context answers first, for the household the server has open now, and the lists have not said so yet.
+  await waitFor(() => expect(f.householdGates.length).toBeGreaterThan(0));
+  await waitFor(() => expect(f.cache.getQueryState([...base, 'context', ids.first])?.error).toBeInstanceOf(Error));
+  expect(f.cache.getQueryData([...base, 'context', ids.first])).toEqual({ role: 'payer', householdId: ids.first, memberId: null });
+  expect(document.body.textContent).not.toContain('Test User · Member');
+  for (const held of f.householdGates) held.settle();
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1)); f.bootstrapGates[0]!.settle();
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+  expect(f.cache.getQueryCache().find({ queryKey: [...base, 'context', ids.first], exact: true })).toBeUndefined();
+  // One refused answer under the old key, and one load for the new household that the reset kept rather than asked for again.
+  expect(fetchCount(f, '/api/portal/context')).toBe(contextCalls + 2);
 });
 it('shows a generic label, never an ID, for a session the server could not name', async () => {
   vi.stubGlobal('scrollTo', vi.fn());
