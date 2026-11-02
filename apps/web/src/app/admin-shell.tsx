@@ -42,7 +42,7 @@ function AccountMenu({ session, onSignOut, signingOut }: { session: ShellSession
     <div ref={panel} id="account-menu" hidden={!open}
       className="absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
       <p className="px-3 pb-2 pt-1 text-sm text-muted-foreground">
-        {session.displayName === null ? t('shell/shell:signedIn') : <>{t('shell/shell:signedInAs')} <span className="break-words font-medium text-foreground">{session.displayName}</span></>}{session.roles.length > 0 && ` (${roleNames(session)})`}
+        {session.displayName === null ? sessionName(session) : <>{t('shell/shell:signedInAs')} <span className="break-words font-medium text-foreground">{sessionName(session)}</span></>}{session.roles.length > 0 && ` (${roleNames(session)})`}
       </p>
       <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>

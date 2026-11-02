@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
 import { portalAccessContracts, portalContextResponseSchema, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
 import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/context.js';
@@ -18,6 +18,19 @@ import { Page, PageHeader } from '../../../components/ui/page.js';
 const text = (key: string) => t('portal/shell:' + key);
 /** How the login stands in a household, as the header and the household picker both say it. */
 const scopeLabel = (role: PortalContext['role']) => text(role === 'payer' ? 'rolePayer' : 'roleMember');
+/**
+ * The household the name in the cached bootstrap was last settled for, one entry per login. It lives in the query cache, under
+ * the bootstrap's own prefix so a switch's reset leaves it alone, and never expires on its own, so a layout that unmounts and
+ * mounts again (or whose household lists were collected meanwhile) still knows whether the household changed while it was away.
+ */
+const openHouseholdKey = (userId: string) => ['shell', 'portal-household', userId] as const;
+const readOpenHousehold = (cache: QueryClient, userId: string) => cache.getQueryData<string | null>(openHouseholdKey(userId));
+const keepsHouseholds = new WeakSet<QueryClient>();
+function rememberOpenHousehold(cache: QueryClient, userId: string, householdId: string | null) {
+  // Entries under this prefix are never collected; the defaults are set once per client.
+  if (!keepsHouseholds.has(cache)) { cache.setQueryDefaults(['shell', 'portal-household'], { gcTime: Infinity }); keepsHouseholds.add(cache); }
+  cache.setQueryData(openHouseholdKey(userId), householdId);
+}
 export function portalNavigation(entries: readonly NavigationEntry[], role: PortalContext['role'], modules: readonly string[]) {
   return entries.filter(entry => entry.enabled && (!entry.moduleId || modules.includes(entry.moduleId)) && entry.permission.kind === 'member' && canMember(role, entry.permission.capability));
 }
@@ -79,41 +92,52 @@ function AuthenticatedPortal() {
   const current = households.data?.current ?? null;
   const context = useQuery({ queryKey: [...base, 'context', current], enabled: member && !!current,
     queryFn: async () => portalContextResponseSchema.parse(await createJsonTransport()('/api/portal/context')).data, retry: false, staleTime: 0 });
+  const userId = session?.userId;
   const choose = useMutation({
     mutationFn: async (householdId: string) => {
       await createJsonTransport()('/api/portal/households/current', { householdId });
-      // Nothing from the previous household may remain on screen or in the cache. Resetting clears it at once;
-      // the refetch it starts is not waited for, so the switch navigates without it.
-      await cache.cancelQueries();
-      void cache.resetQueries({ predicate: query => query.queryKey[0] !== bootstrapKey[0] });
-      await navigate({ to: '/portal', replace: true });
+      // The name is now stale whatever else happens, so say so before anything below can be interrupted.
+      if (userId) rememberOpenHousehold(cache, userId, householdId);
+      // Nothing from the previous household may remain on screen or in the cache. Resetting clears it at once, and the
+      // household lists it refetches are waited for, so every switch finishes in order. The bootstrap is not among them.
+      try {
+        await cache.cancelQueries();
+        await cache.resetQueries({ predicate: query => query.queryKey[0] !== bootstrapKey[0] });
+        await navigate({ to: '/portal', replace: true });
+      } finally {
+        // The switch is stored on the server, so the name is asked for again whatever stopped the steps above, and the switch
+        // goes home without waiting for it. This runs even if the layout that asked for the switch has gone.
+        void cache.invalidateQueries({ queryKey: bootstrapKey });
+      }
     },
   });
   // The name the gym knows the person by follows the open household, however it changed: a switch here, or the server
   // falling back to another household when a link was revoked. The session keeps its data meanwhile (the shell stays up).
-  const openHousehold = useRef<string | null | undefined>(undefined);
   const loaded = households.data !== undefined;
   useEffect(() => {
-    if (!loaded) return;
-    if (openHousehold.current !== undefined && openHousehold.current !== current) void cache.invalidateQueries({ queryKey: bootstrapKey });
-    openHousehold.current = current;
-  }, [loaded, current, cache]);
+    if (!loaded || !userId) return;
+    const seen = readOpenHousehold(cache, userId);
+    if (seen !== undefined && seen !== current) void cache.invalidateQueries({ queryKey: bootstrapKey });
+    rememberOpenHousehold(cache, userId, current);
+  }, [loaded, current, userId, cache]);
   const signOut = useMutation({ mutationFn: async () => { await services.signOut(); await cache.cancelQueries(); cache.clear(); location.assign('/login'); } });
   useEffect(() => {
     const manifest = document.createElement('link'); manifest.rel = 'manifest'; manifest.href = '/portal/manifest.webmanifest'; document.head.append(manifest);
     if ('serviceWorker' in navigator) void navigator.serviceWorker.register('/portal/sw.js', { scope: '/portal' }).catch(() => undefined);
     return () => manifest.remove();
   }, []);
-  if (bootstrap.isPending) return <LoadingState />;
-  if (bootstrap.isError) return <ErrorState onRetry={() => void bootstrap.refetch()} />;
+  // A refetch that fails keeps the portal up: only a first load with nothing to show is an error page.
+  if (!bootstrap.data) return bootstrap.isError ? <ErrorState onRetry={() => void bootstrap.refetch()} /> : <LoadingState />;
   if (session?.roles.length) return <Navigate to="/admin" replace />;
   if (!session?.member) return <Navigate to="/login" replace />;
+  // After a failed refetch the name is the previous household's (or an older load's), so the generic label stands in until one succeeds.
+  const person = sessionName(bootstrap.isRefetchError ? { displayName: null } : session);
   const failed = (retry: () => void) => <Page><ErrorState message={text('failed')} onRetry={retry} /><Button onClick={() => signOut.mutate()} disabled={signOut.isPending}>{text('signOut')}</Button></Page>;
   if (households.isPending || choose.isPending) return <LoadingState />;
   if (households.isError) return failed(() => void households.refetch());
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
-    return <PortalLayout name={bootstrap.data.gym.name} person={sessionName(session)} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
+    return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
       <HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
@@ -121,7 +145,7 @@ function AuthenticatedPortal() {
   if (context.isError) return failed(() => { void households.refetch(); void context.refetch(); });
   const switcher = households.data.households.length > 1
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;
-  return <PortalLayout name={bootstrap.data.gym.name} person={sessionName(session)} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher}>
+  return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher}>
     {(signOut.isError || choose.isError) && <Alert>{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet />
   </PortalLayout>;
 }

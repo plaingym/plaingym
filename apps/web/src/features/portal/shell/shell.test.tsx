@@ -2,11 +2,12 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
-import { focusManager } from '@tanstack/react-query';
+import { focusManager, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
-import { createMemoryHistory } from '@tanstack/react-router';
+import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
-import { App } from '../../../app.js';
+import { App, createShellQueryClient } from '../../../app.js';
+import { ShellServicesContext } from '../../../app/context.js';
 import { createAppRouter } from '../../../app/router.js';
 import type { ShellServices } from '../../../app/services.js';
 import { portalNavigation } from './shell.js';
@@ -44,33 +45,54 @@ it('loads member context, renders the portal, and clears access when signing out
 });
 
 const ids = { user: '00000000-0000-7000-8000-000000000001', first: '00000000-0000-7000-8000-000000000002', second: '00000000-0000-7000-8000-000000000003', member: '00000000-0000-7000-8000-000000000004' };
-function portal(initial: string | null, { path = '/portal', hold = false }: { path?: string; hold?: boolean } = {}) {
+/** A request the test answers itself, so a race runs in the order the test chooses and never on a timer. */
+type Gate = { wait: Promise<void>; settle(): void; fail(): void };
+const gate = (): Gate => {
+  let settle!: () => void, fail!: () => void;
+  const wait = new Promise<void>((resolve, reject) => { settle = resolve; fail = () => reject(new Error('refused')); });
+  return { wait, settle, fail };
+};
+/**
+ * With `hold`, every bootstrap load after the first waits for its own gate (in `bootstrapGates`, in order); with `holdHouseholds`,
+ * so does every household list load after the first. `release()` settles every gate, now and later.
+ */
+function portal(initial: string | null, { path = '/portal', hold = false, holdHouseholds = false }: { path?: string; hold?: boolean; holdHouseholds?: boolean } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
-  let current = initial;
+  let current = initial, released = false;
+  const bootstrapGates: Gate[] = [], householdGates: Gate[] = [];
   const households = [{ householdId: ids.first, name: 'Alder household', role: 'payer' }, { householdId: ids.second, name: 'Birch household', role: 'member' }];
+  let householdLoads = 0;
   const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
     if (path === '/api/demo') return Response.json({ data: { mode: 'disabled' } });
     if (path === '/api/portal/households/current') { current = (JSON.parse(String(init!.body)) as { householdId: string }).householdId; return Response.json({ data: null }); }
-    if (path === '/api/portal/households') return Response.json({ data: { current, households } });
+    if (path === '/api/portal/households') {
+      const answer = Response.json({ data: { current, households } });
+      if (holdHouseholds && householdLoads++ > 0 && !released) { const held = gate(); householdGates.push(held); await held.wait; }
+      return answer;
+    }
     if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', householdId: ids.first, memberId: null } })
       : current === ids.second ? Response.json({ data: { role: 'member', householdId: ids.second, memberId: ids.member } }) : new Response(null, { status: 404 });
     return new Response(null, { status: 404 });
   });
   vi.stubGlobal('fetch', fetcher);
-  // With `hold`, every bootstrap load after the first waits until `release()`, so a test can act while a refetch is in flight.
-  let loads = 0, release = () => undefined as void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
+  let bootstrapLoads = 0;
   const services: ShellServices = { loadBootstrap: async () => {
-    if (hold && loads++ > 0) await gate;
-    return { gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: current === ids.second ? 'Noa Second' : 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } };
+    // The server names the person by the household that is open when the request arrives.
+    const session = { userId: ids.user, displayName: current === ids.second ? 'Noa Second' : 'Test User', roles: [], member: true };
+    if (hold && bootstrapLoads++ > 0 && !released) { const held = gate(); bootstrapGates.push(held); await held.wait; }
+    return { gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session, login: { password: true, magicLink: false } };
   }, signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
-  render(<App services={services} router={router} />);
+  // The same providers `App` supplies, with the cache in hand so a test can do what garbage collection does.
+  const cache = createShellQueryClient();
+  render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={services}><RouterProvider router={router} /></ShellServicesContext.Provider></QueryClientProvider>);
   const selections = () => fetcher.mock.calls.filter(([path]) => path === '/api/portal/households/current').map(([, init]) => JSON.parse(String(init!.body)));
   // What the server does on its own, such as falling back to another household when a link is revoked.
   const serverOpens = (householdId: string) => { current = householdId; };
-  return { fetcher, selections, router, release, serverOpens };
+  const release = () => { released = true; for (const held of [...bootstrapGates, ...householdGates]) held.settle(); };
+  return { fetcher, selections, router, release, serverOpens, bootstrapGates, householdGates, cache };
 }
+const identity = () => screen.getByTestId('signed-in-identity').textContent;
 it('asks a login with several households to choose one before showing the portal', async () => {
   const f = portal(null), user = userEvent.setup();
   expect(await screen.findByRole('heading', { name: 'Choose a household' })).toBeDefined();
@@ -114,6 +136,87 @@ it('navigates a household switch home before the name refetch settles', async ()
   expect(screen.getByTestId('signed-in-identity').textContent).toContain('Test User');
   f.release();
   await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Noa Second · Member'));
+});
+const claimHeading = () => screen.findByRole('heading', { name: 'Set up your portal login' });
+it('refetches the name when the layout remounts while a household switch settles', async () => {
+  const f = portal(ids.first, { hold: true, holdHouseholds: true }), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  // The switch is stored; it waits only for the household list it reset.
+  await waitFor(() => expect(f.householdGates).toHaveLength(1));
+  // The layout unmounts and mounts again before the switch finishes, so nothing it remembered survives.
+  await act(() => f.router.navigate({ to: '/portal/claim' }));
+  await claimHeading();
+  f.householdGates[0]!.settle();
+  await waitFor(() => expect(f.router.state.location.pathname).toBe('/portal'));
+  await screen.findByRole('combobox');
+  // The switch itself asked for the new name; the remounted layout did not have to notice the change.
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  f.bootstrapGates[0]!.settle();
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+});
+it('refetches the name when the layout remounts after the server opened another household and the cache lost the lists', async () => {
+  const f = portal(ids.first, { hold: true });
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  await act(() => f.router.navigate({ to: '/portal/claim' }));
+  await claimHeading();
+  // A link was revoked meanwhile, and the household lists were collected, as an unwatched query is after a while.
+  f.serverOpens(ids.second);
+  f.cache.removeQueries({ queryKey: ['portal'] });
+  await act(() => f.router.navigate({ to: '/portal' }));
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  f.bootstrapGates[0]!.settle();
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+});
+it('refetches the name for every switch of an A → B → A series, and the last answer wins', async () => {
+  const f = portal(ids.first, { hold: true }), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  // The switch back comes while the first refetch is still in flight.
+  await waitFor(() => expect(screen.getByRole('combobox')).toBeDefined());
+  await user.selectOptions(screen.getByRole('combobox'), ids.first);
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(2));
+  expect(f.selections()).toEqual([{ householdId: ids.second }, { householdId: ids.first }]);
+  // The slow answer for B arrives after the one for A was asked for, and must not name the person.
+  f.bootstrapGates[0]!.settle(); f.bootstrapGates[1]!.settle();
+  await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.first));
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  // And a third switch asks again, as every one does.
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(3));
+  f.bootstrapGates[2]!.settle();
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+});
+it('refetches the name even when going home fails after the switch was stored', async () => {
+  const f = portal(ids.first, { hold: true }), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  vi.spyOn(f.router, 'navigate').mockRejectedValueOnce(new Error('navigation refused'));
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  f.bootstrapGates[0]!.settle();
+  await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
+});
+it('shows the generic label, not the previous household\'s member name, when the name refetch fails', async () => {
+  const f = portal(ids.first, { hold: true }), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+  // The portal stays up for the new household, but the first household's member name is gone.
+  f.bootstrapGates[0]!.fail();
+  await waitFor(() => expect(identity()).toBe('Signed in · Member'));
+  expect(document.body.textContent).not.toContain('Test User');
+  expect(screen.getByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
+  // The next successful load names the person again.
+  await user.selectOptions(screen.getByRole('combobox'), ids.first);
+  await waitFor(() => expect(f.bootstrapGates).toHaveLength(2));
+  f.bootstrapGates[1]!.settle();
+  await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
 });
 it('shows a generic label, never an ID, for a session the server could not name', async () => {
   vi.stubGlobal('scrollTo', vi.fn());

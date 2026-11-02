@@ -10,6 +10,7 @@ import { createAppRouter } from './router.js';
 import type { ShellBootstrap, ShellServices } from './services.js';
 import { createWebRegistries } from '@plaingym/shared';
 import { AdminShell, visibleAdminNavigation } from './admin-shell.js';
+import { sessionName } from './identity.js';
 import { RootError, SourceFooter } from '../routes/__root.js';
 
 // The real root shell discovers capabilities independently of the injected
@@ -187,6 +188,14 @@ describe('admin shell', () => {
     expect((await screen.findByTestId('signed-in-identity')).textContent).toContain('Signed in · Coach');
     expect(document.body.textContent).not.toContain('user-id-1');
     expect(screen.getByText(/^Signed in \(Coach\)$/)).toBeDefined();
+  });
+  it('words an unnamed session the same in the account menu as in the header and the portal header', async () => {
+    const state = { ...anonymous, session: { userId: 'user-id-1', displayName: null, roles: ['coach'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+    render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+    const label = sessionName(state.session);
+    expect(within(await screen.findByTestId('signed-in-identity')).getByText(label)).toBeDefined();
+    expect(screen.getByText(new RegExp(`^${label} \\(Coach\\)$`)).closest('#account-menu')).not.toBeNull();
   });
   it('closes the phone menu after navigating', async () => {
     const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
