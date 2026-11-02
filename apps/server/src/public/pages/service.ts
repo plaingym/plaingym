@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
-import { forGym, members, households, auditEvents, waiverTemplates, uuidv7, writeAudit } from '@plaingym/db';
+import { forGym, type Transaction, members, households, auditEvents, waiverTemplates, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
-import { createSettingsService } from '../../areas/settings/settings.js';
+import { createSettingsService, readGymSettings } from '../../areas/settings/settings.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import type { Uploads } from '../../infra/storage/index.js';
@@ -25,7 +25,8 @@ export interface PublicPagesOptions {
   settings?: Pick<ReturnType<typeof createSettingsService>, 'get'>;
   waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign'>;
   uploadsFor?: (gymId: string) => Promise<Uploads>;
-  dropInFeeFor?: (gymId: string) => Promise<{ amountCents: number; currency: string; plusTax: boolean } | null>;
+  /** Given the config read's transaction, so the settings and the fee come over one connection. */
+  dropInFeeFor?: (gymId: string, tx?: Transaction) => Promise<{ amountCents: number; currency: string; plusTax: boolean } | null>;
   /** Called after the intake commits, with identifiers only; the runtime queues the staff notice. */
   notifyStaff: (gymId: string, intake: { kind: 'trial' | 'drop-in'; memberId: string }) => Promise<void>;
 }
@@ -85,7 +86,11 @@ export function createPublicPagesService(options: PublicPagesOptions) {
   return {
     templates, required,
     async config(gymId: string) {
-      const [gym, dropInFee] = await Promise.all([settings.get(gymId), options.dropInFeeFor?.(gymId) ?? null]);
+      // One short transaction on one connection; a missing gym fails on the settings read before the fee is read.
+      const { gym, dropInFee } = await scope(gymId, async tx => {
+        const gym = await readGymSettings(tx, gymId);
+        return { gym, dropInFee: await options.dropInFeeFor?.(gymId, tx) ?? null };
+      });
       return c.publicPageConfigResponseSchema.parse({ data: { gym: { name: gym.name, revision: gym.revision,
         logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null },
       dropInFee } });

@@ -10,7 +10,7 @@ import { addDays, localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
-import { createGymSettingsAccessor, createSettingsService } from '../../areas/settings/settings.js';
+import { createGymSettingsAccessor, createSettingsService, readGymSettings } from '../../areas/settings/settings.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { needsGuardian, validateSignatureImage } from '../../areas/waivers/snapshot.js';
@@ -122,8 +122,8 @@ export function createJoinService(options: JoinOptions) {
   }
   /** The plan as the join page shows it, with whether invoicing adds tax on top; the plan and its rates come from one snapshot. */
   async function joinablePlan(gymId: string, planId: string) {
-    const gym = await settings.get(gymId);
     return scope(gymId, async tx => {
+      const gym = await readGymSettings(tx, gymId);
       const row = await joinableIn(tx, gym.currency, planId);
       return plan(row, (await plansPlusTax(tx, [row.id])).has(row.id));
     });

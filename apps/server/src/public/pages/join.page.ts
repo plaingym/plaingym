@@ -2,10 +2,11 @@
 import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/shared/contracts';
-import { button, money, publicLayout } from './page.js';
+import { formatMoney } from '../../core/money.js';
+import { button, publicLayout } from './page.js';
 import { maxJoinMembers } from './join.service.js';
 
-// The shared public stylesheet is built from the classes in every public source file (`links/styles.build.mjs`).
+// The shared public stylesheet is built from the classes in every public page file, `page.ts` and `*.page.ts` (`links/styles.build.mjs`).
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const link = 'inline-flex min-h-11 items-center underline';
@@ -25,8 +26,8 @@ function layout(input: JoinPageInput, title: string, content: ReturnType<typeof 
 function price(input: JoinPageInput, plan: PublicPlan) {
   const text = joinText(input.t);
   const which = plan.plusTax ? 'plusTax' : 'plain';
-  return [h('p', { class: 'font-semibold' }, text(priceKeys[plan.interval][which], { amount: money(plan.amountCents, plan.currency, input.locale) })),
-    plan.signupFeeCents ? h('p', null, text(signupFeeKeys[which], { amount: money(plan.signupFeeCents, plan.currency, input.locale) })) : null,
+  return [h('p', { class: 'font-semibold' }, text(priceKeys[plan.interval][which], { amount: formatMoney(plan.amountCents, plan.currency, input.locale) })),
+    plan.signupFeeCents ? h('p', null, text(signupFeeKeys[which], { amount: formatMoney(plan.signupFeeCents, plan.currency, input.locale) })) : null,
     plan.commitmentMonths ? h('p', null, text('commitment', { months: plan.commitmentMonths })) : null];
 }
 /** Plans a visitor can join online, or where to turn when online joining is off. */

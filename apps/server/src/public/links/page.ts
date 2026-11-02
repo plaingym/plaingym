@@ -4,6 +4,7 @@ import type { Translator } from '@plaingym/shared';
 import type { PortalSignedLinkData, WaiverTemplate } from '@plaingym/shared/contracts';
 import { zonedInstant } from '@plaingym/shared/time';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
+import { formatMoney } from '../../core/money.js';
 
 const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const input = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
@@ -23,7 +24,7 @@ export interface PageInput {
 export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
   const title = text(state ?? data?.purpose ?? 'unavailable');
-  const money = (value: number, currency: string) => new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value / 100);
+  const money = (value: number, currency: string) => formatMoney(value, currency, locale);
   const date = (value: string) => new Intl.DateTimeFormat(locale, { dateStyle: 'long', timeZone: timezone })
     .format(zonedInstant(value, '12:00', timezone, { gap: 'shift' })!);
   const notice = state ? h('section', { class: panel }, h('h1', { class: 'text-2xl font-bold' }, title), h('p', null, text(state + 'Body'))) : null;

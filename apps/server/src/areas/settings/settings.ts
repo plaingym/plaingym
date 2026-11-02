@@ -20,6 +20,12 @@ const projection = {
 };
 type Row = { createdAt: Date; updatedAt: Date } & Record<string, unknown>;
 const present = (row: Row) => gymSettingsSchema.parse({ ...row, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
+/** The gym's settings, read inside a caller's gym scope so other reads share its snapshot and connection. */
+export async function readGymSettings(tx: Transaction, gymId: string) {
+  const [row] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));
+  if (!row) throw new AppError('not_found', 'Gym not found');
+  return present(row);
+}
 /** Read within the invoice's first-failure transaction without nesting gym scopes. */
 export async function readBillingRules(tx: Transaction, gymId: string) {
   const [row] = await tx.select({ retryDays: gyms.retryDays }).from(gyms).where(eq(gyms.id, gymId));
@@ -39,11 +45,7 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {
     async get(gymId: string) {
-      return scope(gymId, async (tx) => {
-        const [row] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));
-        if (!row) throw new AppError('not_found', 'Gym not found');
-        return present(row);
-      });
+      return scope(gymId, tx => readGymSettings(tx, gymId));
     },
     async update(context: MutationContext, kind: keyof typeof updateSchemas,
       input: UpdateGymSettingsRequest | UpdateBookingRulesRequest | UpdateBillingRulesRequest | UpdateGymCurrencyRequest | UpdateDropInSettingsRequest) {

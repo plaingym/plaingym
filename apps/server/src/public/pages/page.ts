@@ -2,12 +2,11 @@
 import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts';
+import { formatMoney } from '../../core/money.js';
 
 export const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
-/** Cents as the gym's currency in the page's locale. */
-export const money = (cents: number, currency: string, locale = 'en') => new Intl.NumberFormat(locale, { style: 'currency', currency }).format(cents / 100);
 export const pageText = (t: Translator) => (key: string, values?: Record<string, string | number>) => t('public/pages:' + key, values);
 /** Shared server-rendered shell for the gym's core public pages. */
 export function publicLayout(input: { gym: PublicBranding; title: string; t: Translator; content: ReturnType<typeof h>; locale?: string; script?: boolean }) {
@@ -19,7 +18,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
       input.script ? h('script', { src: '/public/pages/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground' },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },
-        h('header', { class: 'space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo/' + input.gym.revision, alt: input.gym.name, width: 64, height: 64 }) : null,
+        h('header', { class: 'max-w-full space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo/' + input.gym.revision, alt: input.gym.name, width: 64, height: 64 }) : null,
           h('p', { class: 'break-words font-semibold' }, input.gym.name), h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, input.title)),
         input.content,
         h('footer', { class: 'flex flex-wrap gap-3' },
@@ -37,7 +36,7 @@ export function intakePage(input: IntakePageInput) {
     h('label', { for: name, class: 'block space-y-1' }, text(label),
       h('input', { id: name, name, type, required, autocomplete, maxlength: max, class: inputClass }));
   const fee = input.kind === 'drop-in' ? h('p', { class: 'font-semibold' }, input.dropInFee
-    ? text(input.dropInFee.plusTax ? 'feePlusTax' : 'fee', { amount: money(input.dropInFee.amountCents, input.dropInFee.currency, input.locale) }) : text('feeUnknown')) : null;
+    ? text(input.dropInFee.plusTax ? 'feePlusTax' : 'fee', { amount: formatMoney(input.dropInFee.amountCents, input.dropInFee.currency, input.locale) }) : text('feeUnknown')) : null;
   const content = h('section', { class: 'space-y-4' }, fee,
     input.state ? h('section', { class: panel, role: 'status' }, h('p', null, text(input.state === 'received' ? 'receivedBody' : input.state)))
       : h('form', { method: 'post', action: '/' + input.kind, enctype: input.kind === 'drop-in' ? 'multipart/form-data' : 'application/x-www-form-urlencoded',

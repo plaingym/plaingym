@@ -8,6 +8,7 @@ import {
 import type { MemberHouseholdContext, PortalIdentity } from '../../core/interfaces/member-household.js';
 import { notFound } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
+import { formatMoney } from '../../core/money.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import { renderPdf } from '../../infra/pdf/index.js';
 import type { CheckoutSession } from '../../infra/payments/index.js';
@@ -90,7 +91,7 @@ export function createPortalBillingService(options: PortalBillingOptions) {
     async receipt(identity: PortalIdentity, invoiceId: string, timezone: string) {
       const { invoice: row, lines } = await detail(identity, invoiceId);
       if (!row.paidAt || !receiptStatuses.has(row.status)) throw new AppError('conflict', 'Invoice has no receipt yet');
-      const money = (cents: number) => new Intl.NumberFormat(receiptLocale, { style: 'currency', currency: row.currency }).format(cents / 100);
+      const money = (cents: number) => formatMoney(cents, row.currency, receiptLocale);
       const paidAt = new Date(row.paidAt), gym = await gymName(identity.gymId);
       // A refunded receipt shows its status; the refunded amount isn't in the household's invoice queries.
       const bytes = await (options.render ?? renderPdf)({ title: t('portal/billing:receiptTitle', { number: row.number }), createdAt: paidAt,

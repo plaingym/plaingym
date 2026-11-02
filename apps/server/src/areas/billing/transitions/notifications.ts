@@ -7,6 +7,7 @@ import type { InvoiceSnapshot } from '../../../core/interfaces/invoice-transitio
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { Email, EmailResult } from '../../../infra/email/index.js';
 import { clock as defaultClock } from '../../../core/clock.js';
+import { formatMoney } from '../../../core/money.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { householdRecipient } from '../../members/household-recipient.js';
 
@@ -69,8 +70,7 @@ export function createTransitionNotifications(options: {
         payUrl = new URL(`/l/${pay.token}`, origin).href;
         updateUrl = new URL(`/l/${update.token}`, origin).href;
       }
-      const values = { number: invoice.number, amount: new Intl.NumberFormat('en', { style: 'currency', currency: invoice.currency })
-        .format((amountCents ?? notice.payment?.amountCents ?? invoice.amountCents) / 100), payUrl, updateUrl };
+      const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency), payUrl, updateUrl };
       const subject = t(`billing/transitions:${kind}Subject`, values), text = t(`billing/transitions:${kind}Body`, values);
       for (const to of new Set(recipients)) {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');

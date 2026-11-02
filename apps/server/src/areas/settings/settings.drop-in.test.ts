@@ -186,20 +186,41 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     expect(await f.dropInFeeFor(f.gymId)).toBeNull();
   });
 
-  it('reads the fee and its tax flag in one query', async () => {
+  it('reads the fee and its tax flag in one query, counted at the driver', async () => {
     const f = await fixture();
     await factory('chargeTypeTaxRates', f.gymId, { chargeTypeId: f.mat.id, taxRateId: (await factory('taxRates', f.gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false })).id });
     await f.choose(f.mat.id);
-    let executed = 0;
-    // Counts every query builder that is awaited, that is, run against the database.
-    const counting = <T extends object>(target: T): T => new Proxy(target, { get(object, prop) {
-      const value = Reflect.get(object, prop, object) as unknown;
-      if (prop === 'then' && typeof value === 'function') return (...args: unknown[]) => { executed++; return (value as (...a: unknown[]) => unknown).apply(object, args); };
-      return typeof value === 'function' ? (...args: unknown[]) => { const result = (value as (...a: unknown[]) => unknown).apply(object, args); return typeof result === 'object' && result !== null ? counting(result) : result; } : value;
-    } });
-    const dropInFeeFor = createDropInFee({ scope: (gymId, fn) => database.forGym(gymId, tx => fn(counting(tx))) });
-    expect(await dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: true });
-    expect(executed).toBe(1);
+    // The test pool's postgres.js debug hook sees every statement sent to the server, whatever builds it.
+    const statements: string[] = [];
+    const options = database.app.sql.options, previous = options.debug;
+    options.debug = (_connection, query) => { statements.push(query); };
+    try {
+      expect(await f.dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: true });
+    } finally { options.debug = previous; }
+    const reads = statements.filter(query => query.trimStart().toLowerCase().startsWith('select') && !query.includes('set_config'));
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatch(/exists/i);
+  });
+
+  it('shares the caller\'s transaction when given one, and gives null for an archived charge type', async () => {
+    const f = await fixture();
+    await factory('chargeTypeTaxRates', f.gymId, { chargeTypeId: f.mat.id, taxRateId: (await factory('taxRates', f.gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false })).id });
+    await f.choose(f.mat.id);
+    expect(await database.forGym(f.gymId, tx => createDropInFee({ scope: () => { throw new Error('opened its own scope'); } })(f.gymId, tx)))
+      .toEqual({ amountCents: 2500, currency: 'CAD', plusTax: true });
+    await f.archive(f.mat.id);
+    expect(await database.forGym(f.gymId, tx => f.dropInFeeFor(f.gymId, tx))).toBeNull();
+  });
+
+  it('reads the config for a missing gym without reading the drop-in fee', async () => {
+    const f = await fixture();
+    const reads: string[] = [];
+    const pages = createPublicPagesService({ scope: database.forGym, clock: f.clock, notifyStaff: async () => {},
+      dropInFeeFor: async gymId => { reads.push(gymId); return null; }, waivers: createWaiversService({ scope: database.forGym, clock: f.clock, uploadsFor: async () => new FakeUploads(f.gymId, f.clock) }) });
+    await expect(pages.config(uuidv7())).rejects.toMatchObject({ code: 'not_found' });
+    expect(reads).toEqual([]);
+    await pages.config(f.gymId);
+    expect(reads).toEqual([f.gymId]);
   });
 
   it('reads only the choosing gym\'s tax rates', async () => {
