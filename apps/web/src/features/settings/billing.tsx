@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState, type FormEvent } from 'react';
-import { billingRulesSchema, gymSettingsResponseSchema } from '@plaingym/shared/contracts';
+import { billingRulesSchema } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
@@ -26,7 +26,7 @@ export function BillingSettings() {
       const result = await gym.save((revision) => api.PATCH('/api/settings/billing', { body: { revision, ...rules.data } }));
       if (result.status === 400) setFieldError(true);
       else if (result.status >= 300) setMessage(text(result.status === 409 ? 'conflict' : 'error'));
-      else { setDays(gymSettingsResponseSchema.parse(result.data).data.retryDays.join(', ')); setMessage(text('saved')); }
+      else { setDays(result.settings.retryDays.join(', ')); setMessage(text('saved')); }
     } catch { setMessage(text('error')); }
     finally { setBusy(false); }
   }

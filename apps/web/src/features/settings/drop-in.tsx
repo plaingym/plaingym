@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState, type FormEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { gymSettingsResponseSchema, type ChargeType } from '@plaingym/shared/contracts';
+import type { ChargeType } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { useGymSettings } from './gym-settings.js';
@@ -47,7 +47,7 @@ export function DropInSettings() {
         setMessage(text(result.status === 409 ? 'conflict' : result.status === 404 ? 'missing' : 'error'));
         return;
       }
-      setChoice(gymSettingsResponseSchema.parse(result.data).data.dropInChargeTypeId ?? ''); setMessage(text('saved'));
+      setChoice(result.settings.dropInChargeTypeId ?? ''); setMessage(text('saved'));
       // Every gym settings save refreshes the shell's cached gym summary, so it never lags a save made here.
       void cache.invalidateQueries({ queryKey: bootstrapKey });
     } catch { setMessage(text('error')); }

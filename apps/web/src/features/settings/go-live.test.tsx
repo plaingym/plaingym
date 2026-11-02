@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
-import { goLiveChecklistItemSchema, type GymSettings, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
+import { goLiveChecklistItemSchema, settingsContracts, type GymSettings, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
+import { canStaff, staffRoles } from '@plaingym/shared';
 import { GoLiveSettings } from './go-live.js';
 import { registration } from './go-live.registrations.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn(), POST: vi.fn() }));
@@ -160,5 +161,11 @@ describe('go-live settings', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Turn on: Billing' }));
     expect((screen.getByRole('button', { name: 'Confirm dates and turn billing on' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  // Go-live shares the gym revision read by GET /api/settings, though its own routes are registered under another capability.
+  it('reads the shared settings under a capability that grants the same roles as its own routes', () => {
+    const read = settingsContracts.get.permission.capability;
+    for (const route of [settingsContracts.goLiveChecklist, settingsContracts.updateGoLive, settingsContracts.rerunGoLiveReconciliation])
+      for (const role of staffRoles) expect(canStaff([role], read), role).toBe(canStaff([role], route.permission.capability));
   });
 });

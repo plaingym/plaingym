@@ -33,6 +33,8 @@ const sections = () => render(<QueryClientProvider client={new QueryClient({ def
   <GeneralSettingsForm/><BillingSettings/><DropInSettings/><GoLiveSettings/></QueryClientProvider>);
 const field = async (name: string) => await screen.findByRole('textbox', { name }) as HTMLInputElement;
 const bodies = () => server.PATCH.mock.calls.map(([path, { body }]) => [path, body.revision]);
+const checklistReads = () => server.GET.mock.calls.filter(([path]) => path === '/api/settings/go-live').length;
+const deferred = () => { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; };
 beforeEach(() => {
   server.GET.mockReset(); server.PATCH.mockReset(); billing.charges.mockReset(); billing.charges.mockResolvedValue([mat]);
   gym = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'America/Vancouver', currency: 'CAD', address: {}, branding: {}, websiteEnabled: false,
@@ -144,7 +146,10 @@ describe('settings sections on one page', () => {
     const read = server.GET.getMockImplementation()!;
     server.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(500) : read(path));
     await user.clear(days); await user.type(days, '6'); await user.click(screen.getByRole('button', { name: 'Save retry schedule' }));
-    expect((await screen.findAllByRole('alert')).map((alert) => alert.textContent).join(' ')).toContain('The request failed');
+    // The save answered 409, so the section says the settings changed, not that the request failed generically.
+    const alerts = async () => (await screen.findAllByRole('alert')).map((alert) => alert.textContent).join(' ');
+    expect(await alerts()).toContain('changed elsewhere');
+    expect(await alerts()).toContain('The request failed');
     await user.click(screen.getByRole('button', { name: 'Save retry schedule' }));
     expect(server.PATCH).toHaveBeenCalledTimes(1);
     server.GET.mockImplementation(read);
@@ -193,5 +198,61 @@ describe('settings sections on one page', () => {
     await user.click(await screen.findByRole('button', { name: 'Turn on: Member emails' }));
     expect(await screen.findByRole('button', { name: 'Turn off: Member emails' })).toBeDefined();
     expect(bodies()).toEqual([['/api/settings/billing', 3], ['/api/settings/go-live', 4]]);
+  });
+  it('refuses a go-live switch clicked while another section\'s save is in flight, and reads the checklist again once', async () => {
+    const user = userEvent.setup(); sections();
+    const days = await field('Retry days');
+    await screen.findByRole('button', { name: 'Turn on: Billing' });
+    const apply = server.PATCH.getMockImplementation()!, sending = deferred(), started = deferred();
+    server.PATCH.mockImplementationOnce(async (path: string, options: { body: { revision: number } & Record<string, unknown> }) => {
+      started.resolve(); await sending.promise; return apply(path, options);
+    });
+    const before = checklistReads();
+    await user.clear(days); await user.type(days, '2'); await user.click(screen.getByRole('button', { name: 'Save retry schedule' }));
+    await started.promise;
+    // The switch is clicked with the checklist read before this save, which the server has not finished.
+    await user.click(screen.getByRole('button', { name: 'Turn on: Member emails' }));
+    sending.resolve();
+    expect(await screen.findByText(/These settings changed elsewhere/)).toBeDefined();
+    expect(await screen.findByText('Retry schedule saved.')).toBeDefined();
+    const toggle = await screen.findByRole('button', { name: 'Turn on: Member emails' }) as HTMLButtonElement;
+    await vi.waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(bodies()).toEqual([['/api/settings/billing', 3]]);
+    expect(gym.memberEmailsEnabled).toBe(false);
+    expect(checklistReads()).toBe(before + 1);
+    // From the refreshed checklist the same click goes through.
+    await user.click(toggle);
+    expect(await screen.findByRole('button', { name: 'Turn off: Member emails' })).toBeDefined();
+    expect(bodies()).toEqual([['/api/settings/billing', 3], ['/api/settings/go-live', 4]]);
+  });
+  it('reads the go-live checklist once after a conflict', async () => {
+    const user = userEvent.setup(); sections();
+    await screen.findByRole('button', { name: 'Turn on: Billing' });
+    // Another tab turned member emails on after this page loaded.
+    gym = { ...gym, memberEmailsEnabled: true, revision: 4 };
+    const before = checklistReads();
+    await user.click(screen.getByRole('button', { name: 'Turn on: Member emails' }));
+    expect(await screen.findByText(/These settings changed elsewhere/)).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'Turn off: Member emails' })).toBeDefined();
+    expect(checklistReads()).toBe(before + 1);
+    expect(bodies()).toEqual([['/api/settings/go-live', 3]]);
+  });
+  it('shows the go-live conflict and reads the checklist once when the reload after it fails', async () => {
+    const user = userEvent.setup(); sections();
+    await screen.findByRole('button', { name: 'Turn on: Billing' });
+    gym = { ...gym, memberEmailsEnabled: true, revision: 4 };
+    const read = server.GET.getMockImplementation()!;
+    server.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(500) : read(path));
+    const before = checklistReads();
+    await user.click(screen.getByRole('button', { name: 'Turn on: Member emails' }));
+    expect(await screen.findByText(/These settings changed elsewhere/)).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'Turn off: Member emails' })).toBeDefined();
+    expect(checklistReads()).toBe(before + 1);
+    // The settings can be reloaded from this section, after which the switch works.
+    server.GET.mockImplementation(read);
+    await user.click(screen.getAllByRole('button', { name: 'Try again' })[0]!);
+    await user.click(await screen.findByRole('button', { name: 'Turn off: Member emails' }));
+    expect(await screen.findByRole('button', { name: 'Turn on: Member emails' })).toBeDefined();
+    expect(bodies()).toEqual([['/api/settings/go-live', 3], ['/api/settings/go-live', 4]]);
   });
 });

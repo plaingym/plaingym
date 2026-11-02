@@ -48,6 +48,14 @@ export function GoLiveSettings() {
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [reload]);
+  /**
+   * A refused or conflicting save. A shared revision past the checklist's refetches it through `behind`, once; when the
+   * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.
+   */
+  function conflict(now: GymSettings, read: number) {
+    setConfirmBilling(false); setConfirmed(false); setMessage('changed');
+    if (now.revision <= read) setReload((value) => value + 1);
+  }
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
     if (!checklist || !settings || locked) return;
     if (name === 'billingEnabled' && !checklist.billingEnabled && checklist.pastDueMemberships.length && !confirmDates) {
@@ -57,8 +65,8 @@ export function GoLiveSettings() {
     try {
       const result = await gym.save((revision) => api.PATCH('/api/settings/go-live', { body: { revision, [name]: !checklist[name],
         ...(confirmDates ? { confirmedPastDueDates: checklist.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) } : {}),
-      } }), adopt);
-      if (result.status === 409) { setConfirmBilling(false); setConfirmed(false); setMessage('changed'); setReload((value) => value + 1); return; }
+      } }), { adopt, readAt: checklist.revision });
+      if (result.status === 409) { conflict(result.settings, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmed(false);
@@ -70,8 +78,8 @@ export function GoLiveSettings() {
     setBusy(true); setChecking(true); setCheckError(false); setMessage(null);
     try {
       const restoreId = checklist.restoreReconciliation.restoreId;
-      const result = await gym.save((revision) => api.POST('/api/settings/go-live/reconciliation', { body: { revision, restoreId } }), adopt);
-      if (result.status === 409) { setMessage('changed'); setReload(value => value + 1); return; }
+      const result = await gym.save((revision) => api.POST('/api/settings/go-live/reconciliation', { body: { revision, restoreId } }), { adopt, readAt: checklist.revision });
+      if (result.status === 409) { conflict(result.settings, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
     } catch { setCheckError(true); setReload(value => value + 1); }
@@ -82,7 +90,7 @@ export function GoLiveSettings() {
     <p className="text-sm text-muted-foreground">{label('help')}</p>
     {message && <Alert>{label(message)}{message === 'error' && (!checklist || behind) &&
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={() => { setMessage(null); setReload((value) => value + 1); }}>{label('retry')}</Button>}</Alert>}
-    {gym.failed && !settings && <Alert>{label('error')}
+    {gym.failed && <Alert>{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={gym.reload}>{label('retry')}</Button></Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled'] as const).map((name) => {
