@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import type { StaffRole } from '@plaingym/shared';
 import type { ShellBootstrap } from '../../app/services.js';
-import { healthTileIds, healthTileSchema, type HealthTile } from '@plaingym/shared/contracts';
+import { healthTileIds, healthTileSchema, maxDismissedChargeRuns, type HealthTile } from '@plaingym/shared/contracts';
 import { HealthPage, HealthTiles } from './page.js';
 import { useBootstrap } from '../../app/context.js';
 import { api } from '../../lib/api.js';
@@ -151,6 +151,37 @@ describe('charge failure reports on the charge-run tile', () => {
     expect(POST).toHaveBeenCalledWith('/api/health/charge-failures/dismiss', { body: { runIds: [uuid(1), uuid(2)] } });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(healthCalls()).toBe(2);
+  });
+  describe('with more reports than one request may name', () => {
+    const many = () => Array.from({ length: maxDismissedChargeRuns * 2 + 1 }, (_, index) => report(index + 1, '2026-10-24', [{ number: index + 1, cause: 'unexpected' }]));
+    const runIdsOf = (call: unknown[]) => (call[1] as { body: { runIds: string[] } }).body.runIds;
+    const confirmAll = async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Dismiss all' }));
+      fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Dismiss all' }));
+    };
+    it('sends Dismiss all in order, in batches of at most that many, and clears the list', async () => {
+      let open = many(); serve(() => open);
+      POST.mockImplementation(async () => { const sent = POST.mock.calls.length; if (sent === 3) open = []; return dismissed(uuid(sent)); });
+      start();
+      await confirmAll();
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Failed charges' })).toBeNull());
+      expect(POST.mock.calls.map(call => runIdsOf(call).length)).toEqual([maxDismissedChargeRuns, maxDismissedChargeRuns, 1]);
+      // Together the batches name every report on screen once, in list order.
+      expect(POST.mock.calls.flatMap(runIdsOf)).toEqual(many().map(entry => entry.runId));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(healthCalls()).toBe(2);
+    });
+    it('stops at a failed batch, keeps what the earlier batches dismissed, and says so', async () => {
+      let open = many(); serve(() => open);
+      POST.mockImplementationOnce(async () => { open = open.slice(maxDismissedChargeRuns); return dismissed(uuid(1)); })
+        .mockResolvedValue({ response: new Response(null, { status: 500 }), data: undefined } as never);
+      start();
+      await confirmAll();
+      expect((await within(await screen.findByRole('dialog')).findByRole('alert')).textContent).toContain('Unable to dismiss');
+      expect(POST).toHaveBeenCalledTimes(2);
+      // The list is read again, so the reports the first batch dismissed are gone from it.
+      await waitFor(() => expect(screen.getAllByText('Charge run of 2026-10-24')).toHaveLength(maxDismissedChargeRuns + 1));
+    });
   });
   it('keeps the reports and says so when a dismissal fails, in the dialog and beside a single report', async () => {
     serve(reports);

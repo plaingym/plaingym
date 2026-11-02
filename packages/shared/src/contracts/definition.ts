@@ -11,6 +11,8 @@ export interface EndpointContract {
   readonly path: string;
   readonly permission: RoutePermission;
   readonly additionalPermissions?: readonly RoutePermission[];
+  /** What the OpenAPI document says about the endpoint beyond its shape, such as a rule that depends on the request body. */
+  readonly description?: string;
   readonly params?: z.ZodType;
   readonly query?: z.ZodType;
   /** Request body media type defaults to application/json. */

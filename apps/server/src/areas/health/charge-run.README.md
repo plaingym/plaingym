@@ -54,10 +54,12 @@ admin). Its error boundary turns failed reads into a safe unavailable tile.
   `{ "runIds": [uuid, …] }` (one to 500; exactly one of the two) and calls the
   runner's `dismissChargeFailures` as the signed-in user, which writes one
   `billing.runner.charge_failures.dismissed` audit per report. The page's **Dismiss all**
-  sends the run IDs it listed, so a report written after the list loaded stays open.
+  sends the run IDs it listed, so a report written after the list loaded stays open;
+  it sends them in order, at most 500 to a request, so a longer list is several requests
+  and one that fails leaves the earlier batches dismissed.
   A body that names no run is 400: there is no dismiss-everything call. It answers the
   invoice IDs those reports still listed; the invoices are unchanged. A run that never
-  reported, or another gym's, is 404 and nothing is dismissed; dismissing a report
+  reported, another gym's, or one whose report is older than the 90 days listed, is 404 and nothing is dismissed; dismissing a report
   twice is a harmless 200 that lists nothing, and two dismissals at once write one audit.
   The charge-run tile's page reads the list only while the tile is an error.
 

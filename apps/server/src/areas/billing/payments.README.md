@@ -47,8 +47,8 @@ admins; front desk may collect payments and remove a card.
 
 A one-off from a charge type needs only `payments.record`. A custom-amount one-off
 (`source: 'custom'`) also needs `payments.custom`, held by owners and admins: without it
-the route answers 403 and creates nothing, and the invoice editor hides the custom
-amount. Charging an existing invoice is unchanged. Front desk therefore bills
+the route answers 403 and creates nothing, before it validates the body (a malformed
+custom body gets the same 403), and the invoice editor hides the custom amount. Charging an existing invoice is unchanged. Front desk therefore bills
 catalog charge types, which managers price.
 
 Removing a card first revokes it locally and clears its default flag, then queues

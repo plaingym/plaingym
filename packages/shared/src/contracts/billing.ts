@@ -103,8 +103,10 @@ export const billingContracts = {
     query: invoiceListQuerySchema, response: invoiceListResponseSchema, successStatus: 200 },
   getInvoice: { method: 'get', path: '/api/billing/invoices/{invoiceId}', permission: read,
     params: billingInvoiceParamsSchema, response: invoiceDetailResponseSchema, successStatus: 200 },
-  // `source: 'custom'` additionally needs `payments.custom` (owner, admin); the route answers 403 without it.
   createOneOffInvoice: { method: 'post', path: '/api/billing/invoices/one-off', permission: collect,
+    description: 'Creates a one-off invoice. Requires `payments.record`. A request with `source: "charge_type"` bills an active charge type; '
+      + 'a request with `source: "custom"` bills any amount and also requires `payments.custom` (owner, admin), otherwise the answer is 403, '
+      + 'whether or not the rest of the body is valid.',
     body: createOneOffInvoiceRequestSchema, response: invoiceResponseSchema, successStatus: 201 },
   chargeInvoice: { method: 'post', path: '/api/billing/invoices/{invoiceId}/charge', permission: collect,
     params: billingInvoiceParamsSchema, body: billingEmptyRequestSchema, response: chargeInvoiceResponseSchema, successStatus: 200 },

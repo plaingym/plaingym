@@ -58,7 +58,7 @@ function start(view: React.ReactNode) {
 afterEach(cleanup);
 describe('invoice and household payment UI', () => {
   it('selects the household in one searchable control and submits that household on a one-off invoice', async () => {
-    const f = transport(); start(<InvoiceList gymId={gymId} access={admin} custom={true} client={f.client} />);
+    const f = transport(); start(<InvoiceList gymId={gymId} access={admin} custom={true} catalog={true} client={f.client} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog'), combo = await within(dialog).findByRole('combobox', { name: 'Search households' });
     fireEvent.change(combo, { target: { value: 'Rivera' } }); fireEvent.focus(combo);
@@ -75,7 +75,7 @@ describe('invoice and household payment UI', () => {
   });
   it('keeps receipt and payment steps inside the invoice dialog, restores focus and preserves charge errors', async () => {
     const f = transport({ invoice: { ...invoice, status: 'paid', paidAt: createdAt }, payments: [payment] });
-    start(<InvoiceList gymId={gymId} access={admin} custom={true} client={f.client} />);
+    start(<InvoiceList gymId={gymId} access={admin} custom={true} catalog={true} client={f.client} />);
     fireEvent.click(await screen.findByRole('button', { name: 'View invoice 42' }));
     const receipt = await screen.findByRole('button', { name: 'View receipt' }); receipt.focus(); fireEvent.click(receipt);
     expect(screen.getAllByRole('dialog')).toHaveLength(1); expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'View receipt' }));
@@ -96,7 +96,7 @@ describe('invoice and household payment UI', () => {
     expect(registration.memberTabs?.[0]).toMatchObject({ enabled: true });
   });
   it('scopes the member invoice list to its household, filters and paginates', async () => {
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} catalog={false} client={f.client}/>);
     await screen.findByRole('button', { name: 'View invoice 42' });
     expect(f.fetcher.mock.calls[0]?.[0]).toContain('householdId=' + home);
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
@@ -140,7 +140,7 @@ describe('invoice and household payment UI', () => {
   it('offers front desk only catalog charge types, with no custom amount', async () => {
     expect(canStaff(bootstrap.session!.roles, 'payments.record')).toBe(true);
     expect(canStaff(bootstrap.session!.roles, 'payments.custom')).toBe(false);
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} catalog={false} client={f.client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     await within(dialog).findByLabelText('Charge type');
@@ -151,7 +151,7 @@ describe('invoice and household payment UI', () => {
     expect(within(dialog).getByText('No charge types are set up. Ask an owner or admin to add one.')).toBeDefined();
   });
   it('tells an owner or admin with no charge types to add one or use a custom amount', async () => {
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={true} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={true} catalog={true} client={f.client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     await within(dialog).findByLabelText('Charge type');
@@ -160,11 +160,30 @@ describe('invoice and household payment UI', () => {
     fireEvent.change(within(dialog).getByLabelText('Charge source'), { target: { value: 'custom' } });
     expect(within(dialog).queryByText('No charge types are set up. Add one in the billing catalog, or use a custom amount.')).toBeNull();
   });
+  it.each([
+    { name: 'the right to add a charge type, with a custom amount', custom: true, catalog: true,
+      hint: 'No charge types are set up. Add one in the billing catalog, or use a custom amount.' },
+    { name: 'the right to add a charge type, without a custom amount', custom: false, catalog: true,
+      hint: 'No charge types are set up. Add one in the billing catalog.' },
+    { name: 'a custom amount but not the right to add a charge type', custom: true, catalog: false,
+      hint: 'No charge types are set up. Ask an owner or admin to add one, or use a custom amount.' },
+    { name: 'neither', custom: false, catalog: false, hint: 'No charge types are set up. Ask an owner or admin to add one.' },
+  ])('picks the empty-catalog hint by plans.manage, not payments.custom: $name', async ({ custom, catalog, hint }) => {
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={custom} catalog={catalog} client={f.client}/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
+    const dialog = screen.getByRole('dialog');
+    await within(dialog).findByLabelText('Charge type');
+    expect(within(dialog).getAllByRole('status').map(alert => alert.textContent)).toEqual([hint]);
+  });
+  it('reads the hint capability from the signed-in roles: owners and admins can add a charge type, front desk and coaches cannot', () => {
+    for (const role of ['owner', 'admin'] as const) expect(canStaff([role], 'plans.manage')).toBe(true);
+    for (const role of ['coach', 'front_desk'] as const) expect(canStaff([role], 'plans.manage')).toBe(false);
+  });
   it('lets front desk create a one-off from a catalog charge type', async () => {
     const f = transport(), charge = { id: id(20), createdAt, name: 'Mat fee', amountCents: 1000, currency: 'USD', active: true, revision: 1, taxRateIds: [] };
     const client = createInvoiceClient(async (path, options) => String(path).startsWith('/api/billing/charge-types')
       ? Response.json({ data: [charge], pagination: { limit: 100, offset: 0, total: 1 } }) : f.fetcher(path, options));
-    start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} client={client}/>);
+    start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} catalog={false} client={client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.change(await within(dialog).findByLabelText('Charge type'), { target: { value: charge.id } });
@@ -181,7 +200,7 @@ describe('invoice and household payment UI', () => {
     function Editor() {
       const [custom, setCustom] = useState(true);
       return <><button type="button" onClick={() => setCustom(false)}>Lose access</button>
-        <OneOffEditor gymId={gymId} householdId={home} custom={custom} client={client} close={() => {}} created={() => {}}/></>;
+        <OneOffEditor gymId={gymId} householdId={home} custom={custom} catalog client={client} close={() => {}} created={() => {}}/></>;
     }
     start(<Editor/>);
     const dialog = screen.getByRole('dialog');
@@ -196,7 +215,7 @@ describe('invoice and household payment UI', () => {
   });
   it('lets an owner or admin create a one-off custom invoice from bootstrap without reading settings', async () => {
     expect(canStaff(['owner'], 'payments.custom') && canStaff(['admin'], 'payments.custom')).toBe(true);
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={true} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={true} catalog={true} client={f.client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.change(await within(dialog).findByLabelText('Charge source'), { target: { value: 'custom' } });

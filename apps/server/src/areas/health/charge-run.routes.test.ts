@@ -2,10 +2,10 @@
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line database/system-tables -- The test reads the database's lock table to know the second dismissal is waiting; it touches no gym data.
 import { and, eq, sql } from 'drizzle-orm';
-import { auditEvents, invoices, uuidv7 } from '@plaingym/db';
+import { auditEvents, gymAdvisoryLockKey, invoices, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { chargeFailuresResponseSchema, dismissChargeFailuresResponseSchema } from '@plaingym/shared/contracts';
+import { chargeFailuresResponseSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns } from '@plaingym/shared/contracts';
 import { createApp } from '../../core/app.js';
 import { TestClock } from '../../core/clock.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -21,6 +21,14 @@ import { createChargeFailureRoutes } from './charge-run.routes.js';
 const db = useTestDatabase(), factory = createFactories(db);
 const roles = ['owner', 'admin', 'coach', 'front_desk'] as const;
 const dismissed = 'billing.runner.charge_failures.dismissed';
+/**
+ * How many advisory lock requests of this test database are waiting. The probe is given the connection no dismissal under test is using (a dismissal
+ * under test may hold both connections of the gym pool) and counts only this test database's locks.
+ */
+async function advisoryWaiters(connection: typeof db.system): Promise<number> {
+  // eslint-disable-next-line database/system-tables -- The lock-table probe.
+  return (await connection.db.execute(sql`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())`))[0]!.n as number;
+}
 async function fixture() {
   const gymId = uuidv7(); await factory('gyms', gymId, { billingEnabled: true });
   const clock = new TestClock('2026-10-26T12:00:00Z');
@@ -158,17 +166,82 @@ describe('charge failure routes', () => {
     const first = runner.dismissChargeFailures(context, [runId]);
     await inside.promise;
     const second = runner.dismissChargeFailures(context, [runId]);
-    const done = second.then(() => true, () => true);
+    let finished = false; const done = second.then(() => { finished = true; }, () => { finished = true; });
     // Wait on the database's own state, with no timer: the second dismissal is either waiting for the lock or already finished.
-    // The probe uses the system connection (the two dismissals hold both connections of the gym pool) and counts only this test database's locks.
-    // eslint-disable-next-line database/system-tables -- The same lock-table probe.
-    const waiting = async () => (await db.system.db.execute(sql`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())`))[0]!.n as number > 0;
-    for (let tries = 0; tries < 5_000 && !await Promise.race([done, waiting()]); tries++);
-    release.resolve();
+    let sawWait = false;
+    for (let tries = 0; tries < 5_000 && !sawWait && !finished; tries++) sawWait = await advisoryWaiters(db.system) > 0;
+    // A second dismissal that finished, or never showed up as waiting, didn't wait on the first.
+    expect(sawWait).toBe(true);
+    expect(finished).toBe(false);
+    release.resolve(); await done;
     const results = await Promise.all([first, second]);
     expect(results.map(result => result.dismissed)).toEqual([[id], []]);
     expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(1);
     expect(await f.list()).toEqual([]);
+  });
+  it('takes the registered per-gym lock, so a held lock stops that gym\'s dismissal and no other gym\'s', async () => {
+    const a = await fixture(), b = await fixture(), runA = uuidv7(), runB = uuidv7();
+    const [invoiceA, invoiceB] = [await a.invoice(1), await b.invoice(1)];
+    await a.report(runA, [invoiceA.id]); await b.report(runB, [invoiceB.id]);
+    const held = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    // Hold gym A's lock the way the registry names it, from the system connection (the two gym connections stay free).
+    const holder = db.system.db.transaction(async (tx) => {
+      // eslint-disable-next-line database/system-tables -- The same lock: the registry's key for gym A, taken directly.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${gymAdvisoryLockKey('chargeFailures', a.gymId)}, 0))`);
+      held.resolve(); await release.promise;
+    });
+    let blocked: ReturnType<typeof a.runner.dismissChargeFailures> | undefined;
+    try {
+      await held.promise;
+      // Gym B finishes while gym A's lock is held.
+      const context = (f: typeof a) => ({ gymId: f.gymId, actor: { kind: 'user' as const, userId: f.user.id } });
+      expect((await b.runner.dismissChargeFailures(context(b), [runB])).dismissed).toEqual([invoiceB.id]);
+      let finished = false;
+      blocked = a.runner.dismissChargeFailures(context(a), [runA]);
+      void blocked.then(() => { finished = true; }, () => { finished = true; });
+      let sawWait = false;
+      for (let tries = 0; tries < 5_000 && !sawWait && !finished; tries++) sawWait = await advisoryWaiters(db.app) > 0;
+      expect(sawWait).toBe(true);
+      expect(finished).toBe(false);
+    } finally { release.resolve(); await holder; }
+    expect((await blocked!).dismissed).toEqual([invoiceA.id]);
+    expect(await a.list()).toEqual([]); expect(await b.list()).toEqual([]);
+  });
+  it('answers a named report past the 90-day window 404, like an unknown one, and dismisses nothing', async () => {
+    const f = await fixture(), old = uuidv7(), recent = uuidv7();
+    const [a, b] = [await f.invoice(1), await f.invoice(2)];
+    await f.report(old, [a.id]);
+    f.clock.advance(91 * 86_400_000);
+    await f.report(recent, [b.id]);
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: old })).status).toBe(404);
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: uuidv7() })).status).toBe(404);
+    // Naming it beside a listed report refuses the whole request.
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runIds: [recent, old] })).status).toBe(404);
+    expect((await f.list()).map(report => report.runId)).toEqual([recent]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(0);
+    // Inside the window it still dismisses.
+    expect((await f.request('owner', '/api/health/charge-failures/dismiss', { runId: recent })).status).toBe(200);
+  });
+  it('reads only the named runs, so another report in the gym can\'t get in the way', async () => {
+    const f = await fixture(), named = uuidv7(), other = uuidv7(), id = (await f.invoice(1)).id;
+    await f.report(named, [id]);
+    // A report the open-list read couldn't parse: dismissing a different run must not read it.
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'billing.runner.charge_failures.reported',
+      targetType: 'charge_run', targetId: other, after: { day: '2026-10-26' }, occurredAt: f.clock.now() }));
+    await expect(f.list()).rejects.toThrow();
+    const response = await f.request('owner', '/api/health/charge-failures/dismiss', { runId: named });
+    expect(response.status).toBe(200);
+    expect(dismissChargeFailuresResponseSchema.parse(await response.json()).data.dismissed).toEqual([id]);
+  });
+  it('dismisses as many reports as one request may name', async () => {
+    const f = await fixture(), invoice = await f.invoice(1);
+    const runIds = Array.from({ length: maxDismissedChargeRuns }, () => uuidv7());
+    await db.forGym(f.gymId, async (tx) => { for (const runId of runIds) await reportChargeFailures(tx, { gymId: f.gymId, actor: { kind: 'system' } }, f.clock, runId, '2026-10-26', [{ invoiceId: invoice.id, cause: 'unexpected' }]); });
+    const response = await f.request('owner', '/api/health/charge-failures/dismiss', { runIds });
+    expect(response.status).toBe(200);
+    expect(dismissChargeFailuresResponseSchema.parse(await response.json()).data.dismissed).toEqual([invoice.id]);
+    expect(await f.list()).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, dismissed)))).toBe(maxDismissedChargeRuns);
   });
   it('shows gym B nothing of gym A and answers its dismissal of gym A\'s run 404', async () => {
     const a = await fixture(), b = await fixture(), runId = uuidv7();

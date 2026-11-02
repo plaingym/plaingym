@@ -14,6 +14,8 @@
   "custom": "Custom amount",
   "chooseCharge": "Choose a charge type",
   "noChargeTypesManager": "No charge types are set up. Add one in the billing catalog, or use a custom amount.",
+  "noChargeTypesCatalog": "No charge types are set up. Add one in the billing catalog.",
+  "noChargeTypesCustom": "No charge types are set up. Ask an owner or admin to add one, or use a custom amount.",
   "noChargeTypes": "No charge types are set up. Ask an owner or admin to add one.",
   "description": "Description",
   "amount": "Amount",

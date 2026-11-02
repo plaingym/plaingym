@@ -14,8 +14,9 @@ import { Select, CheckboxField } from '../../../components/ui/select.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { LoadingState, ErrorState } from '../../../components/ui/states.js';
 
-export function OneOffEditor({ gymId, householdId, custom, client, close, created }: {
-  gymId: string; householdId?: string; custom: boolean; client: InvoiceClient; close: () => void; created: (invoiceId: string) => void;
+/** `custom` is the right to bill any amount (payments.custom); `catalog` the right to add a charge type (plans.manage). */
+export function OneOffEditor({ gymId, householdId, custom, catalog, client, close, created }: {
+  gymId: string; householdId?: string; custom: boolean; catalog: boolean; client: InvoiceClient; close: () => void; created: (invoiceId: string) => void;
 }) {
   const bootstrap = useBootstrap();
   const gym = bootstrap.data?.gym;
@@ -58,7 +59,7 @@ export function OneOffEditor({ gymId, householdId, custom, client, close, create
             <fieldset><legend className="text-sm font-medium">{text('taxes')}</legend>{setup.data.taxes.filter(t => t.active).map(t => <CheckboxField key={t.id} name="taxRateIds" value={t.id} label={t.name}/>)}</fieldset>
           </>}
         <Label className="block">{text('dueOn')}<Input name="dueOn" type="date" required defaultValue={localDate(new Date(), gym.timezone)}/></Label>
-        {source === 'charge_type' && !setup.data.charges.some(c => c.active) && <Alert role="status">{text(custom ? 'noChargeTypesManager' : 'noChargeTypes')}</Alert>}
+        {source === 'charge_type' && !setup.data.charges.some(c => c.active) && <Alert role="status">{text(catalog ? (custom ? 'noChargeTypesManager' : 'noChargeTypesCatalog') : (custom ? 'noChargeTypesCustom' : 'noChargeTypes'))}</Alert>}
         <p className="text-sm text-muted-foreground">{text('createHelp')}</p>
         <Button type="submit" className="w-full sm:w-auto">{text(busy ? 'saving' : 'create')}</Button>
       </fieldset>

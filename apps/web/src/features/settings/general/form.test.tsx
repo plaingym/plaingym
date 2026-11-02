@@ -36,7 +36,7 @@ describe('general settings and the cached shell summary', () => {
     const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
     render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={createShellServices(loadBootstrap)}>
       <GeneralSettingsForm/>
-      <OneOffEditor gymId={settings.id} householdId={id(3)} custom client={invoices} close={() => {}} created={() => {}}/>
+      <OneOffEditor gymId={settings.id} householdId={id(3)} custom catalog client={invoices} close={() => {}} created={() => {}}/>
     </ShellServicesContext.Provider></QueryClientProvider>);
     const editor = screen.getByRole('dialog');
     fireEvent.change(await within(editor).findByLabelText('Charge source'), { target: { value: 'custom' } });

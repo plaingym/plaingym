@@ -145,8 +145,37 @@ describe('payment route permissions and tenant isolation', () => {
     const f = await fixture();
     const document = app(f, staff(f, 'owner')).getOpenAPIDocument({ openapi: '3.0.0', info: { title: 'test', version: '1' } });
     const operation = document.paths['/api/billing/invoices/one-off']?.post as { description?: string } | undefined;
-    expect(operation?.description).toContain('payments.custom');
+    // The document says what the contract says, and the contract is where the rule is written.
+    expect(billingContracts.createOneOffInvoice.description).toContain('payments.custom');
+    expect(operation?.description).toBe(billingContracts.createOneOffInvoice.description);
     expect(operation?.description).toContain('payments.record');
+    // No other route's description came along.
+    const otherOperation = document.paths['/api/billing/invoices/{invoiceId}/charge']?.post as { description?: string } | undefined;
+    expect(otherOperation?.description).toBeUndefined();
+  });
+  it('refuses any custom body from staff without payments.custom with 403, valid or not, and validates it for those with it', async () => {
+    const f = await fixture();
+    const post = (server: ReturnType<typeof app>, body: unknown, headers: Record<string, string> = {}) => server.request(origin + '/api/billing/invoices/one-off', { method: 'POST',
+      headers: { 'content-type': 'application/json', origin, ...headers }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+    const bodies = [{ source: 'custom' }, { source: 'custom', householdId: 'not-an-id', amountCents: -5 }, { source: 'custom', householdId: f.home.id, extra: true },
+      { source: 'custom', householdId: f.home.id, dueOn: '2026-10-25', description: '', amountCents: 100, currency: 'USD' }];
+    const before = (await f.service.listInvoices(f.gymId, { limit: 100, offset: 0 })).pagination.total;
+    for (const role of ['front_desk', 'coach'] as const) for (const body of bodies)
+      expect((await post(app(f, staff(f, role)), body)).status, `${role} ${JSON.stringify(body)}`).toBe(403);
+    // Owners and admins hold the capability, so the same bodies reach validation.
+    for (const role of ['owner', 'admin'] as const) for (const body of bodies)
+      expect((await post(app(f, staff(f, role)), body)).status, `${role} ${JSON.stringify(body)}`).toBe(400);
+    expect(await f.service.listInvoices(f.gymId, { limit: 100, offset: 0 }).then(page => page.pagination.total)).toBe(before);
+    // A body that names no custom amount is not the guard's business: front desk gets the validation answer.
+    const desk = app(f, staff(f, 'front_desk'));
+    for (const body of [{ source: 'charge_type' }, { source: 'nope' }, {}, [], 'not json']) expect((await post(desk, body)).status, JSON.stringify(body)).toBe(400);
+    // The body is still whole for the route after the guard has read it, and a body over the limit is not read by it.
+    const f2 = await factory('chargeTypes', f.gymId, { amountCents: 1000, name: 'Mat fee', currency: 'USD' });
+    expect((await post(desk, { source: 'charge_type', householdId: f.home.id, chargeTypeId: f2.id, dueOn: '2026-10-25' })).status).toBe(201);
+    const oversized = await post(desk, { source: 'custom', note: 'x'.repeat(70_000) });
+    expect(oversized.status).toBe(400);
+    // Anonymous callers are asked to sign in before the body is looked at.
+    expect((await post(app(f, { kind: 'anonymous' }), bodies[0])).status).toBe(401);
   });
   it('limits front desk to catalog charge types and existing invoices, while owner and admin may bill a custom amount', async () => {
     const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 1000, name: 'Mat fee', currency: 'USD' });

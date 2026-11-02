@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { chargeFailuresResponseSchema, dismissChargeFailuresResponseSchema, healthContracts } from '@plaingym/shared/contracts';
+import { chargeFailuresResponseSchema, dismissChargeFailuresResponseSchema, healthContracts, maxDismissedChargeRuns } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -24,9 +24,18 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
   }, refetchInterval: 60_000, enabled: reporting });
   const dismiss = useMutation({
     mutationFn: async (named: string | readonly string[]) => {
-      const result = await api.POST(healthContracts.dismissChargeFailures.path, { body: typeof named === 'string' ? { runId: named } : { runIds: [...named] } });
-      if (!result.response.ok) throw new Error('Dismiss failed');
-      return dismissChargeFailuresResponseSchema.parse(result.data).data;
+      const post = async (body: { runId: string } | { runIds: string[] }) => {
+        const result = await api.POST(healthContracts.dismissChargeFailures.path, { body });
+        if (!result.response.ok) throw new Error('Dismiss failed');
+        return dismissChargeFailuresResponseSchema.parse(result.data).data;
+      };
+      if (typeof named === 'string') return post({ runId: named });
+      // One request takes at most maxDismissedChargeRuns runs, so a longer list goes in order, one batch at a time.
+      // A batch that fails stops the rest; the ones already sent stay dismissed, and the refetch below shows what is left.
+      const dismissed: string[] = [];
+      for (let start = 0; start < named.length; start += maxDismissedChargeRuns)
+        dismissed.push(...(await post({ runIds: named.slice(start, start + maxDismissedChargeRuns) })).dismissed);
+      return { dismissed };
     },
     // A report that is already gone (dismissed elsewhere) is also settled by reading the list again.
     onSettled: () => cache.invalidateQueries({ queryKey: ['health', gymId] }),

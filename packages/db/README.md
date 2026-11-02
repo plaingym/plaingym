@@ -93,6 +93,13 @@ write restrictions. `assertCatalog` then checks actual policies, role properties
 ownership, table and column privileges, tenant keys and foreign keys. Restore uses
 the same migration/security entry point. A failed check prevents successful startup.
 
+Advisory locks are registered in `src/locks.ts`. `advisoryLocks` holds the
+(namespace, key) pairs for work shared by every gym (migrations, backups, job claims).
+`gymAdvisoryLocks` holds the locks that take a gym ID, so one gym's work never waits
+on another's: `lockGym(tx, name, gymId)` waits for the lock and holds it until the
+transaction ends. Don't rename a registered name, since a release running beside an
+older one would then take a different lock.
+
 The security step never restores table-wide DML grants. It removes table and column
 UPDATE permissions on immutable records, then grants only the five mutable outcome
 columns on payment attempts. Audit events allow INSERT and SELECT only. Waiver
