@@ -31,6 +31,17 @@ beforeAll(async () => {
 });
 let verificationGate: Promise<void> | undefined;
 let verificationStarted: (() => void) | undefined;
+/** Holds 'Verified' and 'SlowWrong' guesses until `release`; `started(count)` settles once that many are waiting. */
+function holdVerification() {
+  let open!: () => void, waiting = 0;
+  const waiters: { count: number; resolve: () => void }[] = [];
+  verificationGate = new Promise<void>((resolve) => { open = resolve; });
+  verificationStarted = () => { waiting++; for (const waiter of waiters) if (waiting >= waiter.count) waiter.resolve(); };
+  return {
+    started: (count = 1) => new Promise<void>((resolve) => { waiters.push({ count, resolve }); if (waiting >= count) resolve(); }),
+    release: () => { open(); verificationStarted = undefined; verificationGate = undefined; },
+  };
+}
 /**
  * Stands in for the check-in service: 'Verified' matches, 'Nobody' compares no PIN, 'Broken' fails before any check,
  * 'Silent' reports nothing, and any other name is a wrong PIN.
@@ -194,33 +205,76 @@ describe('kiosk authentication middleware', () => {
     expect(pinLimitReached).toHaveBeenCalledTimes(1);
     expect((await request(app)).status).toBe(429);
   });
-  it('ignores the failure of a request whose bucket was evicted meanwhile, leaving no report for it', async () => {
-    const pinLimitReached = vi.fn(async () => {});
+  it('reports a used-up budget once when its wrong PIN settles after its bucket was evicted', async () => {
+    const pinLimitReached = vi.fn(async (_event: PinLimitReached) => {});
     let peer = '192.0.2.70';
     const { app } = server({ pinLimit: 1, maxBuckets: 2, pinLimitReached, peerAddress: () => peer });
-    let release!: () => void;
-    verificationGate = new Promise<void>((resolve) => { release = resolve; });
-    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const windowEndsAt = new Date(clock.now().getTime() + 60_000), held = holdVerification();
     const slow = request(app, bodies[0][0], token, { ...pinBody, name: 'SlowWrong' });
     try {
-      await started;
+      await held.started();
       // Another device at another address needs room in the full table, so it evicts the slow request's buckets.
       peer = '192.0.2.71';
       expect((await request(app, bodies[0][0], secondToken, { ...pinBody, name: 'Nobody' })).status).toBe(200);
-    } finally { release(); verificationStarted = undefined; verificationGate = undefined; }
+      expect(pinLimitReached).not.toHaveBeenCalled();
+    } finally { held.release(); }
     expect((await slow).status).toBe(200);
-    expect(pinLimitReached).not.toHaveBeenCalled();
+    expect(pinLimitReached.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ deviceId, budgets: ['device', 'address'], windowEndsAt, occurredAt: clock.now() })]);
   });
-  it('does not report a used-up budget for a wrong PIN that settles after its window ended', async () => {
-    const pinLimitReached = vi.fn(async () => {});
+  it('reports a used-up budget once when its wrong PIN settles after its window ended', async () => {
+    const pinLimitReached = vi.fn(async (_event: PinLimitReached) => {});
     const { app } = server({ pinLimit: 1, pinLimitReached, peerAddress: () => '192.0.2.80' });
-    let release!: () => void;
-    verificationGate = new Promise<void>((resolve) => { release = resolve; });
-    const started = new Promise<void>((resolve) => { verificationStarted = resolve; });
+    const windowEndsAt = new Date(clock.now().getTime() + 60_000), held = holdVerification();
     const slow = request(app, bodies[0][0], token, { ...pinBody, name: 'SlowWrong' });
-    try { await started; clock.advance(60_000); } finally { release(); verificationStarted = undefined; verificationGate = undefined; }
+    try { await held.started(); clock.advance(60_000); } finally { held.release(); }
     expect((await slow).status).toBe(200);
-    expect(pinLimitReached).not.toHaveBeenCalled();
+    expect(pinLimitReached.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ deviceId, budgets: ['device', 'address'], windowEndsAt, occurredAt: windowEndsAt })]);
+    // The next guess starts a window of its own.
+    expect((await request(app)).status).toBe(200);
+    expect(pinLimitReached).toHaveBeenCalledTimes(2);
+    expect(pinLimitReached.mock.calls[1]![0].windowEndsAt).toEqual(new Date(windowEndsAt.getTime() + 60_000));
+  });
+  it('counts wrong PINs that settle after their buckets were replaced against the window they reserved in', async () => {
+    const pinLimitReached = vi.fn(async (_event: PinLimitReached) => {});
+    const { app } = server({ pinLimit: 2, pinLimitReached, peerAddress: () => '192.0.2.90' });
+    const firstEnds = new Date(clock.now().getTime() + 60_000), held = holdVerification();
+    const slow = [0, 1].map(() => request(app, bodies[0][0], token, { ...pinBody, name: 'SlowWrong' }));
+    try {
+      await held.started(2);
+      clock.advance(60_000);
+      // A new guess replaces both ended buckets with a new window, which the late wrong PINs leave alone.
+      expect((await request(app)).status).toBe(200);
+    } finally { held.release(); }
+    for (const response of await Promise.all(slow)) expect(response.status).toBe(200);
+    expect(pinLimitReached.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ budgets: ['device', 'address'], windowEndsAt: firstEnds })]);
+    // The new window still has one wrong PIN left, and reports itself when it runs out.
+    expect((await request(app)).status).toBe(200);
+    expect(pinLimitReached.mock.calls.map(([event]) => event.windowEndsAt))
+      .toEqual([firstEnds, new Date(firstEnds.getTime() + 60_000)]);
+    expect((await request(app)).status).toBe(429);
+  });
+  it('never reports a used-up budget twice in one window, however its wrong PINs settle', async () => {
+    const pinLimitReached = vi.fn(async (_event: PinLimitReached) => {});
+    let peer = '192.0.2.100';
+    const { app } = server({ pinLimit: 3, maxBuckets: 2, pinLimitReached, peerAddress: () => peer });
+    const windowEndsAt = new Date(clock.now().getTime() + 60_000);
+    expect((await request(app)).status).toBe(200);
+    const held = holdVerification();
+    const slow = [0, 1].map(() => request(app, bodies[0][0], token, { ...pinBody, name: 'SlowWrong' }));
+    try {
+      await held.started(2);
+      expect((await request(app)).status).toBe(429);
+      // The window ends and another kiosk's guesses evict and refill the table before the late wrong PINs settle.
+      clock.advance(60_000);
+      peer = '192.0.2.101';
+      expect((await request(app, bodies[0][0], secondToken, { ...pinBody, name: 'Nobody' })).status).toBe(200);
+    } finally { held.release(); }
+    for (const response of await Promise.all(slow)) expect(response.status).toBe(200);
+    expect(pinLimitReached.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ budgets: ['device', 'address'], windowEndsAt })]);
   });
   it('reports a device and an address budget that run out together with their own window ends', async () => {
     const register = (name: string) => service.register({ gymId: gymA, actor: { kind: 'system' } }, { name });

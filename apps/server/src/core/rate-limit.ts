@@ -69,17 +69,26 @@ export class RateBuckets<Bucket extends RateBucket = RateBucket> {
     if (bucket && bucket.resetAt <= now) { this.#buckets.delete(key); return undefined; }
     return bucket;
   }
-  /** Starts the key's bucket, first making room in a full table. The buckets of `keep` (the request's own) stay. */
+  /**
+   * Starts the key's bucket, first making room in a full table in one walk: the first ended or within-limit buckets
+   * found, else the first ones not kept. The buckets of `keep` (the request's own) stay, so they can hold the table
+   * over its bound until a later addition makes room for them as well.
+   */
   add(key: string, bucket: Bucket, now: number, keep: readonly string[] = []): Bucket {
     this.#buckets.delete(key);
-    const evict = (evictable: (bucket: Bucket) => boolean) => {
+    let excess = this.#buckets.size - this.maxBuckets + 1;
+    if (excess > 0) {
+      // Over-limit buckets are remembered in table order, only as many as could still be needed.
+      const blocked: string[] = [];
       for (const [id, value] of this.#buckets) {
-        if (this.#buckets.size < this.maxBuckets) return;
-        if (!keep.includes(id) && evictable(value)) this.#buckets.delete(id);
+        if (keep.includes(id)) continue;
+        if (value.resetAt <= now || !this.blocked(value)) {
+          this.#buckets.delete(id);
+          if (--excess === 0) break;
+        } else if (blocked.length < excess) blocked.push(id);
       }
-    };
-    evict((value) => value.resetAt <= now || !this.blocked(value));
-    evict(() => true);
+      for (const id of blocked.slice(0, excess)) this.#buckets.delete(id);
+    }
     this.#buckets.set(key, bucket);
     return bucket;
   }

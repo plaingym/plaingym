@@ -84,10 +84,11 @@ export function createKioskAuthMiddleware(options: KioskAuthOptions = {}): Middl
           }
         } else {
           // The device and the shared address budget are each reported once per window, in one event when both run out together
-          // and their windows end together. A bucket evicted, replaced or expired mid-request has no live window to add to.
+          // and their windows end together. A wrong PIN counts against the window it reserved in, even when that window ended,
+          // or its bucket was evicted or replaced, before it settled: the reservation keeps the bucket, so the last wrong PIN
+          // of a used-up budget always reports it, and the bucket outlives the table only while its own guesses are in flight.
           const occurredAt = current.clock.now();
-          const reached = reservations.filter(({ key, bucket }) => buckets.holds(key, bucket) && bucket.resetAt > occurredAt.getTime()
-            && ++bucket.failures >= limit && !bucket.reported);
+          const reached = reservations.filter(({ bucket }) => ++bucket.failures >= limit && !bucket.reported);
           for (const { bucket } of reached) bucket.reported = true;
           // Recording is best effort: it never changes the answer the kiosk gets.
           await Promise.all([...new Set(reached.map(({ bucket }) => bucket.resetAt))].map((resetAt) =>

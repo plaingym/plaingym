@@ -77,7 +77,7 @@ full table (`RateBuckets`) evicts rather than refusing new clients, so a flood
 can't lock new visitors out: ended windows and the oldest buckets still within
 their limits go first, and a bucket over its limit goes only once every other
 bucket is too, so lifting a refusal takes a flood that fills the whole table
-with refused clients. Refusals keep their
+with refused clients. Each new key makes its room in one walk of the table. Refusals keep their
 `Retry-After`. This is process-local flood protection; auth
 retains its database-backed limiter. `peerAddress` defaults to the Node socket
 address. Set `trustedProxy` to a predicate matching only the immediate reverse

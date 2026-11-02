@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
 import { clientKey, RateBuckets, rateLimit, type RateLimitOptions } from './rate-limit.js';
@@ -138,6 +138,42 @@ it('evicts ended windows and buckets within their limits first, and keeps the ke
   // All three are over their limits now: the oldest goes, unless the request keeps it.
   buckets.add('c', { count: 0, resetAt: 120 }, 20, ['blocked']);
   expect([buckets.get('blocked', 20), buckets.get('a', 20), buckets.get('b', 20)]).toEqual([expect.anything(), undefined, expect.anything()]);
+});
+
+it('makes room in a table full of over-limit buckets in one walk, evicting the first one not kept', () => {
+  const size = 10_000, buckets = new RateBuckets(size, (bucket) => bucket.count >= 1);
+  for (let i = 0; i < size; i++) buckets.add(`key-${i}`, { count: 1, resetAt: 100 }, 0);
+  // Every `for…of` over a Map steps its iterator: one step per bucket visited, and one to find the end.
+  const steps = vi.spyOn(Object.getPrototypeOf(new Map().entries()) as Iterator<unknown>, 'next');
+  let visits: number;
+  try { buckets.add('new', { count: 0, resetAt: 100 }, 0, ['key-0']); visits = steps.mock.calls.length; }
+  finally { steps.mockRestore(); }
+  expect(visits).toBe(size + 1);
+  expect([buckets.get('key-0', 0), buckets.get('key-1', 0), buckets.get('key-2', 0), buckets.get('new', 0)])
+    .toEqual([expect.anything(), undefined, expect.anything(), expect.anything()]);
+});
+
+it('stops walking at the first ended or within-limit bucket', () => {
+  const buckets = new RateBuckets(4, (bucket) => bucket.count >= 1);
+  for (const [key, count] of [['a', 1], ['b', 0], ['c', 0], ['d', 1]] as const) buckets.add(key, { count, resetAt: 100 }, 0);
+  const steps = vi.spyOn(Object.getPrototypeOf(new Map().entries()) as Iterator<unknown>, 'next');
+  let visits: number;
+  try { buckets.add('e', { count: 0, resetAt: 100 }, 0); visits = steps.mock.calls.length; }
+  finally { steps.mockRestore(); }
+  expect(visits).toBe(2);
+  expect(['a', 'b', 'c', 'd', 'e'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([true, false, true, true, true]);
+});
+
+it('brings a table that kept keys held over its bound back to it, preferring within-limit buckets', () => {
+  const buckets = new RateBuckets(2, (bucket) => bucket.count >= 1);
+  buckets.add('blocked', { count: 1, resetAt: 100 }, 0);
+  buckets.add('kept', { count: 1, resetAt: 100 }, 0);
+  // A request keeping both of its own buckets can't make room, so the table holds one bucket too many.
+  buckets.add('open', { count: 0, resetAt: 100 }, 0, ['blocked', 'kept']);
+  expect(['blocked', 'kept', 'open'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([true, true, true]);
+  // The next key evicts two: the within-limit bucket first, then the oldest over-limit one.
+  buckets.add('next', { count: 0, resetAt: 100 }, 0);
+  expect(['blocked', 'kept', 'open', 'next'].map((key) => buckets.get(key, 0) !== undefined)).toEqual([false, true, false, true]);
 });
 
 it('shares a conservative bucket when no socket address is available', async () => {
