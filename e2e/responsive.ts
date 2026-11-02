@@ -11,7 +11,26 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
   await page.evaluate(() => Promise.all(document.getAnimations()
     .filter((animation) => Number.isFinite(Number(animation.effect?.getComputedTiming().endTime ?? Infinity)))
     .map((animation) => animation.finished.catch(() => undefined))));
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), name + ': horizontal scroll').toBe(true);
+  const overflow = await page.evaluate(() => {
+    const root = document.documentElement;
+    if (root.scrollWidth <= root.clientWidth) return undefined;
+    let widest: { element: Element; right: number } | undefined;
+    for (const element of document.querySelectorAll('body *')) {
+      // Fixed elements and children of a clipping container can't widen the page.
+      let clipped = false;
+      for (let parent: Element | null = element; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        if (style.position === 'fixed' || (parent !== element && style.overflowX !== 'visible')) { clipped = true; break; }
+      }
+      const right = element.getBoundingClientRect().right;
+      if (!clipped && right > root.clientWidth && (!widest || right > widest.right)) widest = { element, right };
+    }
+    if (!widest) return `page is ${root.scrollWidth}px wide in a ${root.clientWidth}px viewport (no element reaches past it)`;
+    const { element, right } = widest, label = element.getAttribute('aria-label') ?? element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 40);
+    return `${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}${element.getAttribute('role') ? `[role=${element.getAttribute('role')}]` : ''}`
+      + `${label ? ` "${label}"` : ''} ends at ${Math.round(right)}px in a ${root.clientWidth}px viewport`;
+  });
+  expect(overflow, name + ': horizontal scroll').toBeUndefined();
   // An open modal dialog makes the rest of the page inert, so only its own controls can be touched.
   const small = await page.evaluate(() => [...(document.querySelector('dialog:modal')?.querySelectorAll('button, input, select, a')
     ?? document.querySelectorAll('main button, main input, main select, main a, aside button, aside a, dialog button'))].flatMap((element) => {

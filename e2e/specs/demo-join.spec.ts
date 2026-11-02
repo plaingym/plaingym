@@ -40,6 +40,10 @@ async function portalClass(page: Page, button: string) {
   }
   return target;
 }
+/** Shows the admin schedule's week that holds an instant. The page opens on the browser's current week, which a class on the other side of a Sunday midnight in the gym's zone misses. */
+async function showWeekOf(page: Page, timezone: string, instant: number) {
+  await page.getByLabel('Week of', { exact: true }).fill(new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(instant));
+}
 function newVisitor(): Visitor {
   const lastName = 'Visitor' + randomBytes(3).toString('hex');
   return { firstName: 'Riley', lastName, email: `join-${randomBytes(6).toString('hex')}@example.invalid`, fullName: 'Riley ' + lastName };
@@ -193,6 +197,7 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
     await coach.browser(coachContext);
     const coachPage = await coachContext.newPage();
     await coachPage.goto(sandbox.origin + '/admin/schedule');
+    await showWeekOf(coachPage, bootstrap.data.gym.timezone, start);
     await coachPage.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${soon.name}`) }).first().click();
     const bookings = coachPage.getByRole('region', { name: 'Bookings and check-ins', exact: true });
     await expect(bookings.getByText(visitor.fullName)).toBeVisible();
