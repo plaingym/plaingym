@@ -347,7 +347,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
   } });
   // Photos load from the uploads bucket's signed URLs when S3 is configured. A host the policy can't name (such as a
-  // Compose service with an underscore) is left out and reported, rather than refusing to start over a report-only policy.
+  // Compose service with an underscore) is left out of the enforced policy and logged rather than refusing to start: a
+  // browser can't reach such a host anyway, so leaving it out blocks no photo that would have loaded.
   const bucketImages = (() => {
     if (!uploads.imageOrigin) return [];
     try { return imageOrigins([uploads.imageOrigin]); }
