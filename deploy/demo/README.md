@@ -179,7 +179,8 @@ checks again once that setup has run (stopping before it writes or starts
 anything if Compose is still missing or too old); a re-install, `--local-test`
 and `update.sh` refuse without it. `install.sh --check-only` makes the same check
 as the install it previews, so it needs Compose too, except where a first install
-would add it.
+would add it. Run it with sudo on an installed host: without root it can't read the
+install's `.env`, so it checks as a first install would.
 
 `lib.sh` loads the shared helpers from `base-lib.sh` beside it. Only `install.sh`
 may run without that copy (it carries the helpers itself and copies the file in,
