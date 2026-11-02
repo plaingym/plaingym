@@ -20,13 +20,15 @@ This project is a 100% open-source (AGPL-3.0-only), vendor-neutral, all-in-one g
 
 ## 2. Technical Stack & Architecture
 
+The full picture is in [`docs/architecture.md`](docs/architecture.md) and [`docs/security-model.md`](docs/security-model.md); this section is the summary every change must respect.
+
 * **Runtime & Tooling:** Node.js LTS (pinned in `.nvmrc` and `engines`), pnpm workspaces, Vitest, `tsc --noEmit`; `tsx` in development, esbuild bundles the server
 * **API Framework:** Hono (`@hono/node-server`) + `@hono/zod-openapi`
 * **Public Website:** Server-rendered Hono JSX + Tailwind (no meta-framework)
 * **Admin / Member Portal / Kiosk:** React + Vite + Tailwind CSS + shadcn/ui (SPA served by the app server; the portal is an installable PWA)
 * **Database:** PostgreSQL (one pinned major version), with row-level security for tenant isolation
 * **ORM & Migrations:** Drizzle ORM (`postgres.js` driver) + drizzle-kit
-* **Authentication:** Better Auth (Drizzle adapter, identity + sessions only). Google OAuth + Email Magic Link when SMTP is configured; Email + Password when SMTP is unconfigured (`AUTH_PASSWORD_LOGIN=auto|on|off`). Console-logged magic links are dev-only.
+* **Authentication:** Better Auth (Drizzle adapter, identity + sessions only). Email Magic Link when the gym has SMTP (its own or the install's); Email + Password when it has none (`AUTH_PASSWORD_LOGIN=auto|on|off`). The auth service accepts an optional Google provider extension, which the runtime doesn't configure. Console-logged magic links are dev-only.
 * **Data Validation:** Zod (shared between frontend, API routes, and the OpenAPI spec)
 * **Background Jobs:** Own Postgres `jobs` table + in-process worker with `SKIP LOCKED` claiming and per-gym concurrency caps (do not add an external queue or Redis)
 * **Payments:** Stripe, using the gym's own API keys (webhook endpoint auto-registered during setup)
@@ -145,6 +147,7 @@ Prefer Web-standard APIs (`fetch`, `Request`/`Response`, WebCrypto, Web Streams)
 
 ## 4. Pull Requests & AI Contributions
 * **Branches.** `main` is the only long-lived branch. Work on a short-lived branch from `main`, focused on one change. Each change lands on `main` as one squashed conventional commit, after type checking, lint, and tests pass. Outside contributions arrive as pull requests against `main`.
+* **Keep the docs current.** Every change that lands on `main` leaves the documentation true. When a change alters what a page in `docs/` (see [`docs/README.md`](docs/README.md)), the root `README.md`, `deploy/README.md`, or a module README next to the code says (a setting, environment variable, route surface, permission, setup or deploy step, security rule, or behavior a README describes), update that page in the same commit. Reviewers check this before landing, and a change that leaves a page wrong isn't done. Docs describe only what exists on `main`.
 * **Contributor License Agreement.** Contributors keep their copyright and sign [`CLA.md`](CLA.md) once, by replying to the CLA check on their pull request, before their first pull request is merged; the CLA check must pass. No copyright assignment. See `CONTRIBUTING.md`.
 * Ensure all TypeScript code passes strict type checking: `pnpm check-types` (`tsc --noEmit`).
 * Ensure all linter rules pass: `pnpm lint`.

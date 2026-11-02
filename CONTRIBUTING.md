@@ -32,6 +32,7 @@ Before your first pull request can be merged, you sign our [Contributor License 
 * New dependencies must use a license on the allowlist in `AGENTS.md`. The CI license check blocks anything else.
 * Workflows use only GitHub-owned actions and three others: `pnpm/action-setup`, `docker/setup-buildx-action` and `docker/build-push-action`. Pin each one to a full commit SHA, with its version in a comment. The repository's Actions settings enforce both, so a workflow that uses another action fails to start until a maintainer allows it.
 * Every new member-facing route needs a cross-member access test (member A gets 403/404 on member B's data).
+* Update the documentation your change affects in the same pull request: the pages in [`docs/`](docs/README.md), the root `README.md`, `deploy/README.md`, and the README next to the code you changed.
 * **Never report security issues in public issues or pull requests.** See [`SECURITY.md`](SECURITY.md).
 
 ## Using AI Tools

@@ -253,42 +253,39 @@ set `CADDY_ACCESS_LOG=discard`) and run the same command to turn it off again.
 
 ## Updates and recovery
 
-Generate an age key pair on your own computer (`age-keygen -o backup.key`).
-Keep the private key off the server and put only the public recipient in
-`BACKUP_RECIPIENT` in the server's `.env`. Then run:
+Updates need backups configured in the setup wizard: the updater takes a
+pre-upgrade backup through them. Then run:
 
 ```sh
 cd /opt/plaingym
 sudo ./update.sh ghcr.io/plaingym/app:vX.Y.Z
 ```
 
-The current updater supports the empty scaffold schema and empty uploads.
-It checks both and the age recipient before changing anything, locks out
-concurrent updates, pulls the target image while the app still runs, then stops
-the app and creates an encrypted local archive in `snapshots/`. The archive
-contains a custom-format database dump, uploads tar, recovery environment, and
-previous image pin. Nothing is written between capture and the start of the
-target image. It then starts the target image, verifies the no-migration schema and health endpoint,
-and changes the persisted image pin only on success. A failed image start or
-check restarts the exact previous local image. Keep those images available.
+The updater takes an explicit semver tag or `sha256` digest, locks out
+concurrent updates, and requires the app to be running. It pulls the target
+image while the app still runs, then stops the app and runs
+`node /app/maintenance.mjs snapshot pre-upgrade` in a one-off app container: a
+coordinated, encrypted install snapshot to the gym's backup destination, kept
+under the backup retention's pre-upgrade rule
+(`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
+the snapshot and the start of the target image. Without configured backups the
+snapshot fails, and the updater restarts the current image without changing
+anything. It then starts the target image, which applies its migrations before
+reporting healthy, runs the health check, and changes the persisted image pin
+in `.env` only on success. A failed image start or check restarts the exact
+previous local image (by image ID), so keep those images available. Restore a
+pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
+with `gym-app restore`.
 
-These are local deployment recovery archives, not application backup-service
-snapshots. They include database credentials and encryption keys. Inspect one
-on a trusted machine with `age -d -i backup.key SNAPSHOT.tar.age > recovery.tar`.
-Extract it privately; `recovery.env` is the original deployment configuration,
-`database.dump` is readable by PostgreSQL 18's `pg_restore`, and
-`uploads.tar` holds the uploads directory. Recovery is an operator procedure;
-the current server has no restore command. Archives are retained until the
-operator removes them. A lost age private key makes them unrecoverable.
+Automatic patch selection and timers are not installed; `--patch` returns an
+explicit error. `BACKUP_RECIPIENT`, which the installer writes to `.env` empty,
+is not read.
 
-An application schema or uploads cause the updater to stop and require the
-coordinated application backup/migration commands. No SQL migration is invented
-or silently skipped. Automatic patch selection/timers are not installed;
-`--patch` returns an explicit error.
-
-The host updater tests exercise real age encryption and decryption with a
-Docker command fixture for orchestration failures. The separate image smoke
-test uses actual PostgreSQL, app, and Caddy containers:
+The host updater test drives `update.sh` with a Docker command fixture and
+checks the order (pull, stop, snapshot, start) and that a failure at each stage
+(pull, snapshot, startup, health) keeps the previous image pinned and, once the
+app has stopped, restarts it. The separate image smoke test uses actual PostgreSQL, app,
+and Caddy containers:
 
 ```sh
 sudo sh deploy/test/update.sh
