@@ -2,16 +2,21 @@
 import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/shared/contracts';
-import { button, publicLayout } from './page.js';
+import { button, money, publicLayout } from './page.js';
 import { maxJoinMembers } from './join.service.js';
 
-// The shared public stylesheet is built from the classes in this file and the signed-link page (`links/styles.build.mjs`).
+// The shared public stylesheet is built from the classes in every public source file (`links/styles.build.mjs`).
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const link = 'inline-flex min-h-11 items-center underline';
 type Values = Record<string, string | number>;
 const joinText = (t: Translator) => (key: string, values?: Values) => t('public/join:' + key, values);
-const money = (cents: number, currency: string, locale = 'en') => new Intl.NumberFormat(locale, { style: 'currency', currency }).format(cents / 100);
+/** Each plan interval's price strings, plain and with "+ tax", spelled out so the locale key check sees every key. */
+const priceKeys = {
+  monthly: { plain: 'monthly', plusTax: 'monthlyPlusTax' },
+  annual: { plain: 'annual', plusTax: 'annualPlusTax' },
+} as const satisfies Record<PublicPlan['interval'], { plain: string; plusTax: string }>;
+const signupFeeKeys = { plain: 'signupFee', plusTax: 'signupFeePlusTax' } as const;
 export interface JoinPageInput { gym: PublicBranding; t: Translator; locale?: string }
 function layout(input: JoinPageInput, title: string, content: ReturnType<typeof h>, script = false) {
   return publicLayout({ gym: input.gym, title, t: input.t, ...(input.locale ? { locale: input.locale } : {}),
@@ -19,9 +24,9 @@ function layout(input: JoinPageInput, title: string, content: ReturnType<typeof 
 }
 function price(input: JoinPageInput, plan: PublicPlan) {
   const text = joinText(input.t);
-  const tax = plan.plusTax ? 'PlusTax' : '';
-  return [h('p', { class: 'font-semibold' }, text(plan.interval + tax, { amount: money(plan.amountCents, plan.currency, input.locale) })),
-    plan.signupFeeCents ? h('p', null, text('signupFee' + tax, { amount: money(plan.signupFeeCents, plan.currency, input.locale) })) : null,
+  const which = plan.plusTax ? 'plusTax' : 'plain';
+  return [h('p', { class: 'font-semibold' }, text(priceKeys[plan.interval][which], { amount: money(plan.amountCents, plan.currency, input.locale) })),
+    plan.signupFeeCents ? h('p', null, text(signupFeeKeys[which], { amount: money(plan.signupFeeCents, plan.currency, input.locale) })) : null,
     plan.commitmentMonths ? h('p', null, text('commitment', { months: plan.commitmentMonths })) : null];
 }
 /** Plans a visitor can join online, or where to turn when online joining is off. */

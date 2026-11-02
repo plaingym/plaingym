@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { createGymSettingsAccessor, createSettingsService } from '../../areas/settings/settings.js';
-import { addsTaxOnTop } from '../../areas/settings/drop-in-fee.js';
+import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { needsGuardian, validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
@@ -114,13 +114,19 @@ export function createJoinService(options: JoinOptions) {
   /** The plan row when it can be paid for online; a submission needs no tax lookup. */
   async function joinableRow(gymId: string, planId: string) {
     const gym = await settings.get(gymId);
-    const [row] = await scope(gymId, tx => tx.select().from(plans).where(and(eq(plans.id, planId), joinable(gym.currency))));
+    return scope(gymId, tx => joinableIn(tx, gym.currency, planId));
+  }
+  async function joinableIn(tx: Transaction, currency: string, planId: string) {
+    const [row] = await tx.select().from(plans).where(and(eq(plans.id, planId), joinable(currency)));
     return row ?? missing();
   }
-  /** The plan as the join page shows it, with whether invoicing adds tax on top. */
+  /** The plan as the join page shows it, with whether invoicing adds tax on top; the plan and its rates come from one snapshot. */
   async function joinablePlan(gymId: string, planId: string) {
-    const row = await joinableRow(gymId, planId);
-    return scope(gymId, async tx => plan(row, (await plansPlusTax(tx, [row.id])).has(row.id)));
+    const gym = await settings.get(gymId);
+    return scope(gymId, async tx => {
+      const row = await joinableIn(tx, gym.currency, planId);
+      return plan(row, (await plansPlusTax(tx, [row.id])).has(row.id));
+    });
   }
   /** Billing on, a payment provider, and one to eight current documents, all before anything is written. */
   async function ready(gymId: string) {

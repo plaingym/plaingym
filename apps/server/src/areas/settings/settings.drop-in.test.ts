@@ -186,6 +186,22 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     expect(await f.dropInFeeFor(f.gymId)).toBeNull();
   });
 
+  it('reads the fee and its tax flag in one query', async () => {
+    const f = await fixture();
+    await factory('chargeTypeTaxRates', f.gymId, { chargeTypeId: f.mat.id, taxRateId: (await factory('taxRates', f.gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false })).id });
+    await f.choose(f.mat.id);
+    let executed = 0;
+    // Counts every query builder that is awaited, that is, run against the database.
+    const counting = <T extends object>(target: T): T => new Proxy(target, { get(object, prop) {
+      const value = Reflect.get(object, prop, object) as unknown;
+      if (prop === 'then' && typeof value === 'function') return (...args: unknown[]) => { executed++; return (value as (...a: unknown[]) => unknown).apply(object, args); };
+      return typeof value === 'function' ? (...args: unknown[]) => { const result = (value as (...a: unknown[]) => unknown).apply(object, args); return typeof result === 'object' && result !== null ? counting(result) : result; } : value;
+    } });
+    const dropInFeeFor = createDropInFee({ scope: (gymId, fn) => database.forGym(gymId, tx => fn(counting(tx))) });
+    expect(await dropInFeeFor(f.gymId)).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: true });
+    expect(executed).toBe(1);
+  });
+
   it('reads only the choosing gym\'s tax rates', async () => {
     const f = await fixture();
     // The other gym taxes its own mat fee. Its rate and attachment are invisible to this gym, and to its reader.

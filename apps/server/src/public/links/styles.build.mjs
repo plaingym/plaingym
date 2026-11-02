@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { compile } from '@tailwindcss/node';
 import { build } from 'esbuild';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** Every public source file the stylesheet scans for Tailwind classes: all of `public/**` except tests, so a class used in any public page compiles.
+ * @returns {Promise<string[]>} absolute paths, sorted */
+export async function linkStyleSources() {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const files = await readdir(root, { recursive: true });
+  return files.filter(file => /\.tsx?$/.test(file) && !/\.(test|d)\.tsx?$/.test(file) && !/(^|[\\/])tests[\\/]/.test(file)).sort().map(file => join(root, file));
+}
 /** Build with the web app's already-pinned Tailwind toolchain and shared tokens.
  * @param {string} destination */
 export async function buildLinkStyles(destination) {
   const cssPath = fileURLToPath(new URL('../../../../web/src/app/styles.css', import.meta.url));
   const css = await readFile(cssPath, 'utf8');
   const compiler = await compile(css, { base: dirname(cssPath), onDependency() {} });
-  const sources = await Promise.all(['./page.ts', '../pages/join.page.ts'].map(file => readFile(new URL(file, import.meta.url), 'utf8')));
+  const sources = await Promise.all((await linkStyleSources()).map(file => readFile(file, 'utf8')));
   const candidates = sources.flatMap(source => source.match(/[A-Za-z0-9_:!./%[\]()-]+/g) ?? []);
   await mkdir(dirname(destination), { recursive: true });
   await writeFile(destination, compiler.build(candidates));

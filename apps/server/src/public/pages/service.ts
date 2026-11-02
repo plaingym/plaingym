@@ -85,10 +85,10 @@ export function createPublicPagesService(options: PublicPagesOptions) {
   return {
     templates, required,
     async config(gymId: string) {
-      const gym = await settings.get(gymId);
+      const [gym, dropInFee] = await Promise.all([settings.get(gymId), options.dropInFeeFor?.(gymId) ?? null]);
       return c.publicPageConfigResponseSchema.parse({ data: { gym: { name: gym.name, revision: gym.revision,
         logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null },
-      dropInFee: await options.dropInFeeFor?.(gymId) ?? null } });
+      dropInFee } });
     },
     async logo(gymId: string, revision: string) {
       const gym = await settings.get(gymId), key = gym.branding.logoKey;

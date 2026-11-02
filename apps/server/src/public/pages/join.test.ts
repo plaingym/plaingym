@@ -222,11 +222,18 @@ describe('public join pages through the production registrations', () => {
     expect(noteFor(html, 'Zero rate').month).toBe('$80.00 per month');
     expect(noteFor(html, 'Annual').month).toBeUndefined();
     expect(html).toContain('$1,500.00 per year'); expect(html).not.toContain('$1,500.00' + plus);
+    // An annual plan with an exclusive rate reads "per year", with the note beside the price, and renders no raw key.
+    const annualTaxed = await factory('plans', f.gymId, { name: 'Annual taxed', amountCents: 120000, currency: 'CAD', interval: 'annual', signupFeeCents: 3000 });
+    await factory('planTaxRates', f.gymId, { planId: annualTaxed.id, taxRateId: exclusive.id });
+    for (const page of [await (await f.get('/join')).text(), await (await f.get(`/join?plan=${annualTaxed.id}`)).text()]) {
+      expect(page).toContain(`$1,200.00${plus} per year`); expect(page).toMatch(/Sign-up fee: [A-Z]*\$30\.00/); expect(page).toContain('$30.00' + plus);
+      expect(page).not.toMatch(/annualPlusTax|signupFeePlusTax|public\/join:/);
+    }
     // The form's summary and the API carry the same flag.
     const form = await (await f.get(`/join?plan=${both.id}`)).text();
     expect(form).toContain(`$80.00${plus} per month`); expect(form).toMatch(/Sign-up fee: [A-Z]*\$20\.00\u00a0\+\u00a0tax/);
     const api = publicContracts.plans.response.parse(await (await f.get('/api/public/plans?limit=100&offset=0')).json());
-    expect(Object.fromEntries(api.data.map(p => [p.name, p.plusTax]))).toEqual({ 'Adult monthly': true, Annual: false, Plain: false,
+    expect(Object.fromEntries(api.data.map(p => [p.name, p.plusTax]))).toEqual({ 'Adult monthly': true, Annual: false, 'Annual taxed': true, Plain: false,
       'Inclusive only': false, 'Both rates': true, 'Archived exclusive': true, 'Zero rate': false });
     // The other gym's exclusive rate on its own plan leaves this gym's plain plan alone, and shows only on its page.
     const foreignRate = await factory('taxRates', f.otherGym, { name: 'Other GST', rateMillionths: 50_000, inclusive: false });
