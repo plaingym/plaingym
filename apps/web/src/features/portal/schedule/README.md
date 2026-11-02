@@ -13,7 +13,8 @@ The schedule shows one gym-local week at a time, grouped by day. A class offers
 Book or Join the waitlist once its booking window opens, and Cancel or Leave the
 waitlist only until its `cancelBefore` instant; after that it says the cutoff has
 passed. A conflict from the booking engine shows a general message and refreshes
-the schedule. Household members' places appear with their names.
+the schedule. Household members' places appear with their names. Class and member
+names wrap, even with no break opportunity, rather than truncating or widening the page at 360 px.
 
 The check-in page renders the member's code as a QR image in the browser, shows a
 "no active code" state with a create action, and asks for confirmation before

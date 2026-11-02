@@ -153,6 +153,15 @@ export const test = base.extend<object, { install: Install; sandboxes: Sandbox[]
 });
 export { expect };
 
+/** The wall-clock date (`YYYY-MM-DD`) and time (`HH:MM`) of an instant in a zone. Built from `Intl` parts, not a locale's output format;
+ * this independent suite never loads application modules or their dependencies. */
+export function wall(instant: Date | number, timeZone: string) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(instant).map((part) => [part.type, part.value]));
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+}
+export const localDate = (instant: Date | number, timeZone: string) => wall(instant, timeZone).date;
+
 export async function demoClient(sandbox: Sandbox, role: 'owner' | 'coach' | 'student') {
   const client = new Client(sandbox.origin);
   client.cookie = await cached(`login:${sandbox.gymId}:${role}`, async () => {

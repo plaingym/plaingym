@@ -1,17 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import AxeBuilder from '@axe-core/playwright';
 import type { BrowserContext, Page, TestInfo } from '@playwright/test';
-import { expect, gymOrigin, test, type Install, type Person, type RecordId } from '../support.js';
+import { expect, gymOrigin, localDate, test, wall, type Install, type Person, type RecordId } from '../support.js';
 
 const screens = ['/admin', '/admin/members', '/admin/schedule', '/admin/ranks', '/admin/staff', '/admin/imports', '/admin/settings'];
 const browserZone = 'Pacific/Honolulu';
-// Wall-clock reads through Intl, so this independent suite never loads application modules or their dependencies.
-function wall(instant: Date, timeZone: string) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-    .formatToParts(instant).map((part) => [part.type, part.value]));
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
-}
-const localDate = (instant: Date, timeZone: string) => wall(instant, timeZone).date;
 /** Day of the week of a `YYYY-MM-DD` date, 0 (Sunday) to 6 (Saturday). */
 const weekday = (date: string) => new Date(date + 'T00:00:00Z').getUTCDay();
 const viewports = [

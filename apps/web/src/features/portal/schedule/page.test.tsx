@@ -69,6 +69,17 @@ describe('portal schedule page', () => {
     expect(within(places).getByText('Casey Parent')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Cancel booking: Fundamentals for Casey Parent' })).toBeDefined();
   });
+  it('lets class and member names with no break opportunity wrap instead of widening the page', async () => {
+    const long = 'U'.padEnd(56, 'x');
+    client.members.mockResolvedValue([{ id: parent, name: 'Pat Parent' }, { id: child, name: long }]);
+    client.schedule.mockResolvedValue([{ ...session, name: long + 'c', bookings: [booking] }]);
+    page();
+    // jsdom has no layout; the 360 px overflow itself is checked in the End-to-end suite (demo-join.spec.ts).
+    for (const element of [await screen.findByText(long + 'c'), within(await screen.findByRole('list', { name: 'Household places' })).getByText(long)]) {
+      expect(element.className).toContain('min-w-0');
+      expect(element.className).toContain('[overflow-wrap:anywhere]');
+    }
+  });
   it('hides cancel after the cutoff and reports engine conflicts without server details', async () => {
     client.schedule.mockResolvedValue([{ ...session, cancelBefore: '2026-10-29T15:00:00.000Z', bookings: [{ ...booking, memberId: parent }] },
       { ...session, id: 'second', name: 'Advanced', placesLeft: 0 }]);

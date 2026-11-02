@@ -14,20 +14,42 @@ export async function accessibleLayout(page: Page, info: TestInfo, name: string)
   const overflow = await page.evaluate(() => {
     const root = document.documentElement;
     if (root.scrollWidth <= root.clientWidth) return undefined;
-    let widest: { element: Element; right: number } | undefined;
-    for (const element of document.querySelectorAll('body *')) {
-      // Fixed elements and children of a clipping container can't widen the page.
-      let clipped = false;
-      for (let parent: Element | null = element; parent && parent !== document.body; parent = parent.parentElement) {
-        const style = getComputedStyle(parent);
-        if (style.position === 'fixed' || (parent !== element && style.overflowX !== 'visible')) { clipped = true; break; }
+    // Each element's clipping style is read once; ancestors are shared by many elements.
+    const styles = new Map<Element, { position: string; overflowX: string }>();
+    const styleOf = (element: Element) => {
+      let style = styles.get(element);
+      if (!style) { const computed = getComputedStyle(element); style = { position: computed.position, overflowX: computed.overflowX }; styles.set(element, style); }
+      return style;
+    };
+    // Fixed elements and children of a clipping container can't widen the page. An absolutely positioned element's
+    // containing block is its nearest positioned ancestor: clipping ancestors between the two don't clip it.
+    const clips = new Map<Element, boolean>();
+    const clipped = (element: Element): boolean => {
+      if (element === document.body) return false;
+      let known = clips.get(element);
+      if (known === undefined) {
+        const { position } = styleOf(element);
+        let parent = element.parentElement;
+        if (position === 'absolute') while (parent && parent !== document.body && styleOf(parent).position === 'static') parent = parent.parentElement;
+        known = position === 'fixed' || (!!parent && parent !== document.body && (styleOf(parent).overflowX !== 'visible' || clipped(parent)));
+        clips.set(element, known);
       }
+      return known;
+    };
+    const depth = (element: Element) => { let count = 0; for (let parent = element.parentElement; parent; parent = parent.parentElement) count++; return count; };
+    let widest: { element: Element; right: number; depth: number } | undefined;
+    for (const element of document.querySelectorAll('body *')) {
       const right = element.getBoundingClientRect().right;
-      if (!clipped && right > root.clientWidth && (!widest || right > widest.right)) widest = { element, right };
+      if (right <= root.clientWidth || clipped(element)) continue;
+      // An element and its wrappers end at the same edge: name the deepest one.
+      const level = depth(element);
+      if (!widest || Math.round(right) > Math.round(widest.right) || (Math.round(right) === Math.round(widest.right) && level > widest.depth)) widest = { element, right, depth: level };
     }
     if (!widest) return `page is ${root.scrollWidth}px wide in a ${root.clientWidth}px viewport (no element reaches past it)`;
-    const { element, right } = widest, label = element.getAttribute('aria-label') ?? element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 40);
-    return `${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}${element.getAttribute('role') ? `[role=${element.getAttribute('role')}]` : ''}`
+    const { element, right } = widest, label = element.getAttribute('aria-label') || element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 40);
+    // With no accessible name or text, the classes still point somewhere.
+    const classes = label ? '' : [...element.classList].slice(0, 2).map((name) => '.' + name).join('');
+    return `${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''}${classes}${element.getAttribute('role') ? `[role=${element.getAttribute('role')}]` : ''}`
       + `${label ? ` "${label}"` : ''} ends at ${Math.round(right)}px in a ${root.clientWidth}px viewport`;
   });
   expect(overflow, name + ': horizontal scroll').toBeUndefined();

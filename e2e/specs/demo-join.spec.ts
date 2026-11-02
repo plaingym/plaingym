@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
-import { test, expect, demoClient, type Client, type Person, type Program, type RecordId } from '../support.js';
+import { test, expect, demoClient, localDate, type Client, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, retryLimited, stripeOrigin } from '../portal.js';
 
@@ -40,9 +40,11 @@ async function portalClass(page: Page, button: string) {
   }
   return target;
 }
-/** Shows the admin schedule's week that holds an instant. The page opens on the browser's current week, which a class on the other side of a Sunday midnight in the gym's zone misses. */
+/** Shows the admin schedule's week that holds an instant. The page opens on the gym zone's current week, which a class on the other side of a Sunday midnight in that zone misses. */
 async function showWeekOf(page: Page, timezone: string, instant: number) {
-  await page.getByLabel('Week of', { exact: true }).fill(new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(instant));
+  const weekOf = page.getByLabel('Week of', { exact: true }), date = localDate(instant, timezone);
+  await weekOf.fill(date);
+  await expect(weekOf).toHaveValue(date);
 }
 function newVisitor(): Visitor {
   const lastName = 'Visitor' + randomBytes(3).toString('hex');
@@ -216,6 +218,30 @@ test("the portal schedule's booking actions keep their visible text in their acc
   const result = await new AxeBuilder({ page }).withRules(['label-content-name-mismatch']).analyze();
   const mismatched = result.violations.flatMap(violation => violation.nodes.map(node => node.html));
   expect(mismatched).toEqual([]);
+});
+
+test("the portal schedule wraps a class name with no break opportunity inside a 360 px screen", async ({ page, sandboxes }, info) => {
+  const sandbox = sandboxes[0]!, owner = await demoClient(sandbox, 'owner'), student = await demoClient(sandbox, 'student');
+  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
+  const minute = 60_000, startsAt = Math.ceil((Date.now() + 26 * 60 * minute) / (5 * minute)) * 5 * minute;
+  const tag = randomBytes(2).toString('hex'), name = `Unbreakable${tag}`.padEnd(56, 'x');
+  expect(name).toHaveLength(56);
+  const session = (await owner.json<{ data: Session }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
+    endsAt: new Date(startsAt + 60 * minute).toISOString(), coachId: null, capacity: 5, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
+  // A household member whose name has no break opportunity either, booked into the class: the portal lists the household's places by member name.
+  const alex = (await owner.json<{ data: Person[] }>('/api/members?search=Student')).data.find((row) => row.firstName === 'Alex' && row.lastName === 'Student');
+  expect(alex, 'the demo student').toBeDefined();
+  const longMember = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: alex!.householdId, firstName: 'M',
+    lastName: `Member${tag}`.padEnd(55, 'y'), status: 'active' })).data;
+  await owner.json('/api/bookings', 'POST', { memberId: longMember.id, sessionId: session.id, allowWaitlist: false });
+  await student.browser(page.context());
+  await page.setViewportSize(phone);
+  await page.goto(sandbox.origin + '/portal/schedule');
+  await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
+  const heading = page.getByText(name, { exact: true }), loading = page.getByText('Loading classes…', { exact: true });
+  await expect(loading).toHaveCount(0);
+  await expect(heading).toBeVisible();
+  await accessibleLayout(page, info, 'portal-schedule-long-name');
 });
 
 /** A kiosk tablet whose camera sees the portal's QR image: the kiosk decodes real frames, as from a phone screen. */
