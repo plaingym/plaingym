@@ -14,7 +14,7 @@ export const shellMessages = {
   error: 'Something went wrong. Please try again.', home: 'Go to sign in',
   skip: 'Skip to content', menu: 'Menu', navigation: 'Gym navigation',
   signOut: 'Sign out', noAccess: 'Your account does not have staff access.',
-  admin: 'Gym administration', closeMenu: 'Close menu', account: 'Account', signedInAs: 'Signed in as',
+  admin: 'Gym administration', closeMenu: 'Close menu', account: 'Account', signedInAs: 'Signed in as', signedIn: 'Signed in',
   discardHelp: 'Discard your unsaved changes?', keepEditing: 'Keep editing', discard: 'Discard changes',
   selectSuggestion: 'Select a household from the suggestions.', suggestionsHelp: 'Use the arrow keys and Enter to select.',
   noSuggestions: 'No matching households. Try another name.',

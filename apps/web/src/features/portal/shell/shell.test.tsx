@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory } from '@tanstack/react-router';
 import type { NavigationEntry } from '@plaingym/shared';
@@ -43,7 +44,7 @@ it('loads member context, renders the portal, and clears access when signing out
 });
 
 const ids = { user: '00000000-0000-7000-8000-000000000001', first: '00000000-0000-7000-8000-000000000002', second: '00000000-0000-7000-8000-000000000003', member: '00000000-0000-7000-8000-000000000004' };
-function portal(initial: string | null) {
+function portal(initial: string | null, { path = '/portal', hold = false }: { path?: string; hold?: boolean } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   let current = initial;
   const households = [{ householdId: ids.first, name: 'Alder household', role: 'payer' }, { householdId: ids.second, name: 'Birch household', role: 'member' }];
@@ -56,10 +57,19 @@ function portal(initial: string | null) {
     return new Response(null, { status: 404 });
   });
   vi.stubGlobal('fetch', fetcher);
-  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: current === ids.second ? 'Noa Second' : 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
-  render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }))} />);
+  // With `hold`, every bootstrap load after the first waits until `release()`, so a test can act while a refetch is in flight.
+  let loads = 0, release = () => undefined as void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const services: ShellServices = { loadBootstrap: async () => {
+    if (hold && loads++ > 0) await gate;
+    return { gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: current === ids.second ? 'Noa Second' : 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } };
+  }, signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
+  render(<App services={services} router={router} />);
   const selections = () => fetcher.mock.calls.filter(([path]) => path === '/api/portal/households/current').map(([, init]) => JSON.parse(String(init!.body)));
-  return { fetcher, selections };
+  // What the server does on its own, such as falling back to another household when a link is revoked.
+  const serverOpens = (householdId: string) => { current = householdId; };
+  return { fetcher, selections, router, release, serverOpens };
 }
 it('asks a login with several households to choose one before showing the portal', async () => {
   const f = portal(null), user = userEvent.setup();
@@ -83,6 +93,38 @@ it('switches households from the header and reloads the portal for the new house
   // The scope follows the household that is open: the same person is only a member of the second one.
   // and so does the name, which the server derives from the open household, not a cached copy from the first one.
   await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Noa Second · Member'));
+});
+it('updates the header name when the server opens another household on its own', async () => {
+  const f = portal(ids.first);
+  expect(await screen.findByRole('heading', { name: 'Welcome to your member portal' })).toBeDefined();
+  await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Test User · Account holder'));
+  // A revoked link makes the server fall back to the other household; the next households load reports it.
+  f.serverOpens(ids.second);
+  act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
+  await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Noa Second · Member'));
+  expect(f.selections()).toEqual([]);
+});
+it('navigates a household switch home before the name refetch settles', async () => {
+  const f = portal(ids.first, { path: '/portal/schedule', hold: true }), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  expect(f.router.state.location.pathname).toBe('/portal/schedule');
+  await user.selectOptions(screen.getByRole('combobox'), ids.second);
+  // The bootstrap refetch is held, yet the switch has already gone home.
+  await waitFor(() => expect(f.router.state.location.pathname).toBe('/portal'));
+  expect(screen.getByTestId('signed-in-identity').textContent).toContain('Test User');
+  f.release();
+  await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Noa Second · Member'));
+});
+it('shows a generic label, never an ID, for a session the server could not name', async () => {
+  vi.stubGlobal('scrollTo', vi.fn());
+  const householdId = ids.first;
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(path === '/api/demo' ? { data: { mode: 'disabled' } }
+    : path === '/api/portal/households' ? { data: { current: householdId, households: [{ householdId, name: 'Only household', role: 'payer' }] } }
+    : { data: { role: 'payer', householdId, memberId: null } })));
+  const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: null, roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
+  render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }))} />);
+  await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Signed in · Account holder'));
+  expect(document.body.textContent).not.toContain(ids.user);
 });
 it('completes a claim from the login-link callback and removes its code from the address bar', async () => {
   vi.stubGlobal('scrollTo', vi.fn());

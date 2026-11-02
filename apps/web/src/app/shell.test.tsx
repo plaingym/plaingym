@@ -180,6 +180,14 @@ describe('admin shell', () => {
     expect(identity.closest('nav, #account-menu')).toBeNull();
     expect(within(identity).getByText('Dana Owner').className).toContain('truncate');
   });
+  it('shows a generic label, never the user ID, for a session the server could not name', async () => {
+    const state = { ...anonymous, session: { userId: 'user-id-1', displayName: null, roles: ['coach'] as const, member: false } };
+    const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });
+    render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ['/'] }) })} />);
+    expect((await screen.findByTestId('signed-in-identity')).textContent).toContain('Signed in · Coach');
+    expect(document.body.textContent).not.toContain('user-id-1');
+    expect(screen.getByText(/^Signed in \(Coach\)$/)).toBeDefined();
+  });
   it('closes the phone menu after navigating', async () => {
     const state = { ...anonymous, session: { userId: 'coach', displayName: 'Test User', roles: ['coach'] as const, member: false } };
     const root = createRootRoute({ component: () => <AdminShell state={state} entries={createWebRegistries([{ adminNav: nav }]).adminNav.all()} onSignOut={vi.fn()}><p>Child content</p></AdminShell> });

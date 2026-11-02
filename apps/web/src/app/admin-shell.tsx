@@ -7,6 +7,7 @@ import { t } from '../lib/i18n.js';
 import { Button } from '../components/ui/button.js';
 import { ChevronDownIcon, CloseIcon, MenuIcon, UserIcon } from '../components/ui/icons.js';
 import type { ShellBootstrap, ShellSession } from './services.js';
+import { sessionName } from './identity.js';
 import { useDemoSandbox } from '../features/demo/notice.js';
 export function visibleAdminNavigation(
   entries: readonly NavigationEntry[], session: ShellSession, enabledModules: readonly string[],
@@ -41,7 +42,7 @@ function AccountMenu({ session, onSignOut, signingOut }: { session: ShellSession
     <div ref={panel} id="account-menu" hidden={!open}
       className="absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-card p-2 text-card-foreground shadow-lg">
       <p className="px-3 pb-2 pt-1 text-sm text-muted-foreground">
-        {t('shell/shell:signedInAs')} <span className="break-words font-medium text-foreground">{session.displayName}</span>{session.roles.length > 0 && ` (${roleNames(session)})`}
+        {session.displayName === null ? t('shell/shell:signedIn') : <>{t('shell/shell:signedInAs')} <span className="break-words font-medium text-foreground">{session.displayName}</span></>}{session.roles.length > 0 && ` (${roleNames(session)})`}
       </p>
       <Button variant="ghost" className="w-full justify-start" onClick={onSignOut} disabled={signingOut}>{t('shell/shell:signOut')}</Button>
     </div>
@@ -74,7 +75,7 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
           {/* A long name gives way to its ellipsis; the roles stay. */}
           <p className="flex min-w-0 text-xs text-muted-foreground" data-testid="signed-in-identity">
             <span className="hidden shrink-0 whitespace-pre sm:inline">{t('shell/shell:admin')} · </span>
-            <span className="truncate font-medium text-foreground">{state.session.displayName}</span>
+            <span className="truncate font-medium text-foreground">{sessionName(state.session)}</span>
             {state.session.roles.length > 0 && <span className="shrink-0 whitespace-pre"> · {roleNames(state.session)}</span>}
           </p>
         </div>

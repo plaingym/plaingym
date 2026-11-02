@@ -5,7 +5,9 @@ The portal first loads the signed-in user's households. A login with one
 household goes straight in; a login with several sees a household picker and,
 once one is chosen, a switcher in the header. Choosing or switching stores the
 household with the session on the server, discards every cached portal query and
-returns to the portal home, so data from two households is never shown together.
+returns to the portal home without waiting for the refetch it starts, so data from two households is never shown together.
+Whenever the open household changes, including when the server falls back to another one
+because a link was revoked, the shell refetches the bootstrap, so the name follows it.
 The header shows the gym's name and, under it, the signed-in person's name and their
 scope in the open household (account holder or member), so switching logins or
 households never loses track of who is signed in; a long name truncates, the scope stays.

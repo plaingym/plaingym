@@ -51,7 +51,11 @@ function portalClaimCallback(value: string | null, origin: URL): string | null {
 export interface BoundSession extends Session {
   readonly sessionId: string;
   readonly householdId: string | null;
-  /** The login's own name (its address when the name is blank); a gym may know the person by another. */
+  /**
+   * What a gym may call the login when its own records have no name: the login's own name, or its address when the name
+   * is blank or the install is `multi` (there `auth_user.name` is install-wide, whatever the first gym to provision the
+   * address typed, so it may be another gym's). A gym may know the person by another name still.
+   */
   readonly userName: string;
 }
 export const authEndpoints = [
@@ -144,7 +148,7 @@ export function createAuthService(options: AuthServiceOptions) {
           if (!session) return null;
           const householdId = (session.session as { householdId?: unknown }).householdId;
           return { userId: session.user.id, sessionId: session.session.id, householdId: typeof householdId === 'string' ? householdId : null,
-            userName: session.user.name.trim() || session.user.email };
+            userName: (config.tenancy === 'multi' ? '' : session.user.name.trim()) || session.user.email };
         },
         async handler(request: Request): Promise<Response> {
           assertNoTransaction('auth.handler');
