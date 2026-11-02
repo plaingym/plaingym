@@ -221,7 +221,9 @@ test("the portal schedule's booking actions keep their visible text in their acc
 });
 
 test("the portal schedule wraps a class name with no break opportunity inside a 360 px screen", async ({ page, sandboxes }, info) => {
-  const sandbox = sandboxes[0]!, owner = await demoClient(sandbox, 'owner'), student = await demoClient(sandbox, 'student');
+  // The second sandbox: this adds a member, a class and a booking to its student household, and the household isolation
+  // spec takes the first sandbox's student household as seeded.
+  const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner'), student = await demoClient(sandbox, 'student');
   const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
   const minute = 60_000, startsAt = Math.ceil((Date.now() + 26 * 60 * minute) / (5 * minute)) * 5 * minute;
   const tag = randomBytes(2).toString('hex'), name = `Unbreakable${tag}`.padEnd(56, 'x');
@@ -242,7 +244,7 @@ test("the portal schedule wraps a class name with no break opportunity inside a 
   await expect(loading).toHaveCount(0);
   await expect(heading).toBeVisible();
   // The member's own name, not the generic "Member" label, so its wrapping is what the layout check sees.
-  await expect(page.getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
+  await expect(page.getByRole('list', { name: 'Household places' }).getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
   await accessibleLayout(page, info, 'portal-schedule-long-name');
 });
 
