@@ -39,13 +39,17 @@ web interface. Email stays in its outbox, uploads are disabled, and it expires
 after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
 use a full member name and PIN `2468`.
 
-Optional billing credentials are listed in [the environment template](.env.example).
-Add `DEMO_STRIPE_TEST_KEY` and `DEMO_STRIPE_WEBHOOK_SECRET` to the installation's
-root-only `.env`, then recreate the app with its two Compose files. Use a secret
-or restricted **test** key and the signing secret for one test-account endpoint
-at `https://<GYM_HOSTNAME>/webhooks/stripe`; subscribe to
-[`webhookEvents`](../../apps/server/src/infra/payments/setup.ts). Never use a live
-key. The installer does not prompt for these optional values. With no key,
+Demo billing is optional ([the environment template](.env.example) lists the
+values). After the required inputs, an interactive install asks once whether to set
+it up (default no). If yes, it reads `DEMO_STRIPE_TEST_KEY` and
+`DEMO_STRIPE_WEBHOOK_SECRET` with hidden prompts; an unattended install takes both
+from the environment and never asks. Use a secret or restricted **test** key
+(`sk_test_…` or `rk_test_…`) and the `whsec_…` signing secret for one test-account
+endpoint at `https://<GYM_HOSTNAME>/webhooks/stripe`; subscribe to
+[`webhookEvents`](../../apps/server/src/infra/payments/setup.ts). A live key is
+refused before anything is written, and no value is ever printed. A re-run keeps
+saved values; a re-run on an install without them can add them (it asks again, or
+reads the environment) and recreates the app. With no key,
 sandboxes still work, log the skipped billing seed, and show billing as
 unconfigured. See the [demo mode guide](../../apps/server/src/demo/README.md)
 for dispatch and credential handling.

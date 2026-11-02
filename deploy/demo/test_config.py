@@ -106,5 +106,145 @@ class PreflightTests(unittest.TestCase):
             self.assertNotEqual(config.read_env(output)["APP_PASSWORD"], config.read_env(output)["MAINTENANCE_PASSWORD"])
 
 
+KEY, SECRET = "sk_test_FAKEKEY123", "whsec_FAKESECRET456"
+
+
+class BillingInputTests(unittest.TestCase):
+    """Fake terminal and environment only; no real Stripe key, not even a test one."""
+
+    def run_main(self, directory, env=None, answers=(), terminal=True, existing=True):
+        saved = Path(directory) / ".env"
+        output = Path(directory) / "next"
+        asked = []
+        replies = list(answers)
+
+        def prompt(label, secret=False):
+            asked.append((label, secret))
+            return replies.pop(0)
+        args = ["config.py", "--existing", str(saved if existing else Path(directory) / "none"), "--output", str(output)]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, {**inputs(), **(env or {})}, clear=True), patch.object(config, "dns_check"), \
+                patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                patch.object(config, "prompt", prompt), patch.object(config, "has_terminal", return_value=terminal), \
+                patch.object(config.sys, "argv", args), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                config.main()
+            finally:
+                self.output = out.getvalue() + err.getvalue()
+        return output, asked
+
+    def install(self, directory, output):
+        (Path(directory) / ".env").write_bytes(output.read_bytes())
+
+    def assertQuiet(self):
+        for value in (KEY, SECRET):
+            self.assertNotIn(value, self.output)
+
+    def test_run_without_billing_asks_once_and_writes_no_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, asked = self.run_main(directory, answers=["n"], existing=False)
+            self.assertEqual(asked, [("Set up demo billing with a Stripe test key? [y/N]", False)])
+            self.assertNotIn("DEMO_STRIPE", output.read_text())
+
+    def test_unattended_run_without_billing_never_prompts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, asked = self.run_main(directory, terminal=False, existing=False)
+            self.assertEqual(asked, [])
+            self.assertNotIn("DEMO_STRIPE", output.read_text())
+
+    def test_prompts_read_both_values_hidden(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, asked = self.run_main(directory, answers=["y", KEY, SECRET], existing=False)
+            self.assertEqual([secret for _, secret in asked], [False, True, True])
+            written = config.read_env(output)
+            self.assertEqual((written["DEMO_STRIPE_TEST_KEY"], written["DEMO_STRIPE_WEBHOOK_SECRET"]), (KEY, SECRET))
+            self.assertQuiet()
+
+    def test_environment_supplies_both_without_prompting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, asked = self.run_main(directory, env={"DEMO_STRIPE_TEST_KEY": "rk_test_FAKE9", "DEMO_STRIPE_WEBHOOK_SECRET": SECRET},
+                                          terminal=False, existing=False)
+            self.assertEqual(asked, [])
+            self.assertEqual(config.read_env(output)["DEMO_STRIPE_TEST_KEY"], "rk_test_FAKE9")
+            self.assertQuiet()
+
+    def test_live_key_is_refused_with_nothing_written_or_echoed(self):
+        live = "sk_live_FAKELIVE789"
+        for env, answers in (({"DEMO_STRIPE_TEST_KEY": live, "DEMO_STRIPE_WEBHOOK_SECRET": SECRET}, []),
+                             ({}, ["y", live, SECRET])):
+            with self.subTest(env=bool(env)), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(ValueError) as caught:
+                    self.run_main(directory, env=env, answers=answers, existing=False)
+                self.assertFalse((Path(directory) / "next").exists())
+                self.assertNotIn(live, str(caught.exception) + self.output)
+
+    def test_missing_or_malformed_secret_is_refused(self):
+        for secret in ("", "whsec_", "not-a-secret", "whsec_bad value", "sk_test_FAKEKEY123"):
+            with self.subTest(secret=secret), tempfile.TemporaryDirectory() as directory:
+                env = {"DEMO_STRIPE_TEST_KEY": KEY, "DEMO_STRIPE_WEBHOOK_SECRET": secret}
+                with self.assertRaises(ValueError) as caught:
+                    self.run_main(directory, env=env, terminal=False, existing=False)
+                self.assertFalse((Path(directory) / "next").exists())
+                if len(secret) > len("whsec_"):
+                    self.assertNotIn(secret, str(caught.exception))
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            self.run_main(directory, env={"DEMO_STRIPE_WEBHOOK_SECRET": SECRET}, terminal=False, existing=False)
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
+            self.run_main(directory, env={"DEMO_STRIPE_TEST_KEY": "pk_test_FAKE"}, terminal=False, existing=False)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file permissions require Linux/WSL.")
+    def test_rerun_keeps_saved_values_and_does_not_ask(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, _ = self.run_main(directory, answers=["y", KEY, SECRET], existing=False)
+            self.install(directory, output)
+            original = output.read_bytes()
+            env = {"DEMO_STRIPE_TEST_KEY": "sk_test_OTHER", "DEMO_STRIPE_WEBHOOK_SECRET": "whsec_OTHER"}
+            output, asked = self.run_main(directory, env=env)
+            self.assertEqual(asked, [])
+            self.assertEqual(original, output.read_bytes())
+            self.assertQuiet()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file permissions require Linux/WSL.")
+    def test_rerun_without_billing_can_add_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, _ = self.run_main(directory, answers=["n"], existing=False)
+            self.install(directory, output)
+            before = config.read_env(output)
+            output, _ = self.run_main(directory, answers=["y", KEY, SECRET])
+            after = config.read_env(output)
+            self.assertEqual((after["DEMO_STRIPE_TEST_KEY"], after["DEMO_STRIPE_WEBHOOK_SECRET"]), (KEY, SECRET))
+            self.assertEqual({k: v for k, v in after.items() if not k.startswith("DEMO_STRIPE")}, before)
+            self.assertQuiet()
+
+    def test_closed_terminal_at_a_hidden_prompt_fails_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            error = io.StringIO()
+            args = ["config.py", "--existing", str(Path(directory) / "none"), "--output", str(Path(directory) / "next")]
+            answers = iter(["y"])
+
+            def prompt(label, secret=False):
+                try:
+                    return next(answers)
+                except StopIteration:
+                    raise EOFError from None
+            with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "prompt", prompt), \
+                    patch.object(config, "has_terminal", return_value=True), patch.object(config.sys, "argv", args), \
+                    contextlib.redirect_stderr(error), self.assertRaises(SystemExit):
+                config.cli()
+            self.assertIn("Demo preflight failed: EOFError", error.getvalue())
+            self.assertFalse((Path(directory) / "next").exists())
+
+    def test_check_only_never_prompts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            asked = []
+            args = ["config.py", "--existing", str(Path(directory) / "none"), "--check-only"]
+            with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "dns_check"), \
+                    patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                    patch.object(config, "prompt", lambda *a, **k: asked.append(a)), patch.object(config, "has_terminal", return_value=True), \
+                    patch.object(config.sys, "argv", args), contextlib.redirect_stdout(io.StringIO()):
+                config.main()
+            self.assertEqual(asked, [])
+
+
 if __name__ == "__main__":
     unittest.main()

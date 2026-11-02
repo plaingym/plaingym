@@ -26,6 +26,7 @@ INPUTS = ("GYM_HOSTNAME", "ACME_EMAIL", "APP_IMAGE", "CADDY_IMAGE", "CLOUDFLARE_
           "UPLOADS_S3_ENDPOINT", "UPLOADS_S3_BUCKET", "UPLOADS_S3_ACCESS_KEY_ID", "UPLOADS_S3_SECRET_ACCESS_KEY")
 LABELS = ("Demo domain", "ACME email", "App image (version or digest)", "Cloudflare Caddy image (version or digest)",
           "Cloudflare DNS API token", "S3 endpoint", "S3 bucket", "S3 access key", "S3 secret key")
+BILLING_KEY, BILLING_SECRET = "DEMO_STRIPE_TEST_KEY", "DEMO_STRIPE_WEBHOOK_SECRET"
 SECRET_INPUTS = {"CLOUDFLARE_API_TOKEN", "UPLOADS_S3_ACCESS_KEY_ID", "UPLOADS_S3_SECRET_ACCESS_KEY"}
 
 
@@ -69,6 +70,52 @@ def validate(config):
         raise ValueError("ACME_CA must be an HTTPS directory URL.")
     if not re.fullmatch(r"[1-9][0-9]*", config.get("DEMO_SNAPSHOT_RETENTION", "3")):
         raise ValueError("Snapshot retention must be a positive integer.")
+    validate_billing(config)
+
+
+def validate_billing(config):
+    """Same patterns as the app's demo boot check (apps/server/src/demo/config.ts). Never echoes a value."""
+    key, secret = config.get(BILLING_KEY, ""), config.get(BILLING_SECRET, "")
+    if any(re.search(r"(?:sk|rk|pk)_live_", value, re.IGNORECASE) for value in (key, secret)):
+        raise ValueError("Demo billing refuses live Stripe keys; use a test-mode key")
+    if not key and not secret:
+        return
+    if not re.fullmatch(r"(?:sk|rk)_test_[A-Za-z0-9]+", key):
+        raise ValueError(f"{BILLING_KEY} requires a Stripe test-mode secret or restricted key (sk_test_ or rk_test_)")
+    if not re.fullmatch(r"whsec_[A-Za-z0-9]+", secret):
+        raise ValueError(f"{BILLING_SECRET} must be the endpoint's whsec_ signing secret, set together with the key")
+
+
+def has_terminal():
+    if sys.stdin.isatty():
+        return True
+    try:
+        with open("/dev/tty"):
+            return True
+    except OSError:
+        return False  # present but unusable without a controlling terminal (CI, containers)
+
+
+def prompt(label, secret=False):
+    if secret:
+        return getpass.getpass(label + ": ")
+    with open("/dev/tty", "r+") as terminal:
+        terminal.write(label + ": ")
+        terminal.flush()
+        return terminal.readline().strip()
+
+
+def billing_inputs(config, ask):
+    """Keep saved values; else take both from the environment; else (interactive only) ask once, default no."""
+    if config.get(BILLING_KEY):
+        return
+    values = {name: os.environ.get(name, "") for name in (BILLING_KEY, BILLING_SECRET)}
+    if not any(values.values()):
+        if not ask or not has_terminal() or prompt("Set up demo billing with a Stripe test key? [y/N]").lower() not in ("y", "yes"):
+            return
+        values = {BILLING_KEY: prompt("Stripe test secret key (sk_test_ or rk_test_)", True).strip(),
+                  BILLING_SECRET: prompt("Stripe webhook signing secret (whsec_)", True).strip()}
+    config.update(values)
 
 
 def request(url, method="GET", body=None, headers=None):
@@ -174,16 +221,11 @@ def main():
     for key, label in zip(INPUTS, LABELS):
         value = existing.get(key) or os.environ.get(key)
         if not value:
-            if not sys.stdin.isatty() and not Path("/dev/tty").exists():
+            if not has_terminal():
                 raise ValueError(f"Missing {key}; use an interactive terminal or set it in the environment.")
-            if key in SECRET_INPUTS:
-                value = getpass.getpass(label + ": ")
-            else:
-                with open("/dev/tty", "r+") as terminal:
-                    terminal.write(label + ": ")
-                    terminal.flush()
-                    value = terminal.readline().strip()
+            value = prompt(label, key in SECRET_INPUTS)
         config[key] = value
+    billing_inputs(config, ask=not args.check_only)
     config.setdefault("UPLOADS_S3_REGION", os.environ.get("UPLOADS_S3_REGION", "auto"))
     config.setdefault("ACME_CA", os.environ.get("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"))
     config.setdefault("DEMO_SNAPSHOT_RETENTION", os.environ.get("DEMO_SNAPSHOT_RETENTION", "3"))
@@ -206,10 +248,14 @@ def main():
     args.output.chmod(0o600)
 
 
-if __name__ == "__main__":
+def cli():
     try:
         main()
-    except (ValueError, OSError, KeyError) as error:
+    except (ValueError, OSError, KeyError, EOFError) as error:
         # API responses and request headers can contain credentials. Never echo them.
         print("Demo preflight failed: " + (str(error) if isinstance(error, ValueError) else type(error).__name__) + ". Check DNS, token scope and bucket credentials; no host configuration was changed.", file=sys.stderr)
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()

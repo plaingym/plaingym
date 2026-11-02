@@ -135,6 +135,17 @@ if [ "$DEMO_LOCAL_TEST" = true ]; then caddyfile=Caddyfile.local.conf; else cadd
 copy_deploy "$SOURCE/$caddyfile" Caddyfile 0644
 # shellcheck source=/dev/null
 . "$ROOT/lib.sh"
+# A re-run never replaces the saved .env, so demo billing values given now are added to it here.
+if [ "$refreshing" = true ] && [ -z "$(read_env DEMO_STRIPE_TEST_KEY)" ]; then
+  billing=$(awk -F= '($1 == "DEMO_STRIPE_TEST_KEY" || $1 == "DEMO_STRIPE_WEBHOOK_SECRET") && $2 != ""' "$inputs")
+  if [ -n "$billing" ]; then
+    ( umask 077
+      awk -F= '$1 != "DEMO_STRIPE_TEST_KEY" && $1 != "DEMO_STRIPE_WEBHOOK_SECRET"' "$ROOT/.env" > "$ROOT/.env.next"
+      printf '%s\n' "$billing" >> "$ROOT/.env.next" )
+    mv "$ROOT/.env.next" "$ROOT/.env"
+  fi
+  billing=
+fi
 compose pull --policy missing postgres
 DEMO_TARGET_CADDY_IMAGE="$desired_caddy" compose run --rm --no-deps -T caddy \
   caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
