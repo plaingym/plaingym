@@ -17,8 +17,8 @@ import { InvoiceDetails, type InvoiceAccess } from './detail.js';
 import { OneOffEditor } from './editor.js';
 import { money, text } from './format.js';
 
-export function InvoiceList({ gymId, householdId, access, client = invoiceClient }: {
-  gymId: string; householdId?: string; access: InvoiceAccess; client?: InvoiceClient;
+export function InvoiceList({ gymId, householdId, access, custom, client = invoiceClient }: {
+  gymId: string; householdId?: string; access: InvoiceAccess; custom: boolean; client?: InvoiceClient;
 }) {
   const cache = useQueryClient();
   const [status, setStatus] = useState<InvoiceStatus | ''>(''), [offset, setOffset] = useState(0);
@@ -45,7 +45,7 @@ export function InvoiceList({ gymId, householdId, access, client = invoiceClient
       <span>{Math.min(offset + 1, rows.data.pagination.total)}–{Math.min(offset + 25, rows.data.pagination.total)} / {rows.data.pagination.total}</span>
       <Button variant="outline" disabled={offset + 25 >= rows.data.pagination.total} onClick={() => setOffset(v => v + 25)}>{text('next')}</Button>
     </div>}
-    {create && <OneOffEditor gymId={gymId} {...(householdId ? { householdId } : {})} custom={access.custom} client={client} close={() => setCreate(false)} created={invoiceId => {
+    {create && <OneOffEditor gymId={gymId} {...(householdId ? { householdId } : {})} custom={custom} client={client} close={() => setCreate(false)} created={invoiceId => {
       setCreate(false); setSelected(invoiceId); void cache.invalidateQueries({ queryKey: ['billing', gymId] });
     }}/>}
     {selected && <Dialog size="wide" title={text('invoice')} closeLabel={text('close')} onClose={() => setSelected(null)}>
@@ -60,28 +60,27 @@ function HouseholdName({ gymId, householdId, client }: { gymId: string; househol
 function useInvoiceAccess() {
   const bootstrap = useBootstrap(), roles = bootstrap.data?.session?.roles ?? [];
   return { bootstrap, allowed: canStaff(roles, 'billing.read'), access: {
-    record: canStaff(roles, 'payments.record'), refund: canStaff(roles, 'refunds.create'), links: canStaff(roles, 'links.send'),
-    custom: canStaff(roles, 'payments.custom'),
-  } };
+    record: canStaff(roles, 'payments.record'), refund: canStaff(roles, 'refunds.create'), links: canStaff(roles, 'links.send')
+  }, custom: canStaff(roles, 'payments.custom') };
 }
 export function InvoicePage({ invoiceId }: { invoiceId?: string }) {
-  const { bootstrap, access, allowed } = useInvoiceAccess();
+  const { bootstrap, access, custom, allowed } = useInvoiceAccess();
   if (bootstrap.isPending) return <Page><LoadingState/></Page>;
   if (bootstrap.isError) return <Page><ErrorState onRetry={() => void bootstrap.refetch()}/></Page>;
   if (!bootstrap.data || !allowed) return <Page><EmptyState title={text('denied')}/></Page>;
   return <Page><PageHeader title={text(invoiceId ? 'invoice' : 'title')}/>
     {invoiceId ? <InvoiceDetails key={invoiceId} gymId={bootstrap.data.gym.id} invoiceId={invoiceId} access={access}/>
-      : <InvoiceList gymId={bootstrap.data.gym.id} access={access}/>}
+      : <InvoiceList gymId={bootstrap.data.gym.id} access={access} custom={custom}/>}
   </Page>;
 }
 export function InvoiceTab({ memberId }: ExtensionViewProps) {
-  const { bootstrap, access, allowed } = useInvoiceAccess();
+  const { bootstrap, access, custom, allowed } = useInvoiceAccess();
   const gymId = bootstrap.data?.gym.id;
   const member = useQuery({ queryKey: ['billing', gymId, 'invoice-member', memberId], queryFn: () => invoiceClient.member(memberId!), enabled: !!gymId && !!memberId && allowed });
   if (bootstrap.isPending || member.isPending) return <LoadingState/>;
   if (!gymId || !allowed || !memberId) return null;
   if (member.isError) return <ErrorState onRetry={() => void member.refetch()}/>;
   return <PageSection title={text('title')} description={text('householdInvoices')}>
-    <InvoiceList key={member.data.householdId} gymId={gymId} householdId={member.data.householdId} access={access}/>
+    <InvoiceList key={member.data.householdId} gymId={gymId} householdId={member.data.householdId} access={access} custom={custom}/>
   </PageSection>;
 }

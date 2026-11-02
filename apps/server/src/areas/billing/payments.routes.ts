@@ -17,7 +17,8 @@ export function createPaymentRoutes(service?: PaymentService) {
       if (request.source === 'custom' && !(ctx.principal.kind === 'staff' && canStaff(ctx.principal.roles, 'payments.custom')))
         throw new AppError('forbidden', 'Access denied');
       return { data: await read().createOneOff(billingMutation(ctx), request) };
-    }),
+    }, 'Creates a one-off invoice. Requires `payments.record`. A request with `source: "charge_type"` bills an active charge type; '
+      + 'a request with `source: "custom"` bills any amount and also requires `payments.custom`, otherwise the answer is 403.'),
     billingRoute(c.billingContracts.chargeInvoice, async (ctx, p) => ({ data: await read().charge(billingMutation(ctx), p.invoiceId!) })),
     billingRoute(c.releaseInvoiceHoldContract, async (ctx, p) => ({ data: await read().releaseHold(billingMutation(ctx), p.invoiceId!) })),
     billingRoute(c.billingContracts.recordManualPayment, async (ctx, p, _q, b) => ({ data: await read().manualPayment(billingMutation(ctx), p.invoiceId!, c.recordManualPaymentRequestSchema.parse(b)) })),

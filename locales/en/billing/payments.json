@@ -13,6 +13,7 @@
   "chargeType": "Charge type",
   "custom": "Custom amount",
   "chooseCharge": "Choose a charge type",
+  "noChargeTypesManager": "No charge types are set up. Add one in settings, or use a custom amount.",
   "noChargeTypes": "No charge types are set up. Ask an owner or admin to add one.",
   "description": "Description",
   "amount": "Amount",

@@ -23,7 +23,7 @@ const payment: Payment = { id: id(4), createdAt, invoiceId: invoice.id, amountCe
 const card: MaskedPaymentMethod = { id: id(5), createdAt, householdId: home, brand: 'Visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true, revokedAt: null };
 const settings: GymSettings = { id: gymId, name: 'Gym', slug: 'gym', currency: 'USD', timezone: 'America/Vancouver', address: {}, branding: {}, websiteEnabled: false, existingSiteUrl: null,
   bookingWindowDays: 7, cancellationCutoffMinutes: 0, openMatCountsAsClass: false, billingEnabled: true, memberEmailsEnabled: true, retryDays: [3, 7], dropInChargeTypeId: null, revision: 1, createdAt, updatedAt: createdAt };
-const desk = { record: true, refund: false, links: true, custom: false }, admin = { ...desk, refund: true, custom: true };
+const desk = { record: true, refund: false, links: true }, admin = { ...desk, refund: true };
 function transport(initial: Partial<InvoiceDetail> = {}) {
   const detail: InvoiceDetail = { invoice, lineItems: [{ id: id(7), createdAt, householdId: home, invoiceId: invoice.id, kind: 'charge', description: 'Drop-in',
     membershipId: null, chargeTypeId: null, amountCents: 2500, currency: 'USD', quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null }], payments: [], refunds: [], ...initial };
@@ -58,7 +58,7 @@ function start(view: React.ReactNode) {
 afterEach(cleanup);
 describe('invoice and household payment UI', () => {
   it('selects the household in one searchable control and submits that household on a one-off invoice', async () => {
-    const f = transport(); start(<InvoiceList gymId={gymId} access={admin} client={f.client} />);
+    const f = transport(); start(<InvoiceList gymId={gymId} access={admin} custom={true} client={f.client} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog'), combo = await within(dialog).findByRole('combobox', { name: 'Search households' });
     fireEvent.change(combo, { target: { value: 'Rivera' } }); fireEvent.focus(combo);
@@ -75,7 +75,7 @@ describe('invoice and household payment UI', () => {
   });
   it('keeps receipt and payment steps inside the invoice dialog, restores focus and preserves charge errors', async () => {
     const f = transport({ invoice: { ...invoice, status: 'paid', paidAt: createdAt }, payments: [payment] });
-    start(<InvoiceList gymId={gymId} access={admin} client={f.client} />);
+    start(<InvoiceList gymId={gymId} access={admin} custom={true} client={f.client} />);
     fireEvent.click(await screen.findByRole('button', { name: 'View invoice 42' }));
     const receipt = await screen.findByRole('button', { name: 'View receipt' }); receipt.focus(); fireEvent.click(receipt);
     expect(screen.getAllByRole('dialog')).toHaveLength(1); expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'View receipt' }));
@@ -96,7 +96,7 @@ describe('invoice and household payment UI', () => {
     expect(registration.memberTabs?.[0]).toMatchObject({ enabled: true });
   });
   it('scopes the member invoice list to its household, filters and paginates', async () => {
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} client={f.client}/>);
     await screen.findByRole('button', { name: 'View invoice 42' });
     expect(f.fetcher.mock.calls[0]?.[0]).toContain('householdId=' + home);
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
@@ -140,7 +140,7 @@ describe('invoice and household payment UI', () => {
   it('offers front desk only catalog charge types, with no custom amount', async () => {
     expect(canStaff(bootstrap.session!.roles, 'payments.record')).toBe(true);
     expect(canStaff(bootstrap.session!.roles, 'payments.custom')).toBe(false);
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} client={f.client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     await within(dialog).findByLabelText('Charge type');
@@ -150,11 +150,21 @@ describe('invoice and household payment UI', () => {
     // The fixture has no charge types, so front desk is told whom to ask instead of facing an empty list.
     expect(within(dialog).getByText('No charge types are set up. Ask an owner or admin to add one.')).toBeDefined();
   });
+  it('tells an owner or admin with no charge types to add one or use a custom amount', async () => {
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={true} client={f.client}/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
+    const dialog = screen.getByRole('dialog');
+    await within(dialog).findByLabelText('Charge type');
+    expect(within(dialog).getByText('No charge types are set up. Add one in settings, or use a custom amount.')).toBeDefined();
+    expect(within(dialog).queryByText('No charge types are set up. Ask an owner or admin to add one.')).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText('Charge source'), { target: { value: 'custom' } });
+    expect(within(dialog).queryByText('No charge types are set up. Add one in settings, or use a custom amount.')).toBeNull();
+  });
   it('lets front desk create a one-off from a catalog charge type', async () => {
     const f = transport(), charge = { id: id(20), createdAt, name: 'Mat fee', amountCents: 1000, currency: 'USD', active: true, revision: 1, taxRateIds: [] };
     const client = createInvoiceClient(async (path, options) => String(path).startsWith('/api/billing/charge-types')
       ? Response.json({ data: [charge], pagination: { limit: 100, offset: 0, total: 1 } }) : f.fetcher(path, options));
-    start(<InvoiceList gymId={gymId} householdId={home} access={desk} client={client}/>);
+    start(<InvoiceList gymId={gymId} householdId={home} access={desk} custom={false} client={client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.change(await within(dialog).findByLabelText('Charge type'), { target: { value: charge.id } });
@@ -186,7 +196,7 @@ describe('invoice and household payment UI', () => {
   });
   it('lets an owner or admin create a one-off custom invoice from bootstrap without reading settings', async () => {
     expect(canStaff(['owner'], 'payments.custom') && canStaff(['admin'], 'payments.custom')).toBe(true);
-    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} client={f.client}/>);
+    const f = transport(); start(<InvoiceList gymId={gymId} householdId={home} access={admin} custom={true} client={f.client}/>);
     fireEvent.click(screen.getByRole('button', { name: 'Add one-off charge' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.change(await within(dialog).findByLabelText('Charge source'), { target: { value: 'custom' } });

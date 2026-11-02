@@ -381,7 +381,9 @@ export class StripePayments implements Payments {
     const owner = data(customer.metadata ?? {}).gym_id;
     if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
     const personal = [customer.email, customer.phone, customer.address, customer.shipping, customer.description];
-    if (customer.name === ERASED_CUSTOMER_NAME && personal.every((value) => !value)) return;
+    // An address or shipping object whose fields are all null holds nothing, so it counts as already cleared.
+    const holds = (value: unknown): boolean => typeof value === 'object' && value !== null ? Object.values(value).some(holds) : !!value;
+    if (customer.name === ERASED_CUSTOMER_NAME && !personal.some(holds)) return;
     // An empty string clears a field (the email, phone, address, shipping details and description a dashboard customer may hold);
     // the customer's metadata, payments and disputes are unchanged. Setting the same empty values twice is harmless, so there is
     // no idempotency key: a reused key would replay a cached answer and skip details a dashboard edit added since.

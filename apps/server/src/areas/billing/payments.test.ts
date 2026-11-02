@@ -69,11 +69,11 @@ const contracts = { ...billingContracts, releaseInvoiceHold: releaseInvoiceHoldC
 const operations = ['listInvoices', 'getInvoice', 'createOneOffInvoice', 'chargeInvoice', 'recordManualPayment', 'listPayments',
   'listRefunds', 'createRefund', 'listPaymentMethods', 'setDefaultPaymentMethod', 'revokePaymentMethod', 'resendReceipt', 'releaseInvoiceHold'] as const satisfies readonly (BillingEndpoint | 'releaseInvoiceHold')[];
 type Operation = typeof operations[number];
-function request(server: ReturnType<typeof app>, operation: Operation, f: Fixture) {
+function request(server: ReturnType<typeof app>, operation: Operation, f: Fixture, oneOff?: unknown) {
   const contract = contracts[operation];
   const path = contract.path.replace('{invoiceId}', operation === 'resendReceipt' ? f.paid.id : f.invoice.id)
     .replace('{householdId}', f.home.id).replace('{paymentMethodId}', f.card.id).replace('{paymentId}', f.payment.id);
-  const body = operation === 'createOneOffInvoice' ? { source: 'custom', householdId: f.home.id, dueOn: '2026-10-25', description: 'Drop-in', amountCents: 2500, currency: 'USD' }
+  const body = operation === 'createOneOffInvoice' && oneOff ? oneOff : operation === 'createOneOffInvoice' ? { source: 'custom', householdId: f.home.id, dueOn: '2026-10-25', description: 'Drop-in', amountCents: 2500, currency: 'USD' }
     : operation === 'recordManualPayment' ? { amountCents: 2500, currency: 'USD', method: 'cash', paidAt: f.clock.now().toISOString() }
       : operation === 'createRefund' ? { amountCents: 2500, currency: 'USD', reason: null } : {};
   return server.request(origin + path, { method: contract.method.toUpperCase(),
@@ -110,6 +110,12 @@ describe('payment route permissions and tenant isolation', () => {
       const awaitValue = response.ok ? await response.json() : null;
       if (response.ok) expect(() => contract.response.parse(awaitValue)).not.toThrow();
     });
+    if (operation === 'createOneOffInvoice') for (const role of ['owner', 'admin', 'coach', 'front_desk'] as const) it(`${operation} from the catalog: ${role}`, async () => {
+      const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 1000, name: 'Mat fee', currency: 'USD' });
+      const body = { source: 'charge_type', householdId: f.home.id, chargeTypeId: charge.id, dueOn: '2026-10-25' };
+      const response = await request(app(f, staff(f, role)), operation, f, body);
+      expect(response.status, await response.clone().text()).toBe(canStaff([role], contracts[operation].permission.capability) ? 201 : 403);
+    });
     it(`${operation}: denies anonymous, kiosk and signed-link principals`, async () => {
       const f = await fixture();
       const principals: Principal[] = [{ kind: 'anonymous' }, { kind: 'kiosk', gymId: f.gymId, deviceId: uuidv7() },
@@ -134,6 +140,13 @@ describe('payment route permissions and tenant isolation', () => {
     expect(response.status).toBe(201); expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('paid');
     expect((await request(server, 'createRefund', f)).status).toBe(403);
+  });
+  it('documents the custom-amount rule on the one-off route', async () => {
+    const f = await fixture();
+    const document = app(f, staff(f, 'owner')).getOpenAPIDocument({ openapi: '3.0.0', info: { title: 'test', version: '1' } });
+    const operation = document.paths['/api/billing/invoices/one-off']?.post as { description?: string } | undefined;
+    expect(operation?.description).toContain('payments.custom');
+    expect(operation?.description).toContain('payments.record');
   });
   it('limits front desk to catalog charge types and existing invoices, while owner and admin may bill a custom amount', async () => {
     const f = await fixture(), charge = await factory('chargeTypes', f.gymId, { amountCents: 1000, name: 'Mat fee', currency: 'USD' });

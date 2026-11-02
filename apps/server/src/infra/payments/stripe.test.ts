@@ -446,12 +446,23 @@ it('redacts a customer of this gym or an untagged one, keeping its metadata, and
   // A finished redaction is not written again.
   await payments.redactCustomer('cus_erased');
   expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  // Address and shipping objects whose fields are all null hold nothing, so an erased customer with them is not written again.
+  transport.objects.set('cus_nulls', { id: 'cus_nulls', object: 'customer', name: 'Erased member', email: null, phone: null, description: null,
+    address: { line1: null, city: null, country: null }, shipping: { name: null, phone: null, address: { line1: null } }, metadata: { gym_id: gymId } });
+  await payments.redactCustomer('cus_nulls');
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  // One non-null value anywhere in a nested object still counts as personal data.
+  transport.objects.set('cus_deep', { id: 'cus_deep', object: 'customer', name: 'Erased member', email: null,
+    shipping: { name: null, address: { line1: null, city: 'Austin' } }, metadata: { gym_id: gymId } });
+  await payments.redactCustomer('cus_deep');
+  expect(transport.objects.get('cus_deep')).toMatchObject({ shipping: null });
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
   // A customer whose name and email were cleared by an earlier release still gets its other details cleared.
   transport.objects.set('cus_partial', { id: 'cus_partial', object: 'customer', name: 'Erased member', email: null, phone: '+15555550101',
     metadata: { gym_id: gymId } });
   await payments.redactCustomer('cus_partial');
   expect(transport.objects.get('cus_partial')).toMatchObject({ name: 'Erased member', phone: null, metadata: { gym_id: gymId } });
-  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(2);
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(3);
   transport.objects.set('cus_foreign', { id: 'cus_foreign', object: 'customer', name: 'Other', email: 'other@example.invalid', metadata: { gym_id: 'other' } });
   transport.objects.set('cus_untagged', { id: 'cus_untagged', object: 'customer', name: 'Dashboard', email: 'dash@example.invalid', metadata: {} });
   await expect(payments.redactCustomer('cus_foreign')).rejects.toThrow('another gym');
@@ -462,7 +473,7 @@ it('redacts a customer of this gym or an untagged one, keeping its metadata, and
   await expect(payments.redactCustomer('cus_deleted')).resolves.toBeUndefined();
   await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
   await expect(payments.redactCustomer('../cus_fixture')).rejects.toThrow('Invalid processor ID');
-  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(3);
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(4);
   expect(transport.objects.get('cus_foreign')).toMatchObject({ name: 'Other', email: 'other@example.invalid' });
 });
 it('redacts a fake customer like the provider and refuses another gym', async () => {
