@@ -117,10 +117,11 @@ The checks cover:
   uses the full name Marcus Rivera and PIN 2468, avoiding ambiguous households.
   Outbox preview dialogs are checked too; axe excludes the email iframe, whose
   sandbox deliberately forbids scripts, while the test checks its sandbox and title.
-* The enforced Content Security Policy, in every spec: the automatic `cspGuard` fixture
-  (`support.ts`) fails a test whose pages, in the default context (when the test uses it)
-  or any context the test opens itself, log a CSP violation to the browser console,
-  enforced or report-only. Its failure message drops signed-link tokens, queries and
+* The enforced Content Security Policy, in every spec that takes `test` from `support.ts`:
+  the automatic `cspGuard` fixture fails a test whose pages, in the default context (when
+  the test uses it) or any context the test opens itself, log a CSP violation to the
+  browser console, enforced or report-only. `responsive.spec.ts` (pages it serves itself)
+  and the VM spec (`vm.spec.ts`, its own browser on real servers) don't use it. Its failure message drops signed-link tokens, queries and
   fragments. `csp.spec.ts` checks the guard itself (an injected inline script and style
   are blocked and caught, through `cspViolations`), the staff invitation page's nonce
   script, the public pages (trial, drop-in, join), that a pay link, a card link and the
