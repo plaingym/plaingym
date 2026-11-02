@@ -5,6 +5,7 @@ umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=/dev/null
 . "$ROOT/lib.sh"
+require_compose
 [ "$(id -u)" -eq 0 ] || fail 'Run update.sh as root.'
 [ "$#" -eq 1 ] || [ "$#" -eq 3 ] || fail 'Usage: update.sh IMAGE [--bundle /path/to/demo-bundle.tar]'
 target=$1

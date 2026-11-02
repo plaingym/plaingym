@@ -25,6 +25,18 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$ROOT" in /*) ;; *) fail 'Installation directory must be absolute.' ;; esac
+# The demo's lib.sh is not installed yet, so run its check in a subshell that takes it from the bundle;
+# the installed copy is sourced later, after it is copied.
+check_compose() {
+  (
+    # shellcheck source=deploy/demo/lib.sh
+    . "$SOURCE/lib.sh"
+    require_compose "$@"
+  )
+}
+# Every mode and re-install, before the host setup or any write. Only a first install runs host.sh, which
+# adds Compose to a host that has none; a re-install or --local-test must already have it.
+if [ "$DEMO_LOCAL_TEST" != true ] && [ ! -f "$ROOT/.env" ]; then check_compose missing-ok; else check_compose; fi
 command -v python3 >/dev/null || fail 'Ubuntu python3 is required.'
 if [ -f "$SOURCE/images.env" ]; then
   # Generated bundle metadata has image references only, never credentials.
@@ -76,7 +88,7 @@ trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 # All remote checks and prompts precede host changes or installation writes.
 python3 "$SOURCE/config.py" --existing "$ROOT/.env" --output "$inputs"
-if [ "$DEMO_LOCAL_TEST" != true ] && [ ! -f "$ROOT/.env" ]; then sh "$SOURCE/host.sh"; fi
+if [ "$DEMO_LOCAL_TEST" != true ] && [ ! -f "$ROOT/.env" ]; then sh "$SOURCE/host.sh"; check_compose after-setup; fi
 install -d -m 0700 "$ROOT"
 exec 9>"$ROOT/.install.lock"
 flock -n 9 || fail 'Another demo installation is running.'

@@ -169,6 +169,14 @@ Host setup (Docker, firewall, unattended upgrades, swap) is the shared
 `deploy/host.sh` that the gym installer also runs, so there is one copy; shared
 configuration helpers come from `lib.sh`.
 
+The demo needs Docker Compose 2.24 or later (its overlay uses `!reset`). `install.sh`
+(every mode, including `--local-test` and a re-install) and `update.sh` check it
+first, before the host setup or any write, and stop with the version found if
+it is older or unreadable; upgrade Compose the way it was installed (the
+`docker-compose-plugin` package or your distribution's Compose package). A first
+install on a host with no Compose gets one from the host setup; a re-install,
+`--local-test` and `update.sh` refuse without it.
+
 ## Local validation
 
 On Linux/WSL with Docker, Python 3 and a prebuilt app image:
