@@ -59,6 +59,24 @@ describe('the gym settings save queue', () => {
     expect(gym.revision).toBe(5);
   });
 
+  it('fetches once for reloads asked for while one is still waiting to start', async () => {
+    const { result } = await mount();
+    const sending = deferred(), started = deferred();
+    const saving = result.current.save(async (revision) => { started.resolve(); await sending.promise; return save()(revision); });
+    await started.promise;
+    const epoch = result.current.epoch;
+    for (let click = 0; click < 3; click++) result.current.reload();
+    sending.resolve();
+    await saving;
+    await waitFor(() => expect(result.current.epoch).toBe(epoch + 1));
+    await flushGc();
+    expect(reads()).toBe(2);
+    expect(result.current.epoch).toBe(epoch + 1);
+    // Once that reload has run, the next one fetches again.
+    result.current.reload();
+    await waitFor(() => expect(reads()).toBe(3));
+  });
+
   it('runs a save asked for behind a reload only from settings fetched after it', async () => {
     const { result } = await mount();
     const reading = deferred<ReturnType<typeof reply>>();

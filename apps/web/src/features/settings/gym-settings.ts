@@ -27,8 +27,14 @@ const fromResponse = (data: unknown) => gymSettingsResponseSchema.parse(data).da
 const settingsQuery = { queryKey: gymSettingsKey, queryFn: fetchSettings, staleTime: Infinity, gcTime: 0,
   refetchOnWindowFocus: false, refetchOnReconnect: false } as const;
 
-interface Queue { tail: Promise<void>; waiting: number; unhold?: (() => void) | undefined }
+/** `reloadQueued` is set while a reload waits in the queue and has not started yet. */
+interface Queue { tail: Promise<void>; waiting: number; unhold?: (() => void) | undefined; reloadQueued?: boolean }
 const queues = new WeakMap<QueryClient, Queue>();
+const queueFor = (cache: QueryClient) => {
+  const queue = queues.get(cache) ?? { tail: Promise.resolve(), waiting: 0 };
+  queues.set(cache, queue);
+  return queue;
+};
 const cached = (cache: QueryClient) => cache.getQueryData<Loaded>(gymSettingsKey);
 const failedToLoad = (cache: QueryClient) => cache.getQueryState(gymSettingsKey)?.status === 'error';
 async function refetch(cache: QueryClient) {
@@ -41,8 +47,7 @@ async function refetch(cache: QueryClient) {
  * waiting would find nothing to save against.
  */
 function enqueue<T>(cache: QueryClient, task: () => Promise<T>): Promise<T> {
-  const queue = queues.get(cache) ?? { tail: Promise.resolve(), waiting: 0 };
-  queues.set(cache, queue);
+  const queue = queueFor(cache);
   if (queue.waiting === 0) queue.unhold = new QueryObserver(cache, { ...settingsQuery, refetchOnMount: false, retryOnMount: false }).subscribe(() => undefined);
   queue.waiting++;
   const done = queue.tail.then(task);
@@ -60,8 +65,16 @@ function enqueue<T>(cache: QueryClient, task: () => Promise<T>): Promise<T> {
 export function useGymSettings() {
   const cache = useQueryClient();
   const query = useQuery(settingsQuery);
-  /** Reloads in the save queue, behind the saves already asked for, so the reply can't be older than their revisions. */
-  const reload = useCallback(() => { void enqueue(cache, () => refetch(cache).catch(() => undefined)); }, [cache]);
+  /**
+   * Reloads in the save queue, behind the saves already asked for, so the reply can't be older than their revisions. A
+   * reload asked for while another still waits to start joins it: each completed reload resets every section's input.
+   */
+  const reload = useCallback(() => {
+    const queue = queueFor(cache);
+    if (queue.reloadQueued) return;
+    queue.reloadQueued = true;
+    void enqueue(cache, () => { queue.reloadQueued = false; return refetch(cache).catch(() => undefined); });
+  }, [cache]);
   /**
    * Sends one save with the current revision, one at a time so each save sees the revision the one before it produced.
    * A success updates the shared settings with `adopt(response data, settings now)`; a 409 reloads them first, so the
