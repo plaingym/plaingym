@@ -102,10 +102,14 @@ The checks cover:
   installs (manifest, service worker, no installability errors), books a class, waits
   on a full class and is promoted when staff free the place, shows a QR code that the
   kiosk reads from its camera (frames drawn from the portal's own image), and the
-  coach's roster shows the check-in. A 56-character class name and a household member's 55-character last name, neither with a
-  break opportunity, stay inside the portal schedule at 360 px. Two tests are marked `test.fail` for open
+  coach's roster shows the check-in. Two tests are marked `test.fail` for open
   findings (the payment-mode Checkout start, and the schedule actions' accessible
   names); each fails until its fix lands, then must be unmarked.
+* Names with no break opportunity (56 characters) stay inside a 360 px screen on the admin bookings panel, dashboard
+  widgets, autocomplete options, billing catalog, campaigns and the portal schedule (`long-names.spec.ts`; the portal
+  check uses a household of its own). `responsive.spec.ts` checks the layout helper itself on pages it serves: a
+  static ancestor with `transform`, `filter`, `contain`, `will-change`, `perspective` or the individual transform
+  properties is the containing block of its absolute and fixed descendants, and a clipped `html` can't scroll sideways.
 * Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
 * Login errors and a successful password sign-in; the demo entry button creating

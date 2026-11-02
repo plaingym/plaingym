@@ -31,7 +31,7 @@ export function DashboardWidgets({ widgets, roles, views = [] }: {
           {'count' in widget && <p className="mt-3 text-4xl font-semibold tabular-nums">{widget.count.toLocaleString()}</p>}
           {'items' in widget && widget.items && widget.items.length > 0 && <>
             <ul className="mt-3 divide-y divide-border">{widget.items.map((item) => <li key={item.href}>
-              <a className="flex min-h-11 items-center break-words font-medium underline underline-offset-4" href={item.href}>{item.label}</a>
+              <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={item.href}>{item.label}</a>
             </li>)}</ul>
             {widget.count > widget.items.length && <p className="mt-4 text-sm text-muted-foreground">{t('dashboard/dashboard:showingItems', { shown: widget.items.length, total: widget.count })}</p>}
           </>}
@@ -39,7 +39,7 @@ export function DashboardWidgets({ widgets, roles, views = [] }: {
             <p className="mt-3 text-sm text-muted-foreground">{label('description.' + widget.id)}</p>
             {widget.members.length === 0 ? <p className="mt-4 rounded-lg border border-dashed border-border p-4 text-sm">{label('empty.' + widget.id)}</p>
               : <ul className="mt-3 divide-y divide-border">{widget.members.map((member) => <li key={member.memberId} className="py-2">
-                <a className="flex min-h-11 items-center break-words font-medium underline underline-offset-4" href={'/admin/members/' + encodeURIComponent(member.memberId)}>{member.firstName} {member.lastName}</a>
+                <a className="flex min-h-11 items-center font-medium underline underline-offset-4" href={'/admin/members/' + encodeURIComponent(member.memberId)}>{member.firstName} {member.lastName}</a>
                 <p className="text-sm text-muted-foreground">{label('lastSeen')}: {member.lastSeenAt
                   ? <time dateTime={member.lastSeenAt}>{new Date(member.lastSeenAt).toLocaleDateString()}</time> : label('neverSeen')}</p>
               </li>)}</ul>}

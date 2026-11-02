@@ -7,6 +7,7 @@ import { Page, PageHeader, PageSection } from './page.js';
 import { EmptyState, ErrorState, LoadingState } from './states.js';
 import { CheckboxField, Select } from './select.js';
 import { Badge, TableContainer } from './table.js';
+import { breaksAnywhere } from './wrap.test-helper.js';
 afterEach(cleanup);
 describe('shared page components', () => {
   it('renders one page heading with its actions', () => {
@@ -16,6 +17,22 @@ describe('shared page components', () => {
     expect(screen.getByRole('heading', { level: 2, name: 'Recent' })).toBeDefined();
     expect(screen.getByText('Everyone at the gym')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Add member' })).toBeDefined();
+  });
+  it('lets titles and anything inside a page wrap a name with no break opportunity', () => {
+    const long = 'U'.padEnd(56, 'x');
+    render(<Page><PageHeader title={long + 'h'} /><PageSection title={long + 's'}><p>{long}</p></PageSection></Page>);
+    for (const text of [long + 'h', long + 's', long]) expect(breaksAnywhere(screen.getByText(text))).toBe(true);
+    // The check fails for a class that does nothing, and for a nearer element that turns wrapping off.
+    render(<p className="min-w-0 break-normal">{'plain'}</p>);
+    expect(breaksAnywhere(screen.getByText('plain'))).toBe(false);
+    render(<Page><p className="wrap-normal">{'reset'}</p></Page>);
+    expect(breaksAnywhere(screen.getByText('reset'))).toBe(false);
+  });
+  it('wraps titles used outside a page', () => {
+    const long = 'U'.padEnd(56, 'x');
+    render(<><PageHeader title={long + 'a'} /><PageSection title={long + 'b'}><p>body</p></PageSection></>);
+    expect(breaksAnywhere(screen.getByText(long + 'a'))).toBe(true);
+    expect(breaksAnywhere(screen.getByText(long + 'b'))).toBe(true);
   });
   it('announces loading and errors and offers a retry', () => {
     const retry = vi.fn();

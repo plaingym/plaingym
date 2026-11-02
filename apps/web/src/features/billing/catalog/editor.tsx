@@ -47,7 +47,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, save, cance
         </>}
         <fieldset className="min-w-0 sm:col-span-2"><legend className="font-medium">{text('taxes')}</legend>
           {!taxes.length && <p className="text-sm text-muted-foreground">{text('noTaxes')}</p>}
-          {taxes.filter(item => item.active || price?.taxRateIds.includes(item.id)).map(item => <Label key={item.id} className="flex min-h-11 items-center gap-3 break-words">
+          {taxes.filter(item => item.active || price?.taxRateIds.includes(item.id)).map(item => <Label key={item.id} className="flex min-h-11 items-center gap-3">
             <input className="size-5 shrink-0" type="checkbox" name="taxRateIds" value={item.id} defaultChecked={price?.taxRateIds.includes(item.id)}/>
             {item.name} ({item.rateMillionths / 10_000}%, {text(item.inclusive ? 'inclusive' : 'exclusive')})
           </Label>)}

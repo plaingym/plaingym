@@ -25,7 +25,9 @@ inside one `Page` and starts with one `PageHeader`:
 ```
 
 `PageHeader` renders the page's only `h1`; actions sit below the title on phones
-and beside it from `sm`. `PageSection` renders an `h2` with optional actions.
+and beside it from `sm`. `PageSection` renders an `h2` with optional actions. `Page`, `PageHeader` and `PageSection` set `wrap-anywhere` (`overflow-wrap: anywhere`),
+which its descendants inherit (tables keep their natural widths), so a long name with no break opportunity (a class, plan or member name) wraps
+instead of widening a flex or grid item; `break-words` does not shrink those. Don't repeat it per element; a screen rendered outside a `Page` (the billing catalog) sets it on its own root.
 
 **States.** Use the shared states so every screen reports progress the same way:
 `LoadingState` (announced to screen readers), `EmptyState` (with the next step as

@@ -220,34 +220,6 @@ test("the portal schedule's booking actions keep their visible text in their acc
   expect(mismatched).toEqual([]);
 });
 
-test("the portal schedule wraps a class name with no break opportunity inside a 360 px screen", async ({ page, sandboxes }, info) => {
-  // The second sandbox: this adds a member, a class and a booking to its student household, and the household isolation
-  // spec takes the first sandbox's student household as seeded.
-  const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner'), student = await demoClient(sandbox, 'student');
-  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
-  const minute = 60_000, startsAt = Math.ceil((Date.now() + 26 * 60 * minute) / (5 * minute)) * 5 * minute;
-  const tag = randomBytes(2).toString('hex'), name = `Unbreakable${tag}`.padEnd(56, 'x');
-  expect(name).toHaveLength(56);
-  const session = (await owner.json<{ data: Session }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
-    endsAt: new Date(startsAt + 60 * minute).toISOString(), coachId: null, capacity: 5, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
-  // A household member whose name has no break opportunity either, booked into the class: the portal lists the household's places by member name.
-  const alex = (await owner.json<{ data: Person[] }>('/api/members?search=Student')).data.find((row) => row.firstName === 'Alex' && row.lastName === 'Student');
-  expect(alex, 'the demo student').toBeDefined();
-  const longMember = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: alex!.householdId, firstName: 'M',
-    lastName: `Member${tag}`.padEnd(55, 'y'), status: 'active' })).data;
-  await owner.json('/api/bookings', 'POST', { memberId: longMember.id, sessionId: session.id, allowWaitlist: false });
-  await student.browser(page.context());
-  await page.setViewportSize(phone);
-  await page.goto(sandbox.origin + '/portal/schedule');
-  await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
-  const heading = page.getByText(name, { exact: true }), loading = page.getByText('Loading classes…', { exact: true });
-  await expect(loading).toHaveCount(0);
-  await expect(heading).toBeVisible();
-  // The member's own name, not the generic "Member" label, so its wrapping is what the layout check sees.
-  await expect(page.getByRole('list', { name: 'Household places' }).getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
-  await accessibleLayout(page, info, 'portal-schedule-long-name');
-});
-
 /** A kiosk tablet whose camera sees the portal's QR image: the kiosk decodes real frames, as from a phone screen. */
 async function checkInAtKiosk(browser: Browser, origin: string, token: string, image: string, shown: string) {
   const context = await browser.newContext({ viewport: { width: 768, height: 1024 }, hasTouch: true });

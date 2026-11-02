@@ -62,7 +62,7 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
     {(loading || bootstrap.isPending) && <LoadingState label={text('loading')}/>}
     {!loading && !error && rows.length === 0 && <EmptyState title={text(sessionId ? 'emptyRoster' : 'empty')}/>}
     <ul className="divide-y divide-border rounded-xl border border-border">{rows.map(row => <li key={row.key} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="min-w-0 space-y-1"><p className="break-words font-medium">{row.name}</p>
+      <div className="min-w-0 space-y-1"><p className="font-medium">{row.name}</p>
         <p className="text-sm">{row.booking ? status(row.booking) : text('walkIn')}</p>
         {row.checked !== undefined && <p className="text-sm text-muted-foreground">{text(row.checked ? 'checkedIn' : 'notCheckedIn')}</p>}</div>
       {row.booking && row.booking.status !== 'cancelled' && <Button variant="outline" className="shrink-0" disabled={busy} aria-label={text('cancelNamed', { name: row.name })} onClick={() => void cancel(row.booking!.id)}>{text('cancel')}</Button>}

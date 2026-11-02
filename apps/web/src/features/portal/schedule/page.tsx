@@ -72,7 +72,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
       <p className="text-center text-sm font-medium sm:flex-1" aria-live="polite">{text('weekOf', { date: dateLabel.format(new Date(range.from)) })}</p>
       <Button variant="outline" onClick={() => setWeek(week + 1)}>{text('nextWeek')}</Button>
     </div>
-    {message && <Alert role={message.tone === 'error' ? 'alert' : 'status'} className="[overflow-wrap:anywhere]">{message.text}</Alert>}
+    {message && <Alert role={message.tone === 'error' ? 'alert' : 'status'}>{message.text}</Alert>}
     {schedule.isPending ? <LoadingState label={text('loading')} />
       : schedule.isError ? <ErrorState message={text('error')} onRetry={() => void schedule.refetch()} />
         : !days.size ? <EmptyState title={text('empty')} description={text('emptyDescription')} />
@@ -85,7 +85,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
               return <li key={session.id} className="space-y-3 rounded-xl border border-border p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <p className="min-w-0 [overflow-wrap:anywhere] font-semibold">{session.name}</p>
+                    <p className="font-semibold">{session.name}</p>
                     <p className="text-sm text-muted-foreground">{timeLabel.formatRange(new Date(session.startsAt), new Date(session.endsAt))}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -97,7 +97,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
                 </div>
                 {session.bookings.length > 0 && <ul className="space-y-1 text-sm" aria-label={text('householdPlaces')}>
                   {session.bookings.map(row => <li key={row.id} className="flex flex-wrap items-center gap-2">
-                    <span className="min-w-0 [overflow-wrap:anywhere]">{names.get(row.memberId) ?? text('member')}</span>
+                    <span>{names.get(row.memberId) ?? text('member')}</span>
                     <Badge tone={row.status === 'booked' ? 'success' : 'warning'}>{status(row)}</Badge></li>)}
                 </ul>}
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">

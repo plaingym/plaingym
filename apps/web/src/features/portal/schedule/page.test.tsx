@@ -7,6 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { PortalScheduleSession } from '@plaingym/shared/contracts';
 import { ApiError } from '../../../lib/api.js';
+import { breaksAnywhere } from '../../../components/ui/wrap.test-helper.js';
 import type { PortalClient } from './client.js';
 import { PortalSchedulePage, PortalScheduleView, sessionAction } from './page.js';
 import { registration } from './registrations.js';
@@ -76,8 +77,7 @@ describe('portal schedule page', () => {
     page();
     // jsdom has no layout; the 360 px overflow itself is checked in the End-to-end suite (demo-join.spec.ts).
     for (const element of [await screen.findByText(long + 'c'), within(await screen.findByRole('list', { name: 'Household places' })).getByText(long)]) {
-      expect(element.className).toContain('min-w-0');
-      expect(element.className).toContain('[overflow-wrap:anywhere]');
+      expect(breaksAnywhere(element)).toBe(true);
     }
   });
   it('hides cancel after the cutoff and reports engine conflicts without server details', async () => {

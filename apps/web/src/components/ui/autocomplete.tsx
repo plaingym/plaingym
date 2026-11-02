@@ -33,7 +33,7 @@ export function Autocomplete({ label, value, query, options, onQueryChange, onCh
     {open && <div className="rounded-lg border border-input bg-background p-1">
       <ul id={listId} role="listbox" aria-label={label} className="max-h-56 overflow-y-auto">
         {!loading && options.map((item, index) => <li key={item.id} id={id + '-option-' + index} role="option" aria-selected={item.id === value}
-          className={'flex min-h-11 cursor-pointer items-center break-words rounded px-3 py-2 text-sm ' + (index === active ? 'bg-secondary' : '')}
+          className={'flex min-h-11 cursor-pointer items-center rounded px-3 py-2 text-sm ' + (index === active ? 'bg-secondary' : '')}
           onPointerMove={() => setActive(index)} onMouseDown={event => event.preventDefault()} onClick={() => choose(item)}>{item.label}</li>)}
       </ul>
       <p role="status" className="px-3 py-2 text-sm text-muted-foreground">{t(loading ? 'shell/shell:loading' : options.length ? 'shell/shell:suggestionsHelp' : 'shell/shell:noSuggestions')}</p>

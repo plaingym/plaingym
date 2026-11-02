@@ -28,7 +28,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     } catch (error) { setMessage(saveError(error)); }
     finally { setBusy(false); }
   }
-  return <div className="min-w-0 space-y-5">
+  return <div className="min-w-0 space-y-5 wrap-anywhere">
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
     {data.isPending && <p role="status">{text('loading')}</p>}
     {data.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
@@ -39,8 +39,8 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
         : <Button onClick={() => setEditor('new')}>{text('create')} {text(kind)}</Button>}
       {!data.data[kind].length && <Card><h2 className="font-semibold">{text('empty')}</h2><p className="mt-1 text-muted-foreground">{text('emptyHelp')}</p></Card>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{data.data[kind].map(record => <li key={record.id} className="min-w-0 rounded-lg border p-4">
-        <h2 className="break-words text-lg font-medium">{record.name}</h2><p className="text-sm text-muted-foreground">{text(record.active ? 'active' : 'inactive')}</p>
-        {'amountCents' in record ? <p className="mt-2 break-words">{money(record.amountCents, record.currency)} {'interval' in record ? '/ ' + text(record.interval) : ''}</p> : <p className="mt-2">{record.rateMillionths / 10_000}% · {text(record.inclusive ? 'inclusive' : 'exclusive')}</p>}
+        <h2 className="text-lg font-medium">{record.name}</h2><p className="text-sm text-muted-foreground">{text(record.active ? 'active' : 'inactive')}</p>
+        {'amountCents' in record ? <p className="mt-2">{money(record.amountCents, record.currency)} {'interval' in record ? '/ ' + text(record.interval) : ''}</p> : <p className="mt-2">{record.rateMillionths / 10_000}% · {text(record.inclusive ? 'inclusive' : 'exclusive')}</p>}
         {'signupFeeCents' in record && <p className="text-sm">{text('signupFee')}: {money(record.signupFeeCents, record.currency)} · {text('trialDays')}: {record.trialDays}</p>}
         <Button className="mt-3 w-full sm:w-auto" variant="outline" onClick={() => { setEditor(record); setMessage(''); }} disabled={busy}>{text('edit')} {record.name}</Button>
       </li>)}</ul>

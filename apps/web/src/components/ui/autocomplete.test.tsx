@@ -5,7 +5,15 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Autocomplete } from './autocomplete.js';
+import { Page } from './page.js';
+import { breaksAnywhere } from './wrap.test-helper.js';
 afterEach(cleanup);
+it('lets an option name with no break opportunity wrap instead of widening its list', async () => {
+  const user = userEvent.setup(), long = 'U'.padEnd(56, 'x');
+  render(<Page><Autocomplete label="Household" query="" value="" onQueryChange={() => undefined} onChange={() => undefined} options={[{ id: '1', label: long }]} /></Page>);
+  await user.click(screen.getByRole('combobox'));
+  expect(breaksAnywhere(screen.getByRole('option', { name: long }))).toBe(true);
+});
 const options = [{ id: '1', label: 'Rivera household' }, { id: '2', label: 'Smith household' }];
 function Example({ selected = vi.fn(), submit = vi.fn() }) {
   const [query, setQuery] = useState(''), [value, setValue] = useState('');
