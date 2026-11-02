@@ -171,7 +171,7 @@ describe('setup wizard', () => {
       spy = stub;
     };
     afterEach(() => spy?.mockRestore());
-    const hint = /couldn't detect your timezone/;
+    const hint = /couldn't use your browser's timezone/;
     it.each([
       ['uses a valid host zone without a hint', 'America/Vancouver', 'America/Vancouver', false],
       ['falls back to UTC with a hint when the host reports no zone', undefined, 'UTC', true],

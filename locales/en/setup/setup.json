@@ -29,7 +29,7 @@
   "password": "Password (12–128 characters)",
   "gymName": "Gym name",
   "timezone": "IANA timezone",
-  "timezoneFallback": "We couldn't detect your timezone, so this is set to UTC. Please check it, and enter a region such as America/Vancouver if your gym is elsewhere.",
+  "timezoneFallback": "We couldn't use your browser's timezone, so this is set to UTC. Please check it, and enter a region such as America/Vancouver if your gym is elsewhere.",
   "address": "Street address",
   "currency": "Billing currency (three letters)",
   "primaryColor": "Brand color",
