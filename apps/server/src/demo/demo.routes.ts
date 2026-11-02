@@ -10,6 +10,11 @@ import { demoContracts } from '@plaingym/shared/contracts';
 import { createOutboxQuery } from './outbox.js';
 import type { DemoService } from './service.js';
 import { demoLoginRateLimit } from './identities.js';
+import { z } from '@hono/zod-openapi';
+
+/** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
+export const outboxPreviewPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; "
+  + "sandbox; frame-ancestors 'self'";
 
 export function createDemoRoutes(service: DemoService, options: { installOrigin: string; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery> }) {
   const limiter = rateLimit({ ...options.clientIp, limit: 3, windowMs: 60 * 60 * 1000 });
@@ -63,6 +68,18 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     route({ ...message, request: { params: message.params },
       responses: { 200: { description: 'Message', content: { 'application/json': { schema: message.response } } } },
     }, async (c) => { const gymId = c.get('context').gym.gymId; await service.status(gymId); c.header('cache-control', 'no-store'); return c.json({ data: await outbox.get(gymId, c.req.valid('param').id) }, 200); }),
+    // The outbox's preview frame loads the message from here rather than from srcdoc, which would take the admin page's
+    // policy: email HTML keeps its inline styles under a policy of its own, which runs no script, loads nothing and
+    // may be framed only by the app's own pages. TODO: promote this contract into the shared demo contracts.
+    route({ method: 'get', path: '/api/demo/outbox/{id}/preview', permission: message.permission, request: { params: message.params },
+      responses: { 200: { description: 'Message HTML for the sandboxed preview frame', content: { 'text/html': { schema: z.string() } } } },
+    }, async (c) => {
+      const gymId = c.get('context').gym.gymId; await service.status(gymId);
+      const html = (await outbox.get(gymId, c.req.valid('param').id)).html;
+      c.header('cache-control', 'no-store'); c.header('x-content-type-options', 'nosniff'); c.header('referrer-policy', 'no-referrer');
+      c.header('content-security-policy', outboxPreviewPolicy);
+      return c.html(html, 200);
+    }),
     { ...discovery, mount(app: Parameters<RouteRegistration['mount']>[0], authorize: Parameters<RouteRegistration['mount']>[1]) {
       // Discovery mounts before tenant resolution: the entry host has no gym.
       // Keep ordinary gym roots available to their public website routes.

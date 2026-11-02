@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
 import { cspReportBytes } from './body-limit.js';
 import { cspReportPath } from './csp.js';
@@ -9,8 +9,8 @@ import { logInfo } from './log.js';
 import { rateLimit, type RateLimitOptions } from './rate-limit.js';
 import { route, type PermissionMiddleware } from './registry.js';
 
-/** Each client may send this many reports a minute, and the whole install ten times as many. */
-const clientBudget = 30, installBudget = 300, windowMs = 60_000;
+/** Report requests a minute: each client, each gym (or the install, for requests that resolve no gym), and in all. */
+const clientBudget = 30, gymBudget = 300, installCeiling = 3_000, windowMs = 60_000;
 /** Reports logged from one request (the budgets count requests); the rest of a batch is dropped. */
 const maxReportsPerRequest = 5;
 const maxPathSegments = 8;
@@ -89,35 +89,81 @@ const formats = {
   'application/reports+json': { name: 'reports+json', read: reportingViolations },
 } as const;
 
+export interface CspReportOptions {
+  readonly limits?: RateLimitOptions | undefined;
+  /** The app's tenant resolver. A report whose hostname resolves to a gym counts against that gym's budgets. */
+  readonly resolveGym?: MiddlewareHandler<RequestEnvironment> | undefined;
+  /** The install's restore gate, which the resolver's database read runs inside, as every tenant read does. */
+  readonly restoreGate?: MiddlewareHandler<RequestEnvironment> | undefined;
+}
+
 /**
- * Both limiters answer 204 like every other outcome: a browser retries failed reports, and a flood gets
- * nothing to react to. Reports over budget are dropped unlogged.
+ * Sets the request's gym when its hostname resolves to one. A hostname that resolves to none (an uninitialized
+ * install, an unknown host) or a closed restore gate leaves it unset; whatever answer the resolver or the gate
+ * prepared is discarded.
  */
-function reportBudget(options: RateLimitOptions | undefined): MiddlewareHandler<RequestEnvironment> {
-  const perClient = rateLimit({ ...options, perGym: false, limit: clientBudget, windowMs });
-  const perInstall = rateLimit({ ...options, perGym: true, limit: installBudget, windowMs });
-  return async (context, next) => {
+async function resolveReportGym(context: Context<RequestEnvironment>, options: CspReportOptions): Promise<void> {
+  const resolveGym = options.resolveGym;
+  if (!resolveGym) return;
+  const resolve = () => resolveGym(context, async () => {});
+  try {
+    if (options.restoreGate) await options.restoreGate(context, async () => { await resolve(); });
+    else await resolve();
+  } catch {
+    // A resolver that refuses by throwing, or a database that is briefly unavailable: the report counts as the
+    // install's, and still answers 204.
+  }
+}
+
+/** One fixed window for the whole process, on the request's clock. */
+function windowBudget(limit: number) {
+  let resetAt = 0, count = 0;
+  return (now: number) => {
+    if (now >= resetAt) { resetAt = now + windowMs; count = 0; }
+    if (count >= limit) return false;
+    count++;
+    return true;
+  };
+}
+
+/**
+ * Each client may send 30 requests a minute, counted in memory before anything else, so a client over its budget
+ * costs no database read. The request's gym is resolved next: each gym admits 300 a minute, so no gym's reports use
+ * another's budget, and requests that resolve no gym share one install budget of the same size. An install ceiling
+ * of 3,000 a minute counts only requests a gym's budget admitted, bounding the log however many gyms there are.
+ * Every limiter answers 204 like every other outcome: a browser retries failed reports, and a flood gets nothing to
+ * react to. Reports over budget are dropped unlogged.
+ */
+function reportBudget(options: CspReportOptions): MiddlewareHandler<RequestEnvironment> {
+  // Before resolution the request has no gym, so the client limiter keys by the install and the client's address.
+  const perClient = rateLimit({ ...options.limits, perGym: false, limit: clientBudget, windowMs });
+  const perGym = rateLimit({ ...options.limits, perGym: true, limit: gymBudget, windowMs });
+  const ceiling = windowBudget(installCeiling);
+  const within = async (limiter: MiddlewareHandler<RequestEnvironment>, context: Context<RequestEnvironment>) => {
     let admitted = false;
-    try {
-      await perClient(context, async () => { await perInstall(context, async () => { admitted = true; }); });
-    } catch (error) {
-      if (!(error instanceof AppError && error.code === 'rate_limited')) throw error;
-      context.header('Retry-After', undefined);
-    }
-    if (!admitted) return context.body(null, 204);
+    try { await limiter(context, async () => { admitted = true; }); }
+    catch (error) { if (!(error instanceof AppError && error.code === 'rate_limited')) throw error; }
+    context.header('Retry-After', undefined);
+    return admitted;
+  };
+  return async (context, next) => {
+    if (!await within(perClient, context)) return context.body(null, 204);
+    await resolveReportGym(context, options);
+    if (!await within(perGym, context) || !ceiling(context.get('context').clock.now().getTime())) return context.body(null, 204);
     await next();
   };
 }
 
 /**
  * The violation report endpoint for the app's Content-Security-Policy, mounted before tenancy like the other install
- * routes. It is public and stateless: it stores nothing, never echoes a body, and logs one `csp.violation` line per
- * report holding only the directive, the blocked resource's origin or keyword and the document's sanitized path.
+ * routes (it resolves the gym itself, only for its budgets). It is public and stateless: it stores nothing, never echoes
+ * a body, and logs one `csp.violation` line per report holding only the directive, the blocked resource's origin or
+ * keyword and the document's sanitized path.
  * Whatever the body holds, a request within the body cap and the limits answers 204.
  */
-export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware, limits?: RateLimitOptions): void {
+export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware, options: CspReportOptions = {}): void {
   // TODO: promote the public install contract into shared contracts.
-  route({ method: 'post', path: cspReportPath, permission: { kind: 'public' }, middleware: reportBudget(limits),
+  route({ method: 'post', path: cspReportPath, permission: { kind: 'public' }, middleware: reportBudget(options),
     responses: { 204: { description: 'Report received (or ignored)' } },
   }, async (context) => {
     const type = (context.req.header('content-type') ?? '').split(';', 1)[0]!.trim().toLowerCase();

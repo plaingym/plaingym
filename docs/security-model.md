@@ -186,9 +186,16 @@ Details: `apps/server/src/infra/auth/README.md`.
   makes the last `X-Forwarded-For` entry the client address; nothing else trusts
   forwarded headers.
 * **Body limits** per route, applied before parsing.
-* **Headers.** Responses carry `frame-ancestors 'none'` and a report-only Content
-  Security Policy whose reports go to `/csp-report` (logged without IDs, tokens or
-  query strings). In production the gym's canonical HTTPS hostname gets
+* **Headers.** Every response enforces a Content Security Policy. By default (the
+  admin, portal, kiosk, setup wizard and API) scripts, styles, fonts, connections and
+  form submissions stay on the app's origin, server-rendered inline scripts need the
+  response's nonce, images may also be `data:` URLs or come from the uploads bucket,
+  and no page may be framed (`frame-ancestors 'none'`, plus `X-Frame-Options: DENY`).
+  Public pages, signed links and downloads send stricter policies of their own.
+  Payment pages are left by navigation, never by a form submission, so Stripe
+  Checkout needs no exception in `form-action`. Violations are reported to
+  `/csp-report` and logged without IDs, tokens or query strings, within per-gym
+  budgets. In production the gym's canonical HTTPS hostname gets
   `Strict-Transport-Security` (one year, no `includeSubDomains`).
 * **Validation.** Every route's input is parsed with its shared Zod contract
   before the handler runs.

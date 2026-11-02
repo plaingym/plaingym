@@ -134,7 +134,37 @@ export async function cached<T>(name: string, create: () => Promise<T>): Promise
   return value;
 }
 
-export const test = base.extend<object, { install: Install; sandboxes: Sandbox[] }>({
+/** Chromium's console line for a blocked (or, report-only, reported) resource or inline code names the policy. */
+const cspViolation = /Content Security Policy/i;
+
+/** A URL or console line without what can carry a credential: signed-link tokens, queries and fragments. */
+const redacted = (text: string) => text.replace(/\/l\/[A-Za-z0-9_-]{8,}/g, '/l/:token').replace(/[?#][^\s'"]*/g, '');
+interface CspGuard { readonly violations: string[]; watch(context: BrowserContext): void }
+
+export const test = base.extend<{ cspGuard: CspGuard; cspViolations: string[] }, { install: Install; sandboxes: Sandbox[] }>({
+  /**
+   * Fails any test whose pages log a Content-Security-Policy violation: the pages of the default context, when the test
+   * uses it, and of every context the test opens itself (`browser.newContext`, `browser.newPage`), each frame included.
+   */
+  cspGuard: [async ({ browser }, use) => {
+    const violations: string[] = [], watched = new WeakSet<BrowserContext>();
+    const watch = (target: BrowserContext) => {
+      if (watched.has(target)) return;
+      watched.add(target);
+      target.on('console', (message) => {
+        if (!cspViolation.test(message.text())) return;
+        const url = message.page()?.url() ?? message.location().url;
+        violations.push(redacted(`${url}: ${message.text()}`));
+      });
+    };
+    const newContext = browser.newContext;
+    browser.newContext = async (...options) => { const created = await newContext.apply(browser, options); watch(created); return created; };
+    try { await use({ violations, watch }); } finally { browser.newContext = newContext; }
+    expect(violations, 'Content-Security-Policy violations in the browser console').toEqual([]);
+  }, { auto: true }],
+  context: async ({ context, cspGuard }, use) => { cspGuard.watch(context); await use(context); },
+  /** The violations so far, for a test that expects some: it empties the list once it has checked them. */
+  cspViolations: async ({ cspGuard }, use) => { await use(cspGuard.violations); },
   install: [async ({ browserName: _browserName }, use) => {
     const install = await cached('install', initialize);
     const restore = (client: Client) => Object.assign(new Client(client.origin, client.headers), { cookie: client.cookie });

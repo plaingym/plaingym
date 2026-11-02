@@ -46,15 +46,16 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
   expect(fake.customer('cus_erased')).toEqual({ name: ERASED_CUSTOMER_NAME, email: null, phone: null, address: null, shipping: null, description: null });
 });
 
-it('reports images from the uploads bucket\'s origin under the report-only policy', async () => {
+it('allows images from the uploads bucket\'s origin under the enforced policy', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
   const gymId = uuidv7(); await factory('gyms', gymId);
   runtime = await startRuntime({ ...env(directory), UPLOADS_S3_BUCKET: 'gym-uploads', UPLOADS_S3_REGION: 'auto',
     UPLOADS_S3_ENDPOINT: 'https://account.storage.example.test/ignored-path' });
   const response = await runtime.app.request(origin + '/healthz', { headers: { host: 'gym.example.test' } });
-  expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
-  expect(response.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data: https://account.storage.example.test;");
+  expect(response.headers.get('content-security-policy')).toContain("img-src 'self' data: https://account.storage.example.test;");
+  expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  expect(response.headers.has('content-security-policy-report-only')).toBe(false);
 });
 
 it('receives CSP violation reports before tenancy, logging only the sanitized fields', async () => {
@@ -64,7 +65,7 @@ it('receives CSP violation reports before tenancy, logging only the sanitized fi
   runtime = await startRuntime(env(directory));
   const policy = (await runtime.app.request(origin + '/healthz', { headers: { host: 'gym.example.test' } })).headers;
   expect(policy.get('reporting-endpoints')).toBe('csp="/csp-report"');
-  expect(policy.get('content-security-policy-report-only')).toContain('report-uri /csp-report; report-to csp');
+  expect(policy.get('content-security-policy')).toContain('report-uri /csp-report; report-to csp');
   const logs: string[] = [], previous = setLogSink(line => logs.push(line));
   try {
     const report = [{ type: 'csp-violation', url: origin, body: { documentURL: `${origin}/l/secret-link-token?email=a@example.test`,
@@ -95,7 +96,8 @@ it('sends HSTS in production for the install\'s https: host only', async () => {
   expect(await hsts('gym.example.test')).toBeNull();
 });
 
-it('starts with a bucket host the policy cannot name, leaving it out of the report-only policy', async () => {
+// Such a host (a Compose service name) is unreachable from browsers anyway, so leaving it out blocks nothing that loaded.
+it('starts with a bucket host the policy cannot name, leaving it out of the policy', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
   directory ??= await mkdtemp(join(tmpdir(), 'plaingym-hardening-runtime-'));
   const gymId = uuidv7(); await factory('gyms', gymId);
@@ -105,6 +107,6 @@ it('starts with a bucket host the policy cannot name, leaving it out of the repo
       UPLOADS_S3_ENDPOINT: 'http://plaingym_minio:9000' });
   } finally { setLogSink(previous); }
   const response = await runtime.app.request(origin + '/healthz', { headers: { host: 'gym.example.test' } });
-  expect(response.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data:;");
+  expect(response.headers.get('content-security-policy')).toContain("img-src 'self' data:;");
   expect(logs.map(line => JSON.parse(line).event)).toContain('runtime.csp.image_origin_skipped');
 });

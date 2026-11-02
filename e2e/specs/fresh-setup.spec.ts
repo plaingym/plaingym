@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect } from '@playwright/test';
-import { Client, gymOrigin, password } from '../support.js';
+import { test, expect, Client, gymOrigin, password } from '../support.js';
 import { accessibleLayout, reachable, sizes } from '../responsive.js';
 
 // The fresh-setup project runs before any test can initialize the install fixture.

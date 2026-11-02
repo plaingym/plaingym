@@ -60,17 +60,18 @@ describe('server application composition', () => {
     expect(calls).toEqual(['address', 'gym']);
   });
 
-  it('forbids framing every response, keeping the policy a route sets', async () => {
+  it('enforces the default policy, which forbids framing, on every response without its own', async () => {
     const app = createApp({ resolveGym, session: async (_context, next) => { await next(); }, authorize: () => async (_context, next) => { await next(); } });
     app.get('/api/plain', (context) => context.json({ ok: true }));
     app.get('/api/own-policy', (context) => context.body('file', 200, { 'Content-Security-Policy': "default-src 'none'; sandbox" }));
+    app.get('/api/framed', (context) => context.body('file', 200, { 'Content-Security-Policy': context.req.query('policy')! }));
     for (const path of ['/api/plain', '/api/missing', '/healthz']) {
       const response = await app.request(path);
       expect(response.headers.get('x-frame-options')).toBe('DENY');
-      expect(response.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
-      expect(response.headers.get('content-security-policy-report-only')).toBe("default-src 'self'; script-src 'self'; style-src 'self'; "
+      expect(response.headers.get('content-security-policy')).toBe("default-src 'self'; script-src 'self'; style-src 'self'; "
         + "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
-        + 'report-uri /csp-report; report-to csp');
+        + "frame-ancestors 'none'; report-uri /csp-report; report-to csp");
+      expect(response.headers.has('content-security-policy-report-only')).toBe(false);
       expect(response.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
     }
     const own = await app.request('/api/own-policy');
@@ -78,6 +79,12 @@ describe('server application composition', () => {
     expect(own.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox");
     expect(own.headers.has('content-security-policy-report-only')).toBe(false);
     expect(own.headers.has('reporting-endpoints')).toBe(false);
+    // Only a route's own policy that lets the app's pages frame it, and nothing else, relaxes X-Frame-Options to match.
+    const framed = (policy: string) => app.request('/api/framed?policy=' + encodeURIComponent(policy));
+    expect((await framed("default-src 'none'; sandbox; frame-ancestors 'self'")).headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    for (const policy of ["default-src 'none'; frame-ancestors 'self' https://other.example", "default-src 'none'; frame-ancestors *",
+      "default-src 'none'"])
+      expect((await framed(policy)).headers.get('x-frame-options')).toBe('DENY');
   });
   it('sends HSTS only in production, for the canonical https: host', async () => {
     const paths = ['/api/plain', '/api/fails', '/api/own-policy', '/api/missing', '/healthz'];
@@ -107,15 +114,15 @@ describe('server application composition', () => {
     expect(await hsts(perGym, 'unknown.example')).toEqual(none);
     expect(await hsts(perGym, 'install.example')).toEqual(sent);
   });
-  it('reports, without blocking, inline scripts without the response nonce and images from unlisted origins', async () => {
+  it('allows only the response nonce for inline scripts and only the listed origins for images', async () => {
     const app = createApp({ resolveGym, session, authorize: allow, contentSecurity: { imageOrigins: ['https://uploads.example.test'] } });
     app.get('/page', (context) => context.html(`<script nonce="${cspNonce(context)}">1</script>`));
     const pages = await Promise.all([app.request('/page'), app.request('/page')]);
     const nonces = await Promise.all(pages.map(async (page) => {
       const nonce = /nonce="([^"]+)"/.exec(await page.text())![1]!;
       expect(nonce).toMatch(/^[A-Za-z0-9+/]{22}==$/);
-      expect(page.headers.get('content-security-policy-report-only')).toContain(`script-src 'self' 'nonce-${nonce}';`);
-      expect(page.headers.get('content-security-policy-report-only')).toContain("img-src 'self' data: https://uploads.example.test;");
+      expect(page.headers.get('content-security-policy')).toContain(`script-src 'self' 'nonce-${nonce}';`);
+      expect(page.headers.get('content-security-policy')).toContain("img-src 'self' data: https://uploads.example.test;");
       return nonce;
     }));
     expect(nonces[0]).not.toBe(nonces[1]);

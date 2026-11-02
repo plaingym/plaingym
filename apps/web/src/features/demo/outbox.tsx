@@ -43,7 +43,7 @@ export function OutboxPage() {
     {next && <Button type="button" disabled={loading} onClick={() => setCursor(next)}>{t('demo/demo:more')}</Button>}
     {selected && <Dialog title={selected.subject} closeLabel={t('demo/demo:closePreview')} onClose={() => setPreview(null)} size="wide">
       <iframe title={selected.subject} sandbox="" referrerPolicy="no-referrer" className="h-[60dvh] w-full border border-border"
-        srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; style-src &#39;unsafe-inline&#39;; img-src data:">' + selected.html} />
+        src={`/api/demo/outbox/${selected.id}/preview`} />
     </Dialog>}
   </Page>;
 }

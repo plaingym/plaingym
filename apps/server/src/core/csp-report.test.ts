@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { MiddlewareHandler } from 'hono';
+import { AppError } from '@plaingym/shared';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
 import type { RequestEnvironment } from './context.js';
@@ -24,6 +25,24 @@ const events = () => lines.map((line) => JSON.parse(line) as Record<string, unkn
 const post = (body: BodyInit | null, type = 'application/reports+json', headers: Record<string, string> = {}) =>
   app.request(cspReportPath, { method: 'POST', body, headers: { 'content-type': type, ...headers } });
 const reportingBody = (body: Record<string, unknown>) => JSON.stringify([{ type: 'csp-violation', age: 3, url: 'https://gym.example.test/x', body }]);
+const gymIds = { a: '0192f0c4-0000-7000-8000-00000000000a', b: '0192f0c4-0000-7000-8000-00000000000b' };
+/** A multi-gym app whose resolver maps these hostnames to gyms and answers 404 for any other, as the real one does. */
+function multiGym(gyms: Record<string, string>) {
+  const resolved: string[] = [];
+  const tenancy: MiddlewareHandler<RequestEnvironment> = async (context, next) => {
+    const host = new URL(context.req.url).hostname, gymId = gyms[host];
+    resolved.push(host);
+    if (!gymId) return context.notFound();
+    context.set('context', { ...context.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set<string>() } });
+    await next();
+  };
+  app = createApp({ clock, resolveGym: tenancy, session: resolveGym, authorize: allow,
+    rateLimit: { peerAddress: (context) => context.req.header('x-peer') ?? '203.0.113.1' } });
+  const body = reportingBody({ documentURL: 'https://a.gym.example/admin', blockedURL: 'inline', effectiveDirective: 'script-src' });
+  const send = (host: string, peer = '203.0.113.1') => app.request(`https://${host}${cspReportPath}`,
+    { method: 'POST', body, headers: { 'content-type': 'application/reports+json', 'x-peer': peer } });
+  return { send, resolved };
+}
 
 const token = 'k3J9xQ2mZpL0vR8sT5uW7yB1cD4eF6gH-9aN_oIiM2q';
 const secrets = [token, '0192f0c4-7d3e-7a10-8c55-2f1b6e0a9d11', 'jane@example.test', 'secret-sample', 'sid=abc123', 'Jane Doe', 'returned=1'];
@@ -109,7 +128,7 @@ describe('CSP violation reports', () => {
       expect((await post(body, 'application/reports+json', headers)).status).toBe(204);
     expect(events()).toHaveLength(3);
   });
-  it('limits each client to 30 requests a minute and the install to 300, dropping the rest silently', async () => {
+  it('limits each client to 30 requests a minute and a hostname without a gym to 300 for the install, dropping the rest silently', async () => {
     const body = reportingBody({ documentURL: 'https://gym.example.test/admin', blockedURL: 'inline', effectiveDirective: 'script-src' });
     for (let i = 0; i < 30; i++) expect((await post(body)).status).toBe(204);
     expect(events()).toHaveLength(30);
@@ -125,6 +144,88 @@ describe('CSP violation reports', () => {
     expect(events()).toHaveLength(300);
     clock.set('2026-01-01T00:01:01Z');
     await post(body);
+    expect(events()).toHaveLength(301);
+  });
+  it('budgets each gym apart in multi-gym mode, with one install budget for hostnames without a gym', async () => {
+    const { send, resolved } = multiGym({ 'a.gym.example': gymIds.a, 'b.gym.example': gymIds.b });
+    for (let i = 0; i < 31; i++) expect((await send('a.gym.example')).status).toBe(204);
+    expect(events()).toHaveLength(30);
+    // A client over its budget is refused before the gym is looked up, whichever gym it names.
+    expect(resolved).toHaveLength(30);
+    await send('b.gym.example');
+    expect(events()).toHaveLength(30);
+    expect(resolved).toHaveLength(30);
+    // Ten more clients spend gym A's 300; gym B and the install's budget are untouched.
+    for (let peer = 2; peer < 12; peer++) for (let i = 0; i < 30; i++) await send('a.gym.example', `203.0.113.${peer}`);
+    expect(events()).toHaveLength(300);
+    expect((await send('a.gym.example', '203.0.113.99')).status).toBe(204);
+    expect(events()).toHaveLength(300);
+    await send('b.gym.example', '203.0.113.99'); await send('unknown.example', '203.0.113.98');
+    expect(events()).toHaveLength(302);
+    // Requests without a resolved gym share the install's 300, and never a gym's.
+    for (let peer = 100; peer < 110; peer++) for (let i = 0; i < 30; i++) await send('other.example', `203.0.113.${peer}`);
+    expect(events()).toHaveLength(302 + 299);
+    await send('b.gym.example', '203.0.113.200');
+    expect(events()).toHaveLength(602);
+    expect(resolved).toContain('unknown.example');
+  });
+  it('caps the install at 3,000 admitted requests a minute, counting only what each gym admitted', async () => {
+    const hosts = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`g${i}.gym.example`, `0192f0c4-0000-7000-8000-0000000000${String(i).padStart(2, '0')}`]));
+    const { send } = multiGym(hosts);
+    let peer = 0;
+    const flood = async (host: string, clients: number) => {
+      for (let c = 0; c < clients; c++, peer++) for (let i = 0; i < 30; i++)
+        await send(host, `198.51.${Math.floor(peer / 250)}.${peer % 250 + 1}`);
+    };
+    // Gym 0 is flooded far past its budget first: it admits only its own 300 of the ceiling.
+    await flood('g0.gym.example', 20);
+    expect(events()).toHaveLength(300);
+    for (let gym = 1; gym < 10; gym++) await flood(`g${gym}.gym.example`, 10);
+    expect(events()).toHaveLength(3000);
+    await flood('g10.gym.example', 1);
+    expect(events()).toHaveLength(3000);
+    clock.set('2026-01-01T00:01:01Z');
+    await send('g10.gym.example', '192.0.2.200');
+    expect(events()).toHaveLength(3001);
+  });
+  it('counts a report against the install, and answers 204, when the resolver throws', async () => {
+    for (const failure of [new AppError('not_found', 'Gym not found'), new Error('database unavailable')]) {
+      lines.length = 0;
+      app = createApp({ clock, resolveGym: async () => { throw failure; }, session: resolveGym, authorize: allow,
+        rateLimit: { peerAddress: () => '203.0.113.1' } });
+      const response = await post(reportingBody({ documentURL: 'https://gym.example.test/admin', blockedURL: 'inline', effectiveDirective: 'script-src' }));
+      expect(response.status).toBe(204);
+      expect(events()).toMatchObject([{ event: 'csp.violation' }]);
+    }
+  });
+  it('resolves the gym inside the restore gate, and counts a report against the install while the gate is closed', async () => {
+    const calls: string[] = [];
+    let closed = false;
+    const tenancy: MiddlewareHandler<RequestEnvironment> = async (context, next) => {
+      calls.push('resolve');
+      context.set('context', { ...context.get('context'), gym: { gymId: '0192f0c4-0000-7000-8000-00000000000a', timezone: 'UTC', enabledModules: new Set<string>() } });
+      await next();
+    };
+    const restoreGate: MiddlewareHandler<RequestEnvironment> = async (context, next) => {
+      if (closed) { calls.push('refused'); return context.json({ error: { code: 'unavailable' } }, 503); }
+      calls.push('enter'); await next(); calls.push('leave');
+    };
+    app = createApp({ clock, resolveGym: tenancy, restoreGate, session: resolveGym, authorize: allow,
+      rateLimit: { peerAddress: (context) => context.req.header('x-peer') ?? '203.0.113.1' } });
+    const body = reportingBody({ documentURL: 'https://gym.example.test/admin', blockedURL: 'inline', effectiveDirective: 'script-src' });
+    const from = (peer: number) => post(body, 'application/reports+json', { 'x-peer': '203.0.113.' + peer });
+    expect((await from(1)).status).toBe(204);
+    expect(calls).toEqual(['enter', 'resolve', 'leave']);
+    // Spend the rest of the gym's budget; a report the gate keeps from resolving its gym counts against the install's.
+    for (let i = 1; i < 300; i++) await from(Math.floor(i / 30) + 1);
+    expect(events()).toHaveLength(300);
+    await from(20);
+    expect(events()).toHaveLength(300);
+    closed = true; calls.length = 0;
+    const refused = await from(21);
+    expect(refused.status).toBe(204);
+    expect(await refused.text()).toBe('');
+    expect(calls).toEqual(['refused']);
     expect(events()).toHaveLength(301);
   });
   it('answers other methods without a report', async () => {

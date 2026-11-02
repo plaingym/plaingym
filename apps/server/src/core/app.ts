@@ -76,16 +76,15 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     context.set('context', { ...context.get('context'), clientIp: clientIp(context, options.rateLimit) });
     context.header('X-Request-ID', requestId);
     await next();
-    // No page of the app is meant to be framed (clickjacking defense); a route's own CSP is kept as it is.
-    context.res.headers.set('X-Frame-Options', 'DENY');
+    // No page of the app may be framed (clickjacking defense), except by the app's own pages where a route's own policy
+    // says so (the demo outbox preview); a route's own CSP is kept as it is.
+    const own = context.res.headers.get('Content-Security-Policy');
+    context.res.headers.set('X-Frame-Options', own && /(?:^|;)\s*frame-ancestors 'self'\s*(?:;|$)/.test(own) ? 'SAMEORIGIN' : 'DENY');
     const pinned = transportSecurityHost(context);
     if (pinned && pinned === new URL(context.req.url).host) context.res.headers.set('Strict-Transport-Security', strictTransportSecurity);
+    // Enforced, and reported to /csp-report. Routes that set their own (public pages, signed links, downloads) keep theirs.
     if (!context.res.headers.has('Content-Security-Policy')) {
-      context.res.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
-      // Report-only for one release: browsers report violations without blocking. Enforcing it then replaces the
-      // framing-only policy above. Routes that set their own (public pages, signed links, downloads) enforce theirs.
-      context.res.headers.set('Content-Security-Policy-Report-Only',
-        contentSecurityPolicy({ nonce: issuedNonce(context), imageOrigins: images }));
+      context.res.headers.set('Content-Security-Policy', contentSecurityPolicy({ nonce: issuedNonce(context), imageOrigins: images }));
       context.res.headers.set('Reporting-Endpoints', reportingEndpoints);
     }
   });
@@ -99,7 +98,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   };
   mountHealthz(app, installAuthorize);
   mountSourceLink(app, sourceUrl(options.sourceUrl), installAuthorize);
-  mountCspReports(app, installAuthorize, options.rateLimit);
+  mountCspReports(app, installAuthorize, { limits: options.rateLimit, resolveGym: options.resolveGym, restoreGate: options.restoreGate });
   const contributions = { ...options.contributions, routes: (options.contributions?.routes ?? []).filter((entry) =>
     !options.skipSetup || !Object.values(setupContracts).some((contract) => entry.id === `${contract.method.toUpperCase()} ${contract.path}`)) };
   const firstBootIds = new Set(Object.values(setupContracts)

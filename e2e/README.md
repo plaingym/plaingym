@@ -102,9 +102,7 @@ The checks cover:
   installs (manifest, service worker, no installability errors), books a class, waits
   on a full class and is promoted when staff free the place, shows a QR code that the
   kiosk reads from its camera (frames drawn from the portal's own image), and the
-  coach's roster shows the check-in. Two tests are marked `test.fail` for open
-  findings (the payment-mode Checkout start, and the schedule actions' accessible
-  names); each fails until its fix lands, then must be unmarked.
+  coach's roster shows the check-in.
 * Names with no break opportunity (56 characters) stay inside a 360 px screen on the admin bookings panel, dashboard
   widgets, autocomplete options, billing catalog, campaigns and the portal schedule (`long-names.spec.ts`; the portal
   check uses a household of its own). `responsive.spec.ts` checks the layout helper itself on pages it serves: a
@@ -119,6 +117,16 @@ The checks cover:
   uses the full name Marcus Rivera and PIN 2468, avoiding ambiguous households.
   Outbox preview dialogs are checked too; axe excludes the email iframe, whose
   sandbox deliberately forbids scripts, while the test checks its sandbox and title.
+* The enforced Content Security Policy, in every spec: the automatic `cspGuard` fixture
+  (`support.ts`) fails a test whose pages, in the default context (when the test uses it)
+  or any context the test opens itself, log a CSP violation to the browser console,
+  enforced or report-only. Its failure message drops signed-link tokens, queries and
+  fragments. `csp.spec.ts` checks the guard itself (an injected inline script and style
+  are blocked and caught, through `cspViolations`), the staff invitation page's nonce
+  script, the public pages (trial, drop-in, join), that a pay link, a card link and the
+  portal's invoice and card buttons reach the hosted Checkout page by navigation, and
+  that the outbox preview shows a signed-link email with its inline styles under the
+  preview's own policy.
 
 Browser specs and their helpers import only e2e tooling and local test helpers.
 The End-to-end workflow installs this package independently of the application.

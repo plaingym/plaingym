@@ -41,11 +41,22 @@ installs receive it with an image update.
 
 ## Content-Security-Policy reports
 
-Responses that set no policy of their own carry `frame-ancestors 'none'` and a
-report-only policy that names `POST /csp-report` (`report-to` with a
-`Reporting-Endpoints` header, and `report-uri` for older browsers). The route
-(`csp-report.ts`) is public and mounts before tenancy, so it needs no gym, session
-or CSRF Origin; it stores nothing and never echoes a body. It reads
+Responses that set no policy of their own enforce the policy in `csp.ts`
+(`Content-Security-Policy`; no report-only header): `default-src`, `script-src`,
+`style-src`, `font-src`, `connect-src` and `form-action` allow only `'self'`, a
+server-rendered inline script needs the response's `cspNonce`, `img-src` adds
+`data:` and the uploads bucket's origin, `object-src` and `base-uri` are `'none'`,
+and `frame-ancestors 'none'` forbids framing (with `X-Frame-Options: DENY`, sent on
+every response). Routes that set their own policy (public pages, signed links,
+downloads) keep it. An inline `<script>` or `<style>`, a `style` attribute in
+markup and `eval` are blocked, so pages load their code and styles from files; React
+style props are fine, since they set styles through the CSSOM. Stripe Checkout is
+reached by navigation (`location.assign`, or a same-origin link that answers 303),
+never by a form submission, so `form-action` needs no Stripe origin. The policy names
+`POST /csp-report` (`report-to` with a `Reporting-Endpoints` header, and
+`report-uri` for older browsers). The route (`csp-report.ts`) is public and mounts
+before tenancy, so it needs no gym, session or CSRF Origin; it stores nothing and
+never echoes a body. It reads
 `application/reports+json` and `application/csp-report` bodies up to 16 KiB (a larger
 one gets the usual 400 from the body limit) and logs one `csp.violation` line per
 report, up to five per request, holding only the format, the effective directive
@@ -55,7 +66,14 @@ report, up to five per request, holding only the format, the effective directive
 `members`, `invoices`, ...) becomes `:id`, so IDs, tokens and names never appear; the
 query, fragment, host, samples, referrers, source files and the raw body are never
 logged. Any other body or content type is ignored. Each client may send 30 requests a
-minute and the install 300; requests over either budget are dropped unlogged. Every
+minute, counted in memory first, so a client over its budget costs no database read.
+The route then runs the app's tenant resolver itself, inside the restore gate, only to
+budget reports: each gym admits 300 a minute, so one gym's reports never use another's
+budget. Requests whose hostname resolves to no gym (an uninitialized install, an unknown
+host), that arrive while the restore gate is closed, or whose resolver fails share one
+install budget of 300. A ceiling of 3,000 a minute counts only the requests a gym's (or
+the install's) budget admitted, so it bounds the log however many gyms an install has.
+Requests over a budget are dropped unlogged. Every
 request within the body cap and the budgets answers 204, so a browser has nothing to
 retry and a flood nothing to react to.
 

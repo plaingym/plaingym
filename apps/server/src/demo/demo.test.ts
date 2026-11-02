@@ -12,7 +12,7 @@ import { registerDemoCleanup } from './demo.jobs.js';
 import { createDemoService } from './service.js';
 import { demoBootCheck, type DemoConfig } from './config.js';
 import { createDemoIdentities, demoEmail } from './identities.js';
-import { createDemoRoutes, routes as disabledRoutes } from './demo.routes.js';
+import { createDemoRoutes, outboxPreviewPolicy, routes as disabledRoutes } from './demo.routes.js';
 import { createOutboxQuery } from './outbox.js';
 import { demoUploads } from './uploads.js';
 import { createUploadPrefixCleaner } from './storage.js';
@@ -215,16 +215,34 @@ describe('outbox isolation, permissions, and external boundaries', () => {
     const f = fixture(), a = await f.service.create();
     const mail = await factory('emailOutbox', a.gymId);
     const { app } = appFor(createDemoRoutes(f.service, { installOrigin: 'https://demo.example.test', outbox: createOutboxQuery(db.forGym) }), a.gymId, role);
-    for (const path of ['/api/demo/outbox', '/api/demo/outbox/' + mail.id]) expect((await app.request(path)).status).toBe(role === 'owner' || role === 'admin' ? 200 : 403);
+    for (const path of ['/api/demo/outbox', '/api/demo/outbox/' + mail.id, '/api/demo/outbox/' + mail.id + '/preview']) expect((await app.request(path)).status).toBe(role === 'owner' || role === 'admin' ? 200 : 403);
   });
   it('never returns the other sandbox’s message and rejects anonymous outbox access', async () => {
     const f = fixture(), a = await f.service.create(), b = await f.service.create(), secret = await factory('emailOutbox', b.gymId);
     const routes = createDemoRoutes(f.service, { installOrigin: 'https://demo.example.test', outbox: createOutboxQuery(db.forGym) });
     const { app } = appFor(routes, a.gymId);
     expect((await app.request('/api/demo/outbox/' + secret.id)).status).toBe(404);
+    expect((await app.request('/api/demo/outbox/' + secret.id + '/preview')).status).toBe(404);
     expect(JSON.stringify(await (await app.request('/api/demo/outbox')).json())).not.toContain(secret.id);
     expect((await appFor(routes, a.gymId, 'anonymous').app.request('/api/demo/outbox')).status).toBe(401);
     expect((await post(app, '/api/demo/login', { role: 'owner', gymId: b.gymId })).status).toBe(400);
+  });
+  it('serves a message preview with a policy of its own: inline styles, no script, framed only by the app', async () => {
+    const f = fixture(), a = await f.service.create();
+    const html = '<html><body style="margin:0"><p style="color:red">Styled</p></body></html>';
+    const mail = await factory('emailOutbox', a.gymId, { html });
+    const { app } = appFor(createDemoRoutes(f.service, { installOrigin: 'https://demo.example.test', outbox: createOutboxQuery(db.forGym) }), a.gymId);
+    const response = await app.request('/api/demo/outbox/' + mail.id + '/preview');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/html/);
+    expect(await response.text()).toBe(html);
+    expect(response.headers.get('content-security-policy')).toBe(outboxPreviewPolicy);
+    expect(outboxPreviewPolicy).toContain("style-src 'unsafe-inline'");
+    expect(outboxPreviewPolicy).toMatch(/(?:^|; )sandbox(?:;|$)/);
+    expect(outboxPreviewPolicy).toContain("frame-ancestors 'self'");
+    expect(outboxPreviewPolicy).not.toMatch(/script-src|connect-src|unsafe-eval/);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
   });
   it('blocks uploads before touching storage and clears only the chosen gym prefix', async () => {
     const store = new FakeBackupObjectStore(clock()), a = infraContractGyms.a, b = infraContractGyms.b;

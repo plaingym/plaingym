@@ -84,7 +84,12 @@ generic 500 with the request ID, also recorded by `http.unhandled`.
 `OutboxEmail` implements `Email` with no SMTP dependency. It records text and HTML,
 never delivers to an external mailbox, and rejects calls inside transactions.
 The outbox is owner/admin-only, uses cursor pagination, and scopes detail IDs to
-the current gym. Its HTML preview disallows scripts and network requests.
+the current gym. Its HTML preview frame loads `GET /api/demo/outbox/{id}/preview`
+(same permission), which serves the message under a policy of its own: inline styles
+and `data:` images only, no script (`sandbox`, matching the frame's `sandbox`
+attribute), no network requests, and framing only by the app's own pages
+(`frame-ancestors 'self'`, with `X-Frame-Options: SAMEORIGIN`). A `srcdoc` frame would
+take the admin page's policy, which blocks the emails' inline styles.
 
 Identities use the existing account provisioner and auth service. Demo login captures
 and consumes a request-local magic link without an email transport, then returns the

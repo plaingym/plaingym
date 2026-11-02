@@ -38,8 +38,8 @@ export const reportingEndpoints = `${cspReportGroup}="${cspReportPath}"`;
 /**
  * The policy for every response that sets none of its own: the SPA, its assets and the API. Scripts, styles,
  * fonts and connections stay on the app's origin, and server-rendered inline scripts need this response's nonce.
- * Images also allow data: URLs (generated QR codes). frame-ancestors is enforced separately. Violations go to
- * the report route: `report-to` for browsers with the Reporting API, `report-uri` for older ones.
+ * Images also allow data: URLs (generated QR codes). No page may be framed. The policy is enforced, and
+ * violations go to the report route: `report-to` for browsers with the Reporting API, `report-uri` for older ones.
  */
 export function contentSecurityPolicy(options: { nonce?: string | undefined; imageOrigins?: readonly string[] } = {}): string {
   return [
@@ -52,6 +52,7 @@ export function contentSecurityPolicy(options: { nonce?: string | undefined; ima
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'self'",
+    "frame-ancestors 'none'",
     `report-uri ${cspReportPath}`,
     `report-to ${cspReportGroup}`,
   ].join('; ');
