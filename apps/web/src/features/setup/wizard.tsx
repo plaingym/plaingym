@@ -24,13 +24,14 @@ function destination(data: FormData): SetupS3Credentials {
   return { endpoint: text(data, 'endpoint'), region: text(data, 'region'), bucket: text(data, 'bucket'),
     accessKeyId: text(data, 'accessKeyId'), secretAccessKey: text(data, 'secretAccessKey') };
 }
-function Field({ name, type = 'text', value, required = true, maxLength }: {
-  name: string; type?: string; value?: string; required?: boolean; maxLength?: number;
+function Field({ name, type = 'text', value, required = true, maxLength, hint, onEdit }: {
+  name: string; type?: string; value?: string; required?: boolean; maxLength?: number; hint?: string | undefined; onEdit?: () => void;
 }) {
   return <div className="space-y-2"><Label htmlFor={'setup-' + name}>{t('setup/setup:' + name)}</Label>
     <Input id={'setup-' + name} name={name} type={type} defaultValue={value} required={required} maxLength={maxLength}
-      minLength={name === 'password' ? 12 : undefined}
-      autoComplete={type === 'password' ? 'new-password' : 'off'} /></div>;
+      minLength={name === 'password' ? 12 : undefined} onChange={onEdit} aria-describedby={hint ? 'setup-' + name + '-hint' : undefined}
+      autoComplete={type === 'password' ? 'new-password' : 'off'} />
+    {hint && <p id={'setup-' + name + '-hint'} className="text-sm text-muted-foreground">{hint}</p>}</div>;
 }
 function Destination() {
   return <><Field name="endpoint" type="url" /><Field name="region" value="auto" /><Field name="bucket" />
@@ -60,6 +61,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const [restore, setRestore] = useState(false), [jobId, setJobId] = useState<string | null>(() => sessionStorage.getItem('setup.restore'));
   const [restoreState, setRestoreState] = useState<'running' | 'failed' | 'restored' | null>(null);
   const [sent, setSent] = useState(false);
+  const [hostZone] = useState(hostTimezone), [zoneEdited, setZoneEdited] = useState(false);
   const [backupKey, setBackupKey] = useState<{ privateKey: string; publicKey: string } | null>(null);
   const [backupReady, setBackupReady] = useState(false), [done, setDone] = useState(false);
   const revision = status.data?.revision ?? 1;
@@ -131,7 +133,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         {step === 2 && <Form action={async (data) => {
           await client.call('gym', { name: text(data, 'gymName'), timezone: text(data, 'timezone'), currency: text(data, 'currency').toUpperCase(),
             address: text(data, 'address').trim() ? { line1: text(data, 'address').trim() } : {}, branding: { logoKey: null, primaryColor: text(data, 'primaryColor') || null }, revision }); await refresh();
-        }}><Field name="gymName" /><Field name="timezone" value={hostTimezone()} />
+        }}><Field name="gymName" /><Field name="timezone" value={hostZone.zone} hint={hostZone.fallback && !zoneEdited ? t('setup/setup:timezoneFallback') : undefined} onEdit={() => setZoneEdited(true)} />
           <Field name="currency" value="USD" maxLength={3} /><Field name="address" required={false} /><Field name="primaryColor" type="color" value="#2563eb" /></Form>}
         {step === 3 && <Form action={async (data) => {
           const selected = data.getAll('packs').map(String);

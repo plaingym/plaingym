@@ -82,6 +82,19 @@ describe('settings service and routes', () => {
     expect(last.occurredAt).toEqual(clock.now()); expect(JSON.stringify(audits)).not.toContain('private-smtp-password');
     expect(await service.get(gymB)).toMatchObject({ websiteEnabled: false });
   });
+  it('refuses a new timezone outside the shared rule but keeps a stored one saveable', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'CET' });
+    const context = { ...mutation, gymId }, app = server('owner', gymId);
+    const { revision } = await service.get(gymId);
+    for (const timezone of ['EST5EDT', 'PST', 'Mars/Olympus'])
+      expect((await patch(app, '/api/settings', { revision, timezone })).status).toBe(400);
+    expect((await service.get(gymId)).timezone).toBe('CET');
+    // The form sends the whole general section, so the unchanged stored zone must pass with other fields.
+    const saved = await service.update(context, 'general', { revision, name: 'Renamed', timezone: 'CET' });
+    expect(saved).toMatchObject({ name: 'Renamed', timezone: 'CET' });
+    expect((await patch(app, '/api/settings', { revision: saved.revision, timezone: 'America/Vancouver' })).status).toBe(200);
+    expect((await service.get(gymId)).timezone).toBe('America/Vancouver');
+  });
   it('serializes racing saves so only one update wins', async () => {
     const revision = (await service.get(gymA)).revision;
     const results = await Promise.allSettled([service.update(mutation, 'booking', { revision, bookingWindowDays: 10 }), service.update(mutation, 'booking', { revision, bookingWindowDays: 20 })]);

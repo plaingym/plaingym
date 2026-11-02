@@ -7,10 +7,18 @@ import type { RoutePermission } from '../permissions.js';
 const manage = { kind: 'staff', capability: 'settings.manage' } as const satisfies RoutePermission;
 const goLive = { kind: 'staff', capability: 'go_live.manage' } as const satisfies RoutePermission;
 const name = z.string().trim().min(1);
-export const gymTimezoneSchema = z.string().min(1).refine((value) => {
+const knownZone = (value: string) => {
   try { new Intl.DateTimeFormat('en', { timeZone: value }); return true; }
   catch { return false; }
-}, 'Use a supported IANA timezone');
+};
+/** A zone `Intl` knows. Stored zones, which may predate the new-value rule, are read with this schema. */
+export const storedTimezoneSchema = z.string().min(1).refine(knownZone, 'Use a supported IANA timezone');
+/**
+ * The rule for a new timezone in setup, settings and the `gyms create` CLI: `UTC` or a region form such as
+ * `America/Vancouver` that `Intl` knows. A gym's already stored zone (for example `CET`) stays valid unchanged.
+ */
+export const gymTimezoneSchema = z.string().regex(/^(UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)+)$/)
+  .refine(knownZone, 'Use UTC or a region such as America/Vancouver');
 export const gymAddressSchema = z.strictObject({
   line1: z.string().optional(), line2: z.string().optional(), city: z.string().optional(),
   region: z.string().optional(), postalCode: z.string().optional(),
@@ -38,7 +46,7 @@ export const dropInSettingsSchema = z.strictObject({
 export const goLiveSwitchesSchema = z.strictObject({ billingEnabled: z.boolean(), memberEmailsEnabled: z.boolean() });
 /** An allowlist projection: credentials, PIN/QR keys, and opaque settings never leave the service. */
 export const gymSettingsSchema = z.strictObject({
-  id: idSchema, name, slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), timezone: gymTimezoneSchema,
+  id: idSchema, name, slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/), timezone: storedTimezoneSchema,
   address: gymAddressSchema, branding: gymBrandingSchema,
   websiteEnabled: z.boolean(), existingSiteUrl: z.url({ protocol: /^https?$/ }).nullable(),
   currency: currencySchema, ...bookingRulesSchema.shape, ...billingRulesSchema.shape, ...dropInSettingsSchema.shape,

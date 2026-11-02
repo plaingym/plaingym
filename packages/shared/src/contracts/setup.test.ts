@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { canStaff, isRoutePermission, staffRoles } from '../permissions.js';
 import type { gyms } from '../../../db/src/schema/index.js';
 import {
-  setupContracts, setupGymDetailsSchema, setupWebsiteRequestSchema, setupSmtpRequestSchema,
+  setupContracts, setupGymDetailsSchema, setupTimezoneSchema, gymTimezoneSchema, storedTimezoneSchema, setupWebsiteRequestSchema, setupSmtpRequestSchema,
   setupSmtpResponseSchema, setupStripeRequestSchema, setupStripeResponseSchema,
   setupBackupRequestSchema, setupBackupKeyResponseSchema, setupBackupConfirmRequestSchema,
   setupBackupConfirmResponseSchema, setupRestoreRequestSchema, setupRestoreResponseSchema,
@@ -31,6 +31,20 @@ describe('setup wizard contracts', () => {
       }
     }
     expect([...steps].sort()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+  it('uses one timezone rule for new values in setup, settings and the CLI', () => {
+    expect(setupTimezoneSchema).toBe(gymTimezoneSchema);
+    for (const timezone of ['UTC', 'America/Vancouver', 'Asia/Kolkata', 'Etc/GMT+5']) {
+      expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(true);
+      expect(gymTimezoneSchema.safeParse(timezone).success).toBe(true);
+    }
+    for (const timezone of ['CET', 'EST5EDT', 'PST', 'Mars/Olympus', '+01:00', '']) {
+      expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(false);
+      expect(gymTimezoneSchema.safeParse(timezone).success).toBe(false);
+    }
+    // A stored zone from before the rule still reads back; settings applies the rule only when the value changes.
+    expect(storedTimezoneSchema.safeParse('CET').success).toBe(true);
+    expect(storedTimezoneSchema.safeParse('Mars/Olympus').success).toBe(false);
   });
   it('requires gym currency and a valid IANA timezone at step 2', () => {
     expect(setupGymDetailsSchema.parse(details)).toEqual(details);

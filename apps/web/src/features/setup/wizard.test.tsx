@@ -156,25 +156,51 @@ describe('setup wizard', () => {
     const real = Intl.DateTimeFormat;
     // Only the zone the no-argument call reports is replaced; the formatter is otherwise real, as are those the gym timezone schema builds.
     let spy: { mockRestore: () => void } | undefined;
+    let hostReads = 0;
     const hostZone = (timeZone: string | undefined) => {
-      spy = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (...args: unknown[]) {
+      hostReads = 0;
+      const stub = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (...args: unknown[]) {
         const formatter = new (real as unknown as new (...a: unknown[]) => Intl.DateTimeFormat)(...args);
         if (args.length) return formatter;
+        hostReads += 1;
         const options = formatter.resolvedOptions();
         return Object.assign(formatter, { resolvedOptions: () => ({ ...options, timeZone: timeZone as string }) });
       } as unknown as typeof Intl.DateTimeFormat);
+      // Code that calls the constructor's statics must still work under the stub.
+      Object.assign(Intl.DateTimeFormat, { supportedLocalesOf: real.supportedLocalesOf.bind(real) });
+      spy = stub;
     };
     afterEach(() => spy?.mockRestore());
+    const hint = /couldn't detect your timezone/;
     it.each([
-      ['uses a valid host zone', 'America/Vancouver', 'America/Vancouver'],
-      ['falls back to UTC when the host reports no zone', undefined, 'UTC'],
-      ['falls back to UTC when the host zone is unknown', 'Mars/Olympus_Mons', 'UTC'],
+      ['uses a valid host zone without a hint', 'America/Vancouver', 'America/Vancouver', false],
+      ['falls back to UTC with a hint when the host reports no zone', undefined, 'UTC', true],
+      ['falls back to UTC with a hint when the host zone is unknown', 'Mars/Olympus_Mons', 'UTC', true],
       // Intl knows `CET`, but the gym step's request refuses a zone without a region.
-      ['falls back to UTC when the gym step would refuse the host zone', 'CET', 'UTC'],
-    ])('%s', async (_name, zone, expected) => {
+      ['falls back to UTC with a hint when the gym step would refuse the host zone', 'CET', 'UTC', true],
+    ])('%s', async (_name, zone, expected, hinted) => {
       hostZone(zone);
       start(2);
-      expect(((await screen.findByLabelText('IANA timezone')) as HTMLInputElement).value).toBe(expected);
+      const input = (await screen.findByLabelText('IANA timezone')) as HTMLInputElement;
+      expect(input.value).toBe(expected);
+      expect(!!screen.queryByText(hint)).toBe(hinted);
+      expect(input.getAttribute('aria-describedby') !== null).toBe(hinted);
+    });
+    it('drops the fallback hint once the owner edits the field', async () => {
+      hostZone(undefined);
+      start(2);
+      const input = await screen.findByLabelText('IANA timezone');
+      expect(screen.queryByText(hint)).not.toBeNull();
+      await userEvent.type(input, '/Vancouver');
+      expect(screen.queryByText(hint)).toBeNull();
+    });
+    it('reads the host zone once per wizard mount', async () => {
+      hostZone('America/Vancouver');
+      start(2);
+      const input = await screen.findByLabelText('IANA timezone');
+      await userEvent.type(input, 'x');
+      await userEvent.type(screen.getByLabelText('Gym name'), 'Academy');
+      expect(hostReads).toBe(1);
     });
   });
   it('returns from step 8 to the backup step when backups were deferred', async () => {

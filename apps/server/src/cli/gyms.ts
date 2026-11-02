@@ -17,7 +17,9 @@ export function createGymService(options: { mode?: TenancyMode; system?: typeof 
     const hostname = normalizeHostname(input.hostname), email = input.ownerEmail.trim().toLowerCase();
     if (!hostname || !input.name.trim() || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(input.slug) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       throw new AppError('invalid_request', 'Invalid gym details');
-    const timezone = gymTimezoneSchema.parse(input.timezone), currency = currencySchema.parse(input.currency);
+    const zone = gymTimezoneSchema.safeParse(input.timezone);
+    if (!zone.success) throw new AppError('invalid_request', 'Use UTC or a region such as America/Vancouver for the timezone');
+    const timezone = zone.data, currency = currencySchema.parse(input.currency);
     const gymId = await reserveGym({ ...input, name: input.name.trim(), hostname, ownerEmail: email, timezone, currency }, { system, clock, key: options.key });
     // The reservation commits before identity/owner creation. Identical retries
     // resume it; account and owner writes share a second transaction.

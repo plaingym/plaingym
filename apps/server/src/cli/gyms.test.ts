@@ -27,6 +27,13 @@ it('commits one audited gym and domain before owner provisioning, including conc
   expect(audits.filter((event) => event.action === 'gym.created')).toHaveLength(1);
   expect(result).not.toHaveProperty('qrKey');
 });
+it.each(['CET', 'PST', 'Mars/Olympus'])('refuses the timezone %s before reserving anything', async (timezone) => {
+  const provisionOwner = vi.fn();
+  const create = createGymService({ mode: 'multi', system: database.forSystem, key, clock, provisionOwner });
+  await expect(create({ ...input, slug: 'bad-zone', hostname: 'bad-zone.example.test', timezone })).rejects.toThrow();
+  expect(provisionOwner).not.toHaveBeenCalled();
+  expect(await database.forSystem((tx) => tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.slug, 'bad-zone')))).toHaveLength(0);
+});
 it('resumes a committed reservation after owner failure and rejects changed owner or hostname', async () => {
   const provisionOwner = vi.fn().mockRejectedValueOnce(new Error('failure')).mockResolvedValue({ userId: 'owner', delivery: 'email' });
   const create = createGymService({ mode: 'multi', system: database.forSystem, key, clock, provisionOwner });

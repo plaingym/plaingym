@@ -2,14 +2,10 @@
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { currencySchema, idSchema, revisionSchema } from './common.js';
-import { gymAddressSchema } from './settings.js';
+import { gymAddressSchema, gymTimezoneSchema } from './settings.js';
 
 export const setupStepSchema = z.int32().min(0).max(8);
-export const setupTimezoneSchema = z.string().regex(/^(UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)+)$/)
-  .refine((value) => {
-    try { new Intl.DateTimeFormat('en', { timeZone: value }); return true; }
-    catch { return false; }
-  }, 'Expected an IANA timezone');
+export const setupTimezoneSchema = gymTimezoneSchema;
 export const setupStatusResponseSchema = z.strictObject({ data: z.strictObject({
   currentStep: setupStepSchema, completedSteps: z.array(setupStepSchema), completed: z.boolean(), revision: revisionSchema,
 }) });
