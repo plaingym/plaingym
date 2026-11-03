@@ -22,7 +22,8 @@ export const setupGymDetailsSchema = z.strictObject({
 });
 // Currency is mandatory at step 2. Once any plan, charge type, membership or
 // invoice references it, a change is a conflict, never a silent conversion.
-// The response reads the stored zone, which setup accepted before the current rule (such as `Etc/GMT+5`).
+// The response echoes the details as saved, so its zone already passed the request's rule; it is read with the
+// stored rule, which accepts it as it is rather than transforming it again.
 export const setupGymDetailsResponseSchema = z.strictObject({ data: setupGymDetailsSchema.extend({ timezone: storedTimezoneSchema }) });
 export const setupPacksRequestSchema = z.strictObject({
   revision: revisionSchema,

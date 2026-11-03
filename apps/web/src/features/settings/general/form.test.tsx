@@ -63,6 +63,28 @@ describe('general settings timezone', () => {
     expect(within(general).queryByRole('alert')).toBeNull();
     expect(field.getAttribute('aria-invalid')).toBe('false');
   });
+  it('keeps the timezone error through another section\'s save and drops it when Reload restores the stored zone', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValueOnce(refusedZone);
+    client.PATCH.mockImplementation(async (path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...settings, ...body, revision: 4 } }));
+    const general = await renderForm(settings);
+    fireEvent.change(within(general).getByLabelText('Timezone'), { target: { value: 'PST' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    expect(await within(general).findByRole('alert')).toBeDefined();
+    const booking = screen.getByRole('form', { name: 'Class and booking rules' });
+    fireEvent.click(within(booking).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings/booking', expect.anything()));
+    expect(await screen.findByText('Changes saved.')).toBeDefined();
+    // The general form still holds the refused value, so its error stays.
+    expect((within(screen.getByRole('form', { name: 'Gym details' })).getByLabelText('Timezone') as HTMLInputElement).value).toBe('PST');
+    expect(within(screen.getByRole('form', { name: 'Gym details' })).getByRole('alert')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload settings' }));
+    await vi.waitFor(() => expect((within(screen.getByRole('form', { name: 'Gym details' })).getByLabelText('Timezone') as HTMLInputElement).value)
+      .toBe('America/Vancouver'));
+    const field = within(screen.getByRole('form', { name: 'Gym details' })).getByLabelText('Timezone');
+    expect(within(screen.getByRole('form', { name: 'Gym details' })).queryByRole('alert')).toBeNull();
+    expect(field.getAttribute('aria-invalid')).toBe('false');
+  });
   it('keeps the generic message for a 400 about another field', async () => {
     client.PATCH.mockReset();
     client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.' }, requestId: 'r' } });

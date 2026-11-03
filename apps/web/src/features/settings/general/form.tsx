@@ -20,16 +20,21 @@ function Field({ label, className, children }: { label: string; className?: stri
 export function GeneralSettingsForm() {
   const cache = useQueryClient(), gym = useGymSettings(), settings = gym.settings;
   const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false), [zoneError, setZoneError] = useState(false), zoneId = useId();
+  const [busy, setBusy] = useState(false), zoneId = useId();
   // Each form starts over when the settings come from the server (epoch) or after its own save, never after another
   // section's save, so unsaved input in one form survives a save in another.
   const [saves, setSaves] = useState({ general: 0, booking: 0, currency: 0 });
+  const generalKey = 'general-' + gym.epoch + '-' + saves.general;
+  // A refused timezone belongs to the general form it was typed in: a reload starts a new form, without it.
+  const [refusedIn, setRefusedIn] = useState<string | null>(null), zoneError = refusedIn === generalKey;
   async function save(event: FormEvent<HTMLFormElement>, kind: 'general' | 'booking' | 'currency') {
     event.preventDefault();
     if (!settings) return;
     const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) ?? '').trim();
-    setBusy(true); setMessage(''); setZoneError(false);
+    const formKey = generalKey;
+    setBusy(true); setMessage('');
+    if (kind === 'general') setRefusedIn(null);
     // The server's refusal body, kept so a bad timezone is shown at its field; the save queue returns only the status.
     let refusal: unknown;
     try {
@@ -52,7 +57,7 @@ export function GeneralSettingsForm() {
         return api.PATCH('/api/settings/currency', { body: { revision, currency: value('currency').toUpperCase() } });
       };
       const result = await gym.save(send);
-      if (result.status === 400 && refusedTimezone(refusal)) { setZoneError(true); return; }
+      if (result.status === 400 && refusedTimezone(refusal)) { setRefusedIn(formKey); return; }
       if (result.status >= 300) { setMessage(text(result.status === 409 ? 'conflict' : 'error')); return; }
       setSaves((current) => ({ ...current, [kind]: current[kind] + 1 })); setMessage(text('saved'));
       // Screens read the gym's currency and timezone from the cached shell summary; refetch it now, not after its stale time.
@@ -68,12 +73,12 @@ export function GeneralSettingsForm() {
     </div>
     {message && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{message}</p>}
     {gym.failed && <ErrorState message={text('error')} onRetry={gym.reload}/>}
-    <form key={'general-' + gym.epoch + '-' + saves.general} onSubmit={(event) => void save(event, 'general')} aria-label={text('general')}>
+    <form key={generalKey} onSubmit={(event) => void save(event, 'general')} aria-label={text('general')}>
       <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
         <Field label={text('name')} className="sm:col-span-2"><Input name="name" required defaultValue={settings.name}/></Field>
         <div className="grid min-w-0 gap-2 sm:col-span-2">
           <Field label={text('timezone')}>
-            <Input name="timezone" required defaultValue={settings.timezone} onChange={() => setZoneError(false)}
+            <Input name="timezone" required defaultValue={settings.timezone} onChange={() => setRefusedIn(null)}
               aria-invalid={zoneError} aria-describedby={zoneId + '-help' + (zoneError ? ' ' + zoneId + '-error' : '')}/></Field>
           <p id={zoneId + '-help'} className="text-sm text-muted-foreground">{text('timezoneHelp')}</p>
           {zoneError && <p id={zoneId + '-error'} role="alert" className="text-sm text-destructive">{text('timezoneInvalid')}</p>}
