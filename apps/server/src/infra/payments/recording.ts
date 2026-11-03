@@ -54,7 +54,8 @@ export class FixtureRecorder {
   wrap(payments: Payments): Payments {
     return new Proxy(payments, { get: (target, property: keyof Payments) => {
       if (!paymentMethods.has(property)) return Reflect.get(target, property, target);
-      const method = target[property];
+      // Every name in paymentMethods is a method; the other members (keyMode) are returned above.
+      const method = target[property as Exclude<keyof Payments, 'keyMode'>];
       return (...args: unknown[]) => this.run(property, args, () => Reflect.apply(method, target, args));
     } });
   }

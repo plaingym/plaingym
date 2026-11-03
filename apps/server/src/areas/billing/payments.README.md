@@ -41,8 +41,10 @@ Refunds reserve their balance through the transitions before calling Stripe;
 pending refunds count against the refundable balance. A lost response leaves the
 reservation pending, and an explicit retry reuses that reservation's key inside
 the 23-hour window. Older pending refunds require reconciliation. A pending refund
-with a null reason can resume after a crash and save the requested reason.
-Manual refunds record money already returned to the payer. Routes restrict refunds to owners and
+with a null reason can resume after a crash and save the requested reason. A card
+payment marked `Stripe test mode` by a switch from test to live is refused
+(`test_payment`) before anything is reserved: it lives in the test account, which
+the gym's live key can't refund. Manual refunds record money already returned to the payer. Routes restrict refunds to owners and
 admins; front desk may collect payments and remove a card.
 
 A one-off from a charge type needs only `payments.record`. A custom-amount one-off

@@ -124,8 +124,20 @@ again, and every change is recorded in the audit log without them.
   kept or replaced exactly as in setup. Once any household has a Stripe customer,
   a card is saved or a card payment exists, the new key must be for the same Stripe
   account and the same mode: those customers, cards and payments belong to it.
-  That includes test mode: once a test card or customer exists, a live key is
-  refused.
+  To go live after trying billing in test mode, paste the live key: the page lists
+  what switching clears and what stays, and switches only after you confirm. Once
+  the live key is checked, the Stripe customers and saved cards made in test mode
+  and the open Stripe payment and card pages are cleared (members get a live
+  customer the first time they pay or save a card, and their links keep working);
+  invoices stay, and test card payments stay on them, marked "Stripe test mode"
+  (they can't be refunded: no real money moved). Imported Stripe customer IDs and
+  cards stay too, since they may be your live ones. The switch waits while a card
+  payment or refund is still being processed. Once live customers, cards or
+  payments exist, a test key is refused. If you skipped Stripe in setup and
+  imported households with Stripe customer IDs, a key from any account is
+  accepted. With a live key, a customer the account can't read gets a new one the
+  first time that member pays or saves a card; a test key can't read live
+  customers, so with one, those members' payment and card links aren't available.
 * **Backups** sets up backups skipped in setup, or moves them to another bucket,
   or replaces the backup key. As in setup, the app shows a new private key **once**,
   and nothing changes until you paste it back to prove you saved it; until then,
@@ -158,8 +170,9 @@ Paste it into the wizard's payment step (or, later, **Settings → Email, paymen
 and backups**). The app checks each permission without
 moving money (a missing one is named), then registers its webhook endpoint at
 `https://gym.example.org/webhooks/stripe`. Use a test key (`rk_test_…`) to try
-billing first; a live key (`rk_live_…`) takes real payments. Members enter cards
-only on Stripe's hosted pages.
+billing first; a live key (`rk_live_…`) takes real payments, and replaces the
+test key in **Settings → Email, payments and backups** once you confirm clearing
+the test data. Members enter cards only on Stripe's hosted pages.
 
 ## Sign-in
 

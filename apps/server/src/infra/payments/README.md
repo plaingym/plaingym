@@ -21,7 +21,10 @@ PaymentIntent or SetupIntent. Stripe-generated child objects are matched through
 their parent: a card's Customer, or a refund/dispute's Charge and PaymentIntent.
 Customers created elsewhere (imported Stripe customer IDs) carry no `gym_id` and are
 refused until `adoptCustomer(id)` tags them; it is idempotent and refuses customers
-tagged for another gym. Call it only on staff-provided IDs. Email matches are
+tagged for another gym. Call it only on staff-provided IDs. A test key can't see
+live-mode objects, so a live customer it reads looks missing, as one from another
+account does; `keyMode` (`test` or `live` for `StripePayments`, unset by default
+on `FakePayments`) lets callers tell which key they hold. Email matches are
 restricted to tagged customers and ambiguity fails closed. The saved
 method is returned explicitly; a Checkout success never implies a Customer default.
 

@@ -26,6 +26,7 @@ import { createWebhookInbox, createWebhookHealthQuery } from './webhooks/inbox.j
 import { createWebhookInboxRoutes } from './webhooks/inbox.routes.js';
 import { composeBillingWebhooks } from './webhooks/handlers/composition.js';
 import { createSignedLinkCheckout } from './signed-link-checkout.js';
+import { customerUnlinkedAction } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const origin = 'https://gym.example.test', secret = 'synthetic-signing-secret';
@@ -329,6 +330,49 @@ describe('signed-link audit regressions with real PostgreSQL', () => {
 });
 
 describe('card setup recovery with real PostgreSQL', () => {
+  it.each([true, false])('starts a new setup for the new customer once the household’s customer ID was cleared, never the old session (start names its customer: %s)', async names => {
+    const f = await fixture('update_card'), first = await f.checkout.start(f.gymId, f.linkId);
+    // A switch from test to live clears the ID and audits it, as Settings → Payments does. A start for the old customer
+    // that commits after the unlink (it read the household before the switch) is still recognised as the old customer's.
+    await db.forGym(f.gymId, async tx => {
+      await tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, f.household.id));
+      await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: customerUnlinkedAction, targetType: 'household',
+        targetId: f.household.id, before: { customerId: 'cus_fixture' }, after: { customerId: null }, occurredAt: f.clock.now() });
+    });
+    await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: 'billing.card_setup.started',
+      targetType: 'signed_link', targetId: f.linkId, after: names ? { sessionId: first.session.id, customerId: 'cus_fixture' } : { sessionId: first.session.id },
+      occurredAt: f.clock.now() }));
+    const create = vi.spyOn(f.fake, 'createCheckout');
+    const next = await f.checkout.start(f.gymId, f.linkId);
+    const customerId = (await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))[0]!.stripeCustomerId;
+    expect(customerId).not.toBe('cus_fixture');
+    expect(next.session).toMatchObject({ status: 'open', mode: 'setup', customerId });
+    expect(next.session.id).not.toBe(first.session.id);
+    expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ idempotencyKey: `signed-link:${f.linkId}:setup:after:${first.session.id}` }));
+    expect((await f.checkout.start(f.gymId, f.linkId)).session.id).toBe(next.session.id);
+  });
+  it('keeps an imported customer ID a test key can’t read, and offers no Checkout, since it may be a live customer', async () => {
+    const f = await fixture('update_card', true);
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_ImportedLive' }).where(eq(households.id, f.household.id)));
+    await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toMatchObject({ cause: { reason: 'customer_unreadable' } });
+    const [household] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
+    expect(household!.stripeCustomerId).toBe('cus_ImportedLive');
+    expect(f.transport.requests.some(request => request.method === 'POST' && request.path === '/v1/checkout/sessions')).toBe(false);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerUnlinkedAction)))).toEqual([]);
+  });
+  it('replaces an imported customer ID the live Stripe account can’t read before Checkout uses it', async () => {
+    const f = await fixture('update_card', true);
+    f.setProvider(new StripePayments(f.gymId, { transport: f.transport, clock: f.clock, webhookSecret: secret, mode: 'live' }));
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_FromAnotherAccount' }).where(eq(households.id, f.household.id)));
+    const started = await f.checkout.start(f.gymId, f.linkId);
+    const [household] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
+    expect(household!.stripeCustomerId).toMatch(/^cus_\d+$/);
+    expect(started.session.customerId).toBe(household!.stripeCustomerId);
+    expect(f.transport.requests.filter(request => request.method === 'POST' && request.path === '/v1/checkout/sessions')
+      .every(request => request.params?.customer === household!.stripeCustomerId)).toBe(true);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerUnlinkedAction)));
+    expect(audits).toMatchObject([{ targetId: f.household.id, before: { customerId: 'cus_FromAnotherAccount' }, after: { customerId: null, reason: 'unreadable' } }]);
+  });
   for (const stripe of [false, true]) {
     const name = stripe ? 'Stripe' : 'fake';
     const saved = (f: Awaited<ReturnType<typeof fixture>>) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));

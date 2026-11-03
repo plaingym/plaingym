@@ -2,12 +2,12 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { auditEvents, gyms, uuidv7 } from '@plaingym/db';
+import { auditEvents, gyms, households, invoices, paymentAttempts, paymentMethods, payments, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { staffRoles, type StaffRole } from '@plaingym/shared';
-import { createBackupKeyResponseSchema, integrationsResponseSchema, saveEmailIntegrationResponseSchema } from '@plaingym/shared/contracts';
+import { createBackupKeyResponseSchema, integrationsResponseSchema, saveEmailIntegrationResponseSchema, stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { createServerRegistry } from '../../core/registry.js';
 import { errorHandler } from '../../core/errors.js';
 import { authorize } from '../staff/auth.permissions.js';
@@ -17,6 +17,7 @@ import { decryptSecret } from '../../core/secrets.js';
 import { setLogSink } from '../../core/log.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
+import { StripePayments } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
 import type { StripeConfig } from '../setup/stripe-step.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
@@ -32,10 +33,18 @@ const withPassword = new Set<string>();
 const hasPassword = vi.fn(async (userId: string) => withPassword.has(userId));
 const requestSnapshot = vi.fn(async (_change: string) => { assertNoTransaction('integrations snapshot request'); });
 const checkDestination = vi.fn(async (_destination: unknown) => { assertNoTransaction('integrations destination check'); });
+/** A live key's account: Stripe marks its objects `livemode`. */
+class LiveFixtures extends StripeFixtures {
+  override async request(input: Parameters<StripeFixtures['request']>[0]) {
+    const result = await super.request(input), stored = typeof result.id === 'string' ? this.objects.get(result.id) : undefined;
+    if (stored) stored.livemode = true;
+    return 'livemode' in result ? { ...result, livemode: true } : result;
+  }
+}
 /** One synthetic Stripe account per key, unless a test points a key at an existing account. */
 const accounts = new Map<string, StripeFixtures>();
 const account = (apiKey: string) => {
-  if (!accounts.has(apiKey)) accounts.set(apiKey, new StripeFixtures('provisioning', undefined, (accounts.size + 1) * 1000));
+  if (!accounts.has(apiKey)) accounts.set(apiKey, new (apiKey.startsWith('rk_live_') ? LiveFixtures : StripeFixtures)('provisioning', undefined, (accounts.size + 1) * 1000));
   return accounts.get(apiKey)!;
 };
 const base: IntegrationsOptions = { key, env, config: authConfig(env, false), origin: async () => origin, hasPassword, clock, requestSnapshot, checkDestination,
@@ -156,7 +165,8 @@ describe('Settings → Payments', () => {
   it('connects a key through the setup probe and webhook lifecycle, and accepts another account while nothing belongs to the first', async () => {
     const first = await save('rk_test_first');
     expect(first.status, JSON.stringify(first.json)).toBe(200);
-    expect(integrationsResponseSchema.parse(first.json).data.payments).toEqual({ configured: true, mode: 'test', webhookRegistered: true, accountLocked: false });
+    expect(integrationsResponseSchema.parse(first.json).data.payments).toEqual({ configured: true, mode: 'test', webhookRegistered: true, accountLocked: false,
+      testData: null, importedCustomersOnly: false });
     const firstConfig = (await stripeOf())!;
     expect(firstConfig).toMatchObject({ apiKey: 'rk_test_first', mode: 'test' });
     expect(account('rk_test_first').objects.get(firstConfig.endpointId)).toMatchObject({ url: origin + '/webhooks/stripe', metadata: { gym_id: gymA } });
@@ -189,7 +199,10 @@ describe('Settings → Payments', () => {
     await factory('households', gymA, { stripeCustomerId: String(customer.id) });
     expect((await read()).payments.accountLocked).toBe(true);
     // Row-level security: gym A's customer never locks gym B, and gym B sees none of gym A's settings.
-    expect((await read(server({ gymId: gymB }))).payments).toEqual({ configured: false, mode: null, webhookRegistered: false, accountLocked: false });
+    expect((await read(server({ gymId: gymB }))).payments).toEqual({ configured: false, mode: null, webhookRegistered: false, accountLocked: false,
+      testData: null, importedCustomersOnly: false });
+    // Written straight to the household, as an import does: kept by a switch, since it may be a live customer.
+    expect((await read()).payments.testData).toEqual({ customers: 0, cards: 0, checkouts: 0, payments: 0, importedCustomers: 1, importedCards: 0 });
     const before = await row();
     const foreign = await save('rk_test_foreign');
     expect(foreign.status).toBe(409);
@@ -213,6 +226,159 @@ describe('Settings → Payments', () => {
     const kept = (await stripeOf())!;
     expect((await save('rk_test_rotated')).status).toBe(200);
     expect(await stripeOf()).toEqual({ ...kept, apiKey: 'rk_test_rotated' });
+  });
+});
+
+describe('Settings → Payments: test to live', () => {
+  const gymC = uuidv7(), gymD = uuidv7();
+  let ownerC: string, ownerD: string;
+  beforeAll(async () => {
+    await factory('gyms', gymC, { name: 'Gym C' }); await factory('gyms', gymD, { name: 'Gym D' });
+    ownerC = (await factory('authUser', gymC)).id; ownerD = (await factory('authUser', gymD)).id;
+  });
+  const appC = () => server({ gymId: gymC, userId: ownerC }), appD = () => server({ gymId: gymD, userId: ownerD });
+  const saveTo = async (app: ReturnType<typeof server>, restrictedKey: string, extra: Record<string, unknown> = {}) =>
+    call(app, 'PUT', '/stripe', { revision: (await read(app)).revision, restrictedKey, ...extra });
+  const audits = (gymId: string, action: string) => database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, action)));
+  /** The gym's Stripe objects as the app sees them: what the switch may change. */
+  const snapshot = (gymId: string) => database.forGym(gymId, async (tx) => ({
+    households: await tx.select().from(households), cards: await tx.select().from(paymentMethods), invoices: await tx.select().from(invoices),
+    attempts: await tx.select().from(paymentAttempts), payments: await tx.select().from(payments) }));
+
+  it('clears exactly the test-mode references after the live key connects, in one audited change, and keeps the books', async () => {
+    expect((await saveTo(appC(), 'rk_test_gymc')).status).toBe(200);
+    const test = account('rk_test_gymc'), testConfig = (await stripeOf(gymC))!;
+    const provider = new StripePayments(gymC, { transport: test, webhookSecret: 'whsec_fixture', mode: 'test' });
+    // A household with a test customer the app created, a saved card, an open pay link and an open card setup link.
+    const customer = await provider.createCustomer({ email: 'payer@example.test', name: 'Payer', householdId: uuidv7(), idempotencyKey: 'c1' });
+    const payer = await factory('households', gymC, { stripeCustomerId: customer.id, email: 'payer@example.test' });
+    await factory('auditEvents', gymC, { action: 'billing.customer.linked', targetType: 'household', targetId: payer.id, after: { customerId: customer.id } });
+    const card = await factory('paymentMethods', gymC, { householdId: payer.id, processorId: 'pm_4242', isDefault: true });
+    // A test customer matched by email for a link campaign.
+    const matched = await factory('households', gymC, { stripeCustomerId: 'cus_TestMatched' });
+    await factory('auditEvents', gymC, { action: 'link_campaign.customer_matched', targetType: 'household', targetId: matched.id,
+      after: { matched: true, customerId: 'cus_TestMatched' } });
+    // Imported references are written without asking Stripe, so they may be the gym's live ones: an imported customer and
+    // its imported card stay. An imported card on the payer's household goes with the payer's test customer.
+    const imported = await factory('households', gymC, { stripeCustomerId: 'cus_ImportedLive' });
+    const importedCard = await factory('paymentMethods', gymC, { householdId: imported.id, processorId: 'pm_ImportedLive', isDefault: true });
+    const payerImport = await factory('paymentMethods', gymC, { householdId: payer.id, processorId: 'pm_ImportedPayer' });
+    for (const method of [importedCard, payerImport])
+      await factory('auditEvents', gymC, { action: 'payment_method.created', targetType: 'payment_method', targetId: method.id, after: { importId: uuidv7() } });
+    const checkout = (invoiceId: string) => provider.createCheckout({ mode: 'payment', customerId: customer.id, invoiceId, amount: 5000, currency: 'usd',
+      successUrl: origin + '/l/return', cancelUrl: origin + '/l/return', saveForOffSession: false, idempotencyKey: 'checkout:' + invoiceId });
+    const open = await factory('invoices', gymC, { householdId: payer.id, status: 'open', number: 1 });
+    const payLink = await checkout(open.id);
+    await database.forGym(gymC, (tx) => tx.update(invoices).set({ checkoutSessionId: payLink.id, checkoutExpiresAt: new Date('2026-11-03T00:00:00Z') }).where(eq(invoices.id, open.id)));
+    const link = await factory('signedLinks', gymC, { householdId: payer.id, purpose: 'update_card', expiresAt: new Date('2026-12-01T00:00:00Z') });
+    const setup = await provider.createCheckout({ mode: 'setup', customerId: customer.id, linkId: link.id, successUrl: origin + '/l/return',
+      cancelUrl: origin + '/l/return', saveForOffSession: true, idempotencyKey: 'setup:' + link.id });
+    await factory('auditEvents', gymC, { action: 'billing.card_setup.started', targetType: 'signed_link', targetId: link.id, after: { sessionId: setup.id } });
+    // A paid invoice with its test card payment, a cash payment, and an action-needed attempt on a past-due invoice.
+    // A paid invoice keeps its completed session's ID as history.
+    const paid = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 2, checkoutSessionId: 'cs_completed' });
+    const cardPayment = await factory('payments', gymC, { invoiceId: paid.id, method: 'card', paymentIntentId: 'pi_testpaid', chargeId: 'ch_testpaid' });
+    const cash = await factory('payments', gymC, { invoiceId: paid.id, method: 'cash', reference: 'Receipt 12', amountCents: 100 });
+    const pastDue = await factory('invoices', gymC, { householdId: payer.id, kind: 'one_off', status: 'past_due', number: 3 });
+    const intent = await test.request({ method: 'POST', path: '/v1/payment_intents', params: { amount: 10000, currency: 'usd', customer: customer.id, metadata: { gym_id: gymC } } });
+    const actionNeeded = await factory('paymentAttempts', gymC, { invoiceId: pastDue.id, status: 'requires_action', paymentIntentId: String(intent.id),
+      stripeCustomerId: customer.id, savedPaymentMethod: 'pm_4242', declineCode: 'authentication_required', resolvedAt: clock.now() });
+    // Another gym's Stripe references are never read or touched.
+    const other = await factory('households', gymB, { stripeCustomerId: 'cus_GymB' });
+    // A household whose customer creation may still be in flight with the test key.
+    const creating = await factory('households', gymC);
+    await factory('auditEvents', gymC, { action: 'billing.customer.creation_reserved', targetType: 'household', targetId: creating.id, after: { requestHash: 'x' } });
+
+    expect((await read(appC())).payments).toEqual({ configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
+      testData: { customers: 2, cards: 2, checkouts: 2, payments: 1, importedCustomers: 1, importedCards: 1 }, importedCustomersOnly: false });
+    const before = await snapshot(gymC), gym = await row(gymC);
+
+    // Without the confirmation, a live key stays refused, and nothing changes.
+    const refused = await saveTo(appC(), 'rk_live_gymc');
+    expect(refused.status).toBe(409);
+    expect(refused.json?.error?.details).toEqual({ restrictedKey: ['mode_locked'] });
+    // A charge in flight refuses the switch before any endpoint is registered for the live key.
+    const pending = await factory('paymentAttempts', gymC, { invoiceId: open.id, attemptNumber: 1, status: 'pending', stripeCustomerId: customer.id });
+    const busy = await saveTo(appC(), 'rk_live_gymc', { clearTestData: true });
+    expect(busy.status).toBe(409);
+    expect(busy.json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
+    expect([...account('rk_live_gymc').objects.values()].some((object) => object.object === 'webhook_endpoint')).toBe(false);
+    expect(await snapshot(gymC)).toEqual({ ...before, attempts: [...before.attempts, pending] });
+    expect(await row(gymC)).toEqual(gym);
+    await database.forGym(gymC, (tx) => tx.update(paymentAttempts).set({ status: 'failed', resolvedAt: clock.now() }).where(eq(paymentAttempts.id, pending.id)));
+
+    const switched = await saveTo(appC(), 'rk_live_gymc', { clearTestData: true });
+    expect(switched.status, JSON.stringify(switched.json)).toBe(200);
+    // The kept imported customer still ties the gym to its account.
+    expect(integrationsResponseSchema.parse(switched.json).data.payments).toEqual({ configured: true, mode: 'live', webhookRegistered: true,
+      accountLocked: true, testData: null, importedCustomersOnly: false });
+    expect(await stripeOf(gymC)).toMatchObject({ apiKey: 'rk_live_gymc', mode: 'live' });
+    const after = await snapshot(gymC);
+    expect(Object.fromEntries(after.households.map((household) => [household.id, household.stripeCustomerId])))
+      .toEqual({ [payer.id]: null, [matched.id]: null, [imported.id]: 'cus_ImportedLive', [creating.id]: null });
+    expect(after.cards.sort((a, b) => a.id.localeCompare(b.id))).toEqual([{ ...card, isDefault: false, revokedAt: clock.now() },
+      importedCard, { ...payerImport, isDefault: false, revokedAt: clock.now() }].sort((a, b) => a.id.localeCompare(b.id)));
+    expect(after.invoices.find((invoice) => invoice.id === open.id)).toMatchObject({ status: 'open', checkoutSessionId: null, checkoutExpiresAt: null });
+    expect(after.invoices.find((invoice) => invoice.id === paid.id)).toEqual(before.invoices.find((invoice) => invoice.id === paid.id));
+    expect(after.attempts.find((attempt) => attempt.id === actionNeeded.id)).toMatchObject({ status: 'failed', declineCode: 'authentication_required' });
+    // The test card payment stays in the books, marked as test; the cash payment is untouched.
+    expect(after.payments.find((payment) => payment.id === cardPayment.id)).toEqual({ ...cardPayment, reference: stripeTestPaymentReference });
+    expect(after.payments.find((payment) => payment.id === cash.id)).toEqual(cash);
+    expect((await database.forGym(gymB, (tx) => tx.select().from(households).where(eq(households.id, other.id))))[0]).toEqual(other);
+    // One clearing audit with what it did, and an unlink audit per household, so reservations for the old customers no longer count.
+    const [cleared] = await audits(gymC, 'integrations.stripe_test_cleared');
+    expect(cleared).toMatchObject({ actorUserId: ownerC, targetId: gymC,
+      after: { customers: 2, cards: 2, checkouts: 2, actionNeeded: 1, payments: 1, keptImportedCustomers: 1, keptImportedCards: 1,
+        reservations: 1, abandonedCreations: 1, paymentIds: [cardPayment.id] } });
+    expect((await audits(gymC, 'billing.customer.unlinked')).map((audit) => [audit.targetId, audit.before]).sort())
+      .toEqual([[payer.id, { customerId: customer.id }], [matched.id, { customerId: 'cus_TestMatched' }], [creating.id, { customerId: null }]].sort());
+    expect((await audits(gymC, 'integrations.stripe_saved')).at(-1)).toMatchObject({ before: { mode: 'test' }, after: { mode: 'live', testDataCleared: true } });
+    // The test Checkout sessions can't complete, the action-needed intent is cancelled, and the old test endpoint is gone.
+    expect(test.objects.get(payLink.id)).toMatchObject({ status: 'expired' });
+    expect(test.objects.get(setup.id)).toMatchObject({ status: 'expired' });
+    expect(() => test.completeCheckout(payLink.id)).toThrow('Checkout is not open');
+    expect(test.objects.get(String(intent.id))).toMatchObject({ status: 'canceled' });
+    expect(test.objects.has(testConfig.endpointId)).toBe(false);
+  });
+  it('keeps live to test refused, and never touches a live-mode reference', async () => {
+    const live = new StripePayments(gymC, { transport: account('rk_live_gymc'), webhookSecret: 'whsec_fixture', mode: 'live' });
+    const customer = await live.createCustomer({ email: 'live@example.test', name: 'Live', householdId: uuidv7(), idempotencyKey: 'live1' });
+    const household = await factory('households', gymC, { stripeCustomerId: customer.id });
+    const card = await factory('paymentMethods', gymC, { householdId: household.id, processorId: 'pm_0341', isDefault: true });
+    const invoice = await factory('invoices', gymC, { householdId: household.id, status: 'paid', number: 4 });
+    const payment = await factory('payments', gymC, { invoiceId: invoice.id, method: 'card', paymentIntentId: 'pi_live', chargeId: 'ch_live' });
+    expect((await read(appC())).payments).toMatchObject({ mode: 'live', accountLocked: true, testData: null });
+    for (const extra of [{}, { clearTestData: true }]) {
+      const back = await saveTo(appC(), 'rk_test_back', extra);
+      expect(back.status).toBe(409);
+      expect(back.json?.error?.details).toEqual({ restrictedKey: ['mode_locked'] });
+    }
+    // The confirmation means nothing from live: a rotated live key keeps every reference.
+    const before = await snapshot(gymC);
+    accounts.set('rk_live_rotated', account('rk_live_gymc'));
+    expect((await saveTo(appC(), 'rk_live_rotated', { clearTestData: true })).status).toBe(200);
+    expect(await snapshot(gymC)).toEqual(before);
+    expect(before.households.find((row) => row.id === household.id)?.stripeCustomerId).toBe(customer.id);
+    expect(before.cards.find((row) => row.id === card.id)?.revokedAt).toBeNull();
+    expect(before.payments.find((row) => row.id === payment.id)?.reference).toBeNull();
+    expect(await audits(gymC, 'integrations.stripe_test_cleared')).toHaveLength(1);
+  });
+  it('accepts any account while only imported customer IDs exist, and checks again once there are cards', async () => {
+    await factory('households', gymD, { stripeCustomerId: 'cus_FromAnotherProcessor' });
+    expect((await read(appD())).payments).toEqual({ configured: false, mode: null, webhookRegistered: false, accountLocked: false,
+      testData: null, importedCustomersOnly: true });
+    // With a card, the gym is tied to its account even before any Stripe settings are saved.
+    const card = await factory('paymentMethods', gymD, { householdId: (await factory('households', gymD)).id, processorId: 'pm_FromAnotherProcessor' });
+    expect((await read(appD())).payments).toMatchObject({ accountLocked: true, importedCustomersOnly: false });
+    expect((await saveTo(appD(), 'rk_test_gymd')).json?.error?.details).toEqual({ restrictedKey: ['account_locked'] });
+    await database.forGym(gymD, (tx) => tx.delete(paymentMethods).where(eq(paymentMethods.id, card.id)));
+    const fresh = account('rk_test_gymd');
+    fresh.requests.length = 0;
+    const saved = await saveTo(appD(), 'rk_test_gymd');
+    expect(saved.status, JSON.stringify(saved.json)).toBe(200);
+    // No account check: the new key was never asked for the imported customer.
+    expect(fresh.requests.some((request) => request.path.includes('cus_FromAnotherProcessor'))).toBe(false);
+    expect(integrationsResponseSchema.parse(saved.json).data.payments).toMatchObject({ configured: true, mode: 'test', importedCustomersOnly: false });
   });
 });
 

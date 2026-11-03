@@ -137,6 +137,11 @@ export interface PaymentEvent {
   readonly objectKind: PaymentObjectReference['kind'];
 }
 export interface Payments {
+  /**
+   * The key's mode, where the provider knows it. A test key can't see live-mode objects, so a live customer it reads
+   * looks missing, exactly as one from another account does.
+   */
+  readonly keyMode?: 'test' | 'live' | undefined;
   /** Creates a customer owned by this gym and household; callers persist the key before calling. */
   createCustomer(request: CreateCustomer): Promise<{ id: string; email: string }>;
   createCharge(request: CreateCharge): Promise<{ id: string }>;
@@ -262,6 +267,8 @@ export interface CustomerDetails {
 }
 
 export class FakePayments implements Payments {
+  /** Unset by default, as for a provider that doesn't know its mode; tests set it. */
+  keyMode: 'test' | 'live' | undefined;
   readonly #charges = new Map<string, StoredCharge>();
   readonly #checkouts = new Map<string, CheckoutSession>();
   readonly #checkoutRequests = new Map<string, CheckoutRequest>();

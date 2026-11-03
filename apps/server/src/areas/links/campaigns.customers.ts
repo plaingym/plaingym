@@ -27,7 +27,7 @@ export async function matchCampaignCustomer(options: {
       if (claimed) return;
       await tx.update(households).set({ stripeCustomerId: match.id }).where(and(eq(households.id, householdId), isNull(households.stripeCustomerId)));
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.customer_matched',
-        targetType: 'household', targetId: householdId, after: { matched: true }, occurredAt: clock.now() });
+        targetType: 'household', targetId: householdId, after: { matched: true, customerId: match.id }, occurredAt: clock.now() });
     });
   } catch (error) {
     // Another household can win the existing gym/customer unique constraint during the lookup.

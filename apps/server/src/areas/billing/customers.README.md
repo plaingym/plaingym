@@ -6,13 +6,42 @@ householdId)` returns the household's stored customer ID or creates and links on
 Signed-link Checkout calls it for payment, card updates and onboarding. Existing
 and imported IDs stay unchanged; email matching is not part of this service.
 
+Before Checkout uses a stored ID, signed-link Checkout calls
+`readableCustomer(gymId, householdId, customerId, provider)`. A customer this
+service created and linked (its `billing.customer.linked` audit names the ID) is
+the account's own and needs no Stripe call. Any other ID is adopted (an untagged
+imported customer is tagged with the gym, as a charge does). When the account
+answers 404 `resource_missing` (an imported ID from another account, or a typo),
+it clears the ID only while it is still the stored one, writes a
+`billing.customer.unlinked` audit (`reason: 'unreadable'`) and creates a new
+customer through `ensureCustomer`, but only with a live key (`provider.keyMode`):
+a test key can't see live-mode objects, so a live customer (one imported from the
+gym's own account) looks missing to it, and the ID is kept and the Checkout refused
+(`customer_unreadable`). Any other failure, including a deleted customer, is raised
+and the ID is kept. Settings → Payments writes the same audit when a gym switches
+from test to live (`reason: 'stripe_test_cleared'`), for each household whose
+customer the app linked and each one with a creation reservation (one may be in
+flight); imported IDs stay.
+
+A `billing.customer.unlinked` audit starts a new creation generation. Unlinks and
+reservations are written under the household's row lock, and each reservation
+records the unlink it followed (`after.unlinked`; none before any unlink), so only
+the current generation's reservation counts: a day-old reservation for the old
+customer neither blocks nor replays a new one. The next creation's key is
+`household:<household UUID>:customer:after:<unlink audit UUID>`, so it never reuses
+the old customer's key. A creation whose generation changed while Stripe was called
+is never linked; the service starts once more in the new generation, with the
+provider resolved again. Card setup starts record their customer, so a session made
+for an earlier customer is never reused (`signed-link-checkout.ts`).
+
 The service first reads the household in a short gym-scoped transaction. Existing
 IDs return immediately, even without configured Stripe or payer details. Missing
 email or a blank name fails without reserving. It resolves the provider outside
 the transaction, then locks and re-reads the household in a second transaction.
 Only then does it write a `billing.customer.creation_reserved` audit before
 calling `createCustomer` outside the transaction. The key is
-`household:<household UUID>:customer`. The reservation
+`household:<household UUID>:customer` (with the unlink suffix above after an
+unlink). The reservation
 stores a SHA-256 digest of the exact request, keeping names and emails out of the
 append-only audit log. Concurrent callers use identical parameters and the same
 provider key. A final short transaction locks the household, saves the returned

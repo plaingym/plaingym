@@ -21,6 +21,21 @@
     {
       "operation": "stripe",
       "input": {
+        "method": "GET",
+        "path": "/v1/customers/cus_fixture"
+      },
+      "output": {
+        "id": "cus_fixture",
+        "object": "customer",
+        "email": "payer@example.invalid",
+        "metadata": {
+          "gym_id": "00000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "operation": "stripe",
+      "input": {
         "method": "POST",
         "path": "/v1/checkout/sessions",
         "params": {

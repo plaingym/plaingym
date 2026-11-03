@@ -26,13 +26,32 @@ export const emailIntegrationSchema = z.strictObject({
   removeBlocked: z.boolean(),
 });
 /**
+ * What a switch from test to live clears (`clearTestData`): households holding a Stripe customer the test key made,
+ * the cards saved through Stripe, and open Checkout or card-setup sessions. `payments` counts the card payments that stay
+ * in the books, marked as test. `importedCustomers` and `importedCards` stay too: an import writes Stripe IDs without
+ * asking Stripe, so they may be the gym's live ones.
+ */
+export const stripeTestDataSchema = z.strictObject({
+  customers: z.int().nonnegative(), cards: z.int().nonnegative(), checkouts: z.int().nonnegative(), payments: z.int().nonnegative(),
+  importedCustomers: z.int().nonnegative(), importedCards: z.int().nonnegative(),
+});
+/**
  * The gym's Stripe settings, never the key or the webhook signing secret. `accountLocked` is true once a household has a
  * Stripe customer, a card is saved or a card payment exists: a replacement key must then belong to the same Stripe
- * account and mode.
+ * account and mode, unless the gym switches from test to live with `clearTestData`. `testData` is what that switch
+ * would clear, while the gym is in test mode with Stripe customers, cards or payments (null otherwise).
+ * `importedCustomersOnly` is true while the gym has no Stripe settings and its only Stripe references are imported
+ * customer IDs: any account's key is then accepted, and customers it can't read get new ones when they're first needed.
  */
 export const paymentsIntegrationSchema = z.strictObject({
   configured: z.boolean(), mode: z.enum(['test', 'live']).nullable(), webhookRegistered: z.boolean(), accountLocked: z.boolean(),
+  testData: stripeTestDataSchema.nullable(), importedCustomersOnly: z.boolean(),
 });
+/**
+ * The `reference` a card payment carries once a switch from test to live has marked it as a test payment. Card payments
+ * otherwise never have a reference, so it can't be mistaken for a staff-entered one.
+ */
+export const stripeTestPaymentReference = 'Stripe test mode';
 export const backupDestinationSchema = setupS3CredentialsSchema.omit({ accessKeyId: true, secretAccessKey: true });
 /**
  * Single-gym installs only (null in multi-gym mode). `destination` and `publicKey` are what snapshots use now; `pending`
@@ -63,8 +82,14 @@ export const saveEmailIntegrationResponseSchema = z.strictObject({ data: z.stric
   test: z.enum(['sent', 'failed']), integrations: integrationsSchema,
 }) });
 export const removeEmailIntegrationRequestSchema = z.strictObject({ revision: revisionSchema });
+/**
+ * `clearTestData` confirms a switch from a test-mode key to a live one: once the live key connects, the gym's test-mode
+ * Stripe references are cleared in one audited change (see `stripeTestDataSchema`). It changes nothing for any other save,
+ * and without it that switch is refused (`mode_locked`) while test-mode references exist. Live to test is always refused
+ * while live-mode references exist.
+ */
 export const saveStripeIntegrationRequestSchema = z.strictObject({
-  revision: revisionSchema, restrictedKey: z.string().regex(/^rk_(test|live)_[A-Za-z0-9]+$/),
+  revision: revisionSchema, restrictedKey: z.string().regex(/^rk_(test|live)_[A-Za-z0-9]+$/), clearTestData: z.boolean().default(false),
 });
 export const createBackupKeyRequestSchema = z.strictObject({
   revision: revisionSchema,
@@ -93,6 +118,7 @@ export const integrationsContracts = {
 export type Integrations = z.infer<typeof integrationsSchema>;
 export type EmailIntegration = z.infer<typeof emailIntegrationSchema>;
 export type PaymentsIntegration = z.infer<typeof paymentsIntegrationSchema>;
+export type StripeTestData = z.infer<typeof stripeTestDataSchema>;
 export type BackupsIntegration = z.infer<typeof backupsIntegrationSchema>;
 export type SignInMethods = z.infer<typeof signInMethodsSchema>;
 export type SaveEmailIntegrationRequest = z.infer<typeof saveEmailIntegrationRequestSchema>;

@@ -11,7 +11,7 @@ export const settings: GymSettings = { id: '01900000-0000-7000-8000-000000000001
 export const integrations: Integrations = {
   email: { source: 'none', host: null, port: null, security: null, from: null, signIn: { password: true, magicLink: false },
     signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
-  payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false },
+  payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
   backups: { configured: false, destination: null, publicKey: null, pending: null, retentionBudgetBytes: 8_000_000_000 },
   sandbox: false, revision: 3,
 };

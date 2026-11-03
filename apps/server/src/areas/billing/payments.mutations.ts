@@ -67,6 +67,9 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const payment = (await tx.select().from(payments).where(eq(payments.id, c.idSchema.parse(paymentId))))[0] ?? notFound();
         const invoice = await loadInvoice(tx, payment.invoiceId, true);
         if (request.currency !== payment.currency || request.amountCents > payment.amountCents) paymentConflict('refund_mismatch', 'Refund amount or currency does not match');
+        // Marked by a switch to live: the payment is in the test account, which the gym's live key can't refund.
+        if (payment.method === 'card' && payment.reference === c.stripeTestPaymentReference)
+          paymentConflict('test_payment', 'A Stripe test-mode payment can’t be refunded with the live key');
         const pending = (await tx.select().from(refunds).where(and(eq(refunds.paymentId, paymentId), eq(refunds.status, 'pending'))).orderBy(asc(refunds.id)))[0];
         if (pending && (pending.amountCents !== request.amountCents || pending.reason !== null && pending.reason !== request.reason)) paymentConflict('pending_refund', 'Resolve the pending refund first');
         return { payment, invoice, pending };

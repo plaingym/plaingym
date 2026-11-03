@@ -89,6 +89,7 @@ export class StripePayments implements Payments {
     if (!gymId) throw new Error('A gym is required');
     this.#transport = options.transport; this.#clock = options.clock ?? systemClock; this.#secret = options.webhookSecret; this.#mode = options.mode ?? 'test';
   }
+  get keyMode(): 'test' | 'live' { return this.#mode; }
   #request(input: ProviderRequest): Promise<ObjectData> {
     assertNoTransaction('payments.stripe');
     return this.#transport.request(input);

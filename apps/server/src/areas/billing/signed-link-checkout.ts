@@ -7,7 +7,7 @@ import type { Payments, CheckoutSession } from '../../infra/payments/index.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
-import { createCustomersService, CustomerUnavailable } from './customers.js';
+import { createCustomersService, customerUnlinkedAction, CustomerUnavailable } from './customers.js';
 import { isAssignmentInvoice } from './assignment-invoices.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createCardHandlers } from './webhooks/handlers/methods.js';
@@ -49,17 +49,30 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     if (!household) missing();
     return { link, household };
   }
-  const audit = (tx: Transaction, gymId: string, action: string, id: string, after: { sessionId: string } | null = null) => writeAudit(tx, {
+  const audit = (tx: Transaction, gymId: string, action: string, id: string, after: { sessionId: string; customerId?: string } | null = null) => writeAudit(tx, {
     gymId, actorKind: 'system', action, targetType: 'signed_link', targetId: id,
     before: null, after, occurredAt: clock.now(),
   });
-  async function setupStart(tx: Transaction, linkId: string) {
+  type Household = { id: string; stripeCustomerId: string | null };
+  /**
+   * The link's latest card setup session, unless it was made for another customer than the household's current one (its
+   * ID was cleared since: a switch from test to live, or an ID the account couldn't read). Each start records its
+   * customer; one recorded before starts did counts as stale once the household was ever unlinked, since every unlink
+   * came later. `stale` is a dropped session's ID, which keys the next session apart from it.
+   */
+  async function setupState(tx: Transaction, linkId: string, household: Household) {
     const [row] = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
       eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId),
       eq(auditEvents.action, 'billing.card_setup.started'))).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
-    return row?.after && typeof row.after === 'object' && 'sessionId' in row.after && typeof row.after.sessionId === 'string'
-      ? row.after.sessionId : null;
+    const after = row?.after as { sessionId?: unknown; customerId?: unknown } | null | undefined;
+    const recorded = typeof after?.sessionId === 'string' ? after.sessionId : null;
+    if (!recorded) return { sessionId: null, stale: null };
+    const stale = typeof after?.customerId === 'string' ? after.customerId !== household.stripeCustomerId
+      : (await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetType, 'household'),
+        eq(auditEvents.targetId, household.id), eq(auditEvents.action, customerUnlinkedAction))).limit(1)).length > 0;
+    return stale ? { sessionId: null, stale: recorded } : { sessionId: recorded, stale: null };
   }
+  const setupStart = async (tx: Transaction, linkId: string, household: Household) => (await setupState(tx, linkId, household)).sessionId;
   function ownedSetup(session: CheckoutSession, gymId: string, linkId: string, customerId: string) {
     if (session.metadata.gymId !== gymId || session.metadata.linkId !== linkId || session.customerId !== customerId
       || session.mode !== 'setup' || !session.savesCard) unavailable();
@@ -96,7 +109,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       const prepared = await scope(gymId, async tx => {
         const { link, household } = await locked(tx, gymId, linkId);
         if (household.stripeCustomerId !== customerId) missing();
-        return { link, sessionId: await setupStart(tx, linkId) };
+        return { link, ...await setupState(tx, linkId, household) };
       });
       if (prepared.sessionId) {
         const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.sessionId });
@@ -107,7 +120,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           if (!session.url) unavailable();
           await scope(gymId, async tx => {
             const { household } = await locked(tx, gymId, linkId);
-            if (household.stripeCustomerId !== customerId || await setupStart(tx, linkId) !== session.id)
+            if (household.stripeCustomerId !== customerId || await setupStart(tx, linkId, household) !== session.id)
               throw new AppError('conflict', 'Card setup changed');
           });
           return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(), clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
@@ -116,15 +129,16 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       }
       const session = await provider.createCheckout({ mode: 'setup', customerId, linkId, successUrl: returnUrl,
         cancelUrl: returnUrl, saveForOffSession: true,
-        idempotencyKey: `signed-link:${linkId}:setup` + (prepared.sessionId ? `:after:${prepared.sessionId}` : '') });
+        idempotencyKey: `signed-link:${linkId}:setup` + (prepared.sessionId ? `:after:${prepared.sessionId}`
+          : prepared.stale ? `:after:${prepared.stale}` : '') });
       ownedSetup(session, gymId, linkId, customerId);
       await scope(gymId, async tx => {
         const { household } = await locked(tx, gymId, linkId);
         if (household.stripeCustomerId !== customerId) missing();
-        const current = await setupStart(tx, linkId);
+        const current = await setupStart(tx, linkId, household);
         if (current === session.id) return;
         if (current !== prepared.sessionId) throw new AppError('conflict', 'Card setup changed');
-        await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id });
+        await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id, customerId });
       });
       // A POST retry can contain Stripe's original open response after expiry/completion.
       // Retrieve the persisted session on the next iteration before exposing its URL.
@@ -183,6 +197,9 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       customerId = prepared.customerId ?? await customers.ensureCustomer(gymId, prepared.link.householdId);
       try { provider = await options.paymentsFor(gymId); }
       catch (error) { throw new CustomerUnavailable('stripe_not_configured', error); }
+      // A stored ID (imported, or from before a key change) may be one this account can't read: it is never sent to Checkout,
+      // and is replaced with a live key (with a test key, it may be a live customer, so the link is unavailable instead).
+      if (prepared.customerId) customerId = await customers.readableCustomer(gymId, prepared.link.householdId, customerId, provider);
     } catch (error) {
       if (error instanceof AppError && error.code === 'not_found') throw error;
       logError('billing.customer.unavailable', { gymId, householdId: prepared.link.householdId, purpose: prepared.link.purpose,

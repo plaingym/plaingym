@@ -2,12 +2,12 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, invoices, paymentAttempts, paymentMethods, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoices, paymentAttempts, paymentMethods, payments, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, createTranslator, type StaffRole } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { billingContracts, linksContracts, releaseInvoiceHoldContract, type BillingEndpoint } from '@plaingym/shared/contracts';
+import { billingContracts, linksContracts, releaseInvoiceHoldContract, stripeTestPaymentReference, type BillingEndpoint } from '@plaingym/shared/contracts';
 import { locales } from '@plaingym/shared/locales';
 import { createApp } from '../../app.js';
 import { TestClock } from '../../core/clock.js';
@@ -288,6 +288,16 @@ describe('one-off collection and payment durability', () => {
       .toMatchObject({ id: refundId, status: 'succeeded', reason: 'Returned item' });
     expect(refund).toHaveBeenCalledTimes(1);
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).refunds).toHaveLength(1);
+  });
+  it('refuses to refund a card payment a switch to live marked as test, without calling Stripe', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!;
+    await db.forGym(f.gymId, tx => tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.id, payment.id)));
+    const refund = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { amountCents: 500, currency: 'USD', reason: 'Returned item' }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['test_payment'] } });
+    expect(refund).not.toHaveBeenCalled();
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).refunds).toHaveLength(0);
   });
   it.each(['declined', 'authentication_required'] as const)('keeps a %s one-off open with no dunning or retry effects', async outcome => {
     const f = await fixture(); f.provider.respondNextConfirmation(outcome);

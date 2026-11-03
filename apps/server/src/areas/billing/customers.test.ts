@@ -7,7 +7,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { runInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, FakePayments } from '../../infra/payments/index.js';
-import { createCustomersService, CustomerUnavailable } from './customers.js';
+import { createCustomersService, customerUnlinkedAction, CustomerUnavailable } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
@@ -206,6 +206,78 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     await expect(f.service.ensureCustomer(gymB, f.household.id)).rejects.toMatchObject({ code: 'not_found' });
     expect(f.paymentsFor).not.toHaveBeenCalled();
     expect((await f.read()).household.stripeCustomerId).toBeNull();
+  });
+  it('creates a new customer, under a new key, once the old customer ID was cleared, however old its reservation', async () => {
+    const f = await fixture(), create = vi.spyOn(f.provider, 'createCustomer');
+    const first = await f.service.ensureCustomer(f.gymId, f.household.id);
+    f.clock.advance(48 * 60 * 60 * 1000);
+    // A switch from test to live clears the ID and audits it; the day-old reservation was for the old customer.
+    const unlink = await db.forGym(f.gymId, async tx => {
+      await tx.update(households).set({ stripeCustomerId: null }).where(eq(households.id, f.household.id));
+      return (await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: customerUnlinkedAction, targetType: 'household',
+        targetId: f.household.id, before: { customerId: first }, after: { customerId: null }, occurredAt: f.clock.now() }).returning())[0]!;
+    });
+    const second = await f.service.ensureCustomer(f.gymId, f.household.id);
+    expect(second).not.toBe(first);
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: `household:${f.household.id}:customer:after:${unlink.id}` }));
+    expect((await f.read()).audits.filter(a => a.action === 'billing.customer.creation_reserved')).toHaveLength(2);
+    // The new reservation is the one that counts from now on: a later call reuses the linked customer.
+    expect(await f.service.ensureCustomer(f.gymId, f.household.id)).toBe(second);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+  it('replaces a stored customer the account can’t read, and tags a readable imported one', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_unreadable' }).where(eq(households.id, f.household.id)));
+    const missing = Object.assign(new Error('No such customer'), { code: 'resource_missing', statusCode: 404 });
+    const adopt = vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValueOnce(missing);
+    const replaced = await f.service.readableCustomer(f.gymId, f.household.id, 'cus_unreadable', f.provider);
+    expect(replaced).not.toBe('cus_unreadable');
+    const saved = await f.read();
+    expect(saved.household.stripeCustomerId).toBe(replaced);
+    expect(saved.audits.find(a => a.action === customerUnlinkedAction)).toMatchObject({ targetId: f.household.id, before: { customerId: 'cus_unreadable' }, after: { customerId: null, reason: 'unreadable' } });
+    // The service's own customer needs no Stripe call.
+    adopt.mockClear();
+    expect(await f.service.readableCustomer(f.gymId, f.household.id, replaced, f.provider)).toBe(replaced);
+    expect(adopt).not.toHaveBeenCalled();
+    // A readable imported customer is adopted (tagged for the gym) and kept; any other failure is raised, never replaced.
+    f.provider.seedCustomer({ id: 'cus_imported', email: 'payer@example.invalid' });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_imported' }).where(eq(households.id, f.household.id)));
+    expect(await f.service.readableCustomer(f.gymId, f.household.id, 'cus_imported', f.provider)).toBe('cus_imported');
+    expect(adopt).toHaveBeenLastCalledWith('cus_imported');
+    adopt.mockRejectedValueOnce(Object.assign(new Error('rate limited'), { code: 'rate_limit', statusCode: 429 }));
+    await expect(f.service.readableCustomer(f.gymId, f.household.id, 'cus_imported', f.provider)).rejects.toThrow('rate limited');
+    expect((await f.read()).household.stripeCustomerId).toBe('cus_imported');
+  });
+  it('keeps a stored customer a test key can’t read, refusing the Checkout, since it may be a live one', async () => {
+    const f = await fixture(), create = vi.spyOn(f.provider, 'createCustomer');
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_ImportedLive' }).where(eq(households.id, f.household.id)));
+    f.provider.keyMode = 'test';
+    vi.spyOn(f.provider, 'adoptCustomer').mockRejectedValueOnce(Object.assign(new Error('No such customer'), { code: 'resource_missing', statusCode: 404 }));
+    await expect(f.service.readableCustomer(f.gymId, f.household.id, 'cus_ImportedLive', f.provider))
+      .rejects.toMatchObject({ reason: 'customer_unreadable' });
+    const saved = await f.read();
+    expect(saved.household.stripeCustomerId).toBe('cus_ImportedLive');
+    expect(saved.audits.filter(a => a.action === customerUnlinkedAction)).toEqual([]);
+    expect(create).not.toHaveBeenCalled();
+  });
+  it('never links a customer created in flight while a switch unlinked the household, and creates one in the new generation', async () => {
+    const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
+    let unlink: string | undefined;
+    const spy = vi.spyOn(f.provider, 'createCustomer').mockImplementationOnce(async request => {
+      const made = await create(request);
+      // The switch commits while Stripe answers: it writes a new generation for the household.
+      unlink = (await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: customerUnlinkedAction,
+        targetType: 'household', targetId: f.household.id, before: { customerId: null }, after: { customerId: null }, occurredAt: f.clock.now() }).returning()))[0]!.id;
+      return made;
+    });
+    const linked = await f.service.ensureCustomer(f.gymId, f.household.id);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: `household:${f.household.id}:customer:after:${unlink}` }));
+    const saved = await f.read();
+    expect(saved.household.stripeCustomerId).toBe(linked);
+    expect(saved.audits.filter(a => a.action === 'billing.customer.linked')).toMatchObject([{ after: { customerId: linked } }]);
+    expect(saved.audits.filter(a => a.action === 'billing.customer.creation_reserved').map(a => (a.after as { unlinked?: string }).unlinked))
+      .toEqual(expect.arrayContaining([undefined, unlink]));
   });
   it('requires an email and rejects provider calls inside a transaction', async () => {
     const f = await fixture();

@@ -10,7 +10,8 @@ const signIn = { password: false, magicLink: true };
 const integrations = {
   email: { source: 'gym', host: 'smtp.example.test', port: 587, security: 'starttls', from: 'desk@example.test',
     signIn, signInAfterSave: signIn, signInAfterRemove: { password: true, magicLink: false }, removeBlocked: true },
-  payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: false },
+  payments: { configured: true, mode: 'test', webhookRegistered: true, accountLocked: true,
+    testData: { customers: 2, cards: 1, checkouts: 0, payments: 3, importedCustomers: 1, importedCards: 0 }, importedCustomersOnly: false },
   backups: { configured: true, destination: { endpoint: 'https://s3.example.test', region: 'auto', bucket: 'backups' },
     publicKey: 'age1example', pending: null, retentionBudgetBytes: 8_000_000_000 },
   sandbox: false, revision: 3,
@@ -27,6 +28,9 @@ describe('integration settings contracts', () => {
   it('has no field for a credential in what it returns', () => {
     expect(integrationsSchema.parse(integrations)).toEqual(integrations);
     expect(integrationsSchema.parse({ ...integrations, backups: null }).backups).toBeNull();
+    expect(integrationsSchema.parse({ ...integrations, payments: { ...integrations.payments, testData: null } }).payments.testData).toBeNull();
+    for (const testData of [{ ...integrations.payments.testData, customers: -1 }, { ...integrations.payments.testData, apiKey: 'secret' }])
+      expect(integrationsSchema.safeParse({ ...integrations, payments: { ...integrations.payments, testData } }).success).toBe(false);
     for (const field of ['password', 'username', 'apiKey', 'restrictedKey', 'webhookSecret', 'accessKeyId', 'secretAccessKey', 'privateKey']) {
       expect(integrationsSchema.safeParse({ ...integrations, email: { ...integrations.email, [field]: 'secret' } }).success, field).toBe(false);
       expect(integrationsSchema.safeParse({ ...integrations, payments: { ...integrations.payments, [field]: 'secret' } }).success, field).toBe(false);
@@ -41,6 +45,10 @@ describe('integration settings contracts', () => {
     expect(saveEmailIntegrationRequestSchema.safeParse({ ...email, testTo: undefined }).success).toBe(false);
     expect(removeEmailIntegrationRequestSchema.safeParse({}).success).toBe(false);
     for (const restrictedKey of ['rk_test_abc', 'rk_live_abc']) expect(saveStripeIntegrationRequestSchema.safeParse({ revision: 1, restrictedKey }).success).toBe(true);
+    // The switch from test to live is confirmed explicitly; without the field nothing is cleared.
+    expect(saveStripeIntegrationRequestSchema.parse({ revision: 1, restrictedKey: 'rk_live_abc' }).clearTestData).toBe(false);
+    expect(saveStripeIntegrationRequestSchema.parse({ revision: 1, restrictedKey: 'rk_live_abc', clearTestData: true }).clearTestData).toBe(true);
+    expect(saveStripeIntegrationRequestSchema.safeParse({ revision: 1, restrictedKey: 'rk_live_abc', clearTestData: 'yes' }).success).toBe(false);
     for (const restrictedKey of ['sk_test_abc', 'pk_live_abc', 'rk_test_']) expect(saveStripeIntegrationRequestSchema.safeParse({ revision: 1, restrictedKey }).success).toBe(false);
     const destination = { endpoint: 'https://s3.example.test', region: 'auto', bucket: 'backups', accessKeyId: 'id', secretAccessKey: 'secret' };
     expect(createBackupKeyRequestSchema.safeParse({ revision: 1, destination }).success).toBe(true);

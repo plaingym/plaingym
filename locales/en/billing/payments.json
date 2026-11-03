@@ -111,6 +111,7 @@
   "errors.pending_refund": "Resolve the pending refund before requesting a different amount or reason.",
   "errors.refund_reconciliation": "The pending refund needs reconciliation before it can be retried.",
   "errors.refund_identity": "The processor refund could not be matched. Contact an owner or admin.",
+  "errors.test_payment": "This is a Stripe test-mode payment, made before the gym switched to live, so it can’t be refunded. No real money moved.",
   "errors.no_receipt": "This invoice does not have a receipt yet.",
   "errors.receipt_unavailable": "Receipt delivery is not configured. Contact an owner or admin.",
   "errors.charge_type_inactive": "This charge type is inactive. Choose an active charge type.",
