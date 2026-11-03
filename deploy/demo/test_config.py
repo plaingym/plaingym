@@ -310,6 +310,23 @@ class BillingInputTests(unittest.TestCase):
                 self.assertEqual((written["DEMO_STRIPE_TEST_KEY"], written["DEMO_STRIPE_WEBHOOK_SECRET"]), (KEY, SECRET))
                 self.assertEqual([secret for _, secret in asked], [True] * len(answers))
 
+    def test_an_empty_billing_variable_answers_the_secret_prompt_so_a_scripted_run_never_waits(self):
+        for name in ("DEMO_STRIPE_WEBHOOK_SECRET", "DEMO_STRIPE_TEST_KEY"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                saved = Path(directory) / ".env"
+                saved.write_text(f"DEMO_INSTALL=1\nDEMO_LOCAL_TEST=false\nDEMO_STRIPE_TEST_KEY={KEY}\n"
+                                 + "".join(f"{k}={v}\n" for k, v in inputs().items() if k != "DEMO_LOCAL_TEST"))
+                asked = []
+                args = ["config.py", "--existing", str(saved), "--output", str(Path(directory) / "next")]
+                with patch.dict(os.environ, {**inputs(), name: ""}, clear=True), patch.object(config, "dns_check"), \
+                        patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                        patch.object(config, "prompt", lambda label, secret=False: asked.append(label) or SECRET), \
+                        patch.object(config, "has_terminal", return_value=True), patch.object(config.sys, "argv", args), \
+                        self.assertRaises(ValueError):
+                    config.main()
+                self.assertEqual(asked, [])
+                self.assertFalse((Path(directory) / "next").exists())
+
     def test_a_saved_key_with_no_secret_anywhere_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             saved = Path(directory) / ".env"

@@ -48,17 +48,18 @@ compose() {
 env_next() { ( umask 077; cat > "$ROOT/.env.next" ); }
 commit_env_next() { chmod 0600 "$ROOT/.env.next" && mv "$ROOT/.env.next" "$ROOT/.env"; }
 # A re-run never replaces the saved .env, so demo billing values given now (the installer's inputs file is $1)
-# are added to it: each of the key and the secret that is empty or missing there, taken from $1 when it has
-# one. A value already saved is left alone, and every other line is kept. Prints nothing.
+# are added to it. The key and its secret are a pair: a key added from $1 brings $1's secret, replacing any
+# saved one, and a saved key with no saved secret gets $1's secret. A saved key is left alone, and every
+# other line is kept. Prints nothing.
 merge_demo_billing() {
-  merge_add=
-  for merge_name in DEMO_STRIPE_TEST_KEY DEMO_STRIPE_WEBHOOK_SECRET; do
-    if [ -z "$(read_env "$merge_name")" ]; then
-      merge_value=$(awk -F= -v key="$merge_name" '$1 == key && $2 != "" { print; exit }' "$1")
-      [ -z "$merge_value" ] || merge_add="$merge_add$merge_name "
-    fi
-  done
-  [ -n "$merge_add" ] || return 0
+  if [ -z "$(read_env DEMO_STRIPE_TEST_KEY)" ]; then
+    merge_add='DEMO_STRIPE_TEST_KEY DEMO_STRIPE_WEBHOOK_SECRET' merge_given=DEMO_STRIPE_TEST_KEY
+  elif [ -z "$(read_env DEMO_STRIPE_WEBHOOK_SECRET)" ]; then
+    merge_add=DEMO_STRIPE_WEBHOOK_SECRET merge_given=DEMO_STRIPE_WEBHOOK_SECRET
+  else
+    return 0
+  fi
+  [ -n "$(awk -F= -v key="$merge_given" '$1 == key && $2 != "" { print; exit }' "$1")" ] || return 0
   merge_kept=$(awk -F= -v names="$merge_add" 'BEGIN { split(names, list, " "); for (i in list) drop[list[i]] = 1 } !($1 in drop)' "$ROOT/.env")
   merge_new=$(awk -F= -v names="$merge_add" 'BEGIN { split(names, list, " "); for (i in list) take[list[i]] = 1 } ($1 in take) && $2 != ""' "$1")
   printf '%s\n%s\n' "$merge_kept" "$merge_new" | env_next

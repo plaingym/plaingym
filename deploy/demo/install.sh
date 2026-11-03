@@ -78,14 +78,17 @@ cleanup() {
       # A file the earlier install lacked (a lost base-lib.sh this run restored) goes back to missing.
       if [ -f "$backup/$file" ]; then cp -p "$backup/$file" "$ROOT/$file"; else rm -f -- "$ROOT/$file"; fi
     done
-    # The restored lib.sh may predate the helper check and look for DEMO_FIRST_INSTALL instead; without it, a
-    # rollback that removed a restored base-lib.sh would stop here before bringing the stack back up.
-    # shellcheck source=/dev/null
-    DEMO_FIRST_INSTALL=true . "$ROOT/lib.sh"
-    APP_IMAGE=$(read_env APP_IMAGE)
-    CADDY_IMAGE=$(read_env CADDY_IMAGE)
-    export APP_IMAGE CADDY_IMAGE
-    compose up -d --pull never --wait --wait-timeout 180 || result=1
+    # An earlier install that stopped after writing .env had no deploy files and no stack to bring back.
+    if [ -f "$ROOT/lib.sh" ]; then
+      # The restored lib.sh may predate the helper check and look for DEMO_FIRST_INSTALL instead; without it, a
+      # rollback that removed a restored base-lib.sh would stop here before bringing the stack back up.
+      # shellcheck source=/dev/null
+      DEMO_FIRST_INSTALL=true . "$ROOT/lib.sh"
+      APP_IMAGE=$(read_env APP_IMAGE)
+      CADDY_IMAGE=$(read_env CADDY_IMAGE)
+      export APP_IMAGE CADDY_IMAGE
+      compose up -d --pull never --wait --wait-timeout 180 || result=1
+    fi
   fi
   rm -f -- "$inputs"
   if [ -n "$backup" ]; then rm -rf -- "$backup"; fi

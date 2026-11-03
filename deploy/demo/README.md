@@ -199,9 +199,11 @@ file, whatever the caller's environment says.
 The installer validates and checks the required inputs (domain, images, DNS,
 Cloudflare, S3) before it asks about demo billing, so a mistake there is reported
 before a key is typed. A saved key with no saved secret is completed from
-`DEMO_STRIPE_WEBHOOK_SECRET` or a hidden prompt on the next run, and the
-missing value is added to the saved `.env` (a value already saved is never
-replaced). Ctrl+C at any prompt ends with the same one-line failure message as any
+`DEMO_STRIPE_WEBHOOK_SECRET` or a hidden prompt on the next run (no prompt when
+either billing variable is set in the environment, even empty), and the
+missing value is added to the saved `.env`. A saved key is never replaced; a key
+added on a re-run brings the secret given with it, in place of any saved one.
+Ctrl+C at any prompt ends with the same one-line failure message as any
 other preflight failure.
 
 ## Local validation

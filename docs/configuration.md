@@ -61,7 +61,7 @@ one, that this page doesn't list.
 | `MAINTENANCE_DATABASE_URL` | none | The `maintenance` role's connection URL, for migrations, backups and restore. Single-gym installs give it to the app container; multi-gym installs give it only to the one-shot `migrate` service, and the app refuses to start in production if it is set. |
 | `PGHOST` | `postgres` | The database host the image's start-up scripts wait for and prepare roles on, before the app connects with `DATABASE_URL`. Change it with the URLs when PostgreSQL runs elsewhere. |
 | `PGPORT` | `5432` | The database port the image's start-up scripts use, as `PGHOST`. |
-| `DATABASE_POOL_MAX` | `8` | The app's connection pool, 1 to 100. The default fits the shipped PostgreSQL settings (`max_connections=20`). |
+| `DATABASE_POOL_MAX` | `8` | The app's connection pool, 1 to 100. The default fits the shipped PostgreSQL settings (`max_connections=20`), which leave about one connection spare beside the app's sign-in pool, its backups and an update's snapshot; a larger pool there can make backups or that snapshot fail with too many connections. |
 | `POSTGRES_DB` | `plaingym` | The database name. |
 | `POSTGRES_PASSWORD` | none | The PostgreSQL bootstrap superuser's password. Used only to create the database and roles on first start. |
 | `APP_PASSWORD` | none | The `app` role's password. |
@@ -117,7 +117,7 @@ similar): mail sent directly from a server usually lands in spam.
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode). |
+| `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. Sign-in, kiosk PINs and CSP reports keep their own limits. |
 
 ## Tenancy and demo

@@ -112,9 +112,10 @@ def billing_inputs(config, ask):
     """
     if config.get(BILLING_KEY):
         if not config.get(BILLING_SECRET):
-            # A key saved by hand without its secret: complete it from the environment or a hidden prompt.
+            # A key saved by hand without its secret: complete it from the environment or a hidden prompt. A
+            # billing variable set in the environment, even empty, answers here too, so a scripted run never waits.
             secret = os.environ.get(BILLING_SECRET, "").strip()
-            if not secret and ask and has_terminal():
+            if not secret and not any(name in os.environ for name in (BILLING_KEY, BILLING_SECRET)) and ask and has_terminal():
                 secret = prompt("Stripe webhook signing secret (whsec_)", True).strip()
             config[BILLING_SECRET] = secret
         return

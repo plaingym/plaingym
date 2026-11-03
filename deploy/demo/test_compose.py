@@ -318,6 +318,28 @@ class ReinstallRestoreTests(unittest.TestCase):
         self.assertFalse((self.root / "demo.compose.yaml").exists())
         self.assertIn("APP_IMAGE=plaingym:v0.0.0-test", (self.root / ".env").read_text())
 
+    def test_a_failed_rerun_of_an_install_that_stopped_after_writing_env_still_cleans_up(self):
+        # The first run wrote .env and stopped before the deploy files: the rollback has no stack to start, and
+        # still removes the files this run copied, its backup folder and the inputs file (which holds the secrets).
+        (self.root / "compose.yaml").unlink()
+        (self.root / "lib.sh").unlink()
+        temporary = Path(self.directory.name) / "tmp"
+        temporary.mkdir()
+        self.flag.write_text("")
+        result = subprocess.run(["sh", str(HERE / "install.sh"), "--directory", str(self.root), "--local-test"],
+                                capture_output=True, text=True,
+                                env={**os.environ, "TMPDIR": str(temporary), "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring the previous files", result.stderr)
+        self.assertNotIn("lib.sh", result.stderr)
+        for name in ("lib.sh", "base-lib.sh", "compose.yaml", "demo.compose.yaml"):
+            self.assertFalse((self.root / name).exists(), name)
+        self.assertEqual(list(self.root.glob(".deploy.*")), [])
+        self.assertEqual(list(temporary.iterdir()), [])
+        self.assertIn("APP_IMAGE=plaingym:v0.0.0-test", (self.root / ".env").read_text())
+        starts = [call for call in self.calls.read_text().splitlines() if " up -d --pull never --wait " in call]
+        self.assertEqual(len(starts), 1, starts)
+
     def test_a_failed_refresh_of_an_older_install_still_brings_the_stack_back(self):
         # An install made before the helper check has a lib.sh that looks for DEMO_FIRST_INSTALL instead. The
         # rollback restores that copy, removes the restored base-lib.sh and loads it, then starts the stack again.
@@ -377,6 +399,14 @@ class MergeDemoBillingTests(unittest.TestCase):
         self.assertEqual(result.count("DEMO_STRIPE_TEST_KEY"), 1)
         self.assertIn("DEMO_STRIPE_WEBHOOK_SECRET=whsec_NEW\n", result)
         self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
+
+    def test_a_key_added_now_brings_its_own_secret_in_place_of_a_saved_one(self):
+        saved = "A=1\nDEMO_STRIPE_TEST_KEY=\nDEMO_STRIPE_WEBHOOK_SECRET=whsec_OLD\n"
+        result = self.merge(saved, f"DEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n")
+        self.assertEqual(sorted(line for line in result.splitlines() if line.startswith("DEMO_STRIPE")),
+                         [f"DEMO_STRIPE_TEST_KEY={self.KEY}", f"DEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}"])
+        self.assertNotIn("whsec_OLD", result)
+        self.assertIn("A=1\n", result)
 
     def test_nothing_changes_when_both_are_saved_or_none_is_given(self):
         both = f"A=1\nDEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n"
