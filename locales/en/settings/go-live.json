@@ -65,6 +65,7 @@
   "saving": "Saving…",
   "error": "The request failed. Please try again.",
   "changed": "These settings changed elsewhere. The latest values are shown; try again.",
+  "justSaved": "Settings were just saved on this page. Check what is shown and try again.",
   "retry": "Try again",
   "reconcileTitle": "Restored payments",
   "reconcileHelp": "After resolving payment issues, check again before turning billing on. This check never turns billing on.",

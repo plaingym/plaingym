@@ -5,7 +5,7 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { GymSettings } from '@plaingym/shared/contracts';
-import { gymSettingsKey, useGymSettings } from './gym-settings.js';
+import { gymSettingsKey, saveTimeoutMs, useGymSettings } from './gym-settings.js';
 
 const server = vi.hoisted(() => ({ GET: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: server }));
@@ -139,6 +139,98 @@ describe('the gym settings save queue', () => {
     result.current.reload();
     await waitFor(() => expect(result.current.settings?.revision).toBe(4));
     expect((await result.current.save(save())).status).toBe(200);
+  });
+
+  it('keeps the cached settings, and so every section\'s input, on a 409 when the gym did not move', async () => {
+    const { result } = await mount();
+    const epoch = result.current.epoch;
+    // The server refuses for a reason the gym revision doesn't cover.
+    const outcome = await result.current.save(async () => reply(409));
+    expect(outcome).toMatchObject({ status: 409, settings: { revision: 3 } });
+    expect(reads()).toBe(2);
+    expect(result.current.epoch).toBe(epoch);
+    expect(result.current.failed).toBe(false);
+    // The next save still runs against the same settings.
+    expect((await result.current.save(save())).status).toBe(200);
+  });
+
+  it('replaces the cached settings on a 409 when the gym moved', async () => {
+    const { result } = await mount();
+    const epoch = result.current.epoch;
+    gym = { ...gym, name: 'Renamed elsewhere', revision: 4 };
+    const outcome = await result.current.save(async () => reply(409));
+    expect(outcome).toMatchObject({ status: 409, settings: { revision: 4, name: 'Renamed elsewhere' } });
+    await waitFor(() => expect(result.current.settings?.revision).toBe(4));
+    expect(result.current.epoch).toBeGreaterThan(epoch);
+  });
+
+  it('gives up on a save that stalls, reloads, and lets the reload asked for behind it run', async () => {
+    const { result } = await mount();
+    const never = deferred<ReturnType<typeof reply>>(), started = deferred();
+    let signal!: AbortSignal;
+    // Only the save's own timeout is held back; every other timer runs, and the test fires this one itself.
+    const real = globalThis.setTimeout, expire: Array<() => void> = [];
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, delay?: number) =>
+      delay === saveTimeoutMs ? (expire.push(handler), 0) : real(handler, delay)) as unknown as typeof setTimeout);
+    const stalled = result.current.save((_revision, aborted) => { signal = aborted; started.resolve(); return never.promise; });
+    const failure = expect(stalled).rejects.toThrow('timed out');
+    await started.promise;
+    result.current.reload();
+    const next = vi.fn(save());
+    const queued = result.current.save(next);
+    // Nothing behind the stalled save has run, and it has not been given up on yet.
+    expect(reads()).toBe(1);
+    expect(next).not.toHaveBeenCalled();
+    expect(expire).toHaveLength(1);
+    // The server applied the stalled save after all; the reload that follows the timeout sees it.
+    gym = { ...gym, retryDays: [5], revision: 4 };
+    expire[0]!();
+    await failure;
+    expect(signal.aborted).toBe(true);
+    vi.restoreAllMocks();
+    // The reload asked for behind the save has run by the time the save asked for after it does, from the reloaded settings.
+    await waitFor(() => expect(result.current.settings).toMatchObject({ revision: 4, retryDays: [5] }));
+    expect(reads()).toBeGreaterThanOrEqual(2);
+    expect((await queued).refused).toBe('reloaded');
+    expect(next).not.toHaveBeenCalled();
+    // A late answer from the abandoned request changes nothing.
+    never.resolve(reply(200, { data: { ...gym, revision: 99 } }));
+    await flushGc();
+    expect(result.current.settings?.revision).toBe(4);
+  });
+
+  it('keeps the epoch, and so every section\'s input, when the reload after a stalled save finds the gym unmoved', async () => {
+    const { result } = await mount();
+    const epoch = result.current.epoch, never = deferred<ReturnType<typeof reply>>(), started = deferred();
+    const real = globalThis.setTimeout, expire: Array<() => void> = [];
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, delay?: number) =>
+      delay === saveTimeoutMs ? (expire.push(handler), 0) : real(handler, delay)) as unknown as typeof setTimeout);
+    const stalled = result.current.save(() => { started.resolve(); return never.promise; });
+    const failure = expect(stalled).rejects.toThrow('timed out');
+    await started.promise;
+    const next = vi.fn(save({ retryDays: [2] }));
+    const queued = result.current.save(next);
+    // The server never applied the stalled save, so the reload after the timeout reads the same revision.
+    expire[0]!();
+    await failure;
+    vi.restoreAllMocks();
+    expect(reads()).toBe(2);
+    expect(result.current.epoch).toBe(epoch);
+    // The save asked for behind it is sent, not refused as if the settings had been reloaded.
+    expect(await queued).toMatchObject({ status: 200, settings: { revision: 4, retryDays: [2] } });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a save whose values were read before another section saved with `saved`, and one asked for after a reload with `reloaded`', async () => {
+    const { result } = await mount();
+    const stale = result.current.save;
+    await result.current.save(save({ retryDays: [1] }));
+    expect(await result.current.save(vi.fn(), { readAt: 3 })).toMatchObject({ status: 409, refused: 'saved' });
+    gym = { ...gym, revision: 9 };
+    result.current.reload();
+    await waitFor(() => expect(result.current.settings?.revision).toBe(9));
+    expect(await stale(vi.fn())).toMatchObject({ status: 409, refused: 'reloaded' });
+    expect((await result.current.save(save())).refused).toBeUndefined();
   });
 
   it('returns the settings it adopted from the response', async () => {

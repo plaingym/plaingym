@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { goLiveChecklistResponseSchema, type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
-import { useGymSettings } from './gym-settings.js';
+import { useGymSettings, type SaveResult } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -23,7 +23,7 @@ const statusTone = { ready: 'success', needs_attention: 'warning', not_applicabl
 /** Shows the billing and member-email switches with the readiness checklist from the go-live contract. */
 export function GoLiveSettings() {
   const [checklist, setChecklist] = useState<Checklist | null>(null);
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'changed' | null>(null);
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'changed' | 'justSaved' | null>(null);
   const [reload, setReload] = useState(0);
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
   const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState(false);
@@ -35,7 +35,9 @@ export function GoLiveSettings() {
   };
   // The readiness items follow the settings: fetch the checklist again when another section's save moved the revision.
   // Until it arrives the switches and past-due dates on screen are older than the revision they would save, so they wait.
-  const behind = !!settings && !!checklist && settings.revision > checklist.revision, locked = busy || behind;
+  // While a read has failed the switches wait for the retry: a save would be refused, and its own alert would sit beside the read's.
+  const behind = !!settings && !!checklist && settings.revision > checklist.revision, locked = busy || behind || gym.failed;
+  const checklistFailed = message === 'error' && (!checklist || behind), readFailed = gym.failed || checklistFailed;
   useEffect(() => { if (behind) setReload((value) => value + 1); }, [behind, settings?.revision]);
   useEffect(() => {
     let active = true;
@@ -52,9 +54,17 @@ export function GoLiveSettings() {
    * A refused or conflicting save. A shared revision past the checklist's refetches it through `behind`, once; when the
    * settings did not move past it (their reload failed, or the server's revision went back), nothing else will.
    */
-  function conflict(now: GymSettings, read: number) {
-    setConfirmBilling(false); setConfirmed(false); setMessage('changed');
-    if (now.revision <= read) setReload((value) => value + 1);
+  function conflict(result: SaveResult, read: number) {
+    setConfirmBilling(false); setConfirmed(false);
+    // A save refused unsent because another section of this page saved first is not another user's change.
+    setMessage(result.refused === 'saved' ? 'justSaved' : 'changed');
+    if (result.settings.revision <= read) setReload((value) => value + 1);
+  }
+  /** Retries every read that failed: the shared settings, and the checklist. */
+  function retry() {
+    setMessage(null);
+    if (gym.failed) gym.reload();
+    if (checklistFailed) setReload((value) => value + 1);
   }
   async function toggle(name: keyof GoLiveSwitches, confirmDates = false) {
     if (!checklist || !settings || locked) return;
@@ -63,10 +73,10 @@ export function GoLiveSettings() {
     }
     setBusy(true); setMessage(null);
     try {
-      const result = await gym.save((revision) => api.PATCH('/api/settings/go-live', { body: { revision, [name]: !checklist[name],
+      const result = await gym.save((revision, signal) => api.PATCH('/api/settings/go-live', { signal, body: { revision, [name]: !checklist[name],
         ...(confirmDates ? { confirmedPastDueDates: checklist.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) } : {}),
       } }), { adopt, readAt: checklist.revision });
-      if (result.status === 409) { conflict(result.settings, checklist.revision); return; }
+      if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmed(false);
@@ -78,8 +88,8 @@ export function GoLiveSettings() {
     setBusy(true); setChecking(true); setCheckError(false); setMessage(null);
     try {
       const restoreId = checklist.restoreReconciliation.restoreId;
-      const result = await gym.save((revision) => api.POST('/api/settings/go-live/reconciliation', { body: { revision, restoreId } }), { adopt, readAt: checklist.revision });
-      if (result.status === 409) { conflict(result.settings, checklist.revision); return; }
+      const result = await gym.save((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }), { adopt, readAt: checklist.revision });
+      if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
     } catch { setCheckError(true); setReload(value => value + 1); }
@@ -88,10 +98,9 @@ export function GoLiveSettings() {
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
-    {message && <Alert>{label(message)}{message === 'error' && (!checklist || behind) &&
-      <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={() => { setMessage(null); setReload((value) => value + 1); }}>{label('retry')}</Button>}</Alert>}
-    {gym.failed && <Alert>{label('error')}
-      <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={gym.reload}>{label('retry')}</Button></Alert>}
+    {readFailed ? <Alert>{label('error')}
+      <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
+      : message && <Alert>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
       <ul className="space-y-3">{(['billingEnabled', 'memberEmailsEnabled'] as const).map((name) => {
         const on = checklist[name], action = label(on ? 'turnOff' : 'turnOn');
@@ -132,6 +141,7 @@ export function GoLiveSettings() {
           <PastDueList memberships={checklist.pastDueMemberships}/>
           <CheckboxField label={label('confirmDates')} checked={confirmed} disabled={busy}
             onChange={(event) => setConfirmed(event.target.checked)}/>
+          {/* The dialog is modal: the page's alert behind it can't be seen, so a failed save shows here too. */}
           {message === 'error' && <Alert>{label('error')}</Alert>}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <Button variant="outline" disabled={busy} onClick={() => setConfirmBilling(false)}>{label('cancel')}</Button>

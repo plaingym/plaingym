@@ -57,7 +57,7 @@ describe('go-live settings', () => {
     client.PATCH.mockResolvedValue(reply(200, checklist(4, false, true)));
     const user = userEvent.setup(); start();
     await user.click(await screen.findByRole('button', { name: 'Turn on: Member emails' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/go-live', { body: { revision: 3, memberEmailsEnabled: true } });
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/go-live', { signal: expect.any(AbortSignal), body: { revision: 3, memberEmailsEnabled: true } });
     expect(await screen.findByRole('button', { name: 'Turn off: Member emails' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'Turn on: Billing' })).toBeDefined();
   });
@@ -88,7 +88,7 @@ describe('go-live settings', () => {
     const rerun = await screen.findByRole('button', { name: 'Check restored payments again' });
     expect(screen.getByText(/Objects checked: 4. Unresolved: 2/)).toBeDefined();
     await user.click(rerun);
-    expect(client.POST).toHaveBeenCalledWith('/api/settings/go-live/reconciliation', { body: {
+    expect(client.POST).toHaveBeenCalledWith('/api/settings/go-live/reconciliation', { signal: expect.any(AbortSignal), body: {
       revision: 3, restoreId: restored().data.restoreReconciliation.restoreId,
     } });
     expect(screen.getByText('Checking restored payments…')).toBeDefined();
@@ -140,7 +140,7 @@ describe('go-live settings', () => {
     expect((enable as HTMLButtonElement).disabled).toBe(true);
     await user.click(within(dialog).getByRole('checkbox'));
     await user.click(enable);
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/go-live', { body: {
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/go-live', { signal: expect.any(AbortSignal), body: {
       revision: 3, billingEnabled: true, confirmedPastDueDates: [{ id: overdue().data.pastDueMemberships[0]!.id, revision: 2, nextDueOn: '2026-10-20' }],
     } satisfies UpdateGoLiveRequest });
     expect(await screen.findByRole('button', { name: 'Turn off: Billing' })).toBeDefined();
