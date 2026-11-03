@@ -110,8 +110,14 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     const erased = await factory('households', sandbox.gymId, { email: 'erased.payer@example.invalid' });
     const leaving = await factory('members', sandbox.gymId, { householdId: erased.id });
     const erasedCard = await factory('paymentMethods', sandbox.gymId, { householdId: erased.id, processorId: 'pm_3155', isDefault: true });
+    transport.objects.get('pm_3155')!.billing_details = { name: 'Erased Payer', email: 'erased.payer@example.invalid', phone: '+15555550123' };
     const erasure = await post(`/api/members/${leaving.id}/anonymize`, { revision: leaving.revision }, sandbox.origin, { cookie });
     expect(erasure.status, await erasure.clone().text()).toBe(200);
+    // The runtime passes the erasure flag on, so the card's billing details are cleared at the provider before it is detached.
+    const cardRequests = transport.requests.filter(input => input.path.includes('/payment_methods/pm_3155')).map(input => input.path);
+    expect(cardRequests.indexOf('/v1/payment_methods/pm_3155')).toBeGreaterThanOrEqual(0);
+    expect(cardRequests.at(-1)).toMatch(/\/detach$/);
+    expect(transport.objects.get('pm_3155')!.billing_details).toEqual({ name: null, email: null, phone: null, address: null });
     const detachJobs = await database.forGym(sandbox.gymId, tx => tx.select().from(jobs).where(eq(jobs.name, 'billing.payments.detach')));
     expect(detachJobs.map(job => (job.payload as { value: { paymentMethodId: string } }).value.paymentMethodId)).toContain(erasedCard.id);
     expect(transport.requests.filter(input => input.path.endsWith('/payment_methods/pm_3155/detach'))).toHaveLength(1);

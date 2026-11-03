@@ -73,6 +73,7 @@ import { configureAuthCli } from '../cli/auth.js';
 import { runCli, type CommandIO } from '../cli/index.js';
 import { demoBootCheck } from '../demo/config.js';
 import { createDemoRuntime } from '../demo/runtime.js';
+import type { DetachOptions } from '../infra/payments/index.js';
 import { createDemoPayments } from '../demo/payments.js';
 import { demoWebhookMiddleware } from '../demo/webhook.js';
 import { createRuntimeUploads } from '../infra/storage/runtime.js';
@@ -313,7 +314,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureChargeFailures(monitored);
   const memberships = createMembershipService({ clock, settings, onAssigned: runner.onAssigned });
   configureMemberships(memberships, { assigned: runner.collectAssigned });
-  const detachCard = async (gymId: string, id: string) => (await requirePayments(gymId)).detachPaymentMethod(id);
+  const detachCard = async (gymId: string, id: string, options?: DetachOptions) => (await requirePayments(gymId)).detachPaymentMethod(id, options);
   // Household PINs use the gym's random key; member photos use the gym's file storage. Erasure
   // detaches a household's revoked cards through the same callback and durable job as card removal, and
   // redacts the erased household's Stripe customer (name and email) with its own retrying job.
