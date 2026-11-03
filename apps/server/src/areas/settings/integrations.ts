@@ -19,7 +19,7 @@ import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.j
 import { setupTestMessage } from '../../emails/setup/setup.js';
 import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
-import { customerUnlinkedAction } from '../billing/customers.js';
+import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
 import { encryptSmtpConfig, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, storedSmtpSchema, type SendSmtpTest } from './smtp.js';
 
 type Gym = typeof gyms.$inferSelect;
@@ -28,8 +28,6 @@ const pendingBackupSchema = z.strictObject({ destination: backupDestinationSchem
 type PendingBackup = z.infer<typeof pendingBackupSchema>;
 const defaultRetentionBytes = 8_000_000_000n;
 const smtpPorts = [25, 465, 587, 2525];
-/** Audited (target: the gym) by a switch from test to live; the latest one is the gym's test-data boundary. */
-const testClearedAction = 'integrations.stripe_test_cleared';
 /** Invoices a charge or Checkout can still pay: their sessions and reservations are the open ones a switch drops. */
 const payableStatuses = ['open', 'past_due'];
 /** How long a switch's request waits for the old test key to retire the dropped Stripe objects; the rest finish after it. */

@@ -31,7 +31,12 @@ customer neither blocks nor replays a new one. The next creation's key is
 `household:<household UUID>:customer:after:<unlink audit UUID>`, so it never reuses
 the old customer's key. A creation whose generation changed while Stripe was called
 is never linked; the service starts once more in the new generation, with the
-provider resolved again. Card setup starts record their customer, so a session made
+provider resolved again. The link step first takes a key share lock on the gym row,
+which a settings save holds for its whole transaction, so it waits for a switch in
+progress. A creation reserved after the switch looked for reservations, with the
+provider resolved before the switch committed, is abandoned the same way when the
+gym's latest `integrations.stripe_test_cleared` audit changed meanwhile: the service
+writes the unlink audit itself, then starts once more. Card setup starts record their customer, so a session made
 for an earlier customer is never reused (`signed-link-checkout.ts`).
 
 The service first reads the household in a short gym-scoped transaction. Existing

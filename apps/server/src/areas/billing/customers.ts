@@ -6,6 +6,7 @@ import { auditEvents, forGym, households, writeAudit, type Transaction } from '@
 import { AppError, type Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, type Payments } from '../../infra/payments/index.js';
+import { holdGymSettings } from '../settings/settings.js';
 
 export type CustomerUnavailableReason = 'stripe_not_configured' | 'missing_details' | 'creation_expired' | 'details_changed' | 'customer_unreadable';
 export class CustomerUnavailable extends AppError {
@@ -51,14 +52,22 @@ export function createCustomersService(options: CustomersOptions) {
     return { reservation, unlinked: generation };
   }
 
+  /** The gym's latest switch from test to live (its audit's ID), or null. */
+  async function lastSwitch(tx: Transaction, gymId: string): Promise<string | null> {
+    const [row] = await tx.select({ id: auditEvents.id }).from(auditEvents)
+      .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetId, gymId)))
+      .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
+    return row?.id ?? null;
+  }
+
   async function ensureCustomer(gymId: string, householdId: string, retried = false): Promise<string> {
     // Resolve local configuration before reserving an operation that might reach Stripe.
     // Existing/imported IDs never depend on provider configuration or payer details.
-    const existing = await scope(gymId, async tx => {
+    const { existing, switched } = await scope(gymId, async tx => {
       const [household] = await tx.select().from(households).where(eq(households.id, householdId));
       if (!household) throw new AppError('not_found', 'Household not found');
       if (!household.stripeCustomerId) details(household);
-      return household.stripeCustomerId;
+      return { existing: household.stripeCustomerId, switched: await lastSwitch(tx, gymId) };
     });
     if (existing) return existing;
     let provider: Payments;
@@ -99,12 +108,21 @@ export function createCustomersService(options: CustomersOptions) {
       }
     }
     const linked = await scope(gymId, async tx => {
+      // A switch from test to live holds the gym row for its whole save: a link waits for it, so the switch either
+      // sees this household's customer (and clears it) or has committed before the checks below.
+      await holdGymSettings(tx, gymId);
       const [household] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!household) throw new AppError('not_found', 'Household not found');
       // An import or another opener may have linked the household while Stripe was called.
       if (household.stripeCustomerId) return household.stripeCustomerId;
       // A switch from test to live unlinked the household while Stripe was called: the customer is the old mode's.
       if ((await currentReservation(tx, householdId)).unlinked !== prepared.unlinked) return null;
+      // A switch committed after the provider was resolved, without seeing this creation (reserved after it looked):
+      // the customer was made with the old key. Abandon the creation as the switch does, in a new generation.
+      if (await lastSwitch(tx, gymId) !== switched) {
+        await audit(tx, gymId, householdId, customerUnlinkedAction, { customerId: null, reason: 'stripe_test_cleared' });
+        return null;
+      }
       // The ID is system-owned and hidden from staff, so linking leaves the staff edit revision unchanged.
       const [saved] = await tx.update(households).set({ stripeCustomerId: customer.id })
         .where(and(eq(households.id, householdId), isNull(households.stripeCustomerId))).returning();
@@ -153,6 +171,11 @@ export function createCustomersService(options: CustomersOptions) {
  * reservation made before it belonged to the old customer and no longer counts.
  */
 export const customerUnlinkedAction = 'billing.customer.unlinked';
+/**
+ * Audited (target: the gym) by a switch from test to live; the latest one is the gym's test-data boundary. A creation
+ * that started before it and wasn't cleared by it is abandoned when it comes to link (`ensureCustomer`).
+ */
+export const stripeTestClearedAction = 'integrations.stripe_test_cleared';
 /** Stripe's answer for an object this account doesn't have (`resource_missing`, 404 or 400), as the payments module raises it. */
 function unreadable(error: unknown): boolean {
   const value = error as { code?: unknown; statusCode?: unknown } | null;

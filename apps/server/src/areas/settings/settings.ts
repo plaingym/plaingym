@@ -26,6 +26,13 @@ export async function readGymSettings(tx: Transaction, gymId: string) {
   if (!row) throw new AppError('not_found', 'Gym not found');
   return present(row);
 }
+/**
+ * Waits while a settings save holds the gym row (a Stripe key change, for one), then keeps the gym's settings from
+ * changing until `tx` ends. A key share lock: other updates of the gym row don't wait for it.
+ */
+export async function holdGymSettings(tx: Transaction, gymId: string) {
+  await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, gymId)).for('key share');
+}
 /** Read within the invoice's first-failure transaction without nesting gym scopes. */
 export async function readBillingRules(tx: Transaction, gymId: string) {
   const [row] = await tx.select({ retryDays: gyms.retryDays }).from(gyms).where(eq(gyms.id, gymId));

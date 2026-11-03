@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { auditEvents, households, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a link wait on the gym row lock.
+import { eq, sql } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
+import { auditEvents, gyms, households, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { runInTransaction } from '@plaingym/shared/transaction';
 import { TestClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, FakePayments } from '../../infra/payments/index.js';
-import { createCustomersService, customerUnlinkedAction, CustomerUnavailable } from './customers.js';
+import { createCustomersService, customerUnlinkedAction, CustomerUnavailable, stripeTestClearedAction } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
@@ -278,6 +280,66 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect(saved.audits.filter(a => a.action === 'billing.customer.linked')).toMatchObject([{ after: { customerId: linked } }]);
     expect(saved.audits.filter(a => a.action === 'billing.customer.creation_reserved').map(a => (a.after as { unlinked?: string }).unlinked))
       .toEqual(expect.arrayContaining([undefined, unlink]));
+  });
+  it('abandons a creation that a switch committed during without clearing (reserved after it looked), and creates one in the new generation', async () => {
+    const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
+    let first: string | undefined;
+    const spy = vi.spyOn(f.provider, 'createCustomer').mockImplementationOnce(async request => {
+      const made = await create(request);
+      first = made.id;
+      // The switch commits while Stripe answers; it never saw this household, so it wrote no unlink for it.
+      await db.forGym(f.gymId, tx => tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: stripeTestClearedAction,
+        targetType: 'gym', targetId: f.gymId, before: null, after: {}, occurredAt: f.clock.now() }));
+      return made;
+    });
+    const linked = await f.service.ensureCustomer(f.gymId, f.household.id);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(linked).not.toBe(first);
+    const saved = await f.read(), abandoned = saved.audits.find(a => a.action === customerUnlinkedAction);
+    expect(abandoned).toMatchObject({ targetId: f.household.id, after: { customerId: null, reason: 'stripe_test_cleared' } });
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ idempotencyKey: `household:${f.household.id}:customer:after:${abandoned!.id}` }));
+    expect(saved.household.stripeCustomerId).toBe(linked);
+    expect(saved.audits.filter(a => a.action === 'billing.customer.linked')).toMatchObject([{ after: { customerId: linked } }]);
+  });
+  it('waits for a switch that holds the gym row when the creation comes to link, then abandons it', async () => {
+    const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
+    const locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+    let switching: Promise<void> | undefined, first: string | undefined;
+    const spy = vi.spyOn(f.provider, 'createCustomer').mockImplementationOnce(async request => {
+      const made = await create(request);
+      first = made.id;
+      // The switch's save locks the gym row first and writes its audit before it commits.
+      switching = db.forGym(f.gymId, async tx => {
+        // eslint-disable-next-line database/system-tables -- The holder's backend PID, for the lock-wait probe.
+        const { pid } = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!;
+        await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, f.gymId)).for('update');
+        await tx.insert(auditEvents).values({ gymId: f.gymId, actorKind: 'system', action: stripeTestClearedAction,
+          targetType: 'gym', targetId: f.gymId, before: null, after: {}, occurredAt: f.clock.now() });
+        locked.resolve(pid); await release.promise;
+      });
+      await locked.promise;
+      return made;
+    });
+    const ensuring = f.service.ensureCustomer(f.gymId, f.household.id);
+    let finished = false;
+    void ensuring.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      const pid = await locked.promise;
+      let sawWait = false;
+      // From the system connection: the switch and the waiting link hold both of the gym pool's connections.
+      for (let tries = 0; tries < 5_000 && !sawWait && !finished; tries++)
+        // eslint-disable-next-line database/system-tables -- The lock-wait probe.
+        sawWait = (await db.system.db.execute<{ n: number }>(
+          sql`select count(*)::int as n from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`))[0]!.n > 0;
+      expect(sawWait).toBe(true);
+      expect(finished).toBe(false);
+    } finally { release.resolve(); await switching; }
+    const linked = await ensuring;
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(linked).not.toBe(first);
+    const saved = await f.read();
+    expect(saved.household.stripeCustomerId).toBe(linked);
+    expect(saved.audits.filter(a => a.action === customerUnlinkedAction)).toMatchObject([{ after: { reason: 'stripe_test_cleared' } }]);
   });
   it('requires an email and rejects provider calls inside a transaction', async () => {
     const f = await fixture();
