@@ -38,7 +38,7 @@ its action), and `ErrorState` (with `onRetry`; never show server error details).
 `TableContainer`, a labelled, keyboard-focusable region. The page itself never
 scrolls sideways.
 
-**Dialogs.** Editors and confirmations open in a `Dialog` rather than inline below the page, so on a phone they take the whole screen and keep their actions in reach. Show a save error inside the dialog, not only on the page behind it.
+**Dialogs.** Editors and confirmations open in a `Dialog` rather than inline below the page, so on a phone they take the whole screen and keep their actions in reach. Show a save error inside the dialog, not only on the page behind it. A `Dialog` has one scroll container, its body: the dialog element clips (`overflow-hidden`) and its header stays put, so don't add a second max height around the whole content; give only a bounded list inside it a `max-h-*` with `overflow-y-auto`.
 
 **Forms.** `Input`, `Select` and `Textarea` are 44 px tall with 16 px text, so
 phones don't zoom into fields. Wrap checkboxes in `CheckboxField` so the whole

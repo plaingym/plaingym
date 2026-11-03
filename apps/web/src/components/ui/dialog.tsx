@@ -54,10 +54,10 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onClick={event => { if (event.target === event.currentTarget && startedOutside.current && outside(event.clientX, event.clientY)) requestClose(); startedOutside.current = false; }}
     onChangeCapture={event => { if (event.target instanceof HTMLElement) dirty.current.add(event.target); }}
-    className={cn('m-0 h-dvh max-h-none w-full max-w-none border-0 bg-background p-0 text-foreground backdrop:bg-foreground/40',
+    className={cn('m-0 h-dvh max-h-none w-full max-w-none overflow-hidden border-0 [&[open]]:flex [&[open]]:flex-col bg-background p-0 text-foreground backdrop:bg-foreground/40',
       'sm:m-auto sm:h-fit sm:max-h-[90dvh] sm:w-[calc(100%-2rem)] sm:rounded-xl sm:border sm:border-border sm:shadow-xl',
       size === 'wide' ? 'sm:max-w-4xl' : 'sm:max-w-2xl', className)}>
-    <div className="flex h-full flex-col sm:max-h-[90dvh]">
+    <div className="flex min-h-0 w-full flex-1 flex-col">
       <div className="flex items-start gap-3 border-b border-border px-4 py-3 sm:px-6">
         <div className="min-w-0 flex-1 space-y-1 py-2">
           <h2 id={titleId} className="break-words text-lg font-semibold">{title}</h2>
@@ -65,7 +65,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
         </div>
         <Button variant="ghost" size="icon" aria-label={closeLabel} disabled={!dismissible || busy > 0} onClick={requestClose}><CloseIcon /></Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
+      <div data-dialog-body className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
         {confirm && <div role="alert" className="mb-4 space-y-3 rounded-lg border border-border bg-muted p-4">
           <p>{t('shell/shell:discardHelp')}</p><div className="flex flex-wrap gap-2">
             <Button ref={keep} disabled={!dismissible || busy > 0} onClick={() => { setConfirm(false); dismissOrigin.current?.focus(); }}>{t('shell/shell:keepEditing')}</Button>

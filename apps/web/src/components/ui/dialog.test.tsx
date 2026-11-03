@@ -6,6 +6,13 @@ import { useRef } from 'react';
 import { Dialog, useDialogOperation, useDialogSaved } from './dialog.js';
 
 afterEach(cleanup);
+it('has one scroll container: the dialog clips and its column shrinks inside it', () => {
+  render(<Dialog title="Session" closeLabel="Close" onClose={vi.fn()}><p>Body</p></Dialog>);
+  const dialog = screen.getByRole('dialog'), column = dialog.firstElementChild!, body = screen.getByText('Body').parentElement!;
+  expect(dialog.className).toContain('overflow-hidden'); expect(dialog.className).toContain('[&[open]]:flex');
+  expect(column.className).toContain('min-h-0'); expect(column.className).not.toMatch(/90dvh/);
+  expect(body.className).toContain('overflow-y-auto'); expect(body.className).toContain('relative');
+});
 it('does not report fields from a finished or discarded subview as unsaved', () => {
   const close = vi.fn();
   const view = render(<Dialog title="Session" closeLabel="Close" onClose={close}><input aria-label="Date" /></Dialog>);
