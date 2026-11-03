@@ -98,9 +98,11 @@ def has_terminal():
 def prompt(label, secret=False):
     if secret:
         return getpass.getpass(label + ": ")
-    with open("/dev/tty", "r+") as terminal:
-        terminal.write(label + ": ")
-        terminal.flush()
+    # Buffered read/write mode requires seeking, which a terminal cannot do.
+    # Separate streams also keep prompts independent of piped bootstrap stdin.
+    with open("/dev/tty", "w") as output, open("/dev/tty", "r") as terminal:
+        output.write(label + ": ")
+        output.flush()
         return terminal.readline().strip()
 
 

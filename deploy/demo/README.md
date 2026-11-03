@@ -27,6 +27,7 @@ curl --fail --silent --show-error --location --proto '=https' BOOTSTRAP_URL | su
 The bundle must match the server architecture. The command downloads and verifies
 it, loads its prebuilt app and proxy images, and prompts for the demo domain,
 ACME email, Cloudflare DNS token, S3 endpoint, bucket, access key and secret key.
+Prompts use the controlling terminal even when the bootstrap is piped into `sh`.
 Secrets are hidden at the terminal. They never need to be put in shell history,
 `.env` or Compose by hand. It checks base and wildcard DNS against the server,
 actually creates/deletes a temporary TXT record, and writes/reads/deletes a

@@ -4,6 +4,9 @@ import contextlib
 import io
 import json
 import os
+import select
+import signal
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +14,54 @@ from unittest.mock import patch
 import urllib.error
 
 import config
+
+
+@unittest.skipUnless(hasattr(os, "fork"), "requires a POSIX controlling terminal")
+class TerminalPromptTests(unittest.TestCase):
+    def test_prompts_use_the_terminal_with_piped_stdin(self):
+        import pty
+        pid, terminal = pty.fork()
+        if pid == 0:
+            try:
+                reader, writer = os.pipe()
+                os.close(writer)
+                os.dup2(reader, 0)
+                os.close(reader)
+                assert config.prompt("Domain") == "demo.example.test"
+                assert config.prompt("Email") == "owner@example.test"
+                assert config.prompt("Token", True) == "test-secret-value"
+                print("PROMPTS_OK", flush=True)
+                os._exit(0)
+            except BaseException:
+                os._exit(1)
+        transcript = b""
+        prompts = [(b"Domain: ", b"demo.example.test\n"),
+                   (b"Email: ", b"owner@example.test\n"),
+                   (b"Token: ", b"test-secret-value\n")]
+        deadline = time.monotonic() + 10
+        try:
+            while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.1)[0]:
+                    try:
+                        chunk = os.read(terminal, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    transcript += chunk
+                    if prompts and prompts[0][0] in transcript:
+                        _, answer = prompts.pop(0)
+                        os.write(terminal, answer)
+                    if b"PROMPTS_OK" in transcript:
+                        break
+            self.assertIn(b"PROMPTS_OK", transcript)
+            self.assertNotIn(b"test-secret-value", transcript)
+        finally:
+            os.close(terminal)
+            finished, _ = os.waitpid(pid, os.WNOHANG)
+            if not finished:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
 
 
 def inputs():
