@@ -23,3 +23,7 @@ dates. For older rows with no recorded anniversary, omit `annualAnchorOn` and
 retain the calculators' existing fallback. The membership HTTP contract is
 unchanged; the anniversary is available to database billing callers and in the
 assignment's audited billing instructions.
+
+## Custom prices
+
+A membership copies its plan's price when assigned and keeps it when the plan's price changes. Staff can give one member a custom price from the member's Memberships tab: it sends the `price` override (amount and the membership's currency) on `PATCH /api/billing/memberships/{membershipId}`. A plan change takes the new plan's billing interval unless `interval` is sent too (the tab never sends it); sent without a `price` it also takes the new plan's price, and sent with a `price` it keeps the entered amount.

@@ -12,11 +12,11 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { billingClient, type BillingClient } from '../catalog/api.js';
-import { money, saveError, selectClass } from '../catalog/format.js';
+import { decimalAmount, decimalUnits, money, saveError, selectClass } from '../catalog/format.js';
 import { householdBillingDate } from './calendar.js';
 
 const text = (key: string) => t('billing/memberships:' + key);
-type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership';
+type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership';
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; now?: Date;
 }) {
@@ -94,14 +94,39 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
   row: Membership; plans: Plan[]; manage: boolean; busy: boolean;
   mutate: (operation: Action, input: unknown, membershipId: string) => Promise<boolean>;
 }) {
-  const [confirm, setConfirm] = useState(false), [action, setAction] = useState<'freeze' | 'resume' | null>(null);
+  const [confirm, setConfirm] = useState(false), [action, setAction] = useState<'freeze' | 'resume' | 'edit' | null>(null);
+  const [formError, setFormError] = useState(''), [editPlan, setEditPlan] = useState(row.planId);
+  // The edit compares against, and sends the revision of, the membership as it was when the form opened,
+  // so a change made elsewhere meanwhile is a conflict rather than silently undone.
+  const [base, setBase] = useState(row);
+  const plan = plans.find(item => item.id === row.planId), basePlan = plans.find(item => item.id === base.planId);
+  const customPrice = !!plan && plan.currency === row.currency && plan.amountCents !== row.amountCents;
+  const choices = plans.filter(item => item.currency === base.currency && (item.active || item.id === base.planId));
+  async function edit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = new FormData(event.currentTarget);
+    const entered = String(form.get('price') ?? '').trim();
+    const input: { revision: number; planId?: string; price?: { amountCents: number; currency: string } } = { revision: base.revision };
+    // A plan change without an entered price leaves `price` out, so it takes the new plan's price.
+    if (editPlan !== base.planId) input.planId = editPlan;
+    if (entered) {
+      try {
+        const amountCents = decimalUnits(entered, 2);
+        // The same price on the same plan is no change; with a plan change it keeps the current price.
+        if (input.planId || amountCents !== base.amountCents) input.price = { amountCents, currency: base.currency };
+      } catch { setFormError(text('invalidPrice')); return; }
+    }
+    if (!input.planId && !input.price) { setFormError(text('nothingToChange')); return; }
+    setFormError('');
+    if (await mutate('updateMembership', input, row.id)) setAction(null);
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
     const input = action === 'freeze' ? { resumesOn: form.get('date') || null } : { nextDueOn: form.get('date') };
     if (await mutate(action === 'freeze' ? 'freezeMembership' : 'resumeMembership', { revision: row.revision, ...input }, row.id)) setAction(null);
   }
   return <li className="min-w-0 space-y-3 rounded-lg border p-4">
-    <div><h3 className="break-words font-semibold">{plans.find(plan => plan.id === row.planId)?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p></div>
+    <div><h3 className="break-words font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
+      {customPrice && <p className="text-sm text-muted-foreground">{text('customPrice')} ({text('planPrice')}: {money(plan.amountCents, plan.currency)})</p>}</div>
     <dl className="grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-2">
       <div><dt className="text-muted-foreground">{text('nextDueOn')}</dt><dd>{row.nextDueOn}</dd></div>
       {row.commitmentEndsOn && <div><dt className="text-muted-foreground">{text('commitmentEndsOn')}</dt><dd>{row.commitmentEndsOn}</dd></div>}
@@ -111,12 +136,22 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
     {manage && row.status !== 'cancelled' && <fieldset disabled={busy} className="min-w-0 space-y-3">
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {row.status === 'pending' && <Button onClick={() => void mutate('activateMembership', { revision: row.revision }, row.id)}>{text('activate')}</Button>}
+        <Button variant="outline" onClick={() => { setAction('edit'); setConfirm(false); setFormError(''); setBase(row); setEditPlan(row.planId); }}>{text('editPrice')}</Button>
         {['active', 'trial'].includes(row.status) && <Button variant="outline" onClick={() => { setAction('freeze'); setConfirm(false); }}>{text('freeze')}</Button>}
         {row.status === 'frozen' && <Button variant="outline" onClick={() => { setAction('resume'); setConfirm(false); }}>{text('resume')}</Button>}
         <Button variant="outline" onClick={() => { setConfirm(true); setAction(null); }}>{text('cancel')}</Button>
       </div>
       {confirm && <div className="space-y-2"><p>{text('confirmCancel')}</p><div className="flex flex-col gap-2 sm:flex-row"><Button onClick={async () => { if (await mutate('cancelMembership', { revision: row.revision }, row.id)) setConfirm(false); }}>{text('confirm')}</Button><Button variant="outline" onClick={() => setConfirm(false)}>{text('back')}</Button></div></div>}
-      {action && <form onSubmit={event => void submit(event)} className="space-y-3">
+      {action === 'edit' && <form noValidate onSubmit={event => void edit(event)} className="space-y-3">
+        {formError && <Alert role="alert">{formError}</Alert>}
+        <Label className="block min-w-0">{text('plan')}<select className={selectClass} name="planId" value={editPlan} onChange={event => setEditPlan(event.target.value)}>
+          {!choices.some(item => item.id === base.planId) && <option value={base.planId}>{basePlan?.name ?? text('membership')}</option>}{choices.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)} / {text(item.interval)}</option>)}</select></Label>
+        {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}
+        <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={decimalAmount(base.amountCents)}/></Label>
+        <p className="text-sm text-muted-foreground">{text('priceHelp')}</p>
+        <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
+      </form>}
+      {(action === 'freeze' || action === 'resume') && <form onSubmit={event => void submit(event)} className="space-y-3">
         <p className="text-sm text-muted-foreground">{text(action === 'freeze' ? 'freezeHelp' : 'resumeHelp')}</p>
         <Label className="block min-w-0">{text(action === 'freeze' ? 'resumesOn' : 'nextDueOn')}<Input type="date" name="date" required={action === 'resume'} {...(action === 'resume' ? { min: row.nextDueOn, defaultValue: row.nextDueOn } : {})}/></Label>
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
