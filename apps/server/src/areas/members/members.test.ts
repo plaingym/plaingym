@@ -13,7 +13,7 @@ import { createMemberPhotoJobs } from './members.jobs.js';
 import { createMemberPhotoService } from './photos.js';
 import { hashHouseholdPin, verifyHouseholdPin } from './pin.js';
 import { FakeUploads } from '../../infra/storage/index.js';
-import { FakePayments } from '../../infra/payments/index.js';
+import { FakePayments, type DetachOptions } from '../../infra/payments/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { TestClock } from '../../core/clock.js';
@@ -284,13 +284,16 @@ describe('members and households', () => {
     const cards = await Promise.all([1, 2].map(() => factory('paymentMethods', gymA, { householdId: home.id, processorId: 'pm_erase_' + uuidv7().replaceAll('-', '') })));
     const payments = new FakePayments(gymA, clock), jobs = new FakeJobs(clock);
     payments.seedCustomer({ id: 'cus_erasure', email: 'payer@example.test' });
-    for (const card of cards) payments.recordPaymentMethod({ id: card.processorId, customerId: 'cus_erasure', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
-    const detachCard = vi.fn(async (gymId: string, processorId: string) => {
+    for (const card of cards) {
+      payments.recordPaymentMethod({ id: card.processorId, customerId: 'cus_erasure', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+      payments.setBillingDetails(card.processorId, { name: 'Pat Payer', email: 'payer@example.test', phone: '+15555550100' });
+    }
+    const detachCard = vi.fn(async (gymId: string, processorId: string, options?: DetachOptions) => {
       expect(gymId).toBe(gymA);
       expect((await service.getMember(gymId, person.id)).anonymizedAt).not.toBeNull();
       expect((await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)))).every(card => card.revokedAt)).toBe(true);
       if (failure && processorId === cards[0]!.processorId) throw new Error('Provider unavailable');
-      await payments.detachPaymentMethod(processorId);
+      await payments.detachPaymentMethod(processorId, options);
     });
     const app = new OpenAPIHono<RequestEnvironment>();
     app.use('*', async (ctx, next) => { ctx.set('context', { principal: { kind: 'staff', gymId: gymA, userId, roles: ['owner'] }, gym: { gymId: gymA, timezone: 'UTC', enabledModules: new Set() }, requestId: 'erase', clock }); await next(); });
@@ -303,8 +306,12 @@ describe('members and households', () => {
       expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status, String(errors[0])).toBe(failure && !queued ? 500 : 200);
     } finally { setLogSink(previousLog); }
     expect(detachCard).toHaveBeenCalledTimes(2);
+    // An erasure clears each card's billing details before it detaches the card; the failed card keeps them until its retry.
+    for (const card of cards) expect(detachCard).toHaveBeenCalledWith(gymA, card.processorId, { redactBillingDetails: true });
+    expect(payments.billingDetails(cards[1]!.processorId)).toBeUndefined();
+    expect(payments.billingDetails(cards[0]!.processorId)).toEqual(failure ? { name: 'Pat Payer', email: 'payer@example.test', phone: '+15555550100' } : undefined);
     expect(jobs.jobs).toHaveLength(queued ? 2 : 0);
-    if (queued) expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id }))));
+    if (queued) expect(jobs.jobs.map(job => job.payload)).toEqual(expect.arrayContaining(cards.map(card => ({ paymentMethodId: card.id, redactBillingDetails: true }))));
     expect(logs.filter(entry => (entry as { event?: string }).event === 'members.erasure.detach_failed')).toEqual(failure && queued ? [expect.objectContaining({ event: 'members.erasure.detach_failed', gymId: gymA, memberId: person.id, paymentMethodId: cards[0]!.id })] : []);
     expect(JSON.stringify(logs)).not.toContain('Provider unavailable');
     const stored = await database.forGym(gymA, tx => tx.select().from(paymentMethods).where(eq(paymentMethods.householdId, home.id)));
@@ -331,8 +338,8 @@ describe('members and households', () => {
       expect((await send(app, `/api/members/${person.id}/anonymize`, 'POST', { revision: 1 })).status).toBe(failure && !queued ? 500 : 200);
     } finally { setLogSink(previousLog); }
     expect(redactCustomer).toHaveBeenCalledExactlyOnceWith(gymA, customerId);
-    const cleared = { phone: null, description: null, address: null, shipping: null };
-    expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test', ...details }
+    const cleared = { phone: null, description: null, address: null, shipping: null, individualName: null, businessName: null, customFields: null, taxIds: [] };
+    expect(payments.customer(customerId)).toEqual(failure ? { name: null, email: 'payer@example.test', ...details, individualName: null, businessName: null, customFields: null, taxIds: [] }
       : { name: 'Erased member', email: null, ...cleared });
     expect(jobs.jobs.map(job => ({ name: job.name, payload: job.payload }))).toEqual(queued ? [{ name: redactCustomerJob, payload: { customerId } }] : []);
     // The retry waits a minute, after the inline attempt, which it then finds already redacted.

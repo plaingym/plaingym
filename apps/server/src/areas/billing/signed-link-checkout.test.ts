@@ -373,6 +373,30 @@ describe('card setup recovery with real PostgreSQL', () => {
     const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerUnlinkedAction)));
     expect(audits).toMatchObject([{ targetId: f.household.id, before: { customerId: 'cus_FromAnotherAccount' }, after: { customerId: null, reason: 'unreadable' } }]);
   });
+  it('replaces an imported customer the live Stripe account has deleted before Checkout uses it, and records why', async () => {
+    const f = await fixture('update_card', true);
+    f.setProvider(new StripePayments(f.gymId, { transport: f.transport, clock: f.clock, webhookSecret: secret, mode: 'live' }));
+    f.transport.objects.set('cus_Deleted', { id: 'cus_Deleted', object: 'customer', deleted: true });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_Deleted' }).where(eq(households.id, f.household.id)));
+    const started = await f.checkout.start(f.gymId, f.linkId);
+    const [household] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
+    expect(household!.stripeCustomerId).toMatch(/^cus_\d+$/);
+    expect(started.session.customerId).toBe(household!.stripeCustomerId);
+    expect(f.transport.requests.filter(request => request.method === 'POST' && request.path === '/v1/checkout/sessions')
+      .every(request => request.params?.customer === household!.stripeCustomerId)).toBe(true);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerUnlinkedAction)));
+    expect(audits).toMatchObject([{ targetId: f.household.id, before: { customerId: 'cus_Deleted' }, after: { customerId: null, reason: 'deleted' } }]);
+  });
+  it('keeps an imported customer ID a test key reads as deleted, and offers no Checkout', async () => {
+    const f = await fixture('update_card', true);
+    f.transport.objects.set('cus_Deleted', { id: 'cus_Deleted', object: 'customer', deleted: true });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_Deleted' }).where(eq(households.id, f.household.id)));
+    await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toMatchObject({ cause: { reason: 'customer_unreadable' } });
+    const [household] = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id)));
+    expect(household!.stripeCustomerId).toBe('cus_Deleted');
+    expect(f.transport.requests.some(request => request.method === 'POST' && request.path === '/v1/checkout/sessions')).toBe(false);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, customerUnlinkedAction)))).toEqual([]);
+  });
   for (const stripe of [false, true]) {
     const name = stripe ? 'Stripe' : 'fake';
     const saved = (f: Awaited<ReturnType<typeof fixture>>) => db.forGym(f.gymId, tx => tx.select().from(paymentMethods));

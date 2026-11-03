@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from '@hono/zod-openapi';
 import { bodyLimit } from 'hono/body-limit';
+import type { forGym } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { route, type JobRegistration } from '../../core/registry.js';
@@ -12,6 +13,8 @@ import type { HouseholdPinSecret } from './pin.js';
 import type { Jobs } from '../../infra/jobs/index.js';
 import { promoteWaitlist } from '../bookings/bookings.js';
 import { detachJob } from '../billing/payments.mutations.js';
+import type { DetachOptions } from '../../infra/payments/index.js';
+import { queueEarlierRedactions, redactCustomerJob, redactEarlierJob } from './erasure-redaction.js';
 
 function mutation(context: RequestContext) {
   if (context.principal.kind !== 'staff' || context.principal.gymId !== context.gym.gymId) throw new AppError('not_found', 'Resource not found');
@@ -31,10 +34,10 @@ function jsonRoute(contract: c.EndpointContract, handler: (context: RequestConte
   });
 }
 
-type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string) => Promise<void>;
+type ErasureOptions = { clock?: Clock; detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
   /** Payments.redactCustomer for the gym: the erased household's provider customer keeps no name or email. */
   redactCustomer?: (gymId: string, customerId: string) => Promise<void>; jobs?: Pick<Jobs, 'enqueue'> };
-export const redactCustomerJob = 'members.erasure.redact_customer';
+export { redactCustomerJob };
 const redactPayload = z.object({ customerId: z.string().regex(/^cus_[A-Za-z0-9_]+$/) });
 type Composition = ErasureOptions & { service: MembersService; photos: ReturnType<typeof createMemberPhotoService> | undefined; uploadsFor?: MemberUploads };
 let configured: Composition | undefined;
@@ -44,12 +47,19 @@ export function configureMembers(options: ErasureOptions & { pinSecret: Househol
   configured = { ...options, service, photos: createMemberPhotoService(service, options.uploadsFor) };
 }
 /** Retries redaction of an erased household's provider customer; the payload carries the ID the erasure cleared. */
-export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer'>): readonly JobRegistration[] {
+export function createErasureJobs(supplied?: Pick<ErasureOptions, 'redactCustomer' | 'jobs'> & { scope?: typeof forGym }): readonly JobRegistration[] {
   return [{ id: redactCustomerJob, async handler(payload, ctx) {
     const { customerId } = redactPayload.parse(payload);
     const redact = (supplied ?? configured)?.redactCustomer;
     if (!redact) throw new Error('Customer redaction is not configured');
     await redact(ctx.gymId, customerId);
+  } },
+  // Customers erased before the redaction covered every field are queued once each (a marker audit keeps a rerun quiet), then
+  // the same check keeps every later erasure's redaction from being lost with an exhausted job. It needs no start-up wiring.
+  { id: redactEarlierJob, cron: '29 4 * * *', async handler(_payload, ctx) {
+    const jobs = (supplied ?? configured)?.jobs;
+    if (!jobs) throw new Error('Customer redaction is not configured');
+    await queueEarlierRedactions({ gymId: ctx.gymId, timezone: ctx.timezone, jobs, clock: ctx.clock, ...(supplied?.scope ? { scope: supplied.scope } : {}) });
   } }];
 }
 /** Tests pass a service; otherwise routes use the runtime composition, and without one, photos and
@@ -78,14 +88,15 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
       });
       for (const sessionId of freedSessionIds) await promoteWaitlist(ctx.gym.gymId, sessionId,
         current().clock ? { clock: current().clock! } : {});
-      // Queue every detach before attempting it, so an outage leaves durable retries.
-      for (const card of revokedCards) if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: card.id }, {
+      // Queue every detach before attempting it, so an outage leaves durable retries. An erasure also clears each card's billing
+      // details (name, email, phone, address) before detaching it; a staff card removal leaves them.
+      for (const card of revokedCards) if (jobs) await jobs.enqueue(detachJob, { paymentMethodId: card.id, redactBillingDetails: true }, {
         gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `detach:${card.id}`, maxAttempts: 12,
       });
       const cleanup = await Promise.allSettled([
         ...revokedCards.map(async card => {
           if (!detachCard) throw new AppError('unavailable', 'Card removal is not configured');
-          try { await detachCard(ctx.gym.gymId, card.processorId); }
+          try { await detachCard(ctx.gym.gymId, card.processorId, { redactBillingDetails: true }); }
           catch (error) {
             // The erasure has committed and the queued job retries the detach; without a queue, report it.
             if (!jobs) throw error;

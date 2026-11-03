@@ -6,12 +6,13 @@ import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
+import type { DetachOptions } from '../../infra/payments/index.js';
 import { detachJob, receiptJob } from './payments.mutations.js';
 
 interface DeliveryOptions {
   scope?: typeof forGym;
   notifications: TransitionNotifications;
-  detachCard(gymId: string, processorId: string): Promise<void>;
+  detachCard(gymId: string, processorId: string, options?: DetachOptions): Promise<void>;
 }
 let configured: DeliveryOptions | undefined;
 export function configurePaymentDelivery(options: DeliveryOptions) { configured = options; }
@@ -30,11 +31,13 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
       await options.notifications.receipt(notice);
     } },
     { id: detachJob, async handler(payload, ctx) {
-      const { paymentMethodId } = payload as { paymentMethodId: string }; idSchema.parse(paymentMethodId);
+      const { paymentMethodId, redactBillingDetails } = payload as { paymentMethodId: string; redactBillingDetails?: boolean }; idSchema.parse(paymentMethodId);
       const options = read(), scope = options.scope ?? forGym;
       const row = await scope(ctx.gymId, async tx => (await tx.select().from(paymentMethods).where(and(
         eq(paymentMethods.id, paymentMethodId), eq(paymentMethods.isDefault, false))))[0] ?? notFound());
-      if (row.revokedAt) await options.detachCard(ctx.gymId, row.processorId);
+      // Only an erasure asks for the card's billing details to be cleared; a staff removal queues the job without the flag.
+      if (row.revokedAt) await (redactBillingDetails === true ? options.detachCard(ctx.gymId, row.processorId, { redactBillingDetails: true })
+        : options.detachCard(ctx.gymId, row.processorId));
     } },
   ];
 }

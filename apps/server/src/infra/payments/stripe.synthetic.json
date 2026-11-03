@@ -1981,6 +1981,143 @@
         }
       ]
     },
+    "extended > detaches a card for an erasure with its billing details cleared first, idempotently": {
+      "version": 1,
+      "gymId": "00000000-0000-7000-8000-000000000001",
+      "exchanges": [
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/payment_methods/pm_foreign"
+          },
+          "output": {
+            "id": "pm_foreign",
+            "object": "payment_method",
+            "customer": "cus_foreign",
+            "metadata": {}
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_foreign"
+          },
+          "output": {
+            "id": "cus_foreign",
+            "object": "customer",
+            "metadata": {
+              "gym_id": "other-gym"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/payment_methods/pm_4242"
+          },
+          "output": {
+            "id": "pm_4242",
+            "object": "payment_method",
+            "created": 1792756800,
+            "customer": "cus_fixture",
+            "card": {
+              "brand": "visa",
+              "last4": "4242",
+              "exp_month": 12,
+              "exp_year": 2030
+            },
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_fixture"
+          },
+          "output": {
+            "id": "cus_fixture",
+            "object": "customer",
+            "email": "payer@example.invalid",
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "POST",
+            "path": "/v1/payment_methods/pm_4242/detach",
+            "params": {}
+          },
+          "output": {
+            "id": "pm_4242",
+            "object": "payment_method",
+            "created": 1792756800,
+            "customer": null,
+            "card": {
+              "brand": "visa",
+              "last4": "4242",
+              "exp_month": 12,
+              "exp_year": 2030
+            },
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/payment_methods/pm_4242"
+          },
+          "output": {
+            "id": "pm_4242",
+            "object": "payment_method",
+            "created": 1792756800,
+            "customer": null,
+            "card": {
+              "brand": "visa",
+              "last4": "4242",
+              "exp_month": 12,
+              "exp_year": 2030
+            },
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/payment_methods/pm_4242"
+          },
+          "output": {
+            "id": "pm_4242",
+            "object": "payment_method",
+            "created": 1792756800,
+            "customer": null,
+            "card": {
+              "brand": "visa",
+              "last4": "4242",
+              "exp_month": 12,
+              "exp_year": 2030
+            },
+            "metadata": {
+              "gym_id": "00000000-0000-7000-8000-000000000001"
+            }
+          }
+        }
+      ]
+    },
     "extended > redacts an erased customer idempotently, keeps it, and accepts unknown IDs": {
       "version": 1,
       "gymId": "00000000-0000-7000-8000-000000000001",
@@ -2067,6 +2204,20 @@
           "operation": "stripe",
           "input": {
             "method": "GET",
+            "path": "/v1/customers/cus_1/tax_ids",
+            "params": {
+              "limit": 100
+            }
+          },
+          "output": {
+            "data": [],
+            "has_more": false
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
             "path": "/v1/customers/cus_1"
           },
           "output": {
@@ -2084,6 +2235,20 @@
             "address": null,
             "shipping": null,
             "description": null
+          }
+        },
+        {
+          "operation": "stripe",
+          "input": {
+            "method": "GET",
+            "path": "/v1/customers/cus_1/tax_ids",
+            "params": {
+              "limit": 100
+            }
+          },
+          "output": {
+            "data": [],
+            "has_more": false
           }
         },
         {

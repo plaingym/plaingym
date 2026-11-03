@@ -66,6 +66,13 @@ export function fullPaymentsContract(name: string, create: (card?: Card) => Prom
       await expect(payments.detachPaymentMethod('pm_missing')).resolves.toBeUndefined();
       expect(await payments.readPaymentObject({ kind: 'payment_method', id: detach.owned })).toEqual({ status: 'unknown', reference: { kind: 'payment_method', id: detach.owned } });
     });
+    it('detaches a card for an erasure with its billing details cleared first, idempotently', async () => {
+      const { payments, detach } = await create();
+      await expect(payments.detachPaymentMethod(detach.foreign, { redactBillingDetails: true })).rejects.toThrow();
+      await expect(payments.detachPaymentMethod(detach.owned, { redactBillingDetails: true })).resolves.toBeUndefined();
+      await expect(payments.detachPaymentMethod(detach.owned, { redactBillingDetails: true })).resolves.toBeUndefined();
+      expect(await payments.readPaymentObject({ kind: 'payment_method', id: detach.owned })).toEqual({ status: 'unknown', reference: { kind: 'payment_method', id: detach.owned } });
+    });
     it('redacts an erased customer idempotently, keeps it, and accepts unknown IDs', async () => {
       const { payments, charge } = await create();
       const request = { email: 'erased-payer@example.invalid', name: 'Erased Household', householdId: charge.invoiceId,

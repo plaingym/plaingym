@@ -221,8 +221,12 @@ Details: `apps/server/src/core/app.md`.
   on request: contact details, birth date, emergency contacts, medical notes,
   photo, signed waivers and signature images, logins and links. Invoices and
   attendance keep their IDs for the books. Erasing a household's last member also
-  revokes its cards and clears its name, email, phone, address, shipping details
-  and description at Stripe (`apps/server/src/areas/members/README.md`).
+  revokes its cards, clears each card's billing name, email, phone and address at
+  Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
+  address, shipping details, description, individual and business names and invoice
+  custom fields, and deletes its tax IDs. Customers erased before this was complete
+  are redacted once from the erasure audits
+  (`apps/server/src/areas/members/README.md`).
 * **Medical notes** are readable only by owners, admins and coaches, and are never
   returned to signed links or the portal's household view.
 * **Audit.** State-changing actions write an `audit_events` row (the app role can

@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
-import { CustomerCreationInProgress, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
+import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
   type PaymentEvent, type Refund } from './index.js';
@@ -74,6 +74,10 @@ export function stripeTransport(apiKey: string, options: { testOnly?: boolean; d
   } };
 }
 
+/** An address, shipping or similar object whose fields are all null holds nothing, so it counts as already cleared. */
+function holds(value: unknown): boolean {
+  return typeof value === 'object' && value !== null ? Object.values(value).some(holds) : !!value;
+}
 function absent(error: unknown): boolean {
   const value = error as { code?: string; statusCode?: number } | null;
   return value?.code === 'resource_missing' && [400, 404].includes(value.statusCode ?? 0);
@@ -350,7 +354,7 @@ export class StripePayments implements Payments {
     }
     return value;
   }
-  async detachPaymentMethod(processorId: string): Promise<void> {
+  async detachPaymentMethod(processorId: string, options: DetachOptions = {}): Promise<void> {
     assertNoTransaction('payments.detachPaymentMethod');
     const path = this.#path('payment_methods', processorId);
     let method: ObjectData;
@@ -359,6 +363,18 @@ export class StripePayments implements Payments {
     if (data(method.metadata ?? {}).gym_id) this.#metadata(method);
     if (!method.customer) return;
     await this.#ownedCustomer(id(method.customer));
+    // Stripe updates only an attached card, so erasure clears the billing details first. A failure here stops the detach:
+    // the retry finds the card still attached, whereas a detached card could no longer be cleared.
+    if (options.redactBillingDetails && holds(method.billing_details)) {
+      try { await this.#post(path, { billing_details: { name: '', email: '', phone: '', address: '' } }); }
+      catch (error) {
+        if (absent(error)) return;
+        // Updating a card needs the same Payment Methods permission as detaching it.
+        if ((error as { statusCode?: number } | null)?.statusCode === 403)
+          throw new Error('Check the Stripe permission for Payment Methods', { cause: error });
+        throw error;
+      }
+    }
     try { await this.#post(path + '/detach', {}); }
     catch (error) {
       if (absent(error)) return;
@@ -381,19 +397,47 @@ export class StripePayments implements Payments {
     // As adoptCustomer: an untagged customer (imported or made in the dashboard) is the gym's own; another gym's is refused.
     const owner = data(customer.metadata ?? {}).gym_id;
     if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
-    const personal = [customer.email, customer.phone, customer.address, customer.shipping, customer.description];
-    // An address or shipping object whose fields are all null holds nothing, so it counts as already cleared.
-    const holds = (value: unknown): boolean => typeof value === 'object' && value !== null ? Object.values(value).some(holds) : !!value;
-    if (customer.name === ERASED_CUSTOMER_NAME && !personal.some(holds)) return;
-    // An empty string clears a field (the email, phone, address, shipping details and description a dashboard customer may hold);
-    // the customer's metadata, payments and disputes are unchanged. Setting the same empty values twice is harmless, so there is
-    // no idempotency key: a reused key would replay a cached answer and skip details a dashboard edit added since.
-    await this.#post(path, { name: ERASED_CUSTOMER_NAME, email: '', phone: '', address: '', shipping: '', description: '' });
+    const customFields = customer.invoice_settings ? data(customer.invoice_settings).custom_fields : undefined;
+    const personal = [customer.email, customer.phone, customer.address, customer.shipping, customer.description,
+      customer.individual_name, customer.business_name, customFields];
+    if (customer.name !== ERASED_CUSTOMER_NAME || personal.some(holds)) {
+      // An empty string clears a field (the email, phone, address, shipping details and description a dashboard customer may hold);
+      // the customer's metadata, payments and disputes are unchanged. Setting the same empty values twice is harmless, so there is
+      // no idempotency key: a reused key would replay a cached answer and skip details a dashboard edit added since.
+      // The individual and business names and the invoice custom fields are sent only when the customer holds them, so an API
+      // version that doesn't take them is never sent them.
+      await this.#post(path, { name: ERASED_CUSTOMER_NAME, email: '', phone: '', address: '', shipping: '', description: '',
+        ...(holds(customer.individual_name) ? { individual_name: '' } : {}),
+        ...(holds(customer.business_name) ? { business_name: '' } : {}),
+        ...(holds(customFields) ? { invoice_settings: { custom_fields: '' } } : {}) });
+    }
+    // Tax IDs are separate objects (a VAT number names the person or business), so they are deleted whatever the rest held.
+    // They go last, so a key that can't manage them still has the customer's own fields cleared before the job reports it.
+    await this.#deleteTaxIds(path);
+  }
+  /** Deletes every tax ID of the customer, a page at a time (a deleted one leaves the list). */
+  async #deleteTaxIds(customerPath: string): Promise<void> {
+    try {
+      for (;;) {
+        const page = await this.#get(customerPath + '/tax_ids', { limit: 100 });
+        const ids = (Array.isArray(page.data) ? page.data : []).map(item => id(data(item).id));
+        for (const taxId of ids) {
+          if (!/^[A-Za-z0-9_]+$/.test(taxId)) throw new Error('Invalid processor ID');
+          try { await this.#request({ method: 'DELETE', path: customerPath + '/tax_ids/' + taxId }); }
+          catch (error) { if (!absent(error)) throw error; }
+        }
+        if (!ids.length || !page.has_more) return;
+      }
+    } catch (error) {
+      if ((error as { statusCode?: number } | null)?.statusCode === 403)
+        throw new Error('Check the Stripe permission for Customers (tax IDs)', { cause: error });
+      throw error;
+    }
   }
   async adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }> {
     assertNoTransaction('payments.adoptCustomer');
     const path = this.#path('customers', customerId), customer = await this.#get(path);
-    if (customer.deleted === true) throw new Error('Customer was deleted');
+    if (customer.deleted === true) throw new CustomerDeleted();
     const owner = data(customer.metadata ?? {}).gym_id;
     if (owner !== undefined && owner !== this.gymId) throw new NotForGym('Payment object belongs to another gym');
     // Metadata updates merge, so the customer's other keys stay.

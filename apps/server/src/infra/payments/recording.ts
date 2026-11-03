@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { isDeepStrictEqual } from 'node:util';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { CustomerCreationInProgress, type Payments } from './index.js';
+import { CustomerCreationInProgress, CustomerDeleted, type Payments } from './index.js';
 
 export interface Exchange {
   operation: string;
@@ -45,7 +45,7 @@ export class FixtureRecorder {
       const record = error as Exchange['error'];
       const raw = error && typeof error === 'object' && 'raw' in error ? error.raw as Record<string, unknown> : undefined;
       const intent = record?.payment_intent ?? raw?.payment_intent;
-      exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
+      exchange.error = { type: error instanceof CustomerCreationInProgress ? 'CustomerCreationInProgress' : error instanceof CustomerDeleted ? 'CustomerDeleted' : record?.type ?? 'Error', ...(record?.code ? { code: record.code } : {}),
         ...(record?.statusCode ? { statusCode: record.statusCode } : {}),
         ...(intent ? { payment_intent: redact(intent) } : {}) };
       throw error;
@@ -71,8 +71,8 @@ export class Replay {
     const exchange = this.tape.exchanges[this.#position++];
     if (!exchange || exchange.operation !== operation || !isDeepStrictEqual(exchange.input, redact(input)))
       throw new Error('Fixture request mismatch at exchange ' + this.#position + ': ' + operation);
-    if (exchange.error) throw Object.assign(exchange.error.type === 'CustomerCreationInProgress'
-      ? new CustomerCreationInProgress() : new Error(exchange.error.type), hydrate(exchange.error));
+    if (exchange.error) throw Object.assign(exchange.error.type === 'CustomerCreationInProgress' ? new CustomerCreationInProgress()
+      : exchange.error.type === 'CustomerDeleted' ? new CustomerDeleted() : new Error(exchange.error.type), hydrate(exchange.error));
     return hydrate(structuredClone(exchange.output)) as T;
   }
   assertConsumed(): void {

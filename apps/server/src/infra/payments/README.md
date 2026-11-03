@@ -200,19 +200,34 @@ is confirmed by reading the method again. Permission and provider failures remai
 retryable. Payment Methods **Write** is required and probed during setup. Existing
 keys without it report `Check the Stripe permission for Payment Methods`; local
 card revocation remains in place while the queued detach job retries.
+`detachPaymentMethod(id, { redactBillingDetails: true })` is for member erasure only
+(a staff card removal passes no options): Stripe
+[updates only an attached card](https://docs.stripe.com/api/payment_methods/update),
+so before detaching it clears the card's billing name, email, phone and address (an
+empty string clears each) when it holds any. A failed clearing is raised before the
+detach, so the retry still finds the card attached; a card that is already detached
+keeps what it holds, since it can no longer be updated.
 
 `redactCustomer(id)` serves member erasure. It refuses a customer tagged for another
 gym and, as `adoptCustomer` does, treats an untagged one (an imported ID) as the gym's; it then
 [updates the Customer](https://docs.stripe.com/api/customers/update) so its name
-is `Erased member` and its email, phone, address, shipping details and description
-are cleared (an empty string clears each). A customer adopted from the dashboard may
+is `Erased member` and its email, phone, address, shipping details, description,
+individual name, business name and invoice custom fields are cleared (an empty string
+clears each; the individual and business names and the custom fields are sent only when the
+customer holds them, so an API version without them is never sent them), and it deletes the
+customer's tax IDs (a separate list per customer, deleted after the customer's own fields so a key without
+permission for them, reported as `Check the Stripe permission for Customers (tax IDs)`, still has those cleared). A customer adopted from the dashboard may
 hold any of them. The Customer, its ID, its metadata and its payment and dispute history stay, because the gym
 keeps them for disputes and tax; the adapter never deletes a Customer. Missing,
-deleted and already redacted customers (name, email and all other details cleared) succeed without a write, so the call is
+deleted and already redacted customers (name, email and all other details cleared, no tax ID) succeed without a write, so the call is
 safe to repeat. Erasing a household's last member commits first, then calls it
 with the customer ID the erasure cleared; a durable `members.erasure.redact_customer`
 job carries that ID and retries when Stripe is unreachable. It uses the Customers
 **Write** permission that customer creation already needs.
+
+`adoptCustomer(id)` raises `CustomerDeleted` (exported from `index.ts`; the fake raises it
+for a customer seeded as `deleted`) when Stripe reports the customer deleted, so callers
+can tell it from a transient failure.
 
 Run from the repository root with the pinned Node version:
 

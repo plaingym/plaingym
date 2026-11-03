@@ -14,7 +14,7 @@ import { TestClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { areaContributions } from '../../core/registry-areas.js';
-import { FakePayments } from '../../infra/payments/index.js';
+import { FakePayments, type DetachOptions } from '../../infra/payments/index.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -29,6 +29,7 @@ import { createPaymentService } from './payments.js';
 import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
 import { createPaymentJobs } from './payments.jobs.js';
+import { detachJob } from './payments.mutations.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 async function fixture() {
@@ -38,7 +39,7 @@ async function fixture() {
   const card = await factory('paymentMethods', gymId, { householdId: home.id, processorId: 'pm_4242', isDefault: true });
   const provider = new FakePayments(gymId, clock); provider.seedCustomer({ id: 'cus_fixture', email: 'payer@example.invalid' });
   const jobs = new FakeJobs(clock), email = new FakeEmail(), settings = createGymSettingsAccessor({ scope: db.forGym });
-  const detachCard = vi.fn(async (_gym: string, _id: string) => { assertNoTransaction('detachCard'); });
+  const detachCard = vi.fn(async (_gym: string, _id: string, _options?: DetachOptions) => { assertNoTransaction('detachCard'); });
   const context = { gymId, actor: { kind: 'user' as const, userId: user.id } };
   const options = { scope: db.forGym, clock, settings, jobs, detachCard, paymentsFor: async () => provider,
     transitions: createInvoiceTransitions({ scope: db.forGym, clock }) };
@@ -408,6 +409,19 @@ describe('one-off collection and payment durability', () => {
     await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242');
     const sibling = await factory('households', f.gymId);
     await expect(f.service.revokeCard(f.context, sibling.id, f.card.id)).rejects.toMatchObject({ code: 'not_found' });
+  });
+  it('detaches with the billing-details flag only when the job asks for it (an erasure), never for a staff removal', async () => {
+    const f = await fixture();
+    await f.service.revokeCard(f.context, f.home.id, f.card.id);
+    expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242');
+    await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242');
+    await f.jobs.enqueue(detachJob, { paymentMethodId: f.card.id, redactBillingDetails: true },
+      { gymId: f.gymId, timezone: 'UTC', idempotencyKey: 'detach:erased:' + f.card.id });
+    await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242', { redactBillingDetails: true });
+    // Anything but true is ignored.
+    await f.jobs.enqueue(detachJob, { paymentMethodId: f.card.id, redactBillingDetails: 'yes' },
+      { gymId: f.gymId, timezone: 'UTC', idempotencyKey: 'detach:other:' + f.card.id });
+    await f.jobs.runNext(); expect(f.detachCard).toHaveBeenLastCalledWith(f.gymId, 'pm_4242');
   });
   it('queues a receipt and sends it using the shared notification delivery, respecting the email switch', async () => {
     const f = await fixture();

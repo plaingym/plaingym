@@ -4,7 +4,7 @@ import { randomUUID, createHmac } from 'node:crypto';
 import { afterAll, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
 import { runInTransaction } from '@plaingym/shared/transaction';
-import { CustomerCreationInProgress, FakePayments, isProviderOutage } from './index.js';
+import { CustomerCreationInProgress, CustomerDeleted, FakePayments, isProviderOutage } from './index.js';
 import { FixtureRecorder, replayPayments } from './recording.js';
 import { recordingTransport, replayTransport, type PaymentTransport } from './transport.js';
 import { StripePayments, STRIPE_API_VERSION, stripeTransport } from './stripe.js';
@@ -436,13 +436,22 @@ it('redacts a customer of this gym or an untagged one, keeping its metadata, and
   transport.objects.set('cus_erased', { id: 'cus_erased', object: 'customer', name: 'Pat Payer', email: 'pat@example.invalid',
     phone: '+15555550100', description: 'Pat, Tuesday class', address: { line1: '1 Mat Road', city: 'Austin', country: 'US' },
     shipping: { name: 'Pat Payer', phone: '+15555550100', address: { line1: '2 Gi Lane', country: 'US' } },
+    individual_name: 'Pat Payer', business_name: 'Payer Gi Supply',
+    invoice_settings: { custom_fields: [{ name: 'Member', value: 'Pat' }], default_payment_method: null },
     metadata: { gym_id: gymId, household_id: 'household_fixture' } });
+  for (const id of ['txi_1', 'txi_2']) transport.objects.set(id, { id, object: 'tax_id', customer: 'cus_erased', type: 'eu_vat', value: 'DE123456789' });
+  transport.objects.set('txi_other', { id: 'txi_other', object: 'tax_id', customer: 'cus_fixture', type: 'eu_vat', value: 'DE000' });
   await payments.redactCustomer('cus_erased');
-  // Every personal field is cleared; the ID and the metadata stay.
+  // Every personal field is cleared and the customer's tax IDs are deleted (another customer's stay); the ID and the metadata stay.
   expect(transport.objects.get('cus_erased')).toEqual({ id: 'cus_erased', object: 'customer', name: 'Erased member', email: null,
-    phone: null, description: null, address: null, shipping: null, metadata: { gym_id: gymId, household_id: 'household_fixture' } });
+    phone: null, description: null, address: null, shipping: null, individual_name: null, business_name: null,
+    invoice_settings: { custom_fields: null, default_payment_method: null }, metadata: { gym_id: gymId, household_id: 'household_fixture' } });
+  expect([...transport.objects.keys()].filter(id => id.startsWith('txi_'))).toEqual(['txi_other']);
+  expect(transport.requests.filter((request) => request.method === 'DELETE').map(request => request.path))
+    .toEqual(['/v1/customers/cus_erased/tax_ids/txi_1', '/v1/customers/cus_erased/tax_ids/txi_2']);
   expect(transport.requests.filter((request) => request.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/customers/cus_erased',
-    params: { name: 'Erased member', email: '', phone: '', address: '', shipping: '', description: '' } }]);
+    params: { name: 'Erased member', email: '', phone: '', address: '', shipping: '', description: '',
+      individual_name: '', business_name: '', invoice_settings: { custom_fields: '' } } }]);
   // A finished redaction is not written again.
   await payments.redactCustomer('cus_erased');
   expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
@@ -476,16 +485,124 @@ it('redacts a customer of this gym or an untagged one, keeping its metadata, and
   expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(4);
   expect(transport.objects.get('cus_foreign')).toMatchObject({ name: 'Other', email: 'other@example.invalid' });
 });
+it('clears what an already erased customer still holds: a tax ID, invoice custom fields, an individual name', async () => {
+  const { payments, transport } = fixture();
+  // A customer erased by an earlier release still holds a tax ID; only that is removed, and nothing else is written.
+  transport.objects.set('cus_tax', { id: 'cus_tax', object: 'customer', name: 'Erased member', email: null, metadata: { gym_id: gymId } });
+  transport.objects.set('txi_late', { id: 'txi_late', object: 'tax_id', customer: 'cus_tax', type: 'us_ein', value: '12-3456789' });
+  await payments.redactCustomer('cus_tax');
+  expect(transport.objects.has('txi_late')).toBe(false);
+  expect(transport.requests.filter((request) => request.method === 'POST')).toEqual([]);
+  transport.objects.set('cus_fields', { id: 'cus_fields', object: 'customer', name: 'Erased member', email: null, individual_name: 'Pat Payer',
+    invoice_settings: { custom_fields: [{ name: 'Member', value: 'Pat' }] }, metadata: { gym_id: gymId } });
+  await payments.redactCustomer('cus_fields');
+  expect(transport.objects.get('cus_fields')).toMatchObject({ name: 'Erased member', individual_name: null, invoice_settings: { custom_fields: null } });
+  // Only the fields the customer holds are sent, so an API version without the business name is never sent it.
+  expect(transport.requests.filter((request) => request.method === 'POST')).toEqual([{ method: 'POST', path: '/v1/customers/cus_fields',
+    params: { name: 'Erased member', email: '', phone: '', address: '', shipping: '', description: '', individual_name: '', invoice_settings: { custom_fields: '' } } }]);
+  // Null custom fields and names count as cleared: a second pass writes nothing.
+  await payments.redactCustomer('cus_fields');
+  expect(transport.requests.filter((request) => request.method === 'POST')).toHaveLength(1);
+  // A tax ID that vanished meanwhile is not an error; any other failed deletion is raised, so the queued job retries.
+  transport.objects.set('txi_gone', { id: 'txi_gone', object: 'tax_id', customer: 'cus_tax', type: 'us_ein', value: '1' });
+  const request = transport.request.bind(transport);
+  vi.spyOn(transport, 'request').mockImplementation(async input => {
+    if (input.method !== 'DELETE') return request(input);
+    const gone = input.path.endsWith('txi_gone');
+    throw Object.assign(new Error(gone ? 'No such tax ID' : 'Stripe outage'), gone ? { code: 'resource_missing', statusCode: 404 } : { statusCode: 500 });
+  });
+  await expect(payments.redactCustomer('cus_tax')).resolves.toBeUndefined();
+  transport.objects.set('txi_down', { id: 'txi_down', object: 'tax_id', customer: 'cus_tax', type: 'us_ein', value: '2' });
+  await expect(payments.redactCustomer('cus_tax')).rejects.toThrow('Stripe outage');
+});
+it('clears the customer’s own fields before reporting a key that can’t manage tax IDs', async () => {
+  const { payments, transport } = fixture();
+  transport.objects.set('cus_perm', { id: 'cus_perm', object: 'customer', name: 'Pat Payer', email: 'pat@example.invalid', metadata: { gym_id: gymId } });
+  const request = transport.request.bind(transport);
+  vi.spyOn(transport, 'request').mockImplementation(async input => {
+    if (input.path.endsWith('/tax_ids')) throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
+    return request(input);
+  });
+  await expect(payments.redactCustomer('cus_perm')).rejects.toThrow('Check the Stripe permission for Customers (tax IDs)');
+  expect(transport.objects.get('cus_perm')).toMatchObject({ name: 'Erased member', email: null });
+});
+it('clears a card’s billing details before detaching it only when asked, and never for another gym’s card', async () => {
+  const { payments, transport } = fixture();
+  const billing = { name: 'Pat Payer', email: 'pat@example.invalid', phone: '+15555550100', address: { line1: '1 Mat Road', city: 'Austin', country: 'US' } };
+  const card = (id: string, customer = 'cus_fixture') => transport.objects.set(id, { id, object: 'payment_method', customer, billing_details: structuredClone(billing), card: { last4: '4242' }, metadata: {} });
+  const posts = (id: string) => transport.requests.filter(input => input.method === 'POST' && input.path.startsWith('/v1/payment_methods/' + id)).map(input => input.path);
+  card('pm_staff'); card('pm_erased');
+  // A staff removal leaves the billing details as they are.
+  await payments.detachPaymentMethod('pm_staff');
+  expect(transport.objects.get('pm_staff')).toMatchObject({ customer: null, billing_details: billing });
+  // An erasure clears them while the card is attached, then detaches it.
+  await payments.detachPaymentMethod('pm_erased', { redactBillingDetails: true });
+  expect(transport.objects.get('pm_erased')).toMatchObject({ customer: null, billing_details: { name: null, email: null, phone: null, address: null } });
+  expect(posts('pm_erased')).toEqual(['/v1/payment_methods/pm_erased', '/v1/payment_methods/pm_erased/detach']);
+  expect(transport.requests.find(input => input.method === 'POST' && input.path === '/v1/payment_methods/pm_erased')!.params)
+    .toEqual({ billing_details: { name: '', email: '', phone: '', address: '' } });
+  // A card holding nothing is only detached. One already detached cannot be updated, so it is left alone and nothing is written.
+  transport.objects.set('pm_empty', { id: 'pm_empty', object: 'payment_method', customer: 'cus_fixture', card: { last4: '4242' }, metadata: {},
+    billing_details: { name: null, email: null, phone: null, address: { line1: null, city: null } } });
+  await payments.detachPaymentMethod('pm_empty', { redactBillingDetails: true });
+  expect(posts('pm_empty')).toEqual(['/v1/payment_methods/pm_empty/detach']);
+  await payments.detachPaymentMethod('pm_staff', { redactBillingDetails: true });
+  expect(posts('pm_staff')).toEqual(['/v1/payment_methods/pm_staff/detach']);
+  expect(transport.objects.get('pm_staff')).toMatchObject({ billing_details: billing });
+  // A failed clearing stops the detach, so the retry still finds the card attached.
+  card('pm_retry');
+  const request = transport.request.bind(transport);
+  const failing = vi.spyOn(transport, 'request').mockImplementation(async input => {
+    if (input.method === 'POST' && input.path === '/v1/payment_methods/pm_retry') throw Object.assign(new Error('Stripe outage'), { statusCode: 500 });
+    return request(input);
+  });
+  await expect(payments.detachPaymentMethod('pm_retry', { redactBillingDetails: true })).rejects.toThrow('Stripe outage');
+  expect(transport.objects.get('pm_retry')).toMatchObject({ customer: 'cus_fixture', billing_details: billing });
+  failing.mockRestore();
+  // A key without the Payment Methods permission is named, as for the detach, and the card stays attached.
+  const refused = vi.spyOn(transport, 'request').mockImplementation(async input => {
+    if (input.method === 'POST' && input.path === '/v1/payment_methods/pm_retry') throw Object.assign(new Error('Forbidden'), { statusCode: 403 });
+    return request(input);
+  });
+  await expect(payments.detachPaymentMethod('pm_retry', { redactBillingDetails: true })).rejects.toThrow('Check the Stripe permission for Payment Methods');
+  expect(transport.objects.get('pm_retry')).toMatchObject({ customer: 'cus_fixture', billing_details: billing });
+  refused.mockRestore();
+  await payments.detachPaymentMethod('pm_retry', { redactBillingDetails: true });
+  expect(transport.objects.get('pm_retry')).toMatchObject({ customer: null, billing_details: { name: null } });
+  // Another gym's card is refused before anything is cleared.
+  card('pm_foreign_billing', 'cus_foreign');
+  await expect(payments.detachPaymentMethod('pm_foreign_billing', { redactBillingDetails: true })).rejects.toThrow('another gym');
+  expect(transport.objects.get('pm_foreign_billing')).toMatchObject({ customer: 'cus_foreign', billing_details: billing });
+});
+it('clears a fake card’s billing details only on an erasure detach, and a deleted fake customer raises CustomerDeleted', async () => {
+  const payments = new FakePayments(gymId);
+  payments.seedCustomer({ id: 'cus_cards', email: 'cards@example.invalid' });
+  payments.seedCustomer({ id: 'cus_gone', email: 'gone@example.invalid', deleted: true, taxIds: ['DE1'] });
+  for (const id of ['pm_staff', 'pm_erased']) {
+    payments.recordPaymentMethod({ id, customerId: 'cus_cards', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
+    payments.setBillingDetails(id, { name: 'Pat Payer', email: 'pat@example.invalid' });
+  }
+  await payments.detachPaymentMethod('pm_staff');
+  await payments.detachPaymentMethod('pm_erased', { redactBillingDetails: true });
+  expect(payments.billingDetails('pm_staff')).toEqual({ name: 'Pat Payer', email: 'pat@example.invalid' });
+  expect(payments.billingDetails('pm_erased')).toBeUndefined();
+  await expect(payments.adoptCustomer('cus_gone')).rejects.toBeInstanceOf(CustomerDeleted);
+  await expect(payments.redactCustomer('cus_gone')).resolves.toBeUndefined();
+  expect(payments.customer('cus_gone')).toMatchObject({ taxIds: ['DE1'] });
+});
 it('redacts a fake customer like the provider and refuses another gym', async () => {
   const payments = new FakePayments(gymId);
   payments.seedCustomer({ id: 'cus_seeded', email: 'seeded@example.invalid', phone: '+15555550100', description: 'Seeded',
-    address: { line1: '1 Mat Road' }, shipping: { name: 'Seeded', address: { line1: '2 Gi Lane' } } });
-  payments.seedCustomer({ id: 'cus_other', email: 'other@example.invalid', gymId: 'other-gym', phone: '+15555550102' });
+    address: { line1: '1 Mat Road' }, shipping: { name: 'Seeded', address: { line1: '2 Gi Lane' } },
+    individualName: 'Pat Payer', businessName: 'Payer Gi Supply', customFields: [{ name: 'Member', value: 'Pat' }], taxIds: ['DE123456789'] });
+  payments.seedCustomer({ id: 'cus_other', email: 'other@example.invalid', gymId: 'other-gym', phone: '+15555550102', taxIds: ['DE999'] });
   await payments.redactCustomer('cus_seeded');
-  expect(payments.customer('cus_seeded')).toEqual({ name: 'Erased member', email: null, phone: null, address: null, shipping: null, description: null });
+  expect(payments.customer('cus_seeded')).toEqual({ name: 'Erased member', email: null, phone: null, address: null, shipping: null, description: null,
+    individualName: null, businessName: null, customFields: null, taxIds: [] });
   await payments.redactCustomer('cus_seeded');
   await expect(payments.redactCustomer('cus_other')).rejects.toThrow('another gym');
-  expect(payments.customer('cus_other')).toEqual({ name: null, email: 'other@example.invalid', phone: '+15555550102', address: null, shipping: null, description: null });
+  expect(payments.customer('cus_other')).toEqual({ name: null, email: 'other@example.invalid', phone: '+15555550102', address: null, shipping: null, description: null,
+    individualName: null, businessName: null, customFields: null, taxIds: ['DE999'] });
   await expect(payments.redactCustomer('cus_missing')).resolves.toBeUndefined();
   await runInTransaction(async () => { await expect(payments.redactCustomer('cus_seeded')).rejects.toThrow('transaction'); });
 });

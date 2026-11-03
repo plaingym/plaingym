@@ -11,13 +11,14 @@ Before Checkout uses a stored ID, signed-link Checkout calls
 service created and linked (its `billing.customer.linked` audit names the ID) is
 the account's own and needs no Stripe call. Any other ID is adopted (an untagged
 imported customer is tagged with the gym, as a charge does). When the account
-answers 404 `resource_missing` (an imported ID from another account, or a typo),
+answers 404 `resource_missing` (an imported ID from another account, or a typo), or
+reports the customer deleted (`CustomerDeleted`),
 it clears the ID only while it is still the stored one, writes a
-`billing.customer.unlinked` audit (`reason: 'unreadable'`) and creates a new
+`billing.customer.unlinked` audit (`reason: 'unreadable'`, or `'deleted'`) and creates a new
 customer through `ensureCustomer`, but only with a live key (`provider.keyMode`):
 a test key can't see live-mode objects, so a live customer (one imported from the
 gym's own account) looks missing to it, and the ID is kept and the Checkout refused
-(`customer_unreadable`). Any other failure, including a deleted customer, is raised
+(`customer_unreadable`); a deleted customer is kept the same way. Any other failure is raised
 and the ID is kept. Settings → Payments writes the same audit when a gym switches
 from test to live (`reason: 'stripe_test_cleared'`), for each household whose
 customer the app linked and each one with a creation reservation (one may be in

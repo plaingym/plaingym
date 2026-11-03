@@ -49,6 +49,13 @@ export class CustomerCreationInProgress extends Error {
     this.name = 'CustomerCreationInProgress';
   }
 }
+/** The provider holds the customer ID, but the customer was deleted there: nothing can be charged or checked out with it. */
+export class CustomerDeleted extends Error {
+  constructor(options?: ErrorOptions) {
+    super('Customer was deleted', options);
+    this.name = 'CustomerDeleted';
+  }
+}
 interface CheckoutOptions {
   readonly mode: 'payment' | 'setup';
   readonly linkId?: string;
@@ -136,6 +143,7 @@ export interface PaymentEvent {
   readonly objectId: string;
   readonly objectKind: PaymentObjectReference['kind'];
 }
+export interface DetachOptions { readonly redactBillingDetails?: boolean }
 export interface Payments {
   /**
    * The key's mode, where the provider knows it. A test key can't see live-mode objects, so a live customer it reads
@@ -166,16 +174,20 @@ export interface Payments {
   findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]>;
   /**
    * Tags a customer created outside this app (an imported Stripe customer ID) with this gym, so charges and
-   * Checkout accept it. Idempotent; refuses a customer tagged for another gym or deleted. Call it only on
-   * staff-provided IDs, never on IDs taken from untrusted input.
+   * Checkout accept it. Idempotent; refuses a customer tagged for another gym, and raises `CustomerDeleted` for a deleted one.
+   * Call it only on staff-provided IDs, never on IDs taken from untrusted input.
    */
   adoptCustomer(customerId: string): Promise<{ id: string; email: string | null }>;
-  /** Detach a gym-owned card; missing and already detached methods succeed. */
-  detachPaymentMethod(processorId: string): Promise<void>;
+  /**
+   * Detach a gym-owned card; missing and already detached methods succeed. With `redactBillingDetails` (erasure only, never a
+   * staff removal) the card's billing name, email, phone and address are cleared first: the provider updates only an attached
+   * card, so an already detached one keeps what it holds.
+   */
+  detachPaymentMethod(processorId: string, options?: DetachOptions): Promise<void>;
   /**
    * Erasure: renames the gym's customer (tagged for this gym or untagged) to "Erased member" and clears its email, phone, address,
-   * shipping details and description. The customer, its metadata and its payment history stay. Idempotent; missing and deleted
-   * customers succeed; refuses another gym's customer.
+   * shipping details, description, individual and business names and invoice custom fields, and deletes its tax IDs. The customer,
+   * its metadata and its payment history stay. Idempotent; missing and deleted customers succeed; refuses another gym's customer.
    */
   redactCustomer(customerId: string): Promise<void>;
   parseWebhook(body: Uint8Array, signature: string): Promise<PaymentEvent>;
@@ -264,6 +276,19 @@ export interface CustomerDetails {
   address?: Record<string, string> | null;
   shipping?: Record<string, unknown> | null;
   description?: string | null;
+  individualName?: string | null;
+  businessName?: string | null;
+  /** The invoice custom fields (name and value pairs) a dashboard customer may carry. */
+  customFields?: { name: string; value: string }[] | null;
+  /** The customer's tax ID values (such as a VAT number). */
+  taxIds?: string[];
+}
+/** What a card holds about its owner: erasure clears it before the card is detached. */
+export interface BillingDetails {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: Record<string, string> | null;
 }
 
 export class FakePayments implements Payments {
@@ -277,7 +302,8 @@ export class FakePayments implements Payments {
   readonly #detached = new Set<string>();
   readonly #setups = new Map<string, SetupOutcome>();
   readonly #disputes = new Map<string, Dispute>();
-  readonly #customers: ({ id: string; email: string | null; gymId: string; name?: string; householdId?: string } & CustomerDetails)[] = [];
+  readonly #customers: ({ id: string; email: string | null; gymId: string; name?: string; householdId?: string; deleted?: boolean } & CustomerDetails)[] = [];
+  readonly #billing = new Map<string, BillingDetails>();
   readonly #changes: ChangeRecord[] = [];
   readonly #idempotency = new Map<string, IdempotentRecord>();
   readonly #uncertain = new Set<string>();
@@ -307,9 +333,14 @@ export class FakePayments implements Payments {
     if (uncertain) this.#uncertain.add(id);
     else this.#uncertain.delete(id);
   }
-  seedCustomer(customer: { id: string; email: string; gymId?: string } & CustomerDetails): void {
+  /** `deleted` seeds a customer the provider has deleted: reads of it raise `CustomerDeleted`. */
+  seedCustomer(customer: { id: string; email: string; gymId?: string; deleted?: boolean } & CustomerDetails): void {
     this.#customers.push({ ...customer, gymId: customer.gymId ?? this.gymId });
   }
+  /** Sets what an attached card holds about its owner (its billing details), as a dashboard or Checkout would. */
+  setBillingDetails(processorId: string, details: BillingDetails): void { this.#billing.set(processorId, structuredClone(details)); }
+  /** The card's billing details; absent once erasure cleared them. */
+  billingDetails(processorId: string): BillingDetails | undefined { return structuredClone(this.#billing.get(processorId)); }
   recordPaymentMethod(method: Omit<PaymentMethod, 'createdAt'> & { createdAt?: Date }): void {
     this.#methods.set(method.id, structuredClone({ ...method, createdAt: method.createdAt ?? this.#methods.get(method.id)?.createdAt ?? this.clock.now() }));
     this.#record('payment_method', method.id);
@@ -706,31 +737,37 @@ export class FakePayments implements Payments {
     assertNoTransaction('payments.adoptCustomer');
     const customer = this.#customers.find((item) => item.id === customerId);
     if (!customer) throw new Error('No such customer');
+    if (customer.deleted) throw new CustomerDeleted();
     if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
     return { id: customer.id, email: customer.email };
   }
-  async detachPaymentMethod(processorId: string): Promise<void> {
+  async detachPaymentMethod(processorId: string, options: DetachOptions = {}): Promise<void> {
     assertNoTransaction('payments.detachPaymentMethod');
     if (!/^[A-Za-z0-9_]+$/.test(processorId)) throw new Error('Invalid processor ID');
     const method = this.#methods.get(processorId);
     if (!method || this.#detached.has(processorId)) return;
     await this.adoptCustomer(method.customerId);
+    // Only an attached card can be updated, so its details go before it is detached.
+    if (options.redactBillingDetails) this.#billing.delete(processorId);
     this.#detached.add(processorId);
   }
   /** The stored name, email and personal details, as the provider would show them. */
   customer(customerId: string): ({ name: string | null; email: string | null } & Required<CustomerDetails>) | undefined {
     const customer = this.#customers.find((item) => item.id === customerId);
     return customer && { name: customer.name ?? null, email: customer.email, phone: customer.phone ?? null,
-      address: customer.address ?? null, shipping: customer.shipping ?? null, description: customer.description ?? null };
+      address: customer.address ?? null, shipping: customer.shipping ?? null, description: customer.description ?? null,
+      individualName: customer.individualName ?? null, businessName: customer.businessName ?? null,
+      customFields: customer.customFields ?? null, taxIds: customer.taxIds ?? [] };
   }
   async redactCustomer(customerId: string): Promise<void> {
     assertNoTransaction('payments.redactCustomer');
     if (!/^[A-Za-z0-9_]+$/.test(customerId)) throw new Error('Invalid processor ID');
     const customer = this.#customers.find((item) => item.id === customerId);
-    if (!customer) return;
+    if (!customer || customer.deleted) return;
     if (customer.gymId !== this.gymId) throw new Error('Customer belongs to another gym');
     customer.name = ERASED_CUSTOMER_NAME; customer.email = null;
     customer.phone = null; customer.address = null; customer.shipping = null; customer.description = null;
+    customer.individualName = null; customer.businessName = null; customer.customFields = null; customer.taxIds = [];
   }
   signWebhook(body: Uint8Array): string {
     return createHmac('sha256', this.webhookSecret).update(body).digest('hex');

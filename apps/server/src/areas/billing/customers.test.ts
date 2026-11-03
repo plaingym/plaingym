@@ -262,6 +262,20 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect(saved.audits.filter(a => a.action === customerUnlinkedAction)).toEqual([]);
     expect(create).not.toHaveBeenCalled();
   });
+  it('replaces a stored customer the provider reports deleted with a live key, and keeps it with a test key', async () => {
+    const f = await fixture();
+    f.provider.seedCustomer({ id: 'cus_deleted', email: 'payer@example.invalid', deleted: true });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_deleted' }).where(eq(households.id, f.household.id)));
+    f.provider.keyMode = 'test';
+    await expect(f.service.readableCustomer(f.gymId, f.household.id, 'cus_deleted', f.provider)).rejects.toMatchObject({ reason: 'customer_unreadable' });
+    expect((await f.read()).household.stripeCustomerId).toBe('cus_deleted');
+    f.provider.keyMode = 'live';
+    const replaced = await f.service.readableCustomer(f.gymId, f.household.id, 'cus_deleted', f.provider);
+    expect(replaced).not.toBe('cus_deleted');
+    const saved = await f.read();
+    expect(saved.household.stripeCustomerId).toBe(replaced);
+    expect(saved.audits.find(a => a.action === customerUnlinkedAction)).toMatchObject({ before: { customerId: 'cus_deleted' }, after: { customerId: null, reason: 'deleted' } });
+  });
   it('never links a customer created in flight while a switch unlinked the household, and creates one in the new generation', async () => {
     const f = await fixture(), create = f.provider.createCustomer.bind(f.provider);
     let unlink: string | undefined;

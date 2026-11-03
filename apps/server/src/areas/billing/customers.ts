@@ -5,7 +5,7 @@ import { and, desc, eq, isNull } from 'drizzle-orm';
 import { auditEvents, forGym, households, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { clock as defaultClock } from '../../core/clock.js';
-import { CustomerCreationInProgress, type Payments } from '../../infra/payments/index.js';
+import { CustomerCreationInProgress, CustomerDeleted, type Payments } from '../../infra/payments/index.js';
 import { holdGymSettings } from '../settings/settings.js';
 
 export type CustomerUnavailableReason = 'stripe_not_configured' | 'missing_details' | 'creation_expired' | 'details_changed' | 'customer_unreadable';
@@ -139,26 +139,29 @@ export function createCustomersService(options: CustomersOptions) {
   /**
    * The household's stored customer, checked with the gym's Stripe account (and tagged for the gym, as a charge does)
    * before a Checkout uses it. A customer the account can't read (404: an imported ID from another account, or a typo) is
-   * cleared with an audit and replaced by a new one; any other failure is raised. A customer this service created and
-   * linked is the account's own (a key for another account is refused while it is linked), so it needs no Stripe call.
+   * cleared with an audit and replaced by a new one, as is one the account has deleted (`CustomerDeleted`); any other failure is
+   * raised. A customer this service created and linked is the account's own (a key for another account is refused while it is linked), so it needs no Stripe call.
    * With a test key the ID is kept and the Checkout refused instead: a live customer of the gym's own account (one
-   * imported, say) looks missing to a test key, and replacing it would lose the member's live customer.
+   * imported, say) looks missing to a test key, and replacing it would lose the member's live customer. A deleted customer is kept
+   * the same way: a test key reads only test mode, and the deleted customer may be the live one the gym later restores.
    */
   async function readableCustomer(gymId: string, householdId: string, customerId: string, provider: Payments): Promise<string> {
     const created = await scope(gymId, async tx => (await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
       eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId), eq(auditEvents.action, 'billing.customer.linked'))))
       .some(({ after }) => (after as { customerId?: unknown } | null)?.customerId === customerId));
     if (created) return customerId;
+    let reason = 'unreadable';
     try { await provider.adoptCustomer(customerId); return customerId; }
     catch (error) {
-      if (!unreadable(error)) throw error;
+      if (error instanceof CustomerDeleted) reason = 'deleted';
+      else if (!unreadable(error)) throw error;
       if (provider.keyMode === 'test') throw new CustomerUnavailable('customer_unreadable', error);
     }
     await scope(gymId, async tx => {
       const [cleared] = await tx.update(households).set({ stripeCustomerId: null })
         .where(and(eq(households.id, householdId), eq(households.stripeCustomerId, customerId))).returning({ id: households.id });
       if (cleared) await writeAudit(tx, { gymId, actorKind: 'system', action: customerUnlinkedAction, targetType: 'household', targetId: householdId,
-        before: { customerId }, after: { customerId: null, reason: 'unreadable' }, occurredAt: clock.now() });
+        before: { customerId }, after: { customerId: null, reason }, occurredAt: clock.now() });
     });
     return ensureCustomer(gymId, householdId);
   }

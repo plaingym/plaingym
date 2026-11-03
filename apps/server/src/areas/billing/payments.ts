@@ -8,7 +8,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
-import type { Payments } from '../../infra/payments/index.js';
+import type { DetachOptions, Payments } from '../../infra/payments/index.js';
 import type { Jobs } from '../../infra/jobs/index.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
 import { catalogAudit } from './catalog.js';
@@ -29,7 +29,7 @@ export interface PaymentOptions {
   jobs?: Jobs;
   runner?: Pick<ChargeRunner, 'charge'>;
   /** The runtime delegates to the gym's Payments.detachPaymentMethod outside the transaction. */
-  detachCard?: (gymId: string, processorId: string) => Promise<void>;
+  detachCard?: (gymId: string, processorId: string, options?: DetachOptions) => Promise<void>;
 }
 export const presentInvoice = (r: typeof invoices.$inferSelect) => c.invoiceSchema.parse({
   id: r.id, createdAt: r.createdAt.toISOString(), householdId: r.householdId, kind: r.kind, status: r.status,

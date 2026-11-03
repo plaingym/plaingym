@@ -35,8 +35,18 @@ before attempting either call; the redaction job is queued first, to run a minut
 later (after the inline attempt), and the
 `household.anonymized` audit event records the cleared customer ID. The Stripe
 Customer is kept for the books: its name
-becomes `Erased member` and its email, phone, address, shipping details and description are cleared. A failed attempt is logged with
-identifiers only and the erasure still succeeds, since the job retries it.
+becomes `Erased member` and its email, phone, address, shipping details, description, individual and business names and invoice
+custom fields are cleared and its tax IDs deleted. The detach jobs carry `redactBillingDetails: true`, so each card's billing
+name, email, phone and address are cleared before the card is detached (Stripe updates only an attached card). A failed attempt
+is logged with identifiers only and the erasure still succeeds, since the job retries it.
+
+Customers erased before the redaction covered every field are handled by `members.erasure.redact_earlier`, a daily job
+(`erasure-redaction.ts`): per gym it reads the `household.anonymized` audits' `before.stripeCustomerId`, queues one
+`members.erasure.redact_customer` job per customer under the stable key `redact-earlier:<customer>`, and writes a
+`members.erasure.redaction_queued` audit for it, so a rerun queues nothing new even after the queue prunes finished jobs. It
+reads only the gym's own audits (row-level security), needs no start-up wiring, and also re-queues the redaction of a later
+erasure whose own job ran out of attempts. It skips a customer that a household of the gym links today (the gym reused it), and
+queues at most 200 customers per run; the next run continues. Redaction is idempotent, so a repeat is harmless.
 Failed file cleanup returns an error.
 Unused households can be deleted; referenced households return a conflict.
 

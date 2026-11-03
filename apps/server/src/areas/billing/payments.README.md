@@ -56,8 +56,11 @@ catalog charge types, which managers price.
 Removing a card first revokes it locally and clears its default flag, then queues
 a detach retry and attempts detachment outside the transaction. Revoked rows
 remain visible so staff can retry removal after an outage. No processor IDs leave
-the staff API. `detachCard(gymId, processorId)` delegates to the gym's
+the staff API. `detachCard(gymId, processorId, options?)` delegates to the gym's
 `Payments.detachPaymentMethod`, idempotent for missing and already detached cards.
+A staff removal passes no options and leaves the card's billing details; the detach
+job passes `{ redactBillingDetails: true }` only when its payload carries
+`redactBillingDetails: true`, which only member erasure sets.
 Without that operation removal returns unavailable.
 The Jobs interface rejects enqueue inside a transaction and provides no
 transactional enqueue. If a crash or enqueue failure occurs after local revocation,
@@ -67,11 +70,13 @@ same deduplicated detach job again before the immediate provider call.
 Erasing a household's last member revokes its active cards, clears its local
 Stripe customer ID, and holds open and past-due invoices for staff review in the
 erasure transaction. Other household members keep their cards and invoices.
-After commit, the erasure route queues the same detach jobs and attempts every
+After commit, the erasure route queues the same detach jobs (flagged to clear the
+card's billing name, email, phone and address first) and attempts every
 card detach; the runtime passes the shared `jobs` and `detachCard` to
 `configureMembers`. A failed attempt is logged and left to the queued job, so the
-erasure response still succeeds. Erasure retains accounting history and does not
-modify the Stripe Customer itself.
+erasure response still succeeds. Erasure retains accounting history; the Stripe
+Customer keeps its ID, metadata and payments, with its personal fields redacted
+by a separate job (`areas/members/README.md`).
 
 Pay links use the existing signed-link creation/send contracts, with purpose
 `pay_invoice`, household ID, invoice ID, and a seven-day expiry. Creation can show

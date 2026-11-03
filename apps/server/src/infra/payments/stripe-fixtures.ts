@@ -99,7 +99,30 @@ export class StripeFixtures implements PaymentTransport {
     if (objectId) {
       const object = this.objects.get(objectId);
       if (!object) throw Object.assign(new Error('No such object'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
+      if (resource === 'customers' && action === 'tax_ids') {
+        const taxId = parts[3];
+        if (input.method === 'GET' && !taxId) {
+          const owned = [...this.objects.values()].filter(item => item.object === 'tax_id' && item.customer === objectId);
+          const limit = Number(params.limit ?? 100);
+          return { data: owned.slice(0, limit), has_more: owned.length > limit };
+        }
+        if (input.method === 'DELETE' && taxId) {
+          const existing = this.objects.get(taxId);
+          if (!existing || existing.customer !== objectId) throw Object.assign(new Error('No such tax ID'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
+          this.objects.delete(taxId); return { id: taxId, object: 'tax_id', deleted: true };
+        }
+        throw new Error('Unexpected tax ID request');
+      }
       if (input.method === 'GET') return object;
+      if (resource === 'payment_methods' && !action && input.method === 'POST') {
+        // Stripe updates only an attached card.
+        if (!object.customer) throw Object.assign(new Error('A PaymentMethod must be attached to a customer to be updated'),
+          { type: 'StripeInvalidRequestError', statusCode: 400 });
+        const details = { ...(object.billing_details as ObjectData | undefined), ...(params.billing_details as ObjectData | undefined) };
+        // Stripe clears a field sent as an empty string.
+        for (const [field, value] of Object.entries(details)) if (value === '') details[field] = null;
+        object.billing_details = details; return object;
+      }
       if (resource === 'webhook_endpoints' && !action) {
         if (input.method === 'DELETE') { this.objects.delete(objectId!); return { id: objectId!, object: 'webhook_endpoint', deleted: true }; }
         // Stripe fixes an endpoint's API version when it creates the endpoint.
@@ -113,10 +136,16 @@ export class StripeFixtures implements PaymentTransport {
         object.customer = null; return object;
       }
       if (!action && resource === 'customers') {
-        const { metadata, ...rest } = params;
+        const { metadata, invoice_settings: settings, ...rest } = params;
         Object.assign(object, rest, { metadata: { ...object.metadata as ObjectData, ...metadata as ObjectData } });
         // Stripe clears a field sent as an empty string.
-        for (const field of ['email', 'phone', 'address', 'shipping', 'description']) if (object[field] === '') object[field] = null;
+        for (const field of ['email', 'phone', 'address', 'shipping', 'description', 'individual_name', 'business_name']) if (object[field] === '') object[field] = null;
+        // Invoice settings merge by key, and an empty custom_fields clears the list.
+        if (settings) {
+          const merged = { ...object.invoice_settings as ObjectData | undefined, ...settings as ObjectData };
+          if (merged.custom_fields === '') merged.custom_fields = null;
+          object.invoice_settings = merged;
+        }
         return object;
       }
       if (action === 'confirm') {
