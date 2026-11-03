@@ -23,7 +23,8 @@ export function createDemoService(options: {
     const settings = sandboxSettings(gym?.settings);
     if (!gym || gym.status !== 'active' || !settings?.ready || Date.parse(settings.expiresAt) <= options.clock.now().getTime())
       throw new AppError('not_found', 'Not found');
-    return { expiresAt: settings.expiresAt };
+    // Joining takes test-card payments only where sandbox billing is configured (see payments.ts).
+    return { expiresAt: settings.expiresAt, join: options.config.stripe !== undefined };
   }
   return {
     status,

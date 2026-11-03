@@ -72,7 +72,7 @@ it('shows a demo entry button without requiring a tenant or login', async () => 
 });
 it('saves the sandbox kiosk token and strips only its fragment parameter before mounting the route', async () => {
   window.history.replaceState({ route: 'kept' }, '', '/admin?view=welcome#kioskToken=visitor-device&tab=members');
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
   start();
   await screen.findByText('Login screen');
   expect(readToken()).toBe('visitor-device');
@@ -97,13 +97,13 @@ it('does not consume a token until sandbox discovery succeeds', async () => {
   expect(readToken()).toBeNull();
   expect(window.location.hash).toBe('#kioskToken=visitor-device');
   expect(screen.queryByText('Login screen')).toBeNull();
-  await act(async () => { discover(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } })); });
+  await act(async () => { discover(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } })); });
   await screen.findByText('Login screen');
   expect(readToken()).toBe('visitor-device');
   expect(window.location.hash).toBe('');
 });
 it('shows all sandbox identities before the login screen guard', async () => {
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
   start();
   expect(await screen.findByRole('button', { name: 'Sign in as owner' })).toBeDefined();
   expect(screen.getByRole('button', { name: 'Sign in as coach' })).toBeDefined();
@@ -116,14 +116,14 @@ it('shows all sandbox identities before the login screen guard', async () => {
 });
 it.each([['/admin', true], ['/demo', false]] as const)('links back to the sandbox start page from %s: %s', async (pathname, shown) => {
   route.pathname = pathname;
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
   start();
   await screen.findByRole('button', { name: 'Sign in as owner' });
   const link = screen.queryByRole('link', { name: 'Demo start page' });
   expect(link?.getAttribute('href') ?? null).toBe(shown ? '/demo' : null);
 });
 it('opens the guide under its own label without offering sandbox creation', async () => {
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
   start();
   const button = await screen.findByRole('button', { name: 'Demo guide' });
   button.focus(); fireEvent.click(button);
@@ -140,7 +140,7 @@ function PageSignIn() {
 }
 it('shares one sign-in state between the banner and a page inside the shell', async () => {
   let fail!: (reason: Error) => void;
-  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }))
+  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }))
     .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => { fail = reject; }));
   start(undefined, <PageSignIn />);
   fireEvent.click(await screen.findByRole('button', { name: 'Page sign-in' }));
@@ -154,7 +154,7 @@ it('shares one sign-in state between the banner and a page inside the shell', as
 it('disables all role switches while one is pending and restores them after a failure', async () => {
   let fail!: (reason: Error) => void;
   const pending = new Promise<Response>((_resolve, reject) => { fail = reject; });
-  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }))
+  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }))
     .mockReturnValueOnce(pending);
   start();
   fireEvent.click(await screen.findByRole('button', { name: 'Sign in as coach' }));
@@ -170,14 +170,14 @@ it('disables all role switches while one is pending and restores them after a fa
 });
 it.each(['disabled', 'entry', 'sandbox'] as const)('shows the kiosk hint only for a sandbox (%s)', async (mode) => {
   route.pathname = '/kiosk';
-  fetcher.mockResolvedValue(Response.json({ data: mode === 'sandbox' ? { mode, expiresAt: new Date(Date.now() + 3600_000).toISOString() } : { mode } }));
+  fetcher.mockResolvedValue(Response.json({ data: mode === 'sandbox' ? { mode, expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } : { mode } }));
   const view = start(undefined, <DemoKioskHint />);
   await waitFor(() => expect(view.client.isFetching()).toBe(0));
   expect(screen.queryAllByText(/Search the full name Marcus Rivera/)).toHaveLength(mode === 'sandbox' ? 1 : 0);
   expect(screen.queryByRole('link', { name: 'Try the kiosk' })).toBeNull();
 });
 it('updates the compact banner when navigating to the kiosk without new discovery requests', async () => {
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString() } }));
+  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
   const view = start();
   await screen.findByRole('link', { name: 'Try the kiosk' });
   route.pathname = '/kiosk/';
@@ -200,7 +200,7 @@ it.each(['server', 'transport', 'invalid response'] as const)('keeps a %s error 
 it('expires a cached sandbox, hides impersonation and rechecks discovery once', async () => {
   vi.useFakeTimers();
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
-  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt } }))
+  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt, join: false } }))
     .mockResolvedValue(Response.json({}, { status: 404 }));
   start();
   await act(async () => { await vi.advanceTimersByTimeAsync(10); });

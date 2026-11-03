@@ -31,7 +31,7 @@ const router = { name: 'demo-router-fixture', enforce: 'pre', resolveId: id => i
 const server = await createServer({ configFile: false, appType: 'custom', root: resolve(root, 'apps/web'), plugins: [router, react(), tailwindcss()],
   server: { host: '127.0.0.1', port: 0, fs: { allow: [root] } }, resolve: { dedupe: ['react', 'react-dom', '@tanstack/react-query'] } });
 // Installed before the modules load, since the app's JSON transport binds fetch at import.
-const discovery = "const expiresAt = new Date(Date.now() + 86400000).toISOString(); window.fetch = async (input) => new URL(input instanceof Request ? input.url : String(input), location.href).pathname === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt } }) : Response.json({}, { status: 404 });";
+const discovery = "const expiresAt = new Date(Date.now() + 86400000).toISOString(); window.fetch = async (input) => new URL(input instanceof Request ? input.url : String(input), location.href).pathname === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt, join: true } }) : Response.json({}, { status: 404 });";
 server.middlewares.use('/fixture', async (req, res) => {
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Demo start page</title><script>' + discovery + '</script></head><body><div id="root"></div><script type="module" src="' + modulePath('apps/web/coverage/demo/fixture.tsx') + '"></script></body></html>';
   res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml(req.url ?? '/', html));

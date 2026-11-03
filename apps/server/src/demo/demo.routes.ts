@@ -51,7 +51,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     }, async (c) => { c.header('cache-control', 'no-store'); return c.json({ data: await service.create() }, 201); }),
     route({ ...status,
       responses: { 200: { description: 'Demo status', content: { 'application/json': { schema: status.response } } } },
-    }, async (c) => { c.header('cache-control', 'no-store'); return c.json({ data: await service.status(c.get('context').gym.gymId) }, 200); }),
+    }, async (c) => { c.header('cache-control', 'no-store'); const { expiresAt } = await service.status(c.get('context').gym.gymId); return c.json({ data: { expiresAt } }, 200); }),
     route({ ...login, middleware: [modeGuard, loginLimiter],
       request: { body: { required: true, content: { 'application/json': { schema: login.body } } } },
       responses: { 200: { description: 'Demo session created', content: { 'application/json': { schema: login.response } } } },

@@ -130,11 +130,32 @@ describe('demo runtime discovery', () => {
     const response = await get('https://' + hostname);
     expect(response.status).toBe(scenario.expected);
     if (scenario.expected === 200)
-      expect(demoEntryResponse.parse(await response.json())).toEqual({ data: { mode: 'sandbox', expiresAt } });
+      expect(demoEntryResponse.parse(await response.json())).toEqual({ data: { mode: 'sandbox', expiresAt, join: false } });
   });
 
   it('rejects ordinary gyms and unknown hosts rather than advertising a sandbox', async () => {
     expect((await get('https://previous.example.test')).status).toBe(404);
     expect((await get('https://unknown.example.test')).status).toBe(404);
+  });
+});
+
+describe('demo runtime discovery with sandbox billing configured', () => {
+  beforeAll(async () => {
+    runtime = await startRuntime({ ...env(), PUBLIC_ORIGIN: demoOrigin, TENANCY: 'multi', DEMO_MODE: 'true',
+      DEMO_DOMAIN: new URL(demoOrigin).hostname, UPLOADS_S3_BUCKET: 'demo-uploads', UPLOADS_S3_ENDPOINT: 'http://127.0.0.1:1',
+      UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test',
+      DEMO_STRIPE_TEST_KEY: 'rk_test_discovery', DEMO_STRIPE_WEBHOOK_SECRET: 'whsec_discovery' });
+  });
+  afterAll(async () => { await runtime?.stop(); });
+
+  it('reports join as available without key material, leaving entry and status as they are', async () => {
+    const gymId = uuidv7(), hostname = 'billing.demo.example.test';
+    await factory('gyms', gymId, { settings: { demo: { sandbox: true, ready: true, expiresAt } } });
+    await factory('gymDomains', gymId, { hostname });
+    const response = await get('https://' + hostname), text = await response.text();
+    expect(demoEntryResponse.parse(JSON.parse(text))).toEqual({ data: { mode: 'sandbox', expiresAt, join: true } });
+    expect(text).not.toMatch(/rk_test|whsec_|discovery"/);
+    expect(await (await get(demoOrigin)).json()).toEqual({ data: { mode: 'entry' } });
+    expect(await (await get('https://' + hostname, '/api/demo/status')).json()).toEqual({ data: { expiresAt } });
   });
 });

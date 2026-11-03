@@ -14,6 +14,8 @@ const request = createJsonTransport();
 type DemoDiscovery = ReturnType<typeof demoEntryResponse.parse>['data'];
 const DemoContext = createContext<DemoDiscovery | undefined>(undefined);
 export const useDemoMode = () => useContext(DemoContext)?.mode;
+/** Whether this sandbox takes test-card joins (the shared Stripe test account is configured). */
+export const useDemoJoin = () => { const discovery = useContext(DemoContext); return discovery?.mode === 'sandbox' && discovery.join; };
 export const useDemoSandbox = () => useDemoMode() === 'sandbox';
 export function DemoShell({ children }: { children: ReactNode }) {
   // Capture before a child route's login guard can redirect and discard the fragment.

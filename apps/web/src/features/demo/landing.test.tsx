@@ -4,10 +4,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { DemoPage } from './landing.js';
 
-const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 'sandbox' | undefined, login: vi.fn(), pending: false, error: false }));
-vi.mock('./notice.js', () => ({ useDemoMode: () => context.mode,
+const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 'sandbox' | undefined, join: true, login: vi.fn(), pending: false, error: false }));
+vi.mock('./notice.js', () => ({ useDemoMode: () => context.mode, useDemoJoin: () => context.join,
   useDemoLogin: () => ({ login: context.login, pending: context.pending, error: context.error }) }));
-afterEach(() => { cleanup(); context.login.mockReset(); context.pending = false; context.error = false; });
+afterEach(() => { cleanup(); context.join = true; context.login.mockReset(); context.pending = false; context.error = false; });
 
 it('shows role cards in entry mode without repeating the root entry title or help', () => {
   context.mode = 'entry';
@@ -34,13 +34,23 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   for (const role of ['owner', 'coach', 'student']) fireEvent.click(screen.getByRole('button', { name: `Sign in as ${role}` }));
   expect(context.login.mock.calls).toEqual([['owner'], ['coach'], ['student']]);
   expect(screen.getByText(/Alex Student: two booked classes, a waitlist place/)).toBeDefined();
-  expect(screen.getByText(/Joining needs this demo's Stripe test account/)).toBeDefined();
+  expect(screen.queryByText(/no test payments/)).toBeNull();
   expect(screen.getByRole('link', { name: 'Open the join page' }).getAttribute('href')).toBe('/join');
   expect(screen.getByText('4242 4242 4242 4242')).toBeDefined();
   fireEvent.click(screen.getByRole('button', { name: 'Open the demo outbox' }));
   expect(context.login).toHaveBeenLastCalledWith('owner', '/admin/outbox');
   expect(screen.getByRole('link', { name: 'Open the kiosk' }).getAttribute('href')).toBe('/kiosk');
   expect(screen.queryByRole('link', { name: 'Go to sign in' })).toBeNull();
+});
+it('replaces the join steps with a one-line note when the demo has no test payments, keeping roles and kiosk', () => {
+  context.mode = 'sandbox'; context.join = false;
+  render(<DemoPage />);
+  expect(screen.getByText("This demo has no test payments, so joining online isn't available.")).toBeDefined();
+  expect(screen.queryByRole('link', { name: 'Open the join page' })).toBeNull();
+  expect(screen.queryByText('4242 4242 4242 4242')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Open the demo outbox' })).toBeNull();
+  for (const role of ['owner', 'coach', 'student']) expect(screen.getByRole('button', { name: `Sign in as ${role}` })).toBeDefined();
+  expect(screen.getByRole('link', { name: 'Open the kiosk' }).getAttribute('href')).toBe('/kiosk');
 });
 it('disables the sandbox sign-ins while one is pending, leaving failures to the banner', () => {
   context.mode = 'sandbox'; context.pending = true; context.error = true;

@@ -20,7 +20,7 @@ it('serves the demo entry and creates sandboxes before tenant resolution, with s
   expect(await discovery.json()).toEqual({ data: { mode: 'entry' } });
   const status = await app.runtime.app.request(sandbox.origin + '/api/demo', { headers: app.headers(sandbox) });
   expect(status.status).toBe(200);
-  expect(await status.json()).toEqual({ data: { mode: 'sandbox', expiresAt: expect.any(String) } });
+  expect(await status.json()).toEqual({ data: { mode: 'sandbox', expiresAt: expect.any(String), join: false } });
   expect((await app.runtime.app.request('https://unknown.example.test/api/demo')).status).toBe(404);
   expect((await app.post('/api/setup/owner', {}, sandbox.origin)).status).toBe(404);
   expect((await app.runtime.app.request(sandbox.origin + '/api/setup', { headers: app.headers(sandbox) })).status).toBe(404);

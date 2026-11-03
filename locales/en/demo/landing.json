@@ -5,7 +5,7 @@
   "rolesTitle": "Explore by role",
   "studentHelp": "Open the member portal as Alex Student: two booked classes, a waitlist place, rank progress and a check-in QR code, plus paid invoices when this demo has a Stripe test account.",
   "joinTitle": "Join as a new member",
-  "joinNeedsStripe": "Joining needs this demo's Stripe test account. Without one, the join page says online joining is unavailable.",
+  "joinUnavailable": "This demo has no test payments, so joining online isn't available.",
   "joinStepPlan": "Open the join page, choose a plan and sign the waiver. Use any name and an email address you make up.",
   "joinStepPay": "Pay with this test card, any future expiry date and any CVC. No real money moves.",
   "testCard": "Test card number",

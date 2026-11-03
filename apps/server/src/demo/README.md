@@ -24,7 +24,11 @@ key requires the signing secret; live keys and other key formats refuse startup.
 Without the key, creation succeeds and logs `Demo billing seed skipped` with the
 missing variable name. Payments and the Stripe health tile report unconfigured.
 With the key, the portal seed leaves billing on, so each sandbox's `/join` takes
-test-card payments through the shared account.
+test-card payments through the shared account. `GET /api/demo` on a sandbox host
+reports this as a boolean `join` beside `expiresAt` (true when the key is
+configured; never the key or secret), and the sandbox start page shows the join
+walkthrough only when it is true, otherwise a one-line note that the demo has no
+test payments.
 Webhook requests pass through to the tenant route, which returns 503
 (`Payments are not set up for this gym`) for a sandbox without the shared key.
 

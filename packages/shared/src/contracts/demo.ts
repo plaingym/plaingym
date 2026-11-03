@@ -15,7 +15,7 @@ export const outboxMessageResponse = z.strictObject({ data: outboxMessage });
 export const demoEntryResponse = z.strictObject({ data: z.discriminatedUnion('mode', [
   z.strictObject({ mode: z.literal('disabled') }),
   z.strictObject({ mode: z.literal('entry') }),
-  z.strictObject({ mode: z.literal('sandbox'), expiresAt: z.iso.datetime() }),
+  z.strictObject({ mode: z.literal('sandbox'), expiresAt: z.iso.datetime(), join: z.boolean() }),
 ]) });
 export const demoContracts = {
   entry: { method: 'get', path: '/api/demo', permission: { kind: 'public' }, response: demoEntryResponse },
