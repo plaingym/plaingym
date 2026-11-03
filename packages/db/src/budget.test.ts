@@ -11,5 +11,6 @@ it('fits every budgeted connection into the shipped max_connections', async () =
   const used = Object.values(connectionBudget).reduce((total, count) => total + count, 0);
   expect(used).toBeLessThanOrEqual(available);
   expect(compose).not.toMatch(/superuser_reserved_connections/);
-  expect(compose).not.toMatch(/DATABASE_POOL_MAX/);
+  // Compose passes an operator's pool size from .env; left unset, it is the budgeted one.
+  expect(/DATABASE_POOL_MAX: \$\{DATABASE_POOL_MAX:-(\d+)\}/.exec(compose)?.[1]).toBe(String(connectionBudget.application));
 });

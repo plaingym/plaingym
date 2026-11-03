@@ -48,7 +48,9 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
     ...(kind === 'pay_invoice' ? { purpose: kind, invoiceId: invoice.id } : kind === 'sign_waiver' ? { purpose: kind, memberId: member.id } : { purpose: kind }) });
   const link = await create();
   const provider = new FakePayments(gymId, clock), uploads = new FakeUploads(gymId, clock);
-  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => demo ? demoUploads(uploads) : uploads });
+  // The household's customer is in the gym's Stripe account: Checkout reads a stored ID the app didn't link before using it.
+  if (household.stripeCustomerId) provider.seedCustomer({ id: household.stripeCustomerId, email: household.email ?? 'payer@example.invalid' });
+  const waivers =createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => demo ? demoUploads(uploads) : uploads });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => provider, originFor: async () => 'https://gym.example.test' });
   const config = authConfig({ AUTH_SECRET: 'onboarding-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false);
   const portalInvitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold, smtpConfigured: async () => false, mailer: async () => null, loginLink: async () => undefined });
