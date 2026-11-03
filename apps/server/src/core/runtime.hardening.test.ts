@@ -43,7 +43,8 @@ it('redacts an erased household\'s Stripe customer through the runtime\'s paymen
   runtime = await startRuntime(env(directory));
   // The retry job the erasure route queues after commit reaches the gym's own provider.
   await handlers.get(redactCustomerJob)!({ customerId: 'cus_erased' }, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
-  expect(fake.customer('cus_erased')).toEqual({ name: ERASED_CUSTOMER_NAME, email: null, phone: null, address: null, shipping: null, description: null });
+  expect(fake.customer('cus_erased')).toEqual({ name: ERASED_CUSTOMER_NAME, email: null, phone: null, address: null, shipping: null, description: null,
+    individualName: null, businessName: null, customFields: null, taxIds: [] });
 });
 
 it('allows images from the uploads bucket\'s origin under the enforced policy', async () => {
