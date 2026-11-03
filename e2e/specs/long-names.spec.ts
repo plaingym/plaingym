@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
 import type { Page } from '@playwright/test';
-import { test, expect, demoClient, Client, type Person, type Program, type RecordId, type Sandbox } from '../support.js';
+import { test, expect, createClass, demoClient, Client, type Person, type RecordId, type Sandbox } from '../support.js';
 import { horizontalOverflow } from '../responsive.js';
 import { claimPortal, outboxIds, outboxLink } from '../portal.js';
 
@@ -10,8 +10,6 @@ test.use({ trace: 'off', screenshot: 'off', viewport: { width: 360, height: 740 
 
 /** A 56-character name with no break opportunity: user-supplied text can be this long, and the page must wrap it. */
 const unbreakable = (prefix: string) => (prefix + randomBytes(2).toString('hex')).padEnd(56, 'x');
-const minute = 60_000;
-interface Session extends RecordId { name: string }
 
 async function noSideways(page: Page, surface: string) {
   expect(await horizontalOverflow(page), surface + ': horizontal scroll at 360 px').toBeUndefined();
@@ -19,13 +17,6 @@ async function noSideways(page: Page, surface: string) {
 async function admin(page: Page, sandbox: Sandbox, owner: Client, path: string) {
   await owner.browser(page.context());
   await page.goto(sandbox.origin + path);
-}
-/** A class an hour from now (or later) that nobody else books. */
-async function createClass(owner: Client, name: string): Promise<Session> {
-  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
-  const startsAt = Math.ceil((Date.now() + 26 * 60 * minute) / (5 * minute)) * 5 * minute;
-  return (await owner.json<{ data: Session }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
-    endsAt: new Date(startsAt + 60 * minute).toISOString(), coachId: null, capacity: 5, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
 }
 const sandboxOwner = async (sandboxes: Sandbox[]) => ({ sandbox: sandboxes[1]!, owner: await demoClient(sandboxes[1]!, 'owner') });
 

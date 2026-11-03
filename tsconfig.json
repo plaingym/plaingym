@@ -8,5 +8,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["eslint.config.mjs", "vitest.config.ts", "packages/*/src/**/*.ts"]
+  "include": ["eslint.config.mjs", "vitest.config.ts", "packages/*/src/**/*.ts", "e2e/dates.ts", "e2e/dates.test.ts"]
 }

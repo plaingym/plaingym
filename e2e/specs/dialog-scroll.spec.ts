@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
-import { test, expect, demoClient, localDate, type Client, type Program, type RecordId, type Sandbox } from '../support.js';
+import { test, expect, createClass, demoClient, gymTimezone, showWeek, type Sandbox } from '../support.js';
 import { sizes } from '../responsive.js';
 
 // Cookies are bearer credentials. Keep them out of traces and screenshots.
 test.use({ trace: 'off', screenshot: 'off' });
-
-const minute = 60_000;
-interface Session extends RecordId { name: string; startsAt: string }
-
-async function createClass(owner: Client, name: string): Promise<Session> {
-  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
-  const startsAt = Math.ceil((Date.now() + 26 * 60 * minute) / (5 * minute)) * 5 * minute;
-  return (await owner.json<{ data: Session }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
-    endsAt: new Date(startsAt + 60 * minute).toISOString(), coachId: null, capacity: 5, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
-}
 
 /** The dialog never scrolls itself, and once the body holds more than fits, only the body scrolls. */
 async function onlyBodyScrolls(page: Page, dialog: Locator, surface: string) {
@@ -54,11 +44,11 @@ for (const size of sizes) {
     await page.setViewportSize(size);
     const sandbox: Sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner');
     const name = 'Scroll ' + randomBytes(3).toString('hex'), session = await createClass(owner, name);
-    const zone = (await owner.json<{ data: { timezone: string } }>('/api/settings')).data.timezone;
+    const zone = await gymTimezone(owner);
     await owner.browser(page.context());
 
     await page.goto(sandbox.origin + '/admin/schedule');
-    await page.getByLabel('Week of', { exact: true }).fill(localDate(new Date(session.startsAt), zone));
+    await showWeek(page, zone, Date.parse(session.startsAt));
     await page.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${name}`) }).click();
     const sessionDialog = page.getByRole('dialog', { name });
     await expect(sessionDialog).toBeVisible();

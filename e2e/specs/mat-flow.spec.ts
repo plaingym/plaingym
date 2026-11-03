@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import AxeBuilder from '@axe-core/playwright';
-import { test, expect, gymOrigin, type Person, type RecordId } from '../support.js';
+import { test, expect, gymOrigin, gymTimezone, showWeek, wall, type Person, type RecordId } from '../support.js';
 
 test('import → schedule → coach check-in → kiosk → promote persists across pages', async ({ page, browser, install }, info) => {
   test.setTimeout(150_000);
@@ -45,12 +45,15 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
 
   const imported = await owner.json<{ data: { source: string; programId: string | null }[] }>('/api/attendance?memberId=' + jamie.id + '&source=import');
   expect(imported.data).toMatchObject([{ source: 'import', programId: install.program.id }]);
+  // The form's times are the gym's wall clock (not UTC, which only matches while the gym's zone is UTC); the class runs from five minutes ago, so it
+  // can start on the other side of a Sunday midnight, and the schedule opens on the current week: show the class's own week.
+  const zone = await gymTimezone(owner), began = Date.now() - 5 * 60_000;
   await page.goto(gymOrigin + '/admin/schedule');
   await page.getByRole('button', { name: 'New one-off session', exact: true }).click();
   const form = page.getByRole('dialog', { name: 'New one-off session', exact: true });
   await form.getByLabel('Name', { exact: true }).fill('QA evening class');
-  const start = new Date(Date.now() - 5 * 60_000).toISOString().slice(0, 16);
-  const end = new Date(Date.now() + 55 * 60_000).toISOString().slice(0, 16);
+  const wallValue = (instant: number) => { const { date, time } = wall(instant, zone); return date + 'T' + time; };
+  const start = wallValue(began), end = wallValue(began + 60 * 60_000);
   await form.getByLabel('Starts at').fill(start);
   await form.getByLabel('Ends at').fill(end);
   await form.getByRole('checkbox', { name: install.program.name, exact: true }).check();
@@ -60,10 +63,12 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   expect(response.status()).toBe(200);
   const session = (await response.json() as { data: RecordId & { programIds: string[] } }).data;
   expect(session.programIds).toEqual([install.program.id]);
+  await showWeek(page, zone, began);
   await expect(page.getByRole('button', { name: /QA evening class/ })).toBeVisible();
 
   await coach.browser(page.context());
   await page.reload();
+  await showWeek(page, zone, began);
   await page.getByRole('button', { name: /QA evening class/ }).click();
   const roster = page.getByRole('region', { name: 'Coach check-in roster', exact: true });
   await roster.getByRole('button', { name: 'Check in Jamie River', exact: true }).click();
@@ -117,7 +122,9 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
   const panel = page.getByRole('tabpanel', { name: 'Ranks & promotions', exact: true });
   await panel.getByLabel('Program').selectOption(install.program.id);
   await panel.getByLabel('Target rank').selectOption(rank.id);
-  await panel.getByLabel('Promotion date and time', { exact: true }).fill(new Date().toISOString().slice(0, 16));
+  // This field takes the browser's wall clock, in the zone the browser itself reports.
+  const promoted = wall(Date.now(), await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone));
+  await panel.getByLabel('Promotion date and time', { exact: true }).fill(promoted.date + 'T' + promoted.time);
   await panel.getByRole('button', { name: 'Record promotion', exact: true }).click();
   await expect(panel.getByText('Saved.', { exact: true })).toBeVisible();
   await page.reload();

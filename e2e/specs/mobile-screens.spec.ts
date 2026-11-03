@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import AxeBuilder from '@axe-core/playwright';
 import type { BrowserContext, Page, TestInfo } from '@playwright/test';
-import { expect, gymOrigin, localDate, test, wall, type Install, type Person, type RecordId } from '../support.js';
+import { expect, gymOrigin, localDate, showWeek, test, wall, weekday, type Install, type Person, type RecordId } from '../support.js';
 
 const screens = ['/admin', '/admin/members', '/admin/schedule', '/admin/ranks', '/admin/staff', '/admin/imports', '/admin/settings'];
 const browserZone = 'Pacific/Honolulu';
-/** Day of the week of a `YYYY-MM-DD` date, 0 (Sunday) to 6 (Saturday). */
-const weekday = (date: string) => new Date(date + 'T00:00:00Z').getUTCDay();
 const viewports = [
   { name: 'phone', viewport: { width: 360, height: 740 }, hasTouch: true },
   { name: 'desktop', viewport: { width: 1280, height: 800 }, hasTouch: false },
@@ -126,9 +124,9 @@ for (const { name: size, viewport, hasTouch } of viewports) {
         const panel = page.getByRole('tabpanel', { name: 'Ranks & promotions', exact: true });
         await panel.getByLabel('Program').selectOption(install.program.id);
         await panel.getByLabel('Target rank').selectOption(install.ranks[0]!.id);
-        const promotedAt = new Date();
-        const browserTime = new Intl.DateTimeFormat('en-GB', { timeZone: browserZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(promotedAt);
-        await panel.getByLabel('Promotion date and time', { exact: true }).fill(localDate(promotedAt, browserZone) + 'T' + browserTime);
+        // The field takes the browser's wall clock, one reading of the instant for both its date and its time.
+        const promotedAt = wall(new Date(), browserZone);
+        await panel.getByLabel('Promotion date and time', { exact: true }).fill(promotedAt.date + 'T' + promotedAt.time);
         await panel.getByRole('button', { name: 'Record promotion', exact: true }).click();
         await expect(panel.getByText('Saved.', { exact: true })).toBeVisible();
         await expect(panel.getByRole('listitem').filter({ hasText: install.ranks[0]!.name })).toHaveCount(1);
@@ -136,7 +134,7 @@ for (const { name: size, viewport, hasTouch } of viewports) {
 
         // Schedule: the agenda on phones and the week grid on desktop, then move one generated session.
         await go(page, '/admin/schedule');
-        await page.getByLabel('Week of', { exact: true }).fill(localDate(new Date(first.startsAt), zone));
+        await showWeek(page, zone, Date.parse(first.startsAt));
         await expect(page.getByRole('list', { name: 'Sessions this week, by day' })).toHaveCount(phone ? 1 : 0);
         await sessionButton(page, size).click();
         const dialog = page.getByRole('dialog', { name: `QA ${size} class` });
@@ -177,7 +175,7 @@ for (const { name: size, viewport, hasTouch } of viewports) {
       const [coachContext, coachPage] = await open(browser, install, 'coach', { viewport, hasTouch });
       try {
         await coachPage.goto(gymOrigin + '/admin/schedule');
-        await coachPage.getByLabel('Week of', { exact: true }).fill(localDate(new Date(first.startsAt), zone));
+        await showWeek(coachPage, zone, Date.parse(first.startsAt));
         await sessionButton(coachPage, size).click();
         const roster = coachPage.getByRole('region', { name: 'Coach check-in roster', exact: true });
         await roster.getByLabel('Member name', { exact: true }).fill(last);

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { request as httpsRequest } from 'node:https';
 import { readFile, writeFile } from 'node:fs/promises';
-import { expect, test as base, type BrowserContext } from '@playwright/test';
+import { expect, test as base, type BrowserContext, type Page } from '@playwright/test';
+import { classStart, localDate, mondayOf, type ClassStartOptions } from './dates.js';
 
 export const gymOrigin = 'https://gym.localhost';
 /** The stack's one published address; another loopback lets a run sit beside a local proxy on 127.0.0.1:443. */
@@ -183,14 +184,33 @@ export const test = base.extend<{ cspGuard: CspGuard; cspViolations: string[] },
 });
 export { expect };
 
-/** The wall-clock date (`YYYY-MM-DD`) and time (`HH:MM`) of an instant in a zone. Built from `Intl` parts, not a locale's output format;
- * this independent suite never loads application modules or their dependencies. */
-export function wall(instant: Date | number, timeZone: string) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-    .formatToParts(instant).map((part) => [part.type, part.value]));
-  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+// The date helpers (tested in dates.test.ts). The server has no test clock, so specs derive the day and week they read
+// back from the class they created, and place a class away from local midnight, instead of assuming when they run.
+export { addDays, classStart, localDate, mondayOf, wall, weekStartOf, weekday, type ClassStartOptions } from './dates.js';
+
+/** The gym's IANA timezone, read by a signed-in owner. */
+export async function gymTimezone(owner: Client) {
+  return (await owner.json<{ data: { timezone: string } }>('/api/settings')).data.timezone;
 }
-export const localDate = (instant: Date | number, timeZone: string) => wall(instant, timeZone).date;
+
+/** Shows the admin schedule's week that holds an instant. The page opens on the gym zone's current week, which a class on the
+ * other side of a Sunday midnight in that zone misses; and the week field moves to the Monday that starts the week. */
+export async function showWeek(page: Page, timeZone: string, instant: Date | number) {
+  const weekOf = page.getByLabel('Week of', { exact: true }), date = localDate(instant, timeZone);
+  await weekOf.fill(date);
+  await expect(weekOf).toHaveValue(mondayOf(date));
+}
+
+export interface ClassSession extends RecordId { name: string; startsAt: string; endsAt: string }
+/** A one-off class for the first program, five places, that starts on a 5-minute mark at least `leadMinutes` from now (default 26 hours,
+ * inside every week of the portal's schedule and far from any booking cutoff), clear of the gym's local midnight. */
+export async function createClass(owner: Client, name: string, options: ClassStartOptions & { capacity?: number } = {}): Promise<ClassSession> {
+  const { capacity = 5, durationMinutes = 60, leadMinutes = 26 * 60, ...timing } = options;
+  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
+  const startsAt = classStart(Date.now(), await gymTimezone(owner), { ...timing, leadMinutes, durationMinutes });
+  return (await owner.json<{ data: ClassSession }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
+    endsAt: new Date(startsAt + durationMinutes * 60_000).toISOString(), coachId: null, capacity, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
+}
 
 export async function demoClient(sandbox: Sandbox, role: 'owner' | 'coach' | 'student') {
   const client = new Client(sandbox.origin);

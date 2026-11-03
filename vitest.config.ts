@@ -8,7 +8,7 @@ import { defineConfig } from 'vitest/config';
 // `pnpm verify` names the affected test files in PLAINGYM_TEST_FILES (one per line).
 const selected = process.env.PLAINGYM_TEST_FILES
   ? new Set(readFileSync(process.env.PLAINGYM_TEST_FILES, 'utf8').split('\n').filter(Boolean)) : null;
-const files = globSync(['apps/**/*.test.ts', 'apps/**/*.test.tsx', 'packages/**/*.test.ts'], { exclude: ['**/node_modules/**'] })
+const files = globSync(['apps/**/*.test.ts', 'apps/**/*.test.tsx', 'packages/**/*.test.ts', 'e2e/*.test.ts'], { exclude: ['**/node_modules/**'] })
   .map((file) => file.replaceAll('\\', '/')).filter((file) => !selected || selected.has(file));
 /**
  * A test file needs the database when it uses the test database helpers or the injected template, or when a

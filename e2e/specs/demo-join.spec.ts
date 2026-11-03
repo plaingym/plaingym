@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
-import { test, expect, demoClient, localDate, type Client, type Person, type Program, type RecordId } from '../support.js';
+import { test, expect, demoClient, showWeek, type Client, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, retryLimited, stripeOrigin } from '../portal.js';
 
@@ -28,9 +28,12 @@ async function sign(canvas: Locator, page: Page) {
   for (const step of [0.3, 0.45, 0.6, 0.75, 0.85]) await page.mouse.move(box.x + box.width * step, box.y + box.height * (step % 0.3 + 0.3), { steps: 4 });
   await page.mouse.up();
 }
-/** A class in the portal schedule's current or next week. */
-async function portalClass(page: Page, button: string) {
-  const target = page.getByRole('button', { name: button, exact: true }), loading = page.getByText('Loading classes…', { exact: true });
+/** A class in the portal schedule's current or next week. The portal's week runs from today for seven days, so which of the two holds a
+ * class depends on the day the run starts (a seeded class two weekly slots away is next week from a Tuesday evening). */
+async function portalClass(page: Page, button: string | RegExp) {
+  // A name stays strict (one button); a pattern may match several, such as each class the student waits for.
+  const named = page.getByRole('button', { name: button, exact: typeof button === 'string' });
+  const target = typeof button === 'string' ? named : named.first(), loading = page.getByText('Loading classes…', { exact: true });
   await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
   await expect(loading).toHaveCount(0);
   if (!await target.isVisible()) {
@@ -39,19 +42,6 @@ async function portalClass(page: Page, button: string) {
     await expect(target).toBeVisible();
   }
   return target;
-}
-/** Shows the admin schedule's week that holds an instant. The page opens on the gym zone's current week, which a class on the other side of a Sunday midnight in that zone misses. */
-async function showWeekOf(page: Page, timezone: string, instant: number) {
-  const weekOf = page.getByLabel('Week of', { exact: true }), date = localDate(instant, timezone);
-  await weekOf.fill(date);
-  // The field moves to the Monday that starts the week, as the schedule's own week picker does.
-  await expect(weekOf).toHaveValue(mondayOf(date));
-}
-/** The Monday on or before a calendar date. */
-function mondayOf(date: string) {
-  const day = new Date(date + 'T00:00:00Z');
-  day.setUTCDate(day.getUTCDate() - (day.getUTCDay() + 6) % 7);
-  return day.toISOString().slice(0, 10);
 }
 function newVisitor(): Visitor {
   const lastName = 'Visitor' + randomBytes(3).toString('hex');
@@ -206,7 +196,7 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
     await coach.browser(coachContext);
     const coachPage = await coachContext.newPage();
     await coachPage.goto(sandbox.origin + '/admin/schedule');
-    await showWeekOf(coachPage, bootstrap.data.gym.timezone, start);
+    await showWeek(coachPage, bootstrap.data.gym.timezone, start);
     await coachPage.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${soon.name}`) }).first().click();
     const bookings = coachPage.getByRole('region', { name: 'Bookings and check-ins', exact: true });
     await expect(bookings.getByText(visitor.fullName)).toBeVisible();
@@ -220,8 +210,8 @@ test("the portal schedule's booking actions keep their visible text in their acc
   await student.browser(page.context());
   await page.setViewportSize(phone);
   await page.goto(sandbox.origin + '/portal/schedule');
-  // The seeded student holds booked places and a waitlist place.
-  await expect(page.getByRole('button', { name: /^Leave the waitlist: / }).first()).toBeVisible();
+  // The seeded student holds booked places and a waitlist place, in the class after the next Competition Training: this week or next, by the day.
+  await expect(await portalClass(page, /^Leave the waitlist: /)).toBeVisible();
   const result = await new AxeBuilder({ page }).withRules(['label-content-name-mismatch']).analyze();
   const mismatched = result.violations.flatMap(violation => violation.nodes.map(node => node.html));
   expect(mismatched).toEqual([]);

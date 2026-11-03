@@ -147,6 +147,28 @@ may answer 429 when the sweep exhausts their shared production budget; validatio
 still runs after the limiter. The snapshot additions come from the running
 application's OpenAPI document.
 
+**Specs hold whenever they run.** The app has no test clock, so a spec can't freeze time, and
+the suite is meant to pass at any hour on any day (a run just before a local midnight, on a
+Sunday evening, or on a daylight saving change). The date helpers in `dates.ts`, re-exported
+from `support.ts` with `createClass` and `showWeek`, keep to these rules:
+
+* Never read a day or week from the day the run is on. Take it from the class the spec created
+  or read (`showWeek(page, zone, Date.parse(session.startsAt))`): the schedule opens on the
+  gym's current week, and its **Week of** field moves to the Monday that starts the week.
+* Build a class time with `classStart` (or `createClass`), which keeps the class clear of the
+  gym's local midnight, and a form's wall-clock time with `wall(instant, zone)`: the gym's zone
+  for the schedule's forms and the browser's zone (`UTC`, set in `playwright.config.ts`) for
+  the promotion form. `toISOString()` is UTC, which is neither unless the zone is `UTC`. A class
+  that must start within minutes (the join spec checks in to one) can't wait for `classStart`'s
+  window, so it may cross a local midnight; it still takes its day and week from its own start.
+* The portal schedule lists seven days from today, not a calendar week, so a seeded class can
+  be in either of its first two pages; click **Next week** when it isn't on the first
+  (`portalClass` in `demo-join.spec.ts`).
+
+`dates.test.ts` runs with the repository's unit tests (`pnpm test:unit`, no stack needed) and
+covers Sunday 23:59, Monday 00:00, month ends and both daylight saving changes in UTC and the
+zones the specs use.
+
 Every browser and API request reaches the app from Caddy's one address, so the
 stack sets `RATE_LIMIT_PER_MINUTE=20000` instead of the default 300; the limiter
 itself is covered by unit tests. A full run takes a few minutes. Failed runs
