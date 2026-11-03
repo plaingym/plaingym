@@ -82,17 +82,23 @@ describe('settings service and routes', () => {
     expect(last.occurredAt).toEqual(clock.now()); expect(JSON.stringify(audits)).not.toContain('private-smtp-password');
     expect(await service.get(gymB)).toMatchObject({ websiteEnabled: false });
   });
-  it('refuses a new timezone outside the shared rule but keeps a stored one saveable', async () => {
+  it('refuses a new timezone outside the shared rule with the field path, and never rewrites a stored one', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'CET' });
-    const context = { ...mutation, gymId }, app = server('owner', gymId);
+    const app = server('owner', gymId);
     const { revision } = await service.get(gymId);
-    for (const timezone of ['EST5EDT', 'PST', 'Mars/Olympus'])
-      expect((await patch(app, '/api/settings', { revision, timezone })).status).toBe(400);
+    for (const timezone of ['EST5EDT', 'PST', 'CET', 'Mars/Olympus', 'Etc/GMT+5']) {
+      const response = await patch(app, '/api/settings', { revision, timezone });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: 'invalid_request', details: { timezone: ['invalid_timezone'] } } });
+    }
     expect((await service.get(gymId)).timezone).toBe('CET');
-    // The form sends the whole general section, so the unchanged stored zone must pass with other fields.
-    const saved = await service.update(context, 'general', { revision, name: 'Renamed', timezone: 'CET' });
+    // The form leaves `timezone` out while it is unchanged, so the stored zone stays as it is whatever else is saved.
+    const renamed = await patch(app, '/api/settings', { revision, name: 'Renamed' });
+    expect(renamed.status).toBe(200);
+    const saved = (await renamed.json() as { data: { revision: number; timezone: string; name: string } }).data;
     expect(saved).toMatchObject({ name: 'Renamed', timezone: 'CET' });
-    expect((await patch(app, '/api/settings', { revision: saved.revision, timezone: 'America/Vancouver' })).status).toBe(200);
+    // A new zone is stored under its canonical name.
+    expect((await patch(app, '/api/settings', { revision: saved.revision, timezone: 'america/vancouver' })).status).toBe(200);
     expect((await service.get(gymId)).timezone).toBe('America/Vancouver');
   });
   it('serializes racing saves so only one update wins', async () => {

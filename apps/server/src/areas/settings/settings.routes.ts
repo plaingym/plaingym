@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError } from '@plaingym/shared';
-import { settingsContracts, updateBillingRulesRequestSchema } from '@plaingym/shared/contracts';
+import { settingsContracts, updateBillingRulesRequestSchema, updateGymSettingsRequestSchema } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from '../../core/context.js';
 import { route } from '../../core/registry.js';
 import { createSettingsService } from './settings.js';
 // Runs after authorization and before the shared validator, whose generic error hides field details.
-const billingFieldErrors: MiddlewareHandler<RequestEnvironment> = async (c, next) => {
-  const parsed = updateBillingRulesRequestSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success && parsed.error.issues.some((issue) => issue.path[0] === 'retryDays'))
-    throw new AppError('invalid_request', 'The request is invalid.', { retryDays: ['invalid_retry_days'] });
-  await next();
-};
+const fieldErrors = (schema: typeof updateBillingRulesRequestSchema | typeof updateGymSettingsRequestSchema, field: string, code: string): MiddlewareHandler<RequestEnvironment> =>
+  async (c, next) => {
+    const parsed = schema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success && parsed.error.issues.some((issue) => issue.path[0] === field))
+      throw new AppError('invalid_request', 'The request is invalid.', { [field]: [code] });
+    await next();
+  };
+const middleware = {
+  updateBillingRules: fieldErrors(updateBillingRulesRequestSchema, 'retryDays', 'invalid_retry_days'),
+  updateGeneral: fieldErrors(updateGymSettingsRequestSchema, 'timezone', 'invalid_timezone'),
+} as const;
 const kinds = { updateGeneral: 'general', updateBookingRules: 'booking', updateBillingRules: 'billing', updateCurrency: 'currency', updateDropIn: 'drop_in' } as const;
 export function createSettingsRoutes(service = createSettingsService()) {
   const get = settingsContracts.get;
@@ -20,7 +25,7 @@ export function createSettingsRoutes(service = createSettingsService()) {
     ...(['updateGeneral', 'updateBookingRules', 'updateBillingRules', 'updateCurrency', 'updateDropIn'] as const).map((name) => {
       const contract = settingsContracts[name];
       return route({ ...contract,
-        ...(name === 'updateBillingRules' ? { middleware: billingFieldErrors } : {}),
+        ...(name === 'updateBillingRules' || name === 'updateGeneral' ? { middleware: middleware[name] } : {}),
         request: { body: { required: true, content: { 'application/json': { schema: contract.body } } } },
         responses: { 200: { description: 'Updated gym settings', content: { 'application/json': { schema: contract.response } } } },
       }, async (c) => {

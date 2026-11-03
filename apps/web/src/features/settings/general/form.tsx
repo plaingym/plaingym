@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useId, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { bootstrapKey } from '../../../app/context.js';
 import { api } from '../../../lib/api.js';
@@ -11,13 +11,16 @@ import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
 import { ErrorState, LoadingState } from '../../../components/ui/states.js';
 const text = (key: string) => t('settings/settings:' + key);
+/** The server names the field with a code (`details`), never with its message. */
+const refusedTimezone = (body: unknown) =>
+  (body as { error?: { details?: { timezone?: unknown } } } | undefined)?.error?.details?.timezone !== undefined;
 function Field({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
   return <Label className={'grid min-w-0 gap-2 ' + (className ?? '')}>{label}{children}</Label>;
 }
 export function GeneralSettingsForm() {
   const cache = useQueryClient(), gym = useGymSettings(), settings = gym.settings;
   const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(false), [zoneError, setZoneError] = useState(false), zoneId = useId();
   // Each form starts over when the settings come from the server (epoch) or after its own save, never after another
   // section's save, so unsaved input in one form survives a save in another.
   const [saves, setSaves] = useState({ general: 0, booking: 0, currency: 0 });
@@ -26,20 +29,30 @@ export function GeneralSettingsForm() {
     if (!settings) return;
     const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) ?? '').trim();
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); setZoneError(false);
+    // The server's refusal body, kept so a bad timezone is shown at its field; the save queue returns only the status.
+    let refusal: unknown;
     try {
-      const send = (revision: number) => {
-        if (kind === 'general') return api.PATCH('/api/settings', { body: { revision, name: value('name'), timezone: value('timezone'),
-          address: { line1: value('line1'), line2: value('line2'), city: value('city'), region: value('region'), postalCode: value('postalCode'),
-            ...(value('country') ? { country: value('country').toUpperCase() } : {}) },
-          branding: { primaryColor: value('primaryColor'), logoKey: value('logoKey') || null },
-          websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null } });
+      const send = async (revision: number) => {
+        if (kind === 'general') {
+          // A new zone must follow the shared rule, so it is sent only when it changed: a stored zone the rule would
+          // refuse (such as `CET`) saves with every other field unchanged and is never rewritten.
+          const result = await api.PATCH('/api/settings', { body: { revision, name: value('name'),
+            ...(value('timezone') !== settings.timezone ? { timezone: value('timezone') } : {}),
+            address: { line1: value('line1'), line2: value('line2'), city: value('city'), region: value('region'), postalCode: value('postalCode'),
+              ...(value('country') ? { country: value('country').toUpperCase() } : {}) },
+            branding: { primaryColor: value('primaryColor'), logoKey: value('logoKey') || null },
+            websiteEnabled: form.has('websiteEnabled'), existingSiteUrl: value('existingSiteUrl') || null } });
+          refusal = (result as { error?: unknown }).error;
+          return result;
+        }
         if (kind === 'booking') return api.PATCH('/api/settings/booking', { body: {
           revision, bookingWindowDays: Number(value('bookingWindowDays')), cancellationCutoffMinutes: Number(value('cancellationCutoffMinutes')),
           openMatCountsAsClass: form.has('openMatCountsAsClass') } });
         return api.PATCH('/api/settings/currency', { body: { revision, currency: value('currency').toUpperCase() } });
       };
       const result = await gym.save(send);
+      if (result.status === 400 && refusedTimezone(refusal)) { setZoneError(true); return; }
       if (result.status >= 300) { setMessage(text(result.status === 409 ? 'conflict' : 'error')); return; }
       setSaves((current) => ({ ...current, [kind]: current[kind] + 1 })); setMessage(text('saved'));
       // Screens read the gym's currency and timezone from the cached shell summary; refetch it now, not after its stale time.
@@ -58,7 +71,13 @@ export function GeneralSettingsForm() {
     <form key={'general-' + gym.epoch + '-' + saves.general} onSubmit={(event) => void save(event, 'general')} aria-label={text('general')}>
       <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
         <Field label={text('name')} className="sm:col-span-2"><Input name="name" required defaultValue={settings.name}/></Field>
-        <Field label={text('timezone')} className="sm:col-span-2"><Input name="timezone" required defaultValue={settings.timezone}/></Field>
+        <div className="grid min-w-0 gap-2 sm:col-span-2">
+          <Field label={text('timezone')}>
+            <Input name="timezone" required defaultValue={settings.timezone} onChange={() => setZoneError(false)}
+              aria-invalid={zoneError} aria-describedby={zoneId + '-help' + (zoneError ? ' ' + zoneId + '-error' : '')}/></Field>
+          <p id={zoneId + '-help'} className="text-sm text-muted-foreground">{text('timezoneHelp')}</p>
+          {zoneError && <p id={zoneId + '-error'} role="alert" className="text-sm text-destructive">{text('timezoneInvalid')}</p>}
+        </div>
         {(['line1', 'line2', 'city', 'region', 'postalCode', 'country'] as const).map((key) =>
           <Field key={key} label={text(key === 'line1' ? 'address' : key === 'line2' ? 'addressLine2' : key)} className={key === 'line1' || key === 'line2' ? 'sm:col-span-2' : ''}>
             <Input name={key} defaultValue={settings.address[key] ?? ''} {...(key === 'country' ? { maxLength: 2, autoCapitalize: 'characters' } : {})}/></Field>)}

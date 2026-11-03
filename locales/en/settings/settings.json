@@ -6,6 +6,8 @@
   "general": "Gym details",
   "name": "Gym name",
   "timezone": "Timezone",
+  "timezoneHelp": "UTC or a region such as America/Vancouver.",
+  "timezoneInvalid": "That timezone can't be used. Use UTC or a region such as America/Vancouver; abbreviations such as PST and offsets such as Etc/GMT+5 aren't accepted.",
   "address": "Street address",
   "addressLine2": "Address line 2",
   "city": "City",

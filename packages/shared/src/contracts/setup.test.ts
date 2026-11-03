@@ -34,23 +34,27 @@ describe('setup wizard contracts', () => {
   });
   it('uses one timezone rule for new values in setup, settings and the CLI', () => {
     expect(setupTimezoneSchema).toBe(gymTimezoneSchema);
-    for (const timezone of ['UTC', 'America/Vancouver', 'Asia/Kolkata', 'Etc/GMT+5']) {
+    for (const timezone of ['UTC', 'America/Vancouver', 'Asia/Kolkata']) {
       expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(true);
       expect(gymTimezoneSchema.safeParse(timezone).success).toBe(true);
     }
-    for (const timezone of ['CET', 'EST5EDT', 'PST', 'Mars/Olympus', '+01:00', '']) {
+    expect(setupGymDetailsSchema.parse({ ...details, timezone: 'america/vancouver' }).timezone).toBe('America/Vancouver');
+    for (const timezone of ['CET', 'EST5EDT', 'PST', 'Mars/Olympus', '+01:00', '', 'Etc/GMT+5']) {
       expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(false);
       expect(gymTimezoneSchema.safeParse(timezone).success).toBe(false);
     }
-    // A stored zone from before the rule still reads back; settings applies the rule only when the value changes.
+    // A stored zone from before the rule still reads back; the rule applies only to a new value, and a save that leaves the field out keeps it.
     expect(storedTimezoneSchema.safeParse('CET').success).toBe(true);
     expect(storedTimezoneSchema.safeParse('Mars/Olympus').success).toBe(false);
+    // The step's response reads the stored zone the same way, so a gym saved under the earlier rule still resumes.
+    for (const timezone of ['CET', 'Etc/GMT+5']) expect(setupContracts.gym.response.safeParse({ data: { ...details, timezone } }).success).toBe(true);
   });
   it('requires gym currency and a valid IANA timezone at step 2', () => {
     expect(setupGymDetailsSchema.parse(details)).toEqual(details);
     expect(setupGymDetailsSchema.safeParse({ ...details, currency: undefined }).success).toBe(false);
     for (const timezone of ['Mars/Olympus', 'PST', '+01:00', '']) expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(false);
-    for (const timezone of ['UTC', 'Asia/Kolkata', 'Etc/GMT+5']) expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(true);
+    for (const timezone of ['UTC', 'Asia/Kolkata']) expect(setupGymDetailsSchema.safeParse({ ...details, timezone }).success).toBe(true);
+    expect(setupGymDetailsSchema.safeParse({ ...details, timezone: 'Etc/GMT+5' }).success).toBe(false);
     for (const revision of [undefined, 0, -1, 1.5, '1']) expect(setupGymDetailsSchema.safeParse({ ...details, revision }).success).toBe(false);
     expect(setupGymDetailsSchema.safeParse({ ...details, currency: 'cad' }).success).toBe(false);
     expectTypeOf<Exclude<keyof SetupGymDetails, keyof typeof gyms.$inferSelect>>().toEqualTypeOf<never>();

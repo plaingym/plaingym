@@ -15,6 +15,14 @@ export function isCalendarDate(value: string): boolean {
   try { Temporal.PlainDate.from(value, { overflow: 'reject' }); return true; }
   catch { return false; }
 }
+/**
+ * `timezone` as Temporal names it: the identifier in its canonical case, with links kept as given, so
+ * `asia/kolkata` is `Asia/Kolkata` and `Europe/Kyiv` stays itself (`Intl` would name them `Asia/Calcutta`
+ * and `Europe/Kiev`). Throws for a zone Temporal doesn't know.
+ */
+export function timeZoneId(timezone: string): string {
+  return Temporal.Instant.fromEpochMilliseconds(0).toZonedDateTimeISO(timezone).timeZoneId;
+}
 /** The calendar date an instant falls on in `timezone`. */
 export function localDate(instant: Date, timezone: string): string {
   return Temporal.Instant.fromEpochMilliseconds(instant.getTime()).toZonedDateTimeISO(timezone).toPlainDate().toString();

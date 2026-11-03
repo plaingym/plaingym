@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { idSchema, currencySchema, instantSchema, revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
+import { timeZoneId } from '../time.js';
 
 const manage = { kind: 'staff', capability: 'settings.manage' } as const satisfies RoutePermission;
 const goLive = { kind: 'staff', capability: 'go_live.manage' } as const satisfies RoutePermission;
@@ -13,12 +14,22 @@ const knownZone = (value: string) => {
 };
 /** A zone `Intl` knows. Stored zones, which may predate the new-value rule, are read with this schema. */
 export const storedTimezoneSchema = z.string().min(1).refine(knownZone, 'Use a supported IANA timezone');
+const timezoneMessage = 'Use UTC or a region such as America/Vancouver';
+/** `Etc/GMT+5` is UTC−5: the sign is inverted, and a region form exists for every offset. */
+const fixedOffsetZone = /^Etc\/GMT[+-]\d+$/i;
 /**
  * The rule for a new timezone in setup, settings and the `gyms create` CLI: `UTC` or a region form such as
- * `America/Vancouver` that `Intl` knows. A gym's already stored zone (for example `CET`) stays valid unchanged.
+ * `America/Vancouver` that `Intl` knows, stored in its canonical case (`america/vancouver` becomes
+ * `America/Vancouver`). Links are kept as given rather than resolved: `Intl` resolves current names to retired
+ * ones (`Asia/Kolkata` to `Asia/Calcutta`, `Europe/Kyiv` to `Europe/Kiev`). `Etc/GMT±N` is refused. A gym's already
+ * stored zone (for example `CET`) is read with `storedTimezoneSchema` and is never rewritten by this rule.
  */
-export const gymTimezoneSchema = z.string().regex(/^(UTC|[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)+)$/)
-  .refine(knownZone, 'Use UTC or a region such as America/Vancouver');
+export const gymTimezoneSchema = z.string().regex(/^(utc|[a-z_]+(?:\/[a-z0-9_+-]+)+)$/i, timezoneMessage)
+  .refine(knownZone, timezoneMessage).refine((zone) => !fixedOffsetZone.test(zone), timezoneMessage)
+  .transform((zone, context) => {
+    try { return timeZoneId(zone); }
+    catch { context.addIssue({ code: 'custom', message: timezoneMessage }); return z.NEVER; }
+  });
 export const gymAddressSchema = z.strictObject({
   line1: z.string().optional(), line2: z.string().optional(), city: z.string().optional(),
   region: z.string().optional(), postalCode: z.string().optional(),
@@ -52,9 +63,10 @@ export const gymSettingsSchema = z.strictObject({
   currency: currencySchema, ...bookingRulesSchema.shape, ...billingRulesSchema.shape, ...dropInSettingsSchema.shape,
   ...goLiveSwitchesSchema.shape, revision: revisionSchema, createdAt: instantSchema, updatedAt: instantSchema,
 });
+/** A change names the new timezone under the shared rule; leave `timezone` out to keep a stored zone as it is. */
 export const updateGymSettingsRequestSchema = gymSettingsSchema.pick({
-  name: true, timezone: true, address: true, branding: true, websiteEnabled: true, existingSiteUrl: true,
-}).partial().extend({ revision: revisionSchema })
+  name: true, address: true, branding: true, websiteEnabled: true, existingSiteUrl: true,
+}).partial().extend({ timezone: gymTimezoneSchema.optional(), revision: revisionSchema })
   .refine((value) => Object.keys(value).length > 1, 'Supply at least one change');
 export const updateBookingRulesRequestSchema = bookingRulesSchema.partial().extend({ revision: revisionSchema })
   .refine((value) => Object.keys(value).length > 1, 'Supply at least one change');

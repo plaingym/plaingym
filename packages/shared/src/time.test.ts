@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { addDays, isCalendarDate, localDate, weekday, zonedInstant } from '@plaingym/shared/time';
+import { addDays, isCalendarDate, localDate, timeZoneId, weekday, zonedInstant } from '@plaingym/shared/time';
 
 describe('shared time conversions', () => {
+  it('names a zone in its canonical case without resolving links', () => {
+    for (const [zone, id] of [['asia/kolkata', 'Asia/Kolkata'], ['EUROPE/KYIV', 'Europe/Kyiv'], ['us/pacific', 'US/Pacific'], ['utc', 'UTC']] as const)
+      expect(timeZoneId(zone)).toBe(id);
+    expect(() => timeZoneId('Mars/Olympus')).toThrow();
+  });
   it('accepts only real calendar dates', () => {
     expect(isCalendarDate('2028-02-29')).toBe(true);
     for (const value of ['2026-02-29', '2026-13-01', '2026-04-31', '2026-4-1', '2026-04-01T00:00', '']) expect(isCalendarDate(value)).toBe(false);

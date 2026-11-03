@@ -20,6 +20,60 @@ const reply = (status: number, data?: unknown) => ({ response: { ok: status < 30
 const empty = { data: [], pagination: { limit: 100, offset: 0, total: 0 } };
 afterEach(cleanup);
 
+const renderForm = (stored: GymSettings) => {
+  client.GET.mockResolvedValue(reply(200, { data: stored }));
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <ShellServicesContext.Provider value={createShellServices(vi.fn(async () => { throw new Error('not used'); }))}><GeneralSettingsForm/></ShellServicesContext.Provider>
+  </QueryClientProvider>);
+  return screen.findByRole('form', { name: 'Gym details' });
+};
+const refusedZone = { response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.', details: { timezone: ['invalid_timezone'] } }, requestId: 'r' } };
+
+describe('general settings timezone', () => {
+  it('does not send a timezone that is unchanged, so a stored zone the rule refuses still saves', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockImplementation(async (path: string, { body }: { body: Partial<GymSettings> }) => reply(200, { data: { ...settings, timezone: 'CET', ...body, revision: 4 } }));
+    const general = await renderForm({ ...settings, timezone: 'CET' });
+    expect((within(general).getByLabelText('Timezone') as HTMLInputElement).value).toBe('CET');
+    fireEvent.change(within(general).getByLabelText('Gym name'), { target: { value: 'Renamed' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledTimes(1));
+    const body = client.PATCH.mock.calls[0]![1].body as Record<string, unknown>;
+    expect(body).toMatchObject({ revision: 3, name: 'Renamed' });
+    expect(body).not.toHaveProperty('timezone');
+    expect(await screen.findByText('Changes saved.')).toBeDefined();
+  });
+  it('shows the rule at the timezone field when a new zone is refused, clears it on edit, and sends the zone again', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValueOnce(refusedZone);
+    const general = await renderForm(settings);
+    const field = within(general).getByLabelText('Timezone');
+    expect(within(general).getByText('UTC or a region such as America/Vancouver.')).toBeDefined();
+    fireEvent.change(field, { target: { value: 'PST' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    const error = await within(general).findByRole('alert');
+    expect(error.textContent).toContain('Use UTC or a region such as America/Vancouver');
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings', { body: expect.objectContaining({ timezone: 'PST' }) });
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(field.getAttribute('aria-describedby')).toContain(error.id);
+    // The refusal is about the field, not the page: no generic failure message, and the typed value stays.
+    expect(screen.queryByText('Unable to save or load settings.')).toBeNull();
+    expect((field as HTMLInputElement).value).toBe('PST');
+    fireEvent.change(field, { target: { value: 'America/Toronto' } });
+    expect(within(general).queryByRole('alert')).toBeNull();
+    expect(field.getAttribute('aria-invalid')).toBe('false');
+  });
+  it('keeps the generic message for a 400 about another field', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.' }, requestId: 'r' } });
+    const general = await renderForm(settings);
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Unable to save or load settings.')).toBeDefined();
+    expect(within(general).queryByRole('alert')).toBeNull();
+    expect(client.PATCH.mock.calls[0]![1].body).not.toHaveProperty('timezone');
+  });
+});
+
 describe('general settings and the cached shell summary', () => {
   it('shows the new currency in the one-off invoice editor right after saving, within the summary\'s stale time', async () => {
     let saved = settings;

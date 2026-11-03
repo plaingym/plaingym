@@ -27,12 +27,42 @@ it('commits one audited gym and domain before owner provisioning, including conc
   expect(audits.filter((event) => event.action === 'gym.created')).toHaveLength(1);
   expect(result).not.toHaveProperty('qrKey');
 });
-it.each(['CET', 'PST', 'Mars/Olympus'])('refuses the timezone %s before reserving anything', async (timezone) => {
+it.each(['CET', 'PST', 'Mars/Olympus', 'Etc/GMT+5'])('refuses the timezone %s before reserving anything', async (timezone) => {
   const provisionOwner = vi.fn();
   const create = createGymService({ mode: 'multi', system: database.forSystem, key, clock, provisionOwner });
-  await expect(create({ ...input, slug: 'bad-zone', hostname: 'bad-zone.example.test', timezone })).rejects.toThrow();
+  await expect(create({ ...input, slug: 'bad-zone', hostname: 'bad-zone.example.test', timezone }))
+    .rejects.toMatchObject({ code: 'invalid_request', message: expect.stringContaining('timezone') });
   expect(provisionOwner).not.toHaveBeenCalled();
   expect(await database.forSystem((tx) => tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.slug, 'bad-zone')))).toHaveLength(0);
+});
+it.each(['cad', 'CA', 'CAD1', ''])('refuses the currency "%s" with its own message before reserving anything', async (currency) => {
+  const provisionOwner = vi.fn();
+  const create = createGymService({ mode: 'multi', system: database.forSystem, key, clock, provisionOwner });
+  const rejected = await create({ ...input, slug: 'bad-currency', hostname: 'bad-currency.example.test', currency }).catch((error: unknown) => error);
+  expect(rejected).toMatchObject({ code: 'invalid_request', message: expect.stringContaining('currency') });
+  expect((rejected as Error).message).not.toContain('timezone');
+  expect(provisionOwner).not.toHaveBeenCalled();
+  expect(await database.forSystem((tx) => tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.slug, 'bad-currency')))).toHaveLength(0);
+});
+it('stores a timezone under its canonical name, so a retry with another spelling is the same gym', async () => {
+  const provisionOwner = vi.fn(async () => ({ userId: 'owner', delivery: 'email' as const }));
+  const create = createGymService({ mode: 'multi', system: database.forSystem, key, clock, provisionOwner });
+  const first = { ...input, slug: 'canonical-zone', hostname: 'canonical-zone.example.test', timezone: 'america/vancouver' };
+  const created = await create(first);
+  expect((await database.forGym(created.gymId, (tx) => tx.select({ timezone: gyms.timezone }).from(gyms)))[0]!.timezone).toBe('America/Vancouver');
+  expect(await create({ ...first, timezone: 'America/Vancouver' })).toEqual(created);
+  // A quoted argument with a space around it is the same zone, as in the settings form.
+  expect(await create({ ...first, timezone: ' America/Vancouver ' })).toEqual(created);
+});
+it('prints the timezone and currency messages and exits 1', async () => {
+  const stdout = vi.fn(), stderr = vi.fn();
+  const command = createGymsCommand(async (details) => createGymService({ mode: 'multi', system: database.forSystem, key, clock,
+    provisionOwner: async () => ({ userId: 'owner', delivery: 'email' as const }) })({ ...details, hostname: 'cli-zone.example.test', slug: 'cli-zone' }));
+  expect(await command.run(['create', 'cli-zone', 'cli-zone.example.test', 'owner@example.test', 'Gym', 'PST', 'USD'], { stdout, stderr })).toBe(1);
+  expect(stderr).toHaveBeenLastCalledWith('Use UTC or a region such as America/Vancouver for the timezone');
+  expect(await command.run(['create', 'cli-zone', 'cli-zone.example.test', 'owner@example.test', 'Gym', 'UTC', 'dollars'], { stdout, stderr })).toBe(1);
+  expect(stderr).toHaveBeenLastCalledWith('Use a three-letter currency code such as CAD for the currency');
+  expect(stdout).not.toHaveBeenCalled();
 });
 it('resumes a committed reservation after owner failure and rejects changed owner or hostname', async () => {
   const provisionOwner = vi.fn().mockRejectedValueOnce(new Error('failure')).mockResolvedValue({ userId: 'owner', delivery: 'email' });

@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { currencySchema, idSchema, revisionSchema } from './common.js';
-import { gymAddressSchema, gymTimezoneSchema } from './settings.js';
+import { gymAddressSchema, gymTimezoneSchema, storedTimezoneSchema } from './settings.js';
 
 export const setupStepSchema = z.int32().min(0).max(8);
 export const setupTimezoneSchema = gymTimezoneSchema;
@@ -22,7 +22,8 @@ export const setupGymDetailsSchema = z.strictObject({
 });
 // Currency is mandatory at step 2. Once any plan, charge type, membership or
 // invoice references it, a change is a conflict, never a silent conversion.
-export const setupGymDetailsResponseSchema = z.strictObject({ data: setupGymDetailsSchema });
+// The response reads the stored zone, which setup accepted before the current rule (such as `Etc/GMT+5`).
+export const setupGymDetailsResponseSchema = z.strictObject({ data: setupGymDetailsSchema.extend({ timezone: storedTimezoneSchema }) });
 export const setupPacksRequestSchema = z.strictObject({
   revision: revisionSchema,
   packs: z.array(z.strictObject({ packId: z.string().regex(/^[a-z][a-z0-9-]*$/), version: z.int32().positive() }))

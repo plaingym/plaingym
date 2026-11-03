@@ -2,7 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { databaseCode, forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { billingRulesSchema, gymTimezoneSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
+import { billingRulesSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
   updateDropInSettingsRequestSchema, type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest,
   type UpdateDropInSettingsRequest } from '@plaingym/shared/contracts';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -54,9 +54,6 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
         return await scope(context.gymId, async (tx) => {
           const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
           if (!before) throw new AppError('not_found', 'Gym not found');
-          // The request accepts any zone `Intl` knows so a gym's stored zone (such as `CET`) can be sent back unchanged; only a new value must follow the shared rule.
-          if ('timezone' in changes && changes.timezone !== before.timezone && !gymTimezoneSchema.safeParse(changes.timezone).success)
-            throw new AppError('invalid_request', 'Use UTC or a region such as America/Vancouver');
           if (kind === 'currency' && 'currency' in changes && changes.currency !== before.currency) {
             for (const table of [plans, chargeTypes, memberships, invoices]) {
               const existing = await tx.select({ id: table.id }).from(table).where(eq(table.gymId, context.gymId)).limit(1);
