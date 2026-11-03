@@ -5,6 +5,20 @@ sets active=false; it never deletes a referenced plan or tax. New assignments an
 new tax links require active records; existing memberships keep their price,
 interval, currency, and original commitment when a catalog item is edited.
 
+A tax rate is never archived while charge types or plans carry it. Archiving
+(`active: false`) an active rate that something carries is a conflict whose
+details list the charge types, the plans and the memberships (not cancelled) on
+those plans; GET /api/billing/tax-rates/{taxRateId}/usage returns the same list.
+With `detach: true` one transaction removes every link and archives the rate,
+with one `billing.tax_rate.archived` audit naming each item. Plans' next cycle
+invoices then drop the rate. The plan and charge type revisions don't change; a
+plan or charge type edit locks the rates it names before reading its own links,
+so an edit that waited on a detach can't attach the archived rate again.
+Rates archived and attached before this rule keep their links and stay editable
+as they are: plans still apply the rate, one-off invoices for such a charge type
+are refused (`tax_rate_inactive`), and the catalog warns on each with a way to
+remove it (`detach: true` clears an archived rate's links too).
+
 All mutations write audits in their transaction. Membership edits apply a new
 plan's defaults before explicit overrides. Commitments are recorded, not enforced:
 staff can cancel before the date. New HTTP assignments are pending unless the

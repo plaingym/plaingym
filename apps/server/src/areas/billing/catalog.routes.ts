@@ -34,6 +34,7 @@ export function createCatalogRoutes(service?: CatalogService) {
   return [
     billingRoute(c.billingContracts.listTaxRates, async (ctx, _p, q) => read().listTaxRates(ctx.gym.gymId, q)),
     billingRoute(c.billingContracts.getTaxRate, async (ctx, p) => ({ data: await read().getTaxRate(ctx.gym.gymId, p.taxRateId!) })),
+    billingRoute(c.billingContracts.getTaxRateUsage, async (ctx, p) => ({ data: await read().getTaxRateUsage(ctx.gym.gymId, p.taxRateId!) })),
     billingRoute(c.billingContracts.createTaxRate, async (ctx, _p, _q, b) => ({ data: await read().createTaxRate(billingMutation(ctx), c.createTaxRateRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.updateTaxRate, async (ctx, p, _q, b) => ({ data: await read().updateTaxRate(billingMutation(ctx), p.taxRateId!, c.updateTaxRateRequestSchema.parse(b)) })),
     billingRoute(c.billingContracts.listPlans, async (ctx, _p, q) => read().listPlans(ctx.gym.gymId, q)),

@@ -19,7 +19,7 @@ import {
   paymentAttemptSchema, paymentMethodListResponseSchema, planResponseSchema,
   recordManualPaymentRequestSchema, refundResponseSchema, resumeMembershipRequestSchema,
   taxRateResponseSchema, updateChargeTypeRequestSchema,
-  updateMembershipRequestSchema, updatePlanRequestSchema, updateTaxRateRequestSchema,
+  updateMembershipRequestSchema, updatePlanRequestSchema, updateTaxRateRequestSchema, taxRateUsageResponseSchema,
   type BillingEndpointContract, type ChargeType, type Invoice,
   type InvoiceLineItem, type MaskedPaymentMethod, type Membership, type Payment,
   type PaymentAttempt, type Plan, type Refund, type TaxRate,
@@ -98,6 +98,23 @@ describe('billing catalog', () => {
     for (const schema of [updatePlanRequestSchema, updateTaxRateRequestSchema, updateChargeTypeRequestSchema]) {
       expect(schema.safeParse({ revision: 3 }).success).toBe(false);
     }
+  });
+  it('takes a detach confirmation only with an archive', () => {
+    expect(updateTaxRateRequestSchema.parse({ revision: 3, active: false, detach: true })).toEqual({ revision: 3, active: false, detach: true });
+    expect(updateTaxRateRequestSchema.parse({ revision: 3, active: false })).toEqual({ revision: 3, active: false });
+    for (const body of [{ revision: 3, detach: true }, { revision: 3, name: 'Tax', detach: true },
+      { revision: 3, active: true, detach: true }, { revision: 3, active: false, detach: false }]) {
+      expect(updateTaxRateRequestSchema.safeParse(body).success).toBe(false);
+    }
+  });
+  it('describes what carries a tax rate with membership counts', () => {
+    const usage = { chargeTypes: [{ id: ids.other, name: 'Drop-in', active: true }],
+      plans: [{ id: ids.plan, name: 'Monthly', active: false, memberships: 4 }], memberships: 4 };
+    expect(taxRateUsageResponseSchema.parse({ data: usage }).data).toEqual(usage);
+    for (const changes of [{ memberships: -1 }, { memberships: 1.5 }, { extra: true }]) {
+      expect(taxRateUsageResponseSchema.safeParse({ data: { ...usage, ...changes } }).success).toBe(false);
+    }
+    expect(taxRateUsageResponseSchema.safeParse({ data: { ...usage, plans: [{ ...usage.plans[0], memberships: undefined }] } }).success).toBe(false);
   });
 });
 

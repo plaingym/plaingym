@@ -18,7 +18,7 @@ import { createMembershipService } from './memberships.js';
 import { createMembershipRoutes } from './memberships.routes.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2028-01-15T12:00:00Z');
-const operations = ['listTaxRates', 'getTaxRate', 'createTaxRate', 'updateTaxRate', 'listPlans', 'getPlan', 'createPlan', 'updatePlan',
+const operations = ['listTaxRates', 'getTaxRate', 'getTaxRateUsage', 'createTaxRate', 'updateTaxRate', 'listPlans', 'getPlan', 'createPlan', 'updatePlan',
   'listChargeTypes', 'getChargeType', 'createChargeType', 'updateChargeType', 'listMemberships', 'getMembership', 'assignMembership',
   'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'cancelMembership'] as const;
 type Operation = typeof operations[number];
@@ -105,6 +105,22 @@ describe('all billing catalog and membership routes', () => {
       expect((await request(server(own, staff(own, 'owner')), operation, other)).status).toBe(404);
     });
   }
+  it('answers archiving an attached tax rate with a 409 that lists what carries it, then detaches on confirmation', async () => {
+    const f = await fixture(), app = server(f, staff(f, 'owner'));
+    await factory('planTaxRates', f.gymId, { planId: f.plan.id, taxRateId: f.tax.id });
+    await factory('chargeTypeTaxRates', f.gymId, { chargeTypeId: f.charge.id, taxRateId: f.tax.id });
+    const usage = billingContracts.getTaxRateUsage.response.parse(await (await request(app, 'getTaxRateUsage', f)).json()).data;
+    expect(usage).toMatchObject({ chargeTypes: [{ id: f.charge.id }], plans: [{ id: f.plan.id, memberships: 3 }], memberships: 3 });
+    const refused = await request(app, 'updateTaxRate', f, { revision: 1, active: false });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatchObject({ code: 'conflict',
+      details: { reason: ['tax_rate_attached'], chargeTypes: [f.charge.name], plans: [f.plan.name], memberships: ['3'] } });
+    expect((await request(app, 'updateTaxRate', f, { revision: 1, name: 'Renamed', detach: true })).status).toBe(400);
+    const archived = await request(app, 'updateTaxRate', f, { revision: 1, active: false, detach: true });
+    expect(archived.status).toBe(200);
+    expect((await archived.json()).data).toMatchObject({ active: false, revision: 2 });
+    expect((await (await request(app, 'getTaxRateUsage', f)).json()).data).toEqual({ chargeTypes: [], plans: [], memberships: 0 });
+  });
   it('maps stale catalog and membership revisions to 409 and uses private responses', async () => {
     const f = await fixture(), app = server(f, staff(f, 'owner'));
     for (const operation of ['updatePlan', 'updateTaxRate', 'updateChargeType', 'updateMembership'] as const) {

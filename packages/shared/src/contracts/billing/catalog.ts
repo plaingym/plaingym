@@ -25,9 +25,15 @@ const taxRateFieldsSchema = z.strictObject({
   active: z.boolean(),
 });
 export const createTaxRateRequestSchema = taxRateFieldsSchema.extend({ active: z.boolean().default(true) });
+// Archiving (`active: false`) an active rate still attached to a charge type or plan is
+// refused (conflict) unless `detach: true` confirms removing it from every one
+// of them in the same step.
 export const updateTaxRateRequestSchema = taxRateFieldsSchema.partial().extend({
   revision: revisionSchema,
-}).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.');
+  detach: z.literal(true).optional(),
+}).refine((value) => Object.keys(value).some((key) => key !== 'revision' && key !== 'detach'), 'Supply a change.')
+  .refine((value) => value.detach === undefined || value.active === false,
+    { message: 'Detach only when archiving.', path: ['detach'] });
 export const taxRateSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,
@@ -39,6 +45,17 @@ export const taxRateSchema = z.strictObject({
 });
 export const taxRateResponseSchema = z.strictObject({ data: taxRateSchema });
 export const taxRateListResponseSchema = listResponseSchema(taxRateSchema);
+const countSchema = z.int32().nonnegative();
+const usageItemSchema = z.strictObject({ id: idSchema, name: nameSchema, active: z.boolean() });
+// Every charge type and plan the rate is attached to. A plan's memberships
+// count when they are not cancelled: their next cycle invoices apply the
+// plan's rates as they are then.
+export const taxRateUsageSchema = z.strictObject({
+  chargeTypes: z.array(usageItemSchema),
+  plans: z.array(usageItemSchema.extend({ memberships: countSchema })),
+  memberships: countSchema,
+});
+export const taxRateUsageResponseSchema = z.strictObject({ data: taxRateUsageSchema });
 
 const planFieldsSchema = z.strictObject({
   name: nameSchema,
@@ -113,6 +130,7 @@ export type BillingInterval = z.infer<typeof billingIntervalSchema>;
 export type TaxRate = z.infer<typeof taxRateSchema>;
 export type CreateTaxRateRequest = z.input<typeof createTaxRateRequestSchema>;
 export type UpdateTaxRateRequest = z.input<typeof updateTaxRateRequestSchema>;
+export type TaxRateUsage = z.infer<typeof taxRateUsageSchema>;
 export type Plan = z.infer<typeof planSchema>;
 export type CreatePlanRequest = z.input<typeof createPlanRequestSchema>;
 export type UpdatePlanRequest = z.input<typeof updatePlanRequestSchema>;

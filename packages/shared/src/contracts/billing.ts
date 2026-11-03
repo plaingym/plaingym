@@ -6,7 +6,7 @@ import {
   billingCatalogListQuerySchema, billingTaxRateListQuerySchema,
   chargeTypeListResponseSchema, chargeTypeResponseSchema,
   createChargeTypeRequestSchema, createPlanRequestSchema, createTaxRateRequestSchema,
-  planListResponseSchema, planResponseSchema, taxRateListResponseSchema, taxRateResponseSchema,
+  planListResponseSchema, planResponseSchema, taxRateListResponseSchema, taxRateResponseSchema, taxRateUsageResponseSchema,
   updateChargeTypeRequestSchema, updatePlanRequestSchema, updateTaxRateRequestSchema,
 } from './billing/catalog.js';
 import {
@@ -65,7 +65,14 @@ export const billingContracts = {
     params: billingTaxRateParamsSchema, response: taxRateResponseSchema, successStatus: 200 },
   createTaxRate: { method: 'post', path: '/api/billing/tax-rates', permission: taxes,
     body: createTaxRateRequestSchema, response: taxRateResponseSchema, successStatus: 201 },
+  getTaxRateUsage: { method: 'get', path: '/api/billing/tax-rates/{taxRateId}/usage', permission: read,
+    description: 'Lists the charge types and plans the tax rate is attached to, with the number of memberships '
+      + '(not cancelled) on each plan, so archiving it can say what changes.',
+    params: billingTaxRateParamsSchema, response: taxRateUsageResponseSchema, successStatus: 200 },
   updateTaxRate: { method: 'patch', path: '/api/billing/tax-rates/{taxRateId}', permission: taxes,
+    description: 'Updates a tax rate. Archiving an active rate (`active: false`) while charge types or plans carry it is a 409 '
+      + 'listing them (`details.chargeTypes`, `details.plans`, `details.memberships`), unless `detach: true` removes it '
+      + 'from every one of them and archives it in one audited step.',
     params: billingTaxRateParamsSchema, body: updateTaxRateRequestSchema, response: taxRateResponseSchema, successStatus: 200 },
   listPlans: { method: 'get', path: '/api/billing/plans', permission: read,
     query: billingCatalogListQuerySchema, response: planListResponseSchema, successStatus: 200 },
