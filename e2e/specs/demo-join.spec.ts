@@ -44,7 +44,14 @@ async function portalClass(page: Page, button: string) {
 async function showWeekOf(page: Page, timezone: string, instant: number) {
   const weekOf = page.getByLabel('Week of', { exact: true }), date = localDate(instant, timezone);
   await weekOf.fill(date);
-  await expect(weekOf).toHaveValue(date);
+  // The field moves to the Monday that starts the week, as the schedule's own week picker does.
+  await expect(weekOf).toHaveValue(mondayOf(date));
+}
+/** The Monday on or before a calendar date. */
+function mondayOf(date: string) {
+  const day = new Date(date + 'T00:00:00Z');
+  day.setUTCDate(day.getUTCDate() - (day.getUTCDay() + 6) % 7);
+  return day.toISOString().slice(0, 10);
 }
 function newVisitor(): Visitor {
   const lastName = 'Visitor' + randomBytes(3).toString('hex');
