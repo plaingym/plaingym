@@ -10,10 +10,6 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
   // The confirming page: ask for /join/return about every 2 s and reload once it no longer says it is confirming. The reload
   // (not the polled body) renders the result, so the page never trusts what the poll returns. It gives up after about 90 s.
   if (document.querySelector('[data-join-confirming]')) {
-    // The Refresh header would reload the page every five seconds and restart this bounded poll. Once the page has loaded,
-    // cancel that pending reload (best effort: a browser that keeps it just reloads, and the poll starts over).
-    const keep = () => window.stop();
-    if (document.readyState === 'complete') keep(); else window.addEventListener('load', keep);
     let polls = 0;
     const poll = async () => {
       polls += 1;

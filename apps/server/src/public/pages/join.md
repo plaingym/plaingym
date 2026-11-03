@@ -68,11 +68,10 @@ script) asks `/join/return` itself with the join cookie about every two seconds 
 reloads the page once the answer no longer says it is confirming, so no status route
 exists and nothing but the visitor's own cookie is read; after 45 polls (about 90
 seconds) it stops, hides the spinner and shows "taking longer than usual" beside the
-**Check again** link. Without JavaScript the `Refresh: 5` header reloads the page every
-five seconds, and the link works as before. With JavaScript the script calls
-`window.stop()` once the page has loaded, which cancels that pending reload (it would
-restart the bounded poll every five seconds); a browser that keeps the reload still
-reaches Welcome, as the poll starts over on each load. A cancelled or expired Checkout
+**Check again** link. Without JavaScript a `<noscript>` meta refresh in the page head reloads
+the page every five seconds, and the link works as before. With JavaScript nothing
+reloads the page but the poll, so it runs to its limit; if JavaScript is on but the script
+doesn't load, nothing reloads the page and only **Check again** moves it on. A cancelled or expired Checkout
 leaves the people prospects and the memberships pending; the daily runner neither charges
 nor activates them and holds the invoice for review after seven days. A browser without
 the cookie is told what happens next and can do nothing more.

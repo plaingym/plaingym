@@ -59,13 +59,11 @@ describe('join confirming poll', () => {
     await tick(3);
     expect(page.fetch).toHaveBeenCalledTimes(3); expect(page.reload).toHaveBeenCalledTimes(1);
   });
-  it('cancels the header\'s pending reload once the page has loaded, so its limit holds', () => {
-    const loaded = load(true, () => confirming);
-    expect(loaded.stop).toHaveBeenCalledTimes(1);
-    const loading = load(true, () => confirming, 'loading');
-    expect(loading.stop).not.toHaveBeenCalled();
-    loading.listeners.get('load')!();
-    expect(loading.stop).toHaveBeenCalledTimes(1);
+  it('never stops the page, so no poll is cut off and the limit message shows', async () => {
+    const page = load(true, () => confirming, 'loading');
+    await tick(joinPollLimit);
+    expect(page.stop).not.toHaveBeenCalled(); expect(page.listeners.has('load')).toBe(false);
+    expect(page.progress.hidden.has('hidden')).toBe(true); expect(page.stalled.hidden.has('hidden')).toBe(false);
   });
   it('does not treat a redirected answer as a settled join', async () => {
     const page = load(true, call => call === 0 ? 'redirected:<p>Sign in</p>' : welcome);

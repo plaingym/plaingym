@@ -19,8 +19,8 @@ const priceKeys = {
 } as const satisfies Record<PublicPlan['interval'], { plain: string; plusTax: string }>;
 const signupFeeKeys = { plain: 'signupFee', plusTax: 'signupFeePlusTax' } as const;
 export interface JoinPageInput { gym: PublicBranding; t: Translator; locale?: string }
-function layout(input: JoinPageInput, title: string, content: ReturnType<typeof h>, script = false) {
-  return publicLayout({ gym: input.gym, title, t: input.t, ...(input.locale ? { locale: input.locale } : {}),
+function layout(input: JoinPageInput, title: string, content: ReturnType<typeof h>, script = false, refresh = false) {
+  return publicLayout({ gym: input.gym, title, t: input.t, ...(input.locale ? { locale: input.locale } : {}), ...(refresh ? { noscriptRefreshSeconds: 5 } : {}),
     content: script ? h('div', { class: 'space-y-6' }, content, h('script', { src: '/join/client.js', defer: true })) : content });
 }
 function price(input: JoinPageInput, plan: PublicPlan) {
@@ -93,7 +93,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) 
   const text = joinText(input.t), state = input.state;
   const action = (path: string, label: string) => h('form', { method: 'post', action: path }, h('button', { type: 'submit', class: button }, text(label)));
   const start = h('a', { href: '/join', class: link }, text('startOver'));
-  // The script polls /join/return and replaces this page once it settles; without it the Refresh header and this link keep working.
+  // The script polls /join/return and replaces this page once it settles; without it the noscript refresh in the head and this link keep working.
   const progress = h('div', { class: 'flex items-center gap-3', 'data-join-progress': true },
     h('span', { 'aria-hidden': 'true', class: 'inline-block size-6 shrink-0 animate-spin rounded-full border-4 border-border border-t-foreground motion-reduce:animate-none' }),
     h('span', null, text('confirmingProgress')));
@@ -114,5 +114,5 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) 
   }[state] as [string, string, ...ReturnType<typeof h>[]];
   const waiting = state === 'confirming';
   return layout(input, text(title), h('section', { class: panel, role: 'status', ...(waiting ? { 'aria-live': 'polite', 'data-join-confirming': true } : {}) },
-    h('p', null, text(body)), ...next), waiting);
+    h('p', null, text(body)), ...next), waiting, waiting);
 }

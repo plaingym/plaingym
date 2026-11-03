@@ -9,12 +9,13 @@ const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-bac
 const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 export const pageText = (t: Translator) => (key: string, values?: Record<string, string | number>) => t('public/pages:' + key, values);
 /** Shared server-rendered shell for the gym's core public pages. */
-export function publicLayout(input: { gym: PublicBranding; title: string; t: Translator; content: ReturnType<typeof h>; locale?: string; script?: boolean }) {
+export function publicLayout(input: { gym: PublicBranding; title: string; t: Translator; content: ReturnType<typeof h>; locale?: string; script?: boolean; noscriptRefreshSeconds?: number }) {
   const text = pageText(input.t);
   return '<!doctype html>' + h('html', { lang: input.locale ?? 'en' },
     h('head', null, h('meta', { charset: 'utf-8' }), h('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' }),
       h('meta', { name: 'robots', content: 'noindex, nofollow' }), h('title', null, input.title + ' · ' + input.gym.name),
       h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }), h('link', { rel: 'stylesheet', href: '/public/pages/theme.css' }),
+      input.noscriptRefreshSeconds ? h('noscript', null, h('meta', { 'http-equiv': 'refresh', content: String(input.noscriptRefreshSeconds) })) : null,
       input.script ? h('script', { src: '/public/pages/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground' },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },

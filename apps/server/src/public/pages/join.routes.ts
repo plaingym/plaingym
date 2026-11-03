@@ -30,7 +30,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
   // Limits run before validation, so bots and repeats spend their budget before any household or Checkout session exists.
   const submissions = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
   const admissions = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
-  // Steps that reach the payment provider or send mail; the read-only pages, which refresh while confirming, have only the global limit.
+  // Steps that reach the payment provider or send mail; the read-only pages, which the confirming poll and the no-script refresh hit repeatedly, have only the global limit.
   const steps = rateLimit({ limit: 30, windowMs: 15 * 60_000 });
   // Room for several chosen PNG files. The install-wide limiter in front allows the native form more, so it gets its own page.
   const bounded = bodyLimit({ maxSize: joinBodyBytes, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
@@ -149,7 +149,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       const linkId = pending(ctx), service = options().service;
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
       if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
-      if (state.status === 'pending') { ctx.header('Refresh', '5'); return page(ctx, 'confirming'); }
+      if (state.status === 'pending') return page(ctx, 'confirming');
       return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail');
     }),
     route({ method: 'get', path: '/join/cancelled', permission: { kind: 'public' }, responses: html }, async ctx => {

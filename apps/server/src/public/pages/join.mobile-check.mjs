@@ -92,7 +92,7 @@ try {
     await check(page, width + '-confirming');
     await expect(page.locator('[data-join-progress]')).toBeVisible(); await expect(page.locator('main')).toContainText('This page updates automatically');
     expect(await page.locator('[data-join-progress] span[aria-hidden]').evaluate(e => getComputedStyle(e).animationName)).toBe('spin');
-    // The page keeps its Refresh header, but the script cancels the pending reload once loaded, so only polling moves it to Welcome once the join settles.
+    // The page has no Refresh header (only a noscript meta), so only polling moves it to Welcome once the join settles.
     const loads = []; page.on('request', request => { if (request.isNavigationRequest() && new URL(request.url()).pathname === '/join/return') loads.push(request.url()); });
     await page.goto(base + '/join/return'); await expect(page.locator('[data-join-confirming]')).toBeVisible(); await page.waitForTimeout(6500); expect(loads).toHaveLength(1);
     state = 'active'; await expect(page.locator('main')).toContainText('We sent a sign-in link', { timeout: 6000 });
@@ -133,5 +133,5 @@ try {
   expect(joins.every(c => c.body.members.length === 2 && c.body.members[1].waivers.every(w => w.signer.kind === 'guardian' && w.signer.relationship === 'Parent'))).toBe(true);
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members.every(m => m.signatures.every(s => s.pngBase64.startsWith('iVBOR'))))).toBe(true);
   expect(calls.filter(c => c.kind === 'checkout')).toHaveLength(3);
-  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming (spinner, the script cancelling the Refresh reload and polling on to Welcome, stalled after its limit), cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
+  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming (spinner, polling on to Welcome, stalled after its limit), cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
 } finally { await browser.close(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
