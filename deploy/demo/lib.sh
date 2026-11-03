@@ -3,11 +3,12 @@
 # Host-side only. No Docker socket is mounted into the app.
 # shellcheck source=deploy/lib.sh
 # Before the first install there is no base-lib.sh beside this file; install.sh has sourced the shared
-# helpers itself and says so with DEMO_FIRST_INSTALL=true (it also repairs a lost copy). Every other
-# caller needs the copy beside this file, and a missing one is named.
+# helpers itself (it also repairs a lost copy), which is how this file knows: `read_env` is already
+# defined. Every other caller needs the copy beside this file, and a missing one is named. This checks
+# the shell's own functions, not an environment variable, so nothing an operator exports can skip it.
 if [ -f "$ROOT/base-lib.sh" ]; then
   . "$ROOT/base-lib.sh"
-elif [ "${DEMO_FIRST_INSTALL:-}" != true ]; then
+elif ! command -v read_env >/dev/null 2>&1; then
   printf '%s\n' "$ROOT/base-lib.sh is missing, so the demo cannot run. Run install.sh again from the demo bundle, which restores it." >&2
   exit 1
 fi
@@ -41,6 +42,27 @@ compose() {
   CADDY_IMAGE="${DEMO_TARGET_CADDY_IMAGE:-$(read_env CADDY_IMAGE)}" \
   docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" \
     -f "$ROOT/compose.yaml" -f "$ROOT/demo.compose.yaml" "$@"
+}
+# Saved .env changes are written to .env.next and then moved over .env, always the same way: the file is
+# created private (umask) and committed as 0600. env_next reads the new contents on stdin.
+env_next() { ( umask 077; cat > "$ROOT/.env.next" ); }
+commit_env_next() { chmod 0600 "$ROOT/.env.next" && mv "$ROOT/.env.next" "$ROOT/.env"; }
+# A re-run never replaces the saved .env, so demo billing values given now (the installer's inputs file is $1)
+# are added to it: each of the key and the secret that is empty or missing there, taken from $1 when it has
+# one. A value already saved is left alone, and every other line is kept. Prints nothing.
+merge_demo_billing() {
+  merge_add=
+  for merge_name in DEMO_STRIPE_TEST_KEY DEMO_STRIPE_WEBHOOK_SECRET; do
+    if [ -z "$(read_env "$merge_name")" ]; then
+      merge_value=$(awk -F= -v key="$merge_name" '$1 == key && $2 != "" { print; exit }' "$1")
+      [ -z "$merge_value" ] || merge_add="$merge_add$merge_name "
+    fi
+  done
+  [ -n "$merge_add" ] || return 0
+  merge_kept=$(awk -F= -v names="$merge_add" 'BEGIN { split(names, list, " "); for (i in list) drop[list[i]] = 1 } !($1 in drop)' "$ROOT/.env")
+  merge_new=$(awk -F= -v names="$merge_add" 'BEGIN { split(names, list, " "); for (i in list) take[list[i]] = 1 } ($1 in take) && $2 != ""' "$1")
+  printf '%s\n%s\n' "$merge_kept" "$merge_new" | env_next
+  commit_env_next
 }
 demo_health() {
   compose exec -T app node /app/deploy/healthcheck.mjs

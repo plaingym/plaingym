@@ -195,22 +195,27 @@ class ComposeVersionTests(unittest.TestCase):
     def test_a_missing_base_lib_is_named_unless_the_installer_is_running(self):
         self.docker("2.30.0")
         # The installer copies base-lib.sh itself, so it runs again to restore a lost copy.
-        self.run_install("--check-only", existing=True)
+        self.assertEqual(self.run_install("--check-only", existing=True).returncode, 0)
         (self.install_root / "base-lib.sh").unlink()
         self.assertEqual(self.run_install("--check-only").returncode, 0)
-        # Anything else that loads the installed lib.sh needs the copy beside it.
+        # Anything else that loads the installed lib.sh needs the copy beside it, even when the caller's
+        # environment says DEMO_FIRST_INSTALL (the installer no longer sets it; nothing may skip the check).
         self.run_update()
         (self.install_root / "base-lib.sh").unlink()
-        update = subprocess.run(["bash", str(self.install_root / "update.sh")], capture_output=True, text=True, env=self.env())
-        self.assertNotEqual(update.returncode, 0)
-        self.assertIn(f"{self.install_root}/base-lib.sh is missing", update.stderr)
-        self.assertNotIn("not found", update.stderr)
+        for extra in ({}, {"DEMO_FIRST_INSTALL": "true"}):
+            with self.subTest(extra=extra):
+                update = subprocess.run(["bash", str(self.install_root / "update.sh")], capture_output=True, text=True,
+                                        env={**self.env(), **extra})
+                self.assertNotEqual(update.returncode, 0)
+                self.assertIn(f"{self.install_root}/base-lib.sh is missing", update.stderr)
+                self.assertNotIn("not found", update.stderr)
         # A caller that does not say it is the installer gets the same message for a directory with no .env.
         shutil.rmtree(self.install_root)
         self.install_root.mkdir()
         shutil.copy(HERE / "update.sh", self.install_root / "update.sh")
         shutil.copy(HERE / "lib.sh", self.install_root / "lib.sh")
         bare = subprocess.run(["bash", str(self.install_root / "update.sh")], capture_output=True, text=True, env=self.env())
+        self.assertNotEqual(bare.returncode, 0)
         self.assertIn("base-lib.sh is missing", bare.stderr)
 
     def bundle(self, after_host_setup):
@@ -266,25 +271,155 @@ class ComposeVersionTests(unittest.TestCase):
         self.assertFalse(self.install_root.exists())
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX shell test")
+class ReinstallRestoreTests(unittest.TestCase):
+    """A re-install of an install whose base-lib.sh was lost: the copy comes back on success and goes away
+    again on a failed refresh, along with the rest of the rollback. Docker and the host tools are fakes."""
+
+    OLD_COMPOSE = "# previous compose file\n"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        base = Path(self.directory.name)
+        self.bin, self.root, self.flag, self.calls = base / "bin", base / "install", base / "fail-up", base / "calls"
+        self.bin.mkdir()
+        self.root.mkdir()
+        stub(self.bin / "python3", "exit 0")
+        stub(self.bin / "flock", "exit 0")
+        stub(self.bin / "id", "echo 0")
+        stub(self.bin / "docker",
+             f'printf \'%s\\n\' "$*" >> \'{self.calls}\'\n'
+             'case "$*" in "compose version") exit 0 ;; "compose version --short") echo 2.30.0 ;; "image inspect"*) exit 0 ;;\n'
+             f'  "run "*) echo dns.providers.cloudflare ;; *" up "*) [ ! -f \'{self.flag}\' ] ;; esac')
+        (self.root / ".env").write_text("DEMO_INSTALL=1\nDEMO_LOCAL_TEST=true\nAPP_IMAGE=plaingym:v0.0.0-test\n"
+                                        "CADDY_IMAGE=plaingym-caddy:v0.0.0-test\n")
+        (self.root / "compose.yaml").write_text(self.OLD_COMPOSE)
+        shutil.copy(HERE / "lib.sh", self.root / "lib.sh")
+
+    def reinstall(self):
+        return subprocess.run(["sh", str(HERE / "install.sh"), "--directory", str(self.root), "--local-test"],
+                              capture_output=True, text=True,
+                              env={**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}"})
+
+    def test_a_successful_reinstall_restores_the_lost_copy(self):
+        result = self.reinstall()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "base-lib.sh").read_text(), (DEPLOY / "lib.sh").read_text())
+        self.assertNotEqual((self.root / "compose.yaml").read_text(), self.OLD_COMPOSE)
+
+    def test_a_failed_reinstall_puts_back_what_was_there_including_the_missing_copy(self):
+        self.flag.write_text("")
+        result = self.reinstall()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restoring the previous files", result.stderr)
+        self.assertFalse((self.root / "base-lib.sh").exists())
+        self.assertEqual((self.root / "compose.yaml").read_text(), self.OLD_COMPOSE)
+        self.assertFalse((self.root / "demo.compose.yaml").exists())
+        self.assertIn("APP_IMAGE=plaingym:v0.0.0-test", (self.root / ".env").read_text())
+
+    def test_a_failed_refresh_of_an_older_install_still_brings_the_stack_back(self):
+        # An install made before the helper check has a lib.sh that looks for DEMO_FIRST_INSTALL instead. The
+        # rollback restores that copy, removes the restored base-lib.sh and loads it, then starts the stack again.
+        current = (HERE / "lib.sh").read_text()
+        older = current.replace("elif ! command -v read_env >/dev/null 2>&1; then", 'elif [ "${DEMO_FIRST_INSTALL:-}" != true ]; then')
+        self.assertNotEqual(older, current)
+        (self.root / "lib.sh").write_text(older)
+        self.flag.write_text("")
+        result = self.reinstall()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("is missing", result.stderr)
+        self.assertEqual((self.root / "lib.sh").read_text(), older)
+        self.assertFalse((self.root / "base-lib.sh").exists())
+        starts = [call for call in self.calls.read_text().splitlines() if " up -d --pull never --wait " in call]
+        self.assertEqual(len(starts), 2, starts)
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX shell test")
+class MergeDemoBillingTests(unittest.TestCase):
+    """The installer adds demo billing values to a saved .env on a re-run."""
+
+    KEY, SECRET = "sk_test_FAKEKEY123", "whsec_FAKESECRET456"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        shutil.copy(DEPLOY / "lib.sh", self.root / "base-lib.sh")
+        self.inputs = self.root / "inputs"
+
+    def merge(self, saved, given):
+        (self.root / ".env").write_text(saved)
+        (self.root / ".env").chmod(0o644)
+        self.inputs.write_text(given)
+        result = subprocess.run(["sh", "-c", f'umask 022; ROOT="{self.root}"; . "{HERE / "lib.sh"}"; merge_demo_billing "{self.inputs}"'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse((self.root / ".env.next").exists())
+        return (self.root / ".env").read_text()
+
+    def test_a_rerun_adds_both_values_keeps_every_other_line_and_leaves_0600(self):
+        saved = "# comment\nAPP_IMAGE=plaingym:v0.0.0-test\nDEMO_STRIPE_TEST_KEY=\n\nCADDY_IMAGE=c:v1.0.0\n"
+        result = self.merge(saved, f"GYM_HOSTNAME=x\nDEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n")
+        lines = result.splitlines()
+        self.assertEqual([line for line in lines if not line.startswith("DEMO_STRIPE") and line != ""],
+                         ["# comment", "APP_IMAGE=plaingym:v0.0.0-test", "CADDY_IMAGE=c:v1.0.0"])
+        self.assertEqual(sorted(line for line in lines if line.startswith("DEMO_STRIPE")),
+                         [f"DEMO_STRIPE_TEST_KEY={self.KEY}", f"DEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}"])
+        self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
+
+    def test_a_saved_value_is_left_alone_and_only_the_missing_one_is_added(self):
+        saved = f"APP_IMAGE=a:v1.0.0\nDEMO_STRIPE_TEST_KEY={self.KEY}\n"
+        result = self.merge(saved, "DEMO_STRIPE_TEST_KEY=sk_test_OTHER\nDEMO_STRIPE_WEBHOOK_SECRET=whsec_NEW\n")
+        self.assertIn(f"DEMO_STRIPE_TEST_KEY={self.KEY}\n", result)
+        self.assertNotIn("sk_test_OTHER", result)
+        self.assertEqual(result.count("DEMO_STRIPE_TEST_KEY"), 1)
+        self.assertIn("DEMO_STRIPE_WEBHOOK_SECRET=whsec_NEW\n", result)
+        self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
+
+    def test_nothing_changes_when_both_are_saved_or_none_is_given(self):
+        both = f"A=1\nDEMO_STRIPE_TEST_KEY={self.KEY}\nDEMO_STRIPE_WEBHOOK_SECRET={self.SECRET}\n"
+        self.assertEqual(self.merge(both, "DEMO_STRIPE_TEST_KEY=sk_test_X\nDEMO_STRIPE_WEBHOOK_SECRET=whsec_X\n"), both)
+        self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o644)
+        plain = "A=1\nDEMO_STRIPE_TEST_KEY=\n"
+        self.assertEqual(self.merge(plain, "GYM_HOSTNAME=x\n"), plain)
+
+    def test_the_caddy_pin_update_writes_the_same_way(self):
+        (self.root / ".env").write_text("CADDY_IMAGE=old:v1.0.0\nA=1\n")
+        (self.root / ".env").chmod(0o644)
+        script = (f'umask 022; ROOT="{self.root}"; . "{HERE / "lib.sh"}"; '
+                  f'printf "CADDY_IMAGE=new:v2.0.0\\nA=1\\n" | env_next; commit_env_next')
+        self.assertEqual(subprocess.run(["sh", "-c", script], capture_output=True, text=True).returncode, 0)
+        self.assertEqual((self.root / ".env").read_text(), "CADDY_IMAGE=new:v2.0.0\nA=1\n")
+        self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
+
+
 def interpolated_names(text):
     """Names a Compose file interpolates, as `${NAME}`, `${NAME:-default}` or a bare `$NAME` (`$$` is a literal)."""
-    return set(re.findall(r"(?<!\$)\$\{?(\w+)", text))
+    # `$$` is consumed first, so a variable right after it (`$$$NAME`) is still found.
+    return {name for name in re.findall(r"\$\$|\$\{?(\w+)", text) if name}
 
 
 def clean_environment():
     """The caller's environment without the variables the Compose files interpolate (braced or bare) or
     that Compose and the Docker CLI read themselves (COMPOSE_*, DOCKER_*), so an exported
-    APP_MEMORY_LIMIT, E2E_IMAGE or COMPOSE_FILE cannot change the render; the tests pass what it needs."""
+    APP_MEMORY_LIMIT, E2E_IMAGE or COMPOSE_FILE cannot change the render; the tests pass what it needs.
+    DOCKER_CONFIG stays: it is where a host keeps its Compose plugin, and it changes no render."""
     names = set().union(*(interpolated_names(file.read_text()) for file in COMPOSE_FILES))
     return {key: value for key, value in os.environ.items()
-            if key not in names and not key.startswith(("COMPOSE_", "DOCKER_"))}
+            if key not in names and (key == "DOCKER_CONFIG" or not key.startswith(("COMPOSE_", "DOCKER_")))}
 
 
 def compose_available():
-    """Whether Compose works in the environment the renders use, so a setup that needs DOCKER_* skips the tests."""
+    """Whether Compose works in the environment the renders use."""
     if not shutil.which("docker"):
         return False
     return subprocess.run(["docker", "compose", "version"], capture_output=True, env=clean_environment()).returncode == 0
+
+
+# In CI a missing Compose is a failure, not a skip: the hardening tests must run there.
+IN_CI = bool(os.environ.get("CI"))
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX shell test")
@@ -298,8 +433,18 @@ class ComposeAvailabilityTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PATH": directory}):
                 self.assertTrue(compose_available())
 
+    def test_the_probe_keeps_docker_config_where_the_plugin_lives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stub(Path(directory) / "docker", '[ -n "$DOCKER_CONFIG" ] && [ -z "$DOCKER_HOST" ]')
+            with mock.patch.dict(os.environ, {"PATH": directory, "DOCKER_CONFIG": "/plugins", "DOCKER_HOST": "tcp://x"}):
+                self.assertTrue(compose_available())
 
-@unittest.skipUnless(compose_available(), "needs the docker compose plugin")
+    @unittest.skipUnless(IN_CI, "CI only")
+    def test_ci_has_compose(self):
+        self.assertTrue(compose_available(), "the hardening tests need the docker compose plugin in CI")
+
+
+@unittest.skipUnless(compose_available() or IN_CI, "needs the docker compose plugin")
 class HardeningTests(unittest.TestCase):
     interpolated_names = staticmethod(interpolated_names)
     clean_environment = staticmethod(clean_environment)
@@ -372,6 +517,8 @@ class HardeningTests(unittest.TestCase):
 
     def test_the_clean_environment_drops_bare_variables_and_compose_and_docker_settings(self):
         self.assertEqual(self.interpolated_names("a: ${BRACED:-x} $BARE $$ESCAPED ${OTHER}"), {"BRACED", "BARE", "OTHER"})
+        # A variable right after an escaped dollar is still a variable.
+        self.assertEqual(self.interpolated_names("$$$AFTER $$${BRACED} $$$$LITERAL x$"), {"AFTER", "BRACED"})
         with mock.patch.dict(os.environ, {"COMPOSE_FILE": "x", "COMPOSE_PROFILES": "y", "DOCKER_HOST": "z",
                                           "DOCKER_CONTEXT": "c", "KEPT_BY_THE_TESTS": "1"}):
             environment = self.clean_environment()

@@ -191,8 +191,18 @@ install's `.env`, so it checks as a first install would.
 
 `lib.sh` loads the shared helpers from `base-lib.sh` beside it. Only `install.sh`
 may run without that copy (it carries the helpers itself and copies the file in,
-so running it again restores a lost one); `update.sh` and anything else that loads
-the installed `lib.sh` stops with a message naming the missing file.
+so running it again restores a lost one; if that re-install fails, the rollback
+removes the copy again with the rest of its changes); `update.sh` and anything
+else that loads the installed `lib.sh` stops with a message naming the missing
+file, whatever the caller's environment says.
+
+The installer validates and checks the required inputs (domain, images, DNS,
+Cloudflare, S3) before it asks about demo billing, so a mistake there is reported
+before a key is typed. A saved key with no saved secret is completed from
+`DEMO_STRIPE_WEBHOOK_SECRET` or a hidden prompt on the next run, and the
+missing value is added to the saved `.env` (a value already saved is never
+replaced). Ctrl+C at any prompt ends with the same one-line failure message as any
+other preflight failure.
 
 ## Local validation
 

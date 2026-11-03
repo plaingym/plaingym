@@ -9,8 +9,8 @@ DEPLOY=$(CDPATH='' cd -- "$SOURCE/.." && pwd)
 ROOT=/opt/plaingym-demo
 # The installer has sourced the shared helpers itself and copies base-lib.sh into $ROOT, so it never needs
 # the installed copy: a first install that failed after writing .env, or a re-install whose copy was lost,
-# can run again and repair it. Any other caller of the installed lib.sh needs the file.
-export DEMO_FIRST_INSTALL=true
+# can run again and repair it. The installed lib.sh sees the helpers already loaded and skips the copy;
+# any other caller of it needs the file.
 export DEMO_LOCAL_TEST=false
 check_only=false
 while [ "$#" -gt 0 ]; do
@@ -75,10 +75,13 @@ cleanup() {
   if [ "$result" -ne 0 ] && [ "$refreshing" = true ]; then
     printf 'Deploy refresh failed; restoring the previous files and proxy.\n' >&2
     for file in $deploy_paths .env; do
-      if [ -f "$backup/$file" ]; then cp -p "$backup/$file" "$ROOT/$file"; fi
+      # A file the earlier install lacked (a lost base-lib.sh this run restored) goes back to missing.
+      if [ -f "$backup/$file" ]; then cp -p "$backup/$file" "$ROOT/$file"; else rm -f -- "$ROOT/$file"; fi
     done
+    # The restored lib.sh may predate the helper check and look for DEMO_FIRST_INSTALL instead; without it, a
+    # rollback that removed a restored base-lib.sh would stop here before bringing the stack back up.
     # shellcheck source=/dev/null
-    . "$ROOT/lib.sh"
+    DEMO_FIRST_INSTALL=true . "$ROOT/lib.sh"
     APP_IMAGE=$(read_env APP_IMAGE)
     CADDY_IMAGE=$(read_env CADDY_IMAGE)
     export APP_IMAGE CADDY_IMAGE
@@ -136,16 +139,7 @@ copy_deploy "$SOURCE/$caddyfile" Caddyfile 0644
 # shellcheck source=/dev/null
 . "$ROOT/lib.sh"
 # A re-run never replaces the saved .env, so demo billing values given now are added to it here.
-if [ "$refreshing" = true ] && [ -z "$(read_env DEMO_STRIPE_TEST_KEY)" ]; then
-  billing=$(awk -F= '($1 == "DEMO_STRIPE_TEST_KEY" || $1 == "DEMO_STRIPE_WEBHOOK_SECRET") && $2 != ""' "$inputs")
-  if [ -n "$billing" ]; then
-    ( umask 077
-      awk -F= '$1 != "DEMO_STRIPE_TEST_KEY" && $1 != "DEMO_STRIPE_WEBHOOK_SECRET"' "$ROOT/.env" > "$ROOT/.env.next"
-      printf '%s\n' "$billing" >> "$ROOT/.env.next" )
-    mv "$ROOT/.env.next" "$ROOT/.env"
-  fi
-  billing=
-fi
+if [ "$refreshing" = true ]; then merge_demo_billing "$inputs"; fi
 compose pull --policy missing postgres
 DEMO_TARGET_CADDY_IMAGE="$desired_caddy" compose run --rm --no-deps -T caddy \
   caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
@@ -157,9 +151,10 @@ if [ "$refreshing" = true ] && [ "$desired_caddy" = "$(read_env CADDY_IMAGE)" ] 
 fi
 demo_health
 if [ "$desired_caddy" != "$(read_env CADDY_IMAGE)" ]; then
-  awk -v image="$desired_caddy" '/^CADDY_IMAGE=/ { print "CADDY_IMAGE=" image; next } { print }' "$ROOT/.env" > "$ROOT/.env.next"
-  chmod 0600 "$ROOT/.env.next"
-  mv "$ROOT/.env.next" "$ROOT/.env"
+  # Assigned first, so a failing awk stops the script (set -e) before .env is touched.
+  pinned=$(awk -v image="$desired_caddy" '/^CADDY_IMAGE=/ { print "CADDY_IMAGE=" image; next } { print }' "$ROOT/.env")
+  printf '%s\n' "$pinned" | env_next
+  commit_env_next
 fi
 refreshing=false
 demo_link

@@ -69,6 +69,8 @@ expect_refusal --hostname elsewhere.localhost --email owner@example.org
 install_gym --hostname gym.localhost --email owner@example.org
 [ "$(stat -c %a "$root/.env")" = 600 ]
 grep -qx GYM_HOSTNAME=gym.localhost "$root/.env"
+# Backups use the setup wizard's key pair; nothing reads a BACKUP_RECIPIENT line.
+if grep -q BACKUP_RECIPIENT "$root/.env"; then echo 'A fresh .env names BACKUP_RECIPIENT.' >&2; exit 1; fi
 grep -q '^apt-get install' "$CALLS"
 grep -q '^docker load -i' "$CALLS"
 grep -q 'setup#token=fixture' "$temporary/output"

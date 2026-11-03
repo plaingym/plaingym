@@ -73,7 +73,6 @@ if [ "$existing" = false ]; then
     printf 'APP_ENCRYPTION_KEY=%s\n' "$(openssl rand -hex 32)"
     printf 'AUTH_SECRET=%s\n' "$(openssl rand -hex 32)"
     printf 'SETUP_TOKEN=%s\n' "$(openssl rand -hex 32)"
-    printf 'BACKUP_RECIPIENT=\n'
   } > "$ROOT/.env"
   chmod 0600 "$ROOT/.env"
   # Caddy/Postgres still pull normally. --local-image is for a maintainer-loaded build.

@@ -70,7 +70,6 @@ def validate(config):
         raise ValueError("ACME_CA must be an HTTPS directory URL.")
     if not re.fullmatch(r"[1-9][0-9]*", config.get("DEMO_SNAPSHOT_RETENTION", "3")):
         raise ValueError("Snapshot retention must be a positive integer.")
-    validate_billing(config)
 
 
 def validate_billing(config):
@@ -112,6 +111,12 @@ def billing_inputs(config, ask):
     (an SSH session, test-local.sh) never stops at it: set both values, or DEMO_STRIPE_TEST_KEY= to skip billing.
     """
     if config.get(BILLING_KEY):
+        if not config.get(BILLING_SECRET):
+            # A key saved by hand without its secret: complete it from the environment or a hidden prompt.
+            secret = os.environ.get(BILLING_SECRET, "").strip()
+            if not secret and ask and has_terminal():
+                secret = prompt("Stripe webhook signing secret (whsec_)", True).strip()
+            config[BILLING_SECRET] = secret
         return
     values = {name: os.environ.get(name, "") for name in (BILLING_KEY, BILLING_SECRET)}
     if not any(values.values()):
@@ -232,22 +237,25 @@ def main():
                 raise ValueError(f"Missing {key}; use an interactive terminal or set it in the environment.")
             value = prompt(label, key in SECRET_INPUTS)
         config[key] = value
-    billing_inputs(config, ask=not args.check_only)
     config.setdefault("UPLOADS_S3_REGION", os.environ.get("UPLOADS_S3_REGION", "auto"))
     config.setdefault("ACME_CA", os.environ.get("ACME_CA", "https://acme-v02.api.letsencrypt.org/directory"))
     config.setdefault("DEMO_SNAPSHOT_RETENTION", os.environ.get("DEMO_SNAPSHOT_RETENTION", "3"))
+    # The required inputs are validated and checked before the optional billing question, so a mistake in
+    # them is reported before the operator types a key.
     validate(config)
     if config["DEMO_LOCAL_TEST"] != "true":
         dns_check(config)
         cloudflare_check(config)
     s3_check(config)
+    billing_inputs(config, ask=not args.check_only)
+    validate_billing(config)
     print("Preflight passed: inputs and S3 write/read/delete" + ("; local DNS/TLS stand-in." if config["DEMO_LOCAL_TEST"] == "true" else ", base/wildcard DNS and Cloudflare DNS edit."))
     if args.check_only:
         return
     if not args.output:
         raise ValueError("Missing output file.")
     if not existing:
-        config.update(DEMO_INSTALL="1", COMPOSE_PROJECT_NAME="plaingym-demo", POSTGRES_DB="plaingym", BACKUP_RECIPIENT="")
+        config.update(DEMO_INSTALL="1", COMPOSE_PROJECT_NAME="plaingym-demo", POSTGRES_DB="plaingym")
         for key in ("POSTGRES_PASSWORD", "APP_PASSWORD", "MAINTENANCE_PASSWORD", "APP_ENCRYPTION_KEY", "AUTH_SECRET", "SETUP_TOKEN"):
             config[key] = secrets.token_hex(32)
     # The shell helper deliberately reads literal single-line values without eval/source.
@@ -258,10 +266,10 @@ def main():
 def cli():
     try:
         main()
-    except (ValueError, OSError, KeyError, EOFError) as error:
+    except (ValueError, OSError, KeyError, EOFError, KeyboardInterrupt) as error:
         # API responses and request headers can contain credentials. Never echo them.
         print("Demo preflight failed: " + (str(error) if isinstance(error, ValueError) else type(error).__name__) + ". Check DNS, token scope and bucket credentials; no host configuration was changed.", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(130 if isinstance(error, KeyboardInterrupt) else 1)
 
 
 if __name__ == "__main__":

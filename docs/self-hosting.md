@@ -180,8 +180,9 @@ the test data. Members enter cards only on Stripe's hosted pages.
   and members sign in with a link emailed to them.
 * **Without email**, staff sign in with a password. Once the gym has email,
   passwords stop working and everyone signs in with emailed links
-  (`AUTH_PASSWORD_LOGIN=auto`; the shipped Compose file doesn't pass a different
-  value from `.env`, see [configuration.md](configuration.md)).
+  (`AUTH_PASSWORD_LOGIN=auto`). To keep passwords after email is set up, put
+  `AUTH_PASSWORD_LOGIN=on` in `.env` and run `sudo docker compose up -d`; `off`
+  turns passwords off even without email (see [configuration.md](configuration.md)).
 * **Locked out?** Reset the owner's password on the server:
 
   ```sh

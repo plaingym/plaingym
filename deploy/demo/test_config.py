@@ -245,10 +245,82 @@ class BillingInputTests(unittest.TestCase):
                 except StopIteration:
                     raise EOFError from None
             with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "prompt", prompt), \
+                    patch.object(config, "dns_check"), patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
                     patch.object(config, "has_terminal", return_value=True), patch.object(config.sys, "argv", args), \
                     contextlib.redirect_stderr(error), self.assertRaises(SystemExit):
                 config.cli()
             self.assertIn("Demo preflight failed: EOFError", error.getvalue())
+            self.assertFalse((Path(directory) / "next").exists())
+
+    def test_ctrl_c_at_any_prompt_prints_the_sanitized_line_not_a_traceback(self):
+        # At a required input's prompt (nothing in the environment) and at the billing prompts.
+        for env, answers in (({k: v for k, v in inputs().items() if k != "UPLOADS_S3_BUCKET"}, []), (inputs(), ["y"])):
+            with self.subTest(env=len(env)), tempfile.TemporaryDirectory() as directory:
+                error = io.StringIO()
+                args = ["config.py", "--existing", str(Path(directory) / "none"), "--output", str(Path(directory) / "next")]
+                replies = iter(answers)
+
+                def prompt(label, secret=False):
+                    try:
+                        return next(replies)
+                    except StopIteration:
+                        raise KeyboardInterrupt from None
+                with patch.dict(os.environ, env, clear=True), patch.object(config, "prompt", prompt), \
+                        patch.object(config, "dns_check"), patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                        patch.object(config, "has_terminal", return_value=True), patch.object(config.sys, "argv", args), \
+                        contextlib.redirect_stderr(error), self.assertRaises(SystemExit) as caught:
+                    config.cli()
+                self.assertEqual(caught.exception.code, 130)
+                self.assertIn("Demo preflight failed: KeyboardInterrupt", error.getvalue())
+                self.assertNotIn("Traceback", error.getvalue())
+                self.assertFalse((Path(directory) / "next").exists())
+
+    def test_required_inputs_are_validated_and_checked_before_the_billing_question(self):
+        for env, checks in (({"GYM_HOSTNAME": "https://demo.example.com"}, {}),
+                            ({}, {"dns_check": ValueError("DNS failed")}),
+                            ({}, {"s3_check": ValueError("S3 failed")})):
+            with self.subTest(env=env, checks=list(checks)), tempfile.TemporaryDirectory() as directory:
+                asked = []
+                args = ["config.py", "--existing", str(Path(directory) / "none"), "--output", str(Path(directory) / "next")]
+                patches = {name: patch.object(config, name, side_effect=checks.get(name)) for name in ("dns_check", "cloudflare_check", "s3_check")}
+                with patch.dict(os.environ, {**inputs(), **env}, clear=True), \
+                        patch.object(config, "prompt", lambda label, secret=False: asked.append(label) or "y"), \
+                        patch.object(config, "has_terminal", return_value=True), patch.object(config.sys, "argv", args), \
+                        patches["dns_check"], patches["cloudflare_check"], patches["s3_check"], self.assertRaises(ValueError):
+                    config.main()
+                self.assertEqual(asked, [])
+
+    def test_a_saved_key_without_its_secret_is_completed_from_the_environment_or_the_prompt(self):
+        for env, answers, terminal in (({"DEMO_STRIPE_WEBHOOK_SECRET": SECRET}, [], False), ({}, [SECRET], True)):
+            with self.subTest(env=bool(env)), tempfile.TemporaryDirectory() as directory:
+                saved = Path(directory) / ".env"
+                saved.write_text(f"DEMO_INSTALL=1\nDEMO_LOCAL_TEST=false\nDEMO_STRIPE_TEST_KEY={KEY}\n"
+                                 + "".join(f"{k}={v}\n" for k, v in inputs().items() if k != "DEMO_LOCAL_TEST"))
+                output = Path(directory) / "next"
+                asked = []
+                replies = list(answers)
+                args = ["config.py", "--existing", str(saved), "--output", str(output)]
+                with patch.dict(os.environ, {**inputs(), **env}, clear=True), patch.object(config, "dns_check"), \
+                        patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                        patch.object(config, "prompt", lambda label, secret=False: asked.append((label, secret)) or replies.pop(0)), \
+                        patch.object(config, "has_terminal", return_value=terminal), patch.object(config.sys, "argv", args), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    config.main()
+                written = config.read_env(output)
+                self.assertEqual((written["DEMO_STRIPE_TEST_KEY"], written["DEMO_STRIPE_WEBHOOK_SECRET"]), (KEY, SECRET))
+                self.assertEqual([secret for _, secret in asked], [True] * len(answers))
+
+    def test_a_saved_key_with_no_secret_anywhere_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            saved = Path(directory) / ".env"
+            saved.write_text(f"DEMO_INSTALL=1\nDEMO_LOCAL_TEST=false\nDEMO_STRIPE_TEST_KEY={KEY}\n"
+                             + "".join(f"{k}={v}\n" for k, v in inputs().items() if k != "DEMO_LOCAL_TEST"))
+            args = ["config.py", "--existing", str(saved), "--output", str(Path(directory) / "next")]
+            with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "dns_check"), \
+                    patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                    patch.object(config, "has_terminal", return_value=False), patch.object(config.sys, "argv", args), \
+                    self.assertRaises(ValueError):
+                config.main()
             self.assertFalse((Path(directory) / "next").exists())
 
     def test_check_only_never_prompts(self):

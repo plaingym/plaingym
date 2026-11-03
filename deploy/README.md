@@ -14,7 +14,12 @@ The default limits are 512 MiB for the app, 384 MiB for PostgreSQL, and 128 MiB
 for Caddy. Node has a 256 MiB old-space limit. The installer adds 1 GiB of swap
 when no swap is active. Use 2 GiB RAM for testing; whole-stack operation on a
 1 GiB host has not been established. Override `APP_MEMORY_LIMIT`,
-`POSTGRES_MEMORY_LIMIT`, `CADDY_MEMORY_LIMIT`, or `NODE_OPTIONS` in `.env`.
+`POSTGRES_MEMORY_LIMIT`, `CADDY_MEMORY_LIMIT`, or `NODE_OPTIONS` in `.env`. The
+same file sets `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE` and
+`DATABASE_POOL_MAX` (each uses the app's default when unset or empty; see
+`docs/configuration.md` for what the shipped Compose file passes and what it does
+not). `sh deploy/test/compose-env.sh` renders the Compose file with and without
+each to check this.
 
 ## Build and check
 
@@ -282,8 +287,8 @@ pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
 with `gym-app restore`.
 
 Automatic patch selection and timers are not installed; `--patch` returns an
-explicit error. `BACKUP_RECIPIENT`, which the installer writes to `.env` empty,
-is not read.
+explicit error. Backups use the key pair created in the setup wizard; an old
+`BACKUP_RECIPIENT` line in `.env` is ignored.
 
 The host updater test drives `update.sh` with a Docker command fixture and
 checks the order (pull, stop, snapshot, start) and that a failure at each stage
