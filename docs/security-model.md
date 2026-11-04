@@ -67,7 +67,10 @@ pages.
   read bookings, attendance, ranks, memberships or emergency contacts.
 * **Kiosk.** A kiosk authenticates with a revocable device token (256 random bits,
   stored as a SHA-256 hash, checked on every request) that reaches only the
-  check-in endpoints, never a staff session. Name-and-PIN check-in is limited to
+  check-in endpoints, never a staff session. Settings shows the token once, as a
+  setup link (`/kiosk#token=…`) and QR code; the token sits in the URL fragment,
+  which the browser never sends to the server, and the page stores it and removes
+  it from the address. Name-and-PIN check-in is limited to
   10 wrong PINs per minute per device and per client address, and a used-up
   budget is audited and shown on the dashboard.
 * **QR check-in codes** are per member, revocable, valid only in their own gym,
