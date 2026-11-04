@@ -6,14 +6,15 @@ import { basename, extname, join } from 'node:path';
 const identifier = 'SPDX-License-Identifier: AGPL-3.0-only';
 const syntax = new Map();
 for (const extension of ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.jsonc', '.go', '.rs', '.java', '.kt', '.swift', '.c', '.h', '.cpp', '.hpp', '.cs', '.proto']) syntax.set(extension, '//');
-for (const extension of ['.yml', '.yaml', '.sh', '.bash', '.zsh', '.ps1', '.psm1', '.py', '.rb', '.toml', '.ini', '.conf', '.properties', '.tf', '.r', '.pl']) syntax.set(extension, '#');
+for (const extension of ['.yml', '.yaml', '.sh', '.bash', '.zsh', '.ps1', '.psm1', '.py', '.rb', '.toml', '.ini', '.conf', '.properties', '.tf', '.r', '.pl',
+  '.service', '.timer']) syntax.set(extension, '#');
 for (const extension of ['.html', '.htm', '.xml', '.svg', '.vue', '.svelte']) syntax.set(extension, '<!--');
 for (const extension of ['.css', '.scss', '.less']) syntax.set(extension, '/*');
 syntax.set('.sql', '--');
 syntax.set('.bat', 'REM');
 syntax.set('.cmd', 'REM');
 const hashNames = new Set(['Dockerfile', 'Containerfile', 'Makefile', 'Caddyfile', '.gitignore', '.gitattributes', '.npmrc', '.dockerignore', '.editorconfig']);
-const data = new Set(['.json', '.md', '.txt', '.ttf', '.otf', '.woff', '.woff2', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.pdf', '.snap', '.csv', '.map', '.lock', '.asc']);
+const data = new Set(['.json', '.md', '.txt', '.ttf', '.otf', '.woff', '.woff2', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.pdf', '.snap', '.csv', '.map', '.lock', '.asc', '.pem']);
 
 export function headerSyntax(path, content = '') {
   const name = basename(path);

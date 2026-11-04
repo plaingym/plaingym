@@ -52,7 +52,9 @@ check fails, it stops before changing anything. Then it:
 2. writes `/opt/plaingym/.env` (mode 0600) with six independent random secrets;
 3. starts Caddy, the app and PostgreSQL, waits for a valid certificate and a
    healthy app;
-4. prints a private setup link: `https://gym.example.org/setup#token=…`.
+4. turns on automatic patch updates: a systemd timer (`plaingym-update.timer`)
+   that installs patch releases each night (see [Updates](#updates));
+5. prints a private setup link: `https://gym.example.org/setup#token=…`.
 
 Re-running the same command is safe: it keeps `.env`, starts anything that
 stopped and prints the setup link again. It refuses to change the hostname, email
@@ -231,7 +233,36 @@ resumes when the app restarts.
 
 ## Updates
 
-Update to a new release with:
+Releases are numbered `vX.Y.Z`. A patch release (only Z changes) holds fixes and
+never changes the database; a minor or major release can.
+
+### Patch releases install themselves
+
+Each night the server installs the newest patch release of the version it runs:
+from 1.2.3 it takes 1.2.4 or 1.2.5, never 1.3.0. The installer's timer runs
+`update.sh --patch` once a night between 02:00 and 05:00 in the gym's timezone.
+It:
+
+1. asks the app whether automatic updates are on and backups are set up;
+2. finds the newest patch release and checks its signed release manifest and the
+   image it names, so it only ever installs an image the project published;
+3. takes a pre-upgrade backup, starts the new version and checks that it stays
+   healthy for a minute;
+4. goes back to the previous version if the new one doesn't start or isn't healthy.
+
+The **Health** page's **Automatic updates** tile shows the last night's result:
+up to date, updated, rolled back, or skipped and why (for example, backups that
+aren't set up yet: without a backup it changes nothing). Owners turn automatic
+patch updates off, or on again, in **Settings → Updates**; they are on by default.
+To run tonight's check at once, for example after setting up backups:
+
+```sh
+sudo /opt/plaingym/update.sh --patch --now
+```
+
+### Minor and major releases
+
+Update to a new minor or major release with:
 
 ```sh
 cd /opt/plaingym
@@ -252,8 +283,8 @@ If the new version fails to start, the updater restarts the previous image. Keep
 previous images on the server until you are sure of an update. Releases change the
 database only by adding to it (columns are dropped a release after they stop being
 used), so the previous version keeps working against the migrated database, and
-patch releases (x.y.Z) never change the database. Updates are run by hand; nothing
-updates the app on its own.
+patch releases (x.y.Z) never change the database. Minor and major releases wait
+for you to run the updater.
 
 ## Day to day
 
@@ -261,7 +292,8 @@ updates the app on its own.
 | :--- | :--- |
 | App logs | `sudo docker compose logs app` (one JSON object per line, rotated by Docker) |
 | Access log | Off by default; `CADDY_ACCESS_LOG=stderr` in `.env` turns it on (`deploy/README.md`, "Access log") |
-| Health | The admin's **Health** page: last backup, email, Stripe webhooks, charge runs, disk space, failed jobs and the running version |
+| Health | The admin's **Health** page: last backup, email, Stripe webhooks, charge runs, disk space, failed jobs, the running version and the last automatic update |
+| Automatic updates | On by default; owners switch them in **Settings → Updates**. The timer's log: `journalctl -u plaingym-update` |
 | Restart | `sudo docker compose up -d` in `/opt/plaingym` |
 | Replay a Stripe event | `sudo docker compose exec -T app gym-app replay --gym <gym-id> <event-id>` |
 

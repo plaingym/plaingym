@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
-import { dateSchema, idSchema, instantSchema } from './common.js';
+import { dateSchema, idSchema, instantSchema, revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
 
 /** Every built-in tile is present even while its provider is not configured. */
@@ -33,9 +33,10 @@ export const chargeRunHealthDetailsSchema = z.strictObject({
   result: z.enum(['never_run', 'running', 'succeeded', 'failed']),
   invoicesProcessed: count, failures: count,
 });
+/** The last automatic patch update attempt. `skipped` changed nothing; the tile's message says why. */
 export const automaticUpdatesHealthDetailsSchema = z.strictObject({
   enabled: z.boolean(), lastAttemptAt: instantSchema.nullable(),
-  result: z.enum(['never_run', 'up_to_date', 'updated', 'rolled_back', 'failed']),
+  result: z.enum(['never_run', 'up_to_date', 'updated', 'rolled_back', 'failed', 'skipped']),
   fromVersion: z.string().min(1).nullable(), toVersion: z.string().min(1).nullable(),
 });
 export const updateAvailableHealthDetailsSchema = z.strictObject({
@@ -81,7 +82,22 @@ export const dismissChargeFailuresRequestSchema = z.union([
 ]);
 /** The invoices the dismissed reports still listed; the invoices themselves are unchanged. */
 export const dismissChargeFailuresResponseSchema = z.strictObject({ data: z.strictObject({ dismissed: z.array(idSchema) }) });
+/**
+ * The owner's switch for automatic patch updates (on by default). The install's nightly timer reads it through the
+ * app; `available` is false on an install that serves several gyms, where no timer reads it.
+ */
+export const autoUpdateSettingsSchema = z.strictObject({ enabled: z.boolean(), available: z.boolean(), revision: revisionSchema });
+export const autoUpdateSettingsResponseSchema = z.strictObject({ data: autoUpdateSettingsSchema });
+export const updateAutoUpdateSettingsRequestSchema = z.strictObject({ enabled: z.boolean(), revision: revisionSchema });
 const manageSettings = { kind: 'staff', capability: 'settings.manage' } satisfies RoutePermission;
+const manageIntegrations = { kind: 'staff', capability: 'integrations.manage' } satisfies RoutePermission;
+/** Owners only, like the email, payment and backup settings. */
+export const autoUpdateContracts = {
+  get: { method: 'get', path: '/api/health/auto-update', permission: manageIntegrations, response: autoUpdateSettingsResponseSchema },
+  update: { method: 'put', path: '/api/health/auto-update', permission: manageIntegrations,
+    description: 'Turns automatic patch updates on or off. A stale revision answers 409.',
+    body: updateAutoUpdateSettingsRequestSchema, response: autoUpdateSettingsResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
 export const healthContracts = {
   get: { method: 'get', path: '/api/health', permission: manageSettings, response: healthResponseSchema },
   listChargeFailures: { method: 'get', path: '/api/health/charge-failures', permission: manageSettings,
@@ -104,3 +120,5 @@ export type ChargeFailureReport = z.infer<typeof chargeFailureReportSchema>;
 export type ChargeRunHealthDetails = z.infer<typeof chargeRunHealthDetailsSchema>;
 export type AutomaticUpdatesHealthDetails = z.infer<typeof automaticUpdatesHealthDetailsSchema>;
 export type UpdateAvailableHealthDetails = z.infer<typeof updateAvailableHealthDetailsSchema>;
+export type AutoUpdateSettings = z.infer<typeof autoUpdateSettingsSchema>;
+export type UpdateAutoUpdateSettingsRequest = z.infer<typeof updateAutoUpdateSettingsRequestSchema>;

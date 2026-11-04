@@ -128,11 +128,13 @@ for (const fixture of json(new URL('./fixtures/headers.json', import.meta.url)))
 }
 
 test('every supported source syntax rejects a missing header', () => {
-  for (const path of ['x.js', 'x.jsx', 'x.mjs', 'x.cjs', 'x.ts', 'x.tsx', 'x.mts', 'x.cts', 'x.jsonc', 'x.css', 'x.sql', 'x.html', 'x.svg', 'x.yaml', 'x.sh', 'x.ps1', 'x.py', 'x.go', 'Dockerfile', 'Caddyfile', '.env.example']) {
+  for (const path of ['x.js', 'x.jsx', 'x.mjs', 'x.cjs', 'x.ts', 'x.tsx', 'x.mts', 'x.cts', 'x.jsonc', 'x.css', 'x.sql', 'x.html', 'x.svg', 'x.yaml', 'x.sh', 'x.ps1', 'x.py', 'x.go', 'x.service', 'x.timer', 'Dockerfile', 'Caddyfile', '.env.example']) {
     assert.equal(hasHeader(path, 'plain content'), false, path);
   }
   assert.equal(headerSyntax('package.json'), null);
   assert.equal(headerSyntax('Noto.ttf'), null);
+  assert.equal(headerSyntax('deploy/release-signing.pem'), null);
+  assert.equal(hasHeader('plaingym-update.timer', '# SPDX-License-Identifier: AGPL-3.0-only\n[Timer]\n'), true);
   assert.throws(() => hasHeader('new.unknown', 'content'), /Unclassified/);
 });
 

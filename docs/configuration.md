@@ -87,8 +87,8 @@ change an existing database: the roles keep the password they were created with.
 Backups are set up in the setup wizard's backup step, or later (and changed) in
 **Settings → Email, payments and backups**, single-gym mode only: the destination
 bucket and its credentials are stored encrypted in the database, not in `.env`.
-Updates refuse to run until backups are set up (see
-[self-hosting.md](self-hosting.md#updates)).
+Updates refuse to run until backups are set up, and automatic patch updates skip
+each night until then (see [self-hosting.md](self-hosting.md#updates)).
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
@@ -154,6 +154,16 @@ These are read by `deploy/compose.yaml`, not by the app.
 | `POSTGRES_MEMORY_LIMIT` | `384m` | The PostgreSQL container's memory limit. |
 | `CADDY_MEMORY_LIMIT` | `128m` | The Caddy container's memory limit. |
 | `CADDY_ACCESS_LOG` | `discard` | `stderr` turns on Caddy's access log (`deploy/README.md`, "Access log"). |
+
+## Automatic patch updates
+
+`update.sh --patch`, which the installer's nightly timer runs, reads this from `.env`; neither Compose nor the
+app does. Whether patch releases install on their own is the owner's switch in **Settings → Updates**, stored in
+the database ([self-hosting.md](self-hosting.md#updates)).
+
+| Variable | Default | Meaning |
+| :--- | :--- | :--- |
+| `RELEASE_REPOSITORY` | `plaingym/plaingym` | The GitHub repository whose releases the updater checks, as `owner/name`. A fork that publishes its own releases sets it and replaces `release-signing.pem` in the install directory with its own public key. |
 
 ## Development only
 

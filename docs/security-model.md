@@ -125,7 +125,8 @@ keeps these tables in step with it.
 
 `integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
 **Settings → Email, payments and backups** after it, whose responses and audits
-never contain a password, key, signing secret or storage credential.
+never contain a password, key, signing secret or storage credential. It also
+covers **Settings → Updates**, the switch for automatic patch updates.
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
 
@@ -244,6 +245,16 @@ Only Caddy publishes ports, and PostgreSQL sits on an internal network only the
 app can reach. The installer turns on the firewall (SSH, 80 and 443) and
 unattended OS security updates. Release images pin every system package and are
 scanned for known vulnerabilities each week (`deploy/README.md`).
+
+Automatic patch updates run on the host, as root, from a systemd timer, never in
+the app: the app only answers whether they are on and records their results,
+through `gym-app auto-update` in its own container. The updater installs only an
+image named by a release manifest signed with the project's Ed25519 key
+(`release-signing.pem` in the install directory), pulls it by digest and checks
+the digest and version it got, and refuses a patch whose migrations differ from
+the running image's. It reads only tag names from GitHub's list of releases; the
+signed manifest decides what is installed (`deploy/README.md`, "Automatic patch
+updates" and "Releases").
 
 ## Demo mode
 

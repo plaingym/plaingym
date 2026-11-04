@@ -62,5 +62,10 @@ make_install locked
 if flock "$case_dir/.update.lock" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then exit 1; fi
 [ ! -s "$CALLS" ]
 if sh "$case_dir/update.sh" example:latest >/dev/null 2>&1; then exit 1; fi
-if sh "$case_dir/update.sh" --patch >/dev/null 2>&1; then exit 1; fi
+# Automatic patch updates have their own test (patch.sh); here only malformed arguments are refused.
+for arguments in '' '--now' 'example:v1.0.1 example:v1.0.2' '--patch extra'; do
+  # shellcheck disable=SC2086
+  if sh "$case_dir/update.sh" $arguments >/dev/null 2>&1; then echo "Accepted: $arguments" >&2; exit 1; fi
+done
+[ ! -s "$CALLS" ]
 echo 'PASS: coordinated snapshot, pull before capture, publication, startup/health failures, rollback, lock, version pinning.'

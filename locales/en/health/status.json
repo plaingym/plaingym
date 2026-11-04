@@ -79,6 +79,7 @@
   "result.up_to_date": "Up to date",
   "result.updated": "Updated",
   "result.rolled_back": "Rolled back",
+  "result.skipped": "Skipped",
   "failures.title": "Failed charges",
   "failures.loading": "Loading failed charges…",
   "failures.loadFailed": "Unable to load the failed charges. Refresh to try again.",

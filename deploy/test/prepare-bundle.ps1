@@ -12,18 +12,24 @@ $localTag = 'plaingym:v0.0.0-local'
 $architecture = docker image inspect $Image --format '{{.Architecture}}'
 if ($LASTEXITCODE -ne 0 -or $architecture -notin @('amd64', 'arm64')) { throw 'Build and test the matching image first.' }
 if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
-New-Item -ItemType Directory -Force -Path (Join-Path $staging 'deploy/postgres'), (Join-Path $staging 'deploy/images') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $staging 'deploy/postgres'), (Join-Path $staging 'deploy/images'), (Join-Path $staging 'deploy/systemd') | Out-Null
 docker tag $Image $localTag
 if ($LASTEXITCODE -ne 0) { throw 'Image tag failed.' }
 docker save $localTag -o (Join-Path $staging 'deploy/images/app.tar')
 if ($LASTEXITCODE -ne 0) { throw 'Image export failed.' }
 # Explicit inputs exclude environments, secrets, output, and test fixtures.
-foreach ($file in @('compose.yaml', 'Caddyfile', 'lib.sh', 'host.sh', 'install.sh', 'update.sh', 'bootstrap.sh', 'postgres/01-roles.sh')) {
+foreach ($file in @('compose.yaml', 'Caddyfile', 'lib.sh', 'host.sh', 'install.sh', 'update.sh', 'bootstrap.sh', 'postgres/01-roles.sh', 'systemd/plaingym-update.service', 'systemd/plaingym-update.timer')) {
     Copy-Item -LiteralPath (Join-Path $deployRoot $file) -Destination (Join-Path $staging "deploy/$file")
+}
+# The release signing key, once the repository has one, lets update.sh --patch check releases.
+$optional = @()
+if (Test-Path -LiteralPath (Join-Path $deployRoot 'release-signing.pem')) {
+    Copy-Item -LiteralPath (Join-Path $deployRoot 'release-signing.pem') -Destination (Join-Path $staging 'deploy/release-signing.pem')
+    $optional += 'deploy/release-signing.pem'
 }
 [IO.File]::WriteAllText((Join-Path $staging 'deploy/images.env'), "# SPDX-License-Identifier: AGPL-3.0-only`nAPP_IMAGE=$localTag`nBUNDLE_ARCHITECTURE=$architecture`n", [Text.UTF8Encoding]::new($false))
 $archivePath = Join-Path $outputDirectory "plaingym-$architecture.tar"
-tar -cf $archivePath -C $staging deploy/compose.yaml deploy/Caddyfile deploy/lib.sh deploy/host.sh deploy/install.sh deploy/update.sh deploy/bootstrap.sh deploy/postgres/01-roles.sh deploy/images.env deploy/images/app.tar
+tar -cf $archivePath -C $staging deploy/compose.yaml deploy/Caddyfile deploy/lib.sh deploy/host.sh deploy/install.sh deploy/update.sh deploy/bootstrap.sh deploy/postgres/01-roles.sh deploy/systemd/plaingym-update.service deploy/systemd/plaingym-update.timer deploy/images.env deploy/images/app.tar @optional
 if ($LASTEXITCODE -ne 0) { throw 'Bundle export failed.' }
 Remove-Item -Recurse -Force $staging
 $checksum = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()

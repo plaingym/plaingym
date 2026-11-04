@@ -1,0 +1,184 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Release
+# A signed vX.Y.Z tag builds the image natively for amd64 and arm64, smoke-tests both, pushes one multi-arch image
+# to GHCR and creates the GitHub release with its signed release manifest (deploy/README.md, "Releases"). Every
+# other run is a dry run of the same steps that publishes nothing: the images go to a registry on the runner and
+# the manifest is signed with a throwaway key.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+    branches: [main, 'integration/**']
+    # Path filters don't apply to tag pushes: every release tag runs.
+    paths:
+      - '.github/workflows/release*.yml'
+      - 'deploy/release/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - id: release
+        name: Check the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$GITHUB_REF_NAME
+            # Releases come only from annotated tags that GitHub verified as signed.
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$version" --jq '.object.type + " " + .object.sha')
+            [ "${object%% *}" = tag ] || { echo "::error::$version is not an annotated tag."; exit 1; }
+            verified=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/${object#* }" --jq .verification.verified)
+            [ "$verified" = true ] || { echo "::error::$version is not a signed tag that GitHub verified."; exit 1; }
+            git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/release/*:refs/remotes/origin/release/*'
+            sh deploy/release/check-tag.sh "$version" "$GITHUB_SHA" --branches
+            echo publish=true >> "$GITHUB_OUTPUT"
+          else
+            version=v0.0.0
+            echo publish=false >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test the release scripts
+        run: sh deploy/test/release.sh
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      IMAGE: plaingym:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+      # The AGPL source link names the release tag; a dry run names its commit.
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.version || github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      # A release builds from scratch; a dry run may reuse the Image checks' layer cache.
+      - name: Build on the native CPU
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          build-args: |
+            SOURCE_URL=${{ env.SOURCE_URL }}
+            REVISION=${{ github.sha }}
+            VERSION=${{ env.VERSION }}
+          tags: ${{ env.IMAGE }}
+          load: true
+          no-cache: ${{ needs.prepare.outputs.publish == 'true' }}
+          cache-from: ${{ needs.prepare.outputs.publish != 'true' && format('type=gha,scope=image-{0}', matrix.arch) || '' }}
+      - name: Check the built architecture and labels
+        run: |
+          test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = "${{ matrix.arch }}"
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$VERSION"
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+      - name: Test the production stack
+        run: node deploy/test/smoke.mjs "$IMAGE"
+      - name: Export the tested image
+        run: docker save "$IMAGE" -o "${{ runner.temp }}/release-image-${{ matrix.arch }}.tar"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/release-image-${{ matrix.arch }}.tar
+          retention-days: 3
+  dry-run:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - name: Publish to a registry on this runner with a throwaway key
+        # Only this runner's loopback registry receives images. No credentials, external registry
+        # writes, tags or release assets are used.
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name release-registry --network host -e REGISTRY_HTTP_ADDR=127.0.0.1:5000 \
+            registry:3@sha256:b3419cf99f8ec65bbda73e8a950fd26861012689beaf7b6577ee938995aa7d3f
+          trap 'docker rm -f -v release-registry >/dev/null' EXIT
+          for _ in $(seq 30); do curl --silent --fail http://localhost:5000/v2/ >/dev/null && break; sleep 1; done
+          umask 077
+          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/key.pem"
+          openssl pkey -in "$RUNNER_TEMP/key.pem" -pubout -out "$RUNNER_TEMP/public.pem"
+          sh deploy/release/publish.sh --registry localhost:5000 --name plaingym/app --insecure \
+            --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
+            --key "$RUNNER_TEMP/key.pem" --public-key "$RUNNER_TEMP/public.pem" --out "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dry-run-release-manifest
+          path: |
+            ${{ runner.temp }}/release/release-manifest.txt
+            ${{ runner.temp }}/release/release-manifest.txt.sig
+          retention-days: 3
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The environment holds RELEASE_SIGNING_KEY and limits it to release tags (deploy/README.md, "Releases").
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/images
+      - name: Publish the image and the signed release manifest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          [ -f deploy/release-signing.pem ] || { echo '::error::deploy/release-signing.pem is missing.'; exit 1; }
+          [ -n "$RELEASE_SIGNING_KEY" ] || { echo '::error::The RELEASE_SIGNING_KEY secret is not set.'; exit 1; }
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          trap 'rm -f "$RUNNER_TEMP/key.pem"; docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          # The secret must match the committed public key before anything is pushed.
+          printf 'key check\n' > "$RUNNER_TEMP/probe"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in "$RUNNER_TEMP/probe" -out "$RUNNER_TEMP/probe.sig"
+          openssl pkeyutl -verify -pubin -inkey deploy/release-signing.pem -rawin -in "$RUNNER_TEMP/probe" -sigfile "$RUNNER_TEMP/probe.sig"
+          printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          sh deploy/release/publish.sh --registry ghcr.io --name "$owner/app" \
+            --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
+            --key "$RUNNER_TEMP/key.pem" --public-key deploy/release-signing.pem --out "$RUNNER_TEMP/release"
+          gh release create "$VERSION" --verify-tag --title "$VERSION" --generate-notes \
+            "$RUNNER_TEMP/release/release-manifest.txt" "$RUNNER_TEMP/release/release-manifest.txt.sig"

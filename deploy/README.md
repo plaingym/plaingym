@@ -163,7 +163,8 @@ for another CPU architecture, and runs `install.sh --image-archive`. A bundle
 already on the server can be passed with `--bundle-file PATH` instead.
 
 The installer configures Docker, firewall rules, unattended OS security
-updates, and swap. It generates six independent secrets, then starts the
+updates, swap, and the automatic patch update timer (**Automatic patch
+updates**, below). It generates six independent secrets, then starts the
 stack in `/opt/plaingym`. Its `.env` is mode 0600 in a mode-0700 directory;
 public bootstrap/configuration files are readable by their containers.
 Re-running the same command is safe: it keeps `.env` and its secrets, leaves
@@ -286,17 +287,124 @@ previous local image (by image ID), so keep those images available. Restore a
 pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
 with `gym-app restore`.
 
-Automatic patch selection and timers are not installed; `--patch` returns an
-explicit error. Backups use the key pair created in the setup wizard; an old
+Backups use the key pair created in the setup wizard; an old
 `BACKUP_RECIPIENT` line in `.env` is ignored.
+
+### Automatic patch updates
+
+The installer writes `plaingym-update.service` and `plaingym-update.timer`
+(`systemd/`, with the install directory filled in) to `/etc/systemd/system` and
+enables the timer. It fires every hour at a random minute and runs
+`update.sh --patch`, which acts once a night: on the first run between 02:00 and
+05:00 in the gym's timezone (which the app reports; UTC until it has). The other
+runs stop at once. `update.sh --patch --now` runs the check at any time.
+
+The app never holds the Docker socket. The updater asks the app, through
+`docker compose exec -T app gym-app auto-update check`, whether a restore is in
+progress, whether automatic updates are on (the owner's switch in **Settings →
+Updates**, on by default), whether backups are set up, and the gym's timezone;
+until the setup wizard has created the gym, it stops there without a result. It
+reports each night's result back through `gym-app auto-update record`, which
+the **Automatic updates** tile on the Health page shows. A result the app can't
+take yet (it is down or restoring) waits in `auto-update.result` and is sent
+first on the next run; `auto-update.state` holds the timezone and the night of
+the last check.
+
+Each night, in order, the updater:
+
+1. skips when the switch is off, a restore is in progress, backups aren't set up,
+   there is no `release-signing.pem` in the install directory, or the running
+   image's `org.opencontainers.image.version` label isn't a release version;
+2. reads the tag names of the repository's GitHub releases (`RELEASE_REPOSITORY`,
+   default `plaingym/plaingym`) and picks the newest `vX.Y.Z` with the running
+   X.Y and a higher Z; none means up to date;
+3. downloads that release's `release-manifest.txt` and its signature, checks the
+   signature with `release-signing.pem` and the manifest's fields (**Releases**,
+   below);
+4. pulls `IMAGE:vX.Y.Z@DIGEST` from the manifest while the app runs, and checks
+   that the pulled image has that digest and version label, and that its
+   migrations (`/app/migrations`) are byte for byte those of the running image;
+5. writes `.auto-update.inflight`, stops the app, takes the pre-upgrade snapshot
+   (a failure, or a stop during it, restarts the running image and skips),
+   starts the new image, runs the health check, waits a minute, and checks again
+   that the same container is healthy and never restarted;
+6. pins the new image in `.env`, or on any failure starts the previous image by
+   image ID and reports the rollback.
+
+A run that is stopped (the unit's 90-minute limit, a shutdown) restarts the
+previous image before it exits. One killed outright leaves `.auto-update.inflight`,
+and the next run starts the pinned image first and reports the interruption. A
+rollback that fails keeps the marker too, so each hourly run tries to start the
+pinned image again until it runs. Its log is in the journal:
+`journalctl -u plaingym-update`.
+
+### Tests
 
 The host updater test drives `update.sh` with a Docker command fixture and
 checks the order (pull, stop, snapshot, start) and that a failure at each stage
 (pull, snapshot, startup, health) keeps the previous image pinned and, once the
-app has stopped, restarts it. The separate image smoke test uses actual PostgreSQL, app,
-and Caddy containers:
+app has stopped, restarts it. The patch update test adds curl and clock fixtures
+and real Ed25519 signatures: patch selection, a changed manifest, another key's
+signature, a wrong digest or version label, a patch that changes migrations, the
+switch off, no backups, a failed snapshot, rollback after a failed start, health
+check or second check, a failed rollback, the nightly window, results kept until
+the app can record them, and an interrupted run. The separate image smoke test
+uses actual PostgreSQL, app, and Caddy containers:
 
 ```sh
 sudo sh deploy/test/update.sh
+sudo sh deploy/test/patch.sh
 node deploy/test/smoke.mjs IMAGE
 ```
+
+## Releases
+
+The **Release** workflow (`.github/workflows/release.yml`) runs on a pushed
+`vX.Y.Z` tag. It accepts only an annotated tag that GitHub verified as signed,
+on `main` for `vX.Y.0` and on `release/X.Y` for a patch. `release/check-tag.sh`
+also refuses a patch release whose `packages/db/src/migrations` (journal
+included) differs from the latest earlier `vX.Y` tag: installs apply patches on
+their own and roll one back by starting the previous image. The workflow then
+builds the image natively on amd64 and arm64 without the build cache, labelled
+with the version and commit, runs the smoke test on each, and `release/publish.sh`
+pushes `ghcr.io/OWNER/app:vX.Y.Z-amd64` and `-arm64`, then the multi-arch
+`ghcr.io/OWNER/app:vX.Y.Z` over exactly those two. It signs the release manifest
+with the `RELEASE_SIGNING_KEY` secret of the `release` environment, after
+checking it against `release-signing.pem`, and creates the GitHub release with
+both files. No release has been published yet, and the repository has no
+`release-signing.pem`: until it does, automatic patch updates skip each night.
+
+Every other run (a push that changes the workflow or `release/`, or a manual
+run) is a dry run of the same steps as `v0.0.0`: the images go to a registry on
+the runner, and a throwaway key signs the manifest. It publishes nothing.
+`deploy/test/release.sh` tests both scripts, with a scratch Git repository and a
+dry release of two small images to a local registry:
+
+```sh
+sh deploy/test/release.sh
+```
+
+`release-manifest.txt` has one `key=value` line per field, no spaces, each key
+once; `release-manifest.txt.sig` is the 64-byte Ed25519 signature of its exact
+bytes (`openssl pkeyutl -verify -pubin -inkey release-signing.pem -rawin -in
+release-manifest.txt -sigfile release-manifest.txt.sig`):
+
+```text
+format=plaingym-release-manifest/1
+version=v1.2.3
+image=ghcr.io/plaingym/app
+digest=sha256:<64 hex digits>
+digest.linux/amd64=sha256:<64 hex digits>
+digest.linux/arm64=sha256:<64 hex digits>
+revision=<40 hex digits>
+migrations=sha256:<64 hex digits>
+released=2026-11-03T12:00:00Z
+```
+
+* `digest` is the multi-arch index; installs pull `IMAGE:VERSION@DIGEST`. The
+  `digest.linux/*` lines are its per-architecture images.
+* `revision` is the tagged commit.
+* `migrations` is the digest of the migrations directory, computed as
+  `update.sh` does (`find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum`
+  in it).
+* Readers ignore keys they don't know; a new format changes `format`.

@@ -1,7 +1,8 @@
 ﻿// SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { healthTileIds, healthTileSchema, healthResponseSchema, healthContracts, chargeFailureReportSchema, chargeFailuresResponseSchema,
-  dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns } from './index.js';
+  dismissChargeFailuresRequestSchema, dismissChargeFailuresResponseSchema, maxDismissedChargeRuns, autoUpdateContracts,
+  autoUpdateSettingsResponseSchema, updateAutoUpdateSettingsRequestSchema } from './index.js';
 import { canStaff, staffRoles } from '../permissions.js';
 
 const now = '2026-10-21T20:00:00Z';
@@ -73,5 +74,19 @@ describe('health contracts', () => {
       { ...report, failures: [{ ...failure, number: 0 }] }, { ...report, extra: true }, { ...report, day: 'yesterday' }])
       expect(chargeFailureReportSchema.safeParse(bad).success).toBe(false);
     expect(dismissChargeFailuresResponseSchema.safeParse({ data: { dismissed: [failure.invoiceId] } }).success).toBe(true);
+  });
+  it('reports a skipped automatic update, and keeps the other results', () => {
+    for (const result of ['never_run', 'up_to_date', 'updated', 'rolled_back', 'failed', 'skipped'])
+      expect(healthTileSchema.safeParse({ ...tiles[7], status: 'warning', details: { ...details.automatic_updates, result } }).success).toBe(true);
+    expect(healthTileSchema.safeParse({ ...tiles[7], details: { ...details.automatic_updates, result: 'paused' } }).success).toBe(false);
+    expect(healthTileSchema.safeParse({ ...tiles[7], details: { ...details.automatic_updates, reason: 'backups' } }).success).toBe(false);
+  });
+  it('limits the automatic update switch to owners and needs a revision to change it', () => {
+    for (const contract of [autoUpdateContracts.get, autoUpdateContracts.update])
+      for (const role of staffRoles) expect(canStaff([role], contract.permission.capability)).toBe(role === 'owner');
+    expect(updateAutoUpdateSettingsRequestSchema.parse({ enabled: false, revision: 3 })).toEqual({ enabled: false, revision: 3 });
+    for (const body of [{ enabled: false }, { enabled: 'no', revision: 3 }, { enabled: true, revision: 0 }, { enabled: true, revision: 3, available: true }])
+      expect(updateAutoUpdateSettingsRequestSchema.safeParse(body).success).toBe(false);
+    expect(autoUpdateSettingsResponseSchema.safeParse({ data: { enabled: true, available: false, revision: 1 } }).success).toBe(true);
   });
 });

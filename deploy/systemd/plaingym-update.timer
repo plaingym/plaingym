@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Installed by install.sh. Fires every hour at a random minute; update.sh --patch acts only once a night,
+# between 02:00 and 05:00 in the gym's timezone, and the other runs stop at once.
+[Unit]
+Description=PlainGym automatic patch update, checked each hour
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=50min
+# A server that was off misses that hour: no catch-up run at an unplanned time.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

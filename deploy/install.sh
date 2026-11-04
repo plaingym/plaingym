@@ -31,6 +31,9 @@ printf '%s\n' "$hostname" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 printf '%s\n' "$email" | grep -Eq '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$' || fail 'An ACME contact email is required.'
 valid_image "$image" || fail 'Use an explicit semver image tag or sha256 digest.'
 case "$ROOT" in /*) ;; *) fail 'Installation directory must be absolute.' ;; esac
+# The update timer's unit names the directory, so keep it to plain path characters.
+case "$ROOT" in *[!A-Za-z0-9/._-]*) fail 'Use an installation directory of letters, digits, and / . _ - only. Nothing was changed.' ;; esac
+for unit in plaingym-update.service plaingym-update.timer; do [ -f "$SOURCE/systemd/$unit" ] || fail "The deployment files lack systemd/$unit."; done
 [ -z "$image_archive" ] || [ -f "$image_archive" ] || fail 'The image archive does not exist.'
 # shellcheck source=/dev/null
 . /etc/os-release
@@ -82,6 +85,11 @@ if [ "$existing" = false ]; then
     compose pull
   fi
 fi
+# The public key update.sh --patch checks release manifests with. A bundle without one leaves automatic updates
+# skipping each night with "no release signing key" until the deployment files are updated.
+if [ -f "$SOURCE/release-signing.pem" ] && [ ! -f "$ROOT/release-signing.pem" ]; then
+  install -m 0644 "$SOURCE/release-signing.pem" "$ROOT/release-signing.pem"
+fi
 compose up -d --pull missing --wait --wait-timeout 180
 compose exec -T app /app/deploy/database.sh migrate
 compose exec -T app node /app/deploy/healthcheck.mjs
@@ -92,7 +100,18 @@ until curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "https
   [ "$attempt" -lt 24 ] || fail 'Containers are running, but HTTPS failed. Check DNS, ports 80/443, and Caddy logs.'
   sleep 5
 done
+# Nightly patch updates (update.sh --patch): the timer fires hourly, and update.sh acts once a night in the gym's
+# timezone. The owner turns them off in Settings → Updates; the timer stays and then only records the skip.
+units=${SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+for unit in plaingym-update.service plaingym-update.timer; do
+  sed "s#@ROOT@#$ROOT#g" "$SOURCE/systemd/$unit" > "$units/$unit.next"
+  chmod 0644 "$units/$unit.next"
+  mv "$units/$unit.next" "$units/$unit"
+done
+systemctl daemon-reload
+systemctl enable --now plaingym-update.timer
 printf 'PlainGym is running: https://%s/healthz\nInstallation: %s\n' "$hostname" "$ROOT"
+printf 'Patch releases install automatically each night (plaingym-update.timer); owners can turn this off in Settings → Updates.\n'
 # First-boot setup endpoints close (404) once the gym is set up.
 if [ "$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "https://$hostname/api/setup" || true)" = 404 ]; then
   printf 'Setup is complete. Sign in at https://%s/login\n' "$hostname"

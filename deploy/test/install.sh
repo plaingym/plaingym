@@ -19,7 +19,9 @@ cleanup() {
 trap cleanup EXIT
 mkdir "$temporary/bin"
 export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" HOSTS="$temporary/hosts" STATE="$temporary/state"
-mkdir "$STATE"
+# The update timer's units go here instead of /etc/systemd/system.
+export SYSTEMD_UNIT_DIR="$temporary/units"
+mkdir "$STATE" "$SYSTEMD_UNIT_DIR"
 # 203.0.113.5 is this fixture server; 192.0.2.10 is someone else's.
 printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n' > "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
@@ -64,6 +66,11 @@ expect_refusal() {
 expect_refusal --hostname does-not-exist.invalid --email owner@example.org
 expect_refusal --hostname elsewhere.localhost --email owner@example.org
 [ ! -e "$root" ]
+# The timer's unit names the directory, so odd characters are refused before anything changes.
+: > "$CALLS"
+if sh "$source_dir/install.sh" --directory "$temporary/with space" --image plaingym:v0.0.0-local --hostname gym.localhost --email owner@example.org > "$temporary/output" 2>&1; then exit 1; fi
+grep -q 'Nothing was changed' "$temporary/output"
+[ ! -s "$CALLS" ] && [ ! -e "$temporary/with space" ]
 
 : > "$CALLS"
 install_gym --hostname gym.localhost --email owner@example.org
@@ -74,6 +81,16 @@ if grep -q BACKUP_RECIPIENT "$root/.env"; then echo 'A fresh .env names BACKUP_R
 grep -q '^apt-get install' "$CALLS"
 grep -q '^docker load -i' "$CALLS"
 grep -q 'setup#token=fixture' "$temporary/output"
+# The nightly patch update timer runs this install's update.sh.
+grep -qx "ExecStart=/bin/sh $root/update.sh --patch" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+grep -qx "ConditionPathExists=$root/.env" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+grep -qx 'OnCalendar=hourly' "$SYSTEMD_UNIT_DIR/plaingym-update.timer"
+if grep -q '@ROOT@' "$SYSTEMD_UNIT_DIR"/*; then echo 'A unit kept its placeholder.' >&2; exit 1; fi
+[ "$(stat -c %a "$SYSTEMD_UNIT_DIR/plaingym-update.timer")" = 644 ]
+[ "$(grep -n '^systemctl daemon-reload' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^systemctl enable --now plaingym-update.timer' "$CALLS" | cut -d: -f1)" ]
+grep -q 'Patch releases install automatically each night' "$temporary/output"
+# This source has no release signing key; update.sh --patch then skips each night until one is installed.
+[ ! -e "$root/release-signing.pem" ]
 hashes() { sha256sum "$root/.env" "$root/compose.yaml" "$root/Caddyfile" "$root/update.sh"; }
 before=$(hashes)
 
@@ -95,8 +112,10 @@ grep -q 'use update.sh' "$temporary/output"
 
 # The bootstrap verifies the bundle before extracting or installing anything.
 bundle="$temporary/bundle"
-mkdir -p "$bundle/deploy/postgres" "$bundle/deploy/images"
-for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh postgres/01-roles.sh; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
+mkdir -p "$bundle/deploy/postgres" "$bundle/deploy/images" "$bundle/deploy/systemd"
+for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
+# A bundle carries the release signing key; the installer puts it beside update.sh.
+printf 'fixture public key\n' > "$bundle/deploy/release-signing.pem"
 : > "$bundle/deploy/images/app.tar"
 printf 'APP_IMAGE=plaingym:v0.0.0-local\nBUNDLE_ARCHITECTURE=%s\n' "$(dpkg --print-architecture)" > "$bundle/deploy/images.env"
 tar -cf "$temporary/bundle.tar" -C "$bundle" deploy
@@ -109,6 +128,8 @@ grep -q 'does not match its SHA256' "$temporary/output"
 sh "$source_dir/bootstrap.sh" --bundle-file "$temporary/bundle.tar" --sha256 "$sum" -- --hostname gym.localhost --email owner@example.org --directory "$temporary/bootstrapped" > "$temporary/output" 2>&1
 grep -qx APP_IMAGE=plaingym:v0.0.0-local "$temporary/bootstrapped/.env"
 grep -q 'setup#token=fixture' "$temporary/output"
+grep -qx 'fixture public key' "$temporary/bootstrapped/release-signing.pem"
+grep -qx "ExecStart=/bin/sh $temporary/bootstrapped/update.sh --patch" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
 case "$(dpkg --print-architecture)" in amd64) other=arm64 ;; *) other=amd64 ;; esac
 printf 'APP_IMAGE=plaingym:v0.0.0-local\nBUNDLE_ARCHITECTURE=%s\n' "$other" > "$bundle/deploy/images.env"
 tar -cf "$temporary/foreign.tar" -C "$bundle" deploy

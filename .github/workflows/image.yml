@@ -65,12 +65,17 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck age
-          shellcheck -x deploy/*.sh deploy/container/*.sh deploy/test/*.sh deploy/demo/*.sh
+          shellcheck -x deploy/*.sh deploy/container/*.sh deploy/release/*.sh deploy/test/*.sh deploy/demo/*.sh
           sudo env CI=true PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy/demo -p 'test_*.py'
       - name: Test the Compose environment
         run: sh deploy/test/compose-env.sh
       - name: Test update orchestration
         run: sudo sh deploy/test/update.sh
+      - name: Test automatic patch updates
+        run: sudo sh deploy/test/patch.sh
+      - name: Test the release scripts
+        if: matrix.arch == 'amd64'
+        run: sh deploy/test/release.sh
       - name: Test install and bootstrap checks
         run: sudo sh deploy/test/install.sh
       # The GitHub cache backend needs the docker-container driver. The cache holds the Dockerfile's layers

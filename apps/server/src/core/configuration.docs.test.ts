@@ -25,6 +25,11 @@ function composeVariables(): Set<string> {
   const sources = ['deploy/compose.yaml', ...globSync('deploy/container/*.sh', { cwd: root })];
   return new Set(sources.flatMap((file) => [...read(file).matchAll(/\$\{([A-Z][A-Z0-9_]+)/g)].map(([, name]) => name!)));
 }
+/** Variables the host scripts (installer and updater) read from the install's `.env`. */
+function hostVariables(): Set<string> {
+  return new Set(globSync('deploy/*.sh', { cwd: root })
+    .flatMap((file) => [...read(file).matchAll(/\bread_env ([A-Z][A-Z0-9_]+)/g)].map(([, name]) => name!)));
+}
 /** The variables named in the first column of configuration.md's tables. */
 function documentedVariables(): Set<string> {
   return new Set(read('docs/configuration.md').split('\n')
@@ -40,8 +45,12 @@ describe('docs/configuration.md', () => {
     const documented = documentedVariables();
     expect([...composeVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
   });
+  it('lists every variable the host scripts read', () => {
+    const documented = documentedVariables();
+    expect([...hostVariables()].filter((name) => !documented.has(name)).sort()).toEqual([]);
+  });
   it('lists only variables something still reads', () => {
-    const used = new Set([...serverVariables(), ...composeVariables()]);
+    const used = new Set([...serverVariables(), ...composeVariables(), ...hostVariables()]);
     expect([...documentedVariables()].filter((name) => !used.has(name)).sort()).toEqual([]);
   });
   it('finds the variables it checks', () => {
@@ -49,6 +58,7 @@ describe('docs/configuration.md', () => {
     expect(serverVariables()).toContain('APP_ENCRYPTION_KEY');
     expect(serverVariables()).toContain('BACKUP_STAGING_DIR');
     expect(composeVariables()).toContain('APP_IMAGE');
+    expect(hostVariables()).toContain('RELEASE_REPOSITORY');
     expect(documentedVariables().size).toBeGreaterThan(40);
   });
 });

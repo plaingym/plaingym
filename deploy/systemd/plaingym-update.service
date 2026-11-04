@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Installed by install.sh, which replaces @ROOT@ with the install directory.
+# Run by plaingym-update.timer: installs the newest signed patch release once a night (deploy/README.md, "Automatic patch updates").
+[Unit]
+Description=PlainGym automatic patch update
+Documentation=https://github.com/plaingym/plaingym/blob/main/deploy/README.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=@ROOT@/.env
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh @ROOT@/update.sh --patch
+# A stuck run is stopped: its commands end, and update.sh starts the previous image again before it exits.
+# A run killed outright leaves a marker, and the next run starts the pinned image first.
+TimeoutStartSec=90min
+TimeoutStopSec=5min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
