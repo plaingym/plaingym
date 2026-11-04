@@ -1,12 +1,49 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Updating guide
 
-How to move an install to a new release, and what to do if the update fails.
+How an install moves to a new release, and what to do if an update fails.
 The reference description of the updater is in [self-hosting.md](self-hosting.md#updates)
-and [`deploy/README.md`](../deploy/README.md#updates-and-recovery). Updates are run by
-hand: nothing updates the app on its own.
+and [`deploy/README.md`](../deploy/README.md#updates-and-recovery).
 
-## Before you update
+Releases are numbered `vX.Y.Z`. **Patch releases** (only Z changes: fixes, never
+database changes) install themselves each night on an install set up with the
+installer. **Minor and major releases** wait for you: owners and admins see an
+"Update available" banner, and you run the update by hand (below).
+
+## Patch releases: automatic
+
+Each night, between 02:00 and 05:00 in the gym's timezone, the server's update timer
+(`plaingym-update.timer`) looks for a newer patch release of the version it runs. If
+there is one, it checks the release's signature, takes a backup, installs it, checks
+that the app stays healthy, and goes back to the previous version if not. Owners turn
+this off, or on again, in **Settings → Updates**; it is on by default. An install set
+up by hand with Docker Compose has no timer until you add it
+([install.md](install.md#route-3-docker-compose-by-hand)).
+
+The Health page's **Automatic updates** tile shows the last night's result: up to
+date, updated, rolled back, or skipped and why. To run the check at once, for
+example after setting up backups:
+
+```sh
+sudo /opt/plaingym/update.sh --patch --now
+```
+
+| The tile says | What to do |
+| :--- | :--- |
+| Backups aren't set up | Set them up in **Settings → Email, payments and backups**; the next night's check installs the release. |
+| The server has no release signing key | Copy `release-signing.pem` from the current deployment files into `/opt/plaingym`. |
+| The list of releases, the manifest or the image couldn't be downloaded, or the backup before the update failed | Nothing was changed; the next nightly check tries again. Check the server's network, or the bucket under **Settings → Email, payments and backups**. |
+| The signature didn't verify, the image doesn't match the manifest, or the patch changes the database | Nothing was installed, on purpose. Update by hand once a fixed release is out. |
+| Version X was rolled back | The new version didn't start or failed its health check, and the previous one runs again. Read `sudo docker compose logs app` in `/opt/plaingym`. |
+| The update failed and starting the previous version failed too | Check the containers with `sudo docker compose ps`. The updater tries to start the previous version again each hour until it runs. |
+| No nightly update check since … | Check the timer: `systemctl status plaingym-update.timer`. The updater's log is `journalctl -u plaingym-update`. |
+
+A newer patch release raises no banner, even when automatic updates are off; with
+them off, install it by hand as below.
+
+## Minor and major releases: by hand
+
+### Before you update
 
 1. **Backups must be set up.** The updater takes a backup first and refuses to go on
    without one. Check the admin's **System health** page for a recent successful
@@ -19,7 +56,7 @@ hand: nothing updates the app on its own.
 4. Note the version you run now (the **System health** page shows it). Keep its image
    on the server until you are sure of the update.
 
-## Update
+### Update
 
 On the server:
 
@@ -40,7 +77,7 @@ architecture. `latest` is refused. The script:
 It prints "Already on the requested image." and does nothing when you ask for the
 version you run.
 
-## If it stops
+### If it stops
 
 | What it says | What happened | What to do |
 | :--- | :--- | :--- |
@@ -58,7 +95,7 @@ in the update (for example 1.0 to 1.2), going back to the version you ran before
 isn't safe: [restore](restoring.md) the pre-upgrade backup the updater took instead.
 Restore it too if the data itself is damaged.
 
-## After the update
+### After the update
 
 * Open **System health** and check the running version, the last backup and that
   nothing is failing.

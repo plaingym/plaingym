@@ -48,7 +48,9 @@ The installer, in order:
 3. writes `/opt/plaingym/.env` (mode 0600) with six independent random secrets;
 4. starts Caddy, the app and PostgreSQL, and waits for a valid certificate and
    `https://gym.example.org/healthz`;
-5. prints `https://gym.example.org/setup#token=…`.
+5. installs and starts the nightly update timer (`plaingym-update.timer`), which
+   installs patch releases automatically ([updating.md](updating.md));
+6. prints `https://gym.example.org/setup#token=…`.
 
 Open that link and continue with the [setup wizard](self-hosting.md#setup-wizard).
 Running the same command again is safe: it keeps `.env`, starts anything that has
@@ -86,8 +88,8 @@ reviewed commit of the public repository.
 ## Route 3: Docker Compose by hand
 
 Use this on a server you already manage (Docker and Compose installed, ports 80
-and 443 free). The installer's host changes (firewall, swap, updates) are then yours
-to make.
+and 443 free). The installer's host changes (firewall, swap, OS updates and the
+nightly update timer) are then yours to make.
 
 1. Copy `compose.yaml`, `Caddyfile`, `postgres/01-roles.sh`, `update.sh` and `lib.sh`
    from `deploy/` into `/opt/plaingym`, keeping the `postgres/` folder. The other
@@ -105,6 +107,20 @@ to make.
    docker compose up -d --wait
    docker compose exec -T app gym-app setup-link
    ```
+
+This route installs no update timer, so patch releases don't install themselves
+(the Health page's **Automatic updates** tile says no check has run). To add it,
+copy `release-signing.pem` from `deploy/` into `/opt/plaingym` too when your copy of
+the deployment files has one, then, from `deploy/`, install the two units with the
+install directory filled in:
+
+```sh
+for unit in plaingym-update.service plaingym-update.timer; do
+  sed 's#@ROOT@#/opt/plaingym#g' "systemd/$unit" | sudo tee "/etc/systemd/system/$unit" >/dev/null
+done
+sudo systemctl daemon-reload
+sudo systemctl enable --now plaingym-update.timer
+```
 
 Keep a copy of `.env` somewhere safe: it holds `APP_ENCRYPTION_KEY`. Memory
 limits, `AUTH_PASSWORD_LOGIN`, the access log and the optional install-wide `SMTP_*`
