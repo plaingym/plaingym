@@ -1,3 +1,16 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Google sign-in",
+  "signIn": "Sign in with Google",
+  "or": "or",
+  "pending": "Opening Google...",
+  "startFailed": "Unable to open Google sign-in. Please try again.",
+  "notLinked": "This Google account can't sign in here yet. Its address must match your login's verified email: sign in once with an email link, then try Google again.",
+  "noAccount": "No login at this gym uses that Google address. Ask your gym to invite you, or sign in another way.",
+  "cancelled": "Google sign-in was cancelled.",
+  "failed": "That sign-in didn't work. Please try again.",
+  "on": "Staff and members can sign in with a Google account. It signs in an existing login only: the Google address must match the login's email, and both must be verified. Nobody gets a new login through Google.",
+  "source": "This install's operator set up the Google OAuth client in the server's configuration. To turn Google sign-in off, remove it there.",
+  "redirect": "Authorized redirect URI for this gym",
+  "redirectHelp": "The OAuth client in Google Cloud must list this address exactly."
 }

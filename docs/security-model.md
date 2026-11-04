@@ -152,7 +152,8 @@ types and existing invoices only.
 Authentication uses Better Auth for identities and sessions only; roles live in
 PlainGym's own tables. Only an allowlist of its endpoints is reachable (password
 sign-in when enabled, magic-link request and verification when email is set up,
-get-session, sign-out); every other library endpoint is a 404, and no endpoint
+Google sign-in and its callback when the install has a Google client, get-session,
+sign-out); every other library endpoint is a 404, and no endpoint
 lists or bulk-revokes sessions. There is no public sign-up: identities are created
 by setup, the gym CLI, staff and portal invitations, and the join flow.
 
@@ -163,8 +164,17 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   is `auto` (on only for a gym with no SMTP), `on` or `off`; multi-gym mode
   requires `off`. Hashes are Argon2id (19 MiB, two passes) with a random salt,
   and a process runs at most two hashes at once.
-* **Rate limits.** Password and magic-link sign-in allow 5 attempts per minute per
-  client address, counted in the database so every app process shares them.
+* **Google** sign-in is on only when the server's configuration has a Google
+  OAuth client (`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`); in multi-gym mode
+  too, the client comes from the install, never from a gym owner. The OAuth state
+  records the gym that issued it, and a callback whose state another gym issued,
+  or that is unknown or expired, is refused before the code is exchanged, so a
+  Google sign-in never crosses gyms. Google signs in existing identities only (no
+  sign-up, no sign-in with a bare ID token) and joins an identity by email only when
+  both Google's address and the identity's own are verified. The app keeps the
+  Google account's ID and none of its tokens.
+* **Rate limits.** Password, magic-link and Google sign-in allow 5 attempts per
+  minute per client address, counted in the database so every app process shares them.
 * **Resets.** Staff may reset the password only of users whose roles are all below
   their own (a member who is also staff counts as staff). An owner resets their
   own password with `gym-app auth reset-password <email>` on the server. A reset
@@ -206,7 +216,7 @@ Details: `apps/server/src/core/app.md`.
 ## Secrets and personal data
 
 * **Encrypted at rest.** Stripe keys, SMTP passwords, backup destination
-  credentials, OAuth tokens, the gym's QR key and the backup blob-naming key are
+  credentials, OAuth tokens (Google sign-in stores none), the gym's QR key and the backup blob-naming key are
   encrypted in the database with AES-256-GCM under `APP_ENCRYPTION_KEY`
   (`packages/db/src/encrypted-fields.ts`). Passwords, PINs, check-in codes and
   link tokens are hashed, not encrypted.

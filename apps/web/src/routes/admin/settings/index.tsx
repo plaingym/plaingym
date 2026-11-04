@@ -19,7 +19,8 @@ export function SettingsPage() {
     {!sections.length && <EmptyState title={t('settings/settings:noSections')} description={t('settings/settings:noSectionsHelp')}/>}
     {sections.map((entry) => {
       const Component = entry.component;
-      return <section key={entry.id} aria-label={t(entry.labelKey)} className="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-6"><Component/></section>;
+      // A section with nothing to show for this install (such as Google sign-in without a client) renders empty and is hidden.
+      return <section key={entry.id} aria-label={t(entry.labelKey)} className="min-w-0 rounded-xl border border-border bg-card p-4 empty:hidden sm:p-6"><Component/></section>;
     })}
   </Page>;
 }

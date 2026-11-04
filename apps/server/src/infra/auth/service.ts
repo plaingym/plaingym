@@ -22,10 +22,18 @@ export interface ResolvedAuthGym {
   readonly smtpConfigured?: boolean;
 }
 export interface GoogleAuthExtension {
-  readonly plugins?: BetterAuthPlugin[];
+  /** Plugins for one gym's auth instance, such as the hook that writes that gym into the OAuth state. */
+  plugins?(gym: ResolvedAuthGym): BetterAuthPlugin[];
   readonly socialProviders: { google: { clientId: string; clientSecret: string } };
   /** Must bind and verify OAuth state to the resolved gym before dispatch. */
   beforeRequest(request: Request, gym: ResolvedAuthGym): Promise<boolean>;
+}
+/** Google sign-in stores no provider tokens: login needs none, and a backup then holds no Google credentials of a user. */
+const oauthTokenFields = ['accessToken', 'refreshToken', 'idToken'] as const;
+function withoutOAuthTokens<T extends Record<string, unknown>>(account: T, always: boolean): T {
+  const result: Record<string, unknown> = { ...account };
+  for (const field of oauthTokenFields) if (always || result[field] != null) result[field] = null;
+  return result as T;
 }
 export interface AuthServiceOptions {
   readonly config: AuthConfig;
@@ -86,8 +94,14 @@ export function createAuthService(options: AuthServiceOptions) {
         verification: { disableCleanup: true },
         emailAndPassword: { enabled: passwordEnabled, disableSignUp: true, minPasswordLength: 12, maxPasswordLength: 128, password: passwordAdapter },
         session: { additionalFields: { gymId: { type: 'string', required: true, input: false }, householdId: { type: 'string', required: false, input: false } }, cookieCache: { enabled: false } },
-        account: { accountLinking: { enabled: true, trustedProviders: ['google'] } },
-        ...(options.google ? { socialProviders: options.google.socialProviders } : {}),
+        // A Google login joins an existing identity only when both addresses are verified: no provider is trusted to skip
+        // the check on its side, and an unverified local address (a password login set up without email) never links.
+        // State stays in the database, where the Google extension checks the gym it was issued for.
+        account: { accountLinking: { enabled: true, trustedProviders: [], requireLocalEmailVerified: true }, storeStateStrategy: 'database',
+          encryptOAuthTokens: false, updateAccountOnSignIn: false },
+        // Public signup is disabled: Google signs in identities the gym provisioned, and never with a bare ID token.
+        ...(options.google ? { socialProviders: { google: { ...options.google.socialProviders.google,
+          disableSignUp: true, disableIdTokenSignIn: true, prompt: 'select_account' as const } } } : {}),
         advanced: {
           // PostgreSQL/Drizzle supplies UUIDv7 record defaults. Declaring UUID
           // storage also keeps Better Auth's deterministic reservation IDs valid.
@@ -99,9 +113,12 @@ export function createAuthService(options: AuthServiceOptions) {
         databaseHooks: {
           user: { create: { before: async (user) => ({ data: { ...user, email: user.email.toLowerCase() } }) }, update: { before: async (user) => ({ data: { ...user, ...(user.email ? { email: user.email.toLowerCase() } : {}) } }) } },
           session: { create: { before: async (session) => ({ data: { ...session, gymId: gym.gymId } }) } },
+          account: { create: { before: async (account) => ({ data: withoutOAuthTokens(account, true) }) },
+            update: { before: async (account) => ({ data: withoutOAuthTokens(account, false) }) } },
         },
         rateLimit: { enabled: true, storage: 'database', window: 60, max: 100,
-          customRules: { '/sign-in/email': options.rateLimit ?? { window: 60, max: 5 }, '/sign-in/magic-link': options.rateLimit ?? { window: 60, max: 5 }, '/magic-link/verify': options.rateLimit ?? { window: 60, max: 5 } } },
+          customRules: { '/sign-in/email': options.rateLimit ?? { window: 60, max: 5 }, '/sign-in/magic-link': options.rateLimit ?? { window: 60, max: 5 }, '/magic-link/verify': options.rateLimit ?? { window: 60, max: 5 },
+            '/sign-in/social': options.rateLimit ?? { window: 60, max: 5 } } },
         plugins: [magicLink({
           expiresIn: options.magicLinkTtl ?? 300, storeToken: 'hashed', disableSignUp: true,
           generateToken: () => `${gym.gymId}.${randomBytes(32).toString('base64url')}`,
@@ -110,7 +127,7 @@ export function createAuthService(options: AuthServiceOptions) {
             if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
             await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
           },
-        }), ...(options.google?.plugins ?? [])],
+        }), ...(options.google?.plugins?.(gym) ?? [])],
       });
       function headers(request: Request) {
         const result = new Headers(request.headers);

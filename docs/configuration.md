@@ -11,7 +11,7 @@ secret.
 
 `deploy/compose.yaml` has no `env_file`: the app container gets only the variables
 its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
-settings, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
+settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
 `POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `NODE_OPTIONS`,
 `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE` and `DATABASE_POOL_MAX` (the last
 three with their defaults when unset or empty); it fixes
@@ -119,6 +119,32 @@ similar): mail sent directly from a server usually lands in spam.
 | :--- | :--- | :--- |
 | `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. Sign-in, kiosk PINs and CSP reports keep their own limits. |
+| `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below). Set both or neither; an empty value counts as unset. Ignored in demo mode. |
+| `GOOGLE_CLIENT_SECRET` | unset | That client's secret. |
+
+### Google sign-in
+
+Google sign-in is optional and comes only from these two variables, in single- and
+multi-gym mode alike: a gym owner never enters OAuth credentials. Without them the
+sign-in page shows no Google button and **Settings** has no Google section.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials),
+   create an OAuth client of type **Web application** (set up the OAuth consent
+   screen first if asked).
+2. Under **Authorized redirect URIs**, add `https://<gym hostname>/api/auth/callback/google`
+   for every hostname a gym is served on: `GYM_HOSTNAME` for a single-gym install,
+   each gym's hostname in multi-gym mode. **Settings → Google sign-in** shows the
+   exact address for the gym you are signed in to.
+3. Put the client ID and secret in `.env` as `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET`, then run `sudo docker compose up -d`.
+
+Google signs in existing logins only, the same staff and member logins that email
+links and passwords use: nobody gets a new login through Google. The first Google
+sign-in joins the login whose email is the Google account's address, and only when
+both addresses are verified: Google's, and the login's own (an email link verifies
+it). A login set up with a password on an install without email has an unverified
+address, so it can't use Google. The app stores no Google tokens. To turn Google
+sign-in off, remove both variables and restart; people then sign in another way.
 
 ## Tenancy and demo
 

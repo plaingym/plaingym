@@ -28,7 +28,7 @@ The full picture is in [`docs/architecture.md`](docs/architecture.md) and [`docs
 * **Admin / Member Portal / Kiosk:** React + Vite + Tailwind CSS + shadcn/ui (SPA served by the app server; the portal is an installable PWA)
 * **Database:** PostgreSQL (one pinned major version), with row-level security for tenant isolation
 * **ORM & Migrations:** Drizzle ORM (`postgres.js` driver) + drizzle-kit
-* **Authentication:** Better Auth (Drizzle adapter, identity + sessions only). Email Magic Link when the gym has SMTP (its own or the install's); Email + Password when it has none (`AUTH_PASSWORD_LOGIN=auto|on|off`). The auth service accepts an optional Google provider extension, which the runtime doesn't configure. Console-logged magic links are dev-only.
+* **Authentication:** Better Auth (Drizzle adapter, identity + sessions only). Email Magic Link when the gym has SMTP (its own or the install's); Email + Password when it has none (`AUTH_PASSWORD_LOGIN=auto|on|off`). Google sign-in when the install's configuration has a Google OAuth client (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`; never set by a gym owner), with OAuth state bound to the issuing gym. Console-logged magic links are dev-only.
 * **Data Validation:** Zod (shared between frontend, API routes, and the OpenAPI spec)
 * **Background Jobs:** Own Postgres `jobs` table + in-process worker with `SKIP LOCKED` claiming and per-gym concurrency caps (do not add an external queue or Redis)
 * **Payments:** Stripe, using the gym's own API keys (webhook endpoint auto-registered during setup)

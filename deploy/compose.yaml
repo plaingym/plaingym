@@ -77,6 +77,9 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
+      # Optional Google sign-in: both or neither (docs/configuration.md); empty means off.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       SOURCE_URL: ${SOURCE_URL:-https://github.com/plaingym/plaingym}
       # Operator settings: unset or empty in .env keeps the app's own default. PUBLIC_ORIGIN, PACKS_DIR and
       # UPLOADS_S3_* are not passed (docs/configuration.md): the app reads an empty value as a value.

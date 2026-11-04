@@ -167,7 +167,7 @@ contract suite runs against both (`core/registry-infra-contracts.ts`):
 
 | Module | Production adapter |
 | :--- | :--- |
-| `auth` | Better Auth: sessions, magic links, passwords (`infra/auth/README.md`) |
+| `auth` | Better Auth: sessions, magic links, passwords, optional Google sign-in (`infra/auth/README.md`) |
 | `jobs` | PostgreSQL queue (`infra/jobs/README.md`) |
 | `email` | Nodemailer over SMTP, with durable per-message send state (`infra/email/README.md`) |
 | `payments` | Stripe, on the gym's own keys (`infra/payments/README.md`) |

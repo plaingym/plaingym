@@ -19,7 +19,8 @@ export const shellSessionSchema = z.strictObject({
 export const shellBootstrapSchema = z.strictObject({
   gym: z.strictObject({ id: idSchema, name: z.string().min(1), timezone: storedTimezoneSchema, currency: currencySchema, enabledModules: z.array(z.string().min(1)).readonly() }),
   session: shellSessionSchema.nullable(),
-  login: z.strictObject({ password: z.boolean(), magicLink: z.boolean() }),
+  // `google` is present when Google sign-in is available on this install; absent means it isn't.
+  login: z.strictObject({ password: z.boolean(), magicLink: z.boolean(), google: z.boolean().optional() }),
 });
 export const shellBootstrapResponseSchema = z.strictObject({ data: shellBootstrapSchema });
 export const shellContracts = {
