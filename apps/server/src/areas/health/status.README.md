@@ -28,5 +28,13 @@ TODO: add an oldest failure timestamp to `JobStatsQuery`; the response uses null
 than the pending-job timestamp. Disk details hold the volume with least free space; the
 message reports both uploads and staging (the uploads volume alone when `BACKUP_STAGING_DIR` isn't set, as in multi-gym mode). TODO: allow separate volume details. Disk warning
 means less than 10% or 1 GiB available; error means less than the backup reserve (128 MiB).
+The available-update tile and `GET /api/health/update` (the admin banner's own route, also
+`settings.manage`) come from `updates.ts`: one process-wide `ReleaseCheck` reads
+`api.github.com/repos/plaingym/plaingym/releases/latest` without a token at most once a day. A failed,
+oversized, draft, pre-release or off-host answer keeps the last good one and retries after an hour;
+with a cached answer a request never waits on the network. A newer minor or major is `warning` with
+`available: true` (the banner); a newer patch is `healthy` with `available: false`, since patches apply
+automatically. Multi-gym mode, `UPDATE_CHECK=off` and a build whose version is not `X.Y.Z` are
+`not_configured`; no answer yet is `unavailable`.
 Running version uses `APP_VERSION`, falling back to the current package version.
 The image sets `APP_VERSION` from its `VERSION` build argument.

@@ -43,6 +43,7 @@ export const updateAvailableHealthDetailsSchema = z.strictObject({
   currentVersion: z.string().min(1), latestVersion: z.string().min(1), available: z.boolean(),
   releaseUrl: z.url({ protocol: /^https?$/ }).nullable(),
 });
+export const updateAvailableHealthTileSchema = z.strictObject({ ...common, id: z.literal('update_available'), details: updateAvailableHealthDetailsSchema.nullable() });
 export const healthTileSchema = z.discriminatedUnion('id', [
   z.strictObject({ ...common, id: z.literal('last_backup'), details: backupHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('failed_jobs'), details: failedJobsHealthDetailsSchema.nullable() }),
@@ -52,7 +53,7 @@ export const healthTileSchema = z.discriminatedUnion('id', [
   z.strictObject({ ...common, id: z.literal('stripe_webhooks'), details: webhookHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('last_charge_run'), details: chargeRunHealthDetailsSchema.nullable() }),
   z.strictObject({ ...common, id: z.literal('automatic_updates'), details: automaticUpdatesHealthDetailsSchema.nullable() }),
-  z.strictObject({ ...common, id: z.literal('update_available'), details: updateAvailableHealthDetailsSchema.nullable() }),
+  updateAvailableHealthTileSchema,
 ]).refine((value) => value.status !== 'healthy' || (value.details !== null && value.checkedAt !== null),
   'A healthy tile requires a successful check and its details');
 export const healthResponseSchema = z.strictObject({ data: z.strictObject({
@@ -62,6 +63,11 @@ export const healthResponseSchema = z.strictObject({ data: z.strictObject({
     'Include every health tile exactly once',
   ),
 }) });
+/** Only the release check, for the admin shell's banner: it reads this instead of every tile. */
+export const updateAvailableResponseSchema = z.strictObject({
+  data: updateAvailableHealthTileSchema.refine((value) => value.status !== 'healthy' || (value.details !== null && value.checkedAt !== null),
+    'A healthy tile requires a successful check and its details'),
+});
 /** Why a charge threw. A stopped run reports every cause but an outage; the list accepts all three. */
 export const chargeFailureCauseSchema = z.enum(['provider_outage', 'needs_reconciliation', 'unexpected']);
 /** One stopped charge run's invoices that still need staff. `number` is null for an invoice that had none when the run stopped. */
@@ -100,6 +106,7 @@ export const autoUpdateContracts = {
 } as const satisfies Record<string, EndpointContract>;
 export const healthContracts = {
   get: { method: 'get', path: '/api/health', permission: manageSettings, response: healthResponseSchema },
+  getUpdate: { method: 'get', path: '/api/health/update', permission: manageSettings, response: updateAvailableResponseSchema },
   listChargeFailures: { method: 'get', path: '/api/health/charge-failures', permission: manageSettings,
     response: chargeFailuresResponseSchema },
   dismissChargeFailures: { method: 'post', path: '/api/health/charge-failures/dismiss', permission: manageSettings,

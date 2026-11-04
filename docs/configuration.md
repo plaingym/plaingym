@@ -13,8 +13,8 @@ secret.
 its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
 settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
 `POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `NODE_OPTIONS`,
-`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE` and `DATABASE_POOL_MAX` (the last
-three with their defaults when unset or empty); it fixes
+`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK` and `DATABASE_POOL_MAX` (the last
+four with their defaults when unset or empty); it fixes
 `NODE_ENV`, `HOST`, `PORT`, `TENANCY=single`, `TRUST_PROXY`, `DATABASE_URL`,
 `MAINTENANCE_DATABASE_URL`, `UPLOADS_DIR` and `BACKUP_STAGING_DIR` itself; and it
 reads the Compose and Caddy variables at the end of this page. The other variables
@@ -119,6 +119,7 @@ similar): mail sent directly from a server usually lands in spam.
 | :--- | :--- | :--- |
 | `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. Sign-in, kiosk PINs and CSP reports keep their own limits. |
+| `UPDATE_CHECK` | `on` | `off` stops the app asking GitHub once a day for the newest release (the "Update available" banner and the Health page's update tile), for an install that must not call out; so does any value other than `on`, `true` or `1`. It sends no token and no data about the install. A multi-gym install never checks. |
 | `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below). Set both or neither; an empty value counts as unset. Ignored in demo mode. |
 | `GOOGLE_CLIENT_SECRET` | unset | That client's secret. |
 

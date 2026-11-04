@@ -85,6 +85,7 @@ services:
       # UPLOADS_S3_* are not passed (docs/configuration.md): the app reads an empty value as a value.
       AUTH_PASSWORD_LOGIN: ${AUTH_PASSWORD_LOGIN:-auto}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      UPDATE_CHECK: ${UPDATE_CHECK:-on}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       AUTH_SECRET: ${AUTH_SECRET:?required}

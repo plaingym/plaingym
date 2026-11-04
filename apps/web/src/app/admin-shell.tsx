@@ -48,9 +48,9 @@ function AccountMenu({ session, onSignOut, signingOut }: { session: ShellSession
     </div>
   </div>;
 }
-export function AdminShell({ state, entries = createRegistries().adminNav.all(), children, onSignOut, signingOut = false }:
+export function AdminShell({ state, entries = createRegistries().adminNav.all(), children, banner = null, onSignOut, signingOut = false }:
   { state: ShellBootstrap & { session: ShellSession }; entries?: readonly NavigationEntry[];
-    children: ReactNode; onSignOut: () => void; signingOut?: boolean }) {
+    children: ReactNode; banner?: ReactNode; onSignOut: () => void; signingOut?: boolean }) {
   const [open, setOpen] = useState(false);
   const demo = useDemoSandbox();
   const pathname = useRouterState({ select: (router) => router.location.pathname });
@@ -82,6 +82,7 @@ export function AdminShell({ state, entries = createRegistries().adminNav.all(),
         <AccountMenu session={state.session} onSignOut={onSignOut} signingOut={signingOut} />
       </div>
     </header>
+    {banner}
     <div className="relative flex flex-1">
       {open && <div aria-hidden="true" className="fixed inset-0 top-header z-10 bg-foreground/20 md:hidden" />}
       <nav ref={nav} id="admin-navigation" aria-label={t('shell/shell:navigation')}

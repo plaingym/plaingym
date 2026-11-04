@@ -171,7 +171,8 @@ in `vitest.config.ts`) run every test, and `pnpm generate` validates locale file
 run the full suite. The disposable test database skips durable writes
 (`compose.test.yaml`). CI runs the full suite, split across four jobs, on every push and pull
 request that changes more than Markdown files, and gates landing; End-to-end skips
-Markdown-only pushes too, and still runs nightly. On a push to `main`, CI reuses a passing run of the same
+Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
+stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
 commit (from its integration branch) instead of repeating it.
 Dependency lifecycle scripts are allowlisted for esbuild only.
 

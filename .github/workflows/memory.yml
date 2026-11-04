@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Memory
+# The whole self-hosted stack (Caddy, app, PostgreSQL with warm data) under the shipped Compose memory limits and again
+# without limits, while concurrent API traffic, 20-page waiver PDFs, an encrypted backup and the job worker run. It fails
+# when the memory budget (deploy/test/memory/budget.mjs) is exceeded or anything is killed for memory
+# (deploy/test/memory/README.md). A push that changes Markdown files only skips it; the nightly run still covers main.
+on:
+  push:
+    branches: [main, 'integration/**']
+    paths-ignore: ['**/*.md']
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: memory-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  reuse:
+    # main only receives fast-forwards of integration branches whose checks passed, so the same commit has already
+    # been measured: reuse that run's result instead of repeating it. Any lookup failure measures again.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.lookup.outputs.passed }}
+    steps:
+      - id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api "repos/${{ github.repository }}/actions/workflows/memory.yml/runs?head_sha=${{ github.sha }}&status=success" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length' || echo 0)"
+          if [ "$count" -gt 0 ]; then echo passed=true; else echo passed=false; fi >> "$GITHUB_OUTPUT"
+  memory:
+    needs: reuse
+    if: ${{ !cancelled() && needs.reuse.outputs.passed != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+      # The budget arithmetic, against synthetic runs including a leak and a kill.
+      - run: node --test deploy/test/memory/budget.test.mjs
+      # Builds committed HEAD into the production image, then runs the shipped Compose stack twice (limits, then
+      # none), sampling the real cgroups every 500 ms. Removes its containers, volumes and image afterwards.
+      - run: node deploy/test/memory/run.mjs --mode both --out "$RUNNER_TEMP/memory"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: memory-samples
+          path: ${{ runner.temp }}/memory/
+          retention-days: 7
+          if-no-files-found: ignore
+  canary:
+    # Proves the check can fail: the same run with a leak injected into the app's cgroup must exit 2 (budget exceeded).
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+      - run: |
+          set +e
+          node deploy/test/memory/run.mjs --mode capped --inject-leak --out "$RUNNER_TEMP/memory-canary"
+          code=$?
+          if [ "$code" -eq 2 ]; then echo "The injected leak failed the memory check, as it must."; exit 0; fi
+          echo "Expected exit code 2 (budget exceeded) from the injected leak, got $code." >&2
+          exit 1
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: memory-canary-samples
+          path: ${{ runner.temp }}/memory-canary/
+          retention-days: 7
+          if-no-files-found: ignore

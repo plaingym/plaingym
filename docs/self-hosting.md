@@ -262,6 +262,14 @@ sudo /opt/plaingym/update.sh --patch --now
 
 ### Minor and major releases
 
+Once a day the app reads the newest release from GitHub's public releases list (no
+token, nothing about your install is sent). When a newer minor or major version is
+out, owners and admins see an "Update available" banner with a link to the changelog,
+and the Health page's **Available update** tile shows the running and latest versions.
+A newer patch release raises no banner, even when automatic updates are off. If
+GitHub can't be reached the last answer is kept and the check retries within the
+hour. `UPDATE_CHECK=off` in `.env` stops it (`docs/configuration.md`).
+
 Update to a new minor or major release with:
 
 ```sh

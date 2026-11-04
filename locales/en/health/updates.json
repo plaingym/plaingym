@@ -1,3 +1,14 @@
 {
-  "$comment": "SPDX-License-Identifier: AGPL-3.0-only"
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "available": "Version {latest} is available. This install runs {current}.",
+  "patch": "Version {latest} is a patch release. It applies automatically; this install runs {current}.",
+  "current": "This install runs {current}, the latest release.",
+  "ahead": "This install runs {current}, newer than the latest published release, {latest}.",
+  "off": "Update checks are turned off.",
+  "notRelease": "This build is not a tagged release, so it cannot be compared with the latest release.",
+  "unreachable": "The latest release could not be read. The check retries automatically.",
+  "banner.title": "Update available",
+  "banner.body": "Version {latest} is available. This install runs {current}.",
+  "banner.changelog": "Changelog",
+  "banner.howTo": "Run the updater on the server to install it."
 }

@@ -82,7 +82,8 @@ describe('built-in providers', () => {
     expect(JSON.stringify(result)).not.toContain('sensitive-invalid');
   });
   it('checks free space in both directories, including a low staging disk and a full uploads disk', async () => {
-    const single = { ...env, TENANCY: 'single' };
+    // UPDATE_CHECK=off: reading every tile of a single-gym install would otherwise ask GitHub for the latest release.
+    const single = { ...env, TENANCY: 'single', UPDATE_CHECK: 'off' };
     const check = vi.fn(async (path: string) => ({ blocks: 20_000_000, bsize: 1024, bavail: path === '/staging' ? 500_000 : 10_000_000 }));
     expect(await tile('disk', gymA, { env: single })).toMatchObject({ status: 'healthy', details: { availableBytes: 10_240_000_000 } });
     expect(await tile('disk', gymA, { env: single, disk: check })).toMatchObject({ status: 'warning', details: { availableBytes: 512_000_000 }, message: expect.stringContaining('staging 488 MiB') });

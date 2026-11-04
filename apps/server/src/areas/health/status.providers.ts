@@ -10,6 +10,7 @@ import { parseEncryptionKey } from '../../core/secrets.js';
 import { createSmtpResolver } from '../settings/smtp.js';
 import { healthProvider, statusMessage } from './status.js';
 import { createBackupHealthProvider } from './status-backups.js';
+import { createUpdateAvailableProvider } from './updates.js';
 
 export interface StatusOptions {
   env?: NodeJS.ProcessEnv;
@@ -20,7 +21,7 @@ export interface StatusOptions {
 export function createStatusProviders(options: StatusOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym;
   const jobs = options.jobs ?? new PostgresJobStatsQuery(), disk = options.disk ?? statfs;
-  return [createBackupHealthProvider({ env }),
+  return [createBackupHealthProvider({ env }), createUpdateAvailableProvider({ env }),
     healthProvider('failed_jobs', async (context) => {
       const stats = await jobs.get(context.gymId);
       return { id: 'failed_jobs', status: stats.failed ? 'error' : 'healthy', checkedAt: context.clock.now().toISOString(),
