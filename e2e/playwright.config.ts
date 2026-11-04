@@ -8,6 +8,8 @@ export default defineConfig({
   projects: process.env.E2E_VM_CONFIG ? [{ name: 'vm', testMatch: '**/vm.spec.ts' }] : [
     { name: 'fresh-setup', testMatch: '**/fresh-setup.spec.ts' },
     { name: 'members-mat', testMatch: '**/*.spec.ts', testIgnore: ['**/vm.spec.ts', '**/fresh-setup.spec.ts'], dependencies: ['fresh-setup'] },
+    // Two gyms of one multi-gym install (not demo mode), on their own hostnames.
+    { name: 'multi-gym', testDir: './multi', testMatch: '**/*.spec.ts' },
   ],
   fullyParallel: false,
   workers: 1,

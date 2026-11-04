@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: End-to-end
-# The production image behind Caddy with two installs (single-gym and demo): the staff workflows,
-# permission sweep, demo isolation, phone layouts, and signed downloads (e2e/README.md).
+# The production image behind Caddy with three installs (single-gym, demo, and a multi-gym install of two gyms):
+# the staff workflows, permission sweep, demo isolation, the multi-gym flows and cross-gym sweep, phone layouts,
+# and signed downloads (e2e/README.md).
 # A push that changes Markdown files only skips it; the nightly run still covers main.
 on:
   push:

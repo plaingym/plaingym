@@ -31,11 +31,12 @@ already-built image; make sure it contains the commit being tested. No developer
 `.env`, working-tree files, credentials, dependencies or other worktrees enter
 the build context. The production build and entrypoint are unchanged.
 
-Each run starts its own Compose project: two fresh PostgreSQL databases, a
-single-gym install, a demo install with S3-compatible storage (VersityGW) for its seeded
-files, a stand-in for the Stripe API, and Caddy with local TLS. As in a deployed
-multi-gym install, the demo app holds no maintenance credentials: a one-shot
-`demo-migrate` service migrates its database first. Credentials are
+Each run starts its own Compose project: three fresh PostgreSQL databases, a
+single-gym install with local uploads, a demo install and a multi-gym install (each of those two with
+S3-compatible storage (VersityGW) for uploads), a mail catcher (Mailpit) for the multi-gym install, a stand-in for the
+Stripe API, and Caddy with local TLS. As in a deployed multi-gym install, the demo and multi-gym
+apps hold no maintenance credentials: a one-shot `demo-migrate` or `multi-migrate` service migrates
+their database first. Credentials are
 random for each run. Nothing is exposed except port 443 on the loopback address.
 
 The demo install keeps sandbox billing on with a random test key. Its Stripe calls
@@ -53,8 +54,8 @@ needed. Browser TLS verification is disabled only for the local Caddy certificat
 The runner removes its containers, volumes and fixture cache after the tests,
 including on a test failure.
 
-The `fresh-setup` Playwright project completes the real wizard before the other
-projects, checking each owned step at 360, 768, and 1280 px: no sideways scrolling,
+The `fresh-setup` Playwright project completes the real wizard before the `members-mat`
+project, checking each owned step at 360, 768, and 1280 px: no sideways scrolling,
 44 px targets, reachable primary actions, and axe WCAG A/AA. It also opens the
 restore form and exercises the import choice; the payment step uses its existing
 skip action. The `members-mat` project depends on it, so test-file order cannot
@@ -128,6 +129,28 @@ The checks cover:
   portal's invoice and card buttons reach the hosted Checkout page by navigation, and
   that the outbox preview shows a signed-link email with its inline styles under the
   preview's own policy.
+
+The `multi-gym` Playwright project (`multi/`) uses the multi-gym install without demo mode: `gym-app gyms create`
+makes two gyms, `alpha.multi.localhost` and `beta.multi.localhost`, and each owner signs in by the emailed magic
+link, read from Mailpit's API at `https://mail.localhost`. Each gym gets a coach, a rank system and program, a
+household with a minor who signed the waiver and a PIN, a class and booking, a kiosk device, a plan, an invoice, a
+household portal login, and a Stripe key saved in its own settings (both gyms save the same key for the fake Stripe, whose
+records aren't kept apart per key). Every invitation and sign-in link a gym hands out must name its own hostname. The checks cover:
+
+* In each gym (`flows.spec.ts`): the admin, portal and kiosk (name and PIN) show that gym only, a session or device
+  token copied to the other hostname is refused, and a visitor joins at 360 px, is paid at the desk and gets a portal login,
+  without the other gym ever seeing the prospect.
+* A cross-gym sweep (`isolation.spec.ts`) over every non-public route in `authorization-inventory.json`, in both directions:
+  gym A's owner session, household login, kiosk device and signed links, aimed at gym B's member, household, session, booking,
+  invoice, signature, device, program, rank, staff, portal login and invitation IDs, on gym A's hostname and on gym B's,
+  must answer 4xx and never contain anything of gym B. Mutations get valid bodies, and those with no ID in their path
+  (bookings, check-ins, promotions, programs, ranks, classes, staff roles and profiles, waiver signatures) name gym B's
+  records in the body; a kiosk check-in of gym B's member or QR code answers, as for any unknown member, with the front
+  desk. Every ID-free read and public page of a gym is checked for the other gym's IDs and names, controls prove the same
+  credentials reach their own records, and both gyms' records are unchanged afterwards. Resources a fresh gym has none of
+  (imports, exports, schedule templates and tags) use an ID nothing holds. Routes outside the inventory (such as the staff
+  billing and waiver APIs) aren't in this sweep; the password-reset routes are refused anyway, since a multi-gym install
+  has no password login.
 
 Browser specs and their helpers import only e2e tooling and local test helpers.
 The End-to-end workflow installs this package independently of the application.

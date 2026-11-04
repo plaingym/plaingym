@@ -97,6 +97,61 @@ services:
       DEMO_STRIPE_WEBHOOK_SECRET: ${E2E_STRIPE_WEBHOOK_SECRET:?required}
       NODE_EXTRA_CA_CERTS: /stripe-ca/root.crt
     volumes: ['stripe-ca:/stripe-ca:ro']
+  # A multi-gym install without demo mode: two gyms created with the CLI and signed in by emailed
+  # magic links (the mail catcher below), with the same one-shot migrate arrangement as the demo install.
+  multi-postgres: *postgres
+  multi-migrate:
+    <<: *hardening
+    image: ${E2E_IMAGE:?required}
+    entrypoint: [/app/deploy/database.sh, prepare]
+    healthcheck: {disable: true}
+    depends_on:
+      multi-postgres: {condition: service_healthy}
+    environment:
+      PGHOST: multi-postgres
+      POSTGRES_DB: plaingym
+      APP_PASSWORD: ${E2E_APP_PASSWORD:?required}
+      MAINTENANCE_PASSWORD: ${E2E_MAINTENANCE_PASSWORD:?required}
+      MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@multi-postgres:5432/plaingym
+  multi-s3:
+    image: versity/versitygw:v1.0.20@sha256:c2f9b9289d237b85736214dfbef376b7d092b8540e1456d547aaa35dd03ad0b3
+    entrypoint: [sh, -c, 'mkdir -p /data/plaingym && exec versitygw --port :7070 --region auto posix /data']
+    environment:
+      ROOT_ACCESS_KEY: e2e
+      ROOT_SECRET_KEY: ${E2E_S3_SECRET:?required}
+  # Catches the install's email. The specs read sign-in links from its API, served as https://mail.localhost.
+  mailpit:
+    image: axllent/mailpit:v1.27.8@sha256:6abc8e633df15eaf785cfcf38bae48e66f64beecdc03121e249d0f9ec15f0707
+    healthcheck:
+      test: [CMD, /mailpit, readyz]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  multi:
+    image: ${E2E_IMAGE:?required}
+    depends_on:
+      multi-migrate: {condition: service_completed_successfully}
+      multi-s3: {condition: service_started}
+      mailpit: {condition: service_healthy}
+      stripe-tls: {condition: service_healthy}
+    environment:
+      <<: *app-env
+      PGHOST: multi-postgres
+      PUBLIC_ORIGIN: https://alpha.multi.localhost
+      TENANCY: multi
+      AUTH_PASSWORD_LOGIN: 'off'
+      DATABASE_URL: postgres://app:${E2E_APP_PASSWORD}@multi-postgres:5432/plaingym
+      UPLOADS_S3_BUCKET: plaingym
+      UPLOADS_S3_ENDPOINT: http://multi-s3:7070
+      UPLOADS_S3_ACCESS_KEY_ID: e2e
+      UPLOADS_S3_SECRET_ACCESS_KEY: ${E2E_S3_SECRET}
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_SECURITY: plain
+      SMTP_FROM: gym@multi.localhost
+      # Each gym saves its own restricted test key; the fake Stripe below accepts it.
+      NODE_EXTRA_CA_CERTS: /stripe-ca/root.crt
+    volumes: ['stripe-ca:/stripe-ca:ro']
   # A stateful stand-in for the Stripe API (stripe/server.mjs), so joins complete without Stripe keys.
   stripe:
     image: node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
@@ -106,6 +161,8 @@ services:
     volumes: ['./stripe/server.mjs:/fake/server.mjs:ro']
     environment:
       STRIPE_SECRET_KEY: ${E2E_STRIPE_KEY:?required}
+      # The key a gym of the multi-gym install saves in its settings.
+      STRIPE_RESTRICTED_KEY: ${E2E_STRIPE_RESTRICTED_KEY:?required}
       CHECKOUT_ORIGIN: https://stripe.localhost
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:12111/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
@@ -137,6 +194,7 @@ services:
     depends_on:
       app: {condition: service_healthy}
       demo: {condition: service_healthy}
+      multi: {condition: service_healthy}
       stripe: {condition: service_healthy}
 volumes:
   stripe-ca: {}

@@ -4,6 +4,15 @@ https://gym.localhost {
   tls internal
   reverse_proxy app:3000
 }
+# The multi-gym install: one hostname per gym, and its mail catcher's API for the specs.
+https://alpha.multi.localhost, https://beta.multi.localhost {
+  tls internal
+  reverse_proxy multi:3000
+}
+https://mail.localhost {
+  tls internal
+  reverse_proxy mailpit:8025
+}
 # The fake Stripe's hosted Checkout page and API, for the browser and the specs.
 https://stripe.localhost {
   tls internal

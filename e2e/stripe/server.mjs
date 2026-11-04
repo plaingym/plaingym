@@ -4,8 +4,8 @@
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 
-const secretKey = process.env.STRIPE_SECRET_KEY, checkoutOrigin = process.env.CHECKOUT_ORIGIN;
-if (!secretKey || !checkoutOrigin) throw new Error('STRIPE_SECRET_KEY and CHECKOUT_ORIGIN are required');
+const secretKey = process.env.STRIPE_SECRET_KEY, restrictedKey = process.env.STRIPE_RESTRICTED_KEY, checkoutOrigin = process.env.CHECKOUT_ORIGIN;
+if (!secretKey || !restrictedKey || !checkoutOrigin) throw new Error('STRIPE_SECRET_KEY, STRIPE_RESTRICTED_KEY and CHECKOUT_ORIGIN are required');
 const objects = new Map(), replies = new Map();
 const newId = (prefix) => prefix + '_' + randomBytes(12).toString('hex');
 const now = () => Math.floor(Date.now() / 1000);
@@ -154,6 +154,28 @@ const routes = [
   }],
   ['GET', /^\/v1\/refunds$/, (_body, query) => list('re', query, (refund) => !query.payment_intent || refund.payment_intent === query.payment_intent)],
   ['GET', /^\/v1\/refunds\/(\w+)$/, (_body, _query, id) => find('re', id) ?? missing(id)],
+  // The listings a gym's permission check reads when it saves its key.
+  ['GET', /^\/v1\/checkout\/sessions$/, (_body, query) => list('cs', query)],
+  ['GET', /^\/v1\/setup_intents$/, (_body, query) => list('seti', query)],
+  ['GET', /^\/v1\/payment_methods$/, (_body, query) => list('pm', query, (method) => !query.customer || method.customer === query.customer)],
+  ['GET', /^\/v1\/charges$/, (_body, query) => list('ch', query)],
+  // Webhook endpoints: a gym registers one when it saves its key. Only creation returns the signing secret, as Stripe does.
+  ['POST', /^\/v1\/webhook_endpoints$/, (body) => {
+    const endpoint = store({ id: newId('we'), object: 'webhook_endpoint', created: now(), livemode: false, url: body.url,
+      api_version: body.api_version ?? null, enabled_events: body.enabled_events ?? [], metadata: body.metadata ?? {}, status: 'enabled' });
+    return { ...endpoint, secret: 'whsec_' + randomBytes(16).toString('hex') };
+  }],
+  ['GET', /^\/v1\/webhook_endpoints$/, (_body, query) => list('we', query)],
+  ['GET', /^\/v1\/webhook_endpoints\/(\w+)$/, (_body, _query, id) => find('we', id) ?? missing(id)],
+  ['POST', /^\/v1\/webhook_endpoints\/(\w+)$/, (body, _query, id) => {
+    const endpoint = find('we', id); if (!endpoint) return missing(id);
+    if (body.enabled_events) endpoint.enabled_events = body.enabled_events;
+    return endpoint;
+  }],
+  ['DELETE', /^\/v1\/webhook_endpoints\/(\w+)$/, (_body, _query, id) => {
+    const endpoint = find('we', id); if (!endpoint) return missing(id);
+    objects.delete(id); return { id, object: 'webhook_endpoint', deleted: true };
+  }],
   // Disputes and events never occur in this stand-in; change feeds read them as empty pages.
   ['GET', /^\/v1\/disputes$/, (_body, query) => list('dp', query)],
   ['GET', /^\/v1\/disputes\/(\w+)$/, (_body, _query, id) => missing(id)],
@@ -217,7 +239,7 @@ createServer(async (request, response) => {
         throw error;
       }
     }
-    if (request.headers.authorization !== 'Bearer ' + secretKey)
+    if (![secretKey, restrictedKey].some((key) => request.headers.authorization === 'Bearer ' + key))
       return send(response, 401, { error: { type: 'invalid_request_error', message: 'Invalid API Key provided' } });
     const idempotency = request.method === 'POST' && request.headers['idempotency-key'];
     const replayKey = idempotency && `${request.method} ${url.pathname} ${idempotency}`;
