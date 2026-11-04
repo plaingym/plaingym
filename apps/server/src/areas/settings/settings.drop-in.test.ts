@@ -36,7 +36,7 @@ async function fixture() {
   const catalog = createCatalogService({ ...options, settings: createGymSettingsAccessor(options) });
   const dropInFeeFor = createDropInFee({ scope: database.forGym });
   const uploads = new FakeUploads(gymId, clock);
-  const pages = createPublicPagesService({ ...options, settings: service, dropInFeeFor, notifyStaff: async () => {},
+  const pages = createPublicPagesService({ ...options, dropInFeeFor, notifyStaff: async () => {},
     waivers: createWaiversService({ ...options, uploadsFor: async () => uploads }) });
   const routes = [...createSettingsRoutes(service), ...createPublicRoutes({ service: pages, stylesheet: async () => '' })];
   function server(role: StaffRole = 'owner', principal: { gymId: string; userId: string } = { gymId, userId }, resolved = gymId) {
@@ -58,7 +58,7 @@ async function fixture() {
   const config = async () => publicContracts.config.response.parse(await (await server().request(origin + '/api/public/config')).json()).data.dropInFee;
   const archive = async (id: string, active = false) => catalog.updateChargeType({ gymId, actor: { kind: 'system' } }, id,
     { revision: (await catalog.getChargeType(gymId, id)).revision, active });
-  return { gymId, otherGym, clock, mat, foreign, otherUser, service, catalog, dropInFeeFor, patch, revision, choose, page, config, archive };
+  return { gymId, otherGym, clock, mat, foreign, otherUser, service, catalog, dropInFeeFor, patch, revision, choose, page, config, archive, server };
 }
 
 describe('drop-in fee setting through real PostgreSQL and the settings and public routes', () => {
@@ -221,6 +221,19 @@ describe('drop-in fee setting through real PostgreSQL and the settings and publi
     expect(reads).toEqual([]);
     await pages.config(f.gymId);
     expect(reads).toEqual([f.gymId]);
+  });
+
+  it('shows a zero-decimal gym\'s drop-in fee in whole yen', async () => {
+    const f = await fixture(), yenGym = uuidv7();
+    await factory('gyms', yenGym, { currency: 'JPY' });
+    const fee = await factory('chargeTypes', yenGym, { name: 'Mat fee', amountCents: 1500, currency: 'JPY' });
+    await factory('waiverTemplates', yenGym, { name: 'Participation' });
+    const principal = { gymId: yenGym, userId: (await factory('authUser', yenGym)).id };
+    const response = await f.patch({ revision: await f.revision(yenGym), dropInChargeTypeId: fee.id }, 'owner', principal, yenGym);
+    expect(response.status).toBe(200);
+    expect(await f.dropInFeeFor(yenGym)).toEqual({ amountCents: 1500, currency: 'JPY', plusTax: false });
+    const html = await (await f.server('owner', principal, yenGym).request(origin + '/drop-in')).text();
+    expect(html).toContain('¥1,500'); expect(html).not.toMatch(/¥15(?![,\d])/);
   });
 
   it('reads only the choosing gym\'s tax rates', async () => {

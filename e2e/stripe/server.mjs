@@ -203,7 +203,7 @@ function complete(session, number) {
 }
 const escape = (value) => String(value).replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 function page(session, message = '') {
-  const amount = session.amount_total === null ? '' : `<p>${escape((session.amount_total / 100).toFixed(2))} ${escape(session.currency.toUpperCase())}</p>`;
+  const amount = session.amount_total === null ? '' : `<p>${escape(String(session.amount_total))} ${escape(session.currency.toUpperCase())} (minor units, as sent)</p>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Test checkout</title></head><body style="font-family:sans-serif;max-width:28rem;margin:2rem auto;padding:0 1rem">
 <main><h1>Test checkout</h1>${amount}${message ? `<p role="alert">${escape(message)}</p>` : ''}

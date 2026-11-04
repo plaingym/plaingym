@@ -15,7 +15,7 @@ import { createApp } from '../../app.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { TestClock } from '../../core/clock.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
-import { createSettingsService, createGymSettingsAccessor } from '../../areas/settings/settings.js';
+import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
 import { createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
@@ -78,7 +78,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const settings = createGymSettingsAccessor({ scope: db.forGym, clock }), lifecycle = createMembershipService({ scope: db.forGym, clock, settings });
   const paymentsConfigured = vi.fn(async (id: string) => id === gymId);
   const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts,
-    settings: createSettingsService({ scope: db.forGym, clock }), memberships: lifecycle, invitationStore: createPortalInvitationStore(() => db.system.db) });
+    memberships: lifecycle, invitationStore: createPortalInvitationStore(() => db.system.db) });
   const jobs = new FakeJobs(clock), transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings, async prepare() { return { email: mail, origin }; }, async staffRecipients() { return []; } });
   // As the runtime composes it: the paid-invoice effect completes a join however its invoice was paid.
@@ -167,6 +167,19 @@ function nativeForm(f: Fixture, planId: string, email: string) {
 }
 
 describe('public join pages through the production registrations', () => {
+  it('shows a zero-decimal gym\'s plan prices in whole yen, in the page and the API', async () => {
+    const f = await fixture(), yenGym = uuidv7();
+    await factory('gyms', yenGym, { name: 'Tokyo Gym', currency: 'JPY', timezone, billingEnabled: true });
+    await factory('plans', yenGym, { name: 'Monthly yen', amountCents: 12000, currency: 'JPY', interval: 'monthly', signupFeeCents: 5500 });
+    await factory('plans', yenGym, { name: 'Annual yen', amountCents: 120000, currency: 'JPY', interval: 'annual' });
+    for (const name of ['Conduct', 'Participation']) await factory('waiverTemplates', yenGym, { name, body: 'Terms.' });
+    f.paymentsConfigured.mockResolvedValue(true);
+    const html = await (await f.get('/join', '', f.app(yenGym))).text();
+    expect(html).toContain('¥12,000 per month'); expect(html).toMatch(/Sign-up fee: [A-Z]*¥5,500/); expect(html).toContain('¥120,000 per year');
+    expect(html).not.toMatch(/¥120(?![,\d])|¥55(?![,\d])|¥1,200(?![,\d])/);
+    const api = publicContracts.plans.response.parse(await (await f.get('/api/public/plans?limit=100&offset=0', '', f.app(yenGym))).json());
+    expect(api.data.map(p => [p.name, p.amountCents, p.currency])).toEqual([['Annual yen', 120000, 'JPY'], ['Monthly yen', 12000, 'JPY']]);
+  });
   it('lists only plans payable online, renders the join form with the website off, and projects nothing from another gym', async () => {
     const f = await fixture(), list = await f.get('/join'), html = await list.text();
     expect(list.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;'); expect(html).toContain('href="/source"');

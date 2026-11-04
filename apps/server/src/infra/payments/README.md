@@ -14,6 +14,9 @@ then calls `confirmCharge` with the separate confirmation key. Unknown network
 outcomes throw and must be reconciled by ID. Never interpret them as a decline.
 `attemptId` is the local attempt ID; `attempt_n` comes from the numeric segment in
 the `invoice_id:attempt_n:create` key. Use the persisted request parameters on retry.
+Amounts go to Stripe and come back exactly as stored: positive integers in the
+currency's minor units (500 is $5.00, ¥500 or 0.500 KWD) with a lowercase ISO code,
+in any currency; nothing here converts them.
 
 Explicitly created Customers, intents, Checkout sessions, inline Products, refunds,
 and webhook endpoints receive `gym_id` metadata. Checkout also puts metadata on its
@@ -346,7 +349,8 @@ outside tracked paths (for example, the parent workspace's ignored `scratch/`):
 Set `STRIPE_TEST_RESTRICTED_KEY` in the environment, `STRIPE_CONTRACT_FIXTURES` to
 that file, and `STRIPE_CONTRACT_MODE=test-api`. Then run the command above. The
 exact same contracts run against the real adapter over Stripe's test API, plus
-the permission checks. The harness requires `rk_test_` and a test-only transport;
+the permission checks, and a charge and refund in JPY (zero-decimal) and EUR whose
+amounts must come back unchanged. The harness requires `rk_test_` and a test-only transport;
 live keys are rejected before any request. It creates test payments, refunds,
 and open/expired Checkout sessions, plus a pinned-version webhook endpoint at a
 reserved `.invalid` URL (its ID is printed for review). Delete the test endpoints

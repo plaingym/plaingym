@@ -140,6 +140,23 @@ it('tags all explicitly created objects and sends Endive parameters', async () =
   expect(enabled).not.toContain('charge.dispute.funds_reinstated');
   expect(enabled).not.toContain('charge.dispute.funds_withdrawn');
 });
+it('sends and reads amounts in the currency\'s minor units as stored, for zero- and three-decimal currencies too', async () => {
+  for (const [currency, amount] of [['jpy', 2500], ['kwd', 2500], ['usd', 2500]] as const) {
+    const { payments, transport } = fixture(), key = currency + ':1:create';
+    const intent = await payments.createCharge({ ...charge, amount, currency, idempotencyKey: key });
+    expect(transport.requests.find((input) => input.path === '/v1/payment_intents')?.params).toMatchObject({ amount, currency });
+    expect(await payments.confirmCharge(intent.id, { idempotencyKey: currency + ':1:confirm' })).toMatchObject({ status: 'succeeded', amount, currency });
+    const refund = await payments.refund({ chargeId: intent.id, amount: 1000, idempotencyKey: currency + ':refund' });
+    expect(refund).toMatchObject({ amount: 1000, currency });
+    expect(transport.requests.find((input) => input.path === '/v1/refunds')?.params).toMatchObject({ amount: 1000 });
+    await payments.createCheckout({ ...checkout, amount, currency, idempotencyKey: currency + ':checkout' });
+    expect(transport.requests.find((input) => input.path === '/v1/checkout/sessions')?.params?.line_items)
+      .toMatchObject([{ quantity: 1, price_data: { currency, unit_amount: amount } }]);
+  }
+  const { payments } = fixture();
+  for (const currency of ['JPY', 'jp', 'jpyy', '']) await expect(payments.createCharge({ ...charge, currency, idempotencyKey: 'bad:' + currency })).rejects.toThrow('lowercase ISO currency');
+  for (const amount of [0, -100, 25.5]) await expect(payments.createCharge({ ...charge, amount, idempotencyKey: 'bad:' + amount })).rejects.toThrow('minor units');
+});
 it('charges a saved card in four requests, checking the payer and its gym through the expanded payment method', async () => {
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
   const outcome = await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
@@ -638,6 +655,18 @@ if (process.env.STRIPE_CONTRACT_MODE === 'test-api') {
     const payments = new StripePayments(fixtures.gymId, { transport: recordingTransport(stripeTransport(apiKey, { testOnly: true }), recorder), webhookSecret: 'unused' });
     return { payments, charge: { ...charge, customerId: fixtures.customerId, paymentMethodId: fixtures.methods[card], invoiceId: run, idempotencyKey: run + ':1:create' },
       checkout: { ...checkout, customerId: fixtures.customerId, idempotencyKey: run + ':checkout' }, detach: fixtures.detach };
+  });
+  // ¥2,500 is sent as 2500 (zero-decimal), €25.00 as 2500 (two-decimal); Stripe reads both back unchanged.
+  it.each([['jpy', 2500], ['eur', 2500]] as const)('charges and refunds in %s minor units against the test API', async (currency, amount) => {
+    const run = randomUUID(), recorder = new FixtureRecorder(fixtures.gymId); recordings.push(recorder);
+    const payments = new StripePayments(fixtures.gymId, { transport: recordingTransport(stripeTransport(apiKey, { testOnly: true }), recorder), webhookSecret: 'unused' });
+    const intent = await payments.createCharge({ ...charge, amount, currency, customerId: fixtures.customerId, paymentMethodId: fixtures.methods['4242'],
+      invoiceId: run, idempotencyKey: run + ':1:create' });
+    const outcome = await payments.confirmCharge(intent.id, { idempotencyKey: run + ':1:confirm' });
+    console.log('Test-mode ' + currency + ' charge: ' + intent.id + ' ' + JSON.stringify(outcome));
+    expect(outcome).toMatchObject({ status: 'succeeded', amount, currency });
+    expect(await payments.findCharge({ kind: 'charge', id: intent.id })).toMatchObject({ status: 'succeeded', amount, currency });
+    expect(await payments.refund({ chargeId: intent.id, amount: 1000, idempotencyKey: run + ':refund' })).toMatchObject({ amount: 1000, currency });
   });
   it('checks the full restricted-key profile against the test API', () => stripeProvisioner(stripeTransport(apiKey, { testOnly: true })).validate());
   it('registers a tagged test endpoint at the pinned API version', async () => {

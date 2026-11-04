@@ -182,7 +182,7 @@ export class StripeFixtures implements PaymentTransport {
     if (resource === 'refunds') {
       if (!this.objects.has(String(params.payment_intent))) throw Object.assign(new Error('No intent'), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
       const status = this.nextRefundStatus ?? 'succeeded'; this.nextRefundStatus = undefined;
-      return this.#store('re', { object: 'refund', ...params, currency: 'usd', status });
+      return this.#store('re', { object: 'refund', ...params, currency: this.objects.get(String(params.payment_intent))!.currency ?? 'usd', status });
     }
     if (resource === 'webhook_endpoints') return this.#store('we', { object: 'webhook_endpoint', ...params, secret: 'fixture-signing-secret' });
     throw new Error('Unexpected fixture endpoint ' + input.path);

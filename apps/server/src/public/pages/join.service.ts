@@ -10,7 +10,7 @@ import { addDays, localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
-import { createGymSettingsAccessor, createSettingsService, readGymSettings } from '../../areas/settings/settings.js';
+import { createGymSettingsAccessor, readGymSettings } from '../../areas/settings/settings.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { needsGuardian, validateSignatureImage } from '../../areas/waivers/snapshot.js';
@@ -51,7 +51,6 @@ export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' |
 export interface JoinOptions {
   scope?: typeof forGym;
   clock?: Clock;
-  settings?: Pick<ReturnType<typeof createSettingsService>, 'get'>;
   waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign'>;
   /** The signed-link Checkout service whose sessions the webhook records and completes. */
   checkout: Pick<ReturnType<typeof createSignedLinkCheckout>, 'start'>;
@@ -97,7 +96,7 @@ const marked = async (tx: Transaction, action: string, householdId: string) => (
 
 export function createJoinService(options: JoinOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const settings = options.settings ?? createSettingsService({ scope, clock });
+  const settings = (gymId: string) => scope(gymId, tx => readGymSettings(tx, gymId));
   // No assignment callback: the join issues one first invoice with every first period and sign-up fee.
   const lifecycle = options.memberships ?? createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) });
   const links = options.links ?? createSignedLinksService({ scope, clock });
@@ -113,8 +112,7 @@ export function createJoinService(options: JoinOptions) {
   }
   /** The plan row when it can be paid for online; a submission needs no tax lookup. */
   async function joinableRow(gymId: string, planId: string) {
-    const gym = await settings.get(gymId);
-    return scope(gymId, tx => joinableIn(tx, gym.currency, planId));
+    return scope(gymId, async tx => joinableIn(tx, (await readGymSettings(tx, gymId)).currency, planId));
   }
   async function joinableIn(tx: Transaction, currency: string, planId: string) {
     const [row] = await tx.select().from(plans).where(and(eq(plans.id, planId), joinable(currency)));
@@ -130,7 +128,7 @@ export function createJoinService(options: JoinOptions) {
   }
   /** Billing on, a payment provider, and one to eight current documents, all before anything is written. */
   async function ready(gymId: string) {
-    if (!(await settings.get(gymId)).billingEnabled || !await options.paymentsConfigured(gymId)) unavailable();
+    if (!(await settings(gymId)).billingEnabled || !await options.paymentsConfigured(gymId)) unavailable();
     const page = await options.waivers.listTemplates(gymId, { limit: 100, offset: 0 });
     if (!page.data.length || page.pagination.total > maxJoinDocuments) unavailable();
     return page.data;
@@ -258,16 +256,15 @@ export function createJoinService(options: JoinOptions) {
     ready, joinablePlan,
     passwordMode: (gymId: string) => options.invitations.passwordRequired(gymId),
     async plans(gymId: string, query: c.Pagination) {
-      const gym = await settings.get(gymId);
       return scope(gymId, async tx => {
-        const where = joinable(gym.currency), total = await tx.$count(plans, where);
+        const where = joinable((await readGymSettings(tx, gymId)).currency), total = await tx.$count(plans, where);
         const rows = await tx.select().from(plans).where(where).orderBy(asc(plans.name), asc(plans.id)).limit(query.limit).offset(query.offset);
         const taxed = await plansPlusTax(tx, rows.map(row => row.id));
         return c.publicPlanListResponseSchema.parse({ data: rows.map(row => plan(row, taxed.has(row.id))), pagination: { ...query, total } });
       });
     },
     async branding(gymId: string) {
-      const gym = await settings.get(gymId);
+      const gym = await settings(gymId);
       return c.publicBrandingSchema.parse({ name: gym.name, revision: gym.revision, logoKey: gym.branding.logoKey ?? null, primaryColor: gym.branding.primaryColor ?? null });
     },
     /** Creates the new household and its prospects, then stores each validated signature image. Never looks up an address. */

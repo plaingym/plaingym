@@ -11,8 +11,15 @@ export const idSchema = z.uuid();
 export const dateSchema = z.iso.date();
 /** ISO timestamp with an explicit UTC marker or numeric timezone offset. */
 export const instantSchema = z.iso.datetime({ offset: true });
+/**
+ * ISO 4217 code in capitals. Any currency is accepted; its decimal places (0 for JPY, 2 for USD, 3 for KWD) come
+ * from `currencyExponent` in `@plaingym/shared/money`, which every price display and input goes through.
+ */
 export const currencySchema = z.string().regex(/^[A-Z]{3}$/);
-/** PostgreSQL integer cents; negative values are valid for discount lines. */
+/**
+ * A PostgreSQL integer amount in the currency's minor units, as Stripe takes it (named cents for history: 2500 is
+ * $25.00 but ¥2,500); negative values are valid for discount lines.
+ */
 export const amountCentsSchema = z.int32();
 export const moneySchema = z.strictObject({
   amountCents: amountCentsSchema,

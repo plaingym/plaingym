@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { refundReleased, type InvoiceDetail, type MaskedPaymentMethod, type Payment } from '@plaingym/shared/contracts';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
-import { text, money, decimalAmount, decimalUnits } from './format.js';
+import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
 import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
@@ -48,7 +48,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         setMessage(text(result.data.status === 'succeeded' ? 'paid' : result.data.status === 'failed' ? 'chargeFailed'
           : result.data.status === 'requires_action' ? 'requiresAction' : 'pendingCharge'));
       }
-      if (action.kind === 'refund') await client.call('createRefund', { amountCents: decimalUnits(String(form.get('amount')), 2),
+      if (action.kind === 'refund') await client.call('createRefund', { amountCents: parseMinorUnits(String(form.get('amount')), action.payment.currency, { anyMinorUnit: true }),
         currency: action.payment.currency, reason: form.get('reason') || null }, { paymentId: action.payment.id });
       if (action.kind === 'revoke' || action.kind === 'default') await client.call(action.kind === 'revoke' ? 'revokePaymentMethod' : 'setDefaultPaymentMethod', {},
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
@@ -132,7 +132,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
           </>}
           {action.kind === 'refund' && <>
             <p className="text-sm text-muted-foreground">{text(action.payment.method === 'card' ? 'refundHelp' : 'manualRefundHelp')}</p>
-            <Label className="block">{text('amount')}<Input name="amount" required inputMode="decimal" defaultValue={decimalAmount(refundable(data, action.payment))}/></Label>
+            <Label className="block">{text('amount')}<Input name="amount" required inputMode="decimal" defaultValue={minorUnitsToInput(refundable(data, action.payment), action.payment.currency)}/></Label>
             <Label className="block">{text('reason')}<Input name="reason"/></Label>
           </>}
           {action.kind === 'charge' && <p>{text('chargeHelp')}</p>}

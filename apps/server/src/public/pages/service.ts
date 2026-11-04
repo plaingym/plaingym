@@ -8,7 +8,7 @@ import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
-import { createSettingsService, readGymSettings } from '../../areas/settings/settings.js';
+import { readGymSettings } from '../../areas/settings/settings.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import type { Uploads } from '../../infra/storage/index.js';
@@ -22,11 +22,10 @@ export const admissionSchema = c.publicTrialRequestSchema.extend({
 export interface PublicPagesOptions {
   scope?: typeof forGym;
   clock?: Clock;
-  settings?: Pick<ReturnType<typeof createSettingsService>, 'get'>;
   waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign'>;
   uploadsFor?: (gymId: string) => Promise<Uploads>;
   /** Given the config read's transaction, so the settings and the fee come over one connection. */
-  dropInFeeFor?: (gymId: string, tx?: Transaction) => Promise<{ amountCents: number; currency: string; plusTax: boolean } | null>;
+  dropInFeeFor?: (gymId: string, tx: Transaction) => Promise<{ amountCents: number; currency: string; plusTax: boolean } | null>;
   /** Called after the intake commits, with identifiers only; the runtime queues the staff notice. */
   notifyStaff: (gymId: string, intake: { kind: 'trial' | 'drop-in'; memberId: string }) => Promise<void>;
 }
@@ -34,7 +33,6 @@ const received = () => c.publicSubmissionResponseSchema.parse({ data: { status: 
 const missing = (): never => { throw new AppError('not_found', 'Admission not found'); };
 export function createPublicPagesService(options: PublicPagesOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
-  const settings = options.settings ?? createSettingsService({ scope, clock });
   const mutation = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   async function notifyStaff(gymId: string, intake: Parameters<PublicPagesOptions['notifyStaff']>[1], requestId?: string) {
     try { await options.notifyStaff(gymId, intake); }
@@ -96,7 +94,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       dropInFee } });
     },
     async logo(gymId: string, revision: string) {
-      const gym = await settings.get(gymId), key = gym.branding.logoKey;
+      const gym = await scope(gymId, tx => readGymSettings(tx, gymId)), key = gym.branding.logoKey;
       if (revision !== String(gym.revision)) return missing();
       if (!key || !key.startsWith(gymId + '/') || !options.uploadsFor) return missing();
       const uploads = await options.uploadsFor(gymId), info = await uploads.head(key);

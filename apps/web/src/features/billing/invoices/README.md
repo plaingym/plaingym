@@ -11,7 +11,8 @@ The registered member profile tab resolves the member's household and requests
 that household's invoices. Cache keys include gym, household/member, filters and
 pagination. A created one-off invoice opens its detail so staff can choose cash or
 check, the saved card, or a signed pay link. Currency comes from the bootstrap gym summary;
-decimal input converts to integer cents without floating-point rounding.
+a typed amount converts to the currency's minor units with `parseMinorUnits` from
+`@plaingym/shared/money`, without floating-point rounding.
 
 The one-off editor offers a custom amount only with `payments.custom` (owner, admin);
 without it, staff pick a catalog charge type. When the gym has no active charge type, the editor says so: staff with `plans.manage` (the right to add a charge type; owners and admins) are told to add one in the billing catalog, with `or use a custom amount` when they can bill one, and other staff are told to ask an owner or admin (adding `or use a custom amount` when they can bill one). Collection controls use `payments.record`, pay links use `links.send`, and refund

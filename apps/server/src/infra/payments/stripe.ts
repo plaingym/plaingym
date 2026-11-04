@@ -33,9 +33,10 @@ function missing(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'code' in error && error.code === 'resource_missing'
     && 'statusCode' in error && error.statusCode === 404;
 }
+// Amounts go to Stripe exactly as stored: integers in the currency's minor units (500 is ¥500, $5.00 or 0.500 KWD).
 function money(amount: number | undefined, currency: string | undefined): void {
-  if (!Number.isSafeInteger(amount) || !amount || amount < 1 || !currency || !/^(usd|cad)$/.test(currency))
-    throw new Error('Expected positive integer cents in usd or cad');
+  if (!Number.isSafeInteger(amount) || !amount || amount < 1 || !currency || !/^[a-z]{3}$/.test(currency))
+    throw new Error('Expected a positive integer amount in minor units and a lowercase ISO currency');
 }
 function key(value: string): void { if (!value || value.length > 200) throw new Error('Invalid idempotency key'); }
 function optionalTimestamp(value: Json | undefined): Date | undefined {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-/** Integer cents as an amount in `currency`, in the given locale. Each caller keeps its own locale. */
-export const formatMoney = (cents: number, currency: string, locale = 'en') =>
-  new Intl.NumberFormat(locale, { style: 'currency', currency }).format(cents / 100);
+import { formatMinorUnits } from '@plaingym/shared/money';
+
+/** An amount in `currency`'s minor units, in the given locale. Each caller keeps its own locale. */
+export const formatMoney = (amount: number, currency: string, locale = 'en') => formatMinorUnits(amount, currency, locale);

@@ -6,7 +6,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { decimalAmount, decimalUnits, selectClass, text } from './format.js';
+import { amountInputStep, decimalUnits, minorUnitsToInput, parseMinorUnits, selectClass, text } from './format.js';
 
 /** A catalog message with values. */
 export const say = (key: string, values: Record<string, string | number>) => t('billing/catalog:' + key, values);
@@ -49,8 +49,8 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
     try {
       data = { name: String(form.get('name')).trim(), active: form.has('active') };
       if (kind === 'taxes') Object.assign(data, { rateMillionths: decimalUnits(String(form.get('rate')), 4), inclusive: form.has('inclusive') });
-      else Object.assign(data, { amountCents: decimalUnits(String(form.get('amount')), 2), currency, taxRateIds: form.getAll('taxRateIds') });
-      if (kind === 'plans') Object.assign(data, { interval: form.get('interval'), signupFeeCents: decimalUnits(String(form.get('signupFee')), 2),
+      else Object.assign(data, { amountCents: parseMinorUnits(String(form.get('amount')), currency), currency, taxRateIds: form.getAll('taxRateIds') });
+      if (kind === 'plans') Object.assign(data, { interval: form.get('interval'), signupFeeCents: parseMinorUnits(String(form.get('signupFee')), currency),
         trialDays: Number(form.get('trialDays')), commitmentMonths: form.get('commitmentMonths') ? Number(form.get('commitmentMonths')) : null });
     } catch { setInvalid(true); return; }
     await save({ ...data, ...(record ? { revision: record.revision } : {}) });
@@ -64,10 +64,10 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
         <Label className="block min-w-0">{text('rate')}<Input name="rate" inputMode="decimal" type="number" min="0" max="100" step="0.0001" required defaultValue={tax ? tax.rateMillionths / 10_000 : 0}/></Label>
         <Label className="flex min-h-11 items-center gap-3"><input className="size-5" type="checkbox" name="inclusive" defaultChecked={tax?.inclusive}/>{text('inclusive')}</Label>
       </> : <>
-        <Label className="block min-w-0">{text('amount')} ({currency})<Input name="amount" inputMode="decimal" type="number" min="0" step="0.01" required defaultValue={decimalAmount(price?.amountCents ?? 0)}/></Label>
+        <Label className="block min-w-0">{text('amount')} ({currency})<Input name="amount" inputMode="decimal" type="number" min="0" step={amountInputStep(currency)} required defaultValue={minorUnitsToInput(price?.amountCents ?? 0, currency)}/></Label>
         {kind === 'plans' && <>
           <Label className="block min-w-0">{text('interval')}<select className={selectClass} name="interval" defaultValue={plan?.interval ?? 'monthly'}><option value="monthly">{text('monthly')}</option><option value="annual">{text('annual')}</option></select></Label>
-          <Label className="block min-w-0">{text('signupFee')} ({currency})<Input name="signupFee" type="number" inputMode="decimal" min="0" step="0.01" required defaultValue={decimalAmount(plan?.signupFeeCents ?? 0)}/></Label>
+          <Label className="block min-w-0">{text('signupFee')} ({currency})<Input name="signupFee" type="number" inputMode="decimal" min="0" step={amountInputStep(currency)} required defaultValue={minorUnitsToInput(plan?.signupFeeCents ?? 0, currency)}/></Label>
           <Label className="block min-w-0">{text('trialDays')}<Input name="trialDays" type="number" min="0" step="1" required defaultValue={plan?.trialDays ?? 0}/></Label>
           <Label className="block min-w-0">{text('commitmentMonths')}<Input name="commitmentMonths" type="number" min="1" step="1" defaultValue={plan?.commitmentMonths ?? ''}/></Label>
         </>}

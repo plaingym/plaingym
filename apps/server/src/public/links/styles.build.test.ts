@@ -25,15 +25,20 @@ describe('public stylesheet sources', () => {
     expect(names(sources)).toEqual(['links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
   });
 
-  it('compile a class only pages/page.ts uses, and miss it when that file drops out of the sources', async () => {
-    const sources: string[] = await linkStyleSources();
-    const pageFile = join(publicRoot, 'pages/page.ts');
-    // `max-w-full` is on the shared page header only: the other markup files do not use it.
-    const others = await Promise.all(sources.filter(file => file !== pageFile).map(file => readFile(file, 'utf8')));
-    expect(await readFile(pageFile, 'utf8')).toContain('max-w-full');
-    expect(others.join('\n')).not.toMatch(/(^|[^\w-])max-w-full(?![\w-])/);
-    expect(await stylesheet(sources)).toContain('.max-w-full');
-    expect(await stylesheet(sources.filter(file => file !== pageFile))).not.toContain('.max-w-full');
+  it('compile a class only one page file uses, and miss it when that file drops out of the sources', async () => {
+    // A test-only page tree, so no production markup has to carry a sentinel class.
+    const root = await mkdtemp(join(tmpdir(), 'plaingym-public-'));
+    try {
+      await mkdir(join(root, 'pages'), { recursive: true }); await mkdir(join(root, 'links'), { recursive: true });
+      await writeFile(join(root, 'pages/page.ts'), "export const a = 'max-w-full underline';\n");
+      await writeFile(join(root, 'links/page.ts'), "export const b = 'underline';\n");
+      const sources: string[] = await linkStyleSources(root), pageFile = join(root, 'pages/page.ts');
+      expect(names(sources, root)).toEqual(['links/page.ts', 'pages/page.ts']);
+      expect(await stylesheet(sources)).toContain('.max-w-full');
+      const without = await stylesheet(sources.filter(file => file !== pageFile));
+      expect(without).toContain('.underline');
+      expect(without).not.toContain('.max-w-full');
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('emit no CSS for a utility-named identifier that only a service, job or notice uses', async () => {

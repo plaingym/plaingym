@@ -43,6 +43,33 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.call).toHaveBeenCalledWith('updatePlan', expect.objectContaining({ amountCents: 10029, revision: 3, taxRateIds: [tax.id] }), { planId: plan.id }));
   });
+  it('shows and takes a zero-decimal gym\'s prices in whole yen', async () => {
+    const api = client(), yen = { ...plan, currency: 'JPY', amountCents: 12000, signupFeeCents: 5500 };
+    api.plans.mockResolvedValue([yen]); api.settings.mockResolvedValue({ ...settings, currency: 'JPY' });
+    start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    expect(await screen.findByText(/¥12,000/)).toBeTruthy(); expect(screen.getByText(/¥5,500/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Unlimited' }));
+    const amount = screen.getByLabelText('Amount (JPY)') as HTMLInputElement, fee = screen.getByLabelText('Sign-up fee (JPY)') as HTMLInputElement;
+    expect([amount.value, amount.step, fee.value]).toEqual(['12000', '1', '5500']);
+    fireEvent.change(amount, { target: { value: '2500.5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    // The step attribute refuses a fraction of a yen before the form submits.
+    expect(amount.checkValidity()).toBe(false); expect(api.call).not.toHaveBeenCalled();
+    fireEvent.change(amount, { target: { value: '2500' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.call).toHaveBeenCalledWith('updatePlan', expect.objectContaining({ amountCents: 2500, signupFeeCents: 5500, currency: 'JPY' }), { planId: plan.id }));
+  });
+  it('takes a three-decimal gym\'s prices in fils', async () => {
+    const api = client(), dinar = { ...plan, currency: 'KWD', amountCents: 12500, signupFeeCents: 0 };
+    api.plans.mockResolvedValue([dinar]); api.settings.mockResolvedValue({ ...settings, currency: 'KWD' });
+    start(<CatalogWorkspace gymId={id(1)} client={api}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Unlimited' }));
+    const amount = screen.getByLabelText('Amount (KWD)') as HTMLInputElement;
+    expect([amount.value, amount.step]).toEqual(['12.50', '0.01']);
+    fireEvent.change(amount, { target: { value: '7.25' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.call).toHaveBeenCalledWith('updatePlan', expect.objectContaining({ amountCents: 7250, currency: 'KWD' }), { planId: plan.id }));
+  });
   it('keeps the catalog draft visible on a conflict', async () => {
     const api = client(); vi.mocked(api.call).mockRejectedValue(new ApiError(409, 'conflict'));
     start(<CatalogWorkspace gymId={id(1)} client={api}/>);

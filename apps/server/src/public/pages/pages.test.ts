@@ -41,7 +41,7 @@ async function fixture(demo = false) {
   // The staff-notice hook the runtime gives the public pages (it queues the notice after commit).
   const notices: { gymId: string; kind: string; memberId: string }[] = [];
   const service = configurePublicPages({ scope: db.forGym, clock, waivers, uploadsFor,
-    settings: createSettingsService({ scope: db.forGym, clock }), stylesheet: async () => '/* shared css */',
+    stylesheet: async () => '/* shared css */',
     dropInFeeFor: async id => id === gymId ? { amountCents: 2500, currency: 'CAD', plusTax: false } : null,
     notifyStaff: async (id, intake) => { notices.push({ gymId: id, kind: intake.kind, memberId: intake.memberId }); } });
   const app = (resolved = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ skipSetup: true, clock, authorize,

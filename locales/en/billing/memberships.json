@@ -36,7 +36,7 @@
   "priceHelp": "Leave the price blank to keep the current price. Changing the plan takes the new plan's billing interval, and its price unless you enter one.",
   "customPrice": "Custom price",
   "planPrice": "plan",
-  "invalidPrice": "Enter a valid price with up to two decimal places.",
+  "invalidPrice": "Enter a valid price, with no more decimal places than the currency uses.",
   "nothingToChange": "Choose a different plan or enter a price.",
   "freezeHelp": "The next cycle is skipped. Leave the resume date blank to freeze until staff resume it.",
   "resumeHelp": "Choose the next billing date. The skipped cycle will stay skipped.",

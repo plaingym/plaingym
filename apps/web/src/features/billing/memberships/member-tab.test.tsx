@@ -93,12 +93,26 @@ it('sends nothing when neither the plan nor the price changed', async () => {
   expect(await screen.findByText('Choose a different plan or enter a price.')).toBeDefined();
   expect(client.call).not.toHaveBeenCalled();
 });
+it('shows and takes a zero-decimal membership price in whole yen', async () => {
+  const yenPlan = { ...plan, currency: 'JPY', amountCents: 12000 }, row = { ...membership, currency: 'JPY', amountCents: 9000 };
+  const client = start('admin', { plans: [yenPlan], row });
+  expect(await screen.findByText(/¥9,000/)).toBeDefined(); expect(await screen.findByText(/^Custom price \(plan: ¥12,000\)$/)).toBeDefined();
+  const form = await openEdit();
+  expect(form.price.placeholder).toBe('9000');
+  fireEvent.change(form.price, { target: { value: '9500.5' } });
+  save();
+  expect(await screen.findByText('Enter a valid price, with no more decimal places than the currency uses.')).toBeDefined();
+  expect(client.call).not.toHaveBeenCalled();
+  fireEvent.change(form.price, { target: { value: '9500' } });
+  save();
+  await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 1, price: { amountCents: 9500, currency: 'JPY' } }, { membershipId: membership.id }));
+});
 it('refuses a price with too many decimals and the current price on the same plan', async () => {
   const client = start('admin');
   const form = await openEdit();
   fireEvent.change(form.price, { target: { value: '85.555' } });
   save();
-  expect(await screen.findByText('Enter a valid price with up to two decimal places.')).toBeDefined();
+  expect(await screen.findByText('Enter a valid price, with no more decimal places than the currency uses.')).toBeDefined();
   fireEvent.change(form.price, { target: { value: '100' } });
   save();
   expect(await screen.findByText('Choose a different plan or enter a price.')).toBeDefined();
@@ -110,7 +124,7 @@ it('refuses a price the browser could not read as a number instead of treating i
   fireEvent.change(form.plan, { target: { value: premium.id } });
   fireEvent.change(form.price, { target: { value: '120,00' } });
   save();
-  expect(await screen.findByText('Enter a valid price with up to two decimal places.')).toBeDefined();
+  expect(await screen.findByText('Enter a valid price, with no more decimal places than the currency uses.')).toBeDefined();
   expect(client.call).not.toHaveBeenCalled();
 });
 it('sends the revision the form opened with, so a plan change made meanwhile is not undone', async () => {

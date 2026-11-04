@@ -17,6 +17,7 @@ import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createMembershipService } from '../memberships.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { createInvoiceTransitions } from './index.js';
+import { formatMinorUnits } from '@plaingym/shared/money';
 import { createTransitionEffects } from './effects.js';
 import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
@@ -26,20 +27,20 @@ import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-tra
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
-async function fixture(kind: 'cycle' | 'one_off' = 'cycle') {
+async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
   const gymId = uuidv7();
-  await factory('gyms', gymId, { currency: 'CAD', timezone: 'America/Vancouver', billingEnabled: true, memberEmailsEnabled: true });
+  await factory('gyms', gymId, { currency, timezone: 'America/Vancouver', billingEnabled: true, memberEmailsEnabled: true });
   const clock = new TestClock('2028-03-10T17:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
   const household = await factory('households', gymId, { email: 'payer@example.invalid' });
   const member = await factory('members', gymId, { householdId: household.id, email: household.email });
-  const plan = await factory('plans', gymId);
-  const membership = await factory('memberships', gymId, { householdId: household.id, memberId: member.id, planId: plan.id });
-  const invoice = await factory('invoices', gymId, { householdId: household.id, kind, status: 'processing', number: 1,
+  const plan = await factory('plans', gymId, { currency });
+  const membership = await factory('memberships', gymId, { householdId: household.id, memberId: member.id, planId: plan.id, currency });
+  const invoice = await factory('invoices', gymId, { householdId: household.id, kind, status: 'processing', number: 1, currency,
     dueOn: '2028-03-10', periodStartsOn: '2028-03-10', periodEndsOn: '2028-04-10' });
-  await factory('invoiceLineItems', gymId, { householdId: household.id, invoiceId: invoice.id, membershipId: membership.id, kind: 'membership' });
+  await factory('invoiceLineItems', gymId, { householdId: household.id, invoiceId: invoice.id, membershipId: membership.id, kind: 'membership', currency });
   const provider = new FakePayments(gymId, clock);
   const attemptId = uuidv7();
-  const intent = await provider.createCharge({ amount: invoice.amountCents, currency: 'cad', customerId: 'cus_test', paymentMethodId: 'pm_test',
+  const intent = await provider.createCharge({ amount: invoice.amountCents, currency: currency.toLowerCase(), customerId: 'cus_test', paymentMethodId: 'pm_test',
     invoiceId: invoice.id, attemptId, idempotencyKey: `${invoice.id}:1:create` });
   const attempt = await factory('paymentAttempts', gymId, { id: attemptId, invoiceId: invoice.id, paymentIntentId: intent.id });
   const options = { scope: db.forGym, clock }, transitions = createInvoiceTransitions(options);
@@ -52,9 +53,9 @@ async function fixture(kind: 'cycle' | 'one_off' = 'cycle') {
   const effects = createTransitionEffects(effectOptions);
   for (const job of createTransitionJobs(() => effects)) jobs.handle(job.id, job.handler);
   const success = { invoiceId: invoice.id, paymentId: uuidv7(), attemptId, paymentIntentId: intent.id,
-    chargeId: 'ch_' + intent.id, amountCents: invoice.amountCents, currency: 'CAD', paidAt: clock.now().toISOString() };
+    chargeId: 'ch_' + intent.id, amountCents: invoice.amountCents, currency, paidAt: clock.now().toISOString() };
   const failure = { invoiceId: invoice.id, attemptId, paymentIntentId: intent.id, outcome: 'failed' as const };
-  const manual = { invoiceId: invoice.id, paymentId: uuidv7(), amountCents: invoice.amountCents, currency: 'CAD',
+  const manual = { invoiceId: invoice.id, paymentId: uuidv7(), amountCents: invoice.amountCents, currency,
     paidAt: clock.now().toISOString(), method: 'cash' as const, reference: 'receipt-1' };
   const read = async () => db.forGym(gymId, async tx => ({
     invoice: (await tx.select().from(invoices).where(eq(invoices.id, invoice.id)))[0]!,
@@ -92,6 +93,17 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect((await applyChargeOutcome(f.transitions, f.context, { ...f.success, paymentId: uuidv7(), chargeId: 'ch_2' }, reread))?.outcome).toBe('ignored');
     expect((await f.read()).invoice.status).toBe(card === '4242' ? 'paid' : 'past_due');
     expect((await f.read()).attempts[0]!.status).toBe(card === '4242' ? 'succeeded' : card === '3184' ? 'requires_action' : 'failed');
+  });
+  it('sends a zero-decimal gym\'s receipt in whole yen', async () => {
+    const f = await fixture('cycle', 'JPY');
+    expect(f.invoice).toMatchObject({ amountCents: 10000, currency: 'JPY' });
+    expect((await f.transitions.manualPayment(f.context, f.manual)).outcome).toBe('applied');
+    await f.drain();
+    expect(f.email.messages).toHaveLength(1);
+    const [receipt] = f.email.messages;
+    expect(receipt!.subject).toContain('Receipt');
+    expect(receipt!.text).toContain('¥10,000'); expect(receipt!.html).toContain('¥10,000');
+    expect(receipt!.text).not.toMatch(/¥100(?![,\d])/);
   });
   it.each(['runner first', 'webhook first'])('records one payment, activation and receipt with %s and different local IDs', async order => {
     const f = await fixture(); await succeed(f);
@@ -369,7 +381,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(notices).toHaveLength(amounts.length);
     expect(notices.every(m => m.to === 'staff@example.invalid' && m.subject === 'Refund failed for invoice 1')).toBe(true);
     expect(notices.map(m => m.text).sort()).toEqual(amounts.map(cents =>
-      `A refund of CA$${(cents / 100).toFixed(2)} for invoice 1 was reported as successful but then failed, so the payer did not receive it. `
+      `A refund of ${formatMinorUnits(cents, 'CAD')} for invoice 1 was reported as successful but then failed, so the payer did not receive it. `
       + 'Check the payment in billing and refund the payer another way.').sort());
     // The failed amount is released and can be refunded again.
     expect((await f.transitions.refund(f.context, { ...refunded[0]!, refundId: uuidv7(), processorId: 're_again' })).invoice.status)
@@ -398,7 +410,7 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(duplicate.email.messages.slice(sent)).toMatchObject([{ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1' }]);
   });
   const failedNotice = (cents: number) => ({ to: 'staff@example.invalid', subject: 'Refund failed for invoice 1',
-    text: `A refund of CA$${(cents / 100).toFixed(2)} for invoice 1 failed, so the payer did not receive it. `
+    text: `A refund of ${formatMinorUnits(cents, 'CAD')} for invoice 1 failed, so the payer did not receive it. `
       + 'Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.' });
   const refundNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
     .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_failed')

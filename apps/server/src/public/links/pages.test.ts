@@ -51,6 +51,15 @@ describe('signed-link presentation and return receipts', () => {
     expect(page).toContain(new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(123.45));
     expect(page).toContain('25 octobre 2026'); expect(page).not.toContain('2026-10-25');
   });
+  it('shows a zero-decimal gym\'s invoice in whole yen and a three-decimal one with three places', () => {
+    const invoice = (currency: string, amountCents: number) => linkPage({ now, timezone: 'Asia/Tokyo', t, data: { purpose: 'pay_invoice',
+      invoice: { invoice: { id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents, currency, paidAt: null },
+        lines: [{ id: 'line', kind: 'charge', description: 'Mat fee', quantity: 1, amountCents, currency, taxRateMillionths: null, taxInclusive: null }] } } });
+    const yen = invoice('JPY', 2500);
+    expect(yen).toContain('¥2,500'); expect(yen).not.toContain('¥25.00'); expect(yen).not.toContain('¥25<');
+    const dinar = invoice('KWD', 2500).replace(/\u00a0/g, ' ');
+    expect(dinar).toContain('KWD 2.500'); expect(dinar).not.toContain('KWD 25.00');
+  });
   it('reads assets once, and logs a missing asset once with an explicit unavailable error', async () => {
     const read = vi.fn(async () => 'built asset'), log = vi.fn(), previous = setLogSink(log);
     try {

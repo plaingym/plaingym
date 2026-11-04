@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
 import { invoiceError, type InvoiceClient } from './api.js';
-import { text, decimalUnits, money } from './format.js';
+import { amountInputPattern, text, money, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
 import { Dialog } from '../../../components/ui/dialog.js';
 import { Autocomplete } from '../../../components/ui/autocomplete.js';
@@ -34,7 +34,7 @@ export function OneOffEditor({ gymId, householdId, custom, catalog, client, clos
     try {
       const body = source === 'charge_type' ? { source, householdId: chosen, dueOn: form.get('dueOn'), chargeTypeId: form.get('chargeTypeId') }
         : { source, householdId: chosen, dueOn: form.get('dueOn'), description: form.get('description'),
-          amountCents: decimalUnits(String(form.get('amount')), 2), currency: gym.currency, taxRateIds: form.getAll('taxRateIds') };
+          amountCents: parseMinorUnits(String(form.get('amount')), gym.currency), currency: gym.currency, taxRateIds: form.getAll('taxRateIds') };
       const result = await client.call('createOneOffInvoice', body); created(result.data.id);
     } catch (error) { setError(invoiceError(error)); } finally { setBusy(false); }
   }
@@ -55,7 +55,7 @@ export function OneOffEditor({ gymId, householdId, custom, catalog, client, clos
           {setup.data.charges.filter(c => c.active).map(c => <option key={c.id} value={c.id}>{c.name} · {money(c.amountCents, c.currency)}</option>)}</Select></Label>
           : <>
             <Label className="block">{text('description')}<Input name="description" required/></Label>
-            <Label className="block">{text('amount')} ({gym.currency})<Input name="amount" inputMode="decimal" required pattern="[0-9]+([.][0-9]{1,2})?"/></Label>
+            <Label className="block">{text('amount')} ({gym.currency})<Input name="amount" inputMode="decimal" required pattern={amountInputPattern(gym.currency)}/></Label>
             <fieldset><legend className="text-sm font-medium">{text('taxes')}</legend>{setup.data.taxes.filter(t => t.active).map(t => <CheckboxField key={t.id} name="taxRateIds" value={t.id} label={t.name}/>)}</fieldset>
           </>}
         <Label className="block">{text('dueOn')}<Input name="dueOn" type="date" required defaultValue={localDate(new Date(), gym.timezone)}/></Label>

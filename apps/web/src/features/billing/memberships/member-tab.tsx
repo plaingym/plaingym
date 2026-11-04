@@ -12,7 +12,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { billingClient, type BillingClient } from '../catalog/api.js';
-import { decimalAmount, decimalUnits, money, saveError, selectClass } from '../catalog/format.js';
+import { minorUnitsToInput, money, parseMinorUnits, saveError, selectClass } from '../catalog/format.js';
 import { householdBillingDate } from './calendar.js';
 
 const text = (key: string) => t('billing/memberships:' + key);
@@ -110,7 +110,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
     if (editPlan !== base.planId) input.planId = editPlan;
     if (entered) {
       try {
-        const amountCents = decimalUnits(entered, 2);
+        const amountCents = parseMinorUnits(entered, base.currency);
         // The same price on the same plan is no change; with a plan change it keeps the current price.
         if (input.planId || amountCents !== base.amountCents) input.price = { amountCents, currency: base.currency };
       } catch { setFormError(text('invalidPrice')); return; }
@@ -147,7 +147,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
         <Label className="block min-w-0">{text('plan')}<select className={selectClass} name="planId" value={editPlan} onChange={event => setEditPlan(event.target.value)}>
           {!choices.some(item => item.id === base.planId) && <option value={base.planId}>{basePlan?.name ?? text('membership')}</option>}{choices.map(item => <option key={item.id} value={item.id}>{item.name} · {money(item.amountCents, item.currency)} / {text(item.interval)}</option>)}</select></Label>
         {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}
-        <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={decimalAmount(base.amountCents)}/></Label>
+        <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={minorUnitsToInput(base.amountCents, base.currency)}/></Label>
         <p className="text-sm text-muted-foreground">{text('priceHelp')}</p>
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
