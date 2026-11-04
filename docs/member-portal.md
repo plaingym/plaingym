@@ -96,5 +96,7 @@ app* option.
 2. Accept the invitation and sign in at `/portal`.
 3. On **Schedule**, book a class inside the booking window, then cancel it before the
    cutoff. Try a full class to see the waitlist.
-4. On **Check-in**, create a code, and scan it at the kiosk (`/kiosk`, a device you
-   register under **Settings → Kiosk devices**) or check in there by name and PIN.
+4. On **Check-in**, create a code, and scan it at the kiosk (`/kiosk`) or check in
+   there by name and PIN. Register the kiosk device under **Settings → Kiosk devices**,
+   then scan the setup code it shows, or open the setup link, on that device. They are
+   shown once, and replace any device already set up in that browser.

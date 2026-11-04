@@ -16,7 +16,9 @@ beforeEach(() => {
   client.GET.mockReset(); client.POST.mockReset();
   client.GET.mockResolvedValue(page()); localStorage.clear(); sessionStorage.clear();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup(); vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear(); window.history.replaceState(null, '', '/');
+});
 describe('kiosk device settings', () => {
   it('enables the registered section for device managers and renders safe device metadata', async () => {
     expect(registration.settingsSections?.[0]).toMatchObject({ enabled: true,
@@ -32,11 +34,18 @@ describe('kiosk device settings', () => {
     await screen.findByText('Front desk');
     await user.type(screen.getByLabelText('Device name'), 'Tablet');
     await user.click(screen.getByRole('button', { name: 'Register device' }));
-    expect(await screen.findByText(token)).toBeDefined();
+    const link = window.location.origin + '/kiosk#token=' + token;
+    expect(await screen.findByText(link)).toBeDefined();
+    const qr = screen.getByAltText('QR code of the kiosk setup link') as HTMLImageElement;
+    expect(qr.src.startsWith('data:image/svg+xml')).toBe(true);
+    expect(screen.queryByText(token)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Show token' }));
+    expect(screen.getByText(token)).toBeDefined();
     expect(client.POST).toHaveBeenCalledWith('/api/kiosk/devices', { body: { name: 'Tablet' } });
     expect((screen.getByRole('button', { name: 'Register device' }) as HTMLButtonElement).disabled).toBe(true);
     expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0);
-    await user.click(screen.getByRole('button', { name: 'I saved the token' }));
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(link)).toBeNull(); expect(screen.queryByAltText('QR code of the kiosk setup link')).toBeNull();
     expect(screen.queryByText(token)).toBeNull();
     view.unmount(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
     expect(screen.queryByText(token)).toBeNull();
@@ -55,10 +64,51 @@ describe('kiosk device settings', () => {
     const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
     await user.type(screen.getByLabelText('Device name'), 'Front desk');
     await user.click(screen.getByRole('button', { name: 'Register device' }));
-    await screen.findByText(token);
+    await screen.findByText(window.location.origin + '/kiosk#token=' + token);
     await waitFor(() => expect((screen.getByRole('button', { name: 'Revoke access for Front desk' }) as HTMLButtonElement).disabled).toBe(false));
     await user.click(screen.getByRole('button', { name: 'Revoke access for Front desk' }));
     await screen.findByText('Revoked'); expect(screen.queryByText(token)).toBeNull();
+    expect(screen.queryByAltText('QR code of the kiosk setup link')).toBeNull();
+  });
+  it('copies the setup link, and opening it replaces a token already stored in that browser', async () => {
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    const link = window.location.origin + '/kiosk#token=' + token;
+    await user.click(await screen.findByRole('button', { name: 'Copy link' }));
+    expect(writeText).toHaveBeenCalledWith(link);
+    const { readToken } = await import('../kiosk/api.js');
+    window.localStorage.setItem('plaingym.kioskToken', 'older-token');
+    window.history.replaceState(null, '', '/kiosk#' + link.split('#')[1]);
+    expect(readToken()).toBe(token);
+    expect(window.location.hash).toBe('');
+  });
+  it('does not reveal the next token after a dismissed one was revealed', async () => {
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    for (const name of ['First', 'Second']) {
+      await waitFor(() => expect((screen.getByLabelText('Device name') as HTMLInputElement).disabled).toBe(false));
+      await user.type(screen.getByLabelText('Device name'), name);
+      await user.click(screen.getByRole('button', { name: 'Register device' }));
+      await screen.findByRole('button', { name: 'Show token' });
+      expect(screen.queryByText(token)).toBeNull();
+      await user.click(screen.getByRole('button', { name: 'Show token' }));
+      expect(screen.getByText(token)).toBeDefined();
+      await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    }
+  });
+  it('tells the user to copy by hand when the clipboard is unavailable', async () => {
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    const button = await screen.findByRole('button', { name: 'Copy link' });
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'));
+    await user.click(button);
+    expect(await screen.findByText(/could not be copied/)).toBeDefined();
   });
   it('paginates using contract bounds and refreshes an empty list', async () => {
     client.GET.mockResolvedValueOnce(page([device], 0, 21))

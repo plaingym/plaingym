@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { renderSVG } from 'uqr';
 import { kioskDeviceListResponseSchema, kioskDeviceResponseSchema, registerKioskDeviceResponseSchema,
   type KioskDeviceListResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -18,6 +19,19 @@ export function KioskDevicesSettings() {
   const [message, setMessage] = useState('');
   const [offset, setOffset] = useState(0);
   const [reload, setReload] = useState(0);
+  const [showToken, setShowToken] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // The link and its code exist only in memory while the token is shown; nothing is stored.
+  const setupLink = token ? window.location.origin + '/kiosk#token=' + encodeURIComponent(token.value) : '';
+  const qr = useMemo(() => {
+    if (!setupLink) return '';
+    try { return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(renderSVG(setupLink, { ecc: 'M', border: 4 })); } catch { return ''; }
+  }, [setupLink]);
+  // Clearing the token also resets the reveal and copy state, so the next token never starts revealed.
+  function clearToken() { setToken(null); setShowToken(false); setCopied(false); }
+  async function copyLink() {
+    try { await navigator.clipboard.writeText(setupLink); setCopied(true); } catch { setMessage(t('kiosk/devices:copyFailed')); }
+  }
   useEffect(() => {
     let active = true;
     setBusy(true); setMessage(''); setPage(null);
@@ -51,7 +65,7 @@ export function KioskDevicesSettings() {
       if (!result.response.ok) throw new Error();
       const device = kioskDeviceResponseSchema.parse(result.data).data;
       setPage((previous) => previous && ({ ...previous, data: previous.data.map((row) => row.id === id ? device : row) }));
-      if (token?.deviceId === id) setToken(null);
+      if (token?.deviceId === id) clearToken();
     } catch { setMessage(t('kiosk/devices:error')); }
     finally { setBusy(false); }
   }
@@ -60,9 +74,16 @@ export function KioskDevicesSettings() {
     <p>{t('kiosk/devices:help')}</p>
     {message && <Alert>{message}</Alert>}
     {token && <Alert>
-      <p>{t('kiosk/devices:tokenOnce')}</p>
-      <code className="my-2 block break-all select-all">{token.value}</code>
-      <Button variant="outline" onClick={() => setToken(null)}>{t('kiosk/devices:dismiss')}</Button>
+      <p>{t('kiosk/devices:setupOnce')}</p>
+      {qr && <img src={qr} alt={t('kiosk/devices:qrAlt')} className="my-2 h-auto w-full max-w-64 bg-white"/>}
+      <code className="my-2 block break-all select-all">{setupLink}</code>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={() => void copyLink()}>{copied ? t('kiosk/devices:copied') : t('kiosk/devices:copy')}</Button>
+        <Button variant="outline" aria-expanded={showToken} onClick={() => setShowToken((value) => !value)}>{t('kiosk/devices:showToken')}</Button>
+        <Button variant="outline" onClick={clearToken}>{t('kiosk/devices:dismiss')}</Button>
+      </div>
+      {showToken && <><p className="mt-2">{t('kiosk/devices:tokenHelp')}</p>
+        <code className="my-2 block break-all select-all">{token.value}</code></>}
     </Alert>}
     <form onSubmit={(event) => void register(event)} className="flex flex-wrap items-end gap-3">
       <div className="space-y-2"><Label htmlFor="kiosk-device-name">{t('kiosk/devices:name')}</Label>
