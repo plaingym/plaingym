@@ -112,6 +112,11 @@ export async function wizard(page: Page, config: Config, setupLink: string): Pro
     await page.getByRole('button', { name: 'Skip email configuration', exact: true }).click();
   }
   if(step <= 6) {
+    // An install whose configuration doesn't set Google offers an optional Google page before payments; skip it.
+    const skipGoogle = page.getByRole('button', { name: 'Skip Google sign-in', exact: true });
+    const later = page.getByRole('button', { name: 'Set up later', exact: true });
+    await skipGoogle.or(later).first().waitFor();
+    if(await skipGoogle.isVisible()) await skipGoogle.click();
     // Payments are configured later from settings; the registered Stripe step offers this choice.
     await page.getByRole('button', { name: 'Set up later', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Generate backup key', exact: true })).toBeVisible();

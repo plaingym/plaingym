@@ -74,6 +74,10 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   await expect(page.getByRole('heading', { name: 'Email delivery', exact: true })).toBeVisible();
   await checkStep('email', 'Send test email and save');
   await page.getByRole('button', { name: 'Skip email configuration', exact: true }).click();
+  // The optional Google page sits between email and payments on an install whose configuration doesn't set Google.
+  await expect(page.getByRole('heading', { name: 'Google sign-in (optional)', exact: true })).toBeVisible();
+  await checkStep('google', 'Save Google client');
+  await page.getByRole('button', { name: 'Skip Google sign-in', exact: true }).click();
   // The payments step belongs to the payment integration; exercise its existing skip unchanged.
   await expect(page.getByLabel('Restricted Stripe key', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Set up later', exact: true }).click();
