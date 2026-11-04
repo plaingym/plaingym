@@ -27,6 +27,10 @@ failures are logged with the request ID and safe error metadata, never visitor
 details; visitors still receive the same successful response after their record
 commits.
 
+`createRootRedirect` is core's `GET /`: it sends visitors to `/portal` unless the
+gym has the website module on, when it hands the request on to the module's home
+page (`modules/website/README.md`). It is mounted before every other route.
+
 `publicLayout` is the Hono JSX shell for core pages. It escapes gym and document
 text, uses `t()`, keeps `/source`, and serves only same-origin assets under a strict
 CSP. CSS reuses the existing signed-link Tailwind asset, with validated gym color

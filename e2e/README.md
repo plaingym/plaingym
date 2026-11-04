@@ -104,6 +104,12 @@ The checks cover:
   on a full class and is promoted when staff free the place, shows a QR code that the
   kiosk reads from its camera (frames drawn from the portal's own image), and the
   coach's roster shows the check-in.
+* The public website in a seeded sandbox (`website.spec.ts`): turned on and customized
+  through the API (a photo, text, colors), every page at 360 px and desktop with no
+  sideways scrolling, 44 px targets and axe A/AA under its own nonce policy, the
+  `LocalBusiness` structured data, the phone menu without script, and a call to action
+  reaching `/trial`. Turned off, `/` redirects to `/portal`, the website's pages answer
+  404 and `/trial` still loads.
 * Names with no break opportunity (56 characters) stay inside a 360 px screen on the admin bookings panel, dashboard
   widgets, autocomplete options, billing catalog, campaigns and the portal schedule (`long-names.spec.ts`; the portal
   check uses a household of its own). `responsive.spec.ts` checks the layout helper itself on pages it serves: a

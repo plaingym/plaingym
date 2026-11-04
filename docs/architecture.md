@@ -54,6 +54,7 @@ maintenance credentials (`deploy/README.md`, "Which process holds the maintenanc
 | Path | Surface |
 | :--- | :--- |
 | `/` | The gym's public website when the website module is on; otherwise a redirect to `/portal`. |
+| `/programs`, `/schedule`, `/plans`, `/coaches`, `/contact`, `/sitemap.xml`, `/robots.txt`, `/website/*` | The rest of the public website, its search-engine files, theme and photos. Only while the website module is on; 404 otherwise. |
 | `/join`, `/trial`, `/drop-in` | Public sign-up, trial and drop-in pages. Always on. |
 | `/l/*` | Signed-link pages: pay an invoice, update a card, sign a waiver, onboarding. |
 | `/webhooks/stripe` | The Stripe webhook inbox. |
@@ -104,7 +105,12 @@ replaces placeholder routes with configured ones (setup's placeholders answer
 503 "not configured" until it does).
 
 Optional modules (`apps/server/src/modules/`) own their schema, routes and UI,
-sit behind a per-gym switch in `gyms`, and are never imported by core.
+sit behind a per-gym switch in `gyms`, and are never imported by core. The
+registry checks the switch on every request and job, so a module's routes answer
+404 while the gym has it off. A module keeps small per-gym settings through
+`areas/settings/module-settings.ts`, which saves them in the gym's settings under
+the gym revision and audits each save. The public website
+(`apps/server/src/modules/website/README.md`) is the first module.
 
 ## Data
 

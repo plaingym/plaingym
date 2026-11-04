@@ -18,11 +18,11 @@ async function stylesheet(sources?: string[]) {
 }
 
 describe('public stylesheet sources', () => {
-  it('scan exactly the files that render markup: every page.ts and *.page.ts', async () => {
+  it('scan exactly the files that render markup: every page.ts and *.page.ts under public/ and modules/', async () => {
     const sources: string[] = await linkStyleSources();
     const pages = (await readdir(publicRoot, { recursive: true })).filter(file => /(^|[\\/])([^\\/]+\.)?page\.ts$/.test(file));
-    expect(names(sources)).toEqual(names(pages.map(file => join(publicRoot, file)).sort()));
-    expect(names(sources)).toEqual(['links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
+    expect(names(sources.filter(file => file.startsWith(publicRoot)))).toEqual(names(pages.map(file => join(publicRoot, file)).sort()));
+    expect(names(sources)).toEqual(['../modules/website/site.page.ts', 'links/page.ts', 'pages/join.page.ts', 'pages/page.ts']);
   });
 
   it('compile a class only one page file uses, and miss it when that file drops out of the sources', async () => {

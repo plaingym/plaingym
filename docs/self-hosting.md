@@ -286,6 +286,19 @@ used), so the previous version keeps working against the migrated database, and
 patch releases (x.y.Z) never change the database. Minor and major releases wait
 for you to run the updater.
 
+### Public website
+
+**Settings → Gym details → Enable gym website** turns the built-in website on or
+off. While it's on, `/` is its home page, with pages for programs, the weekly
+schedule, memberships (the active plans, with "+ tax" where tax is added on top),
+coaches (staff profiles marked **Show on the public website**) and location and
+contact, plus a sitemap and `LocalBusiness` structured data for search engines.
+**Settings → Website** sets the logo, the primary and accent colors, up to eight
+photos, a tagline, an about text and a public phone number and email. The logo and
+primary color also brand `/join`, `/trial` and `/drop-in`. With the website off,
+`/` sends visitors to the member portal and the website's other pages answer 404;
+`/join`, `/trial`, `/drop-in` and the portal work either way.
+
 ## Day to day
 
 | Task | How |

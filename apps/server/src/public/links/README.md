@@ -163,7 +163,7 @@ This uses the pinned web Tailwind version and shared design tokens, plus the
 existing esbuild toolchain. Browser code is built separately, avoiding server
 transpiler helpers in the browser. Generated CSS and JavaScript are not committed.
 The stylesheet takes its classes only from `page.ts` and `*.page.ts` files under
-`public/`: a new public file that renders markup must be named `*.page.ts`, or its classes get no CSS.
+`public/` and `modules/` (the website): a new public file that renders markup must be named `*.page.ts`, or its classes get no CSS.
 `pnpm dev` builds into the ignored `apps/server/public/` directory once at startup,
 before starting the server and web watcher. After changing the link styles or
 client script, rerun `node apps/server/src/public/links/styles.build.mjs apps/server/public`

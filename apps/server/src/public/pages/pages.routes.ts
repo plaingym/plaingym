@@ -111,4 +111,20 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
   }
   return result.map(protect);
 }
-export const routes = createPublicRoutes();
+/**
+ * `/` is the website module's home page while the gym has the website on; with it off, visitors go to the member
+ * portal. Mounted before every other route (`order`), this hands the request on while the website is on. Core names
+ * no module code here: it reads only the gym's enabled modules.
+ */
+export function createRootRedirect(): RouteRegistration {
+  const entry = route({ method: 'get', path: '/', permission: { kind: 'public' }, responses: { 302: { description: 'The member portal' } } },
+    ctx => ctx.redirect('/portal', 302));
+  return { ...entry, id: 'GET / (portal redirect)', order: -1, mount(app, authorize) {
+    app.get('/', async (ctx, next) => {
+      if (ctx.get('context').gym.enabledModules.has('website')) return next();
+      await authorize(entry.definition.permission)(ctx, async () => { ctx.res = ctx.redirect('/portal', 302); });
+      return ctx.res;
+    });
+  } };
+}
+export const routes = [...createPublicRoutes(), createRootRedirect()];

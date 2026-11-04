@@ -5,13 +5,16 @@ import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** The public files that render markup, `page.ts` and `*.page.ts` anywhere under `public/`, so a class used in any public page compiles.
- * Services, jobs and notices are left out: their identifiers would otherwise match a utility and emit CSS.
- * @param {string} [root] the directory to scan, `public/` by default
+/** The directories whose pages share the public stylesheet: the core public pages and the feature modules (the website). */
+export const publicPageRoots = [fileURLToPath(new URL('..', import.meta.url)), fileURLToPath(new URL('../../modules', import.meta.url))];
+/** The public files that render markup, `page.ts` and `*.page.ts` anywhere under `public/` and `modules/`, so a class used in any
+ * public page compiles. Services, jobs and notices are left out: their identifiers would otherwise match a utility and emit CSS.
+ * @param {string | string[]} [roots] the directories to scan, `publicPageRoots` by default
  * @returns {Promise<string[]>} absolute paths, sorted */
-export async function linkStyleSources(root = fileURLToPath(new URL('..', import.meta.url))) {
-  const files = await readdir(root, { recursive: true });
-  return files.filter(file => /(^|[\\/])([^\\/]+\.)?page\.ts$/.test(file)).sort().map(file => join(root, file));
+export async function linkStyleSources(roots = publicPageRoots) {
+  const found = await Promise.all([roots].flat().map(async root => (await readdir(root, { recursive: true }))
+    .filter(file => /(^|[\\/])([^\\/]+\.)?page\.ts$/.test(file)).map(file => join(root, file))));
+  return found.flat().sort();
 }
 /** Build with the web app's already-pinned Tailwind toolchain and shared tokens.
  * @param {string} destination

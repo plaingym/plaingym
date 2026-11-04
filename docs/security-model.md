@@ -202,7 +202,9 @@ Details: `apps/server/src/infra/auth/README.md`.
   form submissions stay on the app's origin, server-rendered inline scripts need the
   response's nonce, images may also be `data:` URLs or come from the uploads bucket,
   and no page may be framed (`frame-ancestors 'none'`, plus `X-Frame-Options: DENY`).
-  Public pages, signed links and downloads send stricter policies of their own.
+  Public pages, signed links and downloads send stricter policies of their own; the
+  public website's pages run no script and allow only their structured-data block,
+  by the response's nonce.
   Payment pages are left by navigation, never by a form submission, so Stripe
   Checkout needs no exception in `form-action`. Violations are reported to
   `/csp-report` and logged without IDs, tokens or query strings, within per-gym
