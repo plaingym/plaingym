@@ -3,18 +3,20 @@
 
 The portal first loads the signed-in user's households. A login with one
 household goes straight in; a login with several sees a household picker and,
-once one is chosen, a switcher in the header. Choosing or switching stores the
-household with the session on the server, resets the portal (cancelling its loads in flight, then
-clearing every cached query under `['portal']` and waiting for the household lists it refetches), asks
-for the bootstrap again and returns to the portal home without waiting for that refetch, so data from
-two households is never shown together. The reset reaches only `['portal']`: the bootstrap, the shell's
-own entries and root queries such as demo discovery stay. The previous household's context query is
-removed rather than refetched, and a context answer for a household other than the one its key names is
-never stored (the household lists are read again instead). Once the server has stored the switch, a later
-step that fails (the reset, going home) doesn't report a failed switch: the portal shows the new household.
+once one is chosen, a switcher in the header. Every portal query is keyed by the open household
+(`['portal', gym, user, 'household', householdId, ...]`, built by `usePortalKey` in `household/api.ts` from the
+household lists), so one household's cached pages can't be reached from another's. Choosing or switching
+stores the household with the session on the server, then writes it into the cached household lists (after
+cancelling a list load that began before the switch) and removes every other household's cached queries,
+which also cancels their loads in flight. It then reads the lists again, asks for the bootstrap again and
+returns to the portal home without waiting for that refetch. A context answer for a household other than
+the one its key names is never stored (the household lists are read again instead). Once the server has
+stored the switch, a later step that fails (the list read, going home) doesn't report a failed switch: the
+portal shows the new household. The household lists, the bootstrap, the shell's own entries and root
+queries such as demo discovery are not under a household's keys and stay.
 Whenever the open household changes any other way, such as the server falling back to another one
-because a link was revoked, the shell does the same: it resets the portal (keeping the household lists
-it was just told about) and refetches the bootstrap, so the pages and the name follow it. The household
+because a link was revoked, the pages follow the new key at once; the shell removes the other households'
+entries and refetches the bootstrap, so the pages and the name follow it. The household
 the name was last settled for is kept in the query cache, not in the layout, so a layout that remounts
 (or whose household lists were collected) still notices a change made while it was away.
 From a change until the bootstrap refetch it asks for has finished, and after one that fails, the header

@@ -39,10 +39,10 @@ function status(booking: MemberBooking) {
 
 export function PortalSchedulePage({ client = portalClient, now = () => new Date() }: { client?: PortalClient; now?: () => Date }) {
   const bootstrap = useBootstrap(), cache = useQueryClient(), timezone = bootstrap.data?.gym.timezone ?? 'UTC';
-  const { key, context, members, memberId, member, choose } = usePortalMembers(client);
+  const { key, ready, context, members, memberId, member, choose } = usePortalMembers(client);
   const [week, setWeek] = useState(0), [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string }>();
   const range = weekRange(localDate(now(), timezone), week, timezone);
-  const schedule = useQuery({ queryKey: [...key, 'schedule', range.from], queryFn: () => client.schedule(range.from, range.to), staleTime: 0 });
+  const schedule = useQuery({ queryKey: [...key, 'schedule', range.from], enabled: ready, queryFn: () => client.schedule(range.from, range.to), staleTime: 0 });
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>
       input.action === 'book' ? client.book(input.context, input.member.id, input.session.id) : client.cancel(input.context, input.member.id, input.booking!.id),

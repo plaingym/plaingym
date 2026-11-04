@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import type { PortalContext } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
@@ -12,6 +12,7 @@ import { PortalBillingPage } from '../billing/page.js';
 import { PortalWaiversPage } from '../waivers/page.js';
 import { PortalHouseholdPage } from './page.js';
 import { gymToday, knownMinor, needsGuardian } from './api.js';
+import { portalTestCache } from './test-cache.test-helper.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const ids = { gym: id(1), user: id(2), household: id(3), payer: id(4), child: id(5), adult: id(6), invoice: id(7), paid: id(8), card: id(9), template: id(10), signature: id(11) };
@@ -31,7 +32,7 @@ function mount(element: ReactNode, handle: Handler) {
   vi.stubGlobal('fetch', fetcher);
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.gym, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
     session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
-  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{element}</QueryClientProvider></ShellServicesContext.Provider>);
+  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={portalTestCache(ids.gym, ids.user, ids.household, { defaultOptions: { queries: { retry: false } } })}>{element}</QueryClientProvider></ShellServicesContext.Provider>);
   const calls = (method: string, path: string) => fetcher.mock.calls.filter(([url, init]) => String(url).split('?')[0] === path && (init?.method ?? 'GET') === method);
   return { fetcher, calls };
 }

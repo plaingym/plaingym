@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { portalTestCache } from '../household/test-cache.test-helper.js';
 import type { PortalClient } from '../schedule/client.js';
 import { PortalProgressPage } from './page.js';
 
@@ -27,7 +28,7 @@ beforeEach(() => {
     : { data: [visit(offset + 1)], pagination: { limit: 1, offset, total: 2 } });
 });
 afterEach(cleanup);
-const page = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+const page = () => render(<QueryClientProvider client={portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } })}>
   <PortalProgressPage client={client as unknown as PortalClient} /></QueryClientProvider>);
 
 describe('portal progress', () => {

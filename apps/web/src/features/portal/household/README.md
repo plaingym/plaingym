@@ -13,7 +13,7 @@ as their parent or guardian; an adult member sees only their own documents.
 profile and children's profiles, and shows each member's memberships read-only.
 An adult member sees their own profile, read-only.
 
-Queries live under the `portal` cache key, so switching household discards them.
+Every query key is built by `usePortalKey`, which includes the open household, so one household's cached pages can't be reached from another's.
 The server is authoritative for every permission; the pages only hide actions a
 login cannot use.
 
