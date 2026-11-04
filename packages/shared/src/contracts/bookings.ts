@@ -61,7 +61,9 @@ export const bookingRosterEntrySchema = z.strictObject({ booking: classBookingSc
   .refine((value) => value.attendance === null || (value.attendance.sessionId !== null && (
     value.booking === null || (value.attendance.memberId === value.booking.memberId && value.attendance.sessionId === value.booking.sessionId)
   )), { path: ['attendance'], message: 'Attendance must match the roster session and booked member, when present' });
-export const bookingRosterResponseSchema = listResponseSchema(bookingRosterEntrySchema);
+/** Whole-session counts, never the current page: active bookings, the waitlist, and members checked in (walk-ins included). Cancelled bookings are not counted. */
+export const bookingSessionCountsSchema = z.strictObject({ booked: z.int().nonnegative(), waitlisted: z.int().nonnegative(), checkedIn: z.int().nonnegative() });
+export const bookingRosterResponseSchema = listResponseSchema(bookingRosterEntrySchema).extend({ counts: bookingSessionCountsSchema });
 
 /** Cancellation and promotion are idempotent transitions, not staff record edits; the table has no revision. */
 export const bookingsContracts = {
@@ -85,6 +87,7 @@ export type CreateBookingInput = z.input<typeof createBookingRequestSchema>;
 export type MemberCreateBookingRequest = z.infer<typeof memberCreateBookingRequestSchema>;
 export type BookingListQuery = z.infer<typeof bookingListQuerySchema>;
 export type MemberBookingListQuery = z.infer<typeof memberBookingListQuerySchema>;
+export type BookingSessionCounts = z.infer<typeof bookingSessionCountsSchema>;
 export type BookingRosterEntry = z.infer<typeof bookingRosterEntrySchema>;
 
 export type BookingResponse = z.infer<typeof bookingResponseSchema>;

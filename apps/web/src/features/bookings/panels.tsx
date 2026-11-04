@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { localDate } from '@plaingym/shared/time';
-import type { BookingRosterEntry, ClassBooking, ClassSession, Member } from '@plaingym/shared/contracts';
+import type { BookingRosterEntry, BookingSessionCounts, ClassBooking, ClassSession, Member } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { useBootstrap } from '../../app/context.js';
 import { ApiError } from '../../lib/api.js';
@@ -12,6 +12,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
 import { EmptyState, LoadingState } from '../../components/ui/states.js';
+import { usePublishSessionCounts, useSessionChanged } from '../../lib/session-summary.js';
 import { bookingClient } from './client.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('bookings/bookings:' + key, values);
@@ -25,11 +26,14 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   const bootstrap = useBootstrap(), timezone = bootstrap.data?.gym?.timezone;
   const [reload, setReload] = useState(0), [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<{ key: string; name: string; booking: ClassBooking | null; checked?: boolean }[]>([]);
-  const [total, setTotal] = useState(0), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
+  const [total, setTotal] = useState(0), [counts, setCounts] = useState<BookingSessionCounts | null>(null), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const changed = useSessionChanged(), seenChanged = useRef(changed);
   useEffect(() => {
     if (!timezone) return;
-    let active = true; setLoading(true); setError(''); setRows([]);
+    // A change reported by the dialog refreshes in place; the list doesn't blank while it reloads.
+    const quiet = seenChanged.current !== changed; seenChanged.current = changed;
+    let active = true; setLoading(true); setError(''); if (!quiet) setRows([]);
     async function load() {
       if (sessionId) {
         const page = await bookingClient.roster(sessionId, offset);
@@ -38,24 +42,27 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
           const member = await bookingClient.member(id);
           return { key: id, name: `${member.firstName} ${member.lastName}`, booking: row.booking, checked: !!row.attendance };
         }));
-        return { rows, total: page.pagination.total };
+        return { rows, total: page.pagination.total, counts: page.counts };
       }
       const page = await bookingClient.list(memberId!, offset);
       const sessions = await Promise.all([...new Set(page.data.map(row => row.sessionId))].map(id => bookingClient.session(id)));
-      return { rows: page.data.map(booking => ({ key: booking.id, name: sessionLabel(sessions.find(row => row.id === booking.sessionId)!, timezone!), booking })), total: page.pagination.total };
+      return { rows: page.data.map(booking => ({ key: booking.id, name: sessionLabel(sessions.find(row => row.id === booking.sessionId)!, timezone!), booking })), total: page.pagination.total, counts: null };
     }
-    void load().then(value => { if (active) { setRows(value.rows); setTotal(value.total); } })
-      .catch(error => { if (active) setError(errorText(error)); }).finally(() => { if (active) setLoading(false); });
+    void load().then(value => { if (active) { setRows(value.rows); setTotal(value.total); setCounts(value.counts); } })
+      .catch(error => { if (active) { setError(errorText(error)); setCounts(null); } }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [sessionId, memberId, timezone, offset, reload]);
+  }, [sessionId, memberId, timezone, offset, reload, changed]);
   async function cancel(id: string) {
     if (saving) return; setSaving(true); setError(''); setNotice('');
     try { await bookingClient.cancel(id); setNotice(text('cancelledSaved')); setReload(value => value + 1); }
     catch (error) { setError(errorText(error)); } finally { setSaving(false); }
   }
+  usePublishSessionCounts(sessionId ? counts : null);
   const busy = loading || saving;
   return <section className="min-w-0 space-y-4" aria-label={text(sessionId ? 'roster' : 'title')}>
-    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-lg font-semibold">{text(sessionId ? 'roster' : 'title')}</h3>
+    <div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0">
+      <h3 className="text-lg font-semibold">{text(sessionId ? 'roster' : 'title')}</h3>
+      {sessionId && counts && <p className="text-sm text-muted-foreground" data-testid="roster-counts">{text('counts', counts)}</p>}</div>
       <Button variant="outline" disabled={busy} onClick={() => setReload(value => value + 1)}>{text('refresh')}</Button></div>
     {(error || bootstrap.isError) && <Alert>{error || text('error')}</Alert>}
     {notice && <p role="status">{notice}</p>}

@@ -5,6 +5,7 @@ import { classSessionResponseSchema, updateClassSessionRequestSchema, type Class
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
 import { createRegistries } from '../../lib/registries.js';
+import { SessionCountsProvider, type SessionCounts } from '../../lib/session-summary.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
@@ -22,6 +23,12 @@ export function message(error: unknown): string { return text(error instanceof E
 export function sessionTimes(session: ClassSession, timezone: string) {
   return `${localTime(new Date(session.startsAt), timezone)}–${localTime(new Date(session.endsAt), timezone)}`;
 }
+/** "Booked 4 of 5 · 2 waitlisted · 3 checked in"; without a capacity, "Booked 4 · …". */
+function countsSummary(counts: SessionCounts, capacity: number | null) {
+  const text = (key: string, values: Record<string, number>) => t('schedule/schedule:' + key, values);
+  const booked = capacity === null ? text('bookedOnly', { booked: counts.booked }) : text('bookedOf', { booked: counts.booked, capacity });
+  return [booked, text('waitlistedCount', { count: counts.waitlisted }), text('checkedInCount', { count: counts.checkedIn })].join(' · ');
+}
 export function SessionPanels({ sessionId, roles, enabledModules = [], registries = createRegistries() }:
   { sessionId: string; roles: readonly StaffRole[]; enabledModules?: readonly string[]; registries?: ReturnType<typeof createRegistries> }) {
   return <>{registries.sessionPanels.forModules(new Set(enabledModules)).filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability)).map((entry) => {
@@ -36,10 +43,12 @@ export function Field({ label, children }: { label: string; children: ReactNode 
   return <Label className="grid min-w-0 gap-2">{label}{children}</Label>;
 }
 /** Session detail with its staff actions. `siblings` are the loaded sessions, used to warn before a move collides. */
-export function SessionDetail({ session, options, roles, enabledModules, onSaved, tags = [], siblings = [] }:
+export function SessionDetail({ session, options, roles, enabledModules, onSaved, tags = [], siblings = [], registries }:
   { session: ClassSession; options: ScheduleOptions; roles: readonly StaffRole[]; enabledModules: readonly string[]; onSaved: (session: ClassSession) => void;
-    tags?: readonly ClassTag[]; siblings?: readonly ClassSession[] }) {
+    tags?: readonly ClassTag[]; siblings?: readonly ClassSession[]; registries?: ReturnType<typeof createRegistries> }) {
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [editing, setEditing] = useState(false);
+  // Booking numbers come from whichever session panel publishes them (the bookings panel), not from an import.
+  const [counts, setCounts] = useState<SessionCounts | null>(null), [changed, setChanged] = useState(0);
   useDialogOperation(busy);
   const markSaved = useDialogSaved();
   const manage = canStaff(roles, 'schedule.manage'), notes = canStaff(roles, 'class_notes.manage');
@@ -56,6 +65,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
       check(result.response); if (formElement) markSaved(formElement);
       onSaved(classSessionResponseSchema.parse(result.data).data); setNotice(text('saved'));
+      // A new capacity can promote or move bookings, so the panels that show counts reload. Cancelling a session leaves its bookings as they are.
+      if (kind === 'capacity') setChanged((value) => value + 1);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
   const when = new Intl.DateTimeFormat(undefined, { timeZone: options.timezone, dateStyle: 'full' }).format(new Date(session.startsAt));
@@ -69,6 +80,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         <Badge tone={session.status === 'cancelled' ? 'destructive' : 'success'}>{text(session.status)}</Badge><Badge tone="muted">{text(session.kind)}</Badge></dd></div>
       <div><dt className="text-sm text-muted-foreground">{text('coach')}</dt><dd>{options.coaches.find((coach) => coach.id === session.coachId)?.name ?? text('unassigned')}</dd></div>
       <div><dt className="text-sm text-muted-foreground">{text('capacity')}</dt><dd>{session.capacity ?? text('unlimited')}</dd></div>
+      {counts && <div className="sm:col-span-2"><dt className="text-sm text-muted-foreground">{text('bookings')}</dt>
+        <dd className="font-medium" data-testid="session-counts">{countsSummary(counts, session.capacity)}</dd></div>}
       {session.notes && <div className="sm:col-span-2"><dt className="text-sm text-muted-foreground">{text('notes')}</dt><dd><p className="whitespace-pre-wrap break-words">{session.notes}</p></dd></div>}
     </dl>
     {notice && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{notice}</p>}
@@ -86,7 +99,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     {notes && <form key={'notes-' + session.revision} onSubmit={(event) => void change('notes', event)} className="space-y-2">
       <Field label={text('notes')}><Textarea name="notes" defaultValue={session.notes ?? ''} disabled={busy}/></Field>
       <Button type="submit" className="w-full sm:w-auto" disabled={busy}>{text('saveNotes')}</Button></form>}
-    <SessionPanels sessionId={session.id} roles={roles} enabledModules={enabledModules}/>
+    <SessionCountsProvider publish={setCounts} changed={changed} notify={() => setChanged((value) => value + 1)}><SessionPanels sessionId={session.id} roles={roles} enabledModules={enabledModules} {...(registries ? { registries } : {})}/></SessionCountsProvider>
   </div>;
 }
 /** Edits or moves one session through the full, revision-checked session update. Notes keep their own form. */

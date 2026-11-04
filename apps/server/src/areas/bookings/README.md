@@ -85,6 +85,17 @@ profile tab. Both let staff book or cancel places; the roster includes walk-ins.
 The member tab chooses classes by a gym-local date. Views use paginated booking
 contracts and the existing member/schedule projections for display names.
 
+The roster response carries `counts` for the whole session, not the page:
+`booked`, `waitlisted` (one grouped query over active bookings) and `checkedIn`
+(every check-in, walk-ins included). Cancelled bookings are not counted. The
+roster panel shows them in its heading and publishes them to the session dialog
+(`lib/session-summary.tsx`), which shows them beside the capacity; the schedule
+feature does not import the bookings feature. The panel reloads its counts after
+a booking or cancellation, after a capacity change in the dialog (which can
+promote or move bookings), and after a check-in in the dialog's attendance panel (which tells the
+dialog through the same module); a promotion or check-in made elsewhere shows on
+Refresh.
+
 The Postgres tests cover concurrency, queue gaps, cutoff/window boundaries,
 capacity revision rollback, erasure, route permissions and household/gym
 isolation, plus registered jobs, retry/recovery and captured SMTP delivery.

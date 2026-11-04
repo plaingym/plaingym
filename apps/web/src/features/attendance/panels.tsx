@@ -9,6 +9,7 @@ import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
 import { EmptyState, LoadingState } from '../../components/ui/states.js';
+import { useNotifySessionChanged } from '../../lib/session-summary.js';
 import { attendanceClient } from './client.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('attendance/attendance:' + key, values);
@@ -16,7 +17,7 @@ export function AttendanceRosterPanel({ sessionId }: ExtensionViewProps) {
   return sessionId ? <Roster key={sessionId} sessionId={sessionId}/> : null;
 }
 function Roster({ sessionId }: { sessionId: string }) {
-  const inputId = useId();
+  const inputId = useId(), notifyChanged = useNotifySessionChanged();
   const [search, setSearch] = useState(''), [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0), [reload, setReload] = useState(0);
   const [roster, setRoster] = useState<{ data: Member[]; total: number } | null>(null);
@@ -38,6 +39,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     try {
       await attendanceClient.record({ memberId, sessionId, programId: null });
       setChecked((previous) => new Set([...previous, memberId]));
+      notifyChanged();
     } catch { setError(true); }
     finally { setSaving(false); }
   }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray, lt, ne } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, lt, ne } from 'drizzle-orm';
 import { attendances, classBookings, classSessions, forGym, householdUsers, members, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { attendanceSchema, bookingListQuerySchema, classBookingSchema, createBookingRequestSchema, paginationSchema,
@@ -130,7 +130,12 @@ export function createBookingService(options: BookingOptions = {}) {
             id: attendance.id, memberId, sessionId, programId: attendance.programId, source: attendance.source, kind: attendance.kind,
             occurredAt: attendance.occurredAt.toISOString(), createdAt: attendance.createdAt.toISOString() }) : null };
         }));
-        return { data, pagination: { ...page, total: ids.length } };
+        // Whole-session counts: one grouped query over active bookings, one count of check-ins.
+        const grouped = await tx.select({ status: classBookings.status, total: count() }).from(classBookings)
+          .where(and(eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled'))).groupBy(classBookings.status);
+        const counts = { booked: grouped.find(row => row.status === 'booked')?.total ?? 0, waitlisted: grouped.find(row => row.status === 'waitlisted')?.total ?? 0,
+          checkedIn: await tx.$count(attendances, eq(attendances.sessionId, sessionId)) };
+        return { data, pagination: { ...page, total: ids.length }, counts };
       });
     },
     /** Counts only: open places for each reservable session, never who holds them. Sessions without capacity are omitted. */

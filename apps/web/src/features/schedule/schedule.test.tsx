@@ -9,6 +9,7 @@ import { api } from '../../lib/api.js';
 import { useBootstrap } from '../../app/context.js';
 import type { ShellBootstrap } from '../../app/services.js';
 import { createRegistries } from '../../lib/registries.js';
+import { usePublishSessionCounts, useSessionChanged } from '../../lib/session-summary.js';
 import { SchedulePage, SessionDetail, SessionForm, SessionPanels } from './page.js';
 import { calendarDate, calendarInstant, localTime, shiftDate, weekStart } from './calendar.js';
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
@@ -52,6 +53,37 @@ describe('schedule calendar and session detail', () => {
     expect(screen.getAllByText('Extension panel')).toHaveLength(2); expect(seen).toEqual([id, id]);
     view.rerender(<SessionPanels sessionId={id} roles={['coach']} enabledModules={['extra']} registries={registries}/>);
     expect(screen.getAllByText('Extension panel')).toHaveLength(3);
+  });
+  it('shows the booking counts a session panel publishes beside the capacity, and clears them when the panel goes', () => {
+    let counts: { booked: number; waitlisted: number; checkedIn: number } | null = { booked: 4, waitlisted: 2, checkedIn: 3 };
+    const Panel = () => { usePublishSessionCounts(counts); return <p>Counting panel</p>; };
+    const entry = { id: 'test.counts', labelKey: 'schedule/schedule:notes', permission: { kind: 'staff' as const, capability: 'attendance.manage' as const }, enabled: true, component: Panel };
+    const registries = createRegistries([{ sessionPanels: [entry] }]);
+    const detail = (capacity: number | null) => <SessionDetail session={{ ...session, capacity, notes: null }} options={options} roles={['coach']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>;
+    const view = render(detail(5));
+    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 4 of 5 · 2 waitlisted · 3 checked in');
+    view.rerender(detail(null));
+    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 4 · 2 waitlisted · 3 checked in');
+    counts = { booked: 5, waitlisted: 0, checkedIn: 1 }; view.rerender(detail(5));
+    expect(screen.getByTestId('session-counts').textContent).toBe('Booked 5 of 5 · 0 waitlisted · 1 checked in');
+    view.unmount();
+  });
+  it('tells the panels a capacity save changed the bookings, but not a notes save', async () => {
+    const changes: number[] = [];
+    const Panel = () => { changes.push(useSessionChanged()); return <p>Watching panel</p>; };
+    const entry = { id: 'test.watch', labelKey: 'schedule/schedule:notes', permission: { kind: 'staff' as const, capability: 'attendance.manage' as const }, enabled: true, component: Panel };
+    const registries = createRegistries([{ sessionPanels: [entry] }]);
+    vi.mocked(api.PATCH).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, capacity: 7 } } } as Awaited<ReturnType<typeof api.PATCH>>);
+    render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>);
+    expect(Math.max(...changes)).toBe(0);
+    fireEvent.change(screen.getByLabelText('Coach notes', { selector: 'textarea' }), { target: { value: 'Updated' } }); fireEvent.click(screen.getByRole('button', { name: 'Save notes' }));
+    await waitFor(() => expect(api.PATCH).toHaveBeenCalledTimes(1)); expect(Math.max(...changes)).toBe(0);
+    fireEvent.change(screen.getByLabelText('Capacity'), { target: { value: '7' } }); fireEvent.click(screen.getByRole('button', { name: 'Save capacity' }));
+    await waitFor(() => expect(Math.max(...changes)).toBe(1));
+  });
+  it('shows no booking summary when no panel publishes counts', () => {
+    render(<SessionDetail session={session} options={options} roles={['coach']} enabledModules={[]} onSaved={vi.fn()} registries={createRegistries()}/>);
+    expect(screen.queryByTestId('session-counts')).toBeNull();
   });
   it('saves plain text notes with the displayed revision and hides schedule edits from front desk', async () => {
     const onSaved = vi.fn();

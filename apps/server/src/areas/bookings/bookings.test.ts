@@ -120,6 +120,24 @@ describe('booking transactions', () => {
     expect(roster.data.find(row => row.booking === null)?.attendance?.memberId).toBe(f.other.id);
     expect(await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 1 })).toMatchObject({ pagination: { total: 2 } });
   });
+  it('counts the whole session in the roster: booked, waitlisted and checked in, without cancelled or another gym', async () => {
+    const f = await fixture(2), foreign = await fixture(2);
+    const members = await Promise.all([1, 2, 3, 4].map(() => factory('members', f.gymId)));
+    const first = await f.book(), second = await f.book(f.other.id);
+    await f.book(members[0]!.id); await f.book(members[1]!.id); const gone = await f.book(members[2]!.id);
+    await f.service.cancel(f.actor, gone.id);
+    await foreign.book(); await foreign.book(foreign.other.id); await foreign.book(await factory('members', foreign.gymId).then(row => row.id));
+    for (const member of [first.memberId, members[3]!.id]) await factory('attendances', f.gymId, { memberId: member, sessionId: f.session.id });
+    await factory('attendances', foreign.gymId, { memberId: foreign.member.id, sessionId: foreign.session.id });
+    const expected = { booked: 2, waitlisted: 2, checkedIn: 2 };
+    expect((await f.service.roster(f.gymId, f.session.id, page)).counts).toEqual(expected);
+    // A short or later page still reports the whole session.
+    const small = await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 3 });
+    expect(small.data).toHaveLength(1); expect(small.counts).toEqual(expected);
+    await f.service.cancel(f.actor, second.id); await f.service.promote(f.gymId, f.session.id);
+    expect((await f.service.roster(f.gymId, f.session.id, page)).counts).toEqual({ booked: 2, waitlisted: 1, checkedIn: 2 });
+    expect((await foreign.service.roster(foreign.gymId, foreign.session.id, page)).counts).toEqual({ booked: 2, waitlisted: 1, checkedIn: 1 });
+  });
   it('exports promotion for each session freed by erasure and does not book an erased member again', async () => {
     const f = await fixture(), booked = await f.book(), waiting = await f.book(f.other.id);
     const memberService = createMembersService(f.options);

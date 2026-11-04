@@ -41,4 +41,9 @@ All other endpoints use the frozen schedule contracts.
 The existing area route/job barrels load `schedule.routes.ts` and
 `schedule.jobs.ts`. No extra runtime wiring is required. The admin calendar
 renders enabled, permitted `sessionPanels` contributions without importing
-their components directly.
+their components directly. A panel can publish booking counts for the session
+dialog's summary (`lib/session-summary.tsx`); the dialog shows them beside the
+capacity when a panel has published any. The dialog also tells its panels when a
+capacity change may have moved bookings (cancelling a session leaves its
+bookings as they are), and a panel can tell
+the dialog about its own changes (a check-in), so a panel that shows counts reloads.

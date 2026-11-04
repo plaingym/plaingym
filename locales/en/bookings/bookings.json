@@ -3,6 +3,7 @@
   "title": "Bookings",
   "roster": "Bookings and check-ins",
   "booked": "Booked",
+  "counts": "Booked {booked} · {waitlisted} waitlisted · {checkedIn} checked in",
   "waitlisted": "Waitlisted — position {rank}",
   "cancelled": "Cancelled",
   "checkedIn": "Checked in",

@@ -6,6 +6,8 @@ import userEvent from '@testing-library/user-event';
 import { BookingRosterPanel, MemberBookingsPanel } from './panels.js';
 import { registration } from './registrations.js';
 import { ApiError } from '../../lib/api.js';
+import { SessionCountsProvider, type SessionCounts } from '../../lib/session-summary.js';
+import { useState } from 'react';
 
 const client = vi.hoisted(() => ({ roster: vi.fn(), list: vi.fn(), members: vi.fn(), member: vi.fn(), session: vi.fn(), sessions: vi.fn(), book: vi.fn(), cancel: vi.fn() }));
 vi.mock('./client.js', () => ({ bookingClient: client }));
@@ -16,7 +18,7 @@ const member = { id: memberId, firstName: 'River', lastName: 'Lee' };
 const session = { id: sessionId, name: 'Fundamentals', startsAt: '2026-11-02T18:00:00Z', capacity: 2 };
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
-  client.roster.mockResolvedValue({ data: [{ booking, attendance: { memberId } }], pagination: { total: 1 } });
+  client.roster.mockResolvedValue({ data: [{ booking, attendance: { memberId } }], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 1 } });
   client.list.mockResolvedValue({ data: [booking], pagination: { total: 1 } });
   client.member.mockResolvedValue(member); client.members.mockResolvedValue([member]);
   client.session.mockResolvedValue(session); client.sessions.mockResolvedValue([session]);
@@ -40,6 +42,48 @@ describe('staff booking panels', () => {
     expect(screen.getByText('Walk-in')).toBeDefined();
     expect(screen.getAllByText('Checked in')).toHaveLength(2);
     expect(screen.getByText('Not checked in')).toBeDefined();
+  });
+  it('shows whole-session counts in the heading, publishes them, and refreshes them after a booking change', async () => {
+    const counts = (booked: number, waitlisted: number, checkedIn: number) => ({ booked, waitlisted, checkedIn });
+    const row = { booking, attendance: null };
+    // The page holds one row of 51; the counts still describe the whole session.
+    client.roster.mockResolvedValueOnce({ data: [row], pagination: { total: 51 }, counts: counts(4, 2, 3) })
+      .mockResolvedValue({ data: [row], pagination: { total: 50 }, counts: counts(3, 1, 3) });
+    const Probe = () => { const [seen, setSeen] = useState<SessionCounts | null>(null);
+      return <><p data-testid="top">{seen ? `${seen.booked}/${seen.waitlisted}/${seen.checkedIn}` : 'none'}</p>
+        <SessionCountsProvider publish={setSeen}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider></>; };
+    const user = userEvent.setup(); render(<Probe/>);
+    expect((await screen.findByTestId('roster-counts')).textContent).toBe('Booked 4 · 2 waitlisted · 3 checked in');
+    await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('4/2/3'));
+    await user.click(screen.getByRole('button', { name: 'Cancel booking for River Lee' }));
+    await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 3 · 1 waitlisted · 3 checked in'));
+    await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('3/1/3'));
+  });
+  it('reloads the counts when the dialog reports a change, and drops them when a reload fails', async () => {
+    const row = { booking, attendance: null }, publish = vi.fn();
+    client.roster.mockResolvedValueOnce({ data: [row], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } })
+      .mockResolvedValueOnce({ data: [row], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 1 } })
+      .mockRejectedValue(new Error('down'));
+    const view = render(<SessionCountsProvider publish={publish} changed={0}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    expect((await screen.findByTestId('roster-counts')).textContent).toBe('Booked 1 · 0 waitlisted · 0 checked in');
+    view.rerender(<SessionCountsProvider publish={publish} changed={1}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    // The list stays on screen while the counts reload.
+    expect(screen.getByText('River Lee')).toBeDefined();
+    await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 1 · 0 waitlisted · 1 checked in'));
+    expect(publish).toHaveBeenCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1 });
+    view.rerender(<SessionCountsProvider publish={publish} changed={2}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    await waitFor(() => expect(screen.queryByTestId('roster-counts')).toBeNull());
+    expect(publish).toHaveBeenLastCalledWith(null);
+  });
+  it('clears the published counts when the panel closes, and member tabs publish none', async () => {
+    client.roster.mockResolvedValue({ data: [], pagination: { total: 0 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } });
+    const publish = vi.fn(); const view = render(<SessionCountsProvider publish={publish}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    await waitFor(() => expect(publish).toHaveBeenCalledWith({ booked: 1, waitlisted: 0, checkedIn: 0 }));
+    view.unmount(); expect(publish).toHaveBeenLastCalledWith(null);
+    publish.mockClear();
+    render(<SessionCountsProvider publish={publish}><MemberBookingsPanel memberId={memberId}/></SessionCountsProvider>);
+    await waitFor(() => expect(client.list).toHaveBeenCalled());
+    expect(screen.queryByTestId('roster-counts')).toBeNull(); expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ booked: expect.anything() }));
   });
   it('searches a member, books on their behalf and reports their waitlist rank', async () => {
     client.book.mockResolvedValue({ ...booking, status: 'waitlisted', queueRank: 3 });

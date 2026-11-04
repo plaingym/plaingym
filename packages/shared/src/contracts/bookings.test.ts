@@ -72,6 +72,15 @@ describe('booking and waitlist contracts', () => {
       expect(bookingRosterEntrySchema.safeParse({ booking, attendance: { ...attendance, ...change } }).success).toBe(false);
     }
   });
+  it('carries whole-session counts beside the roster page, and requires them', () => {
+    const page = { data: [], pagination: { limit: 50, offset: 0, total: 0 } }, counts = { booked: 4, waitlisted: 2, checkedIn: 3 };
+    expect(bookingsContracts.roster.response.parse({ ...page, counts }).counts).toEqual(counts);
+    expect(bookingsContracts.roster.response.safeParse(page).success).toBe(false);
+    for (const bad of [{ booked: -1 }, { waitlisted: 1.5 }, { checkedIn: '3' }, { cancelled: 1 }]) {
+      expect(bookingsContracts.roster.response.safeParse({ ...page, counts: { ...counts, ...bad } }).success).toBe(false);
+    }
+    expect(bookingsContracts.roster.response.safeParse({ ...page, counts: { booked: 1, waitlisted: 0 } }).success).toBe(false);
+  });
   it('uses the shared list envelope and rejects invalid filters and metadata', () => {
     expect(bookingListQuerySchema.parse({ sessionId: id, status: 'waitlisted' })).toMatchObject({ limit: 50, offset: 0 });
     expect(bookingListQuerySchema.safeParse({ status: 'pending' }).success).toBe(false);

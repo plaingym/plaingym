@@ -84,7 +84,9 @@ describe('booking route permissions and production composition', () => {
     expect(row.bookedByKind).toBe('staff');
     expect((await server.request('/api/bookings')).status).toBe(200);
     const roster = await server.request(`/api/bookings/sessions/${f.session.id}/roster`);
-    expect(roster.status).toBe(200); expect(bookingsContracts.roster.response.parse(await roster.json()).data).toHaveLength(1);
+    expect(roster.status).toBe(200);
+    const parsed = bookingsContracts.roster.response.parse(await roster.json());
+    expect(parsed.data).toHaveLength(1); expect(parsed.counts).toEqual({ booked: 1, waitlisted: 0, checkedIn: 0 });
     expect((await post(server, `/api/bookings/${row.id}/cancel`)).status).toBe(200);
   });
   it('denies anonymous, member, device and cross-gym staff principals on every staff endpoint', async () => {

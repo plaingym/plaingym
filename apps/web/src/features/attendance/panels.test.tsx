@@ -5,6 +5,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AttendanceRosterPanel, MemberAttendancePanel } from './panels.js';
 import { registration } from './registrations.js';
+import { SessionCountsProvider } from '../../lib/session-summary.js';
 const client = vi.hoisted(() => ({ members: vi.fn(), checkedIn: vi.fn(), record: vi.fn(), totals: vi.fn(), labels: vi.fn() }));
 vi.mock('./client.js', () => ({ attendanceClient: client }));
 const memberId = '00000000-0000-7000-8000-000000000001';
@@ -41,6 +42,16 @@ describe('registered attendance panels', () => {
     view.unmount(); client.checkedIn.mockResolvedValue([{ memberId }]);
     render(<AttendanceRosterPanel sessionId={sessionId}/>);
     expect((await screen.findByRole('button', { name: 'River Lee is checked in' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('tells the session dialog after a check-in so booking counts reload', async () => {
+    const notify = vi.fn(), user = userEvent.setup();
+    render(<SessionCountsProvider publish={vi.fn()} notify={notify}><AttendanceRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    await user.click(await screen.findByRole('button', { name: 'Check in River Lee' }));
+    await screen.findByRole('button', { name: 'River Lee is checked in' });
+    expect(notify).toHaveBeenCalledTimes(1);
+    client.record.mockRejectedValue(new Error('no')); client.members.mockResolvedValue({ data: [{ id: 'other', firstName: 'Sam', lastName: 'Ng' }], total: 1 });
+    await user.click(screen.getByRole('button', { name: 'Refresh attendance' })); await user.click(await screen.findByRole('button', { name: 'Check in Sam Ng' }));
+    await waitFor(() => expect(client.record).toHaveBeenCalledTimes(2)); expect(notify).toHaveBeenCalledTimes(1);
   });
   it('searches and paginates the roster without dropping the session scope', async () => {
     client.members.mockResolvedValue({ data: [{ id: memberId, firstName: 'River', lastName: 'Lee' }], total: 51 });
