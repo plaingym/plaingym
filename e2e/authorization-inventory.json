@@ -783,6 +783,30 @@
     }
   },
   {
+    "method": "GET",
+    "path": "/api/settings/integrations/google",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/settings/integrations/google",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/settings/integrations/google",
+    "permission": {
+      "kind": "staff",
+      "capability": "integrations.manage"
+    }
+  },
+  {
     "method": "POST",
     "path": "/api/setup/finish",
     "permission": {

@@ -6,6 +6,7 @@ export const encryptedFields = [
   { table: 'gyms', column: 's3_config_encrypted', secretClass: 's3_config' },
   { table: 'gyms', column: 'qr_key_encrypted', secretClass: 'qr_key' },
   { table: 'gyms', column: 'backup_blob_key_encrypted', secretClass: 'backup_blob_key' },
+  { table: 'gyms', column: 'google_config_encrypted', secretClass: 'google_config' },
   { table: 'auth_account', column: 'access_token', secretClass: 'oauth_access_token' },
   { table: 'auth_account', column: 'refresh_token', secretClass: 'oauth_refresh_token' },
   { table: 'auth_account', column: 'id_token', secretClass: 'oauth_id_token' },

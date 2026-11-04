@@ -126,7 +126,9 @@ keeps these tables in step with it.
 `integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
 **Settings → Email, payments and backups** after it, whose responses and audits
 never contain a password, key, signing secret or storage credential. It also
-covers **Settings → Updates**, the switch for automatic patch updates.
+covers **Settings → Updates**, the switch for automatic patch updates, and
+**Settings → Google sign-in** (with the wizard's Google page), whose client
+secret is never returned, logged or audited.
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
 
@@ -152,7 +154,7 @@ types and existing invoices only.
 Authentication uses Better Auth for identities and sessions only; roles live in
 PlainGym's own tables. Only an allowlist of its endpoints is reachable (password
 sign-in when enabled, magic-link request and verification when email is set up,
-Google sign-in and its callback when the install has a Google client, get-session,
+Google sign-in and its callback when the gym has a Google client, get-session,
 sign-out); every other library endpoint is a 404, and no endpoint
 lists or bulk-revokes sessions. There is no public sign-up: identities are created
 by setup, the gym CLI, staff and portal invitations, and the join flow.
@@ -164,9 +166,13 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   is `auto` (on only for a gym with no SMTP), `on` or `off`; multi-gym mode
   requires `off`. Hashes are Argon2id (19 MiB, two passes) with a random salt,
   and a process runs at most two hashes at once.
-* **Google** sign-in is on only when the server's configuration has a Google
-  OAuth client (`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`); in multi-gym mode
-  too, the client comes from the install, never from a gym owner. The OAuth state
+* **Google** sign-in is on only when the gym has a Google OAuth client: the
+  server's configuration (`GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`), which
+  wins when set, or on a single-gym install the client the owner entered (owners
+  only; stored encrypted, its secret write-only: never returned, logged or audited).
+  In multi-gym mode the client comes only from the install, never from a gym
+  owner, and a stored one is ignored. The client is looked up on each Google
+  request, so a change needs no restart. The OAuth state
   records the gym that issued it, and a callback whose state another gym issued,
   or that is unknown or expired, is refused before the code is exchanged, so a
   Google sign-in never crosses gyms. Google signs in existing identities only (no
@@ -218,7 +224,7 @@ Details: `apps/server/src/core/app.md`.
 ## Secrets and personal data
 
 * **Encrypted at rest.** Stripe keys, SMTP passwords, backup destination
-  credentials, OAuth tokens (Google sign-in stores none), the gym's QR key and the backup blob-naming key are
+  credentials, a gym's own Google OAuth client, OAuth tokens (Google sign-in stores none), the gym's QR key and the backup blob-naming key are
   encrypted in the database with AES-256-GCM under `APP_ENCRYPTION_KEY`
   (`packages/db/src/encrypted-fields.ts`). Passwords, PINs, check-in codes and
   link tokens are hashed, not encrypted.

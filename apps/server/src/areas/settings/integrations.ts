@@ -6,6 +6,7 @@ import { auditEvents, forGym, gyms, households, invoices, paymentAttempts, payme
 import { AppError, type Clock } from '@plaingym/shared';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
   type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type StripeTestData,
+  type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
   stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -21,6 +22,7 @@ import { createStripeConnection, readStripeConfig, restrictedKeyMode, type Strip
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
 import { encryptSmtpConfig, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, storedSmtpSchema, type SendSmtpTest } from './smtp.js';
+import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig } from './google-login.js';
 
 type Gym = typeof gyms.$inferSelect;
 /** A new destination and key waiting for the owner to prove they saved the private key. Kept in the gym's opaque settings. */
@@ -76,6 +78,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   const sandbox = options.sandbox ?? false, single = options.config.tenancy === 'single';
   // A sandbox mails through the demo outbox and never reads the install's SMTP settings (as the runtime doesn't).
   const installSmtp = !sandbox && smtpFromEnvironment(options.env) !== null;
+  const google = createGoogleClientResolver({ key: options.key, env: options.env, tenancy: options.config.tenancy, scope });
   const stripe = createStripeConnection({ provisioner: options.provisioner });
   const transportFor = options.transport ?? ((apiKey: string) => stripeTransport(apiKey));
 
@@ -324,6 +327,24 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   function assertBackups() {
     if (!single || sandbox) throw new AppError('not_found', 'Backups are not available on this install');
   }
+  /** A gym stores its own Google client only on a single-gym install whose configuration doesn't set one. */
+  function assertGoogle() {
+    if (!google.editable || sandbox) {
+      if (google.install) throw new AppError('conflict', 'This install’s configuration sets Google sign-in', { google: ['install_configured'] });
+      throw new AppError('not_found', 'Google sign-in settings are not available on this install');
+    }
+  }
+  /** What a Google change records: where the client comes from, never its ID or secret. */
+  const googleAudit = (gym: Gym) => ({ source: google.install ? 'install' : gym.googleConfig ? 'gym' : 'none' });
+  async function googleLogin(gym: Gym, userId: string): Promise<GoogleLogin> {
+    const editable = google.editable && !sandbox;
+    const source = google.install ? 'install' : editable && gym.googleConfig ? 'gym' : 'none';
+    // Removing the stored client leaves email links (the gym's SMTP or the install's) and the owner's own password.
+    const after = signIn(Boolean(gym.smtpConfig) || installSmtp);
+    const removeBlocked = source === 'gym' && !after.magicLink && !(after.password && await options.hasPassword(userId));
+    return { source, editable, clientId: source === 'gym' ? readGoogleConfig(options.key, gym.googleConfig, gym.id)?.clientId ?? null : null,
+      clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision };
+  }
   /** Fails fast on a stale revision before any network call; the save checks it again. */
   async function assertCurrent(gymId: string, revision: number): Promise<Gym> {
     const gym = await gymRow(gymId);
@@ -375,6 +396,38 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   return {
     /** The gym's integrations for the signed-in owner (their own password decides whether email can be removed). */
     async get(gymId: string, userId: string): Promise<Integrations> { return present(gymId, userId); },
+
+    /** Google sign-in for the signed-in owner (their own password decides whether the stored client can be removed). */
+    async getGoogle(gymId: string, userId: string): Promise<GoogleLogin> { return googleLogin(await gymRow(gymId), userId); },
+
+    /**
+     * Stores the gym's own Google OAuth client, replacing any stored one; the next sign-in uses it. Single-gym installs
+     * only, and refused when the install's configuration sets Google. Neither value is audited or logged.
+     */
+    async saveGoogle(context: MutationContext, input: SaveGoogleLoginRequest): Promise<GoogleLogin> {
+      assertGoogle();
+      const userId = userOf(context);
+      const value = encryptGoogleConfig(options.key, { clientId: input.clientId, clientSecret: input.clientSecret });
+      const after = await save(context, input.revision, async (gym) => ({ set: { googleConfig: value },
+        action: 'integrations.google_saved', before: googleAudit(gym), after: googleAudit }));
+      return googleLogin(after, userId);
+    },
+
+    /** Turns Google sign-in off for the gym. Refused while it would leave the signed-in owner no way to sign in. */
+    async removeGoogle(context: MutationContext, input: RemoveGoogleLoginRequest): Promise<GoogleLogin> {
+      assertGoogle();
+      const userId = userOf(context);
+      const gym = await assertCurrent(context.gymId, input.revision);
+      const notConfigured = () => new AppError('conflict', 'The gym has no Google client of its own', { google: ['not_configured'] });
+      if (!gym.googleConfig) throw notConfigured();
+      if ((await googleLogin(gym, userId)).removeBlocked)
+        throw new AppError('conflict', 'Google is your only way to sign in: set up email or a password first', { google: ['only_sign_in'] });
+      const after = await save(context, input.revision, async (before) => {
+        if (!before.googleConfig) throw notConfigured();
+        return { set: { googleConfig: null }, action: 'integrations.google_removed', before: googleAudit(before), after: googleAudit };
+      });
+      return googleLogin(after, userId);
+    },
 
     /** Sends a test message through the submitted settings and saves them only if it is accepted. */
     async saveEmail(context: MutationContext, input: SaveEmailIntegrationRequest): Promise<{ test: 'sent' | 'failed'; integrations: Integrations }> {

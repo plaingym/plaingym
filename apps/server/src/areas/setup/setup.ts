@@ -2,7 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { forGym, forSystem, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
+import type { SetupOwnerRequest, SetupGymDetails, SetupPacksRequest, SetupWebsiteRequest, SetupSmtpRequest, SetupGoogleRequest, SetupStripeRequest, SetupBackupRequest, SetupBackupConfirmRequest, SetupFinishRequest } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { reserveGym } from '../../core/tenancy-bootstrap.js';
@@ -10,6 +10,8 @@ import { createOwnerService, type ProvisionOwner } from '../staff/auth.owner.js'
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, storedSmtpFromRequest, type SendSmtpTest } from '../settings/smtp.js';
+import { encryptGoogleConfig } from '../settings/google-login.js';
+import { googleFromEnvironment } from '../../infra/auth/google.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from './backup-key.js';
 import { loadContentPacks } from '../ranks/packs.loader.js';
 import { createContentPackService } from '../ranks/packs.js';
@@ -205,6 +207,31 @@ export function createSetupService(options: {
         return { configured: false, test: 'failed' as const, revision: input.revision };
       const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, stored) });
       return { configured: true, test: 'sent' as const, revision: gym.revision };
+    },
+    /**
+     * The optional Google page after step 5: stores the gym's own OAuth client, encrypted, and changes no step. Refused
+     * when the install's configuration sets Google (it wins) and outside single-gym setup. Neither value is audited.
+     */
+    async google(context: MutationContext, input: SetupGoogleRequest) {
+      if ((env.TENANCY ?? 'single') !== 'single' || env.DEMO_MODE === 'true') throw missing();
+      if (googleFromEnvironment(env)) throw new AppError('conflict', 'This install’s configuration sets Google sign-in', { google: ['install_configured'] });
+      const value = encryptGoogleConfig(options.key, { clientId: input.clientId, clientSecret: input.clientSecret });
+      const gym = await scope(context.gymId, async (tx) => {
+        const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
+        if (!before) throw missing();
+        const state = progress(before);
+        if (context.actor.kind !== 'user' || state.ownerId !== context.actor.userId) throw missing();
+        if (!state.completedSteps.includes(5)) throw new AppError('conflict', 'Complete the preceding setup step');
+        assertRevised(before.revision === input.revision ? [before] : []);
+        const guard = revisionGuard(gyms.revision, input.revision);
+        const after = assertRevised(await tx.update(gyms).set({ googleConfig: value, revision: guard.next, updatedAt: clock.now() })
+          .where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
+        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: context.actor.userId, action: 'setup.google_saved',
+          targetType: 'gym', targetId: context.gymId, before: { source: before.googleConfig ? 'gym' : 'none' },
+          after: { source: 'gym', revision: after.revision }, occurredAt: clock.now() });
+        return after;
+      });
+      return { configured: true as const, revision: gym.revision };
     },
     /** Step 6 validates the restricted key and registers the webhook outside any transaction. */
     stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },

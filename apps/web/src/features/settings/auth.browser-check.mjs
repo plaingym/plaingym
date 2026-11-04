@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The sign-in page with Google and the Google settings section in the built app, at 360 px and 1280 px.
+// The sign-in page with Google and the Google settings section (install client, form, stored client) in the built app, at 360 px and 1280 px.
 // Build the web app first (`pnpm --filter @plaingym/web build`), then run `node apps/web/src/features/settings/auth.browser-check.mjs`.
 import { createServer } from 'node:http';
 import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -11,9 +11,16 @@ const { default: AxeBuilder } = await import(pathToFileURL(resolve('e2e/node_mod
 const output = resolve('coverage/settings/google-browser'), dist = resolve('apps/web/dist'); await mkdir(output, { recursive: true });
 const gym = { id: '00000000-0000-7000-8000-000000000001', name: 'A long gym name that must fit on a phone', timezone: 'UTC', currency: 'USD', enabledModules: [] };
 let session = null, login = { password: false, magicLink: true, google: true };
+const settings = { id: gym.id, name: gym.name, slug: 'gym', timezone: 'UTC', currency: 'USD', address: {}, branding: {}, websiteEnabled: false,
+  existingSiteUrl: null, bookingWindowDays: 14, cancellationCutoffMinutes: 60, openMatCountsAsClass: false, billingEnabled: false,
+  memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 3, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' };
+const googleOff = { source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
+let google = googleOff;
 const api = (path) => {
   if (path === '/api/demo') return { data: { mode: 'disabled' } };
   if (path === '/api/auth/bootstrap') return { data: { gym, session, login } };
+  if (path === '/api/settings') return { data: settings };
+  if (path === '/api/settings/integrations/google') return { data: google };
   return undefined;
 };
 const server = createServer(async (req, res) => {
@@ -51,13 +58,30 @@ try {
     await page.goto(origin + '/login'); await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible();
     await expect(page.getByText(/Sign-in is currently unavailable/)).toHaveCount(0); await check('login-google-only');
     session = { userId: '00000000-0000-7000-8000-000000000002', displayName: 'Owner', roles: ['owner'], member: false }; login = { password: false, magicLink: true, google: true };
+    /** The Google section alone: no page overflow, 44 px targets and no axe violations inside it. */
+    const checkSection = async (name) => {
+      const region = page.getByRole('region', { name: 'Google sign-in' });
+      expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth), name).toBe(true);
+      expect(await region.evaluate((element) => [...element.querySelectorAll('button,input,select,a')].filter((control) => control.getClientRects().length
+        && control.getBoundingClientRect().height < 44).map((control) => control.outerHTML.slice(0, 120))), name).toEqual([]);
+      expect((await new AxeBuilder({ page }).include('section[aria-label="Google sign-in"]').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations, name).toEqual([]);
+      await region.screenshot({ path: resolve(output, `${name}-${width}.png`) });
+    };
+    google = { ...googleOff, source: 'install', editable: false };
     await page.goto(origin + '/admin/settings'); await expect(page.getByRole('heading', { name: 'Google sign-in' })).toBeVisible();
     await expect(page.getByText(origin + '/api/auth/callback/google')).toBeVisible();
-    await page.getByRole('region', { name: 'Google sign-in' }).screenshot({ path: resolve(output, `settings-google-${width}.png`) });
-    expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth), 'settings').toBe(true);
-    login = { password: false, magicLink: true, google: false };
+    await expect(page.getByRole('region', { name: 'Google sign-in' }).getByRole('textbox')).toHaveCount(0);
+    await checkSection('settings-google-install');
+    google = googleOff;
+    await page.goto(origin + '/admin/settings'); await expect(page.getByLabel('Client ID')).toBeVisible();
+    await expect(page.getByLabel('Client secret')).toHaveAttribute('type', 'password');
+    await checkSection('settings-google-form');
+    google = { ...googleOff, source: 'gym', clientId: '123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com', clientSecretSet: true };
+    await page.goto(origin + '/admin/settings'); await expect(page.getByText('Client secret: set')).toBeVisible();
+    await checkSection('settings-google-stored');
+    google = { ...googleOff, editable: false };
     await page.goto(origin + '/admin/settings'); await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Google sign-in' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Google sign-in' })).toHaveCount(0);
   }
   // Other sections read endpoints this check doesn't serve; their 404s are expected.
   if (errors.length) throw new Error(errors.join('\n'));

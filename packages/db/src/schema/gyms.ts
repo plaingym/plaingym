@@ -13,6 +13,8 @@ export const gyms = pgTable('gyms', {
   s3Config: text('s3_config_encrypted'), qrKey: text('qr_key_encrypted'),
   backupDestination: jsonb('backup_destination'), backupPublicKey: text('backup_public_key'),
   backupBlobKey: text('backup_blob_key_encrypted'),
+  /** The gym's own Google OAuth client (single-gym installs only), stored encrypted; the install's GOOGLE_* variables win. */
+  googleConfig: text('google_config_encrypted'),
   backupRetentionBytes: bigint('backup_retention_bytes', { mode: 'bigint' }),
   currency: text('currency').notNull().default('USD'),
   billingEnabled: boolean('billing_enabled').notNull().default(false),

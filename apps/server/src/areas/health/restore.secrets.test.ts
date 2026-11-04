@@ -42,7 +42,7 @@ describe('install snapshot contents after a restore', { timeout: 60_000 }, () =>
     expect(gym.billingEnabled).toBe(false);
     const values: Record<string, string | null> = {
       stripe_config: gym.stripeConfig, smtp_config: gym.smtpConfig, s3_config: gym.s3Config,
-      qr_key: gym.qrKey, backup_blob_key: gym.backupBlobKey,
+      qr_key: gym.qrKey, backup_blob_key: gym.backupBlobKey, google_config: gym.googleConfig,
       oauth_access_token: account.accessToken, oauth_refresh_token: account.refreshToken, oauth_id_token: account.idToken,
     };
     for (const field of encryptedFields) {

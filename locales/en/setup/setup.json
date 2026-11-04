@@ -54,6 +54,7 @@
   "from": "Sender email address",
   "testTo": "Test recipient email address",
   "testAndSave": "Send test email and save",
+  "saveGoogle": "Save Google client",
   "smtpFailed": "The test email failed. Check your SMTP settings and try again, or skip this step.",
   "skipEmail": "Skip email configuration",
   "stripeHint": "Payment configuration is not set up. Continue with billing paused.",

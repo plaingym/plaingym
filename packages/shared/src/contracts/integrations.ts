@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
-import { setupS3CredentialsSchema } from './setup.js';
+import { googleClientValueSchema, setupS3CredentialsSchema } from './setup.js';
 
 /** Email, Stripe and backups after setup: owners only, like the setup steps that first configure them. */
 const own = { kind: 'staff', capability: 'integrations.manage' } as const satisfies RoutePermission;
@@ -101,6 +101,25 @@ export const createBackupKeyResponseSchema = z.strictObject({ data: z.strictObje
 }) });
 export const confirmBackupKeyRequestSchema = z.strictObject({ revision: revisionSchema, privateKey: privateKeySchema });
 
+/**
+ * Google sign-in for this gym. `source` is `install` when the instance's configuration (`GOOGLE_CLIENT_ID` and
+ * `GOOGLE_CLIENT_SECRET`) sets the OAuth client, which then wins; `gym` when the gym's own stored client is used; `none`
+ * when Google sign-in is off. `editable` is true only on a single-gym install whose configuration doesn't set Google,
+ * outside demo mode: elsewhere there is no form. `clientId` is the stored client's ID (null otherwise); the client
+ * secret is write-only and never returned, only whether one is stored. `removeBlocked` is true when removing the stored
+ * client would leave the signed-in owner no way to sign in (no email links and no password of their own).
+ */
+export const googleLoginSchema = z.strictObject({
+  source: z.enum(['install', 'gym', 'none']), editable: z.boolean(), clientId: z.string().nullable(), clientSecretSet: z.boolean(),
+  removeBlocked: z.boolean(), revision: revisionSchema,
+});
+export const googleLoginResponseSchema = z.strictObject({ data: googleLoginSchema });
+/** Replaces the stored client: both values are always sent, so a secret is never kept for another client ID. */
+export const saveGoogleLoginRequestSchema = z.strictObject({
+  revision: revisionSchema, clientId: googleClientValueSchema, clientSecret: googleClientValueSchema,
+});
+export const removeGoogleLoginRequestSchema = z.strictObject({ revision: revisionSchema });
+
 export const integrationsContracts = {
   get: { method: 'get', path: '/api/settings/integrations', permission: own, response: integrationsResponseSchema },
   saveEmail: { method: 'put', path: '/api/settings/integrations/email', permission: own,
@@ -113,6 +132,11 @@ export const integrationsContracts = {
     body: createBackupKeyRequestSchema, response: createBackupKeyResponseSchema },
   confirmBackupKey: { method: 'post', path: '/api/settings/integrations/backups/confirm', permission: own,
     body: confirmBackupKeyRequestSchema, response: integrationsResponseSchema },
+  getGoogle: { method: 'get', path: '/api/settings/integrations/google', permission: own, response: googleLoginResponseSchema },
+  saveGoogle: { method: 'put', path: '/api/settings/integrations/google', permission: own,
+    body: saveGoogleLoginRequestSchema, response: googleLoginResponseSchema },
+  removeGoogle: { method: 'delete', path: '/api/settings/integrations/google', permission: own,
+    body: removeGoogleLoginRequestSchema, response: googleLoginResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type Integrations = z.infer<typeof integrationsSchema>;
@@ -126,3 +150,6 @@ export type RemoveEmailIntegrationRequest = z.infer<typeof removeEmailIntegratio
 export type SaveStripeIntegrationRequest = z.infer<typeof saveStripeIntegrationRequestSchema>;
 export type CreateBackupKeyRequest = z.infer<typeof createBackupKeyRequestSchema>;
 export type ConfirmBackupKeyRequest = z.infer<typeof confirmBackupKeyRequestSchema>;
+export type GoogleLogin = z.infer<typeof googleLoginSchema>;
+export type SaveGoogleLoginRequest = z.infer<typeof saveGoogleLoginRequestSchema>;
+export type RemoveGoogleLoginRequest = z.infer<typeof removeGoogleLoginRequestSchema>;

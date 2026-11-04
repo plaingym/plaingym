@@ -1,29 +1,139 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useBootstrap } from '../../app/context.js';
+import { useState, type FormEvent } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { googleLoginResponseSchema, type GoogleLogin } from '@plaingym/shared/contracts';
+import { bootstrapKey } from '../../app/context.js';
+import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
+import { Button } from '../../components/ui/button.js';
+import { Input } from '../../components/ui/input.js';
+import { Label } from '../../components/ui/label.js';
+import { ErrorState } from '../../components/ui/states.js';
+import { useGymSettings } from './gym-settings.js';
 
 /** Must match the server's Google callback path (`infra/auth/google.ts`). */
 export const googleCallbackPath = '/api/auth/callback/google';
-const label = (key: string) => t('auth/google:' + key);
+export const googleLoginKey = ['settings', 'google-login'] as const;
+const label = (key: string, values?: Record<string, string>) => t('auth/google:' + key, values);
+type Message = { kind: 'status' | 'alert'; text: string };
+type Reply = { response: { ok: boolean; status: number }; data?: unknown; error?: unknown };
+
+async function fetchGoogleLogin(): Promise<GoogleLogin> {
+  const result = await api.GET('/api/settings/integrations/google');
+  if (!result.response.ok) throw new Error('The Google sign-in request failed');
+  return googleLoginResponseSchema.parse(result.data).data;
+}
+/** The server's refusal reason (`details` codes, never its message). */
+const reasonOf = (body: unknown) => {
+  const details = (body as { error?: { details?: Record<string, unknown> } } | undefined)?.error?.details;
+  const first = details ? Object.values(details)[0] : undefined;
+  return Array.isArray(first) && typeof first[0] === 'string' ? first[0] : null;
+};
+const refusals: Record<string, string> = { only_sign_in: 'onlySignIn', install_configured: 'installConfigured', not_configured: 'notConfigured' };
+
+/** The redirect URI the gym's OAuth client must list. The admin runs on the gym's canonical origin, the one Google returns to. */
+export function GoogleRedirect() {
+  return <div className="min-w-0 space-y-1">
+    <p className="text-sm font-medium" id="google-redirect-label">{label('redirect')}</p>
+    <code aria-labelledby="google-redirect-label" className="block break-all rounded-md bg-muted px-3 py-2 text-sm">{window.location.origin + googleCallbackPath}</code>
+    <p className="text-sm text-muted-foreground">{label('redirectHelp')}</p>
+  </div>;
+}
+/** The client ID and secret fields, shared by this section and the setup wizard's Google page. */
+export function GoogleClientFields({ idPrefix }: { idPrefix: string }) {
+  return <>
+    <div className="grid min-w-0 gap-2">
+      <Label htmlFor={idPrefix + '-client-id'}>{label('clientId')}</Label>
+      <Input id={idPrefix + '-client-id'} name="clientId" required maxLength={512} autoComplete="off" spellCheck={false}/>
+    </div>
+    <div className="grid min-w-0 gap-2">
+      <Label htmlFor={idPrefix + '-client-secret'}>{label('clientSecret')}</Label>
+      <Input id={idPrefix + '-client-secret'} name="clientSecret" type="password" required maxLength={512} autoComplete="new-password" spellCheck={false}
+        aria-describedby={idPrefix + '-client-secret-hint'}/>
+      <p id={idPrefix + '-client-secret-hint'} className="text-sm text-muted-foreground">{label('secretHint')}</p>
+    </div>
+  </>;
+}
 
 /**
- * Google sign-in status, shown only when the install has a Google OAuth client. The client comes from the server's
- * configuration in every tenancy mode, so there is nothing for a gym owner to enter: the section explains what Google
- * sign-in does and shows this gym's redirect URI for the operator's OAuth client.
+ * Settings → Google sign-in (owners only). When the install's configuration sets the OAuth client, the section says so
+ * and offers no form. On a single-gym install without it, the owner stores the gym's own client: the client ID is shown,
+ * the secret only as set, and a save replaces both or removes them. Multi-gym installs without an install client, and
+ * demos, have nothing to show, and the settings page hides the empty section.
  */
 export function GoogleLoginSettings() {
-  const bootstrap = useBootstrap();
-  if (!bootstrap.data?.login.google) return null;
-  // The admin runs on the gym's canonical origin, the one Google returns to.
-  const redirect = window.location.origin + googleCallbackPath;
-  return <div className="space-y-3">
+  const cache = useQueryClient(), gym = useGymSettings();
+  const query = useQuery({ queryKey: googleLoginKey, queryFn: fetchGoogleLogin, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null), [open, setOpen] = useState(false);
+  if (query.isError) return <ErrorState message={label('loadError')} onRetry={() => void query.refetch()} retryLabel={label('reload')}/>;
+  const google = query.data;
+  if (!google || (google.source === 'none' && !google.editable)) return null;
+
+  /** Goes through the settings page's save queue with its one gym revision; the reply's revision is adopted. */
+  async function change(send: (revision: number) => Promise<Reply>): Promise<{ status: number; reason: string | null }> {
+    const saved = await gym.save(async (revision) => {
+      const reply = await send(revision);
+      return { response: reply.response, data: reply.response.ok ? reply.data : reply.error };
+    }, { adopt: (data, current) => ({ ...current, revision: googleLoginResponseSchema.parse(data).data.revision }) });
+    if (saved.status < 300) {
+      cache.setQueryData(googleLoginKey, googleLoginResponseSchema.parse(saved.data).data);
+      // The login page offers Google from the bootstrap, which now says otherwise.
+      await cache.invalidateQueries({ queryKey: bootstrapKey });
+      return { status: saved.status, reason: null };
+    }
+    if (saved.status === 409) await query.refetch();
+    return { status: saved.status, reason: reasonOf(saved.data) };
+  }
+  const failure = (status: number, reason: string | null) =>
+    setMessage({ kind: 'alert', text: label(reason && refusals[reason] ? refusals[reason] : status === 409 ? 'conflict' : 'error') });
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setMessage(null);
+    const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '').trim();
+    setBusy('save');
+    try {
+      const reply = await change((revision) => api.PUT('/api/settings/integrations/google', { body: { revision, clientId: field('clientId'), clientSecret: field('clientSecret') } }));
+      if (reply.status < 300) { setMessage({ kind: 'status', text: label('saved') }); setOpen(false); }
+      else failure(reply.status, reply.reason);
+    } catch { setMessage({ kind: 'alert', text: label('error') }); }
+    finally { setBusy(null); }
+  }
+  async function remove() {
+    setMessage(null); setBusy('remove');
+    try {
+      const reply = await change((revision) => api.DELETE('/api/settings/integrations/google', { body: { revision } }));
+      if (reply.status < 300) setMessage({ kind: 'status', text: label('removed') });
+      else failure(reply.status, reply.reason);
+    } catch { setMessage({ kind: 'alert', text: label('error') }); }
+    finally { setBusy(null); }
+  }
+  const formOpen = google.editable && (google.source === 'none' || open);
+  return <div className="min-w-0 space-y-3">
     <h2 className="text-lg font-semibold">{label('title')}</h2>
-    <p className="text-sm">{label('on')}</p>
-    <p className="text-sm text-muted-foreground">{label('source')}</p>
-    <div className="space-y-1">
-      <p className="text-sm font-medium" id="google-redirect-label">{label('redirect')}</p>
-      <code aria-labelledby="google-redirect-label" className="block break-all rounded-md bg-muted px-3 py-2 text-sm">{redirect}</code>
-      <p className="text-sm text-muted-foreground">{label('redirectHelp')}</p>
-    </div>
+    {google.source === 'none' ? <p className="text-sm">{label('off')}</p> : <p className="text-sm">{label('on')}</p>}
+    {google.source === 'install' && <p className="text-sm text-muted-foreground">{label('source')}</p>}
+    {google.source === 'gym' && <div className="min-w-0 space-y-1 text-sm">
+      <p>{label('sourceGym')}</p>
+      <p className="[overflow-wrap:anywhere]">{label('clientIdShown', { clientId: google.clientId ?? label('unreadable') })}</p>
+      <p>{label(google.clientSecretSet ? 'secretSet' : 'secretNotSet')}</p>
+    </div>}
+    {message && <p role={message.kind} className="rounded-md border border-border p-3 text-sm">{message.text}</p>}
+    <GoogleRedirect/>
+    {google.source === 'gym' && <div className="grid min-w-0 gap-2">
+      {google.removeBlocked && <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>}
+      <div className="flex flex-col gap-3 sm:flex-row">
+        {!open && <Button type="button" variant="outline" disabled={busy !== null} onClick={() => { setMessage(null); setOpen(true); }}>{label('replace')}</Button>}
+        <Button type="button" variant="outline" disabled={busy !== null || google.removeBlocked} onClick={() => void remove()}>{label(busy === 'remove' ? 'removing' : 'remove')}</Button>
+      </div>
+    </div>}
+    {formOpen && <form onSubmit={(event) => void save(event)} aria-label={label(google.source === 'gym' ? 'replace' : 'setUp')}>
+      <fieldset disabled={busy !== null} className="grid min-w-0 gap-4">
+        <p className="text-sm text-muted-foreground">{label('setupHelp')}</p>
+        <GoogleClientFields idPrefix="settings-google"/>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <Button type="submit">{label(busy === 'save' ? 'saving' : 'save')}</Button>
+          {google.source === 'gym' && <Button type="button" variant="outline" onClick={() => setOpen(false)}>{label('cancel')}</Button>}
+        </div>
+      </fieldset>
+    </form>}
   </div>;
 }

@@ -72,7 +72,7 @@ describe('setup owner authorization and tenant isolation', () => {
     const input: Record<string, unknown> = {
       gym: { revision: 1, name: 'Forged', timezone: 'UTC', currency: 'USD', address: {}, branding: { logoKey: null, primaryColor: null } },
       packs: { revision: 1, packs: [] }, website: { revision: 1, websiteEnabled: true, existingSiteUrl: null },
-      smtp: { revision: 1, choice: 'skip' }, stripe: { revision: 1, choice: 'skip' },
+      smtp: { revision: 1, choice: 'skip' }, google: { revision: 1, clientId: 'forged-client', clientSecret: 'forged-secret' }, stripe: { revision: 1, choice: 'skip' },
       backups: { revision: 1, destination: { endpoint: 'https://s3.example.org', bucket: 'x', region: 'auto', accessKeyId: 'x', secretAccessKey: 'x' } },
       confirmBackupKey: { revision: 1, privateKey: 'AGE-SECRET-KEY-1ABC' }, finish: { revision: 1, choice: 'fresh' },
     };

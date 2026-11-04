@@ -8,7 +8,7 @@ export const registration: WebRegistration = {
       id: 'settingsSections.settings.auth',
       labelKey: 'auth/google:title',
       permission: { kind: 'staff', capability: 'integrations.manage' },
-      // Renders nothing without Google sign-in; the settings page hides an empty section.
+      // Renders nothing where the gym can't have Google sign-in (multi-gym or demo without an install client); the page hides an empty section.
       enabled: true,
       component: GoogleLoginSettings,
     },

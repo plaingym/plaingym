@@ -3,14 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { App } from '../../app.js';
 import { createAppRouter } from '../../app/router.js';
-import { ShellServicesContext } from '../../app/context.js';
 import { createShellServices, type ShellBootstrap, type ShellServices } from '../../app/services.js';
-import { GoogleLoginSettings, googleCallbackPath } from './auth.js';
-import { registration } from './auth.registrations.js';
 
 // The root shell asks the server whether this is a demo install; these are ordinary gyms.
 vi.hoisted(() => {
@@ -20,7 +16,6 @@ vi.hoisted(() => {
 });
 const gym = { id: '01900000-0000-7000-8000-000000000001', name: 'Training Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] };
 const anonymous = (login: ShellBootstrap['login']): ShellBootstrap => ({ gym, session: null, login });
-const owner = (login: ShellBootstrap['login']): ShellBootstrap => ({ gym, session: { userId: 'owner', displayName: 'Owner', roles: ['owner'], member: false }, login });
 const googleUrl = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=s';
 function services(state: ShellBootstrap): ShellServices {
   return { loadBootstrap: vi.fn().mockResolvedValue(state), signInWithPassword: vi.fn().mockResolvedValue(undefined),
@@ -91,19 +86,4 @@ describe('Google sign-in service', () => {
   });
 });
 
-describe('Google settings section', () => {
-  const section = (state: ShellBootstrap) => render(<QueryClientProvider client={new QueryClient()}>
-    <ShellServicesContext.Provider value={services(state)}><div data-testid="section"><GoogleLoginSettings /></div></ShellServicesContext.Provider></QueryClientProvider>);
-  it('is registered for owners and renders nothing without Google credentials', async () => {
-    expect(registration.settingsSections?.[0]).toMatchObject({ enabled: true, permission: { kind: 'staff', capability: 'integrations.manage' }, component: GoogleLoginSettings });
-    const view = section(owner({ password: false, magicLink: true }));
-    await waitFor(() => expect(view.getByTestId('section').innerHTML).toBe(''));
-  });
-  it('shows what Google sign-in does and this gym\'s redirect URI, with nothing to enter', async () => {
-    section(owner({ password: false, magicLink: true, google: true }));
-    expect(await screen.findByRole('heading', { name: 'Google sign-in' })).toBeDefined();
-    expect(screen.getByText('https://gym.example.org' + googleCallbackPath)).toBeDefined();
-    expect(screen.getByText(/the Google address must match the login's email, and both must be verified/)).toBeDefined();
-    expect(screen.queryByRole('textbox')).toBeNull();
-  });
-});
+// Settings → Google sign-in: auth.section.test.tsx.

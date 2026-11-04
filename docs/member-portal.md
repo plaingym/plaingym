@@ -44,7 +44,7 @@ What the member sees when they accept depends on your email setup:
 * **No email set up:** accepting asks them for a password (12–128 characters). Staff can
   reset it from the same tab (**Reset password**).
 
-When the install has a Google OAuth client ([configuration.md](configuration.md#google-sign-in)),
+When the gym has a Google OAuth client, from the install's configuration or entered by the owner ([configuration.md](configuration.md#google-sign-in)),
 the portal's sign-in page also offers **Sign in with Google**. It signs in only an
 existing login whose email is the Google account's address, once both addresses are
 verified, so a member whose login has an unverified address (a password login on a

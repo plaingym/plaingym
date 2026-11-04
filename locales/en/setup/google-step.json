@@ -1,0 +1,6 @@
+{
+  "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "title": "Google sign-in (optional)",
+  "intro": "Let staff and members sign in with a Google account as well. It signs in existing logins only: the Google address must match the login's verified email. You can skip this and set it up later in Settings → Google sign-in.",
+  "skip": "Skip Google sign-in"
+}

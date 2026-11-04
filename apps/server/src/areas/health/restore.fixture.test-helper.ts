@@ -81,6 +81,7 @@ export function useRestoreFixture(options: { shared?: boolean } = {}) {
       s3Config: encryptSecret(oldKey, 's3_config', 's3-test'),
       qrKey: encryptSecret(oldKey, 'qr_key', 'stable-qr-secret'),
       backupBlobKey: encryptSecret(oldKey, 'backup_blob_key', blobKey.toString('hex')),
+      googleConfig: encryptSecret(oldKey, 'google_config', 'google-test'),
       billingEnabled: true,
     });
     await make('authAccount', gymId, {

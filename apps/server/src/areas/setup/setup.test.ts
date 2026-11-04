@@ -133,6 +133,9 @@ describe('first-boot setup', () => {
     revision = (await service.status()).revision;
     expect((await call('/api/setup/website', 'PUT', { revision, websiteEnabled: false, existingSiteUrl: 'https://academy.example.org' }, cookie)).status).toBe(200);
     revision = (await service.status()).revision;
+    const google = { clientId: 'setup-client.apps.googleusercontent.com', clientSecret: 'private-google-secret' };
+    // The optional Google page follows the email step.
+    expect((await call('/api/setup/google', 'PUT', { ...google, revision }, cookie)).status).toBe(409);
     const mail = { choice: 'configure', revision, host: 'smtp.example.org', port: 587, secure: false,
       username: 'sender', password: 'private-smtp-password', from: 'gym@example.org', testTo: owner.email };
     sendTest.mockRejectedValueOnce(new Error('provider leaked secret'));
@@ -144,6 +147,16 @@ describe('first-boot setup', () => {
     expect(await smtp.configured(gymId)).toBe(true);
     expect(passwordLogin(config, await smtp.configured(gymId))).toBe(false);
     expect((await call('/api/auth/sign-in/email', 'POST', { email: owner.email, password: owner.password })).status).toBe(404);
+    revision = (await service.status()).revision;
+    expect((await call('/api/setup/google', 'PUT', { ...google, revision })).status).toBe(401);
+    expect((await call('/api/setup/google', 'PUT', { ...google, clientSecret: 'has space', revision }, cookie)).status).toBe(400);
+    expect((await call('/api/setup/google', 'PUT', { ...google, revision: revision - 1 }, cookie)).status).toBe(409);
+    const googleSaved = await call('/api/setup/google', 'PUT', { ...google, revision }, cookie);
+    expect(await googleSaved.json()).toEqual({ data: { configured: true, revision: revision + 1 } });
+    const [withGoogle] = await database.forSystem((tx) => tx.select().from(gyms));
+    expect(JSON.parse(decryptSecret(key, 'google_config', withGoogle!.googleConfig!))).toEqual(google);
+    // It changes no step: payments come next.
+    expect(await service.status()).toMatchObject({ currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5] });
     revision = (await service.status()).revision;
     const stripe = await call('/api/setup/stripe', 'PUT', { choice: 'configure', restrictedKey: 'rk_test_PrivateSetupKey', revision }, cookie);
     expect(await stripe.json()).toMatchObject({ data: { configured: true, mode: 'test', webhookRegistered: true } });
@@ -168,13 +181,14 @@ describe('first-boot setup', () => {
     expect(decryptSecret(key, 's3_config', row!.s3Config!)).toContain('private-storage-key');
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);
-    expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password|PrivateSetupKey|whsec_/);
+    expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password|PrivateSetupKey|whsec_|private-google-secret|setup-client/);
+    expect(audits.find((audit) => audit.action === 'setup.google_saved')).toMatchObject({ before: { source: 'none' }, after: { source: 'gym' } });
     expect(audits.every((audit) => audit.occurredAt.getTime() === clock.now().getTime())).toBe(true);
     revision = (await service.status()).revision;
     expect((await call('/api/setup/finish', 'POST', { choice: 'fresh', revision }, cookie)).status).toBe(200);
-    for (const name of ['status', 'start', 'owner', 'gym', 'packs', 'website', 'smtp', 'stripe', 'backups', 'confirmBackupKey', 'finish'] as const) {
+    for (const name of ['status', 'start', 'owner', 'gym', 'packs', 'website', 'smtp', 'google', 'stripe', 'backups', 'confirmBackupKey', 'finish'] as const) {
       const contract = setupContracts[name];
-      const result = await call(contract.path, contract.method.toUpperCase(), name === 'status' ? undefined : name === 'start' ? { choice: 'fresh' } : name === 'owner' ? owner : name === 'gym' ? { ...details, revision } : name === 'packs' ? { revision, packs: [] } : name === 'website' ? { revision, websiteEnabled: true, existingSiteUrl: null } : name === 'smtp' || name === 'stripe' ? { revision, choice: 'skip' } : name === 'backups' ? { revision, destination } : name === 'confirmBackupKey' ? { revision, privateKey: keys.privateKey } : { revision, choice: 'fresh' }, cookie);
+      const result = await call(contract.path, contract.method.toUpperCase(), name === 'status' ? undefined : name === 'start' ? { choice: 'fresh' } : name === 'owner' ? owner : name === 'gym' ? { ...details, revision } : name === 'packs' ? { revision, packs: [] } : name === 'website' ? { revision, websiteEnabled: true, existingSiteUrl: null } : name === 'smtp' || name === 'stripe' ? { revision, choice: 'skip' } : name === 'google' ? { ...google, revision } : name === 'backups' ? { revision, destination } : name === 'confirmBackupKey' ? { revision, privateKey: keys.privateKey } : { revision, choice: 'fresh' }, cookie);
       expect(result.status, name).toBe(404);
     }
     const [finished] = await database.forSystem((tx) => tx.select().from(gyms).where(eq(gyms.id, gymId)));
@@ -182,8 +196,17 @@ describe('first-boot setup', () => {
     expect(await service.assertEmpty().catch((error: unknown) => error)).toMatchObject({ code: 'not_found' });
   });
   it('hides first-boot setup in multi and demo mode', async () => {
+    const google = { revision: 1, clientId: 'client', clientSecret: 'secret' };
+    const context = { gymId: '01900000-0000-7000-8000-000000000001', actor: { kind: 'user' as const, userId: '01900000-0000-7000-8000-000000000002' } };
     for (const env of [{ TENANCY: 'multi' }, { DEMO_MODE: 'true' }]) {
       await expect(createSetupService({ key, origin, env }).status()).rejects.toMatchObject({ code: 'not_found' });
+      await expect(createSetupService({ key, origin, env }).google(context, google)).rejects.toMatchObject({ code: 'not_found' });
     }
+  });
+  it('offers no Google page when the install’s configuration sets Google', async () => {
+    const installEnv = { ...env, GOOGLE_CLIENT_ID: 'install-client', GOOGLE_CLIENT_SECRET: 'install-secret' };
+    const context = { gymId: '01900000-0000-7000-8000-000000000001', actor: { kind: 'user' as const, userId: '01900000-0000-7000-8000-000000000002' } };
+    await expect(createSetupService({ key, origin, env: installEnv }).google(context, { revision: 1, clientId: 'client', clientSecret: 'secret' }))
+      .rejects.toMatchObject({ code: 'conflict', details: { google: ['install_configured'] } });
   });
 });

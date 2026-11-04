@@ -95,6 +95,11 @@ The wizard's steps:
    message and saves the settings only if it arrives. Follow your provider's SPF
    and DKIM instructions. Once email works, sign-in switches to emailed links
    (`AUTH_PASSWORD_LOGIN=auto`).
+
+   An optional **Google sign-in** page follows: enter a Google OAuth client's ID
+   and secret to let staff and members sign in with Google, or skip it (see
+   [Google sign-in](configuration.md#google-sign-in)). The wizard skips the page
+   when `.env` already sets Google.
 7. **Payments**: a Stripe restricted key (see [Stripe](#stripe)), or skip.
 8. **Backups**: the bucket and its credentials. The app generates a backup key pair
    and shows the private key **once**: download it, keep it somewhere safe off
@@ -107,7 +112,7 @@ After setup, billing and member emails are still paused. Turn them on in
 file for paid memberships, current waivers signed, email and backups set up.
 
 The admin's **Settings** covers the gym's details, booking rules, billing rules,
-currency, drop-in fee and go-live. Its **Email, payments and backups** section
+currency, drop-in fee, go-live and Google sign-in. Its **Email, payments and backups** section
 (owners only) changes what the wizard set up, or adds what was skipped, through
 the same steps: see [After setup](#after-setup).
 
@@ -153,6 +158,14 @@ again, and every change is recorded in the audit log without them.
   move, the app no longer manages the old bucket: its snapshots stay there until
   you delete them. The section also shows the last restorable
   snapshot and the retention budget.
+
+Owners also set up, replace or turn off Google sign-in in **Settings → Google
+sign-in**, which shows the redirect URI to register with Google. The client secret
+is never shown again (only that one is set), a change takes effect on the next
+sign-in, and the audit log records each change without the client ID or secret.
+Turning it off is refused while Google is your only way to sign in. When `.env`
+sets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, the section says so and offers
+no form: see [Google sign-in](configuration.md#google-sign-in).
 
 ## Stripe
 

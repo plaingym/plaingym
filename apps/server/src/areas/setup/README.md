@@ -14,6 +14,13 @@ Pack application and progress share one short transaction. SMTP sends its test
 outside a transaction and saves encrypted settings only after successful delivery.
 Skipping SMTP keeps the existing gym and install configuration.
 
+The optional Google page after the email step (`PUT /api/setup/google`, contract step 5)
+stores the gym's own OAuth client with `encryptGoogleConfig` (`settings/google-login.ts`)
+in `gyms.google_config_encrypted`, under the revision, and audits `setup.google_saved`
+with neither value. It needs step 5 complete and changes no step; skipping it sends
+nothing (the wizard remembers the skip for the browser session). It is refused with
+`install_configured` when the install's `GOOGLE_*` variables are set, which win.
+
 Backup setup returns a new private identity once, stores only its public recipient,
 and activates the destination only after the owner pastes the matching identity.
 The saved fields are read directly by `loadBackupConfig`; the default budget is 8 GB.

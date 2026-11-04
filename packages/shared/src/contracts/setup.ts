@@ -46,6 +46,16 @@ export const setupSmtpRequestSchema = z.discriminatedUnion('choice', [
 export const setupSmtpResponseSchema = z.strictObject({ data: z.strictObject({
   configured: z.boolean(), test: z.enum(['not_sent', 'sent', 'failed']), revision: revisionSchema,
 }) });
+/** A Google OAuth client ID or secret as entered: no spaces, at most 512 characters (the rule for `GOOGLE_*` too). */
+export const googleClientValueSchema = z.string().trim().min(1).max(512).regex(/^\S+$/);
+/**
+ * The optional Google sign-in page after the email step (step 5): the gym's own OAuth client, stored encrypted. It
+ * changes no step; skipping it sends nothing. Refused when the install's configuration sets Google.
+ */
+export const setupGoogleRequestSchema = z.strictObject({
+  revision: revisionSchema, clientId: googleClientValueSchema, clientSecret: googleClientValueSchema,
+});
+export const setupGoogleResponseSchema = z.strictObject({ data: z.strictObject({ configured: z.literal(true), revision: revisionSchema }) });
 export const setupStripeRequestSchema = z.discriminatedUnion('choice', [
   z.strictObject({ choice: z.literal('skip'), revision: revisionSchema }),
   z.strictObject({ choice: z.literal('configure'), revision: revisionSchema, restrictedKey: z.string().regex(/^rk_(test|live)_[A-Za-z0-9]+$/) }),
@@ -107,6 +117,7 @@ export const setupContracts = {
   packs: { method: 'post', path: '/api/setup/packs', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 3, body: setupPacksRequestSchema, response: setupStatusResponseSchema },
   website: { method: 'put', path: '/api/setup/website', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 4, body: setupWebsiteRequestSchema, response: setupStatusResponseSchema },
   smtp: { method: 'put', path: '/api/setup/smtp', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 5, body: setupSmtpRequestSchema, response: setupSmtpResponseSchema },
+  google: { method: 'put', path: '/api/setup/google', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 5, body: setupGoogleRequestSchema, response: setupGoogleResponseSchema },
   stripe: { method: 'put', path: '/api/setup/stripe', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 6, body: setupStripeRequestSchema, response: setupStripeResponseSchema },
   backups: { method: 'post', path: '/api/setup/backups', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 7, body: setupBackupRequestSchema, response: setupBackupKeyResponseSchema },
   confirmBackupKey: { method: 'post', path: '/api/setup/backups/confirm', permission: { kind: 'staff', capability: 'integrations.manage' }, gate: 'setup_owner', step: 7, body: setupBackupConfirmRequestSchema, response: setupBackupConfirmResponseSchema },
@@ -120,6 +131,7 @@ export type SetupGymDetails = z.infer<typeof setupGymDetailsSchema>;
 export type SetupPacksRequest = z.infer<typeof setupPacksRequestSchema>;
 export type SetupWebsiteRequest = z.infer<typeof setupWebsiteRequestSchema>;
 export type SetupSmtpRequest = z.infer<typeof setupSmtpRequestSchema>;
+export type SetupGoogleRequest = z.infer<typeof setupGoogleRequestSchema>;
 export type SetupStripeRequest = z.infer<typeof setupStripeRequestSchema>;
 export type SetupS3Credentials = z.infer<typeof setupS3CredentialsSchema>;
 export type SetupBackupRequest = z.infer<typeof setupBackupRequestSchema>;

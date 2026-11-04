@@ -4,6 +4,7 @@ import { canStaff, isRoutePermission, staffRoles } from '../permissions.js';
 import {
   integrationsContracts, integrationsSchema, saveEmailIntegrationRequestSchema, saveStripeIntegrationRequestSchema,
   createBackupKeyRequestSchema, createBackupKeyResponseSchema, confirmBackupKeyRequestSchema, removeEmailIntegrationRequestSchema,
+  googleLoginSchema, saveGoogleLoginRequestSchema,
 } from './index.js';
 
 const signIn = { password: false, magicLink: true };
@@ -38,6 +39,14 @@ describe('integration settings contracts', () => {
     }
     // Only key creation shows the new private key, once.
     expect(createBackupKeyResponseSchema.safeParse({ data: { privateKey: 'AGE-SECRET-KEY-1EXAMPLE', publicKey: 'age1example', integrations } }).success).toBe(true);
+  });
+  it('returns Google sign-in without its client secret and takes both values on a save', () => {
+    const google = { source: 'gym', editable: true, clientId: 'client.apps.googleusercontent.com', clientSecretSet: true, removeBlocked: false, revision: 4 };
+    expect(googleLoginSchema.parse(google)).toEqual(google);
+    expect(googleLoginSchema.safeParse({ ...google, clientSecret: 'secret' }).success).toBe(false);
+    expect(saveGoogleLoginRequestSchema.parse({ revision: 1, clientId: ' id ', clientSecret: 'secret' })).toEqual({ revision: 1, clientId: 'id', clientSecret: 'secret' });
+    for (const values of [{ clientId: 'id' }, { clientId: 'an id', clientSecret: 'secret' }, { clientId: 'id', clientSecret: 'x'.repeat(513) }, { clientId: '', clientSecret: 'secret' }])
+      expect(saveGoogleLoginRequestSchema.safeParse({ revision: 1, ...values }).success).toBe(false);
   });
   it('validates the requests that carry credentials', () => {
     const email = { revision: 1, host: 'smtp.example.test', username: 'user', password: 'secret', from: 'desk@example.test', testTo: 'owner@example.test' };

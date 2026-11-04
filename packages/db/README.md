@@ -45,6 +45,9 @@ whose price the public drop-in page shows. Existing gyms keep null. It has no fo
 make the `gyms` and `charge_types` schema modules import each other, which breaks loading them in some
 orders. Instead, the settings service accepts only a charge type visible under the gym's row-level
 security, and the drop-in fee reader also matches it on `gym_id`, so a stale or foreign ID shows no fee.
+Migration `0017_google_config.sql` adds nullable `gyms.google_config_encrypted`, a gym's own Google
+OAuth client (secret class `google_config`). Existing gyms keep null, which leaves Google sign-in to
+the install's `GOOGLE_*` variables as before.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -315,7 +318,7 @@ row IDs.
 
 ## Encrypted fields
 
-`src/encrypted-fields.ts` lists the integration configuration envelopes, gym QR key,
+`src/encrypted-fields.ts` lists the integration configuration envelopes (including the gym's Google OAuth client), gym QR key,
 backup blob-naming key, and OAuth tokens. The auth adapter must encrypt/decrypt its
 registered token fields. Password, PIN, check-in and capability hashes are hashes,
 not reversible encryption. The age public key and backup destination metadata are

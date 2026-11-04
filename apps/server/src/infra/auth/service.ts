@@ -24,7 +24,11 @@ export interface ResolvedAuthGym {
 export interface GoogleAuthExtension {
   /** Plugins for one gym's auth instance, such as the hook that writes that gym into the OAuth state. */
   plugins?(gym: ResolvedAuthGym): BetterAuthPlugin[];
-  readonly socialProviders: { google: { clientId: string; clientSecret: string } };
+  /**
+   * The OAuth client this gym signs in with now, or null when Google sign-in is off for it. Looked up on each Google
+   * request, outside any transaction, so a client saved or removed while the server runs applies to the next sign-in.
+   */
+  credentials(gymId: string): Promise<{ clientId: string; clientSecret: string } | null>;
   /** Must bind and verify OAuth state to the resolved gym before dispatch. */
   beforeRequest(request: Request, gym: ResolvedAuthGym): Promise<boolean>;
 }
@@ -84,7 +88,8 @@ export function createAuthService(options: AuthServiceOptions) {
       const smtpConfigured = gym.smtpConfigured ?? config.smtpConfigured;
       const passwordEnabled = gym.smtpConfigured === undefined ? config.passwordEnabled : passwordLogin(config, smtpConfigured);
       const magicLinkEnabled = Boolean(options.sendMagicLink) && (gym.smtpConfigured ?? true);
-      const auth = betterAuth({
+      // Only the Google endpoints need the provider, so they build their own instance with the gym's current client.
+      const build = (google: { clientId: string; clientSecret: string } | null) => betterAuth({
         secret: config.secret, baseURL: origin.origin, basePath: '/api/auth', trustedOrigins: [origin.origin],
         database: drizzleAdapter(database(), { provider: 'pg', schema: {
           user: authUser, session: authSession, account: authAccount, verification: authVerification, rateLimit: authRateLimit,
@@ -100,7 +105,7 @@ export function createAuthService(options: AuthServiceOptions) {
         account: { accountLinking: { enabled: true, trustedProviders: [], requireLocalEmailVerified: true }, storeStateStrategy: 'database',
           encryptOAuthTokens: false, updateAccountOnSignIn: false },
         // Public signup is disabled: Google signs in identities the gym provisioned, and never with a bare ID token.
-        ...(options.google ? { socialProviders: { google: { ...options.google.socialProviders.google,
+        ...(google ? { socialProviders: { google: { clientId: google.clientId, clientSecret: google.clientSecret,
           disableSignUp: true, disableIdTokenSignIn: true, prompt: 'select_account' as const } } } : {}),
         advanced: {
           // PostgreSQL/Drizzle supplies UUIDv7 record defaults. Declaring UUID
@@ -127,8 +132,9 @@ export function createAuthService(options: AuthServiceOptions) {
             if (!options.sendMagicLink) throw new Error('Magic-link delivery is not configured');
             await options.sendMagicLink({ email: email.toLowerCase(), url, gymId: gym.gymId });
           },
-        }), ...(options.google?.plugins?.(gym) ?? [])],
+        }), ...(google ? options.google?.plugins?.(gym) ?? [] : [])],
       });
+      const auth = build(null);
       function headers(request: Request) {
         const result = new Headers(request.headers);
         for (const key of [...result.keys()]) if (/^(?:forwarded$|x-forwarded-|x-real-ip$|cf-connecting-ip$|x-plaingym-client-ip$|host$)/i.test(key)) result.delete(key);
@@ -176,6 +182,9 @@ export function createAuthService(options: AuthServiceOptions) {
           const key = `${request.method} ${path}`;
           const googleEndpoint = Boolean(options.google && (key === 'POST /sign-in/social' || key === 'GET /callback/google'));
           if (!authEndpoints.some((endpoint) => endpoint === key) && !googleEndpoint) return new Response(null, { status: 404 });
+          // The gym's Google client as it is now: none means the Google endpoints don't exist for this gym.
+          const google = googleEndpoint ? await options.google!.credentials(gym.gymId) : null;
+          if (googleEndpoint && !google) return new Response(null, { status: 404 });
           if (path === '/sign-in/email' && !passwordEnabled) return new Response(null, { status: 404 });
           if ((path === '/sign-in/magic-link' || path === '/magic-link/verify') && !magicLinkEnabled) return new Response(null, { status: 404 });
           const session = await readSession(request);
@@ -206,7 +215,7 @@ export function createAuthService(options: AuthServiceOptions) {
             // The extension owns provider state and callback parameters after validating the gym binding.
             safeUrl.search = url.search;
           }
-          const response = await auth.handler(new Request(safeUrl, { method: request.method, headers: headers(request), ...(body ? { body } : {}) }));
+          const response = await (google ? build(google) : auth).handler(new Request(safeUrl, { method: request.method, headers: headers(request), ...(body ? { body } : {}) }));
           response.headers.set('cache-control', 'no-store');
           if (response.headers.get('content-type')?.includes('application/json') && response.ok) {
             const value: unknown = await response.json();

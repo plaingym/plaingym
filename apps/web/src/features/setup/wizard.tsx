@@ -16,6 +16,7 @@ import { createRegistries } from '../../lib/registries.js';
 import { setupClient, type createSetupClient } from './api.js';
 import { SetupActions, SetupSecondaryActions } from './actions.js';
 import { hostTimezone } from './host-timezone.js';
+import { GoogleClientFields, GoogleRedirect } from '../settings/auth.js';
 
 type Client = ReturnType<typeof createSetupClient>;
 const key = ['setup', 'status'];
@@ -64,6 +65,11 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   const [hostZone] = useState(hostTimezone), [zoneEdited, setZoneEdited] = useState(false);
   const [backupKey, setBackupKey] = useState<{ privateKey: string; publicKey: string } | null>(null);
   const [backupReady, setBackupReady] = useState(false), [done, setDone] = useState(false);
+  // The optional Google page after the email step: shown until saved or skipped in this browser session, and never when
+  // Google sign-in is already on (the install's configuration sets it) or payments are done.
+  const [googleDone, setGoogleDone] = useState(() => sessionStorage.getItem('setup.google') !== null);
+  const googlePage = step === 6 && !googleDone && session.data !== undefined && session.data.login.google !== true && !status.data?.completedSteps.includes(6);
+  const finishGoogle = (outcome: 'saved' | 'skipped') => { sessionStorage.setItem('setup.google', outcome); setGoogleDone(true); };
   const revision = status.data?.revision ?? 1;
   const refresh = async () => { setOverride(null); await status.refetch(); };
   const run = async (action: () => Promise<void>) => {
@@ -92,7 +98,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
   }, [client, jobId]);
   const complete = done || restoreState === 'restored';
   const unavailable = status.isError && !jobId && !restoreState && !done;
-  useEffect(() => { heading.current?.focus(); }, [step, restore]);
+  useEffect(() => { heading.current?.focus(); }, [step, restore, googlePage]);
   const deferBackups = <Button type="button" disabled={busy} variant="outline" onClick={() => { setBackupKey(null); setOverride(8); }}>{t('setup/setup:skipBackups')}</Button>;
   return <FormContext.Provider value={{ busy, run }}><main id="main-content" className="mx-auto w-full max-w-2xl min-w-0 flex-1 p-3 sm:p-6"><Card className="space-y-5 p-4 sm:space-y-6 sm:p-6">
     <h1 className="text-2xl font-semibold">{t('setup/setup:title')}</h1>
@@ -102,8 +108,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     : status.isPending && !jobId ? <LoadingState label={t('setup/setup:loading')} />
     : jobId || restoreState === 'running' ? <LoadingState label={t('setup/setup:restoring')} />
     : <>
-      <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {step + 1} / 9</p>
-      <h2 ref={heading} tabIndex={-1} className="scroll-mt-4 text-xl font-semibold focus:outline-none">{t('setup/setup:step' + step)}</h2>
+      <p className="text-sm text-muted-foreground">{t('setup/setup:step')} {(googlePage ? 5 : step) + 1} / 9</p>
+      <h2 ref={heading} tabIndex={-1} className="scroll-mt-4 text-xl font-semibold focus:outline-none">{googlePage ? t('setup/google-step:title') : t('setup/setup:step' + step)}</h2>
       {error && <Alert>{t('setup/setup:' + error)}</Alert>}
       {restoreState === 'failed' && <Alert>{t('setup/setup:restoreFailed')}</Alert>}
       {step === 0 && (restore ? <Form action={async (data) => {
@@ -160,7 +166,12 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             <Field name="host" /><Field name="port" type="number" value="587" /><CheckboxField name="secure" label={t('setup/setup:secure')} />
             <Field name="username" /><Field name="smtpPassword" type="password" /><Field name="from" type="email" /><Field name="testTo" type="email" /></Form>
           </>}
-        {step === 6 && (Stripe ? <Stripe />
+        {googlePage && <Form submit="saveGoogle" secondary={<Button type="button" disabled={busy} variant="outline" onClick={() => finishGoogle('skipped')}>{t('setup/google-step:skip')}</Button>} action={async (data) => {
+          await client.call('google', { revision, clientId: text(data, 'clientId').trim(), clientSecret: text(data, 'clientSecret').trim() });
+          finishGoogle('saved'); await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
+        }}><p>{t('setup/google-step:intro')}</p><GoogleRedirect /><p className="text-sm text-muted-foreground">{t('auth/google:setupHelp')}</p>
+          <GoogleClientFields idPrefix="setup-google" /></Form>}
+        {step === 6 && !googlePage && (Stripe ? <Stripe />
           : <><p>{t('setup/setup:stripeHint')}</p><SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></SetupActions></>)}
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>
           {backupReady || status.data?.completedSteps.includes(7) ? <SetupActions><Button disabled={busy} onClick={() => { setBackupKey(null); setOverride(8); }}>{t('setup/setup:next')}</Button></SetupActions>

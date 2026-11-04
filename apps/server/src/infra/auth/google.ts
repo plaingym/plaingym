@@ -19,8 +19,8 @@ export const googleStateGymKey = 'plaingymGymId';
 
 /**
  * The Google client from the instance's configuration: `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, both or neither.
- * This is the only source in either tenancy mode, so a gym owner never supplies OAuth credentials. Demo mode ignores them:
- * sandboxes sign in with their one-click logins.
+ * When set, it wins in either tenancy mode; otherwise a single-gym owner may store the gym's own client
+ * (`areas/settings/google-login.ts`). Demo mode ignores them: sandboxes sign in with their one-click logins.
  */
 export function googleFromEnvironment(env: NodeJS.ProcessEnv = process.env): GoogleCredentials | null {
   if (env.DEMO_MODE === 'true') return null;
@@ -56,18 +56,23 @@ async function stateGym(database: Database, state: string, now: Date): Promise<s
 }
 
 /**
- * Google sign-in for staff and members, with one install-wide client. The sign-in accepts only `{ "provider": "google" }`
- * (no ID-token sign-in, scopes or extra state), and the callback runs only for a state this gym issued: a state from
- * another gym, an unknown or expired state, or several states are refused before Better Auth reads them.
+ * Google sign-in for staff and members. `credentials` is one client for every gym, or a lookup of each gym's current
+ * client (null: Google sign-in is off for that gym), called on each Google request. The sign-in accepts only
+ * `{ "provider": "google" }` (no ID-token sign-in, scopes or extra state), and the callback runs only for a state this gym
+ * issued: a state from another gym, an unknown or expired state, or several states are refused before Better Auth reads them.
  */
 export function createGoogleAuthExtension(options: {
-  credentials: GoogleCredentials;
+  credentials: GoogleCredentials | ((gymId: string) => Promise<GoogleCredentials | null>);
   database?: () => Database;
   now?: () => Date;
 }): GoogleAuthExtension {
   const database = options.database ?? systemDatabase, now = options.now ?? (() => new Date());
+  const lookup = options.credentials;
   return {
-    socialProviders: { google: { clientId: options.credentials.clientId, clientSecret: options.credentials.clientSecret } },
+    async credentials(gymId) {
+      assertNoTransaction('auth.google.credentials');
+      return typeof lookup === 'function' ? lookup(gymId) : lookup;
+    },
     plugins: (gym) => [gymStatePlugin(gym)],
     async beforeRequest(request, gym) {
       assertNoTransaction('auth.google.beforeRequest');

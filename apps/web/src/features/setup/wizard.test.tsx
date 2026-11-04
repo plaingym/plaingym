@@ -29,6 +29,7 @@ function start(step = 0, completedSteps = Array.from({ length: step }, (_, i) =>
     if (name.endsWith('/gym')) { currentStep = 3; revision++; return Response.json({ data: { ...body, revision } }); }
     if (name.endsWith('/packs')) { currentStep = 4; revision++; return Response.json({ data: { currentStep, completedSteps: [0, 1, 2, 3], completed: false, revision } }); }
     if (name.endsWith('/smtp')) { currentStep = 6; revision++; return Response.json({ data: { configured: false, test: 'not_sent', revision } }); }
+    if (name.endsWith('/google')) { revision++; return Response.json({ data: { configured: true, revision } }); }
     if (name.endsWith('/stripe')) { currentStep = 7; revision++; return Response.json({ data: { configured: false, mode: null, webhookRegistered: false, revision } }); }
     if (name.endsWith('/finish')) return Response.json({ data: { completed: true, billingEnabled: false, memberEmailsEnabled: false, revision: ++revision } });
     return Response.json({}, { status: 500 });
@@ -67,6 +68,7 @@ describe('setup wizard', () => {
     submit.focus(); await userEvent.tab();
     expect(document.activeElement).toBe(skip);
     await userEvent.keyboard('{Enter}');
+    await userEvent.click(await screen.findByRole('button', { name: 'Skip Google sign-in' }));
     await screen.findByLabelText('Restricted Stripe key');
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/smtp');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'skip', revision: 1 });
@@ -102,6 +104,7 @@ describe('setup wizard', () => {
     expect(services.signInWithPassword).toHaveBeenCalledWith('owner@example.org', 'owner-password-123');
   });
   it('keeps the unregistered payment fallback in an action bar and continues to backups', async () => {
+    sessionStorage.setItem('setup.google', 'skipped');
     const { fetcher } = start(6, [0, 1, 2, 3, 4, 5], createWebRegistries<ExtensionView>([]));
     await screen.findByText('Payment configuration is not set up. Continue with billing paused.');
     const actions = screen.getByRole('group', { name: 'Setup actions' });
@@ -121,10 +124,50 @@ describe('setup wizard', () => {
     expect(fetcher.mock.calls.find(([path]) => path === '/api/setup')?.[1]?.headers).not.toHaveProperty('X-Setup-Token');
   });
   it('renders the registered Stripe step at step 6', async () => {
+    sessionStorage.setItem('setup.google', 'skipped');
     start(6);
     expect(await screen.findByLabelText('Restricted Stripe key')).toBeDefined();
     expect(screen.getByText('Step 7 / 9')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Validate and connect' })).toBeDefined();
+  });
+  it('offers an optional Google page after email that stores the client and changes no step', async () => {
+    const { fetcher, query } = start(6);
+    await screen.findByLabelText('Client ID');
+    expect(screen.getByRole('heading', { name: 'Google sign-in (optional)' })).toBeDefined();
+    expect(screen.getByText('Step 6 / 9')).toBeDefined();
+    expect(screen.getByText(window.location.origin + '/api/auth/callback/google')).toBeDefined();
+    expect(screen.queryByLabelText('Restricted Stripe key')).toBeNull();
+    const secret = screen.getByLabelText('Client secret') as HTMLInputElement;
+    expect(secret.type).toBe('password');
+    const invalidate = vi.spyOn(query, 'invalidateQueries');
+    await userEvent.type(screen.getByLabelText('Client ID'), ' wizard-client.apps.googleusercontent.com ');
+    await userEvent.type(secret, 'wizard-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Save Google client' }));
+    await screen.findByLabelText('Restricted Stripe key');
+    const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/google');
+    expect(call?.[1]?.method).toBe('PUT');
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ revision: 1, clientId: 'wizard-client.apps.googleusercontent.com', clientSecret: 'wizard-secret' });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['shell', 'bootstrap'] });
+    expect(sessionStorage.getItem('setup.google')).toBe('saved');
+    // The secret leaves only in that request: it is never written anywhere the browser keeps.
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain('wizard-secret');
+  });
+  it('remembers a skipped Google page and never shows it when the install already has Google sign-in', async () => {
+    const { fetcher } = start(6);
+    await userEvent.click(await screen.findByRole('button', { name: 'Skip Google sign-in' }));
+    await screen.findByLabelText('Restricted Stripe key');
+    expect(fetcher.mock.calls.some(([path]) => path === '/api/setup/google')).toBe(false);
+    cleanup();
+    start(6);
+    expect(await screen.findByLabelText('Restricted Stripe key')).toBeDefined();
+    cleanup(); sessionStorage.clear();
+    const original = vi.mocked(services.loadBootstrap).getMockImplementation()!;
+    vi.mocked(services.loadBootstrap).mockImplementation(async () => ({ ...await original(), login: { password: true, magicLink: false, google: true } }));
+    try {
+      start(6);
+      expect(await screen.findByLabelText('Restricted Stripe key')).toBeDefined();
+      expect(screen.queryByRole('heading', { name: 'Google sign-in (optional)' })).toBeNull();
+    } finally { vi.mocked(services.loadBootstrap).mockImplementation(original); }
   });
   it('offers setup later and finishes from step 8 without asking for S3 credentials', async () => {
     const { fetcher } = start(7);
@@ -236,6 +279,7 @@ describe('setup wizard', () => {
     expect(screen.getByText(/SPF and DKIM/)).toBeDefined();
     expect(screen.getByText(/AUTH_PASSWORD_LOGIN=auto/)).toBeDefined();
     await userEvent.click(await screen.findByRole('button', { name: 'Skip email configuration' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Skip Google sign-in' }));
     await screen.findByLabelText('Restricted Stripe key');
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/smtp');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'skip', revision: 1 });
