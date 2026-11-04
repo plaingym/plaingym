@@ -15,7 +15,7 @@ for Caddy. Node has a 256 MiB old-space limit. The installer adds 1 GiB of swap
 when no swap is active. Use 2 GiB RAM for testing; whole-stack operation on a
 1 GiB host has not been established. Override `APP_MEMORY_LIMIT`,
 `POSTGRES_MEMORY_LIMIT`, `CADDY_MEMORY_LIMIT`, or `NODE_OPTIONS` in `.env`. The
-same file sets `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK` and
+same file sets `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY` and
 `DATABASE_POOL_MAX` (each uses the app's default when unset or empty; see
 `docs/configuration.md` for what the shipped Compose file passes and what it does
 not). `sh deploy/test/compose-env.sh` renders the Compose file with and without

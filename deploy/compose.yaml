@@ -86,6 +86,8 @@ services:
       AUTH_PASSWORD_LOGIN: ${AUTH_PASSWORD_LOGIN:-auto}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
       UPDATE_CHECK: ${UPDATE_CHECK:-on}
+      # The repository the update banner reads; the nightly updater reads the same value from .env.
+      RELEASE_REPOSITORY: ${RELEASE_REPOSITORY:-plaingym/plaingym}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       AUTH_SECRET: ${AUTH_SECRET:?required}

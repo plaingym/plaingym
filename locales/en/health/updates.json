@@ -1,14 +1,15 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
-  "available": "Version {latest} is available. This install runs {current}.",
+  "available": "Version {latest} is available. This install runs {current}. Run the updater on the server to install it.",
   "patch": "Version {latest} is a patch release. It applies automatically; this install runs {current}.",
+  "patchHeld": "Version {latest}, a patch release, has not installed by itself. {why} This install runs {current}.",
   "current": "This install runs {current}, the latest release.",
   "ahead": "This install runs {current}, newer than the latest published release, {latest}.",
   "off": "Update checks are turned off.",
   "notRelease": "This build is not a tagged release, so it cannot be compared with the latest release.",
-  "unreachable": "The latest release could not be read. The check retries automatically.",
+  "unreachable": "The latest release is being read for the first time. This takes a moment.",
+  "unreadable": "The latest release could not be read from GitHub. The check tries again each hour; turn it off with UPDATE_CHECK=off on an install without internet access.",
+  "badRepository": "RELEASE_REPOSITORY is not in the form owner/name, so releases cannot be read.",
   "banner.title": "Update available",
-  "banner.body": "Version {latest} is available. This install runs {current}.",
-  "banner.changelog": "Changelog",
-  "banner.howTo": "Run the updater on the server to install it."
+  "banner.changelog": "Changelog"
 }

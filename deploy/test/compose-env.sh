@@ -20,7 +20,7 @@ SETUP_TOKEN=t"
 # Compose prefers the shell's environment to --env-file, so drop every name the file interpolates, the
 # operator variables below, and Compose's own settings.
 for name in $(grep -Eo '\$\{[A-Z][A-Z0-9_]*' "$source_dir/compose.yaml" | tr -d '${') \
-    AUTH_PASSWORD_LOGIN RATE_LIMIT_PER_MINUTE UPDATE_CHECK DATABASE_POOL_MAX PUBLIC_ORIGIN PACKS_DIR TENANCY BACKUP_RECIPIENT \
+    AUTH_PASSWORD_LOGIN RATE_LIMIT_PER_MINUTE UPDATE_CHECK RELEASE_REPOSITORY DATABASE_POOL_MAX PUBLIC_ORIGIN PACKS_DIR TENANCY BACKUP_RECIPIENT \
     UPLOADS_S3_BUCKET UPLOADS_S3_ENDPOINT UPLOADS_S3_REGION UPLOADS_S3_ACCESS_KEY_ID UPLOADS_S3_SECRET_ACCESS_KEY \
     COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES; do
   unset "$name"
@@ -55,6 +55,9 @@ expect DATABASE_POOL_MAX 12 'DATABASE_POOL_MAX=12'
 expect UPDATE_CHECK on ""
 expect UPDATE_CHECK on "UPDATE_CHECK="
 expect UPDATE_CHECK off "UPDATE_CHECK=off"
+expect RELEASE_REPOSITORY plaingym/plaingym ""
+expect RELEASE_REPOSITORY plaingym/plaingym "RELEASE_REPOSITORY="
+expect RELEASE_REPOSITORY example/app "RELEASE_REPOSITORY=example/app"
 # TENANCY stays single whatever .env says, and the variables the app reads an empty value of as a value
 # are not passed at all.
 expect TENANCY single 'TENANCY=multi'

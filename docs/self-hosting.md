@@ -279,12 +279,22 @@ sudo /opt/plaingym/update.sh --patch --now
 ### Minor and major releases
 
 Once a day the app reads the newest release from GitHub's public releases list (no
-token, nothing about your install is sent). When a newer minor or major version is
+token, nothing about your install is sent) for the repository in `RELEASE_REPOSITORY`,
+the one the updater follows (`plaingym/plaingym` unless you set another). When a newer minor or major version is
 out, owners and admins see an "Update available" banner with a link to the changelog,
 and the Health page's **Available update** tile shows the running and latest versions.
-A newer patch release raises no banner, even when automatic updates are off. If
-GitHub can't be reached the last answer is kept and the check retries within the
-hour. `UPDATE_CHECK=off` in `.env` stops it (`docs/configuration.md`).
+A newer patch release raises no banner while the nightly update is expected to install
+it. It does raise the banner when that update won't happen: automatic updates are
+off, no nightly check has run for two days since the last one (the timer stopped), or the
+last check for that release skipped, rolled back or failed. The banner and the tile say
+why. With automatic updates off or the timer stopped, turn them on or fix the timer, or
+install the release by hand, as below. When the updater refused the release on purpose
+(its signature, image or database changes), don't install it by hand: wait for a fixed
+release ([updating.md](updating.md#patch-releases-automatic)). A fresh start shows
+nothing until the first answer has arrived, a moment later; if GitHub can't be reached
+the last answer is kept and the check retries within the hour (the Health page's tile
+says when it couldn't be read). A development build isn't a release and never asks.
+`UPDATE_CHECK=off` in `.env` stops it (`docs/configuration.md`).
 
 Update to a new minor or major release with:
 

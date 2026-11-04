@@ -29,12 +29,23 @@ than the pending-job timestamp. Disk details hold the volume with least free spa
 message reports both uploads and staging (the uploads volume alone when `BACKUP_STAGING_DIR` isn't set, as in multi-gym mode). TODO: allow separate volume details. Disk warning
 means less than 10% or 1 GiB available; error means less than the backup reserve (128 MiB).
 The available-update tile and `GET /api/health/update` (the admin banner's own route, also
-`settings.manage`) come from `updates.ts`: one process-wide `ReleaseCheck` reads
-`api.github.com/repos/plaingym/plaingym/releases/latest` without a token at most once a day. A failed,
-oversized, draft, pre-release or off-host answer keeps the last good one and retries after an hour;
-with a cached answer a request never waits on the network. A newer minor or major is `warning` with
-`available: true` (the banner); a newer patch is `healthy` with `available: false`, since patches apply
-automatically. Multi-gym mode, `UPDATE_CHECK=off` and a build whose version is not `X.Y.Z` are
-`not_configured`; no answer yet is `unavailable`.
+`settings.manage`) come from `updates.ts`: one process-wide `ReleaseCheck` per repository reads
+`api.github.com/repos/<RELEASE_REPOSITORY>/releases/latest` (default `plaingym/plaingym`, the repository the
+updater follows; the release page must sit under it) without a token at most once a day. A read never waits on
+the network: with nothing cached it starts the request in the background and the tile is `unavailable` with no
+`checkedAt` until it arrives (the banner asks again each minute meanwhile). After a failed request with nothing cached
+it is `unavailable` with `checkedAt` set to the failure and its own message (the banner then keeps its usual pace; the
+check retries hourly). A failed, oversized (refused by `Content-Length`, or once the stream passes 256 KiB), draft, pre-release or
+off-host answer keeps the last good one and retries after an hour. A newer minor or major is `warning` with
+`available: true` (the banner). A newer patch is `healthy` with `available: false` while the nightly update is
+expected to install it, and `warning` with `available: true` when it is not: the gym's automatic-updates switch is off,
+no check has run for `staleAfterHours` (`auto-update.ts`), or the last attempt skipped, rolled back or failed
+(`patchHoldReason`, which reads the same switch and attempt as the `automatic_updates` tile and shares its
+`classifyAttempt` verdict; a read that fails keeps the quiet answer). An attempt holds back only the release it was about:
+one for an older version than the newest release doesn't, since tonight's check tries the newest. The message carries the
+advice: update by hand for the switch and a stopped timer; never install by hand a release the updater refused on purpose
+(signature, digest, manifest, or a database change); otherwise the reason's own advice. The banner shows that message. Multi-gym mode, `UPDATE_CHECK=off`, a build whose version is not `X.Y.Z` or is `0.0.0` (a development
+build), and a `RELEASE_REPOSITORY` that is not `owner/name` are `not_configured`. `configureUpdateRoutes({ env })`
+(`updates.routes.ts`) gives the route the runtime's environment, as `configureHealthStatus` does the tile.
 Running version uses `APP_VERSION`, falling back to the current package version.
 The image sets `APP_VERSION` from its `VERSION` build argument.

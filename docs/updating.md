@@ -38,8 +38,15 @@ sudo /opt/plaingym/update.sh --patch --now
 | The update failed and starting the previous version failed too | Check the containers with `sudo docker compose ps`. The updater tries to start the previous version again each hour until it runs. |
 | No nightly update check since … | Check the timer: `systemctl status plaingym-update.timer`. The updater's log is `journalctl -u plaingym-update`. |
 
-A newer patch release raises no banner, even when automatic updates are off; with
-them off, install it by hand as below.
+A newer patch release raises no banner while the nightly update is expected to install
+it. When it won't (automatic updates are off, no nightly check has run for two days, or
+the last check for that release skipped, rolled back or failed), the banner appears and
+says why. If automatic updates are off or the timer has stopped, turn them on or fix the
+timer, or install the release by hand as below. If the check was refused on purpose (the
+signature, the image or the database row in the table above), don't install that release
+by hand: update by hand once a fixed release is out. For any other reason, do what it
+says. A failed check for an older patch raises nothing once a newer one is out, because
+the next nightly check tries the newest.
 
 ## Minor and major releases: by hand
 

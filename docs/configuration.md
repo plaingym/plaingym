@@ -13,8 +13,8 @@ secret.
 its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
 settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
 `POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `NODE_OPTIONS`,
-`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK` and `DATABASE_POOL_MAX` (the last
-four with their defaults when unset or empty); it fixes
+`AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY` and `DATABASE_POOL_MAX` (the last
+five with their defaults when unset or empty); it fixes
 `NODE_ENV`, `HOST`, `PORT`, `TENANCY=single`, `TRUST_PROXY`, `DATABASE_URL`,
 `MAINTENANCE_DATABASE_URL`, `UPLOADS_DIR` and `BACKUP_STAGING_DIR` itself; and it
 reads the Compose and Caddy variables at the end of this page. The other variables
@@ -119,7 +119,7 @@ similar): mail sent directly from a server usually lands in spam.
 | :--- | :--- | :--- |
 | `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
 | `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. Sign-in, kiosk PINs and CSP reports keep their own limits. |
-| `UPDATE_CHECK` | `on` | `off` stops the app asking GitHub once a day for the newest release (the "Update available" banner and the Health page's update tile), for an install that must not call out; so does any value other than `on`, `true` or `1`. It sends no token and no data about the install. A multi-gym install never checks. |
+| `UPDATE_CHECK` | `on` | `off` stops the app asking GitHub once a day for the newest release (the "Update available" banner and the Health page's update tile), for an install that must not call out; so does any value other than `on`, `true` or `1`. It sends no token and no data about the install. A multi-gym install never checks. The banner reads the releases of `RELEASE_REPOSITORY` (see [Automatic patch updates](#automatic-patch-updates)). |
 | `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below), and wins over a client the owner entered in the app. Set both or neither; an empty value counts as unset. Ignored in demo mode. |
 | `GOOGLE_CLIENT_SECRET` | unset | That client's secret. |
 
@@ -198,13 +198,13 @@ These are read by `deploy/compose.yaml`, not by the app.
 
 ## Automatic patch updates
 
-`update.sh --patch`, which the installer's nightly timer runs, reads this from `.env`; neither Compose nor the
-app does. Whether patch releases install on their own is the owner's switch in **Settings → Updates**, stored in
+`update.sh --patch`, which the installer's nightly timer runs, reads this from `.env`, and Compose passes the same
+value to the app, so the "Update available" banner reads the releases the updater follows. Whether patch releases install on their own is the owner's switch in **Settings → Updates**, stored in
 the database ([self-hosting.md](self-hosting.md#updates)).
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `RELEASE_REPOSITORY` | `plaingym/plaingym` | The GitHub repository whose releases the updater checks, as `owner/name`. A fork that publishes its own releases sets it and replaces `release-signing.pem` in the install directory with its own public key. |
+| `RELEASE_REPOSITORY` | `plaingym/plaingym` | The GitHub repository whose releases the updater checks, as `owner/name`. Unset or empty means the default; a value that is not `owner/name` stops the banner from reading releases (the updater skips its night). A fork that publishes its own releases sets it and replaces `release-signing.pem` in the install directory with its own public key. |
 
 ## Development only
 

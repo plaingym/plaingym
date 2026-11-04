@@ -9,7 +9,8 @@ import { UpdateBanner } from './update-banner.js';
 vi.mock('../../lib/api.js', () => ({ api: { GET: vi.fn() } }));
 const GET = vi.mocked(api.GET) as unknown as ReturnType<typeof vi.fn>;
 const checkedAt = '2026-11-03T12:00:00Z';
-const tile = (over: object) => ({ id: 'update_available', status: 'warning', checkedAt, message: 'm',
+const tile = (over: object) => ({ id: 'update_available', status: 'warning', checkedAt,
+  message: 'Version 1.3.0 is available. This install runs 1.2.0. Run the updater on the server to install it.',
   details: { currentVersion: '1.2.0', latestVersion: '1.3.0', available: true, releaseUrl: 'https://github.com/plaingym/plaingym/releases/tag/v1.3.0' }, ...over });
 const serve = (data: unknown, ok = true) => GET.mockResolvedValue({ response: new Response(null, { status: ok ? 200 : 502 }), data: { data } } as never);
 function start() {
@@ -49,5 +50,36 @@ describe('update banner', () => {
     await waitFor(() => expect(GET).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(screen.queryByTestId('update-banner')).toBeNull();
+  });
+  it("shows the server's message for a patch that won't install itself, without the updater advice", async () => {
+    const message = 'Version 1.2.5, a patch release, has not installed by itself. The release manifest\'s signature didn\'t verify. Do not install this release by hand: wait for a fixed release. This install runs 1.2.0.';
+    serve(tile({ message, details: { currentVersion: '1.2.0', latestVersion: '1.2.5', available: true, releaseUrl: 'https://github.com/plaingym/plaingym/releases/tag/v1.2.5' } }));
+    start();
+    const banner = await screen.findByTestId('update-banner');
+    expect(banner.textContent).toContain('Do not install this release by hand');
+    expect(banner.textContent).not.toContain('Run the updater');
+  });
+  it('does not keep asking once the server says its read of the release list failed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      serve(tile({ status: 'unavailable', details: null }));
+      start();
+      await waitFor(() => expect(GET).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(GET).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+  it('asks again within a minute while the server has not read the release list yet', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      serve(tile({ status: 'unavailable', checkedAt: null, details: null }));
+      start();
+      await waitFor(() => expect(GET).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId('update-banner')).toBeNull();
+      serve(tile({}));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await screen.findByTestId('update-banner')).toBeTruthy();
+      expect(GET).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 });

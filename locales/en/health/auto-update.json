@@ -12,6 +12,8 @@
   "tile.skippedTarget": "Version {to} was not installed. {reason}",
   "tile.rolledBack": "Version {to} was rolled back and {from} is running again. {reason}",
   "tile.failed": "The update to {to} failed. {reason}",
+  "hold.byHand": "To install it now, update by hand as the updating guide describes.",
+  "hold.wait": "Do not install this release by hand: wait for a fixed release.",
   "reason.disabled": "Automatic updates were turned off.",
   "reason.check_failed": "The app couldn't report its update setting.",
   "reason.backups_not_configured": "Backups aren't set up, so no backup could be taken first. Set them up in Settings → Email, payments and backups.",

@@ -7,7 +7,10 @@ import { healthTileSchema } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import { createAutoUpdateSettings } from '../settings/auto-update.js';
 import messages from '../../../../../locales/en/health/auto-update.json' with { type: 'json' };
-import { autoUpdateAttemptSchema, autoUpdateReasons, createAutoUpdateAttempts, createAutoUpdateHealthProvider, type AutoUpdateAttempt } from './auto-update.js';
+import {
+  autoUpdateAttemptSchema, autoUpdateReasons, createAutoUpdateAttempts, createAutoUpdateHealthProvider, createAutoUpdateStateReader, classifyAttempt, patchHoldReason,
+  type AutoUpdateAttempt, type AutoUpdateState,
+} from './auto-update.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
 import { createHealthService } from './status.js';
 
@@ -59,6 +62,50 @@ describe('automatic update attempts', () => {
   });
 });
 
+describe('why a newer patch would not install', () => {
+  it('reads the switch and the latest attempt from the database, one gym at a time', async () => {
+    const f = await fixture(), other = await fixture(), read = createAutoUpdateStateReader({ scope: db.forGym, settings: f.settings });
+    expect(await read(f.gymId, f.clock)).toEqual({ enabled: true, attempt: null });
+    await f.attempts.record(f.gymId, attempt({ result: 'skipped', reason: 'backups_not_configured' }));
+    await f.turn(false);
+    expect(await read(f.gymId, f.clock)).toMatchObject({ enabled: false, attempt: { result: 'skipped', reason: 'backups_not_configured' } });
+    expect((await createAutoUpdateStateReader({ scope: db.forGym })(other.gymId, other.clock))).toEqual({ enabled: true, attempt: null });
+  });
+  it('names a reason only when the nightly update is held back', () => {
+    const now = new Date('2026-11-04T10:00:00Z'), recent = attempt({ attemptedAt: at('2026-11-04T04:00:00Z') });
+    const hold = (state: AutoUpdateState, isOlder = () => false) => patchHoldReason(state, now, isOlder);
+    expect(hold({ enabled: true, attempt: null })).toBeNull();
+    expect(hold({ enabled: true, attempt: recent })).toBeNull();
+    expect(hold({ enabled: true, attempt: { ...recent, result: 'updated', toVersion: 'v1.2.4' } })).toBeNull();
+    expect(hold({ enabled: true, attempt: { ...recent, result: 'skipped', reason: 'disabled' } })).toBeNull();
+    expect(hold({ enabled: false, attempt: recent })).toContain('off');
+    expect(hold({ enabled: true, attempt: { ...recent, result: 'skipped', reason: 'no_signing_key' } })).toContain('signing key');
+    expect(hold({ enabled: true, attempt: { ...recent, result: 'rolled_back', reason: 'startup_failed', toVersion: 'v1.2.4' } })).toContain("didn't start");
+    expect(hold({ enabled: true, attempt: { ...recent, result: 'failed', reason: 'rollback_failed', toVersion: 'v1.2.4' } })).toContain('docker compose ps');
+    expect(hold({ enabled: true, attempt: { ...recent, attemptedAt: at('2026-11-02T04:00:00Z') } })).toContain('No nightly update check since');
+  });
+  it('lets an attempt hold back only the release it was about', () => {
+    const now = new Date('2026-11-04T10:00:00Z'), recent = attempt({ attemptedAt: at('2026-11-04T04:00:00Z') });
+    const refused: AutoUpdateAttempt = { ...recent, result: 'skipped', reason: 'signature_invalid', toVersion: 'v1.2.4' };
+    const asked: string[] = [];
+    expect(patchHoldReason({ enabled: true, attempt: refused }, now, (version) => { asked.push(version); return true; })).toBeNull();
+    expect(asked).toEqual(['v1.2.4']);
+    expect(patchHoldReason({ enabled: true, attempt: refused }, now, () => false)).toContain('wait for a fixed release');
+    // No target (the release list was never read): nothing to compare, so the reason stands.
+    expect(patchHoldReason({ enabled: true, attempt: { ...refused, toVersion: null } }, now, () => true)).toContain('wait for a fixed release');
+    // The switch and a stopped timer hold every patch back.
+    expect(patchHoldReason({ enabled: false, attempt: refused }, now, () => true)).toContain('update by hand');
+  });
+  it('gives the tile and the banner one verdict', () => {
+    const now = new Date('2026-11-04T10:00:00Z'), recent = attempt({ attemptedAt: at('2026-11-04T04:00:00Z') });
+    expect(classifyAttempt({ enabled: false, attempt: recent }, now)).toBe('off');
+    expect(classifyAttempt({ enabled: true, attempt: null }, now)).toBe('never_run');
+    expect(classifyAttempt({ enabled: true, attempt: { ...recent, attemptedAt: at('2026-11-02T04:00:00Z') } }, now)).toBe('stale');
+    expect(classifyAttempt({ enabled: true, attempt: { ...recent, result: 'skipped', reason: 'disabled' } }, now)).toBe('resumed');
+    expect(classifyAttempt({ enabled: true, attempt: recent }, now)).toBe('ok');
+    expect(classifyAttempt({ enabled: true, attempt: { ...recent, result: 'skipped', reason: 'pull_failed', toVersion: 'v1.2.4' } }, now)).toBe('problem');
+  });
+});
 describe('automatic updates tile', () => {
   it('reads not set up before the first nightly check, and off when the owner turned it off', async () => {
     const f = await fixture();
