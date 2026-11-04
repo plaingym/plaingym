@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, lt } from 'drizzle-orm';
 import { emailOutbox, forGym } from '@plaingym/db';
-import { AppError } from '@plaingym/shared';
-import { outboxQuery } from '@plaingym/shared/contracts';
+import { AppError, createTranslator } from '@plaingym/shared';
+import { locales } from '@plaingym/shared/locales';
+import { demoSignInLinkPath, outboxQuery } from '@plaingym/shared/contracts';
+
+/** Every sign-in link in a sandbox is captured with this subject (`renderDemoLogin`, which the demo runtime sends with English). */
+const signInSubject = createTranslator(locales.en ?? {})('demo/demo:loginSubject');
 
 export function createOutboxQuery(scope: typeof forGym = forGym) {
   const present = (row: typeof emailOutbox.$inferSelect) => ({ id: row.id, recipient: row.recipient, subject: row.subject,
@@ -19,6 +23,19 @@ export function createOutboxQuery(scope: typeof forGym = forGym) {
       const [row] = await scope(gymId, (tx) => tx.select().from(emailOutbox).where(and(eq(emailOutbox.gymId, gymId), eq(emailOutbox.id, id))));
       if (!row) throw new AppError('not_found', 'Message not found');
       return present(row);
+    },
+    /** The sign-in link from the latest sign-in message to one address in this gym's outbox, as a path on the gym's own origin.
+     * Only sign-in messages qualify, never the rest of the outbox; anything else is 404. */
+    async signInLink(gymId: string, email: string) {
+      const [row] = await scope(gymId, (tx) => tx.select({ text: emailOutbox.text }).from(emailOutbox)
+        .where(and(eq(emailOutbox.gymId, gymId), eq(emailOutbox.recipient, email.trim().toLowerCase()), eq(emailOutbox.subject, signInSubject)))
+        // Latest by capture time; IDs made in the same millisecond needn't sort in capture order.
+        .orderBy(desc(emailOutbox.sentAt), desc(emailOutbox.id)).limit(1));
+      for (const match of row?.text.matchAll(/https?:\/\/\S+/g) ?? []) {
+        const url = URL.canParse(match[0]) ? new URL(match[0]) : null;
+        if (url?.pathname === demoSignInLinkPath && url.searchParams.has('token')) return { href: url.pathname + url.search };
+      }
+      throw new AppError('not_found', 'No sign-in link');
     },
   };
 }

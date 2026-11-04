@@ -113,8 +113,34 @@ Ordinary install-wide identities remain shared.
 The [demo installer](../../../../deploy/demo/README.md) sets up the server, wildcard
 TLS, and S3 configuration. Open its printed link to create a sandbox. A new sandbox
 opens on its start page (`/demo`), which offers one-click owner, coach and student
-logins, the public join with the test card, and the kiosk; the demo controls link
-back to it. No command line setup is needed in a sandbox.
+logins, the members who joined, the public join with the test card, and the kiosk.
+Every page of a sandbox starts with one slim row (`DemoNotice`): the sandbox, its
+expiry and a **Demo menu** button. The menu (a bottom sheet on phones, a side panel on
+wider screens) groups **Sign in as** (the three roles and the joined members),
+**Go to** (start page, admin, member portal, kiosk, the join page when the sandbox
+takes joins, the website when it's on, outbox) and **About this demo**. Each hint
+shows only where it is used: the sample household on the kiosk's Name and PIN search,
+the test card on the start page's join step, and the outbox note on `/login`. No
+command line setup is needed in a sandbox.
+
+### Signing in again
+
+A member who joined through `/join` can sign in again without the owner:
+
+- `GET /api/demo/menu` lists the sandbox's joined members (the payer logins of the
+  latest five households admitted through `/join`, newest first, by household name)
+  and says whether the website is on. `POST /api/demo/login` takes `{ member: <id> }`
+  for one of them as well as `{ role }`. It refuses any login the menu doesn't list,
+  staff identities, and a household whose address no longer names its payer login.
+- `POST /api/demo/sign-in-link` takes the address entered on `/login` and returns the
+  link from the latest sign-in message to that address in this sandbox's outbox, as a
+  path on the sandbox's own origin. It reads sign-in messages only; the rest of the
+  outbox stays with the owner and admins.
+
+All three answer 404 outside demo mode and outside an active sandbox, and read only
+the sandbox's own rows, so another sandbox's member or message is a 404. Anyone in a
+sandbox can already sign in as its owner and read the whole outbox, so these open no
+boundary inside a sandbox.
 
 The [mat seed guide](seed/mat.md) describes the sample households, schedule and
 promotion history; the [portal seed guide](seed/portal.md) describes the student's
@@ -126,7 +152,7 @@ matches. Staff can find other sample members' full names in the members page.
 The production runtime connects the boot checks, outbox delivery for login and
 signed links, upload restrictions, tenant-free entry routes, and cleanup timer.
 Open `https://<DEMO_DOMAIN>/demo` to create a sandbox. Sandbox creation accepts
-only the install hostname. Every shell shows demo controls before login guards;
+only the install hostname. Every shell shows the demo bar before login guards;
 the outbox navigation appears only in a sandbox.
 
 Set `UPLOADS_S3_BUCKET`, optional `UPLOADS_S3_ENDPOINT` and `UPLOADS_S3_REGION`,
@@ -166,9 +192,12 @@ Runtime and shared composition use these exports:
   foreign prefixes. Supply the deletion callback appropriate to the install's
   storage provider. Never give this helper the backup destination.
 - `DemoNotice` in the shared shell **before login/admin guards**, so an anonymous
-  sandbox visitor can choose an identity; `TryDemoButton` on the demo entry page.
-  The notice links to `/admin/outbox`; the shell enables its navigation entry
-  only after the sandbox status check succeeds.
+  sandbox visitor can choose an identity from its menu; `TryDemoButton` on the demo
+  entry page. The menu links to `/admin/outbox`; the shell enables its navigation
+  entry only after the sandbox status check succeeds.
+- `joinTestCardHint(service, t)` from `demo.routes.ts` returns, for a gym, the
+  test-card note for the join page's payment steps (`joinStatusPage`'s
+  `testCardHint`) in a sandbox that takes joins, and nothing elsewhere.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
   `runSeeds(context)` applies foundation, members, billing, waivers, mat and portal seeds.
   Both sandbox creation and the seed CLI use this composition. Billing receives

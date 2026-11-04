@@ -18,4 +18,7 @@ export const shellMessages = {
   discardHelp: 'Discard your unsaved changes?', keepEditing: 'Keep editing', discard: 'Discard changes',
   selectSuggestion: 'Select a household from the suggestions.', suggestionsHelp: 'Use the arrow keys and Enter to select.',
   noSuggestions: 'No matching households. Try another name.',
+  linkUsed: 'This sign-in link was already used or has expired. Request a new one below.',
+  linkNoAccount: 'No login here uses that address. Check it, or ask your gym to invite you.',
+  linkFailed: "That sign-in link didn't work. Request a new one below.",
 } as const;

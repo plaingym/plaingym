@@ -102,89 +102,120 @@ it('does not consume a token until sandbox discovery succeeds', async () => {
   expect(readToken()).toBe('visitor-device');
   expect(window.location.hash).toBe('');
 });
-it('shows all sandbox identities before the login screen guard', async () => {
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
+const sandbox = (join = false) => Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join } });
+const riley = { id: '019a0000-0000-7000-8000-0000000000aa', name: 'Riley Visitor' };
+/** Discovery, the demo menu and any other path, answered by path. */
+function serve(options: { join?: boolean; website?: boolean; members?: { id: string; name: string }[]; login?: () => Promise<Response> } = {}) {
+  fetcher.mockImplementation(async (path: string) => path === '/api/demo' ? sandbox(options.join)
+    : path === '/api/demo/menu' ? Response.json({ data: { members: options.members ?? [], website: options.website ?? false } })
+      : path === '/api/demo/login' && options.login ? options.login() : Response.json({}, { status: 404 }));
+}
+const openMenu = async () => {
+  const button = await screen.findByRole('button', { name: 'Demo menu' });
+  button.focus(); fireEvent.click(button);
+  return screen.getByRole('dialog', { name: 'Demo menu' });
+};
+it('keeps the bar to one slim row: the sandbox, its expiry and the demo menu, with no hints or links', async () => {
+  serve();
   start();
-  expect(await screen.findByRole('button', { name: 'Sign in as owner' })).toBeDefined();
-  expect(screen.getByRole('button', { name: 'Sign in as coach' })).toBeDefined();
-  expect(screen.getByRole('button', { name: 'Sign in as student' })).toBeDefined();
+  const bar = await screen.findByRole('complementary', { name: 'Demo controls' });
+  await within(bar).findByRole('button', { name: 'Demo menu' });
+  expect(within(bar).getAllByRole('button')).toHaveLength(1);
+  expect(within(bar).queryAllByRole('link')).toHaveLength(0);
+  expect(bar.textContent).toMatch(/^Demo gym · expires .+Demo menu$/);
+  expect(bar.textContent).not.toMatch(/Marcus Rivera|4242|outbox/);
   expect(screen.getByText('Login screen')).toBeDefined();
   expect(screen.getByText('Sandbox consumer')).toBeDefined();
   expect(screen.queryByRole('button', { name: 'Try the demo' })).toBeNull();
-  expect(screen.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toBeDefined();
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button', { name: 'Sign in as owner' })).toBeNull();
+  // The bar fetches nothing beyond discovery; the menu loads its members when opened.
+  expect(fetcher.mock.calls.map(([path]) => path)).toEqual(['/api/demo']);
 });
-it.each([['/admin', true], ['/demo', false]] as const)('links back to the sandbox start page from %s: %s', async (pathname, shown) => {
-  route.pathname = pathname;
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
+it('opens the demo menu with its labelled groups and returns focus to the bar on close', async () => {
+  route.pathname = '/portal/schedule';
+  serve({ join: true, members: [riley] });
   start();
-  await screen.findByRole('button', { name: 'Sign in as owner' });
-  const link = screen.queryByRole('link', { name: 'Demo start page' });
-  expect(link?.getAttribute('href') ?? null).toBe(shown ? '/demo' : null);
-});
-it('opens the guide under its own label without offering sandbox creation', async () => {
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
-  start();
-  const button = await screen.findByRole('button', { name: 'Demo guide' });
-  button.focus(); fireEvent.click(button);
-  const guide = screen.getByRole('dialog', { name: 'Demo guide' });
-  expect(within(guide).getByText(/Marcus Rivera.*2468/)).toBeDefined();
-  expect(screen.queryByRole('button', { name: 'Try the demo' })).toBeNull();
-  fireEvent.click(within(guide).getByRole('button', { name: 'Close demo guide' }));
+  const menu = await openMenu();
+  const signIn = within(menu).getByRole('region', { name: 'Sign in as' });
+  for (const role of ['owner', 'coach', 'student']) expect(within(signIn).getByRole('button', { name: 'Sign in as ' + role })).toBeDefined();
+  expect(await within(signIn).findByRole('button', { name: 'Sign in as Riley Visitor' })).toBeDefined();
+  const goTo = within(menu).getByRole('navigation', { name: 'Go to' });
+  expect(within(goTo).getAllByRole('link').map((link) => [link.textContent?.replace('→', ''), link.getAttribute('href')])).toEqual([
+    ['Start page', '/demo'], ['Gym admin', '/admin'], ['Member portal', '/portal'], ['Kiosk', '/kiosk'], ['Join page', '/join'], ['Demo outbox', '/admin/outbox']]);
+  expect(within(goTo).getByRole('link', { name: 'Member portal' }).getAttribute('aria-current')).toBe('page');
+  expect(within(goTo).getByRole('link', { name: 'Gym admin' }).getAttribute('aria-current')).toBeNull();
+  const about = within(menu).getByRole('region', { name: 'About this demo' });
+  expect(within(about).getByText(/^Expires: /)).toBeDefined();
+  expect(within(about).getByText(/deleted after 24 hours/)).toBeDefined();
+  expect(menu.textContent).not.toMatch(/Marcus Rivera|4242/);
+  fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
   expect(screen.queryByRole('dialog')).toBeNull();
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo guide' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Demo menu' }));
+});
+it.each([[true, true], [false, false]] as const)('lists the website only when it is on (%s), and the join page only when joining is', async (on, join) => {
+  serve({ website: on, join });
+  start();
+  const goTo = within(await openMenu()).getByRole('navigation', { name: 'Go to' });
+  await waitFor(() => expect(fetcher.mock.calls.some(([path]) => path === '/api/demo/menu')).toBe(true));
+  await waitFor(() => expect(within(goTo).queryByRole('link', { name: 'Gym website' })?.getAttribute('href') ?? null).toBe(on ? '/' : null));
+  expect(within(goTo).queryByRole('link', { name: 'Join page' }) !== null).toBe(join);
+});
+it('signs in as a joined member from the menu', async () => {
+  const assign = vi.fn();
+  vi.stubGlobal('location', { ...window.location, assign });
+  serve({ members: [riley], login: async () => Response.json({ data: { redirect: '/portal' } }) });
+  start();
+  fireEvent.click(await within(await openMenu()).findByRole('button', { name: 'Sign in as Riley Visitor' }));
+  await waitFor(() => expect(assign).toHaveBeenCalledWith('/portal'));
+  const call = fetcher.mock.calls.find(([path]) => path === '/api/demo/login')!;
+  expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ member: riley.id });
+  vi.unstubAllGlobals(); vi.stubGlobal('fetch', fetcher);
 });
 function PageSignIn() {
   const { login, pending } = useDemoLogin();
   return <button type="button" disabled={pending} onClick={() => { void login('student'); }}>Page sign-in</button>;
 }
-it('shares one sign-in state between the banner and a page inside the shell', async () => {
+it('shares one sign-in state between the menu and a page inside the shell, and reports the failure in the bar', async () => {
   let fail!: (reason: Error) => void;
-  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }))
-    .mockReturnValueOnce(new Promise<Response>((_resolve, reject) => { fail = reject; }));
+  serve({ login: () => new Promise<Response>((_resolve, reject) => { fail = reject; }) });
   start(undefined, <PageSignIn />);
   fireEvent.click(await screen.findByRole('button', { name: 'Page sign-in' }));
-  expect((screen.getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByRole('button', { name: 'Sign in as owner' }));
+  const menu = await openMenu();
+  expect((within(menu).getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(within(menu).getByRole('button', { name: 'Sign in as owner' }));
   expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(1);
   await act(async () => { fail(new TypeError('Offline')); });
+  // While the menu is open the error shows in it; once closed, in the bar's row.
+  expect(within(menu).getByRole('alert').textContent).toContain('The demo is unavailable');
   expect(await screen.findAllByRole('alert')).toHaveLength(1);
+  fireEvent.click(within(menu).getByRole('button', { name: 'Close demo menu' }));
+  const bar = screen.getByRole('complementary', { name: 'Demo controls' });
+  expect(within(bar).getByRole('alert').textContent).toContain('The demo is unavailable');
   expect((screen.getByRole('button', { name: 'Page sign-in' }) as HTMLButtonElement).disabled).toBe(false);
 });
-it('disables all role switches while one is pending and restores them after a failure', async () => {
+it('disables every sign-in while one is pending and restores them after a failure', async () => {
   let fail!: (reason: Error) => void;
-  const pending = new Promise<Response>((_resolve, reject) => { fail = reject; });
-  fetcher.mockResolvedValueOnce(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }))
-    .mockReturnValueOnce(pending);
+  serve({ members: [riley], login: () => new Promise<Response>((_resolve, reject) => { fail = reject; }) });
   start();
-  fireEvent.click(await screen.findByRole('button', { name: 'Sign in as coach' }));
-  for (const role of ['owner', 'coach', 'student']) {
-    const button = screen.getByRole('button', { name: 'Sign in as ' + role }) as HTMLButtonElement;
+  const menu = await openMenu();
+  await within(menu).findByRole('button', { name: 'Sign in as Riley Visitor' });
+  fireEvent.click(within(menu).getByRole('button', { name: 'Sign in as coach' }));
+  for (const name of ['Sign in as owner', 'Sign in as coach', 'Sign in as student', 'Sign in as Riley Visitor']) {
+    const button = within(menu).getByRole('button', { name }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
   }
   expect(fetcher.mock.calls.filter(([path]) => path === '/api/demo/login')).toHaveLength(1);
   await act(async () => { fail(new TypeError('Offline')); });
-  await screen.findByRole('alert');
-  expect((screen.getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(false);
+  await within(menu).findByRole('alert');
+  expect((within(menu).getByRole('button', { name: 'Sign in as owner' }) as HTMLButtonElement).disabled).toBe(false);
 });
 it.each(['disabled', 'entry', 'sandbox'] as const)('shows the kiosk hint only for a sandbox (%s)', async (mode) => {
   route.pathname = '/kiosk';
-  fetcher.mockResolvedValue(Response.json({ data: mode === 'sandbox' ? { mode, expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } : { mode } }));
+  fetcher.mockResolvedValue(mode === 'sandbox' ? sandbox() : Response.json({ data: { mode } }));
   const view = start(undefined, <DemoKioskHint />);
   await waitFor(() => expect(view.client.isFetching()).toBe(0));
   expect(screen.queryAllByText(/Search the full name Marcus Rivera/)).toHaveLength(mode === 'sandbox' ? 1 : 0);
-  expect(screen.queryByRole('link', { name: 'Try the kiosk' })).toBeNull();
-});
-it('updates the compact banner when navigating to the kiosk without new discovery requests', async () => {
-  fetcher.mockResolvedValue(Response.json({ data: { mode: 'sandbox', expiresAt: new Date(Date.now() + 3600_000).toISOString(), join: false } }));
-  const view = start();
-  await screen.findByRole('link', { name: 'Try the kiosk' });
-  route.pathname = '/kiosk/';
-  view.rerender(<QueryClientProvider client={view.client}><DemoShell><DemoKioskHint /></DemoShell></QueryClientProvider>);
-  expect(screen.queryByRole('link', { name: 'Try the kiosk' })).toBeNull();
-  expect(screen.getAllByText(/Search the full name Marcus Rivera/)).toHaveLength(1);
-  expect(fetcher).toHaveBeenCalledTimes(1);
 });
 it.each(['server', 'transport', 'invalid response'] as const)('keeps a %s error visible and permits an explicit retry', async (failure) => {
   if (failure === 'transport') fetcher.mockRejectedValueOnce(new TypeError('Network unavailable'));
@@ -207,7 +238,7 @@ it('expires a cached sandbox, hides impersonation and rechecks discovery once', 
   expect(screen.getByText('Sandbox consumer')).toBeDefined();
   await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
   expect(screen.getByText('Ordinary consumer')).toBeDefined();
-  expect(screen.queryByRole('button', { name: 'Sign in as owner' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Demo menu' })).toBeNull();
   expect(screen.getByRole('alert')).toBeDefined();
   expect(fetcher).toHaveBeenCalledTimes(2);
   await act(async () => { window.dispatchEvent(new Event('focus')); window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(60_000); });

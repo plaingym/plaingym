@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
-import { test, expect, demoClient, showWeek, type Client, type Person, type Program, type RecordId } from '../support.js';
+import { test, expect, Client, demoClient, showWeek, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, retryLimited, stripeOrigin } from '../portal.js';
 
@@ -112,7 +112,37 @@ test('a visitor joins with the test card, and only the signed checkout webhook a
   await bothWidths(page, info, 'join-welcome');
   expect((await joined(owner, visitor)).map(member => member.status)).toEqual(['active']);
   await signInToPortal(page, info, owner, visitor, before);
+  await signInAgain(page, info, sandbox.origin, visitor);
 });
+/** A joined member signs in again without the owner: from the start page and the demo menu, then from /login through
+ * their own sign-in link in the outbox. A used link explains itself. */
+async function signInAgain(page: Page, info: TestInfo, origin: string, visitor: Visitor) {
+  const portal = page.getByRole('heading', { name: 'Welcome to your member portal', exact: true });
+  await page.goto(origin + '/demo');
+  await expect(page.getByRole('main').getByRole('button', { name: 'Sign in as ' + visitor.fullName, exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Demo menu', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Demo menu', exact: true });
+  await bothWidths(page, info, 'demo-menu-joined');
+  await Promise.all([page.waitForURL(url => url.pathname.startsWith('/portal')),
+    menu.getByRole('button', { name: 'Sign in as ' + visitor.fullName, exact: true }).click()]);
+  await expect(portal).toBeVisible();
+  await page.context().clearCookies();
+  await page.goto(origin + '/login');
+  await page.getByLabel('Email address', { exact: true }).fill(visitor.email);
+  await page.getByRole('button', { name: 'Email me a sign-in link', exact: true }).click();
+  await expect(page.getByText(/the link went to the demo outbox/)).toBeVisible();
+  await bothWidths(page, info, 'login-outbox-link');
+  await page.getByRole('button', { name: 'Open my sign-in link', exact: true }).click();
+  await page.waitForURL(url => url.pathname.startsWith('/portal'));
+  await expect(portal).toBeVisible();
+  // The latest sign-in link to that address is the one just used: opening it again explains itself.
+  const used = (await new Client(origin).json<{ data: { href: string } }>('/api/demo/sign-in-link', 'POST', { email: visitor.email })).data.href;
+  await page.context().clearCookies();
+  await page.goto(origin + used);
+  await page.waitForURL(url => url.pathname === '/login' && url.searchParams.get('error') === 'INVALID_TOKEN');
+  await expect(page.getByRole('alert')).toHaveText('This sign-in link was already used or has expired. Request a new one below.');
+  await bothWidths(page, info, 'login-used-link');
+}
 
 test('a joined visitor books, is promoted from the waitlist, checks in by QR code on the coach roster, and can install the portal', async ({ page, browser, sandboxes }, info) => {
   test.setTimeout(300_000);

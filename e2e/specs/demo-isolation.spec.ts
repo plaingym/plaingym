@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 test('local demo has lived-in data and working owner and coach logins', async ({ page, sandboxes }) => {
   const sandbox = sandboxes[0], owner = new Client(sandbox.origin);
   await page.goto(sandbox.origin + '/admin');
-  await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: 'Sign in as owner', exact: true }).click()]);
+  await page.getByRole('button', { name: 'Demo menu', exact: true }).click();
+  await Promise.all([page.waitForNavigation(), page.getByRole('dialog', { name: 'Demo menu' }).getByRole('button', { name: 'Sign in as owner', exact: true }).click()]);
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   owner.cookie = (await page.context().cookies(sandbox.origin)).map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
   const dashboard = await owner.json<{ data: { widgets: { id: string; count: number; status: string }[] } }>('/api/dashboard');
@@ -18,7 +19,8 @@ test('local demo has lived-in data and working owner and coach logins', async ({
   expect(members.data.length).toBeGreaterThanOrEqual(22);
   expect((await owner.json<{ data: unknown[] }>('/api/staff/profiles')).data).toHaveLength(4);
   expect((await owner.json<{ data: unknown[] }>('/api/schedule/templates')).data.length).toBeGreaterThanOrEqual(15);
-  await Promise.all([page.waitForNavigation(), page.getByRole('button', { name: 'Sign in as coach', exact: true }).click()]);
+  await page.getByRole('button', { name: 'Demo menu', exact: true }).click();
+  await Promise.all([page.waitForNavigation(), page.getByRole('dialog', { name: 'Demo menu' }).getByRole('button', { name: 'Sign in as coach', exact: true }).click()]);
   await page.goto(sandbox.origin + '/admin/schedule');
   await expect(page.getByRole('heading', { name: 'Schedule', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /scheduled|cancelled/i }).first()).toBeVisible();

@@ -32,7 +32,6 @@ function DeviceSetup({ onSaved }: { onSaved: (token: string) => void }) {
   const [value, setValue] = useState('');
   return <main id="main-content" className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-4 p-4 sm:gap-6 sm:p-6">
     <h1 className="text-2xl font-semibold sm:text-3xl">{text('setupTitle')}</h1><p className="text-base sm:text-lg">{text('setupHelp')}</p>
-    <DemoKioskHint />
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSaved(value.trim()); }}>
       <Label className="grid gap-2 text-lg">{text('token')}<Input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" required/></Label>
       <Button type="submit" className={big + ' w-full'}>{text('saveToken')}</Button>
@@ -96,10 +95,9 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     onPointerDown={() => setActivity((value) => value + 1)} onKeyDown={() => setActivity((value) => value + 1)}>
     <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
-    <DemoKioskHint />
     {screen.kind === 'search' && flow === 'choose' && <Choose onQr={() => setFlow('qr')} onPin={() => setFlow('pin')}/>}
     {screen.kind === 'search' && flow === 'qr' && <QrCheckin token={token} onUnauthorized={onUnauthorized} onClose={reset} onNamePin={() => setFlow('pin')}/>}
-    {screen.kind === 'search' && flow === 'pin' && <><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>
+    {screen.kind === 'search' && flow === 'pin' && <><DemoKioskHint /><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>
       <Button variant="outline" className={big + ' w-full'} onClick={reset}>{text('cancel')}</Button></>}
     {screen.kind === 'select' && <Select screen={screen} busy={busy} onChange={setScreen} onSubmit={() => submit(screen)} onCancel={reset}/>}
     {screen.kind === 'results' && <Results screen={screen} busy={busy} onChoose={(memberId, sessionId) => choose(screen, memberId, sessionId)} onDone={reset}

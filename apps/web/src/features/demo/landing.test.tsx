@@ -4,10 +4,11 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { DemoPage } from './landing.js';
 
-const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 'sandbox' | undefined, join: true, login: vi.fn(), pending: false, error: false }));
-vi.mock('./notice.js', () => ({ useDemoMode: () => context.mode, useDemoJoin: () => context.join,
-  useDemoLogin: () => ({ login: context.login, pending: context.pending, error: context.error }) }));
-afterEach(() => { cleanup(); context.join = true; context.login.mockReset(); context.pending = false; context.error = false; });
+const context = vi.hoisted(() => ({ mode: undefined as 'disabled' | 'entry' | 'sandbox' | undefined, join: true, login: vi.fn(), pending: false, error: false,
+  members: [] as { id: string; name: string }[] }));
+vi.mock('./notice.js', async (original) => ({ ...await original<typeof import('./notice.js')>(), useDemoMode: () => context.mode, useDemoJoin: () => context.join,
+  useDemoLogin: () => ({ login: context.login, pending: context.pending, error: context.error }), useDemoMenu: () => ({ data: { members: context.members, website: false } }) }));
+afterEach(() => { cleanup(); context.join = true; context.login.mockReset(); context.pending = false; context.error = false; context.members = []; });
 
 it('shows role cards in entry mode without repeating the root entry title or help', () => {
   context.mode = 'entry';
@@ -41,6 +42,27 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   expect(context.login).toHaveBeenLastCalledWith('owner', '/admin/outbox');
   expect(screen.getByRole('link', { name: 'Open the kiosk' }).getAttribute('href')).toBe('/kiosk');
   expect(screen.queryByRole('link', { name: 'Go to sign in' })).toBeNull();
+  // The kiosk's sample household is shown on the kiosk's own search, not here; nobody has joined yet.
+  expect(document.body.textContent).not.toMatch(/Marcus Rivera|2468/);
+  expect(screen.queryByRole('heading', { name: 'Members who joined' })).toBeNull();
+});
+it('offers the members who joined by name, as sign-in buttons', () => {
+  context.mode = 'sandbox';
+  context.members = [{ id: '019a0000-0000-7000-8000-0000000000aa', name: 'Riley Visitor' }, { id: '019a0000-0000-7000-8000-0000000000ab', name: 'Sam Joiner' }];
+  render(<DemoPage />);
+  expect(screen.getByRole('heading', { name: 'Members who joined' })).toBeDefined();
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in as Sam Joiner' }));
+  expect(context.login).toHaveBeenLastCalledWith({ member: '019a0000-0000-7000-8000-0000000000ab' });
+  expect(screen.getByRole('button', { name: 'Sign in as Riley Visitor' })).toBeDefined();
+});
+it('uses one control style: navigation is a full-width menu link, signing in is a button', () => {
+  context.mode = 'sandbox';
+  render(<DemoPage />);
+  for (const link of screen.getAllByRole('link')) {
+    expect(link.className).toContain('w-full');
+    expect(link.className).not.toContain('underline');
+  }
+  for (const name of ['Sign in as owner', 'Open the demo outbox']) expect(screen.getByRole('button', { name }).className).toContain('w-full');
 });
 it('replaces the join steps with a one-line note when the demo has no test payments, keeping roles and kiosk', () => {
   context.mode = 'sandbox'; context.join = false;

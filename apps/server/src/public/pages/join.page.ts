@@ -88,8 +88,9 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
   | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge';
-/** Every step after the form. None of these pages grants anything; actions post back to fixed join routes. */
-export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) {
+/** Every step after the form. None of these pages grants anything; actions post back to fixed join routes.
+ * In a demo sandbox, `testCardHint` names the test card on the steps that lead to payment. */
+export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; testCardHint?: string | undefined }) {
   const text = joinText(input.t), state = input.state;
   const action = (path: string, label: string) => h('form', { method: 'post', action: path }, h('button', { type: 'submit', class: button }, text(label)));
   const start = h('a', { href: '/join', class: link }, text('startOver'));
@@ -113,6 +114,8 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState }) 
     tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],
   }[state] as [string, string, ...ReturnType<typeof h>[]];
   const waiting = state === 'confirming';
+  const testCard = input.testCardHint && (state === 'continue' || state === 'cancelled')
+    ? h('p', { class: 'rounded-lg border border-border bg-muted p-3', 'data-demo-test-card': true }, input.testCardHint) : null;
   return layout(input, text(title), h('section', { class: panel, role: 'status', ...(waiting ? { 'aria-live': 'polite', 'data-join-confirming': true } : {}) },
-    h('p', null, text(body)), ...next), waiting, waiting);
+    h('p', null, text(body)), testCard, ...next), waiting, waiting);
 }

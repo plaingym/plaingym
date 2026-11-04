@@ -8,6 +8,7 @@ import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states
 import { t } from '../../lib/i18n.js';
 import { outboxResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
+import { DemoMenuLink } from './notice.js';
 type Message = ReturnType<typeof outboxResponse.parse>['data'][number];
 export function OutboxPage() {
   const [messages, setMessages] = useState<Message[]>([]), [next, setNext] = useState<string | null>(null);
@@ -27,16 +28,16 @@ export function OutboxPage() {
   const selected = messages.find((message) => message.id === preview);
   return <Page className="max-w-4xl">
     <PageHeader title={t('demo/demo:title')} description={t('demo/demo:banner')} />
-    <a className="inline-flex min-h-11 items-center underline" href="/admin">{t('demo/demo:back')}</a>
+    <div className="sm:max-w-sm"><DemoMenuLink href="/admin">{t('demo/demo:back')}</DemoMenuLink></div>
     {error && <ErrorState message={t('demo/demo:unavailable')} onRetry={() => setRetry((value) => value + 1)} />}
     {loading && <LoadingState label={t('demo/demo:loading')} />}
     {!loading && !error && messages.length === 0 && <EmptyState title={t('demo/demo:empty')} />}
     {messages.map((message) => <Card key={message.id}>
-      <h2 className="break-words text-lg font-semibold">{message.subject}</h2>
+      <h2 className="text-lg font-semibold">{message.subject}</h2>
       <div className="space-y-3">
-        <p className="break-words">{t('demo/demo:recipient')}: {message.recipient}</p>
+        <p>{t('demo/demo:recipient')}: {message.recipient}</p>
         <p>{t('demo/demo:sent')}: <time dateTime={message.sentAt}>{new Date(message.sentAt).toLocaleString()}</time></p>
-        <pre className="whitespace-pre-wrap break-words font-sans">{message.text}</pre>
+        <pre className="whitespace-pre-wrap font-sans">{message.text}</pre>
         <Button type="button" variant="outline" onClick={() => setPreview(message.id)}>{t('demo/demo:html')}</Button>
       </div>
     </Card>)}

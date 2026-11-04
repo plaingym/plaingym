@@ -99,7 +99,9 @@ The checks cover:
   replaced (`household-isolation.spec.ts`).
 * The sandbox join at 360 px and desktop (`demo-join.spec.ts`): plans, the signed
   form, the hosted test-card payment, activation only from the signed webhook, the
-  outbox sign-in link into the portal. A join paid at the desk continues: the portal
+  outbox sign-in link into the portal, then signing in again without the owner: from
+  the start page and the demo menu, and through **Open my sign-in link** on `/login`,
+  with a used link's message. A join paid at the desk continues: the portal
   installs (manifest, service worker, no installability errors), books a class, waits
   on a full class and is promoted when staff free the place, shows a QR code that the
   kiosk reads from its camera (frames drawn from the portal's own image), and the
@@ -115,10 +117,10 @@ The checks cover:
   check uses a household of its own). `responsive.spec.ts` checks the layout helper itself on pages it serves: a
   static ancestor with `transform`, `filter`, `contain`, `will-change`, `perspective` or the individual transform
   properties is the containing block of its absolute and fixed descendants, and a clipped `html` can't scroll sideways.
-* Local demo owner/coach switching, seeded members, schedule, staff and dashboard,
+* Local demo owner/coach switching from the demo menu, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
 * Login errors and a successful password sign-in; the demo entry button creating
-  a sandbox, compact role switching and the demo guide dialog; and device setup,
+  a sandbox, the slim demo bar and the demo menu (role switching, navigation, a bottom sheet on a phone and a side panel wider); and device setup,
   the Scan a QR code / Name and PIN choice, name/PIN search, family selection and check-in at all three widths, with axe
   A/AA throughout (`setup-kiosk-demo.spec.ts`). The visitor-facing kiosk example
   uses the full name Marcus Rivera and PIN 2468, avoiding ambiguous households.

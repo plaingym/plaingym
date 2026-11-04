@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Optional layout check of a sandbox's start page and demo controls: install the pinned e2e tooling first
+// Optional layout check of a sandbox's start page, the demo bar and the demo menu: install the pinned e2e tooling first
 // (`pnpm --dir e2e install --frozen-lockfile`). No production services are started; discovery is a fixture.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -31,7 +31,9 @@ const router = { name: 'demo-router-fixture', enforce: 'pre', resolveId: id => i
 const server = await createServer({ configFile: false, appType: 'custom', root: resolve(root, 'apps/web'), plugins: [router, react(), tailwindcss()],
   server: { host: '127.0.0.1', port: 0, fs: { allow: [root] } }, resolve: { dedupe: ['react', 'react-dom', '@tanstack/react-query'] } });
 // Installed before the modules load, since the app's JSON transport binds fetch at import.
-const discovery = "const expiresAt = new Date(Date.now() + 86400000).toISOString(); window.fetch = async (input) => new URL(input instanceof Request ? input.url : String(input), location.href).pathname === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt, join: true } }) : Response.json({}, { status: 404 });";
+const discovery = "const expiresAt = new Date(Date.now() + 86400000).toISOString(); const members = [{ id: '019a0000-0000-7000-8000-0000000000aa', name: 'Riley Visitor-Longername' }, { id: '019a0000-0000-7000-8000-0000000000ab', name: 'Sam Joiner' }]; "
+  + "window.fetch = async (input) => { const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname; "
+  + "return path === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt, join: true } }) : path === '/api/demo/menu' ? Response.json({ data: { members, website: true } }) : Response.json({}, { status: 404 }); };";
 server.middlewares.use('/fixture', async (req, res) => {
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Demo start page</title><script>' + discovery + '</script></head><body><div id="root"></div><script type="module" src="' + modulePath('apps/web/coverage/demo/fixture.tsx') + '"></script></body></html>';
   res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml(req.url ?? '/', html));
@@ -50,7 +52,11 @@ try {
     await page.goto('http://127.0.0.1:' + address.port + '/fixture' + path);
     await expect(page.getByRole('heading', { level: 1, name: 'Your demo gym' })).toBeVisible();
     await expect(page.getByText('4242 4242 4242 4242')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Demo start page' })).toHaveCount(path === '/demo' ? 0 : 1);
+    await expect(page.getByRole('button', { name: 'Sign in as Riley Visitor-Longername' })).toBeVisible();
+    // The bar is one slim row: about 44 px, with no hints.
+    const bar = page.getByRole('complementary', { name: 'Demo controls' });
+    expect((await bar.boundingBox()).height).toBeLessThanOrEqual(56);
+    await expect(bar.getByText(/Marcus Rivera/)).toHaveCount(0);
     expect(await page.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth)).toBe(true);
     const small = await page.locator('a, button').evaluateAll(elements => elements.filter(element => {
       const bounds = element.getBoundingClientRect(); return bounds.width > 0 && (bounds.height < 44 || bounds.width < 44);
@@ -59,7 +65,22 @@ try {
     const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(accessibility.violations).toEqual([]);
     await page.screenshot({ path: resolve(output, 'start' + path.replace('/', '-') + '-' + width + '.png'), fullPage: true });
-    results.push({ width, path, overflow: false, minimumTarget: 44, axeViolations: 0 });
+    // The menu: a bottom sheet on a phone, a side panel on wider screens.
+    await bar.getByRole('button', { name: 'Demo menu' }).click();
+    const menu = page.getByRole('dialog', { name: 'Demo menu' });
+    await expect(menu.getByRole('link', { name: 'Gym website' })).toBeVisible();
+    const sheet = await menu.boundingBox(), viewport = page.viewportSize();
+    if (width < 640) expect([Math.round(sheet.y + sheet.height), Math.round(sheet.width)]).toEqual([viewport.height, viewport.width]);
+    else expect([Math.round(sheet.x + sheet.width), Math.round(sheet.height)]).toEqual([viewport.width, viewport.height]);
+    const menuSmall = await menu.locator('a, button').evaluateAll(elements => elements.filter(element => {
+      const bounds = element.getBoundingClientRect(); return bounds.width > 0 && (bounds.height < 44 || bounds.width < 44);
+    }).map(element => element.outerHTML));
+    expect(menuSmall).toEqual([]);
+    expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
+    await page.screenshot({ path: resolve(output, 'menu' + path.replace('/', '-') + '-' + width + '.png') });
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    results.push({ width, path, overflow: false, minimumTarget: 44, axeViolations: 0, bar: 'slim', menu: width < 640 ? 'bottom sheet' : 'side panel' });
     await context.close();
   }
   expect(errors).toEqual([]); await writeFile(resolve(output, 'results.json'), JSON.stringify(results, null, 2));

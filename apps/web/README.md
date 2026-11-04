@@ -62,9 +62,9 @@ Keep subviews inside the existing dialog. Reviewed flows: invoice receipt,
 cash/check, saved-card charge, refund, pay link, card removal/default and review
 hold; one-off invoice creation; member/household creation; schedule session edit
 and panels, class edit/delete; rank and staff edit; waiver templates/signing;
-campaign creation; go-live confirmation; demo guide and outbox preview. Only
+campaign creation; go-live confirmation; demo menu and outbox preview. Only
 invoice actions opened another dialog; they now use integrated views. The demo
-guide and outbox preview are separate top-level views, and other dialogs already
+menu and outbox preview are separate top-level views, and other dialogs already
 contain their forms or steps. Busy saves/payments block dismissal; changed form
 inputs require explicit discard confirmation before dismissal.
 Fields from a finished or discarded subview stop counting as drafts when the

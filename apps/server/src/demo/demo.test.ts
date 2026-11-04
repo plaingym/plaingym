@@ -116,7 +116,7 @@ describe('demo boundaries and sandbox lifecycle', () => {
   it('uses the real auth service for host-only sessions that fail on the other sandbox', async () => {
     const f = fixture(), a = await f.service.create(), b = await f.service.create();
     for (const role of ['owner', 'coach', 'student'] as const) {
-      const response = await f.service.login(a.gymId, role, '192.0.2.50');
+      const response = await f.service.login(a.gymId, { role }, '192.0.2.50');
       expect(response.status).toBe(303); expect(response.headers.get('location')).toBe(role === 'student' ? '/portal' : '/admin');
       const cookie = response.headers.get('set-cookie')!;
       expect(cookie).toContain('HttpOnly'); expect(cookie).toContain('Secure'); expect(cookie).not.toMatch(/domain=/i);
@@ -131,7 +131,7 @@ describe('demo boundaries and sandbox lifecycle', () => {
     const f = fixture(), sandbox = await f.service.create(), ip = '192.0.2.77';
     // The ordinary magic-link limit is five per minute, and its window restarts on every request.
     for (let attempt = 0; attempt < 8; attempt++)
-      expect((await f.service.login(sandbox.gymId, attempt % 2 ? 'coach' : 'owner', ip)).status, 'login ' + (attempt + 1)).toBe(303);
+      expect((await f.service.login(sandbox.gymId, { role: attempt % 2 ? 'coach' : 'owner' }, ip)).status, 'login ' + (attempt + 1)).toBe(303);
   });
   it('returns 404 on creation and one-click login outside demo mode, before validation', async () => {
     const { app } = appFor(disabledRoutes, infraContractGyms.a, 'anonymous');

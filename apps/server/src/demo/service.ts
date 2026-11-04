@@ -9,11 +9,11 @@ import type { GymContext } from '../core/context.js';
 import { logError } from '../core/log.js';
 import type { GymDeleteService } from '../areas/settings/gym-delete.js';
 import { requireDemo, sandboxSettings, type DemoConfig } from './config.js';
-import type { DemoRole } from '@plaingym/shared/contracts';
+import type { DemoLoginTarget } from '@plaingym/shared/contracts';
 
 export function createDemoService(options: {
   config: DemoConfig; key: Buffer; clock: Clock; deletion: GymDeleteService;
-  identities: { seed(gymId: string): Promise<void>; login(gymId: string, role: DemoRole, origin: string, clientIp: string): Promise<Response> };
+  identities: { seed(gymId: string): Promise<void>; login(gymId: string, target: DemoLoginTarget, origin: string, clientIp: string): Promise<Response> };
   seed(context: GymContext): Promise<void>; scope?: typeof forGym; system?: typeof forSystem;
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem;
@@ -75,12 +75,12 @@ export function createDemoService(options: {
         throw error;
       }
     },
-    async login(gymId: string, role: DemoRole, clientIp: string) {
+    async login(gymId: string, target: DemoLoginTarget, clientIp: string) {
       await status(gymId);
       const [domain] = await system((tx) => tx.select({ hostname: gymDomains.hostname }).from(gymDomains)
         .where(and(eq(gymDomains.gymId, gymId), eq(gymDomains.kind, 'default'))));
       if (!domain || !domain.hostname.endsWith('.' + options.config.domain)) throw new AppError('not_found', 'Not found');
-      return options.identities.login(gymId, role, `https://${domain.hostname}`, clientIp);
+      return options.identities.login(gymId, target, `https://${domain.hostname}`, clientIp);
     },
     async expire(gymId: string) {
       if (!options.config.enabled) return;

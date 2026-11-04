@@ -16,11 +16,15 @@ use a test Stripe key ([going-live.md](going-live.md#1-try-it-in-test-mode-optio
 
 * **A whole gym per visitor**, at its own random hostname, seeded with sample
   households, a class schedule, promotion history and a student's portal.
-* **One-click logins** as owner, coach and student, on the sandbox's start page
-  (`/demo`), plus the public join page and the check-in kiosk. The sample kiosk
-  members check in by full name and PIN `2468`.
+* **One-click logins** as owner, coach and student, and as the latest members who
+  joined in the sandbox, on its start page (`/demo`) and in the **Demo menu**. A slim
+  bar at the top of every page shows when the sandbox expires and opens the menu,
+  which also goes to the start page, the admin, the member portal, the kiosk, the join
+  page, the gym's website (when it's on) and the outbox. The sample kiosk members
+  check in by full name and PIN `2468`; the kiosk's name search shows one.
 * **No outside effects.** Email is never sent; it lands in an in-app **outbox** the owner
-  and admins can read. General uploads are off. A demo refuses to start with a
+  and admins can read. On `/login`, after **Email me a sign-in link**, **Open my
+  sign-in link** opens the link sent to the address you entered, without the owner. General uploads are off. A demo refuses to start with a
   live Stripe key.
 * **Test payments, optionally.** With a Stripe *test* key configured for the install
   (see below), `/join` takes payments with Stripe's test cards; without it, billing
@@ -70,6 +74,7 @@ billing, and updating a demo are in [`deploy/demo/README.md`](../deploy/demo/REA
    `/join` with the test card number it shows (any future expiry and any CVC; no real
    money moves), then find the invoice as the owner.
 5. As the owner, open the **Demo outbox** to read the emails the actions sent; the
-   sign-in link for your new member portal is there.
+   sign-in link for your new member portal is there. After that, sign in again as
+   your new member from the start page or the **Demo menu**.
 
 Throw the sandbox away when you are done: it expires by itself.

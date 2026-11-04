@@ -35,7 +35,7 @@ temporary S3 object **before changing host configuration**. A failed check stops
 with no host configuration written.
 
 Success prints **https://demo.plaingym.app**. Open it, create a sandbox, and select
-owner or coach in the demo controls. Everything about the sandbox happens in the
+owner or coach from the start page or the **Demo menu**. Everything about the sandbox happens in the
 web interface. Email stays in its outbox, uploads are disabled, and it expires
 after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
 choose Name and PIN, then use a full member name and PIN `2468`.

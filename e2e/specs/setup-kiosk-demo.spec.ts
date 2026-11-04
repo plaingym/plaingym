@@ -30,7 +30,7 @@ test('login at phone, tablet and desktop widths supports errors and password sig
   expect((await page.context().cookies(gymOrigin)).some((cookie) => cookie.name.includes('session_token'))).toBe(true);
 });
 
-test('demo entry creates a gym, phone role controls and guide work, full-name kiosk check-in fits every size', async ({ page }, info) => {
+test('demo entry creates a gym, the slim bar and demo menu work at every size, full-name kiosk check-in fits every size', async ({ page }, info) => {
   test.setTimeout(180_000);
   await page.goto('https://demo.localhost/');
   for (const size of sizes) {
@@ -47,16 +47,21 @@ test('demo entry creates a gym, phone role controls and guide work, full-name ki
   await page.waitForURL((url) => url.hostname.endsWith('.demo.localhost'));
   const sandbox = { origin: new URL(page.url()).origin };
   const banner = page.getByRole('complementary', { name: 'Demo controls', exact: true });
-  await expect(banner.getByText(/Marcus Rivera.*2468/)).toBeVisible();
+  const menuButton = banner.getByRole('button', { name: 'Demo menu', exact: true }), menu = page.getByRole('dialog', { name: 'Demo menu', exact: true });
+  // One slim row: the sandbox, its expiry and the demo menu. The kiosk's sample household shows only on the kiosk's name search.
+  await expect(menuButton).toBeVisible();
+  await expect(page.getByText(/Marcus Rivera/)).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => location.hash.includes('kioskToken'))).toBe(false);
   await expect(page.getByRole('button', { name: 'Try the demo', exact: true })).toHaveCount(0);
-  // Follow the public visitor path; sandbox creation provisions the device.
-  await banner.getByRole('link', { name: 'Try the kiosk', exact: true }).click();
+  // Follow the public visitor path through the demo menu; sandbox creation provisions the device.
+  await menuButton.click();
+  await menu.getByRole('navigation', { name: 'Go to' }).getByRole('link', { name: 'Kiosk', exact: true }).click();
   await expect(page.getByLabel('Device token', { exact: true })).toHaveCount(0);
-  await expect(banner.getByRole('link', { name: 'Try the kiosk', exact: true })).toHaveCount(0);
-  await expect(page.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Name and PIN', exact: true })).toBeVisible();
+  await expect(page.getByText(/Marcus Rivera/)).toHaveCount(0);
   for (const size of sizes) {
     await page.setViewportSize(size);
+    expect((await banner.boundingBox())!.height, 'the demo bar stays one slim row').toBeLessThanOrEqual(56);
     // The start screen offers the two ways in and shows neither flow.
     for (const name of ['Scan a QR code', 'Name and PIN']) {
       const choice = page.getByRole('button', { name, exact: true });
@@ -67,6 +72,7 @@ test('demo entry creates a gym, phone role controls and guide work, full-name ki
     await accessibleLayout(page, info, 'kiosk-choice-' + size.width);
   }
   await page.getByRole('button', { name: 'Name and PIN', exact: true }).click();
+  await expect(page.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toHaveCount(1);
   for (const size of sizes) {
     await page.setViewportSize(size);
     await expect(page.getByLabel('Your name', { exact: true })).toBeVisible();
@@ -111,18 +117,25 @@ test('demo entry creates a gym, phone role controls and guide work, full-name ki
     await accessibleLayout(page, info, 'sandbox-demo-page-' + size.width);
   }
   await page.goto(sandbox.origin + '/admin');
-  await page.getByRole('button', { name: 'Demo guide', exact: true }).click();
-  const guide = page.getByRole('dialog', { name: 'Demo guide', exact: true });
-  await expect(guide.getByText(/Marcus Rivera.*2468/)).toBeVisible();
+  await menuButton.click();
+  // A bottom sheet on a phone and a side panel on wider screens, with its three labelled groups and no hints.
+  await expect(menu.getByRole('region', { name: 'Sign in as', exact: true }).getByRole('button', { name: 'Sign in as owner', exact: true })).toBeVisible();
+  await expect(menu.getByRole('navigation', { name: 'Go to', exact: true }).getByRole('link', { name: 'Demo outbox', exact: true })).toHaveAttribute('href', '/admin/outbox');
+  await expect(menu.getByRole('region', { name: 'About this demo', exact: true }).getByText(/^Expires: /)).toBeVisible();
+  await expect(menu.getByText(/Marcus Rivera|4242/)).toHaveCount(0);
   for (const size of sizes) {
     await page.setViewportSize(size);
-    await accessibleLayout(page, info, 'demo-guide-' + size.width);
+    const box = (await menu.boundingBox())!;
+    if (size.width < 640) expect(Math.round(box.y + box.height)).toBe(size.height);
+    else expect([Math.round(box.x + box.width), Math.round(box.height)]).toEqual([size.width, size.height]);
+    await accessibleLayout(page, info, 'demo-menu-' + size.width);
   }
   await page.keyboard.press('Escape');
-  await expect(guide).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Demo guide', exact: true })).toBeFocused();
+  await expect(menu).toHaveCount(0);
+  await expect(menuButton).toBeFocused();
   for (const role of ['owner', 'coach', 'owner']) {
-    await Promise.all([page.waitForNavigation(), banner.getByRole('button', { name: 'Sign in as ' + role, exact: true }).click()]);
+    await menuButton.click();
+    await Promise.all([page.waitForNavigation(), menu.getByRole('button', { name: 'Sign in as ' + role, exact: true }).click()]);
     await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
   }
   const owner = new Client(sandbox.origin);

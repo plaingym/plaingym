@@ -58,7 +58,8 @@ opens the kiosk. The join activates only from the shared webhook
 (`checkout.session.completed`, routed to the sandbox by the Checkout session's
 `gym_id` metadata). Its passwordless sign-in link goes to the sandbox's outbox,
 which the owner reads; following it lands the visitor in the new household's
-portal, where they issue a check-in code and scan it at the kiosk. Each drawn
+portal (afterwards the start page and the **Demo menu** offer the new member by name,
+and `/login` opens the visitor's own sign-in link from the outbox), where they issue a check-in code and scan it at the kiosk. Each drawn
 join signature takes one of the sandbox's 64 signature-image admissions; once
 they are used, `POST /join/signatures` answers 429.
 
@@ -81,5 +82,6 @@ well under a minute when the whole suite runs together.
 
 With the separate `e2e` dependencies installed and Edge available,
 `node apps/web/src/features/demo/landing.browser-check.mjs` checks the sandbox
-start page and demo controls at 360 and 1280 px (no horizontal scroll, 44 px
-targets, axe WCAG A/AA).
+start page, the slim demo bar and the demo menu (a bottom sheet at 360 px, a side
+panel at 1280 px) at both widths (no horizontal scroll, 44 px targets, axe WCAG
+A/AA).
