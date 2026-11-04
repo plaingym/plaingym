@@ -262,7 +262,8 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | audit_events | Append-only activity records with a user, device or system actor |
 | email_outbox | Per-gym captured email for demo mode |
 
-Amounts are integer cents with a currency. Each gym has one billing currency:
+Amounts are integers in the currency's minor units (cents for USD, whole yen for
+JPY; `@plaingym/shared/money`), with a currency. Each gym has one billing currency:
 plans, charge types, memberships and invoices reference `(gym_id, currency)` on
 `gyms`, and invoice lines, attempts and payments reference their invoice's
 currency (refunds, their payment's). Once anything references it, the gym's
