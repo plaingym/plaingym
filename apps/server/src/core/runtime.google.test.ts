@@ -17,7 +17,7 @@ import { startRuntime, type Runtime } from './runtime.js';
 // and registers the automatic updates tile.
 const db = useTestDatabase(), factory = createFactories(db), gymId = uuidv7();
 const origin = 'https://gym.example.test';
-let runtime: Runtime | undefined, directory: string;
+let runtime: Runtime | undefined, directory: string, ownerCreated = false;
 beforeAll(async () => { await factory('gyms', gymId); });
 beforeEach(async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
@@ -55,14 +55,65 @@ it('refuses to start with only half of the Google configuration', async () => {
   await expect(startRuntime(environment({ GOOGLE_CLIENT_ID: 'client-id.apps.googleusercontent.com' }))).rejects.toThrow();
 });
 
-it('registers the automatic updates tile, on by default and never run', async () => {
+/** Starts the runtime and signs in the gym's owner (created once, with a password), returning the session cookie. */
+async function startAsOwner(extra: NodeJS.ProcessEnv = {}): Promise<string> {
   const accounts = createAccountService(authConfig(environment()), () => db.system.db);
-  const owner = await accounts.createPasswordUser(gymId, 'owner@example.test', 'Owner', 'original-owner-password', clock);
-  await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
-  runtime = await startRuntime(environment());
+  if (!ownerCreated) {
+    const owner = await accounts.createPasswordUser(gymId, 'owner@example.test', 'Owner', 'original-owner-password', clock);
+    await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
+    ownerCreated = true;
+  }
+  runtime = await startRuntime(environment(extra));
   const login = await request('/api/auth/sign-in/email', { method: 'POST', body: JSON.stringify({ email: 'owner@example.test', password: 'original-owner-password' }) });
   expect(login.status).toBe(200);
-  const cookie = login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+  return login.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+}
+
+it('uses a client the owner stored in Settings, without a restart, until it is removed', async () => {
+  const cookie = await startAsOwner();
+  const bootstrap = async () => (await (await request('/api/auth/bootstrap')).json()).data.login;
+  const startGoogle = () => request('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google' }) });
+  expect(await bootstrap()).not.toHaveProperty('google');
+  expect((await startGoogle()).status).toBe(404);
+
+  const current = (await (await request('/api/settings/integrations/google', { cookie })).json()).data as { revision: number };
+  const saved = await request('/api/settings/integrations/google', { method: 'PUT', cookie,
+    body: JSON.stringify({ revision: current.revision, clientId: 'stored-client.apps.googleusercontent.com', clientSecret: 'stored-client-secret' }) });
+  expect(saved.status).toBe(200);
+  expect(await bootstrap()).toMatchObject({ google: true });
+  const start = await startGoogle();
+  expect(start.status).toBe(200);
+  const { url } = await start.json() as { url: string };
+  expect(new URL(url).origin).toBe('https://accounts.google.com');
+  expect(new URL(url).searchParams.get('client_id')).toBe('stored-client.apps.googleusercontent.com');
+
+  const removed = await request('/api/settings/integrations/google', { method: 'DELETE', cookie,
+    body: JSON.stringify({ revision: (await saved.json()).data.revision }) });
+  expect(removed.status).toBe(200);
+  expect(await bootstrap()).not.toHaveProperty('google');
+  expect((await startGoogle()).status).toBe(404);
+});
+
+it('lets the install\'s variables win over a stored client', async () => {
+  const cookie = await startAsOwner();
+  const current = (await (await request('/api/settings/integrations/google', { cookie })).json()).data as { revision: number };
+  expect((await request('/api/settings/integrations/google', { method: 'PUT', cookie,
+    body: JSON.stringify({ revision: current.revision, clientId: 'stored-client', clientSecret: 'stored-client-secret' }) })).status).toBe(200);
+  await runtime!.stop();
+  runtime = await startRuntime(environment({ GOOGLE_CLIENT_ID: 'install-client', GOOGLE_CLIENT_SECRET: 'install-client-secret' }));
+  const start = await request('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google' }) });
+  expect(new URL((await start.json() as { url: string }).url).searchParams.get('client_id')).toBe('install-client');
+});
+
+it('reads the update banner route from the environment the runtime runs with', async () => {
+  const cookie = await startAsOwner({ UPDATE_CHECK: 'off' });
+  const update = await request('/api/health/update', { cookie });
+  expect(update.status).toBe(200);
+  expect((await update.json()).data).toMatchObject({ id: 'update_available', status: 'not_configured', message: 'Update checks are turned off.' });
+});
+
+it('registers the automatic updates tile, on by default and never run', async () => {
+  const cookie = await startAsOwner();
   const health = await request('/api/health', { cookie });
   expect(health.status).toBe(200);
   const tile = (await health.json()).data.tiles.find((candidate: { id: string }) => candidate.id === 'automatic_updates');

@@ -84,6 +84,8 @@ import { imageOrigins } from './csp.js';
 import { createKioskAuthMiddleware } from '../areas/kiosk/devices.auth.js';
 import { createPinLimitWidgetProvider } from '../areas/kiosk/pin-limit.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
+import { configureUpdateRoutes } from '../areas/health/updates.routes.js';
+import { createGoogleClientResolver } from '../areas/settings/google-login.js';
 import { createStripeHealthProvider } from '../areas/health/stripe.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../areas/health/charge-run.js';
 import { createAutoUpdateHealthProvider } from '../areas/health/auto-update.js';
@@ -155,11 +157,11 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const install = publicOrigin(env) ?? (demo.enabled ? `https://${demo.domain}` : undefined);
   if (mode === 'single' && !install) throw new Error('Set GYM_HOSTNAME or PUBLIC_ORIGIN');
   // Both Google variables or neither: half a configuration fails boot, before the database opens. Demo mode ignores them.
-  const google = googleFromEnvironment(env);
+  googleFromEnvironment(env);
   await initializeDatabase(required(env, 'DATABASE_URL'), poolSize(env));
   const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
   configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp ? smtp.configured(gymId) : Promise.resolve(true) });
-  return { key, mode, config, install, smtp, google };
+  return { key, mode, config, install, smtp };
 }
 /** Stripe events for each gym, verified by that gym's own Stripe settings; the CLI replays through the same inbox. */
 function webhookInbox(paymentsFor: PaymentsResolver, jobs: Jobs) {
@@ -183,7 +185,7 @@ export interface Runtime {
 export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composition: RuntimeModules = {}): Promise<Runtime> {
   // Only the server refuses the maintenance role in multi mode: `gym-app migrate` is the step that needs it.
   assertMaintenanceCredentials(env);
-  const { key, mode, config: initialConfig, install, smtp, google } = await prepare(env);
+  const { key, mode, config: initialConfig, install, smtp } = await prepare(env);
   // Caddy is the only peer that can reach the app in the Compose deployment.
   const trustedProxy = env.TRUST_PROXY === 'true' ? () => true : undefined;
   const limit = floodLimit(env);
@@ -206,11 +208,13 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     ...(trustedProxy ? { clientIp: { trustedProxy } } : {}) });
   const config = demo?.authConfig ?? initialConfig;
   const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
+  // The install's GOOGLE_* variables win; otherwise a single-gym owner's stored client. Each Google request and the login methods look it up.
+  const googleClients = createGoogleClientResolver({ key, env, tenancy: mode });
   const auth = createAuthService({ config, sendMagicLink: demo?.sendMagicLink ?? createAuthEmailSender((gymId) => smtp!.config(gymId)),
-    ...(google ? { google: createGoogleAuthExtension({ credentials: google }) } : {}) });
+    google: createGoogleAuthExtension({ credentials: googleClients.credentials }) });
   configureLoginMethods(async (gymId) => {
     const configured = await smtpConfigured(gymId);
-    return { password: passwordLogin(config, configured), magicLink: configured, ...(google ? { google: true } : {}) };
+    return { password: passwordLogin(config, configured), magicLink: configured, ...(await googleClients.credentials(gymId) ? { google: true } : {}) };
   });
   const settings = createGymSettingsAccessor(), gymSettings = createSettingsService(), t = createTranslator(locales.en ?? {});
   // Member-facing mail goes through the gym's SMTP (or the demo outbox), with links on the gym's own origin.
@@ -284,6 +288,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureIntegrations({ key, env, config, origin: gymOrigin, hasPassword: (userId) => accounts.hasPassword(userId), sandbox: Boolean(demo), clock,
     ...(gate && env.MAINTENANCE_DATABASE_URL ? { requestSnapshot: async (change: string) => { await queue.enqueueSystem('health.backup', { kind: 'manual' },
       { timezone: 'UTC', runAt: clock.now(), idempotencyKey: 'snapshot:' + change, maxAttempts: 3 }); } } : {}) });
+  configureUpdateRoutes({ env });
   configureHealthStatus({ env, providers: [
     createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
     createChargeRunHealthProvider({ settings }),
