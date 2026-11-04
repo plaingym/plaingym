@@ -17,12 +17,15 @@ import pages from '../../../../../locales/en/public/pages.json' with { type: 'js
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
 
 const translator = createTranslator({ 'public/pages': pages, 'public/join': messages });
-interface JoinRouteOptions { service: JoinService; continuations: JoinContinuations; t?: Translator }
+/** In a demo sandbox, `testCardHint` names the test card for a gym's payment steps. */
+type TestCardHint = (gymId: string) => Promise<string | undefined>;
+interface JoinRouteOptions { service: JoinService; continuations: JoinContinuations; t?: Translator; testCardHint?: TestCardHint }
 let configured: JoinRouteOptions | undefined;
 /** Runtime supplies the shared waiver and signed-link Checkout services, portal invitations, accounts, payment readiness and a stable key. */
-export function configureJoin(options: JoinOptions & { key: Uint8Array; t?: Translator }) {
+export function configureJoin(options: JoinOptions & { key: Uint8Array; t?: Translator; testCardHint?: TestCardHint }) {
   const service = createJoinService(options);
-  configured = { service, continuations: joinContinuations(options.key), ...(options.t ? { t: options.t } : {}) };
+  configured = { service, continuations: joinContinuations(options.key), ...(options.t ? { t: options.t } : {}),
+    ...(options.testCardHint ? { testCardHint: options.testCardHint } : {}) };
   return service;
 }
 export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteRegistration[] {
@@ -56,7 +59,9 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
   const gymOf = (ctx: Context<RequestEnvironment>) => ctx.get('context').gym.gymId;
   async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 503 = 200) {
     const config = options();
-    return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state }), status);
+    // Only the steps that lead to payment show the hint, so the other pages skip the lookup.
+    const testCardHint = config.testCardHint && (state === 'continue' || state === 'cancelled') ? await config.testCardHint(gymOf(ctx)) : undefined;
+    return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint }), status);
   }
   /** HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed, short-lived and scoped to /join. */
   function remember(ctx: Context<RequestEnvironment>, linkId: string) {

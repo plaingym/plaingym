@@ -13,7 +13,7 @@ import { configureGymDeletion } from '../areas/settings/gym-delete.routes.js';
 import { demoBootCheck } from './config.js';
 import { createDemoService } from './service.js';
 import { createDemoIdentities } from './identities.js';
-import { configureDemoRoutes, disableDemoRoutes } from './demo.routes.js';
+import { configureDemoRoutes, disableDemoRoutes, joinTestCardHint } from './demo.routes.js';
 import { registerDemoCleanup } from './demo.jobs.js';
 import { runSeeds } from './seed/index.js';
 import { createDemoPayments } from './payments.js';
@@ -45,7 +45,7 @@ export async function createDemoRuntime(options: {
   configureGymDeletion(deletion);
   const t = createTranslator(locales.en ?? {});
   const emailFor = (gymId: string) => new OutboxEmail(gymId, defaultClock);
-  return { service, payments, registerCleanup: (queue: Parameters<typeof registerDemoCleanup>[0]) => registerDemoCleanup(queue, { config, service, clock: defaultClock }), authConfig: authentication, emailFor, skipSetup: true as const,
+  return { service, payments, joinTestCardHint: joinTestCardHint(service, t), registerCleanup: (queue: Parameters<typeof registerDemoCleanup>[0]) => registerDemoCleanup(queue, { config, service, clock: defaultClock }), authConfig: authentication, emailFor, skipSetup: true as const,
     async sendMagicLink(input: { email: string; url: string; gymId: string }) {
       const rendered = await renderDemoLogin(input.url, t);
       await emailFor(input.gymId).sendEmail({ to: input.email, ...rendered });

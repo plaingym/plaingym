@@ -197,7 +197,9 @@ Runtime and shared composition use these exports:
   entry only after the sandbox status check succeeds.
 - `joinTestCardHint(service, t)` from `demo.routes.ts` returns, for a gym, the
   test-card note for the join page's payment steps (`joinStatusPage`'s
-  `testCardHint`) in a sandbox that takes joins, and nothing elsewhere.
+  `testCardHint`) in a sandbox that takes joins, and nothing elsewhere. The demo
+  runtime exposes it and the server runtime passes it to `configureJoin`, so the
+  join page shows the note on its `continue` and `cancelled` steps.
 - `createSeedCommand()` for the CLI registry and a root `pnpm seed <gym-uuid>` script.
   `runSeeds(context)` applies foundation, members, billing, waivers, mat and portal seeds.
   Both sandbox creation and the seed CLI use this composition. Billing receives
