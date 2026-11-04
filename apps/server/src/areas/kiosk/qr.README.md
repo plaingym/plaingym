@@ -28,8 +28,11 @@ The staff read/replace/revoke endpoints use the shared check-in-code contracts
 and require `members.manage`. Device tokens remain restricted by the existing
 kiosk middleware to check-in endpoints and cannot access these staff routes.
 
-The registered `memberTabs.checkin-code` staff tab and the kiosk search screen
-are mounted. The camera stays off until a user starts it;
+The registered `memberTabs.checkin-code` staff tab is mounted, and the kiosk start
+screen offers **Scan a QR code** and **Name and PIN** as two choices: the page owns
+which flow is open, and the QR flow closes back to the choice. The camera starts when
+a member chooses it (a device without one, or with access denied, is offered name and
+PIN instead);
 native `BarcodeDetector` is preferred, with local `jsqr` 1.4.0 (Apache-2.0)
 fallback. Frames are never uploaded. Results reset after eight seconds, and
 unfinished scans and session choices after sixty seconds. Codes stay in memory

@@ -86,6 +86,7 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
     await kiosk.getByRole('button', { name: 'Full screen', exact: true }).click();
     await expect.poll(() => kiosk.evaluate(() => Boolean(document.fullscreenElement))).toBe(true);
     expect((await kioskContext.cookies()).filter((cookie) => cookie.name.includes('session_token'))).toHaveLength(0);
+    await kiosk.getByRole('button', { name: 'Name and PIN', exact: true }).click();
     await kiosk.getByLabel('Your name', { exact: true }).fill('Jamie River');
     for (const digit of ['1', '3', '5', '7']) await kiosk.getByRole('button', { name: digit, exact: true }).click();
     await kiosk.getByRole('button', { name: 'Find me', exact: true }).click();
@@ -106,6 +107,7 @@ test('import → schedule → coach check-in → kiosk → promote persists acro
     await info.attach('kiosk-accessibility', { body: JSON.stringify(axe.violations, null, 2), contentType: 'application/json' });
     expect(axe.violations).toEqual([]);
     await kiosk.getByRole('button', { name: 'Done', exact: true }).click();
+    await kiosk.getByRole('button', { name: 'Name and PIN', exact: true }).click();
     await expect(kiosk.getByLabel('Your name', { exact: true })).toHaveValue('');
     await expect(kiosk.getByLabel('Household PIN', { exact: true })).toHaveValue('');
     await expect(kiosk.getByRole('link', { name: 'Source code', exact: true })).toBeVisible();

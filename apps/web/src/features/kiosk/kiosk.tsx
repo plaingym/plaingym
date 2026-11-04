@@ -42,10 +42,11 @@ function DeviceSetup({ onSaved }: { onSaved: (token: string) => void }) {
 
 function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () => void }) {
   const [screen, setScreen] = useState<Screen>({ kind: 'search' });
+  const [flow, setFlow] = useState<'choose' | 'qr' | 'pin'>('choose');
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState(0);
   const generation = useRef(0), pending = useRef(false);
-  const reset = useCallback(() => { generation.current++; setScreen({ kind: 'search' }); }, []);
+  const reset = useCallback(() => { generation.current++; setFlow('choose'); setScreen({ kind: 'search' }); }, []);
   useEffect(() => {
     const timer = setTimeout(reset, screen.kind === 'results' && settled(screen.rows) ? doneResetMs : idleResetMs);
     return () => clearTimeout(timer);
@@ -62,7 +63,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     catch (error) {
       if (!current()) return;
       if (error instanceof KioskAuthError) onUnauthorized();
-      else { playTone('attention'); setScreen({ kind: 'search', message: 'error' }); }
+      else { playTone('attention'); setFlow('pin'); setScreen({ kind: 'search', message: 'error' }); }
     } finally { pending.current = false; setBusy(false); }
   }
   function announce(results: readonly KioskCheckinResult[]) {
@@ -72,7 +73,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
   const search = (name: string, pin: string) => void guard(async (current) => {
     const found = await kioskApi.lookup(token, name, pin);
     if (!current()) return;
-    if (found.status === 'see_front_desk') { playTone('attention'); setScreen({ kind: 'search', message: 'not_found' }); return; }
+    if (found.status === 'see_front_desk') { playTone('attention'); setFlow('pin'); setScreen({ kind: 'search', message: 'not_found' }); return; }
     setScreen({ kind: 'select', name, pin, members: found.members, chosen: new Set(found.members.map((member) => member.id)) });
   });
   const submit = (selection: Extract<Screen, { kind: 'select' }>) => void guard(async (current) => {
@@ -96,13 +97,23 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
     <DemoKioskHint />
-    {screen.kind === 'search' && <><QrCheckin token={token} onUnauthorized={onUnauthorized}/><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/></>}
+    {screen.kind === 'search' && flow === 'choose' && <Choose onQr={() => setFlow('qr')} onPin={() => setFlow('pin')}/>}
+    {screen.kind === 'search' && flow === 'qr' && <QrCheckin token={token} onUnauthorized={onUnauthorized} onClose={reset} onNamePin={() => setFlow('pin')}/>}
+    {screen.kind === 'search' && flow === 'pin' && <><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>
+      <Button variant="outline" className={big + ' w-full'} onClick={reset}>{text('cancel')}</Button></>}
     {screen.kind === 'select' && <Select screen={screen} busy={busy} onChange={setScreen} onSubmit={() => submit(screen)} onCancel={reset}/>}
     {screen.kind === 'results' && <Results screen={screen} busy={busy} onChoose={(memberId, sessionId) => choose(screen, memberId, sessionId)} onDone={reset}
       onMembers={() => setScreen({ kind: 'select', name: screen.name, pin: screen.pin, members: screen.members,
         chosen: new Set(screen.members.filter((member) => !screen.rows.some((row) => row.member.id === member.id &&
           (row.result?.status === 'checked_in' || row.result?.status === 'already_checked_in'))).map((member) => member.id)) })}/>}
   </main>;
+}
+
+function Choose({ onQr, onPin }: { onQr: () => void; onPin: () => void }) {
+  return <section className="grid gap-4 sm:grid-cols-2 sm:gap-6" aria-labelledby="kiosk-choose"><h2 id="kiosk-choose" className="text-2xl sm:col-span-2">{text('howCheckIn')}</h2>
+    <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onQr}>{t('kiosk/qr:scan')}</Button>
+    <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onPin}>{text('namePin')}</Button>
+  </section>;
 }
 
 function Search({ busy, message, onSearch }: { busy: boolean; message?: 'not_found' | 'error' | undefined; onSearch: (name: string, pin: string) => void }) {

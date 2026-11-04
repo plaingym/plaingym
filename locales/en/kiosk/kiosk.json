@@ -6,6 +6,8 @@
   "setupHelp": "An owner or admin registers this device in Settings under Kiosk devices, then enters its device token here.",
   "token": "Device token",
   "saveToken": "Save and start check-in",
+  "howCheckIn": "How would you like to check in?",
+  "namePin": "Name and PIN",
   "name": "Your name",
   "pin": "Household PIN",
   "clear": "Clear",

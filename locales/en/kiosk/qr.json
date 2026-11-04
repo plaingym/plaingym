@@ -5,6 +5,8 @@
   "camera": "QR check-in camera",
   "cameraHelp": "Hold your check-in QR code in front of the camera.",
   "cameraError": "The camera could not start. Allow camera access and try again, or use your name and PIN.",
+  "noCamera": "This device can't scan a QR code. Use your name and PIN instead.",
+  "usePin": "Use name and PIN",
   "checking": "Checking in…",
   "requestError": "Something went wrong. Please try again or see the front desk.",
   "checked_in": "Checked in",

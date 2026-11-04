@@ -26,7 +26,7 @@
   "coachHelp": "Open the schedule, take attendance, and record promotions.",
   "studentHelp": "Preview the member portal as a sample student.",
   "kioskTitle": "Try the kiosk",
-  "kioskHint": "Search the full name Marcus Rivera with household PIN 2468. A shared surname can match more than one household.",
+  "kioskHint": "Search the full name Marcus Rivera with household PIN 2468 (choose Name and PIN first). A shared surname can match more than one household.",
   "close": "Close demo guide",
   "explore": "Explore this gym",
   "starting": "Creating your demo gym…",

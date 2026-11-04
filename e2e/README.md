@@ -113,7 +113,7 @@ The checks cover:
   disabled uploads, and invitations captured in the outbox.
 * Login errors and a successful password sign-in; the demo entry button creating
   a sandbox, compact role switching and the demo guide dialog; and device setup,
-  name/PIN search, family selection and check-in at all three widths, with axe
+  the Scan a QR code / Name and PIN choice, name/PIN search, family selection and check-in at all three widths, with axe
   A/AA throughout (`setup-kiosk-demo.spec.ts`). The visitor-facing kiosk example
   uses the full name Marcus Rivera and PIN 2468, avoiding ambiguous households.
   Outbox preview dialogs are checked too; axe excludes the email iframe, whose

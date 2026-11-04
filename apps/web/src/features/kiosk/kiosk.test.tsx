@@ -18,7 +18,9 @@ const parent = { id: '00000000-0000-7000-8000-000000000001', firstName: 'Dana', 
 const child = { ...parent, id: '00000000-0000-7000-8000-000000000002', firstName: 'Kai' };
 const session = { id: '00000000-0000-7000-8000-000000000003', name: 'Fundamentals', startsAt: '2026-10-22T18:00:00Z', endsAt: '2026-10-22T19:00:00Z' };
 const credentials = { name: 'Rivera', pin: '0042' };
+const setCamera = (value: unknown) => Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value });
 beforeEach(() => {
+  setCamera({ getUserMedia: vi.fn() });
   vi.mocked(readToken).mockReturnValue('device-token');
   vi.mocked(kioskApi.lookup).mockResolvedValue({ status: 'select_member', members: [parent, child] });
   vi.mocked(kioskApi.checkin).mockResolvedValue([
@@ -26,8 +28,10 @@ beforeEach(() => {
     { status: 'select_session', member: child, sessions: [session] },
   ]);
 });
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setCamera(undefined); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+function choosePin() { const choice = screen.queryByRole('button', { name: 'Name and PIN' }); if (choice) fireEvent.click(choice); }
 function fill() {
+  choosePin();
   fireEvent.change(screen.getByLabelText('Your name'), { target: { value: credentials.name } });
   fireEvent.change(screen.getByLabelText('Household PIN'), { target: { value: credentials.pin } });
 }
@@ -63,8 +67,55 @@ describe('kiosk check-in screen', () => {
     expect(forgetToken).toHaveBeenCalledOnce();
     expect(await screen.findByLabelText('Device token')).toBeDefined();
   });
+  it('starts on two choices and shows neither flow', () => {
+    render(<KioskApp/>);
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Name and PIN' })).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    expect(screen.queryByLabelText('QR check-in camera')).toBeNull();
+  });
+  it('shows only the QR flow after choosing it, and Start over returns to the choice', async () => {
+    vi.mocked(scanQrCamera).mockResolvedValue({ stop: vi.fn() });
+    render(<KioskApp/>);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
+    expect(screen.getByLabelText('QR check-in camera')).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    expect(screen.queryByLabelText('Household PIN')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    expect(screen.getByRole('button', { name: 'Name and PIN' })).toBeDefined();
+    expect(screen.queryByLabelText('QR check-in camera')).toBeNull();
+  });
+  it('shows only name and PIN after choosing it, and Start over returns to the choice', () => {
+    render(<KioskApp/>);
+    choosePin();
+    expect(screen.getByLabelText('Your name')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Scan a QR code' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+  });
+  it('returns to the choice after a finished QR check-in and when the QR flow idles out', async () => {
+    vi.useFakeTimers();
+    vi.mocked(scanQrCamera).mockImplementation(async (_video, found) => { found('pgci1_' + 'a'.repeat(43)); return { stop: vi.fn() }; });
+    vi.mocked(qrCheckin).mockResolvedValue({ status: 'checked_in', member: parent });
+    render(<KioskApp/>);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
+    expect(screen.getByText('Checked in')).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+    expect(screen.getByRole('button', { name: 'Name and PIN' })).toBeDefined();
+    expect(screen.queryByText('Checked in')).toBeNull();
+  });
+  it('offers name and PIN when the camera is denied', async () => {
+    vi.mocked(scanQrCamera).mockRejectedValue(new Error('denied'));
+    render(<KioskApp/>);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
+    fireEvent.click(screen.getByRole('button', { name: 'Use name and PIN' }));
+    expect(screen.getByLabelText('Your name')).toBeDefined();
+    expect(screen.queryByLabelText('QR check-in camera')).toBeNull();
+  });
   it('accepts masked PINs from the touch keypad, including leading zeros', async () => {
     render(<KioskApp/>);
+    choosePin();
     fireEvent.change(screen.getByLabelText('Your name'), { target: { value: credentials.name } });
     for (const digit of credentials.pin) fireEvent.click(screen.getByRole('button', { name: digit }));
     expect(screen.getByLabelText('Household PIN').getAttribute('type')).toBe('password');
@@ -96,6 +147,8 @@ describe('kiosk check-in screen', () => {
     expect(screen.getAllByRole('checkbox').every((node) => node.getAttribute('aria-checked') === 'false')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
     expect(screen.queryByText('Dana R.')).toBeNull();
+    expect(screen.queryByLabelText('Household PIN')).toBeNull();
+    choosePin();
     expect((screen.getByLabelText('Household PIN') as HTMLInputElement).value).toBe('');
   });
   it('shows a neutral front-desk result with attention audio', async () => {
@@ -125,7 +178,7 @@ describe('kiosk check-in screen', () => {
     expect(kioskApi.checkin).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
     await act(async () => { complete([{ status: 'checked_in', member: parent }]); });
-    expect(screen.getByLabelText('Your name')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Name and PIN' })).toBeDefined();
     expect(screen.queryByText('Dana R.')).toBeNull();
   });
   it('clears PINs and family results automatically, including unfinished searches', async () => {
@@ -133,6 +186,8 @@ describe('kiosk check-in screen', () => {
     render(<KioskApp/>);
     fill();
     await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    choosePin();
     expect((screen.getByLabelText('Your name') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('Household PIN') as HTMLInputElement).value).toBe('');
     vi.mocked(kioskApi.checkin).mockResolvedValueOnce([{ status: 'checked_in', member: parent }, { status: 'checked_in', member: child }]);
@@ -140,6 +195,8 @@ describe('kiosk check-in screen', () => {
     expect(screen.getAllByText('Checked in')).toHaveLength(2);
     await act(async () => { vi.advanceTimersByTime(8_000); });
     expect(screen.queryByText('Dana R.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+    choosePin();
     expect((screen.getByLabelText('Household PIN') as HTMLInputElement).value).toBe('');
   });
   it('clears a rejected device token and opens device setup', async () => {
@@ -156,6 +213,7 @@ describe('kiosk check-in screen', () => {
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 1024 });
     render(<KioskApp/>);
     fireEvent.click(screen.getByRole('button', { name: 'Full screen' }));
+    choosePin();
     await waitFor(() => expect(fullscreen).toHaveBeenCalledOnce());
     expect(screen.getByRole('button', { name: '1' }).className).toContain('min-h-16');
   });

@@ -37,7 +37,7 @@ Success prints **https://demo.plaingym.app**. Open it, create a sandbox, and sel
 owner or coach in the demo controls. Everything about the sandbox happens in the
 web interface. Email stays in its outbox, uploads are disabled, and it expires
 after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
-use a full member name and PIN `2468`.
+choose Name and PIN, then use a full member name and PIN `2468`.
 
 Demo billing is optional ([the environment template](.env.example) lists the
 values). After the required inputs, an install run from a terminal asks once

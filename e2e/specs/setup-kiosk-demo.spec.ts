@@ -57,7 +57,20 @@ test('demo entry creates a gym, phone role controls and guide work, full-name ki
   await expect(page.getByText(/Search the full name Marcus Rivera with household PIN 2468/)).toHaveCount(1);
   for (const size of sizes) {
     await page.setViewportSize(size);
+    // The start screen offers the two ways in and shows neither flow.
+    for (const name of ['Scan a QR code', 'Name and PIN']) {
+      const choice = page.getByRole('button', { name, exact: true });
+      await expect(choice).toBeVisible();
+      expect((await choice.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    await expect(page.getByLabel('Your name', { exact: true })).toHaveCount(0);
+    await accessibleLayout(page, info, 'kiosk-choice-' + size.width);
+  }
+  await page.getByRole('button', { name: 'Name and PIN', exact: true }).click();
+  for (const size of sizes) {
+    await page.setViewportSize(size);
     await expect(page.getByLabel('Your name', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Scan a QR code', exact: true })).toHaveCount(0);
     await accessibleLayout(page, info, 'kiosk-search-' + size.width);
     await page.screenshot({ path: info.outputPath('kiosk-search-' + size.width + '.png'), fullPage: true });
   }
@@ -81,6 +94,8 @@ test('demo entry creates a gym, phone role controls and guide work, full-name ki
     await accessibleLayout(page, info, 'kiosk-results-' + size.width);
   }
   await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Name and PIN', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Name and PIN', exact: true }).click();
   await expect(page.getByLabel('Your name', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Household PIN', { exact: true })).toHaveValue('');
   expect((await page.context().cookies()).filter((cookie) => cookie.name.includes('session_token'))).toHaveLength(0);

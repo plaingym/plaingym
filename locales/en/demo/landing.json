@@ -13,7 +13,7 @@
   "joinOpen": "Open the join page",
   "outboxOpen": "Open the demo outbox",
   "kioskTitle": "Check in at the kiosk",
-  "kioskHelp": "In the member portal, open your check-in code. Then open the kiosk in another window of this browser, which is paired as the gym's kiosk, and scan the code with the camera, or search the full name Marcus Rivera with PIN 2468.",
+  "kioskHelp": "In the member portal, open your check-in code. Then open the kiosk in another window of this browser, which is paired as the gym's kiosk, and scan the code with the camera, or choose Name and PIN and search the full name Marcus Rivera with PIN 2468.",
   "kioskOpen": "Open the kiosk",
   "startLink": "Demo start page"
 }

@@ -118,7 +118,7 @@ back to it. No command line setup is needed in a sandbox.
 
 The [mat seed guide](seed/mat.md) describes the sample households, schedule and
 promotion history; the [portal seed guide](seed/portal.md) describes the student's
-portal and the full demo walkthrough. Seeded households use kiosk PIN **2468**. Search by a **full
+portal and the full demo walkthrough. Seeded households use kiosk PIN **2468**. On the kiosk, choose **Name and PIN**, then search by a **full
 member name**, for example **Marcus Rivera**, then enter that PIN. A broad search
 such as "family" or "Ma" can match several households; the kiosk refuses ambiguous
 matches. Staff can find other sample members' full names in the members page.
