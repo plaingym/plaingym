@@ -83,6 +83,7 @@ for (const index of [0, 1] as const) {
       await kiosk.goto(own.origin + '/kiosk');
       await kiosk.getByLabel('Device token', { exact: true }).fill(own.kioskToken);
       await kiosk.getByRole('button', { name: 'Save and start check-in', exact: true }).click();
+      await kiosk.getByRole('button', { name: 'Name and PIN', exact: true }).click();
       await kiosk.getByLabel('Your name', { exact: true }).fill(own.student.fullName);
       for (const digit of own.pin) await kiosk.getByRole('button', { name: digit, exact: true }).click();
       await kiosk.getByRole('button', { name: 'Find me', exact: true }).click();
@@ -94,8 +95,9 @@ for (const index of [0, 1] as const) {
       if (await mat.isVisible()) for (const button of await kiosk.getByRole('button', { name: 'Open mat', exact: true }).all()) await button.click();
       await expect(checked).toBeVisible();
       await expectOnlyOwn(kiosk, own, other, 'the kiosk');
-      // The kiosk starts over for the next family, with no name or PIN left behind.
-      await expect(kiosk.getByLabel('Your name', { exact: true })).toBeVisible({ timeout: 30_000 });
+      // The kiosk starts over at the choice for the next family, with no name or PIN left behind.
+      await expect(kiosk.getByRole('button', { name: 'Name and PIN', exact: true })).toBeVisible({ timeout: 30_000 });
+      await kiosk.getByRole('button', { name: 'Name and PIN', exact: true }).click();
       await expect(kiosk.getByLabel('Your name', { exact: true })).toHaveValue('');
     } finally { await context.close(); }
     const mine = await own.owner.json<{ data: { memberId: string }[] }>('/api/attendance?limit=100');
