@@ -90,7 +90,7 @@ try {
     await fill(page, true); await check(page, width + '-form-signed');
     await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await page.waitForURL('**/join/return');
     await check(page, width + '-confirming');
-    await expect(page.locator('[data-join-progress]')).toBeVisible(); await expect(page.locator('main')).toContainText('This page updates automatically');
+    await expect(page.locator('[data-join-progress]')).toBeVisible(); await expect(page.locator('main')).toContainText('If this page does not change, select Check again');
     expect(await page.locator('[data-join-progress] span[aria-hidden]').evaluate(e => getComputedStyle(e).animationName)).toBe('spin');
     // The page has no Refresh header (only a noscript meta), so only polling moves it to Welcome once the join settles.
     const loads = []; page.on('request', request => { if (request.isNavigationRequest() && new URL(request.url()).pathname === '/join/return') loads.push(request.url()); });
@@ -121,6 +121,8 @@ try {
   state = 'pending'; await page.goto(base + `/join?plan=${plans[0].id}&members=2`); await fill(page, false);
   await page.locator('button[type=submit]', { hasText: 'Continue to payment' }).click(); await page.waitForURL('**/join');
   await check(page, '360-continue-native'); await page.locator('a', { hasText: 'Pay securely' }).click(); await page.waitForURL('**/join/return');
+  // With the script blocked the page still says what to do and promises no update.
+  await expect(page.locator('main')).toContainText('If this page does not change, select Check again'); await expect(page.locator('main')).not.toContainText('updates automatically');
   // An oversized native form gets join's own page.
   await page.goto(base + `/join?plan=${plans[0].id}&members=1`); await fill(page, false, 1);
   await page.evaluate(() => { const extra = document.createElement('input'); extra.type = 'hidden'; extra.name = 'padding'; extra.value = 'x'.repeat(4 * 1024 * 1024 + 1); document.querySelector('[data-join-form]').append(extra); });

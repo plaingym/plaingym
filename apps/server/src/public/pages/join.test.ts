@@ -273,7 +273,7 @@ describe('public join pages through the production registrations', () => {
     expect(confirming.headers.get('refresh')).toBeNull();
     const progress = await confirming.text();
     expect(progress).toMatch(/<head>[\s\S]*<noscript><meta http-equiv="refresh" content="5"\/?><\/noscript>[\s\S]*<\/head>/);
-    expect(progress).toContain('Confirming your payment'); expect(progress).toContain('This page updates automatically');
+    expect(progress).toContain('Confirming your payment'); expect(progress).toContain('If this page does not change, select Check again'); expect(progress).not.toContain('updates automatically');
     expect(progress).toContain('Waiting for your payment to be confirmed'); expect(progress).toContain('aria-live="polite"');
     // The poll is one external script that /join/return itself serves state to: no inline script, no new route, and the no-JS link stays.
     expect(progress).toContain('data-join-confirming'); expect(progress).toContain('src="/join/client.js"'); expect(progress).toContain('href="/join/return"');

@@ -62,8 +62,9 @@ does the same for any recorded Checkout of the joined household once the invoice
 Both lock the household and check `public.join.completed`, so together, retried or
 concurrent, they complete a join once and send one sign-in link. `/join/return` grants
 nothing: it shows "confirming" until the invoice is paid, the memberships are active and
-the join is complete. The confirming page has a spinner with `aria-live` text and says it
-updates automatically. `/join/client.js` (the page's only script, `'self'`, no inline
+the join is complete. The confirming page has a spinner with `aria-live` text. It says it is
+confirming and points to **Check again** if the page does not change; it does not promise an
+automatic update. `/join/client.js` (the page's only script, `'self'`, no inline
 script) asks `/join/return` itself with the join cookie about every two seconds and
 reloads the page once the answer no longer says it is confirming, so no status route
 exists and nothing but the visitor's own cookie is read; after 45 polls (about 90

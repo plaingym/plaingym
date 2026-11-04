@@ -49,7 +49,7 @@
   "continueBody": "Your details and signed waivers are saved. Pay securely to start your membership. Nothing is active until payment is confirmed.",
   "pay": "Pay securely",
   "confirmingTitle": "Confirming your payment",
-  "confirmingBody": "This page updates automatically. It usually takes a few seconds.",
+  "confirmingBody": "We are confirming your payment, which usually takes a few seconds. If this page does not change, select Check again.",
   "confirmingProgress": "Waiting for your payment to be confirmed…",
   "confirmingStalled": "This is taking longer than usual. Select Check again, or contact the gym if it does not move on.",
   "checkAgain": "Check again",
