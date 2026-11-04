@@ -17,6 +17,7 @@ import { parseEncryptionKey } from './secrets.js';
 import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, singleGymId, tenancyMode } from './tenancy.js';
 import { authConfig, passwordLogin } from '../infra/auth/config.js';
 import { createAuthService } from '../infra/auth/service.js';
+import { createGoogleAuthExtension, googleFromEnvironment } from '../infra/auth/google.js';
 import { createAuthEmailSender } from '../infra/auth/delivery.js';
 import { sessionMiddleware } from '../infra/auth/middleware.js';
 import { SmtpEmail } from '../infra/email/index.js';
@@ -85,6 +86,7 @@ import { createPinLimitWidgetProvider } from '../areas/kiosk/pin-limit.js';
 import { configureHealthStatus } from '../areas/health/status.routes.js';
 import { createStripeHealthProvider } from '../areas/health/stripe.js';
 import { createChargeRunHealthProvider, monitorChargeRunner } from '../areas/health/charge-run.js';
+import { createAutoUpdateHealthProvider } from '../areas/health/auto-update.js';
 import { configureChargeFailures } from '../areas/health/charge-run.routes.js';
 import { createSetupLinkCommand } from '../cli/setup-link.js';
 import { configureRanks } from '../areas/ranks/ranks.routes.js';
@@ -152,10 +154,12 @@ async function prepare(env: NodeJS.ProcessEnv) {
   const config = demo.enabled ? authConfig({ ...env, AUTH_PASSWORD_LOGIN: 'off' }, true) : authConfig(env);
   const install = publicOrigin(env) ?? (demo.enabled ? `https://${demo.domain}` : undefined);
   if (mode === 'single' && !install) throw new Error('Set GYM_HOSTNAME or PUBLIC_ORIGIN');
+  // Both Google variables or neither: half a configuration fails boot, before the database opens. Demo mode ignores them.
+  const google = googleFromEnvironment(env);
   await initializeDatabase(required(env, 'DATABASE_URL'), poolSize(env));
   const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
   configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp ? smtp.configured(gymId) : Promise.resolve(true) });
-  return { key, mode, config, install, smtp };
+  return { key, mode, config, install, smtp, google };
 }
 /** Stripe events for each gym, verified by that gym's own Stripe settings; the CLI replays through the same inbox. */
 function webhookInbox(paymentsFor: PaymentsResolver, jobs: Jobs) {
@@ -172,7 +176,7 @@ export interface Runtime {
 export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promise<Runtime> {
   // Only the server refuses the maintenance role in multi mode: `gym-app migrate` is the step that needs it.
   assertMaintenanceCredentials(env);
-  const { key, mode, config: initialConfig, install, smtp } = await prepare(env);
+  const { key, mode, config: initialConfig, install, smtp, google } = await prepare(env);
   // Caddy is the only peer that can reach the app in the Compose deployment.
   const trustedProxy = env.TRUST_PROXY === 'true' ? () => true : undefined;
   const limit = floodLimit(env);
@@ -195,10 +199,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
     ...(trustedProxy ? { clientIp: { trustedProxy } } : {}) });
   const config = demo?.authConfig ?? initialConfig;
   const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
-  const auth = createAuthService({ config, sendMagicLink: demo?.sendMagicLink ?? createAuthEmailSender((gymId) => smtp!.config(gymId)) });
+  const auth = createAuthService({ config, sendMagicLink: demo?.sendMagicLink ?? createAuthEmailSender((gymId) => smtp!.config(gymId)),
+    ...(google ? { google: createGoogleAuthExtension({ credentials: google }) } : {}) });
   configureLoginMethods(async (gymId) => {
     const configured = await smtpConfigured(gymId);
-    return { password: passwordLogin(config, configured), magicLink: configured };
+    return { password: passwordLogin(config, configured), magicLink: configured, ...(google ? { google: true } : {}) };
   });
   const settings = createGymSettingsAccessor(), gymSettings = createSettingsService(), t = createTranslator(locales.en ?? {});
   // Member-facing mail goes through the gym's SMTP (or the demo outbox), with links on the gym's own origin.
@@ -275,6 +280,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   configureHealthStatus({ env, providers: [
     createStripeHealthProvider({ webhooks: createWebhookHealthQuery(), configured: async gymId => Boolean(await paymentsFor(gymId)) }),
     createChargeRunHealthProvider({ settings }),
+    createAutoUpdateHealthProvider(),
   ] });
   async function requirePayments(gymId: string) {
     const provider = await paymentsFor(gymId);
