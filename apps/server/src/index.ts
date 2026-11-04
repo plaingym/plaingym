@@ -5,6 +5,7 @@ import { regularFontUrl } from './assets.js';
 import { runCommandLine, startRuntime } from './core/runtime.js';
 import { logInfo } from './core/log.js';
 import { shutdown } from './shutdown.js';
+import { configureWebsite, websiteModule } from './modules/website/index.js';
 
 const args = process.argv.slice(2);
 if (args.length) {
@@ -14,7 +15,7 @@ if (args.length) {
 } else {
   // Fail startup when a packaged asset is missing.
   await access(regularFontUrl);
-  const runtime = await startRuntime();
+  const runtime = await startRuntime(process.env, { modules: [websiteModule], configureModules: configureWebsite });
   const server = serve({
     fetch: runtime.app.fetch,
     hostname: process.env.HOST ?? '127.0.0.1',

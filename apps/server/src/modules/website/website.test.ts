@@ -64,7 +64,7 @@ beforeAll(async () => {
   Object.assign(ids, { coach: coach.id, hidden: hidden.id, otherCoach: otherCoach.id });
   publicDirectory = await mkdtemp(join(tmpdir(), 'plaingym-website-'));
   await writeFile(join(publicDirectory, 'index.html'), '<!doctype html><title>Portal app</title>');
-  configurePublicPages({ scope: db.forGym, clock, settings, uploadsFor, stylesheet: async () => '/* css */', notifyStaff: async () => {},
+  configurePublicPages({ scope: db.forGym, clock, uploadsFor, stylesheet: async () => '/* css */', notifyStaff: async () => {},
     waivers: createWaiversService({ scope: db.forGym, clock, uploadsFor }) });
   return () => rm(publicDirectory, { recursive: true, force: true });
 });

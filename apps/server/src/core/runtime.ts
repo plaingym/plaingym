@@ -12,7 +12,7 @@ import { assertMaintenanceCredentials, restoreStagingDirectory } from './mainten
 import { registerModuleJobs } from './modules.js';
 import { clientIp } from './rate-limit.js';
 import { areaContributions } from './registry-areas.js';
-import { createServerRegistry } from './registry.js';
+import { createServerRegistry, type ModuleDefinition } from './registry.js';
 import { parseEncryptionKey } from './secrets.js';
 import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, singleGymId, tenancyMode } from './tenancy.js';
 import { authConfig, passwordLogin } from '../infra/auth/config.js';
@@ -168,12 +168,19 @@ function webhookInbox(paymentsFor: PaymentsResolver, jobs: Jobs) {
   return inbox;
 }
 
+/** Feature modules come from the entry point: core never imports module code. */
+export interface RuntimeModules {
+  readonly modules?: readonly ModuleDefinition[];
+  /** Gives the modules the runtime's services before the routes mount. */
+  readonly configureModules?: (services: { uploadsFor: ReturnType<typeof createRuntimeUploads>['forGym'];
+    origin: (context: Context<RequestEnvironment>) => string; clock: typeof clock }) => void;
+}
 export interface Runtime {
   readonly app: ReturnType<typeof createApp>;
   readonly uploadsFor: ReturnType<typeof createRuntimeUploads>['forGym'];
   stop(): Promise<void>;
 }
-export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promise<Runtime> {
+export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composition: RuntimeModules = {}): Promise<Runtime> {
   // Only the server refuses the maintenance role in multi mode: `gym-app migrate` is the step that needs it.
   assertMaintenanceCredentials(env);
   const { key, mode, config: initialConfig, install, smtp, google } = await prepare(env);
@@ -338,7 +345,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env): Promis
   // Setup takes the runtime's key, origin and environment; the registry's unconfigured copies are replaced.
   const setupRoutes = install ? createSetupRoutes({ config: { key, origin: install, env } }) : [];
   const replaced = new Set(setupRoutes.map(r => r.id));
-  const contributions = { ...areaContributions,
+  composition.configureModules?.({ uploadsFor: uploads.forGym, origin: originFor, clock });
+  const contributions = { ...areaContributions, modules: composition.modules ?? [],
     routes: [...(areaContributions.routes ?? []).filter(r => !replaced.has(r.id)), ...setupRoutes,
       ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
