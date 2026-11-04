@@ -3,7 +3,10 @@
 
 This guide takes a gym from an empty server to a running install, and covers
 backups, updates and day-to-day operation. One install runs one gym on one
-hostname. For building images and the installer's internals, see
+hostname. Step-by-step guides cover [installing](install.md), [updating](updating.md),
+[restoring](restoring.md), [importing](importing.md), [card re-collection](card-recollection.md),
+the [member portal](member-portal.md), [going live](going-live.md) and [demos](demo.md).
+For building images and the installer's internals, see
 [`deploy/README.md`](../deploy/README.md); for every setting, see
 [configuration.md](configuration.md).
 
