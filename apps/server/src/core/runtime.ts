@@ -376,7 +376,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   })();
   const kioskSession = createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session });
   const app = createApp({
-    contributions, clock, resolveGym: createTenantResolver({ mode }), authorize: createPortalAuthorization(),
+    contributions, clock, resolveGym: createTenantResolver({ mode }), tenancy: mode, authorize: createPortalAuthorization(),
     // Signed-link routes resolve their own bearer after normal session loading.
     session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
     origin: originFor, ...(install ? { installOrigin: install } : {}), strictTransportSecurity: env.NODE_ENV === 'production',

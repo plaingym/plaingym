@@ -9,7 +9,14 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import { atomicJson } from '../areas/health/backups.files.js';
+import { createApp } from './app.js';
 import { startRuntime, type Runtime } from './runtime.js';
+
+// Calls through to the real app; the test below reads what the runtime passed it.
+vi.mock('./app.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./app.js')>();
+  return { ...actual, createApp: vi.fn(actual.createApp) };
+});
 
 const database = useTestDatabase(), factory = createFactories(database);
 const origin = 'https://install.multi.example.test', setupToken = 'multi-runtime-setup-token-with-32-characters';
@@ -45,4 +52,6 @@ it('builds no restore gate in multi mode and answers setup restore as unavailabl
   });
   expect(restore.status).toBe(503);
   expect(JSON.stringify(await restore.json())).toContain('Restore is not configured');
+  // The CSP report route budgets by hostname only in multi mode, so the runtime hands the app the env's mode, not process.env's.
+  expect(vi.mocked(createApp)).toHaveBeenCalledWith(expect.objectContaining({ tenancy: 'multi' }));
 });
