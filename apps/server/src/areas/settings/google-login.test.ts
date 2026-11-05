@@ -177,7 +177,7 @@ describe('Settings → Google sign-in', () => {
     await setStored(gymB, null);
   });
   it('counts a stored or install Google client as a way in when the owner removes the gym’s email settings', async () => {
-    const smtp = encryptSmtpConfig(key, { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'gym-user', password: 'smtp-secret-never-shown' });
+    const smtp = encryptSmtpConfig(key, gymB, { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'gym-user', password: 'smtp-secret-never-shown' });
     const gym = (gymId: string, values: Partial<typeof gyms.$inferInsert>) => database.forGym(gymId, (tx) => tx.update(gyms).set(values).where(eq(gyms.id, gymId)));
     await gym(gymB, { smtpConfig: smtp });
     // No password and no other email: removing the gym's email would leave the owner no way in.
@@ -190,7 +190,7 @@ describe('Settings → Google sign-in', () => {
     expect((await emailRemove(withoutGoogle, current.revision)).status).toBe(409);
     expect((await row(gymB)).smtpConfig).not.toBeNull();
     // A client the owner stored counts, so they can remove the email settings and still sign in with Google.
-    await setStored(gymB, encryptGoogleConfig(key, { clientId, clientSecret }));
+    await setStored(gymB, encryptGoogleConfig(key, gymB, { clientId, clientSecret }));
     current = await integrations(withoutGoogle);
     expect(current.email.removeBlocked).toBe(false);
     expect((await emailRemove(withoutGoogle, current.revision)).status).toBe(200);
