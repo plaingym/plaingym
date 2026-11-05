@@ -36,13 +36,27 @@ const cspReportGroup = 'csp';
 export const reportingEndpoints = `${cspReportGroup}="${cspReportPath}"`;
 
 /**
+ * A policy of these directives whose violations go to the report route: `report-to` for browsers with the Reporting
+ * API (with the `Reporting-Endpoints` header `setPolicy` sends), `report-uri` for older ones. Every enforced policy
+ * the app sends, its default one and each route's own, is built here.
+ */
+export function reportedPolicy(directives: readonly string[]): string {
+  return [...directives, `report-uri ${cspReportPath}`, `report-to ${cspReportGroup}`].join('; ');
+}
+
+/** Sets a route's own policy, reported like the app's default one (`reportedPolicy`), and the endpoint it reports to. */
+export function setPolicy(context: Context, directives: readonly string[]): void {
+  context.header('Content-Security-Policy', reportedPolicy(directives));
+  context.header('Reporting-Endpoints', reportingEndpoints);
+}
+
+/**
  * The policy for every response that sets none of its own: the SPA, its assets and the API. Scripts, styles,
  * fonts and connections stay on the app's origin, and server-rendered inline scripts need this response's nonce.
- * Images also allow data: URLs (generated QR codes). No page may be framed. The policy is enforced, and
- * violations go to the report route: `report-to` for browsers with the Reporting API, `report-uri` for older ones.
+ * Images also allow data: URLs (generated QR codes). No page may be framed. The policy is enforced and reported.
  */
 export function contentSecurityPolicy(options: { nonce?: string | undefined; imageOrigins?: readonly string[] } = {}): string {
-  return [
+  return reportedPolicy([
     "default-src 'self'",
     "script-src 'self'" + (options.nonce ? ` 'nonce-${options.nonce}'` : ''),
     "style-src 'self'",
@@ -53,9 +67,7 @@ export function contentSecurityPolicy(options: { nonce?: string | undefined; ima
     "base-uri 'none'",
     "form-action 'self'",
     "frame-ancestors 'none'",
-    `report-uri ${cspReportPath}`,
-    `report-to ${cspReportGroup}`,
-  ].join('; ');
+  ]);
 }
 
 /** The nonce issued for this response, if a page asked for one. */

@@ -186,6 +186,8 @@ describe('public join pages through the production registrations', () => {
     expect(html).toContain('Adult monthly'); expect(html).toContain('Annual'); expect(html).toContain('$150.00\u00a0+\u00a0tax per month'); expect(html).toMatch(/Sign-up fee: [A-Z]*\$50\.00\u00a0\+\u00a0tax/);
     for (const hidden of ['Trial plan', 'Free plan', 'Retired plan', 'Private other plan', 'Private']) expect(html).not.toContain(hidden);
     expect(list.headers.get('content-security-policy')).toContain("form-action 'self'"); expect(list.headers.get('cache-control')).toBe('no-store');
+    expect(list.headers.get('content-security-policy')).toMatch(/; report-uri \/csp-report; report-to csp$/);
+    expect(list.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
     const form = await (await f.get(`/join?plan=${f.plan.id}&members=2`)).text();
     expect(form.match(/data-member=/g)).toHaveLength(2); expect(form.match(/data-waiver/g)).toHaveLength(4);
     expect(form).toContain('&lt;script&gt;bad()&lt;/script&gt;'); expect(form).not.toContain('<script>bad()'); expect(form).toContain('src="/join/client.js"');

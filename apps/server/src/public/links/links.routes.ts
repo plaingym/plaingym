@@ -6,6 +6,7 @@ import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema, portalAccessContracts } from '@plaingym/shared/contracts';
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { setPolicy } from '../../core/csp.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
@@ -19,6 +20,9 @@ import messages from '../../../../../locales/en/public/links.json' with { type: 
 const t = createTranslator({ 'public/links': messages });
 export const receiptCookie = 'plaingym_link_checkout';
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
+/** Signed-link pages load their script, styles and images (`data:` QR codes) from the app only. */
+const linkPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self' data:", "base-uri 'none'",
+  "form-action 'self'", "frame-ancestors 'none'"];
 interface PageRoutesOptions {
   portalInvitations?: PortalInvitationService;
   service: LinkPageService;
@@ -66,7 +70,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     } };
   }
   function html(c: Context<RequestEnvironment>, input: Parameters<typeof linkPage>[0], status: 200 | 404 = 200) {
-    c.header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    setPolicy(c, linkPageDirectives);
     return c.html(linkPage(input), status);
   }
   const textResponses = { 200: { description: 'Signed-link page' }, 404: { description: 'Unavailable signed link' } };

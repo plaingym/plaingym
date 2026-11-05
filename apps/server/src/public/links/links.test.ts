@@ -29,6 +29,7 @@ import { createPortalInvitationService } from '../../areas/members/household-use
 import { authConfig } from '../../infra/auth/config.js';
 import { createMemberHouseholdContext } from '../../areas/members/household-users.context.js';
 import { createAccountService } from '../../infra/auth/accounts.js';
+import { reportingEndpoints } from '../../core/csp.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer = true, demo = false) {
@@ -170,6 +171,8 @@ describe('signed-link pages through production registrations', () => {
     expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('active');
     const response = await f.app().request('/l/' + f.link.token);
     expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toMatch(/^default-src 'none'; .*; report-uri \/csp-report; report-to csp$/);
+    expect(response.headers.get('reporting-endpoints')).toBe(reportingEndpoints);
     const page = await response.text(); expect(page).toContain('Already done'); expect(page).not.toContain('original terms');
     expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('used');
     expect((await f.request()).status).toBe(404);
@@ -179,6 +182,8 @@ describe('signed-link pages through production registrations', () => {
     await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'draft', number: null }).where(eq(invoices.id, f.invoice.id)));
     const response = await f.app().request('/l/' + f.link.token);
     expect(response.status).toBe(404); expect(response.headers.get('content-type')).toContain('text/html');
+    expect(response.headers.get('content-security-policy')).toContain('report-uri /csp-report; report-to csp');
+    expect(response.headers.get('reporting-endpoints')).toBe(reportingEndpoints);
     expect(await response.text()).toContain('This link is unavailable');
   });
   it('uses the configured translation and gym locale on resource, cleared and return pages', async () => {

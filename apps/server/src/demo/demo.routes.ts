@@ -5,6 +5,7 @@ import { AppError, type Translator } from '@plaingym/shared';
 import { route, type RouteRegistration } from '../core/registry.js';
 import { clientIp, rateLimit, type ClientIpOptions } from '../core/rate-limit.js';
 import { csrf } from '../core/csrf.js';
+import { setPolicy } from '../core/csp.js';
 import { createTenantResolver, type TenancyMode } from '../core/tenancy.js';
 import { demoContracts, demoTestCard } from '@plaingym/shared/contracts';
 import { createOutboxQuery } from './outbox.js';
@@ -14,8 +15,8 @@ import { z } from '@hono/zod-openapi';
 import type { forGym } from '@plaingym/db';
 
 /** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
-export const outboxPreviewPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; "
-  + "sandbox; frame-ancestors 'self'";
+export const outboxPreviewDirectives = ["default-src 'none'", "style-src 'unsafe-inline'", 'img-src data:', "base-uri 'none'",
+  "form-action 'none'", 'sandbox', "frame-ancestors 'self'"];
 
 export function createDemoRoutes(service: DemoService, options: { installOrigin: string; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym }) {
   const limiter = rateLimit({ ...options.clientIp, limit: 3, windowMs: 60 * 60 * 1000 });
@@ -96,7 +97,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
       const gymId = c.get('context').gym.gymId; await service.status(gymId);
       const html = (await outbox.get(gymId, c.req.valid('param').id)).html;
       c.header('cache-control', 'no-store'); c.header('x-content-type-options', 'nosniff'); c.header('referrer-policy', 'no-referrer');
-      c.header('content-security-policy', outboxPreviewPolicy);
+      setPolicy(c, outboxPreviewDirectives);
       return c.html(html, 200);
     }),
     { ...discovery, mount(app: Parameters<RouteRegistration['mount']>[0], authorize: Parameters<RouteRegistration['mount']>[1]) {

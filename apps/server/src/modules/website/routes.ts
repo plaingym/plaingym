@@ -5,7 +5,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { AppError, createTranslator, type RoutePermission, type Translator } from '@plaingym/shared';
 import type { RequestEnvironment } from '../../core/context.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
-import { cspNonce, cspReportPath, reportingEndpoints } from '../../core/csp.js';
+import { cspNonce, setPolicy } from '../../core/csp.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { createWebsiteService, type SitePart, type WebsiteOptions, type WebsiteService } from './service.js';
 import { pagePath, renderSitePage, sitePages, siteThemeCss, type SitePage } from './site.page.js';
@@ -30,8 +30,8 @@ export function configureWebsite(options: WebsiteOptions & { origin?: WebsiteRou
 }
 
 /** The pages run no script: the one inline element, the structured-data block, carries the response's nonce. */
-export const sitePolicy = (nonce: string) => [`default-src 'none'`, `script-src 'nonce-${nonce}'`, `style-src 'self'`, `img-src 'self'`,
-  `base-uri 'none'`, `form-action 'self'`, `frame-ancestors 'none'`, `report-uri ${cspReportPath}`, `report-to csp`].join('; ');
+const siteDirectives = (nonce: string) => [`default-src 'none'`, `script-src 'nonce-${nonce}'`, `style-src 'self'`, `img-src 'self'`,
+  `base-uri 'none'`, `form-action 'self'`, `frame-ancestors 'none'`];
 const parts: Record<SitePage, readonly SitePart[]> = {
   home: ['programs'], programs: ['programs', 'classes'], schedule: ['programs', 'classes'], plans: ['plans'], coaches: ['coaches'], contact: [],
 };
@@ -64,7 +64,7 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
       responses: { 200: { description: `Website ${page} page` } } }, async (c) => {
       const config = options(), gym = c.get('context').gym, nonce = cspNonce(c);
       const site = await config.service.site(gym.gymId, parts[page]);
-      c.header('Content-Security-Policy', sitePolicy(nonce)); c.header('Reporting-Endpoints', reportingEndpoints);
+      setPolicy(c, siteDirectives(nonce));
       c.header('Cache-Control', 'no-cache'); c.header('X-Content-Type-Options', 'nosniff'); c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
       return c.html(renderSitePage({ page, site, t: config.t ?? translator, origin: originOf(c), nonce }), 200);
     })),

@@ -5,9 +5,10 @@ import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { publicContracts as contracts, paginationSchema, publicTrialRequestSchema } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { setPolicy } from '../../core/csp.js';
 import { cachedLinkAsset } from '../links/assets.js';
 import { admissionSchema, createPublicPagesService, type PublicPagesOptions, type PublicPagesService } from './service.js';
-import { intakePage, themeCss } from './page.js';
+import { intakePage, publicPageDirectives, themeCss } from './page.js';
 import { publicBrowserScript } from './browser.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 
@@ -31,7 +32,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
   const protect = (entry: RouteRegistration): RouteRegistration => ({ ...entry, mount(app, authorize) {
     entry.mount(app, permission => async (ctx, next) => {
       ctx.header('Cache-Control', 'no-store'); ctx.header('Referrer-Policy', 'no-referrer'); ctx.header('X-Content-Type-Options', 'nosniff');
-      ctx.header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+      setPolicy(ctx, publicPageDirectives);
       return authorize(permission)(ctx, next);
     });
   } });

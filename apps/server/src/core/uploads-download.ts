@@ -5,6 +5,7 @@ import { AppError } from '@plaingym/shared';
 import { LocalUploads, type Uploads } from '../infra/storage/index.js';
 import { uploadDownloadPath } from '../infra/storage/runtime.js';
 import type { RequestEnvironment } from './context.js';
+import { setPolicy } from './csp.js';
 import { route, type RouteRegistration } from './registry.js';
 
 const inline = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -33,9 +34,10 @@ export function createUploadDownloadRoute(options: {
     }
     const name = (info.key.split('/').at(-1) ?? 'download').replace(/[^A-Za-z0-9._-]/g, '_');
     // Stored content types come from uploads; only known image types render, everything else downloads.
+    setPolicy(c, ["default-src 'none'", 'sandbox']);
     return c.body(body, 200, { 'Content-Type': inline.has(info.contentType) ? info.contentType : 'application/octet-stream',
       'Content-Disposition': inline.has(info.contentType) ? 'inline' : `attachment; filename="${name}"`,
       'Content-Length': String(info.size), 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'none'; sandbox", 'Referrer-Policy': 'no-referrer' });
+      'Referrer-Policy': 'no-referrer' });
   });
 }

@@ -8,6 +8,8 @@ import { idSchema, paginationSchema, publicContracts as contracts, publicSubmiss
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
+import { setPolicy } from '../../core/csp.js';
+import { publicPageDirectives } from './page.js';
 import { createJoinService, joinAdmissionResponseSchema, joinAdmissionSchema, joinBodyBytes, maxJoinDocuments, maxJoinMembers, type JoinOptions,
   type JoinService } from './join.service.js';
 import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuations } from './join.continuation.js';
@@ -52,7 +54,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       // Join URLs carry no credential. 'same-origin' keeps the Origin header on the cookie-bearing form posts, which the
       // CSRF check requires ('no-referrer' would send Origin: null), and sends no Referer to Checkout or anywhere else.
       ctx.header('Cache-Control', 'no-store'); ctx.header('Referrer-Policy', 'same-origin'); ctx.header('X-Content-Type-Options', 'nosniff');
-      ctx.header('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+      setPolicy(ctx, publicPageDirectives);
       return authorize(permission)(ctx, next);
     });
   } });

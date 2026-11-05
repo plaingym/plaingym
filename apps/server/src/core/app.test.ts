@@ -4,7 +4,7 @@ import { z } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
 import type { MiddlewareHandler } from 'hono';
 import { createApp } from './app.js';
-import { cspNonce } from './csp.js';
+import { cspNonce, reportedPolicy } from './csp.js';
 import { app as defaultApp } from '../closed-app.js';
 import type { RequestEnvironment } from './context.js';
 import { TestClock } from './clock.js';
@@ -82,6 +82,8 @@ describe('server application composition', () => {
     // Only a route's own policy that lets the app's pages frame it, and nothing else, relaxes X-Frame-Options to match.
     const framed = (policy: string) => app.request('/api/framed?policy=' + encodeURIComponent(policy));
     expect((await framed("default-src 'none'; sandbox; frame-ancestors 'self'")).headers.get('x-frame-options')).toBe('SAMEORIGIN');
+    // Also once the reporting directives follow it, as `setPolicy` adds them.
+    expect((await framed(reportedPolicy(["default-src 'none'", "frame-ancestors 'self'"]))).headers.get('x-frame-options')).toBe('SAMEORIGIN');
     for (const policy of ["default-src 'none'; frame-ancestors 'self' https://other.example", "default-src 'none'; frame-ancestors *",
       "default-src 'none'"])
       expect((await framed(policy)).headers.get('x-frame-options')).toBe('DENY');

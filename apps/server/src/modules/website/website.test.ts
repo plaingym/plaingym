@@ -143,6 +143,8 @@ describe('the pages', () => {
       expect(policy, path).toMatch(/default-src 'none'/);
       expect(policy, path).not.toContain('unsafe-inline');
       expect(policy, path).toContain("frame-ancestors 'none'");
+      expect(policy, path).toMatch(/; report-uri \/csp-report; report-to csp$/);
+      expect(headers.get('reporting-endpoints'), path).toBe('csp="/csp-report"');
       const nonce = /script-src 'nonce-([^']+)'/.exec(policy)?.[1];
       expect(nonce, path).toBeTruthy();
       for (const [, attributes] of body.matchAll(/<script([^>]*)>/g)) {

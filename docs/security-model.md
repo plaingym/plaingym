@@ -225,9 +225,11 @@ Details: `apps/server/src/infra/auth/README.md`.
   public website's pages run no script and allow only their structured-data block,
   by the response's nonce.
   Payment pages are left by navigation, never by a form submission, so Stripe
-  Checkout needs no exception in `form-action`. Violations are reported to
-  `/csp-report` and logged without IDs, tokens or query strings, within per-gym
-  budgets. In production the gym's canonical HTTPS hostname gets
+  Checkout needs no exception in `form-action`. Every policy, the default one and
+  each route's own, reports its violations to `/csp-report`, where they are logged
+  without IDs, tokens or query strings, within per-client, per-gym (per-hostname in
+  `multi` mode) and install-wide budgets held in memory, so a report costs no
+  database read. In production the gym's canonical HTTPS hostname gets
   `Strict-Transport-Security` (one year, no `includeSubDomains`).
 * **Validation.** Every route's input is parsed with its shared Zod contract
   before the handler runs.

@@ -6,10 +6,11 @@ import type { RequestEnvironment } from './context.js';
 import { cspReportBytes } from './body-limit.js';
 import { cspReportPath } from './csp.js';
 import { logInfo } from './log.js';
-import { rateLimit, type RateLimitOptions } from './rate-limit.js';
+import { RateBuckets, rateLimit, type RateBucket, type RateLimitOptions } from './rate-limit.js';
 import { route, type PermissionMiddleware } from './registry.js';
+import { normalizeHostname, tenancyMode, type TenancyMode } from './tenancy.js';
 
-/** Report requests a minute: each client, each gym (or the install, for requests that resolve no gym), and in all. */
+/** Report requests a minute: each client, each gym (its hostname in `multi` mode), and in all. */
 const clientBudget = 30, gymBudget = 300, installCeiling = 3_000, windowMs = 60_000;
 /** Reports logged from one request (the budgets count requests); the rest of a batch is dropped. */
 const maxReportsPerRequest = 5;
@@ -91,74 +92,68 @@ const formats = {
 
 export interface CspReportOptions {
   readonly limits?: RateLimitOptions | undefined;
-  /** The app's tenant resolver. A report whose hostname resolves to a gym counts against that gym's budgets. */
-  readonly resolveGym?: MiddlewareHandler<RequestEnvironment> | undefined;
-  /** The install's restore gate, which the resolver's database read runs inside, as every tenant read does. */
-  readonly restoreGate?: MiddlewareHandler<RequestEnvironment> | undefined;
+  /** The install's tenancy mode, which decides what a gym budget is keyed by. Defaults to `TENANCY`. */
+  readonly tenancy?: TenancyMode | undefined;
 }
 
+/** A gym's (or the ceiling's) window, with the limit it was opened with. */
+interface Budget extends RateBucket { readonly limit: number }
+/** Gym budgets are keyed `install` or `host:<hostname>`, so no hostname can name the ceiling's entry. */
+const ceilingKey = 'ceiling';
+
 /**
- * Sets the request's gym when its hostname resolves to one. A hostname that resolves to none (an uninitialized
- * install, an unknown host) or a closed restore gate leaves it unset; whatever answer the resolver or the gate
- * prepared is discarded.
+ * The gym budget a report counts against, from the request alone. In `single` mode every hostname serves the one gym,
+ * so there is one budget. In `multi` mode the budget is the request's hostname, normalized as the tenant resolver
+ * normalizes it, so a gym's reports keep to the budget of the hostname its pages are served from; a Host header no
+ * gym could have shares the install's budget.
  */
-async function resolveReportGym(context: Context<RequestEnvironment>, options: CspReportOptions): Promise<void> {
-  const resolveGym = options.resolveGym;
-  if (!resolveGym) return;
-  const resolve = () => resolveGym(context, async () => {});
-  try {
-    if (options.restoreGate) await options.restoreGate(context, async () => { await resolve(); });
-    else await resolve();
-  } catch {
-    // A resolver that refuses by throwing, or a database that is briefly unavailable: the report counts as the
-    // install's, and still answers 204.
-  }
-}
-
-/** One fixed window for the whole process, on the request's clock. */
-function windowBudget(limit: number) {
-  let resetAt = 0, count = 0;
-  return (now: number) => {
-    if (now >= resetAt) { resetAt = now + windowMs; count = 0; }
-    if (count >= limit) return false;
-    count++;
-    return true;
-  };
+function gymBudgetKey(context: Context<RequestEnvironment>, mode: TenancyMode): string {
+  if (mode === 'single') return 'install';
+  const hostname = normalizeHostname(context.req.header('host') ?? new URL(context.req.url).host);
+  return hostname ? `host:${hostname}` : 'install';
 }
 
 /**
- * Each client may send 30 requests a minute, counted in memory before anything else, so a client over its budget
- * costs no database read. The request's gym is resolved next: each gym admits 300 a minute, so no gym's reports use
- * another's budget, and requests that resolve no gym share one install budget of the same size. An install ceiling
- * of 3,000 a minute counts only requests a gym's budget admitted, bounding the log however many gyms there are.
- * Every limiter answers 204 like every other outcome: a browser retries failed reports, and a flood gets nothing to
- * react to. Reports over budget are dropped unlogged.
+ * Each client may send 30 requests a minute; each gym (its hostname, in `multi` mode) admits 300 a minute, so no gym's
+ * reports use another's budget; and an install ceiling of 3,000 a minute, checked before a gym's budget is spent and
+ * spent only with it, bounds the log however many gyms there are. Every count is in memory: a report costs no database
+ * read and no restore-gate lease, whether it is admitted or dropped. Every limiter answers 204 like every other
+ * outcome: a browser retries failed reports, and a flood gets nothing to react to. Reports over budget are dropped
+ * unlogged.
  */
 function reportBudget(options: CspReportOptions): MiddlewareHandler<RequestEnvironment> {
-  // Before resolution the request has no gym, so the client limiter keys by the install and the client's address.
+  const mode = options.tenancy ?? tenancyMode();
+  // The report route runs before tenancy, so the client limiter keys by the install and the client's address.
   const perClient = rateLimit({ ...options.limits, perGym: false, limit: clientBudget, windowMs });
-  const perGym = rateLimit({ ...options.limits, perGym: true, limit: gymBudget, windowMs });
-  const ceiling = windowBudget(installCeiling);
-  const within = async (limiter: MiddlewareHandler<RequestEnvironment>, context: Context<RequestEnvironment>) => {
-    let admitted = false;
-    try { await limiter(context, async () => { admitted = true; }); }
+  // The gym budgets and the ceiling share one table; every addition keeps the ceiling's entry, so a flood of new
+  // hostnames can evict other budgets but never reset the ceiling.
+  const budgets = new RateBuckets<Budget>(options.limits?.maxBuckets ?? 10_000, (bucket) => bucket.count >= bucket.limit);
+  const open = (key: string, limit: number, now: number) =>
+    budgets.get(key, now) ?? budgets.add(key, { count: 0, resetAt: now + windowMs, limit }, now, [ceilingKey]);
+  const admitted = async (context: Context<RequestEnvironment>) => {
+    let within = false;
+    try { await perClient(context, async () => { within = true; }); }
     catch (error) { if (!(error instanceof AppError && error.code === 'rate_limited')) throw error; }
     context.header('Retry-After', undefined);
-    return admitted;
+    return within;
   };
   return async (context, next) => {
-    if (!await within(perClient, context)) return context.body(null, 204);
-    await resolveReportGym(context, options);
-    if (!await within(perGym, context) || !ceiling(context.get('context').clock.now().getTime())) return context.body(null, 204);
+    if (!await admitted(context)) return context.body(null, 204);
+    const now = context.get('context').clock.now().getTime();
+    const ceiling = open(ceilingKey, installCeiling, now);
+    if (ceiling.count >= ceiling.limit) return context.body(null, 204);
+    const gym = open(gymBudgetKey(context, mode), gymBudget, now);
+    if (gym.count >= gym.limit) return context.body(null, 204);
+    gym.count++; ceiling.count++;
     await next();
   };
 }
 
 /**
  * The violation report endpoint for the app's Content-Security-Policy, mounted before tenancy like the other install
- * routes (it resolves the gym itself, only for its budgets). It is public and stateless: it stores nothing, never echoes
- * a body, and logs one `csp.violation` line per report holding only the directive, the blocked resource's origin or
- * keyword and the document's sanitized path.
+ * routes: it resolves no gym, and budgets reports by hostname instead (`reportBudget`). It is public and stateless: it
+ * stores nothing, never echoes a body, and logs one `csp.violation` line per report holding only the directive, the
+ * blocked resource's origin or keyword and the document's sanitized path.
  * Whatever the body holds, a request within the body cap and the limits answers 204.
  */
 export function mountCspReports(app: OpenAPIHono<RequestEnvironment>, authorize: PermissionMiddleware, options: CspReportOptions = {}): void {

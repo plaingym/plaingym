@@ -25,7 +25,8 @@ Pass `RestoreGate.middleware()` as `restoreGate` before tenant database access,
 and use its activity leases for workers. Only setup restore initiation and status
 polling bypass that middleware: the coordinator must begin outside the lease it
 drains. Other first-boot handlers, the catalog, assets and gym routes use the gate.
-Liveness and source metadata remain reachable while restore runs.
+Liveness, source metadata and CSP reports (which read no database) remain reachable
+while restore runs.
 
 ## Transport security
 
@@ -47,12 +48,14 @@ Responses that set no policy of their own enforce the policy in `csp.ts`
 server-rendered inline script needs the response's `cspNonce`, `img-src` adds
 `data:` and the uploads bucket's origin, `object-src` and `base-uri` are `'none'`,
 and `frame-ancestors 'none'` forbids framing (with `X-Frame-Options: DENY`, sent on
-every response). Routes that set their own policy (public pages, signed links,
-downloads) keep it. An inline `<script>` or `<style>`, a `style` attribute in
+every response). Routes that set their own policy (public pages, the website, signed
+links, downloads, the demo outbox preview) keep it; they set it with `setPolicy`,
+which adds the same reporting directives and `Reporting-Endpoints` header as the
+default policy. An inline `<script>` or `<style>`, a `style` attribute in
 markup and `eval` are blocked, so pages load their code and styles from files; React
 style props are fine, since they set styles through the CSSOM. Stripe Checkout is
 reached by navigation (`location.assign`, or a same-origin link that answers 303),
-never by a form submission, so `form-action` needs no Stripe origin. The policy names
+never by a form submission, so `form-action` needs no Stripe origin. Every policy names
 `POST /csp-report` (`report-to` with a `Reporting-Endpoints` header, and
 `report-uri` for older browsers). The route (`csp-report.ts`) is public and mounts
 before tenancy, so it needs no gym, session or CSRF Origin; it stores nothing and
@@ -65,15 +68,17 @@ report, up to five per request, holding only the format, the effective directive
 `/l/:token` and every segment that is not one of the app's own route words (`admin`,
 `members`, `invoices`, ...) becomes `:id`, so IDs, tokens and names never appear; the
 query, fragment, host, samples, referrers, source files and the raw body are never
-logged. Any other body or content type is ignored. Each client may send 30 requests a
-minute, counted in memory first, so a client over its budget costs no database read.
-The route then runs the app's tenant resolver itself, inside the restore gate, only to
-budget reports: each gym admits 300 a minute, so one gym's reports never use another's
-budget. Requests whose hostname resolves to no gym (an uninitialized install, an unknown
-host), that arrive while the restore gate is closed, or whose resolver fails share one
-install budget of 300. A ceiling of 3,000 a minute counts only the requests a gym's (or
-the install's) budget admitted, so it bounds the log however many gyms an install has.
-Requests over a budget are dropped unlogged. Every
+logged. Any other body or content type is ignored. Every budget is counted in memory,
+so a report, admitted or dropped, costs no database read and no restore-gate lease;
+the route never runs the tenant resolver. Each client may send 30 requests a minute.
+Each gym admits 300 a minute, so one gym's reports never use another's budget: in
+`single` mode every hostname is the one gym's, and in `multi` mode the budget is the
+request's hostname, normalized as the tenant resolver normalizes it (a Host header no
+gym could have shares one install budget of 300). The app passes its `tenancy`
+option, which defaults to `TENANCY`. A ceiling of 3,000 a minute, checked before a
+gym's budget is spent and spent only with it, bounds the log however many gyms or
+hostnames there are; it shares one table with the gym budgets and is never evicted
+from it. Requests over a budget are dropped unlogged. Every
 request within the body cap and the budgets answers 204, so a browser has nothing to
 retry and a flood nothing to react to.
 

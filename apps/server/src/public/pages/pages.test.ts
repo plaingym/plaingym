@@ -69,6 +69,8 @@ describe('core public pages through the production registrations', () => {
       expect(response.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;');
       expect(html).toContain('href="/source"'); expect(html).not.toContain('Private Member');
       expect(response.headers.get('content-security-policy')).toContain("script-src 'self'");
+      expect(response.headers.get('content-security-policy')).toMatch(/; report-uri \/csp-report; report-to csp$/);
+      expect(response.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
       expect(response.headers.get('cache-control')).toBe('no-store');
       if (path === '/drop-in') { expect(html).toContain('$25.00'); expect(html).toContain('&lt;script&gt;bad()&lt;/script&gt;'); expect(html).not.toContain('<script>bad()'); }
     }

@@ -17,6 +17,7 @@ import { mountOpenApi } from './openapi.js';
 import { staticAssets } from './static.js';
 import { contentSecurityPolicy, imageOrigins, issuedNonce, reportingEndpoints, type ContentSecurityOptions } from './csp.js';
 import { mountCspReports } from './csp-report.js';
+import type { TenancyMode } from './tenancy.js';
 import { requireSetupToken } from '../areas/setup/setup.token.js';
 
 export interface AppOptions {
@@ -37,6 +38,8 @@ export interface AppOptions {
   readonly setupToken?: string;
   readonly skipSetup?: boolean;
   readonly contentSecurity?: ContentSecurityOptions;
+  /** The install's tenancy mode, for routes that need it before tenant resolution. Defaults to `TENANCY`. */
+  readonly tenancy?: TenancyMode;
   /**
    * For production only: send HSTS on responses for the canonical host when its origin is `https:` (a resolved
    * gym's `origin`, else the static `origin` or `installOrigin`). Development leaves it off, so a browser never pins
@@ -98,7 +101,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   };
   mountHealthz(app, installAuthorize);
   mountSourceLink(app, sourceUrl(options.sourceUrl), installAuthorize);
-  mountCspReports(app, installAuthorize, { limits: options.rateLimit, resolveGym: options.resolveGym, restoreGate: options.restoreGate });
+  mountCspReports(app, installAuthorize, { limits: options.rateLimit, tenancy: options.tenancy });
   const contributions = { ...options.contributions, routes: (options.contributions?.routes ?? []).filter((entry) =>
     !options.skipSetup || !Object.values(setupContracts).some((contract) => entry.id === `${contract.method.toUpperCase()} ${contract.path}`)) };
   const firstBootIds = new Set(Object.values(setupContracts)

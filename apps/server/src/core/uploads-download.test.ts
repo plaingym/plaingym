@@ -11,6 +11,7 @@ import type { RequestEnvironment } from './context.js';
 import { errorHandler } from './errors.js';
 import { uploadDownloadPath } from '../infra/storage/runtime.js';
 import { createUploadDownloadRoute } from './uploads-download.js';
+import { reportingEndpoints } from './csp.js';
 
 const clock = new TestClock('2026-10-23T12:00:00Z'), origin = 'https://gym.example.test', key = new Uint8Array(32).fill(7);
 const gymA = uuidv7(), gymB = uuidv7();
@@ -44,6 +45,11 @@ it('streams a signed local photo inline and an export as a download', async () =
   expect(archive.status).toBe(200);
   expect(archive.headers.get('content-type')).toBe('application/octet-stream');
   expect(archive.headers.get('content-disposition')).toBe('attachment; filename="export.zip"');
+  // A file the browser renders runs nothing and loads nothing; a violation is reported like any page's.
+  for (const response of [photo, archive]) {
+    expect(response.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox; report-uri /csp-report; report-to csp");
+    expect(response.headers.get('reporting-endpoints')).toBe(reportingEndpoints);
+  }
 });
 it('returns the same 404 for tampered, expired, missing, and other gyms\' links', async () => {
   const uploads = await uploadsFor(gymA);
