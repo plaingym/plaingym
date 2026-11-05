@@ -102,10 +102,30 @@ fresh install, before anyone has completed setup.
    sudo docker compose exec -T app gym-app restore SNAPSHOT_ID --config /var/lib/plaingym/restore.json
    ```
 
-   It prints "Restore complete; billing remains paused" when it succeeds, and
-   "Restore failed; verified restores can be resumed with the maintenance CLI" for any
-   failure, without the cause. Check the file, the bucket details, the snapshot ID
-   and the key against the list above, then run it again.
+   It prints "Restore complete; billing remains paused" when it succeeds. When it fails
+   it prints `Restore failed: ` and the reason, then "A verified restore can be resumed
+   with the maintenance CLI". The reason names a path, a field, a code or an error name,
+   never a key, a credential or a value from your file:
+
+   | Reason | What to check |
+   | :--- | :--- |
+   | `Cannot read the restore configuration file PATH (CODE)` | The path, and that the file is inside the container (`ENOENT` is a missing file, `EACCES` a file the app can't read). |
+   | `The restore configuration file PATH is not valid JSON` | The file's syntax. |
+   | `The restore configuration file PATH has invalid fields: NAMES` | The fields named: missing, empty or wrongly formed. A field the file has that the command doesn't know is counted (`(1 unrecognized field)`), not named; look for a misspelled name next to a missing one. |
+   | `SNAPSHOT is not a snapshot ID (a UUID)` | The ID you passed. |
+   | `The restore configuration names a different snapshot than SNAPSHOT` | The `snapshotId` field, if you set one. |
+   | `Cannot read the key file PATH (CODE)` | `identityFile` in the configuration, and that the file is inside the container. |
+   | `The backup bucket answered with error CODE` | The bucket's error code (such as `AccessDenied`, or `HTTP` and a status): the access keys, region and endpoint. |
+   | `Cannot reach the backup bucket (CODE)` | The `endpoint` and the server's network connection; `ECONNREFUSED` and `ENOTFOUND` mean nothing answered at that address. |
+   | `Snapshot not found in the bucket` | The snapshot ID, and the `bucket` name: a bucket that doesn't exist reads the same as a snapshot that doesn't. |
+   | `The key doesn't open this snapshot` | That the key file is the private key for the backup key the snapshot was made with. |
+   | `The key file doesn't hold an age private key`, `The key file must hold exactly one age private key` | The key file's content. |
+   | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |
+   | `A verified restore is already staged; resume it first` | See **If a restore is interrupted**. |
+   | `Missing NAME` | The environment variable the app container needs. |
+   | `Unexpected error (NAME)` | Any other failure, with only the error's name. |
+
+   Fix what it names and run it again.
 4. Delete both files, from the container and from wherever you wrote them:
 
    ```sh
