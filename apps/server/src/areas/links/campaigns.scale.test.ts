@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
 import { asc, inArray } from 'drizzle-orm';
-import { households, paymentMethods, signedLinks, uuidv7, type Transaction } from '@plaingym/db';
+import { auditEvents, households, paymentMethods, signedLinks, uuidv7, type Transaction } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createTranslator } from '@plaingym/shared';
@@ -14,6 +14,8 @@ import { FakePayments } from '../../infra/payments/index.js';
 import { createCampaignsService, campaignPublishJob, campaignSendJob } from './campaigns.js';
 import { createCampaignJobs } from './campaigns.jobs.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
+import { campaignCreationLease } from './campaigns.customers.js';
+import { creationLeaseMs, creationReleasedAction, creationRetriedAction, customerRequestHash, customerUnlinkedAction, reservationAction } from '../billing/customers.js';
 
 // Seeding and publishing 2000 recipients takes seconds, so this test has a file of its own, apart from the campaign tests that share a fixture.
 const db = useTestDatabase(), factory = createFactories(db);
@@ -81,10 +83,35 @@ function recording(reads: Read[]): typeof db.forGym {
   } });
   return (gymId, fn) => db.forGym(gymId, tx => fn(new Proxy(tx, { get(target, key) {
     const value = Reflect.get(target, key) as unknown;
-    if (key === 'select' && typeof value === 'function') return (...args: unknown[]) => watch((value as (...a: unknown[]) => object).apply(target, args));
+    if ((key === 'select' || key === 'selectDistinctOn') && typeof value === 'function') return (...args: unknown[]) => watch((value as (...a: unknown[]) => object).apply(target, args));
     return typeof value === 'function' ? value.bind(target) : value;
   } })));
 }
+
+it('reads only four lease events in one statement across many customer generations', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-10-26T12:00:00Z');
+  await factory('gyms', gymId);
+  const household = await factory('households', gymId);
+  const events: (typeof auditEvents.$inferInsert)[] = [];
+  let reservation = '', attempt = '';
+  for (let generation = 0; generation < 20; generation++) {
+    const unlinked = uuidv7(); reservation = uuidv7(); attempt = uuidv7();
+    const add = (id: string, action: string, after: unknown) => {
+      const time = new Date(clock.now().getTime() + events.length);
+      events.push({ id, gymId, targetType: 'household', targetId: household.id, actorKind: 'system', action, after, createdAt: time, occurredAt: time });
+    };
+    add(unlinked, customerUnlinkedAction, null);
+    add(reservation, reservationAction, { unlinked, requestHash: customerRequestHash(household, unlinked) });
+    add(attempt, creationRetriedAction, { reservation });
+    add(uuidv7(), creationReleasedAction, { reservation, attempt });
+  }
+  await db.forGym(gymId, tx => tx.insert(auditEvents).values(events));
+  clock.advance(creationLeaseMs + events.length);
+  const reads: Read[] = [];
+  expect(await recording(reads)(gymId, tx => campaignCreationLease(tx, household, clock.now())))
+    .toEqual({ state: 'released', reservation, attempt, matchesRequest: true });
+  expect(reads).toHaveLength(1); expect(reads[0]!.rows).toBe(4);
+});
 
 it('serves a 320-household campaign with batched creation, grouped progress, SQL recipient pages and a Stripe-free card filter', async () => {
   const gymId = uuidv7(), clock = new TestClock('2026-10-26T12:00:00Z'), size = 320;
@@ -119,10 +146,10 @@ it('serves a 320-household campaign with batched creation, grouped progress, SQL
   });
   const progress = { total: size, completed: 100, revoked: 40, expired: 30, pending: 150 };
 
-  // Progress: one campaign row and two grouped counts, a row each, whatever the recipient count.
+  // Progress: one campaign row and one joined aggregate statement, whatever the recipient count.
   reads.length = 0;
   expect((await service.get(gymId, c.campaign.id)).progress).toEqual(progress);
-  expect(reads.map(r => r.rows)).toEqual([1, 1, 1]);
+  expect(reads.map(r => r.rows)).toEqual([1, 1]);
   expect(reads.slice(1).every(r => /group by "signed_links"."campaign_id"/.test(r.sql))).toBe(true);
   reads.length = 0;
   expect((await service.list(gymId)).data.map(d => d.progress)).toEqual([progress]);
@@ -136,20 +163,25 @@ it('serves a 320-household campaign with batched creation, grouped progress, SQL
     expect(page.data.map(r => r.link.id), String(state)).toEqual(expected.slice(20, 40));
     expect(page.data.every(r => r.state === (state ?? r.state))).toBe(true);
     const listed = reads.at(-1)!;
-    expect(listed.rows).toBe(expected.slice(20, 40).length); expect(listed.sql).toMatch(/limit \$\d+ offset \$\d+$/);
+    expect(reads).toHaveLength(2); // Campaign existence, then count and page in one statement.
+    expect(listed.rows).toBe(expected.slice(20, 40).length); expect(listed.sql).toMatch(/limit \$\d+ offset \$\d+/);
+    expect(listed.sql).toContain('count(*)');
   }
+  expect(await service.recipients(gymId, c.campaign.id, { limit: 20, offset: size + 1 }))
+    .toMatchObject({ data: [], pagination: { total: size } });
 
   // The filter: the gym's households without a usable card, a page at a time, from the database alone.
   const needing = people.filter((_, i) => i % 3 !== 0 || i === 0).map(p => p.id).sort();
   const found: string[] = [];
   reads.length = 0;
-  for (let offset = 0; offset < needing.length; offset += 100) {
-    const page = await service.householdsNeedingCard(gymId, { limit: 100, offset });
-    expect(page.pagination.total).toBe(needing.length);
+  for (let after: string | undefined; ; ) {
+    const page = await service.householdsNeedingCard(gymId, { limit: 100, ...(after ? { after } : {}) });
     found.push(...page.data.map(r => r.householdId));
+    if (page.pagination.nextAfter === null) break;
+    after = page.pagination.nextAfter;
   }
   expect(found).toEqual(needing);
   expect(reads).toHaveLength(Math.ceil(needing.length / 100));
-  expect(reads.every(r => r.rows <= 100 && /not exists/.test(r.sql))).toBe(true);
+  expect(reads.every(r => r.rows <= 101 && /not exists/.test(r.sql) && !/offset/.test(r.sql))).toBe(true);
   expect(paymentsFor).not.toHaveBeenCalled();
 }, 90_000);

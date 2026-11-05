@@ -23,7 +23,9 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
       targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence }, occurredAt: clock.now() }));
     throw error; // No credential changed or SMTP attempted; configuration can recover on the job retry.
   }
-  const token = randomBytes(32).toString('base64url');
+  // A public format marker permits replacement guidance without retaining old secrets or their hashes.
+  // It grants no authority: resolution still requires the complete token's current stored hash.
+  const token = 'campaign_' + randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const reservationId = uuidv7(clock.now().getTime());
   const reservation = await scope(gymId, async tx => {
@@ -59,7 +61,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     const [current] = await scope(gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)));
     if (current && current.tokenHash === tokenHash && campaignRecipient(current, clock.now()).state === 'pending') {
       await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: reservation.link, token,
-        delivery: { ...prepared, email: observed } });
+        delivery: { ...prepared, email: observed }, noticeKey: 'links/campaigns:replacementNotice' });
       outcome = 'sent';
     }
   } catch (error) {

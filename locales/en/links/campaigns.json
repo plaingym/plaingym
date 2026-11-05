@@ -1,5 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "replacementNotice": "This email replaces any earlier email for the same request. Use the link in the newest one; earlier links for this request no longer work.",
   "title": "Campaigns",
   "help": "Send onboarding or card update links to households and follow their progress.",
   "create": "New campaign",

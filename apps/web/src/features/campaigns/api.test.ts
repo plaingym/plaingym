@@ -10,25 +10,25 @@ const households: Household[] = ['empty', 'active', 'revoked-only'].map(id => ({
 it('pages the server filter and keeps only the editor households, in their order', async () => {
   // The server answers for the whole gym, so it can name a household the editor doesn't list.
   const pages = [['revoked-only', 'other'], ['empty']];
-  const load = vi.fn(async (offset: number) => ({ data: pages[offset / 2]!.map(householdId => ({ householdId })),
-    pagination: { total: 3, limit: 2, offset } }));
+  const load = vi.fn(async (after?: string) => ({ data: pages[after ? 1 : 0]!.map(householdId => ({ householdId })),
+    pagination: { limit: 2, nextAfter: after ? null : 'other' } }));
   expect(await householdsNeedingCard(households, load)).toEqual(['empty', 'revoked-only']);
-  expect(load.mock.calls).toEqual([[0], [2]]);
+  expect(load.mock.calls).toEqual([[undefined], ['other']]);
 });
 
 it('sends one request for the whole gym instead of one per household', async () => {
   const householdId = '01900000-0000-7000-8000-000000000001';
   const get = vi.spyOn(api, 'GET').mockResolvedValue({ response: new Response('{}'),
-    data: { data: [{ householdId }], pagination: { total: 1, limit: 100, offset: 0 } } });
+    data: { data: [{ householdId }], pagination: { limit: 100, nextAfter: null } } });
   try {
     expect(await campaignClient.needsCard([...households, { ...households[0]!, id: householdId }])).toEqual([householdId]);
     expect(get).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledWith('/api/link-campaign-households/needing-card', { params: { query: { limit: 100, offset: 0 } } });
+    expect(get).toHaveBeenCalledWith('/api/link-campaign-households/needing-card', { params: { query: { limit: 100 } } });
   } finally { get.mockRestore(); }
 });
 
 it('does not classify households as missing a card after an incomplete or failed response', async () => {
-  await expect(householdsNeedingCard(households, async () => ({ data: [], pagination: { total: 1, limit: 100, offset: 0 } })))
+  await expect(householdsNeedingCard(households, async () => ({ data: [], pagination: { limit: 100, nextAfter: 'next' } })))
     .rejects.toThrow('Incomplete household list');
   await expect(householdsNeedingCard(households, async () => { throw new Error('Unavailable'); })).rejects.toThrow('Unavailable');
 });

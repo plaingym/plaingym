@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Signed-link pages
 
+Campaign reminders rotate their token. An unresolvable token in the public
+`campaign_` format renders a static **This link was replaced** page with instructions
+to use the newest email. It returns 404, exposes no data or actions, and looks the
+same for made-up tokens and tokens presented to another gym. The prefix does not
+grant access; every active token still needs its current, gym-scoped stored hash.
+Unmarked unavailable links also mention replacement in their general guidance.
+No old tokens or token hashes are retained.
+
 Card payment uses `cardChargeIssue` from `@plaingym/shared/money`, the same minimum
 and currency-step check as the saved-card runner. An invoice below the minimum or
 off the step shows manual-payment instructions and no Checkout action. The server

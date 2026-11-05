@@ -67,12 +67,14 @@ Each retry of a reserved request writes `billing.customer.creation_retried`
 (naming the reservation) under the household lock before calling Stripe. It
 doesn't move the 23-hour deadline, which still runs from the reservation. It renews
 the reservation's 15-minute lease (`creationLeaseMs`), which holds off campaign
-email matching while a creation may still make a customer. `creationLease(tx,
-householdId, now)` reports the current generation's reservation as `active`,
-`expired`, or `released` once campaign matching found no customer naming the
-household after the lease and wrote `billing.customer.creation_released` (naming
-the reservation and the attempt whose lease ended). A release changes nothing here:
-the next creation replays the reservation and its key, and renews the lease
+email matching while a creation may still make a customer.
+`campaignCreationLease(tx, household, now)` (`areas/links/campaigns.customers.ts`)
+reports the current generation's reservation as `active`, `expired`, or `released`
+once campaign matching found no customer naming the household after the lease and
+wrote `billing.customer.creation_released` (naming the reservation and the attempt
+whose lease ended), and whether its `requestHash` (`customerRequestHash`) still
+matches the household. A release changes nothing here: the next creation replays
+the reservation and its key, and renews the lease
 (`areas/links/campaigns.README.md`).
 
 Only the typed in-flight idempotency conflict is retried automatically, with at

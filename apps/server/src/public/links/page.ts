@@ -14,7 +14,7 @@ const h = jsx;
 export interface PageInput {
   portalClaim?: { password: boolean } | undefined;
   data?: PortalSignedLinkData;
-  state?: 'alreadyDone' | 'unavailable' | 'cleared';
+  state?: 'alreadyDone' | 'unavailable' | 'replaced' | 'cleared';
   tablet?: boolean;
   now: Date;
   timezone: string;

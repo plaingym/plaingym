@@ -24,21 +24,20 @@ export function recipientState(state: CampaignRecipientState, now: Date) {
 
 export interface CampaignTally { progress: LinkCampaignProgress; lastUsedAt: Date | null }
 /**
- * Each campaign's progress, counted in the database with two `GROUP BY campaign_id` queries: every link (total, used and
- * the latest use), and the unused links that are closed (revoked or expired). Called inside forGym.
+ * Join grouped counts in one statement so all states share a snapshot. Called inside forGym.
  */
 export async function campaignTallies(tx: Transaction, gymId: string, campaignIds: string[], now: Date) {
   const tallies = new Map<string, CampaignTally>();
   if (!campaignIds.length) return tallies;
   const scoped = and(eq(signedLinks.gymId, gymId), inArray(signedLinks.campaignId, campaignIds));
-  const all = await tx.select({ campaignId: signedLinks.campaignId, total: count(), completed: count(signedLinks.usedAt),
-    lastUsedAt: max(signedLinks.usedAt) }).from(signedLinks).where(scoped).groupBy(signedLinks.campaignId);
-  const closed = await tx.select({ campaignId: signedLinks.campaignId, closed: count(), revoked: count(signedLinks.revokedAt) })
+  const all = tx.select({ campaignId: signedLinks.campaignId, total: count().as('total'), completed: count(signedLinks.usedAt).as('completed'),
+    lastUsedAt: max(signedLinks.usedAt).as('last_used_at') }).from(signedLinks).where(scoped).groupBy(signedLinks.campaignId).as('all_links');
+  const closed = tx.select({ campaignId: signedLinks.campaignId, closed: count().as('closed'), revoked: count(signedLinks.revokedAt).as('revoked') })
     .from(signedLinks).where(and(scoped, isNull(signedLinks.usedAt), or(isNotNull(signedLinks.revokedAt), lte(signedLinks.expiresAt, now))))
-    .groupBy(signedLinks.campaignId);
-  const closedBy = new Map(closed.map(row => [row.campaignId, row]));
-  for (const row of all) {
-    const ended = closedBy.get(row.campaignId), revoked = ended?.revoked ?? 0, expired = (ended?.closed ?? 0) - revoked;
+    .groupBy(signedLinks.campaignId).as('closed_links');
+  const rows = await tx.select().from(all).leftJoin(closed, eq(all.campaignId, closed.campaignId));
+  for (const { all_links: row, closed_links: ended } of rows) {
+    const revoked = ended?.revoked ?? 0, expired = (ended?.closed ?? 0) - revoked;
     tallies.set(row.campaignId!, { lastUsedAt: row.lastUsedAt, progress: { total: row.total, completed: row.completed, revoked, expired,
       pending: row.total - row.completed - revoked - expired } });
   }

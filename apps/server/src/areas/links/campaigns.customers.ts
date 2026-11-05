@@ -1,9 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, isNull } from 'drizzle-orm';
-import { households, type forGym, writeAudit } from '@plaingym/db';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { auditEvents, households, type forGym, type Transaction, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import type { CustomerMatch, Payments } from '../../infra/payments/index.js';
-import { creationLease, creationReleasedAction } from '../billing/customers.js';
+import { creationLeaseMs, creationReleasedAction, creationRetriedAction, customerRequestHash, customerUnlinkedAction,
+  reservationAction } from '../billing/customers.js';
+
+/**
+ * All four actions serialize on the household lock. The newest event of each kind therefore suffices;
+ * generation and attempt references discard older events. One statement, at most four returned rows.
+ */
+export async function campaignCreationLease(tx: Transaction, household: typeof households.$inferSelect, now: Date) {
+  const events = await tx.selectDistinctOn([auditEvents.action]).from(auditEvents).where(and(
+    eq(auditEvents.gymId, household.gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, household.id),
+    inArray(auditEvents.action, [customerUnlinkedAction, reservationAction, creationRetriedAction, creationReleasedAction])))
+    .orderBy(asc(auditEvents.action), desc(auditEvents.createdAt), desc(auditEvents.id));
+  const event = (action: string) => events.find(row => row.action === action);
+  const unlinked = event(customerUnlinkedAction)?.id ?? null, reservation = event(reservationAction);
+  const saved = reservation?.after as { unlinked?: string; requestHash?: string } | null;
+  if (!reservation || (saved?.unlinked ?? null) !== unlinked) return { state: 'none' as const };
+  const retry = event(creationRetriedAction);
+  const latest = (retry?.after as { reservation?: string } | null)?.reservation === reservation.id ? retry! : reservation;
+  const release = event(creationReleasedAction);
+  const state = now.getTime() < latest.occurredAt.getTime() + creationLeaseMs ? 'active'
+    : (release?.after as { attempt?: string } | null)?.attempt === latest.id ? 'released' : 'expired';
+  return { state, reservation: reservation.id, attempt: latest.id,
+    matchesRequest: saved?.requestHash === customerRequestHash(household, unlinked) };
+}
 
 /**
  * Email is only a candidate lookup: ambiguous matches and customers already linked elsewhere are left alone, and a customer
@@ -11,7 +34,7 @@ import { creationLease, creationReleasedAction } from '../billing/customers.js';
  * whose reply was lost) wins over customers that name none.
  *
  * A customer creation in progress holds off matching for its lease. After the lease, the lookup above is the check for the
- * customer the creation may have made: if none names the household, the reservation is released (audited) and matching
+ * customer the creation may have made: if its request still matches and none names the household, the reservation is released (audited) and matching
  * goes on with the other candidates; a later creation still replays the reservation's own key.
  */
 export async function matchCampaignCustomer(options: {
@@ -21,9 +44,9 @@ export async function matchCampaignCustomer(options: {
   const before = await scope(gymId, async tx => {
     const [household] = await tx.select().from(households).where(eq(households.id, householdId));
     if (!household || household.stripeCustomerId || !household.email?.trim()) return undefined;
-    return { email: household.email, lease: await creationLease(tx, householdId, clock.now()) };
+    return { email: household.email, lease: await campaignCreationLease(tx, household, clock.now()) };
   });
-  if (!before || before.lease.state === 'active') return;
+  if (!before || before.lease.state === 'active' || (before.lease.state !== 'none' && !before.lease.matchesRequest)) return;
   const email = before.email.trim().toLowerCase();
   const matches = (await (await options.paymentsFor(gymId)).findCustomerByEmail(before.email.trim()))
     .filter(match => match.email.trim().toLowerCase() === email);
@@ -36,8 +59,8 @@ export async function matchCampaignCustomer(options: {
       const [current] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!current || current.stripeCustomerId || current.email !== before.email) return;
       // Customer creation reserves and retries under this same household lock. Never race a creation that may still create.
-      const lease = await creationLease(tx, householdId, clock.now());
-      if (lease.state === 'active') return;
+      const lease = await campaignCreationLease(tx, current, clock.now());
+      if (lease.state === 'active' || (lease.state !== 'none' && !lease.matchesRequest)) return;
       if (lease.state === 'expired' && !own.length) await writeAudit(tx, { gymId, actorKind: 'system', action: creationReleasedAction,
         targetType: 'household', targetId: householdId, after: { reservation: lease.reservation, attempt: lease.attempt }, occurredAt: clock.now() });
       if (!match) return;

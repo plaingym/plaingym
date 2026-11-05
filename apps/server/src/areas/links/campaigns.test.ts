@@ -33,13 +33,14 @@ import { createCampaignRoutes } from './campaigns.routes.js';
 import { createCampaignJobs } from './campaigns.jobs.js';
 import { matchCampaignCustomer } from './campaigns.customers.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
+import campaignMessages from '../../../../../locales/en/links/campaigns.json' with { type: 'json' };
 
 const db = useTestDatabase(), factory = createFactories(db);
 const origin = 'https://gym.example.test';
 const messages = JSON.parse(await readFile(new URL('../../../../../locales/en/links/service.json', import.meta.url), 'utf8')) as Record<string, string>;
-async function fixture() {
+async function fixture(currency = 'USD') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-26T12:00:00Z');
-  await factory('gyms', gymId, { memberEmailsEnabled: true, billingEnabled: true, timezone: 'America/Los_Angeles' });
+  await factory('gyms', gymId, { memberEmailsEnabled: true, billingEnabled: true, timezone: 'America/Los_Angeles', currency });
   const household = await factory('households', gymId, { email: 'payer@example.test' });
   const member = await factory('members', gymId, { householdId: household.id, email: household.email });
   const user = await factory('authUser', gymId);
@@ -47,7 +48,7 @@ async function fixture() {
   const paymentsFor = vi.fn(async () => { expect(isInTransaction()).toBe(false); return provider; });
   const prepare = vi.fn(async (id: string) => {
     expect(isInTransaction()).toBe(false);
-    return { gymId: id, gymName: 'Test Gym', origin, email, memberEmailsEnabled: true, t: createTranslator({ 'links/service': messages }) };
+    return { gymId: id, gymName: 'Test Gym', origin, email, memberEmailsEnabled: true, t: createTranslator({ 'links/service': messages, 'links/campaigns': campaignMessages }) };
   });
   const delivery: SignedLinkDelivery = { prepare };
   const service = createCampaignsService({ scope: db.forGym, clock, jobs, delivery, paymentsFor });
@@ -179,11 +180,15 @@ describe('campaign contract, authorization and isolation', () => {
     const response = await f.server().request('/api/link-campaign-households/needing-card');
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(linksContracts.listHouseholdsNeedingCard.response.parse(await response.json())).toEqual({
-      data: expected.map(householdId => ({ householdId })), pagination: { total: 2, limit: 50, offset: 0 } });
-    expect(await f.service.householdsNeedingCard(f.gymId, { limit: 1, offset: 1 }))
-      .toEqual({ data: [{ householdId: expected[1] }], pagination: { total: 2, limit: 1, offset: 1 } });
+      data: expected.map(householdId => ({ householdId })), pagination: { limit: 50, nextAfter: null } });
+    const first = await f.service.householdsNeedingCard(f.gymId, { limit: 1 });
+    expect(first.pagination.nextAfter).toBe(expected[0]);
+    // Completing a card between pages must not shift a household past an OFFSET.
+    await factory('paymentMethods', f.gymId, { householdId: expected[0]!, processorId: 'pm_between_pages' });
+    expect(await f.service.householdsNeedingCard(f.gymId, { limit: 1, after: first.pagination.nextAfter! }))
+      .toEqual({ data: [{ householdId: expected[1] }], pagination: { limit: 1, nextAfter: null } });
     // Gym B sees only its own household, which has a card; gym A's households never appear.
-    expect(await b.service.householdsNeedingCard(b.gymId)).toEqual({ data: [], pagination: { total: 0, limit: 50, offset: 0 } });
+    expect(await b.service.householdsNeedingCard(b.gymId)).toEqual({ data: [], pagination: { limit: 50, nextAfter: null } });
     expect(f.paymentsFor).not.toHaveBeenCalled();
   });
 });
@@ -261,8 +266,7 @@ describe('campaign sends and reminders', () => {
     await Promise.all([f.service.remindCampaign(f.context, c.campaign.id), f.service.remindCampaign(f.context, c.campaign.id)]); await f.drain();
     expect(f.email.messages).toHaveLength(2);
   });
-  // TODO: enforce these campaign request limits in the shared contract.
-  it('rejects campaign requests beyond the local limits', async () => {
+  it('rejects campaign requests beyond the shared limits', async () => {
     const f = await fixture();
     for (const override of [
       { reminderSchedule: [2147483647] }, { reminderSchedule: Array.from({ length: 11 }, (_, i) => i + 1) },
@@ -617,6 +621,28 @@ describe('campaign matching after a customer creation reservation', () => {
     expect(await f.customers.ensureCustomer(f.gymId, f.household.id)).toBe(created!.id);
     expect(create).not.toHaveBeenCalled();
   });
+  it('retains the hold after a lost reply and an email change, leaving reconciliation to staff', async () => {
+    const f = await reserved('lost');
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'changed@example.test' }).where(eq(households.id, f.household.id)));
+    f.provider.seedCustomer({ id: 'cus_new_address', email: 'changed@example.test' });
+    f.clock.advance(minutes(16));
+    const lookup = vi.spyOn(f.provider, 'findCustomerByEmail');
+    await f.match();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(await f.read()).toEqual({ customer: null, audits: ['billing.customer.creation_reserved'] });
+    await expect(f.customers.ensureCustomer(f.gymId, f.household.id)).rejects.toMatchObject({ reason: 'details_changed' });
+    expect(await f.provider.findCustomerByEmail('payer@example.test')).toHaveLength(1);
+  });
+  it('rechecks the reservation hash under the lock when the household name changes during lookup', async () => {
+    const f = await reserved('failed');
+    f.clock.advance(minutes(16));
+    vi.spyOn(f.provider, 'findCustomerByEmail').mockImplementationOnce(async () => {
+      await db.forGym(f.gymId, tx => tx.update(households).set({ name: 'Changed payer' }).where(eq(households.id, f.household.id)));
+      return [{ id: 'cus_candidate', email: f.household.email! }];
+    });
+    await f.match();
+    expect(await f.read()).toEqual({ customer: null, audits: ['billing.customer.creation_reserved'] });
+  });
   it('releases a failed creation reservation once the lease ends and links the email match', async () => {
     const f = await reserved('failed');
     f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
@@ -655,6 +681,47 @@ describe('campaign matching after a customer creation reservation', () => {
 });
 
 describe('campaign completion and production registrations', () => {
+  it('shows a replaced page for a rotated campaign token and explains replacement in both email formats', async () => {
+    const f = await fixture(), c = await f.campaign(); await f.drain(); const original = f.token();
+    f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
+    const checkout = createSignedLinkCheckout({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor, originFor: async () => origin });
+    configureLinkPages({ scope: db.forHousehold, links: f.links, checkout, receiptKey: new Uint8Array(32).fill(7),
+      waivers: createWaiversService({ scope: db.forGym, clock: f.clock, uploadsFor: async () => new FakeUploads(f.gymId, f.clock) }) });
+    const app = (gymId = f.gymId) => createApp({ clock: f.clock, skipSetup: true, authorize, origin, contributions: areaContributions,
+      resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+      session: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), principal: { kind: 'anonymous' } }); await next(); }, rateLimit: { limit: 10000 } });
+    const response = await app().request(origin + '/l/' + original), body = await response.text();
+    expect(response.status).toBe(404); expect(body).toContain('This link was replaced'); expect(body).toContain('newest email');
+    expect(body).not.toContain('/l/client.js'); expect(body).not.toContain(f.household.email);
+    expect(response.headers.get('cache-control')).toBe('no-store, private');
+    expect((await app().request(origin + '/l/' + f.token())).status).toBe(200);
+    expect((await app().request(origin + '/api/links/update-card', { headers: { authorization: 'Bearer ' + original } })).status).toBe(404);
+    const otherGym = uuidv7(); await factory('gyms', otherGym);
+    expect(await (await app(otherGym).request(origin + '/l/' + original)).text()).toBe(body);
+    expect(await (await app().request(origin + '/l/campaign_' + 'a'.repeat(43))).text()).toBe(body);
+    expect(f.email.messages).toHaveLength(2);
+    for (const message of f.email.messages) for (const format of [message.text, message.html]) {
+      const notice = 'This email replaces any earlier email for the same request';
+      expect(format).toContain(notice);
+      expect(format).toContain(messages['footer']);
+      expect(format.indexOf(notice)).toBeLessThan(format.indexOf(messages['footer']!));
+    }
+  });
+  it.each([[32, 'CAD'], [1255, 'KWD']] as const)('omits link replacement guidance from a manual-payment campaign for %s %s', async (amountCents, currency) => {
+    const f = await fixture(currency);
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents, currency });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice',
+      recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    await f.drain();
+    f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
+    expect(f.email.messages).toHaveLength(2);
+    for (const message of f.email.messages) for (const format of [message.text, message.html]) {
+      expect(format).toContain('Contact the gym to arrange a manual payment');
+      expect(format).not.toContain('/l/');
+      expect(format).not.toContain(campaignMessages.replacementNotice);
+      expect(format).not.toContain('links/campaigns:replacementNotice');
+    }
+  });
   it.each(['update_card', 'pay_invoice'] as const)('protects the old %s token through Checkout and completes its real browser return', async purpose => {
     const f = await fixture();
     const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1 });

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { auditEvents, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -91,13 +91,13 @@ describe('signed link creation and metadata', () => {
     const erased = await factory('members', gymA, { householdId: household.id, anonymizedAt: clock.now() });
     const foreign = await factory('members', gymB, { anonymizedAt: clock.now() });
     const other = await factory('members', gymA, { anonymizedAt: clock.now() });
-    const before = await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }));
+    const before = await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks).orderBy(asc(signedLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)) }));
     for (const [memberId, status] of [[erased.id, 409], [foreign.id, 404], [other.id, 404]] as const) {
       const input = { ...request('sign_waiver'), householdId: household.id, memberId };
       expect((await post(server(), '/api/links', input)).status).toBe(status);
       expect((await post(server(), '/api/links/send', input)).status).toBe(status);
     }
-    expect(await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }))).toEqual(before);
+    expect(await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks).orderBy(asc(signedLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)) }))).toEqual(before);
   });
   it.each(['onboarding', 'update_card', 'pay_invoice', 'sign_waiver'] as const)('creates a scoped %s credential with only a SHA-256 digest stored', async (purpose) => {
     const result = await service.create(mutation, request(purpose));
@@ -317,6 +317,10 @@ describe('signed link HTTP contracts and permissions', () => {
     const body = signedLinkResponseSchema.parse(await result.json());
     const message = email.messages.at(-1)!;
     expect(message.to).toBe('payer@example.test');
+    for (const format of [message.text, message.html]) {
+      expect(format).not.toContain('This email replaces');
+      expect(format).not.toContain('links/campaigns:replacementNotice');
+    }
     const token = /https:\/\/gym[.]example[.]test\/l\/([A-Za-z0-9_-]+)/.exec(message.text)![1]!;
     expect((await service.resolve(gymA, token)).status).toBe('active');
     expect(JSON.stringify(body)).not.toContain(token);

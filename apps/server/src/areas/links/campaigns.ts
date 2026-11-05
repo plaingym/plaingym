@@ -3,7 +3,7 @@ import { and, asc, count, desc, eq, gt, isNull, notExists } from 'drizzle-orm';
 import { auditEvents, forGym, households, linkCampaigns, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
-import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, householdsNeedingCardQuerySchema, linkCampaignListQuerySchema,
+import { campaignLimits, campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, householdsNeedingCardQuerySchema, linkCampaignListQuerySchema,
   type CreateLinkCampaignRequest, type CreateSignedLinkRequest } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -101,12 +101,12 @@ export function createCampaignsService(options: CampaignsOptions) {
       await queue(gymId, campaignId, 'initial');
     },
     async create(context: MutationContext, input: CreateLinkCampaignRequest) {
-      const request = createLinkCampaignRequestSchema.parse(input);
-      // TODO: mirror these bounds in the shared campaign contract.
-      if (request.name.length > 120 || request.recipients.length > 2000 || request.reminderSchedule.length > 10
-        || request.reminderSchedule.some(day => day > 365)
-        || new Date(request.expiresAt).getTime() > clock.now().getTime() + 90 * 86400000)
-        throw new AppError('invalid_request', 'Campaign limits: 120-character name, 2000 recipients, 10 reminder days up to 365, and expiry within 90 days');
+      const parsed = createLinkCampaignRequestSchema.safeParse(input);
+      if (!parsed.success) throw new AppError('invalid_request', 'Invalid campaign request');
+      const request = parsed.data;
+      // Relative expiry uses the injected clock; static limits are enforced by the shared schema.
+      if (new Date(request.expiresAt).getTime() > clock.now().getTime() + campaignLimits.expiryDays * 86400000)
+        throw new AppError('invalid_request', `Campaign expiry must be within ${campaignLimits.expiryDays} days`);
       // The campaign and its recipient set are one atomic definition. External work is per-link in jobs.
       const id = await scope(context.gymId, async tx => {
         const [row] = await tx.insert(linkCampaigns).values({ gymId: context.gymId, name: request.name,
@@ -154,9 +154,12 @@ export function createCampaignsService(options: CampaignsOptions) {
         // One clock reading, so the page and its total partition the states alike.
         const now = clock.now(), where = and(eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, campaignId),
           query.state ? recipientState(query.state, now) : undefined);
-        const total = await tx.$count(signedLinks, where);
-        const rows = await tx.select().from(signedLinks).where(where).orderBy(asc(signedLinks.id)).limit(query.limit).offset(query.offset);
-        return { data: rows.map(row => campaignRecipient(row, now)), pagination: { total, limit: query.limit, offset: query.offset } };
+        const totals = tx.select({ total: count().as('total') }).from(signedLinks).where(where).as('totals');
+        const page = tx.select().from(signedLinks).where(where).orderBy(asc(signedLinks.id)).limit(query.limit).offset(query.offset).as('page');
+        // A left join retains the count even for an empty/out-of-range page, in the same snapshot.
+        const rows = await tx.select().from(totals).leftJoin(page, eq(totals.total, totals.total)).orderBy(asc(page.id));
+        return { data: rows.flatMap(row => row.page ? [campaignRecipient(row.page, now)] : []),
+          pagination: { total: rows[0]!.totals.total, limit: query.limit, offset: query.offset } };
       });
     },
     /**
@@ -166,12 +169,13 @@ export function createCampaignsService(options: CampaignsOptions) {
     async householdsNeedingCard(gymId: string, input: z.input<typeof householdsNeedingCardQuerySchema> = {}) {
       const query = householdsNeedingCardQuerySchema.parse(input);
       return scope(gymId, async tx => {
-        const where = and(eq(households.gymId, gymId), notExists(tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
+        const where = and(eq(households.gymId, gymId), query.after ? gt(households.id, query.after) : undefined,
+          notExists(tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
           eq(paymentMethods.gymId, gymId), eq(paymentMethods.householdId, households.id), isNull(paymentMethods.revokedAt)))));
-        const total = await tx.$count(households, where);
         const rows = await tx.select({ householdId: households.id }).from(households).where(where)
-          .orderBy(asc(households.id)).limit(query.limit).offset(query.offset);
-        return { data: rows, pagination: { total, limit: query.limit, offset: query.offset } };
+          .orderBy(asc(households.id)).limit(query.limit + 1);
+        const data = rows.slice(0, query.limit);
+        return { data, pagination: { limit: query.limit, nextAfter: rows.length > query.limit ? data.at(-1)!.householdId : null } };
       });
     },
     async remindCampaign(context: MutationContext, campaignId: string) {

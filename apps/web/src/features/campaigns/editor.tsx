@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useRef, useState } from 'react';
-import { createLinkCampaignRequestSchema, type CreateLinkCampaignRequest, type Household } from '@plaingym/shared/contracts';
+import { campaignLimits, createLinkCampaignRequestSchema, type CreateLinkCampaignRequest, type Household } from '@plaingym/shared/contracts';
 import { zonedInstant } from '@plaingym/shared/time';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
@@ -38,9 +38,9 @@ export function CampaignEditor({ households, timezone, save, close, loadNeedsCar
     try {
       const reminderSchedule = days.trim() ? days.split(',').map(d => Number(d.trim())) : [];
       const expiry = zonedInstant(expires, '23:59:59', timezone, { gap: 'shift' })!;
-      const limit = name.trim().length > 120 ? 'nameLimit' : selected.size > 2000 ? 'recipientLimit'
-        : reminderSchedule.length > 10 ? 'scheduleLimit' : reminderSchedule.some(day => day > 365) ? 'dayLimit'
-          : expiry.getTime() > Date.now() + 90 * 86400000 ? 'expiryLimit' : undefined;
+      const limit = name.trim().length > campaignLimits.name ? 'nameLimit' : selected.size > campaignLimits.recipients ? 'recipientLimit'
+        : reminderSchedule.length > campaignLimits.reminders ? 'scheduleLimit' : reminderSchedule.some(day => day > campaignLimits.reminderDay) ? 'dayLimit'
+          : expiry.getTime() > Date.now() + campaignLimits.expiryDays * 86400000 ? 'expiryLimit' : undefined;
       if (limit) { setError(text(limit)); return; }
       input = createLinkCampaignRequestSchema.parse({ name, purpose,
         expiresAt: expiry.toISOString(), reminderSchedule,
@@ -54,7 +54,7 @@ export function CampaignEditor({ households, timezone, save, close, loadNeedsCar
   return <Dialog title={text('create')} closeLabel={text('close')} dismissible={!busy} onClose={close}>
     <form className="min-w-0 space-y-4" onSubmit={event => { event.preventDefault(); void submit(); }}>
       <fieldset disabled={busy} className="min-w-0 space-y-4">
-        <div><Label htmlFor="campaign-name">{text('name')}</Label><Input id="campaign-name" maxLength={120} value={name} onChange={e => setName(e.target.value)} required /></div>
+        <div><Label htmlFor="campaign-name">{text('name')}</Label><Input id="campaign-name" maxLength={campaignLimits.name} value={name} onChange={e => setName(e.target.value)} required /></div>
         <div><Label htmlFor="campaign-purpose">{text('purpose')}</Label><Select id="campaign-purpose" value={purpose} onChange={e => setPurpose(e.target.value as typeof purpose)}>
           <option value="onboarding">{text('onboarding')}</option><option value="update_card">{text('update_card')}</option>
         </Select></div>

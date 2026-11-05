@@ -97,7 +97,11 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       const ctx = c.get('context'), config = options();
       const resolution = await config.links.resolve(ctx.gym.gymId, c.req.valid('param').token);
       const common = { ...await presentation(c), tablet: c.req.valid('query').tablet === '1' };
-      if (resolution.status !== 'active') return html(c, { ...common, state: resolution.status === 'used' ? 'alreadyDone' : 'unavailable' }, resolution.status === 'used' ? 200 : 404);
+      if (resolution.status !== 'active') {
+        // This is static guidance, never proof a credential or household exists. Other gyms see the same page.
+        const replaced = resolution.status === 'not_found' && /^campaign_[A-Za-z0-9_-]{43}$/.test(c.req.valid('param').token);
+        return html(c, { ...common, state: resolution.status === 'used' ? 'alreadyDone' : replaced ? 'replaced' : 'unavailable' }, resolution.status === 'used' ? 200 : 404);
+      }
       try {
         const verified = { ...ctx, principal: resolution.principal };
         const data = await config.service.read(verified);

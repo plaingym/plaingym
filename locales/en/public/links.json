@@ -1,4 +1,6 @@
 {
+  "replaced": "This link was replaced",
+  "replacedBody": "Use the link in the newest email from your gym. If you cannot find it, contact the gym for help.",
   "_license": "SPDX-License-Identifier: AGPL-3.0-only",
   "manualPayment": "This invoice cannot be paid by card. Contact the gym to arrange a manual payment.",
   "pay_invoice": "Pay invoice",
@@ -9,7 +11,7 @@
   "alreadyDone": "Already done",
   "alreadyDoneBody": "This link has already been completed. There is nothing more to do.",
   "unavailable": "This link is unavailable",
-  "unavailableBody": "It may have expired or been withdrawn. Please ask the gym for a new link.",
+  "unavailableBody": "It may have expired, been withdrawn, or been replaced by a newer email. Use the link in the newest email, or ask the gym for a new link.",
   "failed": "We couldn't complete that step. Please try again or contact the gym.",
   "conflict": "Something changed. Reload this page and review the latest details before continuing.",
   "customerMissing": "Card setup isn't available yet. Please contact the gym.",

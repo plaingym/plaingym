@@ -65,6 +65,7 @@ const server = createServer(async (req, res) => {
   }
   res.setHeader('content-type', 'text/html');
   if (url.pathname === '/l/cleared') { res.end(linkPage({ state: 'cleared', now, timezone: 'UTC', t })); return; }
+  if (url.pathname === '/l/replaced') { res.end(linkPage({ state: 'replaced', now, timezone: 'UTC', t })); return; }
   if (url.pathname === '/l/sign_waiver' && fixtures.sign_waiver?.purpose === 'sign_waiver' && fixtures.sign_waiver.signatures.length === templates.length) {
     res.end(linkPage({ state: 'alreadyDone', now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet') })); return;
   }
@@ -77,10 +78,15 @@ const browser = await chromium.launch({ channel: 'msedge', headless: true });
 try {
   const page = await browser.newPage();
   page.on('pageerror', (error: Error) => errors.push(error.message));
-  for (const width of [360, 1280]) for (const name of Object.keys(fixtures)) {
+  for (const width of [360, 1280]) for (const name of [...Object.keys(fixtures), 'replaced']) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(origin + '/l/' + name);
     await page.waitForLoadState('networkidle');
+    if (name === 'replaced') {
+      await expect(page.getByRole('heading', { name: 'This link was replaced' })).toBeVisible();
+      await expect(page.getByText('Use the link in the newest email', { exact: false })).toBeVisible();
+      if (await page.locator('[data-checkout], [data-waiver]').count()) throw new Error('Replaced link exposes actions');
+    }
     if (name.startsWith('manual_')) {
       if (!(await page.locator('main').textContent())?.includes('Contact the gym to arrange a manual payment'))
         throw new Error('Missing manual payment guidance');
@@ -184,7 +190,7 @@ try {
   await page.clock.fastForward(121_000);
   await page.waitForURL('**/l/cleared');
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log('Passed: six screens at 360 px and desktop, including manual payment, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
+  console.log('Passed: seven screens at 360 px and desktop, including replaced links, manual payment, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
 } finally {
   await browser.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

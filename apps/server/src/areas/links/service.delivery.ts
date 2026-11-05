@@ -37,6 +37,7 @@ export async function deliverSignedLink(input: {
   link: SignedLinkRecord;
   token: string;
   delivery: PreparedSignedLinkDelivery;
+  noticeKey?: string;
 }): Promise<void> {
   assertNoTransaction('links.send');
   const { scope, context, link, token, delivery } = input;
@@ -56,7 +57,8 @@ export async function deliverSignedLink(input: {
     return !!cardChargeIssue(invoice.amountCents, invoice.currency);
   });
   const url = manualPayment ? '' : new URL(`/l/${token}`, delivery.origin).href;
-  const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose, manualPayment }, delivery.t);
+  const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose, manualPayment,
+    ...(input.noticeKey ? { noticeKey: input.noticeKey } : {}) }, delivery.t);
   if (!(await createGymSettingsAccessor({ scope }).get(context.gymId)).memberEmailsEnabled)
     throw new AppError('unavailable', 'Member email is disabled');
   const result = await delivery.email.sendEmail({ to: recipient, ...content });

@@ -54,13 +54,15 @@ export const signedLinkTokenParamsSchema = z.strictObject({
   token: createSignedLinkResponseSchema.shape.data.shape.token,
 });
 
+/** Static bounds are checked by the schemas; expiryDays is checked against the caller's clock. */
+export const campaignLimits = { name: 120, recipients: 2000, reminders: 10, reminderDay: 365, expiryDays: 90 } as const;
 /** Days after campaign creation, strictly increasing; [] disables automatic reminders. */
-export const campaignReminderScheduleSchema = z.array(z.int32().positive())
+export const campaignReminderScheduleSchema = z.array(z.int32().positive().max(campaignLimits.reminderDay)).max(campaignLimits.reminders)
   .refine((days) => days.every((day, index) => index === 0 || day > days[index - 1]!),
     'Reminder days must be unique and increasing');
 export const linkCampaignSchema = z.strictObject({
   id: idSchema,
-  name: z.string().trim().min(1),
+  name: z.string().trim().min(1).max(campaignLimits.name),
   purpose: signedLinkPurposeSchema,
   createdBy: idSchema.nullable(),
   reminderSchedule: campaignReminderScheduleSchema,
@@ -75,13 +77,13 @@ const campaignFields = {
 const householdRecipientSchema = z.strictObject({ householdId: idSchema });
 const invoiceRecipientSchema = z.strictObject({ householdId: idSchema, invoiceId: idSchema });
 const waiverRecipientSchema = z.strictObject({ householdId: idSchema, memberId: idSchema });
-const householdRecipientsSchema = z.array(householdRecipientSchema).min(1)
+const householdRecipientsSchema = z.array(householdRecipientSchema).min(1).max(campaignLimits.recipients)
   .refine((recipients) => new Set(recipients.map((recipient) => recipient.householdId)).size === recipients.length,
     'A household may appear only once');
-const invoiceRecipientsSchema = z.array(invoiceRecipientSchema).min(1)
+const invoiceRecipientsSchema = z.array(invoiceRecipientSchema).min(1).max(campaignLimits.recipients)
   .refine((recipients) => new Set(recipients.map((recipient) => recipient.invoiceId)).size === recipients.length,
     'An invoice may appear only once');
-const waiverRecipientsSchema = z.array(waiverRecipientSchema).min(1)
+const waiverRecipientsSchema = z.array(waiverRecipientSchema).min(1).max(campaignLimits.recipients)
   .refine((recipients) => new Set(recipients.map((recipient) => recipient.memberId)).size === recipients.length,
     'A member may appear only once');
 /** A campaign uses one purpose. Recipients specify exactly the resource that purpose grants. */
@@ -123,8 +125,14 @@ export const remindLinkCampaignResponseSchema = z.strictObject({
   data: z.strictObject({ queued: z.int().nonnegative() }),
 });
 /** Households of the gym with no saved card that isn't removed, in ID order: the campaign editor's "Needs a card" filter. */
-export const householdsNeedingCardQuerySchema = paginationSchema;
-export const householdsNeedingCardResponseSchema = listResponseSchema(z.strictObject({ householdId: idSchema }));
+export const householdsNeedingCardQuerySchema = z.strictObject({
+  limit: paginationSchema.shape.limit,
+  after: idSchema.optional(),
+});
+export const householdsNeedingCardResponseSchema = z.strictObject({
+  data: z.array(z.strictObject({ householdId: idSchema })),
+  pagination: z.strictObject({ limit: z.int().positive(), nextAfter: idSchema.nullable() }),
+});
 
 /**
  * API declarations only. Creation and sending mint a fresh single-use link; later metadata

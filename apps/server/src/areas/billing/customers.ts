@@ -23,14 +23,24 @@ export interface CustomersOptions {
   sleep?: (milliseconds: number) => Promise<void>;
 }
 
+/** The provider request for a household, in the customer generation after `unlinked`. */
+function customerRequest(household: Pick<typeof households.$inferSelect, 'id' | 'email' | 'name'>, unlinked: string | null) {
+  return { email: household.email, name: household.name, householdId: household.id,
+    idempotencyKey: `household:${household.id}:customer` + (unlinked ? ':after:' + unlinked : '') };
+}
+
+/** Hash the exact reserved provider request, including its customer generation, without storing PII. */
+export function customerRequestHash(household: Pick<typeof households.$inferSelect, 'id' | 'email' | 'name'>, unlinked: string | null = null) {
+  return createHash('sha256').update(JSON.stringify(customerRequest(household, unlinked))).digest('hex');
+}
+
 /** An unresolved creation must never be repeated after the provider can forget its key. */
 export function createCustomersService(options: CustomersOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const sleep = options.sleep ?? pause;
   function details(household: typeof households.$inferSelect, unlinked: string | null = null) {
     if (!household.email?.trim() || !household.name.trim()) throw new CustomerUnavailable('missing_details');
-    return { email: household.email, name: household.name, householdId: household.id,
-      idempotencyKey: `household:${household.id}:customer` + (unlinked ? ':after:' + unlinked : '') };
+    return { ...customerRequest(household, unlinked), email: household.email };
   }
   const audit = (tx: Transaction, gymId: string, householdId: string, action: string, after: unknown) => writeAudit(tx, {
     gymId, actorKind: 'system', action, targetType: 'household', targetId: householdId,
@@ -66,7 +76,7 @@ export function createCustomersService(options: CustomersOptions) {
       const request = details(household, unlinked);
       // Keep PII out of the audit log. If details change after an uncertain call, refuse
       // rather than send different parameters with the same key or create another customer.
-      const requestHash = createHash('sha256').update(JSON.stringify(request)).digest('hex');
+      const requestHash = customerRequestHash(household, unlinked);
       if (reservation) {
         const saved = reservation.after as { requestHash?: string } | null;
         if (saved?.requestHash !== requestHash) throw new CustomerUnavailable('details_changed');
@@ -187,24 +197,6 @@ export async function currentReservation(tx: Transaction, householdId: string) {
   return { reservation, unlinked: generation };
 }
 
-export type CreationLease =
-  | { state: 'none' }
-  /** `attempt` is the reservation or its latest retry, which the lease runs from. */
-  | { state: 'active' | 'expired' | 'released'; reservation: string; attempt: string };
-/**
- * Whether the household's current creation reservation still holds off campaign matching: for `creationLeaseMs` after it,
- * or after its latest retry. An expired lease is `released` once matching recorded that no customer of the household exists.
- */
-export async function creationLease(tx: Transaction, householdId: string, now: Date): Promise<CreationLease> {
-  const { reservation } = await currentReservation(tx, householdId);
-  if (!reservation) return { state: 'none' };
-  const names = (action: string, key: string, id: string) => householdAudits(tx, householdId, action)
-    .then(rows => rows.filter(row => (row.after as Record<string, unknown> | null)?.[key] === id));
-  const [latest = reservation] = await names(creationRetriedAction, 'reservation', reservation.id);
-  const lease = { reservation: reservation.id, attempt: latest.id };
-  if (now.getTime() < latest.occurredAt.getTime() + creationLeaseMs) return { state: 'active', ...lease };
-  return { state: (await names(creationReleasedAction, 'attempt', latest.id)).length ? 'released' : 'expired', ...lease };
-}
 /** The household's audits of one action, newest first. */
 function householdAudits(tx: Transaction, householdId: string, action: string) {
   return tx.select().from(auditEvents).where(and(eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),

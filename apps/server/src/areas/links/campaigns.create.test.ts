@@ -31,8 +31,8 @@ async function fixture() {
   };
   const input = <P extends keyof typeof requests>(purpose: P, recipients: unknown[] = requests[purpose]) =>
     ({ name: 'Batch ' + purpose, purpose, expiresAt, reminderSchedule: [3], recipients }) as CreateLinkCampaignRequest;
-  const stored = () => db.forGym(gymId, async tx => ({ campaigns: await tx.select().from(linkCampaigns),
-    links: await tx.select().from(signedLinks), audits: await tx.select().from(auditEvents) }));
+  const stored = () => db.forGym(gymId, async tx => ({ campaigns: await tx.select().from(linkCampaigns).orderBy(asc(linkCampaigns.id)),
+    links: await tx.select().from(signedLinks).orderBy(asc(signedLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)) }));
   return { gymId, clock, jobs, options, service, links, context, requests, input, stored };
 }
 async function bulkHouseholds(gymId: string, count: number) {

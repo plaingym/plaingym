@@ -13,8 +13,8 @@ function checked<T>(result: { response: Response; data?: T; error?: unknown }): 
 }
 export const campaignClient = {
   async needsCard(households: Household[]) {
-    return householdsNeedingCard(households, async offset => parseResponse(linksContracts.listHouseholdsNeedingCard.response,
-      checked(await api.GET('/api/link-campaign-households/needing-card', { params: { query: { limit: 100, offset } } }))));
+    return householdsNeedingCard(households, async after => parseResponse(linksContracts.listHouseholdsNeedingCard.response,
+      checked(await api.GET('/api/link-campaign-households/needing-card', { params: { query: { limit: 100, ...(after ? { after } : {}) } } }))));
   },
   async list(offset = 0) {
     return parseResponse(linksContracts.listCampaigns.response, checked(await api.GET('/api/link-campaigns', { params: { query: { limit: 20, offset } } })));
@@ -49,14 +49,14 @@ export type CampaignClient = typeof campaignClient;
  * Loaded only when the filter is requested: the server answers for the whole gym a page of 100 at a time, so the request
  * count follows the households without a card, not every household. Keeps the editor's households, in their order.
  */
-export async function householdsNeedingCard(households: Household[], load: (offset: number) => Promise<HouseholdsNeedingCardResponse>) {
+export async function householdsNeedingCard(households: Household[], load: (after?: string) => Promise<HouseholdsNeedingCardResponse>) {
   const missing = new Set<string>();
-  for (let offset = 0; ; ) {
-    const page = await load(offset);
+  for (let after: string | undefined; ; ) {
+    const page = await load(after);
     for (const row of page.data) missing.add(row.householdId);
-    offset += page.data.length;
-    if (offset >= page.pagination.total) break;
-    if (!page.data.length) throw new Error('Incomplete household list');
+    if (page.pagination.nextAfter === null) break;
+    if (!page.data.length || (after !== undefined && page.pagination.nextAfter <= after)) throw new Error('Incomplete household list');
+    after = page.pagination.nextAfter;
   }
   return households.filter(h => missing.has(h.id)).map(h => h.id);
 }
