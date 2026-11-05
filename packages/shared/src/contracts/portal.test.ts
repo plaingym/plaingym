@@ -48,8 +48,8 @@ describe('portal access and safe projections', () => {
     expect(Object.values(portalContracts).some((contract) => (contract.permission.capability as string) === 'memberships.manage')).toBe(false);
   });
   it('keeps payer context valid without a member login and requires a member link for adults', () => {
-    expect(portalContextSchema.parse({ role: 'payer', householdId: id, memberId: null }).memberId).toBeNull();
-    expect(portalContextSchema.safeParse({ role: 'member', householdId: id, memberId: null }).success).toBe(false);
+    expect(portalContextSchema.parse({ role: 'payer', memberId: null }).memberId).toBeNull();
+    expect(portalContextSchema.safeParse({ role: 'member', memberId: null }).success).toBe(false);
   });
   it('includes emergency contacts but rejects staff-only or credential fields', () => {
     expect(portalMemberSchema.parse(member).emergencyContacts).toEqual(member.emergencyContacts);

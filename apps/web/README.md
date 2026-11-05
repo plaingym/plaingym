@@ -89,3 +89,12 @@ elements are real buttons and links with accessible names. The production-image
 e2e suite (`e2e/specs/mobile.spec.ts`) checks the admin shell at 360 px and
 desktop width: every admin page reachable through the menu, no sideways
 scrolling, 44 px shell targets, and axe WCAG 2.1 A/AA; `e2e/specs/mobile-screens.spec.ts` checks the admin screens themselves at both widths (whole-page axe, 44 px content targets) and their main flows.
+
+## API answer compatibility
+
+Staff and portal API consumers use `lib/response.ts` to parse JSON answers. It strips fields the
+shared schema identifies as unknown, including nested records, so an open tab
+can read an answer with newly added fields. Required fields, field types and
+refinements still apply. Request validation and the OpenAPI schemas remain strict.
+Kiosk lookup and check-in answers remain strict to reject unexpected private fields
+on shared devices.

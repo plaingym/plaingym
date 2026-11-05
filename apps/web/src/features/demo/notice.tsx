@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
@@ -25,7 +26,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
     queryKey: ['demo', 'discovery', window.location.origin],
     // Let an in-flight discovery finish across a StrictMode/root remount, so it
     // can be shared by the next observer rather than cancelled and requested twice.
-    queryFn: async () => demoEntryResponse.parse(await request('/api/demo')),
+    queryFn: async () => parseResponse(demoEntryResponse, await request('/api/demo')),
     staleTime: Infinity, gcTime: Infinity, retry: false,
     refetchOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
   });
@@ -116,7 +117,7 @@ function useLoginState(): DemoLogin {
 export function useDemoMenu(enabled = true) {
   const sandbox = useDemoSandbox();
   return useQuery({ queryKey: ['demo', 'menu'], enabled: sandbox && enabled, retry: false,
-    queryFn: async ({ signal }) => demoMenuResponse.parse(await request('/api/demo/menu', undefined, signal)).data });
+    queryFn: async ({ signal }) => parseResponse(demoMenuResponse, await request('/api/demo/menu', undefined, signal)).data });
 }
 /** The demo's one navigation style, in the menu and on the start page alike: a full-width link with a forward arrow. */
 export function DemoMenuLink({ href, children, current = false }: { href: string; children: ReactNode; current?: boolean }) {
@@ -192,7 +193,7 @@ export function TryDemoButton({ navigate = (url: string) => window.location.assi
     active.current = true;
     setPending(true); setError('');
     try {
-      const { data } = sandboxResponse.parse(await request('/api/demo/sandboxes', {}));
+      const { data } = parseResponse(sandboxResponse, await request('/api/demo/sandboxes', {}));
       // The sandbox's start page offers every role, the join walkthrough and the kiosk.
       const destination = new URL('/demo', data.origin);
       destination.hash = new URLSearchParams({ kioskToken: data.kioskToken }).toString();

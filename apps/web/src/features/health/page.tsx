@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import type { ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -44,7 +45,7 @@ function HealthPanel({ gymId }: { gymId: string }) {
   const query = useQuery({ queryKey: ['health', gymId], queryFn: async ({ signal }) => {
     const result = await api.GET(healthContracts.get.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Health check failed');
-    return healthResponseSchema.parse(result.data).data;
+    return parseResponse(healthResponseSchema, result.data).data;
   }, refetchInterval: 60_000 });
   return <main className="mx-auto max-w-7xl space-y-6 p-6">
     <div className="flex items-center justify-between gap-4"><h1 className="text-2xl font-semibold">{label('title')}</h1><Button variant="outline" disabled={query.isFetching} onClick={() => void cache.invalidateQueries({ queryKey: ['health', gymId] })}>{label('refresh')}</Button></div>

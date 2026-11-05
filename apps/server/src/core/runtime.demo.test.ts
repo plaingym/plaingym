@@ -48,7 +48,7 @@ it('separates real member and staff sessions through the runtime composition', a
   const headers = app.headers(sandbox, await app.login('student'));
   const context = await app.runtime.app.request(sandbox.origin + '/api/portal/context', { headers });
   expect(context.status).toBe(200);
-  expect(await context.json()).toMatchObject({ data: { role: 'payer', householdId: expect.any(String) } });
+  expect(await context.json()).toMatchObject({ data: { role: 'payer' }, householdId: expect.any(String) });
   for (const path of ['/api/staff/profiles', '/api/settings/go-live', '/api/dashboard']) {
     expect((await app.runtime.app.request(sandbox.origin + path, { headers })).status, path).toBe(403);
   }

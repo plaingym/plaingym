@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { saveEmailIntegrationResponseSchema, type EmailIntegration, type SignInMethods } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
@@ -36,7 +37,7 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
       const reply = await state.change((revision, signal) => api.PUT('/api/settings/integrations/email', { signal, body: { revision, host: field('host').trim(),
         port: Number(field('port')), secure: form.has('secure'), username: field('username'), password: field('password'),
         from: field('from'), testTo: field('testTo') } }), (data) => {
-        const parsed = saveEmailIntegrationResponseSchema.parse(data).data;
+        const parsed = parseResponse(saveEmailIntegrationResponseSchema, data).data;
         return { integrations: parsed.integrations, result: parsed.test };
       });
       if (reply.result === 'sent') { setMessage({ kind: 'status', text: label('saved') }); setOpen(false); }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useState } from 'react';
 import { demoSignInLinkResponse } from '@plaingym/shared/contracts';
 import { Alert } from '../../components/ui/alert.js';
@@ -17,7 +18,7 @@ export function DemoSignInLink({ email, navigate = (href: string) => window.loca
     if (pending) return;
     setPending(true); setError(undefined);
     try {
-      const { data } = demoSignInLinkResponse.parse(await request('/api/demo/sign-in-link', { email }));
+      const { data } = parseResponse(demoSignInLinkResponse, await request('/api/demo/sign-in-link', { email }));
       // The contract allows only a sign-in path on this origin.
       navigate(data.href);
     } catch (failure) {

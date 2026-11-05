@@ -18,11 +18,22 @@ No request body or parameter supplies the household scope, and the portal never
 shows several households at once. Instead every logged-in portal answer
 (`portalContracts` and `portalScheduleContracts`) names the household it was
 read for: `{ data, householdId }` (plus `pagination` on lists), built with
-`portalAnswer` from the household this request resolved to. The household can
+`portalRoute` from the household this request resolved to, which also refuses an
+answer that breaks its contract (a 500, never the answer). The context has just
+one household field, at the top level. The household can
 change between two requests (another tab switches, or a revoked link falls back
 to another household), so the portal compares it with the household it asked
 under and never keeps an answer for another one. Signed-link answers name no
 household.
+
+Every member-authorized write requires an `X-Portal-Household` header naming the
+household the page has open. Authorization compares it with the session's freshly
+resolved household before validation or the handler. A missing or mismatched
+header returns 409, with `X-Portal-Household` naming the resolved household; no
+write, Checkout or receipt-cookie replacement occurs. Reads that send the header
+get the same check. The header is a precondition, never a grant of access. Ordinary
+revision conflicts do not carry this response header. The household selector and
+invitation endpoints use their own session permissions, not this write precondition.
 
 ## Choosing a household
 

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { checkinCodeContracts, checkinCodeResponseSchema, kioskCheckinResponseSchema, type CheckinCodeResponse } from '@plaingym/shared/contracts';
 import { KioskAuthError } from './api.js';
 
@@ -20,5 +21,5 @@ export async function staffCheckinCode(memberId: string, action: 'read' | 'regen
     ...(action === 'read' ? {} : { body: JSON.stringify({ revision }) }),
   });
   if (!response.ok) throw new QrRequestError(response.status);
-  return checkinCodeResponseSchema.parse(await response.json()).data;
+  return parseResponse(checkinCodeResponseSchema, await response.json()).data;
 }

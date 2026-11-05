@@ -14,6 +14,7 @@ import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
+import { rememberPortalApp, portalTestHeaders } from './household.fixture.js';
 import { createPortalAuthorization } from './auth.permissions.js';
 import { createPortalBookingService } from './bookings.js';
 import { createPortalBookingRoutes } from './bookings.routes.js';
@@ -78,12 +79,12 @@ export function portalServices(db: Database, clock: TestClock, options: { config
     ...createPortalProgressRoutes(createPortalProgressService({ ...shared, ranks: () => configured ? ranks : undefined, attendance: () => attendance })),
   ];
   function app(gymId: string, principal: Principal) {
-    return createApp({ clock, skipSetup: true, origin: 'http://localhost', contributions: { routes },
+    return rememberPortalApp(createApp({ clock, skipSetup: true, origin: 'http://localhost', contributions: { routes },
       resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
       session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
-      authorize: createPortalAuthorization(households) });
+      authorize: createPortalAuthorization(households) }), principal);
   }
   return { app, bookings, codes, ranks, attendance, settings };
 }
 export const post = (server: ReturnType<ReturnType<typeof portalServices>['app']>, path: string, body: unknown = {}) => server.request(path, {
-  method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://localhost' }, body: JSON.stringify(body) });
+  method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://localhost', ...portalTestHeaders(server) }, body: JSON.stringify(body) });

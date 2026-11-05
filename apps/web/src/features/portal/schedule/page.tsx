@@ -45,7 +45,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await client.schedule(range.from, range.to)).data, staleTime: 0 });
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>
-      input.action === 'book' ? client.book(input.context, input.member.id, input.session.id) : client.cancel(input.context, input.member.id, input.booking!.id),
+      scope.run(() => input.action === 'book' ? client.book(input.context, input.member.id, input.session.id, scope.key[4]!) : client.cancel(input.context, input.member.id, input.booking!.id, scope.key[4]!)),
     onMutate: () => setMessage(undefined),
     onSuccess: (row, input) => setMessage({ tone: 'success', text: row.status === 'cancelled' ? text('cancelledSaved', { name: input.member.name })
       : row.status === 'waitlisted' ? text('waitlistSaved', { name: input.member.name, rank: row.queueRank }) : text('bookedSaved', { name: input.member.name }) }),
@@ -56,7 +56,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const timeLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' });
   const whenLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
   const names = new Map(members.data?.map(row => [row.id, row.name]));
-  if (context.isPending || members.isPending) return <LoadingState />;
+  if (scope.moving || context.isPending || members.isPending) return <LoadingState />;
   if (context.isError || members.isError) return <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
   const days = new Map<string, PortalScheduleSession[]>();
   for (const session of schedule.data ?? []) {

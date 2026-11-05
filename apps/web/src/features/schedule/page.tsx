@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState, type FormEvent } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { classSessionListResponseSchema, classTagListResponseSchema, classTemplateListResponseSchema, type ClassSession, type ClassTag, type ClassTemplate } from '@plaingym/shared/contracts';
@@ -58,15 +59,15 @@ function ScheduleContent({ gymId, roles, enabledModules }: { gymId: string | und
         limit: 100, ...(programId ? { programId } : {}), ...(tagId ? { tagId } : {}), ...(coachId ? { coachId } : {}) };
       const rows = await allPages(async (offset) => {
         const result = await api.GET('/api/schedule/sessions', { params: { query: { ...query, offset } }, signal }); check(result.response);
-        return classSessionListResponseSchema.parse(result.data);
+        return parseResponse(classSessionListResponseSchema, result.data);
       });
       const templateRows = await allPages(async (offset) => {
         const result = await api.GET('/api/schedule/templates', { params: { query: { offset, limit: 100 } }, signal }); check(result.response);
-        return classTemplateListResponseSchema.parse(result.data);
+        return parseResponse(classTemplateListResponseSchema, result.data);
       });
       const tagRows = await allPages(async (offset) => {
         const result = await api.GET('/api/schedule/tags', { params: { query: { offset, limit: 100 } }, signal }); check(result.response);
-        return classTagListResponseSchema.parse(result.data);
+        return parseResponse(classTagListResponseSchema, result.data);
       });
       if (!signal.aborted) { setSessions(rows); setTemplates(templateRows); setTags(tagRows); }
     }

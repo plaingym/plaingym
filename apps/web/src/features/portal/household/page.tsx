@@ -13,7 +13,7 @@ import { Card } from '../../../components/ui/card.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
-import { conflict, gymToday, knownMinor, portalCall, usePortalContext, usePortalScope, type PortalScope } from './api.js';
+import { conflict, gymToday, knownMinor, usePortalContext, usePortalScope, type PortalScope } from './api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/household:' + key, values);
 const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
@@ -21,19 +21,20 @@ const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 
 /** Reads the open household once; everything below is keyed by it and checks each answer was for it. */
 export function PortalHousehold() {
   const scope = usePortalScope(), context = usePortalContext(scope);
-  if (context.isPending) return <LoadingState />;
+  if (context.isPending || (scope.moving && context.isError)) return <LoadingState />;
   if (context.isError) return <ErrorState onRetry={() => void context.refetch()} />;
   return <PortalHouseholdPage context={context.data} scope={scope} />;
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
   const bootstrap = useBootstrap(), { ready, own } = scope, payer = context.role === 'payer';
   const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState(false);
-  const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await portalCall(contracts.household)).data });
+  const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.household)).data });
   const members = useQuery({ queryKey: [...scope.key, 'household', 'members'], enabled: ready, queryFn: async () => payer
-    ? own(await portalCall(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
-    : [own(await portalCall(contracts.profile, undefined, { memberId: context.memberId! })).data] });
+    ? own(await scope.call(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
+    : [own(await scope.call(contracts.profile, undefined, { memberId: context.memberId! })).data] });
   const timezone = bootstrap.data?.gym.timezone ?? 'UTC', today = gymToday(timezone);
   const editable = (member: PortalMember) => payer && (member.id === context.memberId || knownMinor(member.dateOfBirth, today));
+  if (scope.moving) return <LoadingState />;
   return <Page className="max-w-3xl">
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {payer && (household.isPending ? <LoadingState /> : household.isError ? <ErrorState onRetry={() => void household.refetch()} />
@@ -66,7 +67,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
 function Memberships({ memberId, scope }: { memberId: string; scope: PortalScope }) {
   const [open, setOpen] = useState(false);
   const rows = useQuery({ queryKey: [...scope.key, 'household', 'memberships', memberId], enabled: open,
-    queryFn: async () => scope.own(await portalCall(contracts.memberships, undefined, { memberId }, { limit: 50, offset: 0 })).data });
+    queryFn: async () => scope.own(await scope.call(contracts.memberships, undefined, { memberId }, { limit: 50, offset: 0 })).data });
   return <div className="space-y-2">
     <Button variant="ghost" className="px-0" aria-expanded={open} onClick={() => setOpen(!open)}>{text(open ? 'hideMemberships' : 'showMemberships')}</Button>
     {open && (rows.isPending ? <LoadingState /> : rows.isError ? <ErrorState onRetry={() => void rows.refetch()} />
@@ -85,7 +86,7 @@ function HouseholdForm({ household, scope, saved, setSaved }: { household: Porta
   const save = useMutation({ mutationFn: async (form: FormData) => {
     const value = (name: string) => String(form.get(name) ?? '').trim();
     const address = Object.fromEntries(addressFields.map(field => [field, field === 'countryCode' ? value(field).toUpperCase() : value(field)]).filter(([, entry]) => entry));
-    scope.own(await portalCall(contracts.updateHousehold, { name: value('name'), email: value('email') || null, phone: value('phone') || null, address, revision: household.revision }));
+    scope.own(await scope.call(contracts.updateHousehold, { name: value('name'), email: value('email') || null, phone: value('phone') || null, address, revision: household.revision }));
   }, onSuccess: async () => { setSaved(true); await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); } });
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); save.mutate(new FormData(event.currentTarget)); }
   return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
@@ -112,7 +113,7 @@ function EditMember({ member, scope, close }: { member: PortalMember; scope: Por
   const [contacts, setContacts] = useState<PortalEmergencyContact[]>(member.emergencyContacts), [changed, setChanged] = useState(false);
   const save = useMutation({ mutationFn: async (form: FormData) => {
     const value = (name: string) => String(form.get(name) ?? '').trim();
-    scope.own(await portalCall(contracts.updateMember, { firstName: value('firstName'), lastName: value('lastName'), email: value('email') || null, phone: value('phone') || null,
+    scope.own(await scope.call(contracts.updateMember, { firstName: value('firstName'), lastName: value('lastName'), email: value('email') || null, phone: value('phone') || null,
       dateOfBirth: value('dateOfBirth') || null, revision: member.revision,
       emergencyContacts: contacts.map(item => ({ name: item.name.trim(), relationship: item.relationship?.trim() || null, phone: item.phone.trim(),
         ...(item.email?.trim() ? { email: item.email.trim() } : {}) })) }, { memberId: member.id }));

@@ -53,7 +53,7 @@ it('serves the portal check-in, progress, waiver and billing routes from the run
   expect(signIn.status).toBe(200);
   const cookie = signIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
   const request = (method: string, path: string, body?: unknown) => app.request(env.PUBLIC_ORIGIN + path,
-    { method, headers: headers(cookie), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    { method, headers: { ...headers(cookie), 'X-Portal-Household': household.id }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const ok = async (method: string, path: string, body?: unknown) => {
     const response = await request(method, path, body);
     expect(response.status, `${method} ${path}: ${await response.clone().text()}`).toBe(200);

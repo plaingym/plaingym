@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import type { PortalContext } from '@plaingym/shared/contracts';
@@ -16,8 +16,9 @@ import { portalTestCache } from './test-cache.test-helper.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 const ids = { gym: id(1), user: id(2), household: id(3), payer: id(4), child: id(5), adult: id(6), invoice: id(7), paid: id(8), card: id(9), template: id(10), signature: id(11) };
-const payer: PortalContext = { role: 'payer', householdId: ids.household, memberId: ids.payer };
-const adult: PortalContext = { role: 'member', householdId: ids.household, memberId: ids.adult };
+const payer: PortalContext = { role: 'payer', memberId: ids.payer };
+const adult: PortalContext = { role: 'member', memberId: ids.adult };
+const household = { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, address: { line1: '1 Main St' }, billingDay: 1, revision: 3 };
 const person = (memberId: string, firstName: string, dateOfBirth: string | null) => ({ id: memberId, firstName, lastName: 'Rivera', email: null, phone: null,
   dateOfBirth, photoKey: null, status: 'active', emergencyContacts: [{ name: 'Grandparent', relationship: null, phone: '555-0100' }], revision: 1 });
 const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim', '2016-06-01'), person(ids.adult, 'Alex', '1990-01-01'), person(id(12), 'Jordan', null)];
@@ -28,11 +29,11 @@ type Handler = (path: string, init?: RequestInit) => unknown;
  * (the open household unless a test says otherwise); the household lists, which the pages read again after an answer for
  * another household, keep naming the open one.
  */
-function mount(element: ReactNode, handle: Handler, { context, answeredFor = ids.household }: { context?: PortalContext; answeredFor?: string } = {}) {
+function mount(element: ReactNode, handle: Handler, { context, answeredFor = ids.household, householdLists }: { context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response> } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const path = String(input);
-    if (path === '/api/portal/households') return Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Test household', role: 'payer' }] } });
+    if (path === '/api/portal/households') return householdLists ? householdLists() : Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Test household', role: 'payer' }] } });
     // The role comes from the open household; the page's own reads are what a test may answer for another one.
     if (path === '/api/portal/context' && context) return Response.json({ data: context, householdId: ids.household });
     const result = handle(path, init);
@@ -51,6 +52,13 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor = ids
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('portal billing page', () => {
+  it('still loads an answer with additive envelope and record fields', async () => {
+    mount(<PortalBillingPage navigate={vi.fn()} />, path => path.startsWith('/api/portal/invoices?')
+      ? { ...page([{ id: ids.invoice, number: 7, kind: 'one_off', status: 'open', dueOn: '2026-10-20', amountCents: 2500, currency: 'USD', paidAt: null, added: true }]), added: true }
+      : path === '/api/portal/payment-methods' ? { data: [], added: true } : undefined);
+    expect(await screen.findByText('Invoice #7')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
   it.each([[32, 'USD'], [1255, 'KWD']] as const)('offers manual payment instead of a card action for %s %s', async (amountCents, currency) => {
     const navigate = vi.fn();
     mount(<PortalBillingPage navigate={navigate} />, path => path.startsWith('/api/portal/invoices?') ? page([
@@ -91,6 +99,19 @@ describe('portal billing page', () => {
     await user.click(await screen.findByRole('button', { name: 'Update card' }));
     expect((await screen.findByRole('alert')).textContent).toContain("Online payment isn't available");
     expect(navigate).not.toHaveBeenCalled();
+  });
+  it.each(['Pay now', 'Update card'])('shows loading while %s recovers from a household conflict, without navigating', async action => {
+    const navigate = vi.fn(), user = userEvent.setup();
+    let release!: (response: Response) => void;
+    const view = mount(<PortalBillingPage navigate={navigate} />, (path, init) => init?.method === 'POST'
+      ? Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } }) : handle(path, init),
+    { householdLists: () => new Promise(resolve => { release = resolve; }) });
+    await user.click(await screen.findByRole('button', { name: action }));
+    await waitFor(() => expect(view.calls('GET', '/api/portal/households')).toHaveLength(1));
+    expect(screen.getByRole('status').textContent).toContain('Loading');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { release(new Response(null, { status: 503 })); });
   });
   it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
     const view = mount(<PortalBillingPage navigate={vi.fn()} />, handle, { answeredFor: id(99) });
@@ -185,10 +206,23 @@ describe('portal waivers page', () => {
     // Only the shared context, which the open household answered, is kept.
     expect(view.stored().map(query => query.queryKey.slice(5))).toEqual([['context']]);
   });
+  it('keeps the household page queries mounted while loading recovery, then shows failure without a refetch loop', async () => {
+    let release!: (response: Response) => void;
+    const view = mount(<PortalHousehold />, path => path === '/api/portal/household' ? { data: household }
+      : path.startsWith('/api/portal/members?') ? page(people) : undefined,
+    { context: payer, answeredFor: id(99), householdLists: () => new Promise(resolve => { release = resolve; }) });
+    await waitFor(() => expect(view.calls('GET', '/api/portal/households')).toHaveLength(1));
+    expect(screen.getByRole('status').textContent).toContain('Loading');
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { release(Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Household', role: 'payer' }] } })); });
+    expect((await screen.findAllByRole('button', { name: 'Try again' })).length).toBeGreaterThan(0);
+    expect(view.calls('GET', '/api/portal/households')).toHaveLength(1);
+    expect(view.calls('GET', '/api/portal/household')).toHaveLength(1);
+    expect(view.calls('GET', '/api/portal/members')).toHaveLength(1);
+  });
 });
 
 describe('portal household page', () => {
-  const household = { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, address: { line1: '1 Main St' }, billingDay: 1, revision: 3 };
   it('lets the payer edit household contacts and children, not other adults, and shows memberships read-only', async () => {
     const view = mount(<PortalHousehold />, (path, init) => {
       if (path === '/api/portal/household' && init?.method === 'PATCH') return { data: { ...household, phone: '555-0199', revision: 4 } };

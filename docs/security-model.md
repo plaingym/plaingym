@@ -60,6 +60,10 @@ pages.
 * **Payer and member.** Within a household, the payer sees the household's
   members, invoices and payment methods; an adult member who isn't the payer sees
   only their own records.
+* **Portal writes.** The page sends its expected household in `X-Portal-Household`.
+  Member authorization rejects a missing or mismatched household with 409 before
+  any handler runs, including Checkout and booking changes. The header never
+  supplies authority: the gym session and current household link still do.
 * **Signed links** grant exactly one purpose for one resource: pay one invoice,
   update the household's card, sign one member's waivers, or onboarding. The
   token is 256 random bits; only its SHA-256 digest is stored. Each request

@@ -16,11 +16,10 @@ import {
 import { memberBookingSchema } from './bookings.js';
 import { rankSchema } from './ranks.js';
 
-/**
- * A logged-in portal answer: the payload, plus the household it was read for. No portal request names a household; the
- * server answers for the one the session has open, and says which, so a page can tell an answer for a household it didn't
- * ask about (the session moved on meanwhile) from one for its own.
- */
+/** Portal writes name the household the page expects; the session remains the source of authority. */
+export const portalHouseholdHeader = 'X-Portal-Household';
+export const portalHouseholdHeadersSchema = z.object({ 'x-portal-household': idSchema });
+/** Every portal answer names the household it was read for. */
 export function portalAnswerSchema<S extends z.core.$ZodLooseShape, C extends z.core.$ZodObjectConfig>(schema: z.ZodObject<S, C>) {
   return schema.extend({ householdId: idSchema });
 }
@@ -28,8 +27,8 @@ export const portalMemberParamsSchema = z.strictObject({ memberId: idSchema });
 export const portalInvoiceParamsSchema = z.strictObject({ invoiceId: idSchema });
 // Context is resolved from the authenticated user, never accepted as request input.
 export const portalContextSchema = z.discriminatedUnion('role', [
-  z.strictObject({ role: z.literal('payer'), householdId: idSchema, memberId: idSchema.nullable() }),
-  z.strictObject({ role: z.literal('member'), householdId: idSchema, memberId: idSchema }),
+  z.strictObject({ role: z.literal('payer'), memberId: idSchema.nullable() }),
+  z.strictObject({ role: z.literal('member'), memberId: idSchema }),
 ]);
 export const portalContextResponseSchema = z.strictObject({ data: portalContextSchema });
 export const portalEmergencyContactSchema = z.strictObject({

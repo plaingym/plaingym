@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../../lib/response.js';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { portalAccessContracts } from '@plaingym/shared/contracts';
@@ -30,7 +31,7 @@ export function PortalClaim() {
   // Neither the invitation token nor the claim code stays in the address bar or history.
   useEffect(() => { history.replaceState(null, '', location.pathname); }, []);
   const claim = useMutation({
-    mutationFn: async () => portalAccessContracts.claim.response.parse(await createJsonTransport()('/api/portal/invitations/accept', { token, ...(bootstrap.data?.login.password ? { password } : {}) })).data,
+    mutationFn: async () => parseResponse(portalAccessContracts.claim.response, await createJsonTransport()('/api/portal/invitations/accept', { token, ...(bootstrap.data?.login.password ? { password } : {}) })).data,
     onSuccess: () => setPassword(''), onError: () => setPassword(''),
   });
   const submit = (event: FormEvent) => { event.preventDefault(); if (!claim.isPending) claim.mutate(); };

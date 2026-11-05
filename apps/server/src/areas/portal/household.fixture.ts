@@ -60,12 +60,19 @@ export async function answerFor(response: Response, householdId: string, label =
 }
 /** Mounts routes the way the runtime does: the gym from the request, the principal from the session, portal authorization. */
 export function portalApp(db: Database, f: PortalFixture, principal: Principal, routes: readonly RouteRegistration[], clock: Clock) {
-  return createApp({ clock, skipSetup: true, origin: 'http://localhost', contributions: { routes },
+  return rememberPortalApp(createApp({ clock, skipSetup: true, origin: 'http://localhost', contributions: { routes },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
     authorize: createPortalAuthorization(createMemberHouseholdContext(db.forGym)),
-  });
+  }), principal);
 }
-type App = ReturnType<typeof portalApp>;
+type App = ReturnType<typeof createApp>;
+const expectedHouseholds = new WeakMap<App, string>();
+/** The fixture's page names the household it opened, just like the browser. */
+export function rememberPortalApp(app: App, principal: Principal): App {
+  if (principal.kind === 'member') expectedHouseholds.set(app, principal.scope.householdId);
+  return app;
+}
+export const portalTestHeaders = (app: App) => ({ 'X-Portal-Household': expectedHouseholds.get(app) ?? '' });
 export const send = (server: App, method: string, path: string, body?: unknown) => server.request(path, { method,
-  headers: { 'content-type': 'application/json', origin: 'http://localhost' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  headers: { 'content-type': 'application/json', origin: 'http://localhost', ...portalTestHeaders(server) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });

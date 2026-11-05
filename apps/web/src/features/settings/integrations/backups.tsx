@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { createBackupKeyResponseSchema, type BackupsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
@@ -36,7 +37,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     void run(async () => {
       const reply = await state.change((revision, signal) => api.POST('/api/settings/integrations/backups', { signal, body: { revision, destination: {
         endpoint: field('endpoint'), region: field('region'), bucket: field('bucket'), accessKeyId: field('accessKeyId'), secretAccessKey: field('secretAccessKey') } } }),
-      (data) => { const parsed = createBackupKeyResponseSchema.parse(data).data; return { integrations: parsed.integrations, result: { privateKey: parsed.privateKey, publicKey: parsed.publicKey } }; });
+      (data) => { const parsed = parseResponse(createBackupKeyResponseSchema, data).data; return { integrations: parsed.integrations, result: { privateKey: parsed.privateKey, publicKey: parsed.publicKey } }; });
       if (reply.result) { setCreated(reply.result); setOpen(false); }
       else setMessage({ kind: 'alert', text: reply.reason === 'unreachable' ? label('unreachable') : refusedText(reply) });
     });

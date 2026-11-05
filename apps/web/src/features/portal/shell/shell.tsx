@@ -8,7 +8,8 @@ import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/conte
 import { sessionName } from '../../../app/identity.js';
 import { createRegistries } from '../../../lib/registries.js';
 import { createJsonTransport } from '../../../lib/api.js';
-import { HouseholdMoved, ownAnswer, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey } from '../household/api.js';
+import { parseResponse } from '../../../lib/response.js';
+import { HouseholdMoved, ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey } from '../household/api.js';
 import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
@@ -138,11 +139,12 @@ function AuthenticatedPortal() {
   // The shell's own context query lives in the open household's subtree like every portal query, so it is unreachable from any
   // other, under the reserved `shell` segment no page key uses, so no page's query or invalidation reaches it.
   const householdKey = portalHouseholdKey(login, current);
+  const listsVersion = householdListsVersion(cache, householdKey);
   const context = useQuery({ queryKey: [...householdKey, 'shell', 'context'], enabled: member && !!current,
     // The server answers for the household it has open. If the lists this key came from name another one, the server moved on
     // (a revoked link fell back to another household) and this answer is the new household's: it is never stored under the
     // old household's key, and the lists are read again; once they name the other household, this key is no longer the open one.
-    queryFn: async () => ownAnswer(cache, householdKey, portalContracts.context.response.parse(await createJsonTransport()(portalContracts.context.path))).data,
+    queryFn: async () => ownAnswer(cache, householdKey, parseResponse(portalContracts.context.response, await createJsonTransport()(portalContracts.context.path)), listsVersion).data,
     retry: false, staleTime: 0 });
   // While the name may still be the previous household's, the header says nothing about who is signed in. Only the shell's own
   // entries (the mark and the bootstrap) can change that, so no other cache event wakes this.

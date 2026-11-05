@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../lib/response.js';
 import { shellContracts, shellBootstrapResponseSchema, type ShellBootstrap, type ShellSession } from '@plaingym/shared/contracts';
 import { createJsonTransport } from '../lib/api.js';
 export type { ShellBootstrap, ShellSession };
@@ -41,6 +42,6 @@ export function createShellServices(
 }
 export function createBootstrapLoader(fetcher: typeof fetch = fetch): ShellServices['loadBootstrap'] {
   const request = createJsonTransport(fetcher);
-  return async (signal) => shellBootstrapResponseSchema.parse(await request(shellContracts.bootstrap.path, undefined, signal)).data;
+  return async (signal) => parseResponse(shellBootstrapResponseSchema, await request(shellContracts.bootstrap.path, undefined, signal)).data;
 }
 export const defaultShellServices = createShellServices(createBootstrapLoader());

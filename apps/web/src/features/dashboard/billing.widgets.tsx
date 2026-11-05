@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { useQuery } from '@tanstack/react-query';
 import { billingDashboardResponseSchema, dashboardContracts, type DashboardWidget } from '@plaingym/shared/contracts';
@@ -29,7 +30,7 @@ export const billingWidgetViews: readonly DashboardView[] = ['mrr', 'past_due', 
 function BillingPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRole[] }) {
   const query = useQuery({ queryKey: ['dashboard-billing', gymId, [...roles].sort()], queryFn: async ({ signal }) => {
     const result = await api.GET(dashboardContracts.billing.path, { signal, cache: 'no-store' });
-    return billingDashboardResponseSchema.parse(result.data).data;
+    return parseResponse(billingDashboardResponseSchema, result.data).data;
   }, refetchInterval: 5 * 60_000 });
   return <PageSection title={label('title')} actions={<Button variant="outline" disabled={query.isFetching}
     onClick={() => void query.refetch()}>{label('refresh')}</Button>}>

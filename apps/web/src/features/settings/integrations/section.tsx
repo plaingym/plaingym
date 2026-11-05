@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../../lib/response.js';
 import { useQuery } from '@tanstack/react-query';
 import { healthResponseSchema } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
@@ -15,7 +16,7 @@ function useHealthDetails(enabled: boolean) {
     queryFn: async ({ signal }) => {
       const result = await api.GET('/api/health', { signal, cache: 'no-store' });
       if (!result.response.ok) throw new Error('The health request failed');
-      const tiles = healthResponseSchema.parse(result.data).data.tiles;
+      const tiles = parseResponse(healthResponseSchema, result.data).data.tiles;
       const stripe = tiles.find((tile) => tile.id === 'stripe_webhooks'), backup = tiles.find((tile) => tile.id === 'last_backup');
       return {
         lastEventAt: stripe?.id === 'stripe_webhooks' && stripe.details ? stripe.details.lastReceivedAt : null,

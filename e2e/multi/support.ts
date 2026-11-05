@@ -113,7 +113,7 @@ export interface Context extends GymFixture {
 }
 export const contextOf = (fixture: GymFixture): Context => ({ ...fixture,
   owner: withCookie(fixture.origin, fixture.cookies.owner), coach: withCookie(fixture.origin, fixture.cookies.coach),
-  household: withCookie(fixture.origin, fixture.cookies.household), device: new Client(fixture.origin, { authorization: 'Bearer ' + fixture.kioskToken }) });
+  household: withCookie(fixture.origin, fixture.cookies.household, { 'X-Portal-Household': fixture.householdId }), device: new Client(fixture.origin, { authorization: 'Bearer ' + fixture.kioskToken }) });
 
 /** A multipart/form-data body with one file part, as a browser upload sends it. */
 export function multipart(field: string, filename: string, type: string, content: Buffer) {
@@ -239,7 +239,7 @@ async function createGym(gym: (typeof gyms)[number]): Promise<GymFixture> {
     expect(portalLink.origin).toBe(gym.origin);
     return (await claimPortal(gym.origin, portalLink)).cookie;
   });
-  const portal = withCookie(gym.origin, portalCookie);
+  const portal = withCookie(gym.origin, portalCookie, { 'X-Portal-Household': householdId });
 
   // The member signs the gym's current waiver through the household login, as the kiosk requires.
   const signatureId = await step('signature', async () => {

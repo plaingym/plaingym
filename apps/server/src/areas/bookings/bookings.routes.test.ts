@@ -15,6 +15,7 @@ import type { Principal } from '../../core/context.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { FakeMemberHouseholdContext } from '../../core/interfaces/member-household.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
+import { rememberPortalApp, portalTestHeaders } from '../portal/household.fixture.js';
 import { createPortalAuthorization } from '../portal/auth.permissions.js';
 import { createMembersService } from '../members/members.js';
 import { createMembersRoutes } from '../members/members.routes.js';
@@ -51,15 +52,15 @@ const memberPrincipal = (f: Fixture, adult = false): Principal => ({ kind: 'memb
 function app(f: Fixture, principal: Principal, fake = false, production = false) {
   const households = fake ? f.fake : createMemberHouseholdContext(db.forGym);
   const portal = createPortalBookingService({ households, householdScope: db.forHousehold, bookings: service });
-  return createApp({ clock, skipSetup: true, origin: 'http://localhost',
+  return rememberPortalApp(createApp({ clock, skipSetup: true, origin: 'http://localhost',
     contributions: production ? areaContributions : { routes: [...createMembersRoutes(createMembersService({ scope: db.forGym, clock }), undefined, { clock }), ...createBookingRoutes(service), ...createPortalBookingRoutes(portal)] },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
     authorize: createPortalAuthorization(households),
-  });
+  }), principal);
 }
 const post = (server: ReturnType<typeof app>, path: string, body?: unknown) => server.request(path, { method: 'POST',
-  headers: { 'content-type': 'application/json', origin: 'http://localhost' }, body: JSON.stringify(body ?? {}) });
+  headers: { 'content-type': 'application/json', origin: 'http://localhost', ...portalTestHeaders(server) }, body: JSON.stringify(body ?? {}) });
 const book = (f: Fixture, memberId = f.member.id) => service.book(f.actor, { memberId, sessionId: f.session.id, allowWaitlist: true });
 
 describe('booking route permissions and production composition', () => {

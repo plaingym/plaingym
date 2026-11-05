@@ -24,8 +24,12 @@ from another's. Pages that need the login's role share one context query
 (`usePortalContext`). Every portal answer names the household the server read it for;
 `PortalScope.own` passes on only an answer for the page's own household. An answer for
 another one (the session moved on, say because another tab switched) is never stored or
-shown: the read fails and the household lists are read again, after which every key is
-the other household's. `household/keys.test.ts` checks that every page key starts from
+shown: the page shows loading while the household lists are read again, after which
+every key is the other household's. Writes and member-ID reads send `X-Portal-Household` from that same
+page key. A household conflict (409 with that response header) starts the same
+recovery; a revision conflict stays with the form. Recovery shares an in-flight
+or just-finished list read across the page's queries. Client answer parsing strips
+new, unknown fields recursively while still requiring and validating known fields. `household/keys.test.ts` checks that every page key starts from
 the scope's key and stays out of the shell's reserved `shell` segment.
 The server is authoritative for every permission; the pages only hide actions a
 login cannot use.

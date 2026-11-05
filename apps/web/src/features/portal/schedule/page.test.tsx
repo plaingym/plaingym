@@ -22,7 +22,7 @@ const session: PortalScheduleSession = { id, name: 'Fundamentals', startsAt: '20
   capacity: 10, status: 'scheduled', revision: 1, bookingOpensAt: '2026-10-23T00:00:00.000Z', cancelBefore: '2026-10-30T17:00:00.000Z', placesLeft: 4, bookings: [] };
 const booking = { id: 'booking', memberId: child, sessionId: id, createdAt: '2026-10-29T12:00:00.000Z', status: 'booked' as const, waitlistPosition: null, queueRank: null, cancelledAt: null };
 const client = { context: vi.fn(), members: vi.fn(), schedule: vi.fn(), book: vi.fn(), cancel: vi.fn() };
-const payer = { role: 'payer', householdId: id, memberId: parent };
+const payer = { role: 'payer', memberId: parent };
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
   client.context.mockResolvedValue(answer(payer));
@@ -66,7 +66,7 @@ describe('portal schedule page', () => {
     client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 3, bookings: [booking] }]));
     await user.click(screen.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
     await screen.findByText('Casey Parent is booked.');
-    expect(client.book).toHaveBeenCalledWith(payer, child, id);
+    expect(client.book).toHaveBeenCalledWith(payer, child, id, 'household');
     const places = await screen.findByRole('list', { name: 'Household places' });
     expect(within(places).getByText('Casey Parent')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Cancel booking: Fundamentals for Casey Parent' })).toBeDefined();
@@ -92,13 +92,13 @@ describe('portal schedule page', () => {
     await screen.findByText(/This change isn't available any more/);
   });
   it('an adult member has no picker and books only for themself', async () => {
-    client.context.mockResolvedValue(answer({ role: 'member', householdId: id, memberId: child }));
+    client.context.mockResolvedValue(answer({ role: 'member', memberId: child }));
     client.members.mockResolvedValue(answer([{ id: child, name: 'Casey Parent' }]));
     const user = userEvent.setup(); page();
     await screen.findByText('Fundamentals');
     expect(screen.queryByLabelText('Booking for')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
-    expect(client.book).toHaveBeenCalledWith({ role: 'member', householdId: id, memberId: child }, child, id);
+    expect(client.book).toHaveBeenCalledWith({ role: 'member', memberId: child }, child, id, 'household');
   });
   it('moves between weeks without going into the past', async () => {
     const user = userEvent.setup(); page();

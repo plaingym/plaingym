@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useCallback } from 'react';
 import { QueryObserver, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { gymSettingsResponseSchema, type GymSettings } from '@plaingym/shared/contracts';
@@ -62,11 +63,11 @@ let fetches = 0;
 async function fetchSettings({ client, signal }: { client: QueryClient; signal?: AbortSignal }): Promise<Loaded> {
   const result = await api.GET('/api/settings', { signal: abortWithin(signal, saveTimeoutMs) });
   if (!result.response.ok) throw new Error('The settings request failed');
-  const settings = gymSettingsResponseSchema.parse(result.data).data, before = client.getQueryData<Loaded>(gymSettingsKey);
+  const settings = parseResponse(gymSettingsResponseSchema, result.data).data, before = client.getQueryData<Loaded>(gymSettingsKey);
   const unmoved = before && unmovedAt.get(client) === settings.revision && before.settings.revision === settings.revision;
   return { settings, epoch: unmoved ? before.epoch : ++fetches };
 }
-const fromResponse = (data: unknown) => gymSettingsResponseSchema.parse(data).data;
+const fromResponse = (data: unknown) => parseResponse(gymSettingsResponseSchema, data).data;
 const settingsQuery = { queryKey: gymSettingsKey, queryFn: fetchSettings, staleTime: Infinity, gcTime: 0,
   refetchOnWindowFocus: false, refetchOnReconnect: false } as const;
 

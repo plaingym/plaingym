@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useQuery } from '@tanstack/react-query';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { dashboardContracts, matDashboardResponseSchema } from '@plaingym/shared/contracts';
@@ -17,7 +18,7 @@ function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly Staff
   const query = useQuery({ queryKey: ['dashboard', gymId, [...roles].sort()], queryFn: async ({ signal }) => {
     const result = await api.GET(dashboardContracts.mat.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Dashboard request failed');
-    return matDashboardResponseSchema.parse(result.data).data;
+    return parseResponse(matDashboardResponseSchema, result.data).data;
   }, refetchInterval: 60_000 });
   return <Page>
     <PageHeader title={label('title')} description={query.data && <>{label('updated')}: <time dateTime={query.data.generatedAt}>{new Date(query.data.generatedAt).toLocaleString()}</time></>}

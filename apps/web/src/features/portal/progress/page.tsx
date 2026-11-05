@@ -26,14 +26,14 @@ function Swatch({ ranks, rankId }: { ranks: readonly Rank[]; rankId: string }) {
 export function PortalProgressPage({ client = portalClient }: { client?: PortalClient }) {
   const bootstrap = useBootstrap(), timezone = bootstrap.data?.gym.timezone ?? 'UTC';
   const { scope, members, memberId, choose } = usePortalMembers(client);
-  const progress = useQuery({ queryKey: [...scope.key, 'progress', memberId], queryFn: async () => scope.own(await client.progress(memberId)).data, enabled: !!memberId, staleTime: 0 });
+  const progress = useQuery({ queryKey: [...scope.key, 'progress', memberId], queryFn: async () => scope.own(await scope.run(() => client.progress(memberId, scope.key[4]!))).data, enabled: !!memberId, staleTime: 0 });
   // Each page of visits is checked on its own, so a later page read for another household is never added.
   const attendance = useInfiniteQuery({ queryKey: [...scope.key, 'attendance', memberId], enabled: !!memberId, initialPageParam: 0, staleTime: 0,
-    queryFn: async ({ pageParam }) => scope.own(await client.attendance(memberId, pageParam)),
+    queryFn: async ({ pageParam }) => scope.own(await scope.run(() => client.attendance(memberId, pageParam, scope.key[4]!))),
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
   const date = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium' });
   const dateTime = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
-  if (members.isPending) return <LoadingState />;
+  if (scope.moving || members.isPending) return <LoadingState />;
   if (members.isError) return <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const data = progress.data, programName = (id: string | null) => data?.programs.find(item => item.id === id)?.name;
   const visits = attendance.data?.pages.flatMap(page => page.data) ?? [];

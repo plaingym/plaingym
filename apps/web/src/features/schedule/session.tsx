@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useCallback, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { classSessionResponseSchema, updateClassSessionRequestSchema, type ClassSession, type ClassTag } from '@plaingym/shared/contracts';
@@ -65,7 +66,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
         : kind === 'capacity' ? await api.PATCH('/api/schedule/sessions/{id}/capacity', { params, body: { revision, capacity: form?.get('capacity') ? Number(form.get('capacity')) : null } })
         : await api.PATCH('/api/schedule/sessions/{id}/notes', { params, body: { revision, notes: String(form?.get('notes') ?? '') || null } });
       check(result.response); if (formElement) markSaved(formElement);
-      onSaved(classSessionResponseSchema.parse(result.data).data); setNotice(text('saved'));
+      onSaved(parseResponse(classSessionResponseSchema, result.data).data); setNotice(text('saved'));
       // A new capacity can promote or move bookings, so the panels that show counts reload. Cancelling a session leaves its bookings as they are.
       if (kind === 'capacity') setChanged((value) => value + 1);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
@@ -137,7 +138,7 @@ export function SessionForm({ session, options, tags, siblings, onSaved, onCance
         setNotice(text(code === 'session_start_taken' ? 'occupied' : 'conflict'));
         return;
       }
-      check(result.response); onSaved(classSessionResponseSchema.parse(result.data).data);
+      check(result.response); onSaved(parseResponse(classSessionResponseSchema, result.data).data);
     } catch (error) { setNotice(message(error)); } finally { setBusy(false); }
   }
   return <form onSubmit={(event) => void save(event)} className="space-y-4" aria-label={text('editSession')}>

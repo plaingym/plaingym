@@ -25,7 +25,7 @@ it('loads member context, renders the portal, and clears access when signing out
   const userId = '00000000-0000-7000-8000-000000000001', householdId = '00000000-0000-7000-8000-000000000002';
   const fetcher = vi.fn(async (path: string) => Response.json(path === '/api/demo' ? { data: { mode: 'disabled' } }
     : path === '/api/portal/households' ? { data: { current: householdId, households: [{ householdId, name: 'Only household', role: 'payer' }] } }
-    : { data: { role: 'payer', householdId, memberId: null }, householdId }));
+    : { data: { role: 'payer', memberId: null }, householdId }));
   vi.stubGlobal('fetch', fetcher);
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: userId, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const router = createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] })); render(<App services={services} router={router} />);
@@ -80,8 +80,8 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
       return Response.json(answer);
     }
     if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId: current });
-    if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', householdId: ids.first, memberId: null }, householdId: ids.first })
-      : current === ids.second ? Response.json({ data: { role: 'member', householdId: ids.second, memberId: ids.member }, householdId: ids.second }) : new Response(null, { status: 404 });
+    if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', memberId: null }, householdId: ids.first })
+      : current === ids.second ? Response.json({ data: { role: 'member', memberId: ids.member }, householdId: ids.second }) : new Response(null, { status: 404 });
     return new Response(null, { status: 404 });
   });
   vi.stubGlobal('fetch', fetcher);
@@ -264,7 +264,7 @@ it('discards only the previous household\'s entries on a switch, and refetches n
   expect(fetchCount(f, '/api/demo')).toBe(discoveryCalls);
   // Nothing is left under the previous household's prefix, and the only context asked for since is the new household's.
   expect(f.cache.getQueryCache().findAll({ queryKey: household(ids.first) })).toEqual([]);
-  expect(f.cache.getQueryData([...household(ids.second), 'shell', 'context'])).toEqual({ role: 'member', householdId: ids.second, memberId: ids.member });
+  expect(f.cache.getQueryData([...household(ids.second), 'shell', 'context'])).toEqual({ role: 'member', memberId: ids.member });
   expect(fetchCount(f, '/api/portal/context')).toBe(contextCalls + 1);
   // The household lists are not the previous household's: they stay, and now name the new one.
   expect(f.cache.getQueryData([...base, 'households'])).toMatchObject({ current: ids.second });
@@ -354,7 +354,7 @@ it('never stores the new household\'s context under the old household\'s key whe
   // The context answers first, for the household the server has open now, and the lists have not said so yet.
   await waitFor(() => expect(f.householdGates.length).toBeGreaterThan(0));
   await waitFor(() => expect(f.cache.getQueryState(oldContext)?.error).toBeInstanceOf(Error));
-  expect(f.cache.getQueryData(oldContext)).toEqual({ role: 'payer', householdId: ids.first, memberId: null });
+  expect(f.cache.getQueryData(oldContext)).toEqual({ role: 'payer', memberId: null });
   expect(document.body.textContent).not.toContain('Test User · Member');
   for (const held of f.householdGates) held.settle();
   await waitFor(() => expect(f.bootstrapGates).toHaveLength(1)); f.bootstrapGates[0]!.settle();

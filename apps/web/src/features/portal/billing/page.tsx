@@ -11,7 +11,7 @@ import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { money } from '../../billing/catalog/format.js';
-import { portalCall, unavailable, usePortalScope, type PortalScope } from '../household/api.js';
+import { unavailable, usePortalScope, type PortalScope } from '../household/api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/billing:' + key, values);
 const payable = new Set(['open', 'past_due']), receipted = new Set(['paid', 'partially_refunded', 'refunded']);
@@ -25,20 +25,21 @@ export function leave(url: string) { location.assign(url); }
 export function PortalBillingPage({ navigate = leave }: { navigate?: (url: string) => void }) {
   const bootstrap = useBootstrap(), scope = usePortalScope(), { ready, own } = scope, gym = bootstrap.data?.gym;
   const [offset, setOffset] = useState(0), [open, setOpen] = useState<string | null>(null), [receipt, setReceipt] = useState<string | null>(null);
-  const invoices = useQuery({ queryKey: [...scope.key, 'billing', 'invoices', offset], enabled: ready, queryFn: async () => own(await portalCall(contracts.invoices, undefined, {}, { limit: pageSize, offset })) });
-  const cards = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready, queryFn: async () => own(await portalCall(contracts.paymentMethods)).data });
+  const invoices = useQuery({ queryKey: [...scope.key, 'billing', 'invoices', offset], enabled: ready, queryFn: async () => own(await scope.call(contracts.invoices, undefined, {}, { limit: pageSize, offset })) });
+  const cards = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready, queryFn: async () => own(await scope.call(contracts.paymentMethods)).data });
   const checkout = useMutation({ mutationFn: async (invoiceId: string | null) => {
     // A Checkout started for another household than this page's is never followed.
-    const started = own(invoiceId ? await portalCall(contracts.payInvoice, undefined, { invoiceId }) : await portalCall(contracts.updateCard));
+    const started = own(invoiceId ? await scope.call(contracts.payInvoice, undefined, { invoiceId }) : await scope.call(contracts.updateCard));
     navigate(started.data.url);
   } });
   const download = useMutation({ mutationFn: async (invoiceId: string) => {
-    setReceipt(null); setReceipt(own(await portalCall(contracts.receipt, undefined, { invoiceId })).data.url);
+    setReceipt(null); setReceipt(own(await scope.call(contracts.receipt, undefined, { invoiceId })).data.url);
   } });
   if (!gym) return null;
   const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
   const instant = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }).format(new Date(value));
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
+  if (scope.moving) return <LoadingState />;
   return <Page className="max-w-3xl">
     <PageHeader title={text('title')} description={text('description')} />
     {failure && <Alert role="alert">{text(unavailable(failure) ? unavailableKey : 'failed')}</Alert>}
@@ -87,7 +88,8 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
 /** The routed page and portal registration. */
 export function PortalBilling() { return <PortalBillingPage />; }
 function InvoiceLines({ invoiceId, scope }: { invoiceId: string; scope: PortalScope }) {
-  const detail = useQuery({ queryKey: [...scope.key, 'billing', 'invoice', invoiceId], queryFn: async () => scope.own(await portalCall(contracts.invoice, undefined, { invoiceId })).data });
+  const detail = useQuery({ queryKey: [...scope.key, 'billing', 'invoice', invoiceId], retryOnMount: false,
+    queryFn: async () => scope.own(await scope.call(contracts.invoice, undefined, { invoiceId })).data });
   if (detail.isPending) return <LoadingState />;
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()} />;
   return <dl className="space-y-1 rounded-lg bg-muted/50 p-3 text-sm">

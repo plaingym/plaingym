@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { chargeFailuresResponseSchema, dismissChargeFailuresResponseSchema, healthContracts, maxDismissedChargeRuns } from '@plaingym/shared/contracts';
@@ -20,14 +21,14 @@ export function ChargeFailures({ gymId, reporting }: { gymId: string; reporting:
   const query = useQuery({ queryKey: ['health', gymId, 'charge-failures'], queryFn: async ({ signal }) => {
     const result = await api.GET(healthContracts.listChargeFailures.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Charge failures failed');
-    return chargeFailuresResponseSchema.parse(result.data).data;
+    return parseResponse(chargeFailuresResponseSchema, result.data).data;
   }, refetchInterval: 60_000, enabled: reporting });
   const dismiss = useMutation({
     mutationFn: async (named: string | readonly string[]) => {
       const post = async (body: { runId: string } | { runIds: string[] }) => {
         const result = await api.POST(healthContracts.dismissChargeFailures.path, { body });
         if (!result.response.ok) throw new Error('Dismiss failed');
-        return dismissChargeFailuresResponseSchema.parse(result.data).data;
+        return parseResponse(dismissChargeFailuresResponseSchema, result.data).data;
       };
       if (typeof named === 'string') return post({ runId: named });
       // One request takes at most maxDismissedChargeRuns runs, so a longer list goes in order, one batch at a time.

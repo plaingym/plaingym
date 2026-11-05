@@ -20,7 +20,7 @@ function CodeImage({ code, name }: { code: string; name: string }) {
 }
 export function PortalCheckinPage({ client = portalClient }: { client?: PortalClient }) {
   const cache = useQueryClient(), { scope, members, memberId, member, choose } = usePortalMembers(client);
-  const code = useQuery({ queryKey: [...scope.key, 'checkin-code', memberId], queryFn: async () => scope.own(await client.checkinCode(memberId)).data, enabled: !!memberId, staleTime: 0, gcTime: 0, retry: false });
+  const code = useQuery({ queryKey: [...scope.key, 'checkin-code', memberId], queryFn: async () => scope.own(await scope.run(() => client.checkinCode(memberId, scope.key[4]!))).data, enabled: !!memberId, staleTime: 0, gcTime: 0, retry: false });
   const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const locked = useRef(false);
   async function regenerate() {
@@ -28,7 +28,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
     locked.current = true; setBusy(true); setError('');
     try {
       // A code regenerated in another household than this page's is never shown.
-      cache.setQueryData([...scope.key, 'checkin-code', memberId], scope.own(await client.regenerateCheckin(memberId, code.data.revision)).data);
+      cache.setQueryData([...scope.key, 'checkin-code', memberId], scope.own(await scope.run(() => client.regenerateCheckin(memberId, code.data!.revision, scope.key[4]!))).data);
       setConfirming(false);
     } catch (cause) {
       setError(cause instanceof ApiError && cause.status === 409 ? 'conflict' : 'error');
@@ -36,7 +36,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       await code.refetch();
     } finally { locked.current = false; setBusy(false); }
   }
-  if (members.isPending) return <LoadingState />;
+  if (scope.moving || members.isPending) return <LoadingState />;
   if (members.isError) return <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const active = code.data?.code;
   return <Page className="max-w-xl">

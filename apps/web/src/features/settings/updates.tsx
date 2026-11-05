@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { autoUpdateContracts, autoUpdateSettingsResponseSchema, type AutoUpdateSettings } from '@plaingym/shared/contracts';
@@ -22,7 +23,7 @@ export function AutoUpdateSettings() {
   const query = useQuery({ queryKey: autoUpdateKey, retry: false, queryFn: async ({ signal }) => {
     const result = await api.GET(autoUpdateContracts.get.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('The update setting request failed');
-    return autoUpdateSettingsResponseSchema.parse(result.data).data;
+    return parseResponse(autoUpdateSettingsResponseSchema, result.data).data;
   } });
   async function save(current: AutoUpdateSettings, enabled: boolean) {
     setNotice('saving');
@@ -35,7 +36,7 @@ export function AutoUpdateSettings() {
         return;
       }
       if (!result.response.ok) throw new Error('The update setting save failed');
-      cache.setQueryData(autoUpdateKey, autoUpdateSettingsResponseSchema.parse(result.data).data);
+      cache.setQueryData(autoUpdateKey, parseResponse(autoUpdateSettingsResponseSchema, result.data).data);
       setNotice('saved');
     } catch { setNotice('failed'); }
   }

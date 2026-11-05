@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { ranksContracts, membersContracts, type ListResponse } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
 
@@ -25,7 +26,7 @@ export function createRanksClient(fetcher: typeof fetch = fetch) {
       headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!response.ok) throw new ApiError(response.status, 'request_failed');
-    return contract.response.parse(await response.json()) as ReturnType<typeof ranksContracts[K]['response']['parse']>;
+    return parseResponse(contract.response, await response.json()) as ReturnType<typeof ranksContracts[K]['response']['parse']>;
   }
   return {
     call,
@@ -39,7 +40,7 @@ export function createRanksClient(fetcher: typeof fetch = fetch) {
       const contract = membersContracts.listMembers;
       const response = await fetcher(contract.path + '?limit=100&offset=' + offset, { credentials: 'same-origin', redirect: 'error', cache: 'no-store' });
       if (!response.ok) throw new ApiError(response.status, 'request_failed');
-      return contract.response.parse(await response.json());
+      return parseResponse(contract.response, await response.json());
     }),
   };
 }

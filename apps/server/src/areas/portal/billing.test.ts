@@ -81,6 +81,19 @@ const routes = (invoiceId: string) => [['GET', '/api/portal/invoices'], ['GET', 
 const portalLinks = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.createdBy, f.payerUser.id)));
 
 describe('portal billing routes', () => {
+  it('rejects stale card and invoice Checkout without creating links, calling Stripe or replacing the receipt cookie', async () => {
+    const f = await fixture(), principals = await bothHouseholds(factory, f), server = f.app(principals.other);
+    const checkout = vi.spyOn(f.fake, 'createCheckout');
+    for (const path of ['/api/portal/payment-methods/checkout', `/api/portal/invoices/${f.open.id}/checkout`]) {
+      const response = await server.request(path, { method: 'POST', headers: {
+        origin: 'http://localhost', 'X-Portal-Household': f.household.id, cookie: 'receipt=pending-invoice',
+      } });
+      expect(response.status).toBe(409);
+      expect(response.headers.get('Set-Cookie')).toBeNull();
+    }
+    expect(checkout).not.toHaveBeenCalled();
+    expect(await portalLinks(f)).toHaveLength(0);
+  });
   it.each([[32, 'CAD', 'below_minimum'], [1255, 'KWD', 'off_step']] as const)(
     'offers manual payment for %s %s without creating a pay link or Checkout', async (amountCents, currency, reason) => {
       const f = await fixture(currency), create = vi.spyOn(f.fake, 'createCheckout');

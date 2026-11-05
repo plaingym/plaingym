@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../../lib/response.js';
 import { useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { integrationsResponseSchema, type Integrations } from '@plaingym/shared/contracts';
@@ -11,7 +12,7 @@ export const text = (key: string, values?: Record<string, string | number>) => t
 async function fetchIntegrations(): Promise<Integrations> {
   const result = await api.GET('/api/settings/integrations');
   if (!result.response.ok) throw new Error('The integrations request failed');
-  return integrationsResponseSchema.parse(result.data).data;
+  return parseResponse(integrationsResponseSchema, result.data).data;
 }
 /**
  * The reply to one change: its HTTP status, the server's refusal reason (`details` codes, never its message), the picked
@@ -51,4 +52,4 @@ export function useIntegrations() {
   return { integrations: query.data, ready: Boolean(query.data && gym.settings), failed: query.isError || gym.failed, reload, change };
 }
 /** Picks a reply whose data is the integrations themselves. */
-export const integrationsOf = (data: unknown) => ({ integrations: integrationsResponseSchema.parse(data).data, result: null });
+export const integrationsOf = (data: unknown) => ({ integrations: parseResponse(integrationsResponseSchema, data).data, result: null });

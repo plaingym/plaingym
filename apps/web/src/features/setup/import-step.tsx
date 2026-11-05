@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { importsContracts, importJobSchema, importTargetFieldSchema, importUploadSchema, type ImportColumnMapping, type ImportJob,
   type ImportMapper, type ImportUpload, type ImportPlanRequest } from '@plaingym/shared/contracts';
@@ -35,7 +36,7 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     let alive = true;
     const timer = setTimeout(() => {
       void request<{ data: unknown }>('/api/imports/' + job.id).then((result) => {
-        if (alive) { setJob(importJobSchema.parse(result.data)); setPollFailed(false); }
+        if (alive) { setJob(parseResponse(importJobSchema, result.data)); setPollFailed(false); }
       }).catch(() => { if (alive) { setFailure('error'); setPollFailed(true); } });
     }, pollMs);
     return () => { alive = false; clearTimeout(timer); };
@@ -60,12 +61,12 @@ export function ImportStep({ fetcher = fetch, pollMs = 1500 }: { fetcher?: typeo
     const form = new FormData(); form.set('file', file);
     const response = await fetcher('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
     if (!response.ok) throw new ApiError(response.status, 'request_failed');
-    const data = importUploadSchema.parse((await response.json() as { data: unknown }).data);
+    const data = parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
     setUpload(data); setMapping(data.suggestedMapping ?? []); setJob(undefined);
   });
   const start = (dryRun: boolean) => run(async () => {
     if (!upload) return;
-    setJob(importJobSchema.parse((await request<{ data: unknown }>('/api/imports',
+    setJob(parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports',
       { uploadId: upload.id, mapper, mapping, duplicatePolicy, dryRun })).data));
   });
   if (done) return <div className="space-y-3"><p role="status">{label('finished')}</p><a href="/login" className="inline-flex min-h-11 items-center underline">{t('setup/setup:signIn')}</a></div>;
@@ -131,7 +132,7 @@ function ImportIssues({ id, fetcher }: { id: string; fetcher: typeof fetch }) {
       credentials: 'same-origin', redirect: 'error', headers: { Accept: 'application/json' },
     }).then(async (response) => {
       if (!response.ok) throw new ApiError(response.status, 'request_failed');
-      const parsed = importsContracts.errors.response.parse(await response.json());
+      const parsed = parseResponse(importsContracts.errors.response, await response.json());
       if (active) setData(parsed);
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; };

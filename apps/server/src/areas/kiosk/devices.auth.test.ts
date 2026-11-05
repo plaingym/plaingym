@@ -74,7 +74,7 @@ const checkinRoutes = [
     responses: { 200: { description: 'QR fixture', content: { 'application/json': { schema: kioskContracts.checkinQr.response } } } } },
   (c) => c.json({ data: { status: 'see_front_desk' as const } }, 200)),
   route({ ...portalContracts.context, responses: { 200: { description: 'Portal fixture', content: { 'application/json': { schema: portalContracts.context.response } } } } },
-  (c) => { const householdId = uuidv7(); return c.json({ data: { role: 'payer' as const, householdId, memberId: null }, householdId }, 200); }),
+  (c) => { const householdId = uuidv7(); return c.json({ data: { role: 'payer' as const, memberId: null }, householdId }, 200); }),
 ];
 function server(options: KioskAuthOptions = {}, principal: Principal = { kind: 'anonymous' }) {
   const session = vi.fn<MiddlewareHandler<RequestEnvironment>>(async (c, next) => {

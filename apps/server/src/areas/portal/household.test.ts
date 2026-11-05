@@ -7,7 +7,7 @@ import { auditEvents, householdUsers, memberships } from '@plaingym/db';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { portalContracts as contracts } from '@plaingym/shared/contracts';
+import { bookingsContracts, portalContracts as contracts } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
@@ -16,6 +16,7 @@ import { createPortalHouseholdService } from './household.js';
 import { createPortalHouseholdProfileRoutes } from './household.routes.js';
 import { adultPrincipal, answerFor, bothHouseholds, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send, type PortalFixture } from './household.fixture.js';
 import type { Principal } from '../../core/context.js';
+import { isPortalRoute, portalRoute } from './auth.permissions.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-29T16:00:00Z');
 beforeAll(() => initializeDatabase(db.appUrl));
@@ -33,6 +34,57 @@ function memberRoutes(memberId: string, revision = 1) {
 }
 
 describe('portal household routes', () => {
+  it('registers every portal contract through the household answer helper', () => {
+    for (const contract of Object.values(contracts)) {
+      const registration = areaContributions.routes?.find(route => route.id === `${contract.method.toUpperCase()} ${contract.path}`);
+      expect(registration, contract.path).toBeDefined();
+      expect(isPortalRoute(registration!), contract.path).toBe(true);
+    }
+  });
+  it('rejects every stale portal write before validation or a handler, including an absent household', async () => {
+    const f = await portalFixture(factory), principals = await bothHouseholds(factory, f);
+    const server = app(f, principals.other, true);
+    for (const contract of [...Object.values(contracts), ...Object.values(bookingsContracts)].filter(contract => contract.method !== 'get' && contract.path.startsWith('/api/portal/'))) {
+      const path = contract.path.replace(/\{[^}]+\}/g, () => f.child.id);
+      for (const expected of [f.household.id, undefined]) {
+        const response = await server.request(path, { method: contract.method.toUpperCase(),
+          headers: { origin: 'http://localhost', 'content-type': 'application/json', ...(expected ? { 'X-Portal-Household': expected } : {}) }, body: '{}' });
+        expect(response.status, `${contract.method} ${path}`).toBe(409);
+        expect(response.headers.get('X-Portal-Household')).toBe(f.otherHousehold.id);
+      }
+    }
+  });
+  it('refuses to send an answer that breaks its contract', async () => {
+    const f = await portalFixture(factory), contract = contracts.context;
+    const leaky = portalRoute({ ...contract, responses: { 200: { description: 'Context', content: { 'application/json': { schema: contract.response } } } } },
+      c => c.json({ data: { role: 'payer', memberId: null, privateField: 'hidden' } }, 200));
+    const response = await portalApp(db, f, payerPrincipal(f), [leaky], clock).request(contract.path);
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain('hidden');
+  });
+  it('does not write one household form into another household at the same revision', async () => {
+    const f = await portalFixture(factory), principals = await bothHouseholds(factory, f);
+    const server = app(f, principals.other), before = await (await server.request('/api/portal/household')).json();
+    const response = await server.request('/api/portal/household', { method: 'PATCH',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json', 'X-Portal-Household': f.household.id },
+      body: JSON.stringify({ name: 'Stale form', email: 'stale@example.test', phone: '123', address: { city: 'Wrong' }, revision: f.household.revision }) });
+    expect(response.status).toBe(409);
+    expect(await (await server.request('/api/portal/household')).json()).toEqual(before);
+  });
+  it('reports the moved household even when its new role cannot perform the stale write', async () => {
+    const f = await portalFixture(factory), principals = await bothHouseholds(factory, f);
+    const member = await factory('members', f.gymId, { householdId: f.otherHousehold.id, dateOfBirth: '1980-04-02' });
+    await db.forGym(f.gymId, tx => tx.update(householdUsers).set({ scope: 'member', memberId: member.id })
+      .where(and(eq(householdUsers.householdId, f.otherHousehold.id), eq(householdUsers.userId, f.payerUser.id))));
+    const server = app(f, principals.other);
+    const request = (expected: string) => server.request('/api/portal/household', { method: 'PATCH',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json', 'X-Portal-Household': expected }, body: '{}' });
+    const moved = await request(f.household.id);
+    expect(moved.status).toBe(409);
+    expect(moved.headers.get('X-Portal-Household')).toBe(f.otherHousehold.id);
+    // Once the page names the current household, its member role still cannot edit household contacts.
+    expect((await request(f.otherHousehold.id)).status).toBe(404);
+  });
   it('lets the payer read the household, its current members, profiles and read-only memberships', async () => {
     const f = await portalFixture(factory), server = app(f, payerPrincipal(f));
     await factory('memberships', f.gymId, { householdId: f.household.id, memberId: f.child.id, status: 'active' });

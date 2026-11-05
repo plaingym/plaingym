@@ -77,12 +77,12 @@ it('keeps a signed-in session without staff roles or household links, so the adm
   expect((await choose(unlinkedHousehold.id)).status).toBe(404);
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
   expect((await choose(second.id)).status).toBe(200);
-  expect(await context()).toEqual({ data: { role: 'payer', householdId: second.id, memberId: null }, householdId: second.id });
+  expect(await context()).toEqual({ data: { role: 'payer', memberId: null }, householdId: second.id });
   expect((await choose(first.id)).status).toBe(200);
-  expect(await context()).toEqual({ data: { role: 'payer', householdId: first.id, memberId: null }, householdId: first.id });
+  expect(await context()).toEqual({ data: { role: 'payer', memberId: null }, householdId: first.id });
   // A revoked choice is never honored: with one link left, the session opens that household.
   await db.forGym(gymId, tx => tx.delete(householdUsers).where(and(eq(householdUsers.householdId, first.id), eq(householdUsers.userId, member.userId))));
-  expect(await context()).toEqual({ data: { role: 'payer', householdId: second.id, memberId: null }, householdId: second.id });
+  expect(await context()).toEqual({ data: { role: 'payer', memberId: null }, householdId: second.id });
 });
 it('names a portal login by the member it is linked to in the open household, else by its own name, never another gym\'s', async () => {
   const user = await accounts.createPasswordUser(gymId, 'named@example.test', 'Login Name', 'named-user-password', clock);

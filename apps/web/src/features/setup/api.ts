@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { setupContracts, ranksContracts } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
 
@@ -27,12 +28,12 @@ export function createSetupClient(fetcher: typeof fetch = fetch) {
       });
       if (!response.ok) throw new ApiError(response.status, 'request_failed');
       if (name === 'finish') sessionStorage.removeItem('setup.token');
-      return contract.response.parse(await response.json()).data as ReturnType<typeof setupContracts[K]['response']['parse']>['data'];
+      return parseResponse(contract.response, await response.json()).data as ReturnType<typeof setupContracts[K]['response']['parse']>['data'];
     },
     async catalog() {
       const response = await fetcher(ranksContracts.catalog.path, { credentials: 'same-origin', redirect: 'error' });
       if (!response.ok) throw new ApiError(response.status, 'request_failed');
-      return ranksContracts.catalog.response.parse(await response.json()).data;
+      return parseResponse(ranksContracts.catalog.response, await response.json()).data;
     },
     async magicLink(email: string) {
       const response = await fetcher('/api/auth/sign-in/magic-link', { method: 'POST', credentials: 'same-origin', redirect: 'error',

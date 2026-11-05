@@ -105,6 +105,7 @@ const stripeCheckout = new Set(['POST /api/portal/payment-methods/checkout']);
 test('a payer household login reaches every portal route', async ({ sandboxes }) => {
   // The demo student is its household's payer, so payer-only routes must answer too.
   const member = await demoClient(sandboxes[0], 'student');
+  member.headers['X-Portal-Household'] = (await member.json<{ householdId: string }>('/api/portal/context')).householdId;
   for (const entry of inventory.filter(item => item.permission.kind === 'member')) {
     const response = await member.request(entry.path.replace(/\{[^}]+\}/g, missingId), entry.method,
       entry.method === 'GET' ? undefined : 'invalid');

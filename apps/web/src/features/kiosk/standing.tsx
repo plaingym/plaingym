@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useQuery } from '@tanstack/react-query';
 import { kioskStandingResponseSchema } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
@@ -11,7 +12,7 @@ export function KioskStandingTab({ memberId }: ExtensionViewProps) {
   const query = useQuery({ queryKey: ['kiosk-standing', memberId], enabled: !!memberId, queryFn: async ({ signal }) => {
     const response = await fetch(`/api/kiosk/standing/${memberId}`, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('Request failed');
-    return kioskStandingResponseSchema.parse(await response.json()).data;
+    return parseResponse(kioskStandingResponseSchema, await response.json()).data;
   } });
   if (query.isPending) return <p role="status">{t('kiosk/standing:loading')}</p>;
   if (query.isError) return <Alert role="alert">{t('kiosk/standing:error')}</Alert>;

@@ -13,7 +13,7 @@ import { CheckboxField } from '../../../components/ui/select.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
-import { conflict, gymToday, knownMinor, needsGuardian, portalCall, usePortalContext, usePortalScope, type PortalScope } from '../household/api.js';
+import { conflict, gymToday, knownMinor, needsGuardian, usePortalContext, usePortalScope, type PortalScope } from '../household/api.js';
 import { portalWaiverEndpoints, type PortalWaiverEndpoints } from './endpoints.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/waivers:' + key, values);
@@ -23,7 +23,7 @@ type Person = { id: string; firstName: string; lastName: string; dateOfBirth: st
 export function PortalWaivers() {
   // The open household is read once; everything below is keyed by it and checks each answer was for it.
   const scope = usePortalScope(), context = usePortalContext(scope);
-  if (context.isPending) return <LoadingState />;
+  if (context.isPending || (scope.moving && context.isError)) return <LoadingState />;
   if (context.isError) return <ErrorState onRetry={() => void context.refetch()} />;
   return <PortalWaiversPage context={context.data} scope={scope} />;
 }
@@ -32,16 +32,17 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
   const endpoints = portalWaiverEndpoints(payer);
   const [signing, setSigning] = useState<{ template: WaiverTemplate; member: Person } | null>(null);
   const people = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'people'], enabled: ready, queryFn: async (): Promise<Person[]> => payer
-    ? own(await portalCall(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
-    : [own(await portalCall(contracts.profile, undefined, { memberId: context.memberId! })).data] });
-  const pending = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'pending'], enabled: ready, queryFn: async () => own(await portalCall(endpoints.pending, undefined, {}, { limit: 100, offset: 0 })) });
-  const signed = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'signed'], enabled: ready, queryFn: async () => own(await portalCall(endpoints.signed, undefined, {}, { limit: 100, offset: 0 })) });
-  const pdf = useMutation({ mutationFn: async (signatureId: string) => own(await portalCall(endpoints.pdf, undefined, { signatureId })).data.url });
+    ? own(await scope.call(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
+    : [own(await scope.call(contracts.profile, undefined, { memberId: context.memberId! })).data] });
+  const pending = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'pending'], enabled: ready, queryFn: async () => own(await scope.call(endpoints.pending, undefined, {}, { limit: 100, offset: 0 })) });
+  const signed = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'signed'], enabled: ready, queryFn: async () => own(await scope.call(endpoints.signed, undefined, {}, { limit: 100, offset: 0 })) });
+  const pdf = useMutation({ mutationFn: async (signatureId: string) => own(await scope.call(endpoints.pdf, undefined, { signatureId })).data.url });
   const gym = bootstrap.data?.gym;
   if (!gym) return null;
   const name = (memberId: string) => { const person = people.data?.find(row => row.id === memberId); return person ? `${person.firstName} ${person.lastName}` : ''; };
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }), today = gymToday(gym.timezone);
   const failed = people.isError || pending.isError || signed.isError;
+  if (scope.moving) return <LoadingState />;
   return <Page className="max-w-3xl">
     <PageHeader title={text('title')} description={text(payer ? 'descriptionPayer' : 'description')} />
     {(people.isPending || pending.isPending || signed.isPending) && <LoadingState />}
@@ -73,14 +74,15 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
         })}</StackedList>}
       </PageSection>
     </>}
-    {signing && <SignWaiver key={signing.template.id + signing.member.id} template={signing.template} member={signing.member} endpoints={endpoints} own={own}
+    {signing && <SignWaiver key={signing.template.id + signing.member.id} template={signing.template} member={signing.member} endpoints={endpoints} scope={scope}
       minor={needsGuardian(signing.member.dateOfBirth, today)} close={() => setSigning(null)}
       saved={async () => { await cache.invalidateQueries({ queryKey: [...scope.key, 'waivers', context.role] }); setSigning(null); }} />}
   </Page>;
 }
 /** Draw or type a signature; the server validates the template version, guardian rule and image, and stores one immutable snapshot. */
-export function SignWaiver({ template, member, minor, endpoints, own, close, saved }: { template: WaiverTemplate; member: Person; minor: boolean;
-  endpoints: PortalWaiverEndpoints; own: PortalScope['own']; close: () => void; saved: () => Promise<void> }) {
+export function SignWaiver({ template, member, minor, endpoints, scope, close, saved }: { template: WaiverTemplate; member: Person; minor: boolean;
+  endpoints: PortalWaiverEndpoints; scope: PortalScope; close: () => void; saved: () => Promise<void> }) {
+  const { own } = scope;
   const canvas = useRef<HTMLCanvasElement>(null), drawing = useRef(false), hasInk = useRef(false);
   const uploaded = useRef<{ signatureImageKey: string; signatureImageHash: string } | null>(null);
   const [typed, setTyped] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [changed, setChanged] = useState(false);
@@ -93,8 +95,8 @@ export function SignWaiver({ template, member, minor, endpoints, own, close, sav
       const signer = String(data.get('signer')).trim(), node = canvas.current!, ctx = node.getContext('2d')!;
       if (typed) { ctx.clearRect(0, 0, node.width, node.height); ctx.fillStyle = '#000'; ctx.font = '32px sans-serif'; ctx.fillText(signer, 12, 65, 560); }
       else if (!hasInk.current) { setError(text('signatureRequired')); return; }
-      uploaded.current ??= own(await portalCall(endpoints.upload, { memberId: member.id, pngBase64: node.toDataURL('image/png').split(',')[1] })).data;
-      own(await portalCall(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
+      uploaded.current ??= own(await scope.call(endpoints.upload, { memberId: member.id, pngBase64: node.toDataURL('image/png').split(',')[1] })).data;
+      own(await scope.call(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
         signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer } }));
       await saved();
     } catch (failure) { setError(text(conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }

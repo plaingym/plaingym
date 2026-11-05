@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { renderSVG } from 'uqr';
 import { kioskDeviceListResponseSchema, kioskDeviceResponseSchema, registerKioskDeviceResponseSchema,
@@ -37,7 +38,7 @@ export function KioskDevicesSettings() {
     setBusy(true); setMessage(''); setPage(null);
     void api.GET('/api/kiosk/devices', { params: { query: { limit: pageSize, offset } } }).then((result) => {
       if (!result.response.ok) throw new Error();
-      const next = kioskDeviceListResponseSchema.parse(result.data);
+      const next = parseResponse(kioskDeviceListResponseSchema, result.data);
       if (active) setPage(next);
     }).catch(() => { if (active) setMessage(t('kiosk/devices:error')); })
       .finally(() => { if (active) setBusy(false); });
@@ -52,7 +53,7 @@ export function KioskDevicesSettings() {
     try {
       const result = await api.POST('/api/kiosk/devices', { body: { name } });
       if (!result.response.ok) throw new Error();
-      const data = registerKioskDeviceResponseSchema.parse(result.data).data;
+      const data = parseResponse(registerKioskDeviceResponseSchema, result.data).data;
       setToken({ deviceId: data.device.id, value: data.token });
       form.reset(); setOffset(0); setReload((value) => value + 1);
     } catch { setMessage(t('kiosk/devices:error')); }
@@ -63,7 +64,7 @@ export function KioskDevicesSettings() {
     try {
       const result = await api.POST('/api/kiosk/devices/{id}/revoke', { params: { path: { id } } });
       if (!result.response.ok) throw new Error();
-      const device = kioskDeviceResponseSchema.parse(result.data).data;
+      const device = parseResponse(kioskDeviceResponseSchema, result.data).data;
       setPage((previous) => previous && ({ ...previous, data: previous.data.map((row) => row.id === id ? device : row) }));
       if (token?.deviceId === id) clearToken();
     } catch { setMessage(t('kiosk/devices:error')); }

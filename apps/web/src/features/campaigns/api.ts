@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { linksContracts, membersContracts, type CampaignRecipientState, type CreateLinkCampaignRequest, type Household,
   type HouseholdsNeedingCardResponse } from '@plaingym/shared/contracts';
 import { api, ApiError } from '../../lib/api.js';
@@ -12,30 +13,30 @@ function checked<T>(result: { response: Response; data?: T; error?: unknown }): 
 }
 export const campaignClient = {
   async needsCard(households: Household[]) {
-    return householdsNeedingCard(households, async offset => linksContracts.listHouseholdsNeedingCard.response.parse(
+    return householdsNeedingCard(households, async offset => parseResponse(linksContracts.listHouseholdsNeedingCard.response,
       checked(await api.GET('/api/link-campaign-households/needing-card', { params: { query: { limit: 100, offset } } }))));
   },
   async list(offset = 0) {
-    return linksContracts.listCampaigns.response.parse(checked(await api.GET('/api/link-campaigns', { params: { query: { limit: 20, offset } } })));
+    return parseResponse(linksContracts.listCampaigns.response, checked(await api.GET('/api/link-campaigns', { params: { query: { limit: 20, offset } } })));
   },
   async get(campaignId: string) {
-    return linksContracts.getCampaign.response.parse(checked(await api.GET('/api/link-campaigns/{campaignId}', { params: { path: { campaignId } } }))).data;
+    return parseResponse(linksContracts.getCampaign.response, checked(await api.GET('/api/link-campaigns/{campaignId}', { params: { path: { campaignId } } }))).data;
   },
   async recipients(campaignId: string, state: CampaignRecipientState | undefined, offset = 0) {
-    return linksContracts.listCampaignRecipients.response.parse(checked(await api.GET('/api/link-campaigns/{campaignId}/recipients',
+    return parseResponse(linksContracts.listCampaignRecipients.response, checked(await api.GET('/api/link-campaigns/{campaignId}/recipients',
       { params: { path: { campaignId }, query: { ...(state ? { state } : {}), limit: 20, offset } } })));
   },
   async create(input: CreateLinkCampaignRequest) {
     const body = linksContracts.createCampaign.body.parse(input);
-    return linksContracts.createCampaign.response.parse(checked(await api.POST('/api/link-campaigns', { body }))).data;
+    return parseResponse(linksContracts.createCampaign.response, checked(await api.POST('/api/link-campaigns', { body }))).data;
   },
   async remind(campaignId: string) {
-    return linksContracts.remindCampaign.response.parse(checked(await api.POST('/api/link-campaigns/{campaignId}/remind', { params: { path: { campaignId } } }))).data;
+    return parseResponse(linksContracts.remindCampaign.response, checked(await api.POST('/api/link-campaigns/{campaignId}/remind', { params: { path: { campaignId } } }))).data;
   },
   async households() {
     const result: Household[] = [];
     for (let offset = 0; ; ) {
-      const page = membersContracts.listHouseholds.response.parse(checked(await api.GET('/api/households', { params: { query: { offset, limit: 100 } } })));
+      const page = parseResponse(membersContracts.listHouseholds.response, checked(await api.GET('/api/households', { params: { query: { offset, limit: 100 } } })));
       result.push(...page.data); offset += page.data.length;
       if (offset >= page.pagination.total) return result;
       if (!page.data.length) throw new Error('Incomplete household list');

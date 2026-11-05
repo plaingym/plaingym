@@ -17,12 +17,17 @@ interface Household {
 test.use({ trace: 'off', screenshot: 'off' });
 
 async function read(client: Client, path: string) {
-  const response = await client.request<{ data: unknown }>(path);
+  const response = await client.request<{ data: unknown; householdId: string }>(path);
   expect(response.status, `${path}: ${response.text}`).toBe(200);
+  if (!path.includes('/bookings')) {
+    const expected = path === '/api/portal/household' ? (response.body.data as RecordId).id : client.headers['X-Portal-Household'];
+    expect(response.body.householdId, path).toBe(expected);
+  }
   return response.body.data;
 }
 async function household(client: Client, sessionId: string): Promise<Household> {
   const home = await read(client, '/api/portal/household') as { id: string };
+  client.headers['X-Portal-Household'] = home.id;
   const members = await read(client, '/api/portal/members') as Member[];
   const member = members[0]!;
   const invoiceIds = (await read(client, '/api/portal/invoices?limit=100&offset=0') as RecordId[]).map(row => row.id);
@@ -78,16 +83,19 @@ async function sweepPortal(own: Household, target: Household, sessionId: string,
     }
   }
 }
-/** Every portal read without a path parameter shows only the caller's household. */
+/** Every portal read shows only the caller's household and identifies it (booking answers are not cached by portal pages). */
 async function sweepReads(own: Household, target: Household) {
   const from = new Date(Date.now() - 7 * 86_400_000).toISOString(), to = new Date(Date.now() + 14 * 86_400_000).toISOString();
-  for (const entry of inventory.filter(item => item.permission.kind === 'member' && item.method === 'GET' && !item.path.includes('{'))) {
+  const ids: Record<string, string> = { memberId: own.members[0]!.id, invoiceId: own.invoiceIds[0] ?? missingId,
+    signatureId: own.signatureIds[0] ?? missingId, id: own.bookingIds[0] ?? missingId };
+  for (const entry of inventory.filter(item => item.permission.kind === 'member' && item.method === 'GET')) {
     const query = entry.path === '/api/portal/schedule' ? `?from=${from}&to=${to}&limit=100&offset=0`
       : ['/api/portal/invoices', '/api/portal/bookings'].includes(entry.path) ? '?limit=100&offset=0' : '';
-    const response = await own.client.request(entry.path + query);
+    const response = await own.client.request(entry.path.replace(/\{(\w+)\}/g, (_, name: string) => ids[name]!) + query);
     // The self routes answer 404 to a payer login that has no member profile of its own.
-    expect(entry.path === '/api/portal/bookings' || entry.path.startsWith('/api/portal/waivers') ? [200, 404] : [200, 503],
+    expect(entry.path.includes('{') ? [200, 404, 503] : entry.path === '/api/portal/bookings' || entry.path.startsWith('/api/portal/waivers') ? [200, 404] : [200, 503],
       `${key(entry)}: ${response.text}`).toContain(response.status);
+    if (response.status === 200 && !entry.path.includes('/bookings')) expect((response.body as { householdId: string }).householdId, key(entry)).toBe(own.householdId);
     for (const secret of secrets(target)) expect(response.text, `${key(entry)} leaks`).not.toContain(secret);
   }
 }

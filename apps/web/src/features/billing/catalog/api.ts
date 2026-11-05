@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { billingContracts, settingsContracts, membersContracts, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
 import { ApiError } from '../../../lib/api.js';
+import { parseResponse } from '../../../lib/response.js';
 
 export async function billingRequest<C extends EndpointContract>(contract: C,
   input?: unknown, params: Record<string, string> = {}, query: Record<string, string | number | undefined> = {}, fetcher: typeof fetch = fetch): Promise<ReturnType<C['response']['parse']>> {
@@ -13,7 +14,7 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
     headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed');
-  return contract.response.parse(await response.json()) as ReturnType<C['response']['parse']>;
+  return parseResponse(contract.response, await response.json()) as ReturnType<C['response']['parse']>;
 }
 async function all<T>(load: (offset: number) => Promise<ListResponse<T>>) {
   const result: T[] = [];

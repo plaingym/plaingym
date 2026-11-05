@@ -44,7 +44,7 @@ describe('portal progress', () => {
     expect(screen.getByText('Visits: 2')).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Show more' }));
     await screen.findByText('Class · Grappling');
-    expect(client.attendance).toHaveBeenLastCalledWith(child, 1);
+    expect(client.attendance).toHaveBeenLastCalledWith(child, 1, 'household');
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
   it('shows the current rank the server chose, even when a same-time promotion is listed first', async () => {

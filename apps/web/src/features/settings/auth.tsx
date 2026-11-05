@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { googleCallbackPath, googleLoginResponseSchema, type GoogleLogin } from '@plaingym/shared/contracts';
@@ -19,7 +20,7 @@ type Reply = { response: { ok: boolean; status: number }; data?: unknown; error?
 async function fetchGoogleLogin(): Promise<GoogleLogin> {
   const result = await api.GET('/api/settings/integrations/google');
   if (!result.response.ok) throw new Error('The Google sign-in request failed');
-  return googleLoginResponseSchema.parse(result.data).data;
+  return parseResponse(googleLoginResponseSchema, result.data).data;
 }
 /** The gym's Google sign-in settings, shared by the section and the settings page's decision to list it. */
 export function useGoogleLogin(enabled: boolean) {
@@ -78,9 +79,9 @@ export function GoogleLoginSettings() {
     const saved = await gym.save(async (revision, signal) => {
       const reply = await send(revision, signal);
       return { response: reply.response, data: reply.response.ok ? reply.data : reply.error };
-    }, { adopt: (data, current) => ({ ...current, revision: googleLoginResponseSchema.parse(data).data.revision }) });
+    }, { adopt: (data, current) => ({ ...current, revision: parseResponse(googleLoginResponseSchema, data).data.revision }) });
     if (saved.status < 300) {
-      cache.setQueryData(googleLoginKey, googleLoginResponseSchema.parse(saved.data).data);
+      cache.setQueryData(googleLoginKey, parseResponse(googleLoginResponseSchema, saved.data).data);
       // The login page offers Google from the bootstrap, which now says otherwise.
       await cache.invalidateQueries({ queryKey: bootstrapKey });
       return { status: saved.status, reason: null };

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button.js';
 import { Card } from '../../components/ui/card.js';
@@ -19,7 +20,7 @@ export function OutboxPage() {
     const abort = new AbortController();
     setLoading(true); setError(false);
     void api.GET('/api/demo/outbox', { params: { query: { limit: 30, ...(cursor ? { before: cursor } : {}) } }, signal: abort.signal })
-      .then((result) => { if (!result.response.ok) throw new Error(); return outboxResponse.parse(result.data); })
+      .then((result) => { if (!result.response.ok) throw new Error(); return parseResponse(outboxResponse, result.data); })
       .then((body) => { setMessages((current) => cursor ? [...current, ...body.data] : body.data); setNext(body.next); })
       .catch(() => { if (!abort.signal.aborted) setError(true); })
       .finally(() => { if (!abort.signal.aborted) setLoading(false); });

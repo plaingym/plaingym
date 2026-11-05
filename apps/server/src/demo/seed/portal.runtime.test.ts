@@ -108,8 +108,8 @@ it('lets a visitor join with the test card, activates only from the shared webho
   const member = after.people[0]!, path = `/api/portal/members/${member.id}/checkin-code`;
   const current = await send(sandbox.origin, path, { cookie });
   expect(current.status, await current.clone().text()).toBe(200);
-  const { revision } = (await current.json()).data as { revision: number };
-  const issued = await send(sandbox.origin, path, { body: { revision }, cookie });
+  const { data: { revision }, householdId } = await current.json() as { data: { revision: number }; householdId: string };
+  const issued = await send(sandbox.origin, path, { body: { revision }, cookie, headers: { 'X-Portal-Household': householdId } });
   expect(issued.status, await issued.clone().text()).toBe(200);
   const { code } = (await issued.json()).data as { code: string };
   expect(await checkIn(sandbox, code)).toMatchObject({ status: 'checked_in', member: { id: member.id } });

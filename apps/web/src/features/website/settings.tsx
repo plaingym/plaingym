@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { maxWebsitePhotos, websiteSettingsResponseSchema, type GymSettings, type WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
@@ -62,12 +63,12 @@ export function WebsiteSettings() {
     try {
       const result = await api.GET('/api/website');
       if (!result.response.ok || !result.data) throw new Error('The website settings request failed');
-      show(websiteSettingsResponseSchema.parse(result.data).data, true);
+      show(parseResponse(websiteSettingsResponseSchema, result.data).data, true);
     } catch { setFailed(true); }
   }
   // Read again whenever the gym settings come from the server: a reload, a conflict, or this section's own save.
   useEffect(() => { void load(); }, [gym.epoch]);
-  const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: websiteSettingsResponseSchema.parse(body).data.revision });
+  const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: parseResponse(websiteSettingsResponseSchema, body).data.revision });
   /** `kind` says what the save changed: the text and colors, a photo, or the logo. */
   async function run(send: (revision: number, signal: AbortSignal) => Promise<Sent>, done: string, kind: 'content' | 'photo' | 'logo') {
     setBusy(true); setMessage(null);
@@ -81,7 +82,7 @@ export function WebsiteSettings() {
         if (result.status === 409 || result.status === 404) void load();
         return;
       }
-      show(websiteSettingsResponseSchema.parse(result.data).data, kind !== 'content'); setMessage({ text: text(done), error: false });
+      show(parseResponse(websiteSettingsResponseSchema, result.data).data, kind !== 'content'); setMessage({ text: text(done), error: false });
       // The logo and the primary color also show in General, which would otherwise save back what it read before.
       if (kind !== 'photo') { gym.reload(); void cache.invalidateQueries({ queryKey: bootstrapKey }); }
     } catch { setMessage({ text: text('error'), error: true }); }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useEffect, useState } from 'react';
 import { goLiveChecklistResponseSchema, type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -14,7 +15,7 @@ import { CheckboxField } from '../../components/ui/select.js';
 type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
 type Checklist = WireChecklist & { pastDueMemberships: NonNullable<WireChecklist['pastDueMemberships']> };
 function parseChecklist(response: unknown): Checklist {
-  const data = goLiveChecklistResponseSchema.parse(response).data;
+  const data = parseResponse(goLiveChecklistResponseSchema, response).data;
   return { ...data, pastDueMemberships: data.pastDueMemberships ?? [] };
 }
 const label = (key: string, values?: Record<string, string>) => t('settings/go-live:' + key, values);

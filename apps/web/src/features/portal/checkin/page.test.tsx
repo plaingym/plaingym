@@ -32,7 +32,7 @@ describe('portal check-in code', () => {
     await screen.findByText(/There is no active check-in code/);
     await user.click(screen.getByRole('button', { name: 'Create a code' }));
     await screen.findByAltText('QR check-in code for Casey Parent');
-    expect(client.regenerateCheckin).toHaveBeenCalledWith(child, 4);
+    expect(client.regenerateCheckin).toHaveBeenCalledWith(child, 4, 'household');
   });
   it('replaces a code only after confirmation and reports a stale revision', async () => {
     client.regenerateCheckin.mockRejectedValueOnce(new ApiError(409, 'request_failed'));
@@ -44,7 +44,7 @@ describe('portal check-in code', () => {
     expect(client.checkinCode).toHaveBeenCalledTimes(2);
     await user.click(screen.getByRole('button', { name: 'Replace code' }));
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(client.regenerateCheckin).toHaveBeenLastCalledWith(parent, 4);
+    expect(client.regenerateCheckin).toHaveBeenLastCalledWith(parent, 4, 'household');
   });
   it('explains an unavailable gym key without server details', async () => {
     client.checkinCode.mockRejectedValue(new ApiError(503, 'request_failed'));

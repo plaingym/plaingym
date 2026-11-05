@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
@@ -28,27 +29,27 @@ function ImportPanel({ gymId }: { gymId: string }) {
   const plan = upload ? { uploadId: upload.id, mapper, mapping, duplicatePolicy } : undefined;
   const fingerprint = JSON.stringify(plan);
   const progress = useQuery({ queryKey: ['imports', gymId, runId], enabled: !!runId,
-    queryFn: async () => importJobSchema.parse((await request<{ data: unknown }>('/api/imports/' + runId)).data),
+    queryFn: async () => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports/' + runId)).data),
     refetchInterval: (query) => query.state.data && ['succeeded', 'failed'].includes(query.state.data.status) ? false : 1500 });
   const errors = useQuery({ queryKey: ['imports', gymId, runId, 'errors', errorOffset], enabled: !!runId && !!progress.data?.errorCount,
     queryFn: async () => {
       const response = await fetch(`/api/imports/${runId}/errors?offset=${errorOffset}&limit=50`, { credentials: 'same-origin', redirect: 'error' });
       if (!response.ok) throw new Error('Import report unavailable');
-      return listResponseSchema(importIssueSchema).parse(await response.json());
+      return parseResponse(listResponseSchema(importIssueSchema), await response.json());
     }, refetchInterval: progress.data?.status === 'running' ? 1500 : false });
   const uploadFile = useMutation({ mutationFn: async (file: File) => {
     const form = new FormData(); form.set('file', file);
     const response = await fetch('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
     if (!response.ok) throw new Error('Upload failed');
-    return importUploadSchema.parse((await response.json() as { data: unknown }).data);
+    return parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
   }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setRunId(undefined); setOffset(0); } });
   const previewRows = useMutation({ mutationFn: async (page: number) => {
     const response = await fetch(`/api/imports/preview?offset=${page}&limit=50`, { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
     if (!response.ok) throw new Error('Preview failed');
-    return importPreviewResponseSchema.parse(await response.json());
+    return parseResponse(importPreviewResponseSchema, await response.json());
   }, onSuccess(data) { setPreview(data); setOffset(data.pagination.offset); } });
-  const start = useMutation({ mutationFn: async (dryRun: boolean) => importJobSchema.parse((await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
+  const start = useMutation({ mutationFn: async (dryRun: boolean) => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
     onSuccess(data) { setRunId(data.id); setRunPlan(fingerprint); setErrorOffset(0); } });
   const busy = uploadFile.isPending || start.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running';
   const dryRunPassed = progress.data?.dryRun && progress.data.status === 'succeeded' && progress.data.errorCount === 0 && runPlan === fingerprint;
@@ -116,9 +117,9 @@ function ImportPanel({ gymId }: { gymId: string }) {
 }
 function ExportPanel({ gymId }: { gymId: string }) {
   const [id, setId] = useState<string>();
-  const create = useMutation({ mutationFn: async () => exportJobSchema.parse((await request<{ data: unknown }>('/api/exports', { format: 'csv' })).data), onSuccess(job) { setId(job.id); } });
+  const create = useMutation({ mutationFn: async () => parseResponse(exportJobSchema, (await request<{ data: unknown }>('/api/exports', { format: 'csv' })).data), onSuccess(job) { setId(job.id); } });
   const progress = useQuery({ queryKey: ['exports', gymId, id], enabled: !!id,
-    queryFn: async () => exportJobSchema.parse((await request<{ data: unknown }>('/api/exports/' + id)).data),
+    queryFn: async () => parseResponse(exportJobSchema, (await request<{ data: unknown }>('/api/exports/' + id)).data),
     refetchInterval: (query) => query.state.data && ['succeeded', 'failed'].includes(query.state.data.status) ? false : 1500 });
   return <PageSection title={t('imports/export:title')} description={t('imports/export:description')}><div className={card}>
     <Button className="w-full sm:w-auto" disabled={create.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running'} onClick={() => create.mutate()}>{t('imports/export:create')}</Button>

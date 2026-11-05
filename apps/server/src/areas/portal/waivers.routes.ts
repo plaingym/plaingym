@@ -2,9 +2,8 @@
 import { bodyLimit } from 'hono/body-limit';
 import { AppError } from '@plaingym/shared';
 import { portalContracts as contracts } from '@plaingym/shared/contracts';
-import { route } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
-import { portalAnswer, portalIdentity } from './auth.permissions.js';
+import { portalRoute as route, portalIdentity } from './auth.permissions.js';
 import { ok } from './household.js';
 import { createPortalWaiverService, type PortalWaiverScope, type PortalWaiverService } from './waivers.js';
 import type { WaiversService } from '../waivers/waivers.js';
@@ -23,25 +22,25 @@ export function createPortalWaiverRoutes(service: PortalWaiverService = createPo
     return [
       route({ ...pending, request: { query: pending.query }, responses: ok('Unsigned current waivers', pending.response) }, async c => {
         c.header('Cache-Control', 'no-store');
-        return c.json(portalAnswer(c.get('context'), await service.pending(portalIdentity(c.get('context')), kind, c.req.valid('query'))), 200);
+        return c.json(await service.pending(portalIdentity(c.get('context')), kind, c.req.valid('query')), 200);
       }),
       route({ ...signed, request: { query: signed.query }, responses: ok('Signed waivers', signed.response) }, async c => {
         c.header('Cache-Control', 'no-store');
-        return c.json(portalAnswer(c.get('context'), await service.signed(portalIdentity(c.get('context')), kind, c.req.valid('query'))), 200);
+        return c.json(await service.signed(portalIdentity(c.get('context')), kind, c.req.valid('query')), 200);
       }),
       route({ ...upload, middleware: [limit(), rateLimit({ limit: 30 })], request: { body: { required: true, content: { 'application/json': { schema: upload.body } } } }, responses: ok('Uploaded signature image', upload.response) }, async c => {
         const input = c.req.valid('json'), context = c.get('context');
         c.header('Cache-Control', 'no-store');
-        return c.json(portalAnswer(c.get('context'), { data: await service.upload(portalIdentity(context), kind, input.memberId, Buffer.from(input.pngBase64, 'base64'), context.gym.timezone) }), 200);
+        return c.json({ data: await service.upload(portalIdentity(context), kind, input.memberId, Buffer.from(input.pngBase64, 'base64'), context.gym.timezone) }, 200);
       }),
       route({ ...sign, middleware: [limit(), rateLimit({ limit: 30 })], request: { body: { required: true, content: { 'application/json': { schema: sign.body } } } }, responses: ok('Signed waiver', sign.response) }, async c => {
         const context = c.get('context');
         c.header('Cache-Control', 'no-store');
-        return c.json(portalAnswer(c.get('context'), { data: await service.sign(portalIdentity(context), kind, c.req.valid('json'), { timezone: context.gym.timezone, ipAddress: context.clientIp ?? 'unknown' }) }), 200);
+        return c.json({ data: await service.sign(portalIdentity(context), kind, c.req.valid('json'), { timezone: context.gym.timezone, ipAddress: context.clientIp ?? 'unknown' }) }, 200);
       }),
       route({ ...pdf, middleware: rateLimit({ limit: 10 }), request: { params: pdf.params }, responses: ok('Signed waiver PDF link', pdf.response) }, async c => {
         c.header('Cache-Control', 'no-store');
-        return c.json(portalAnswer(c.get('context'), await service.pdf(portalIdentity(c.get('context')), kind, c.req.valid('param').signatureId)), 200);
+        return c.json(await service.pdf(portalIdentity(c.get('context')), kind, c.req.valid('param').signatureId), 200);
       }),
     ];
   };

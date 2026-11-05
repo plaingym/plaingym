@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { parseResponse } from '../../lib/response.js';
 import { useQuery } from '@tanstack/react-query';
 import { healthContracts, updateAvailableResponseSchema } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -15,7 +16,7 @@ export function UpdateBanner({ gymId }: { gymId: string }) {
   const query = useQuery({ queryKey: ['health', gymId, 'update'], queryFn: async ({ signal }) => {
     const result = await api.GET(healthContracts.getUpdate.path, { signal, cache: 'no-store' });
     if (!result.response.ok) throw new Error('Update check failed');
-    return updateAvailableResponseSchema.parse(result.data).data;
+    return parseResponse(updateAvailableResponseSchema, result.data).data;
   }, staleTime: 60 * 60_000, retry: false,
     // While the server's first read of the release list is running it answers `unavailable` with no check time, so ask again
     // soon. An `unavailable` with a time is a failed read: the server retries hourly by itself, so the usual pace is enough.
