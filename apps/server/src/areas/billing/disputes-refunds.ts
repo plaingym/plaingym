@@ -3,13 +3,14 @@ import { createHash } from 'node:crypto';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import { forGym, invoices, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { terminalDisputeStatuses } from '@plaingym/shared/contracts';
+import { stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { ChargeOutcome, Dispute, Payments, Refund } from '../../infra/payments/index.js';
 import type { BillingAlerts } from './alerts/index.js';
+import { holdGymSettings } from '../settings/settings.js';
 import { audit, lockInvoice } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
@@ -101,7 +102,13 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
   async function dispute(gymId: string, payment: Payment, value: Dispute): Promise<'recorded' | 'unchanged' | 'conflict'> {
     let attached = false;
     const result = await scope(gymId, async tx => {
+      // A switch from test to live holds the gym row for its whole save and closes the open disputes of the card payments
+      // it marks as test: waiting for it first means it either sees this dispute or has marked the payment, whose dispute
+      // is then in the test account and isn't recorded (the live key could never read or answer it).
+      await holdGymSettings(tx, gymId);
       const invoice = await lockInvoice(tx, payment.invoiceId);
+      const [current] = await tx.select({ method: payments.method, reference: payments.reference }).from(payments).where(eq(payments.id, payment.id));
+      if (current?.method === 'card' && current.reference === stripeTestPaymentReference) return 'unchanged' as const;
       if (invoice.disputeId && invoice.disputeId !== value.id) return 'conflict' as const;
       if (invoice.disputeId === value.id && (invoice.disputeStatus === value.status || isTerminalDispute(invoice.disputeStatus)))
         return 'unchanged' as const;

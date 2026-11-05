@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import { beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { stripeEvents, uuidv7 } from '@plaingym/db';
+import { auditEvents, stripeEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
@@ -17,7 +17,8 @@ import { StripePayments } from '../../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../../infra/payments/stripe-fixtures.js';
 import type { ObjectData } from '../../../infra/payments/transport.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
-import { createWebhookHealthQuery, createWebhookInbox, type WebhookInbox } from './inbox.js';
+import { createWebhookHealthQuery, createWebhookInbox, testEventSkippedAction, type WebhookInbox } from './inbox.js';
+import { stripeTestClearedAction } from '../customers.js';
 import { createWebhookInboxJobs } from './inbox.jobs.js';
 import { createWebhookInboxRoutes } from './inbox.routes.js';
 import { createReplayCommand } from '../../../cli/replay.js';
@@ -150,7 +151,8 @@ it('verifies the exact raw body via StripePayments, stores references only, and 
   const service = stripe(), handler = vi.fn(); service.register('payment_intent.succeeded', handler);
   const delivery = stripeDelivery();
   expect((await request(server(service), delivery.body, delivery.signature)).status).toBe(200);
-  expect(handler).not.toHaveBeenCalled(); expect((await rows())[0]!.payload).toEqual(event('evt_stripe'));
+  // The verifying key's mode is stored with the event.
+  expect(handler).not.toHaveBeenCalled(); expect((await rows())[0]!.payload).toEqual({ ...event('evt_stripe'), livemode: false });
   expect(JSON.stringify(await rows())).not.toContain('private@example.invalid');
   const altered = new TextEncoder().encode(new TextDecoder().decode(delivery.body) + ' ');
   expect((await request(server(service), altered, delivery.signature)).status).toBe(400);
@@ -235,4 +237,56 @@ it('deduplicates and retries through the real persistent Postgres queue', async 
   await queue.runNext(); expect(calls).toBe(1); clock.advance(1000); await queue.runNext(); expect(calls).toBe(2);
   expect(await queue.runNext()).toBe(false);
   await service.replay(gymA, 'evt_persistent'); await queue.runNext(); expect(calls).toBe(3);
+});
+/** This test's skip audits: the events table is emptied before each test, the audit log isn't. */
+async function skippedAudits() {
+  const ids = new Set((await rows()).map((row) => row.id));
+  return (await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, testEventSkippedAction))))
+    .filter((row) => ids.has(row.targetId));
+}
+/** The gym's key after a switch from test to live; any call to Stripe through it fails the test. */
+function liveKey() {
+  const live = new FakePayments(gymA, clock); live.keyMode = 'live';
+  const calls = [vi.spyOn(live, 'findCharge'), vi.spyOn(live, 'readPaymentObject'), vi.spyOn(live, 'listRefunds')];
+  return { live, calls };
+}
+it('finishes a test-mode event stored before a switch to live with an audit, without its handler or a Stripe call', async () => {
+  fake.keyMode = 'test';
+  await deliver(event('evt_test_mode')); await deliver(event('evt_still_test'));
+  expect((await rows()).map((row) => row.payload)).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'evt_test_mode', livemode: false })]));
+  // Before the switch the test key reads it as usual.
+  const handled = vi.fn(); inbox.register('payment_intent.succeeded', handled);
+  await inbox.dispatch({ eventId: 'evt_still_test' }, context()); expect(handled).toHaveBeenCalledTimes(1);
+  const { live, calls } = liveKey(), service = build(async () => live), handler = vi.fn();
+  service.register('payment_intent.succeeded', handler);
+  clock.advance(60_000);
+  await service.dispatch({ eventId: 'evt_test_mode' }, context());
+  expect(handler).not.toHaveBeenCalled();
+  for (const call of calls) expect(call).not.toHaveBeenCalled();
+  const row = (await rows()).find((saved) => saved.eventId === 'evt_test_mode')!;
+  expect(row).toMatchObject({ processedAt: clock.now(), error: null });
+  expect(await skippedAudits()).toMatchObject([{ actorKind: 'system', targetType: 'stripe_event', targetId: row.id,
+    after: { eventId: 'evt_test_mode', type: 'payment_intent.succeeded' } }]);
+  // A live event for the live key goes to its handler, with no audit.
+  live.keyMode = 'live';
+  const liveEvent = fakeDelivery(event('evt_live'));
+  await build(async () => live).receive(gymA, liveEvent.body, live.signWebhook(liveEvent.body));
+  await service.dispatch({ eventId: 'evt_live' }, context());
+  expect(handler).toHaveBeenCalledTimes(1); expect(await skippedAudits()).toHaveLength(1);
+});
+it('treats an event stored without its mode as test-mode only when it arrived before the gym’s latest switch to live', async () => {
+  await deliver(event('evt_before'));
+  clock.advance(1000);
+  await database.forGym(gymA, (tx) => tx.insert(auditEvents).values({ gymId: gymA, actorKind: 'system', action: stripeTestClearedAction,
+    targetType: 'gym', targetId: gymA, before: null, after: {}, occurredAt: clock.now() }));
+  clock.advance(1000);
+  await deliver(event('evt_after'));
+  expect((await rows()).every((row) => !('livemode' in (row.payload as object)))).toBe(true);
+  const { live } = liveKey(), service = build(async () => live), handler = vi.fn();
+  service.register('payment_intent.succeeded', handler);
+  await service.dispatch({ eventId: 'evt_before' }, context());
+  await service.dispatch({ eventId: 'evt_after' }, context());
+  expect(handler.mock.calls.map(([received]) => (received as PaymentEvent).id)).toEqual(['evt_after']);
+  expect(await skippedAudits()).toHaveLength(1);
+  expect((await rows()).every((row) => row.processedAt !== null && row.error === null)).toBe(true);
 });

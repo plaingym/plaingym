@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
-import { and, asc, eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see the dispute writer wait on the gym row lock.
+import { and, asc, eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test counts the alert's permanent queue key in its isolated database.
-import { auditEvents, invoices, jobs, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
+import { auditEvents, gyms, invoices, jobs, paymentAttempts, payments, refunds, uuidv7 } from '@plaingym/db';
+import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -250,6 +252,51 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     expect(rows.refunds).toEqual([expect.objectContaining({ processorId: refund.id, status: 'failed' })]);
     expect(rows.invoice.status).toBe('paid');
     expect(refundNotices(rows)).toEqual([processorRefundId(f.gymId, refund.id)]);
+  });
+  it('leaves a dispute of a payment a switch to live marked as test unrecorded, and restore never reads one', async () => {
+    const f = await fixture(), intentId = await charged(f);
+    await db.forGym(f.gymId, tx => tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.paymentIntentId, intentId)));
+    const publish = vi.spyOn(f.alerts, 'publishDispute');
+    f.provider.recordDispute({ id: 'dp_marked', chargeId: intentId, amount: 10000, status: 'open' });
+    await f.webhook('charge.dispute.created', { kind: 'dispute', id: 'dp_marked' });
+    expect((await f.read()).invoice).toMatchObject({ disputeId: null, disputeStatus: null });
+    expect(publish).not.toHaveBeenCalled();
+    // One recorded before the payment was marked, which the live key can't read: restore skips it.
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ disputeId: 'dp_test_account', disputeStatus: 'open' }));
+    const reads = vi.spyOn(f.provider, 'readPaymentObject');
+    const checked = await f.restore();
+    expect(reads.mock.calls.some(([reference]) => reference.id === 'dp_test_account')).toBe(false);
+    expect(checked.issues).not.toContainEqual(expect.objectContaining({ id: 'dp_test_account' }));
+    expect((await f.read()).invoice).toMatchObject({ disputeId: 'dp_test_account', disputeStatus: 'open' });
+  });
+  it('waits for a switch to live that holds the gym row before recording a dispute, then leaves the marked payment’s dispute out', async () => {
+    const f = await fixture(), intentId = await charged(f);
+    f.provider.recordDispute({ id: 'dp_racing', chargeId: intentId, amount: 10000, status: 'open' });
+    const locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+    // The switch's save: it holds the gym row and marks the card payment as test, then waits to commit.
+    const saving = db.forGym(f.gymId, async tx => {
+      // eslint-disable-next-line database/system-tables -- The holder's backend PID, for the lock-wait probe.
+      const { pid } = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!;
+      await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, f.gymId)).for('update');
+      await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.paymentIntentId, intentId));
+      locked.resolve(pid); await release.promise;
+    });
+    const pid = await locked.promise;
+    const recording = f.webhook('charge.dispute.created', { kind: 'dispute', id: 'dp_racing' });
+    let finished = false;
+    void recording.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      let sawWait = false;
+      // From the system connection: the switch and the waiting writer hold both of the gym pool's connections.
+      for (let tries = 0; tries < 5_000 && !sawWait && !finished; tries++)
+        // eslint-disable-next-line database/system-tables -- The lock-wait probe.
+        sawWait = (await db.system.db.execute<{ n: number }>(
+          sql`select count(*)::int as n from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`))[0]!.n > 0;
+      expect(sawWait).toBe(true);
+      expect(finished).toBe(false);
+    } finally { release.resolve(); await saving; }
+    await recording;
+    expect((await f.read()).invoice).toMatchObject({ disputeId: null, disputeStatus: null });
   });
   it('reads no processor intent during restore for a refund whose payment is recorded', async () => {
     const f = await fixture(), intentId = await charged(f), reads = vi.spyOn(f.provider, 'findCharge');

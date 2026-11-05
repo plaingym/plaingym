@@ -23,7 +23,10 @@ gym is acknowledged with 200 and dropped. Every other error fails the request,
 including provider lookups, database writes, and queue insertion, so Stripe retries.
 
 The inbox stores the normalized verified `PaymentEvent` (event ID, type, gym ID,
-object kind and object ID), never a customer snapshot or signature. Its event ID is
+object kind and object ID), never a customer snapshot or signature, with `livemode`:
+the mode of the key that verified it (`Payments.keyMode`; the Stripe adapter refuses
+an event whose own mode differs), absent where the provider doesn't know its mode
+and on events stored before it was recorded. Its event ID is
 globally unique. Receipt commits before enqueue; 200 follows durable enqueue. A
 redelivery repairs an interrupted enqueue with the same persistent job key, without
 replacing the saved event or re-running a completed one.
@@ -36,6 +39,13 @@ is at least once, including a process dying after side effects but before record
 completion. No network I/O runs inside an inbox transaction. Unregistered types
 are marked processed without side effects. Register the required billing handlers
 before starting the worker.
+
+A Stripe test-mode event dispatched once the gym's key is live (stored before a
+switch from test to live, or while one was saving) is finished without its handler
+or any Stripe call, since the live key can't read a test object: it is marked
+processed with a `billing.webhook.test_event_skipped` audit (target: the stored
+event). An event stored without `livemode` counts as test mode when it arrived
+before the gym's latest `integrations.stripe_test_cleared` audit.
 
 A failed handler records only `handler_failed`, leaves the event unprocessed, and
 rethrows to the queue. Dispatch jobs allow ten attempts with the queue's backoff.

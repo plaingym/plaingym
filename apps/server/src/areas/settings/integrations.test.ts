@@ -275,10 +275,14 @@ describe('Settings → Payments: test to live', () => {
       cancelUrl: origin + '/l/return', saveForOffSession: true, idempotencyKey: 'setup:' + link.id });
     await factory('auditEvents', gymC, { action: 'billing.card_setup.started', targetType: 'signed_link', targetId: link.id, after: { sessionId: setup.id } });
     // A paid invoice with its test card payment, a cash payment, and an action-needed attempt on a past-due invoice.
-    // A paid invoice keeps its completed session's ID as history.
-    const paid = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 2, checkoutSessionId: 'cs_completed' });
+    // A paid invoice keeps its completed session's ID as history. Its open dispute is in the test account.
+    const paid = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 2, checkoutSessionId: 'cs_completed',
+      disputeId: 'dp_test', disputeStatus: 'needs_response' });
     const cardPayment = await factory('payments', gymC, { invoiceId: paid.id, method: 'card', paymentIntentId: 'pi_testpaid', chargeId: 'ch_testpaid' });
     const cash = await factory('payments', gymC, { invoiceId: paid.id, method: 'cash', reference: 'Receipt 12', amountCents: 100 });
+    // A dispute on an invoice no test card payment paid stays open.
+    const cashOnly = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 9, disputeId: 'dp_cash', disputeStatus: 'needs_response' });
+    await factory('payments', gymC, { invoiceId: cashOnly.id, method: 'cash', reference: 'Receipt 13', amountCents: 100 });
     const pastDue = await factory('invoices', gymC, { householdId: payer.id, kind: 'one_off', status: 'past_due', number: 3 });
     const intent = await test.request({ method: 'POST', path: '/v1/payment_intents', params: { amount: 10000, currency: 'usd', customer: customer.id, metadata: { gym_id: gymC } } });
     const actionNeeded = await factory('paymentAttempts', gymC, { invoiceId: pastDue.id, status: 'requires_action', paymentIntentId: String(intent.id),
@@ -319,7 +323,13 @@ describe('Settings → Payments: test to live', () => {
     expect(after.cards.sort((a, b) => a.id.localeCompare(b.id))).toEqual([{ ...card, isDefault: false, revokedAt: clock.now() },
       importedCard, { ...payerImport, isDefault: false, revokedAt: clock.now() }].sort((a, b) => a.id.localeCompare(b.id)));
     expect(after.invoices.find((invoice) => invoice.id === open.id)).toMatchObject({ status: 'open', checkoutSessionId: null, checkoutExpiresAt: null });
-    expect(after.invoices.find((invoice) => invoice.id === paid.id)).toEqual(before.invoices.find((invoice) => invoice.id === paid.id));
+    // The test dispute closes, so nothing reads it with the live key; the other stays open.
+    expect(after.invoices.find((invoice) => invoice.id === paid.id)).toEqual({ ...before.invoices.find((invoice) => invoice.id === paid.id), disputeStatus: 'closed' });
+    expect(after.invoices.find((invoice) => invoice.id === cashOnly.id)).toEqual(before.invoices.find((invoice) => invoice.id === cashOnly.id));
+    expect((await audits(gymC, 'billing.invoice.disputed')).map((audit) => ({ actorUserId: audit.actorUserId, targetId: audit.targetId,
+      before: audit.before, after: audit.after })))
+      .toEqual([{ actorUserId: ownerC, targetId: paid.id, before: { disputeId: 'dp_test', disputeStatus: 'needs_response' },
+        after: { disputeId: 'dp_test', disputeStatus: 'closed', reason: 'stripe_test_cleared' } }]);
     expect(after.attempts.find((attempt) => attempt.id === actionNeeded.id)).toMatchObject({ status: 'failed', declineCode: 'authentication_required' });
     // The test card payment stays in the books, marked as test; the cash payment is untouched.
     expect(after.payments.find((payment) => payment.id === cardPayment.id)).toEqual({ ...cardPayment, reference: stripeTestPaymentReference });
@@ -329,7 +339,7 @@ describe('Settings → Payments: test to live', () => {
     const [cleared] = await audits(gymC, 'integrations.stripe_test_cleared');
     expect(cleared).toMatchObject({ actorUserId: ownerC, targetId: gymC,
       after: { customers: 2, cards: 2, checkouts: 2, actionNeeded: 1, payments: 1, keptImportedCustomers: 1, keptImportedCards: 1,
-        reservations: 1, abandonedCreations: 1, paymentIds: [cardPayment.id] } });
+        reservations: 1, abandonedCreations: 1, paymentIds: [cardPayment.id], disputes: 1, disputedInvoiceIds: [paid.id] } });
     expect((await audits(gymC, 'billing.customer.unlinked')).map((audit) => [audit.targetId, audit.before]).sort())
       .toEqual([[payer.id, { customerId: customer.id }], [matched.id, { customerId: 'cus_TestMatched' }], [creating.id, { customerId: null }]].sort());
     expect((await audits(gymC, 'integrations.stripe_saved')).at(-1)).toMatchObject({ before: { mode: 'test' }, after: { mode: 'live', testDataCleared: true } });

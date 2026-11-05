@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, desc, eq, gt, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { auditEvents, forGym, gyms, households, invoices, paymentAttempts, paymentMethods, payments, refunds, revisionGuard, assertRevised,
   signedLinks, writeAudit, type Transaction } from '@plaingym/db';
@@ -7,7 +7,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { backupDestinationSchema, type BackupsIntegration, type ConfirmBackupKeyRequest, type CreateBackupKeyRequest, type EmailIntegration,
   type Integrations, type RemoveEmailIntegrationRequest, type SaveEmailIntegrationRequest, type SaveStripeIntegrationRequest, type StripeTestData,
   type GoogleLogin, type RemoveGoogleLoginRequest, type SaveGoogleLoginRequest,
-  stripeTestPaymentReference } from '@plaingym/shared/contracts';
+  stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
@@ -34,6 +34,8 @@ const smtpPorts = [25, 465, 587, 2525];
 const payableStatuses = ['open', 'past_due'];
 /** How long a switch's request waits for the old test key to retire the dropped Stripe objects; the rest finish after it. */
 const retireBudgetMs = 10_000;
+/** The final status a switch from test to live gives the open disputes of the payments it marks as test. */
+const closedTestDispute = 'closed';
 /** Lists an empty prefix with the submitted credentials: a wrong endpoint, bucket or key fails here, without writing anything. */
 async function listDestination(destination: CreateBackupKeyRequest['destination']): Promise<void> {
   const client = createS3Client({ region: destination.region, endpoint: destination.endpoint,
@@ -259,13 +261,29 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const actionNeeded = await tx.update(paymentAttempts).set({ status: 'failed' })
       .where(and(eq(paymentAttempts.status, 'requires_action'), boundary ? gt(paymentAttempts.id, boundary) : undefined))
       .returning({ id: paymentAttempts.id, intentId: paymentAttempts.paymentIntentId });
+    // The open disputes of the payments marked below are in the test account too: the live key can't read or answer
+    // them, so they close here (a dispute's final status never reopens). The dispute writer waits for the gym row, so
+    // none is attached to these invoices while the switch runs.
+    const disputed = await tx.select({ id: invoices.id, disputeId: invoices.disputeId, disputeStatus: invoices.disputeStatus }).from(invoices)
+      .where(and(inArray(invoices.id, tx.select({ id: payments.invoiceId }).from(payments).where(unmarkedCardPayments(boundary))),
+        isNotNull(invoices.disputeId), or(isNull(invoices.disputeStatus), notInArray(invoices.disputeStatus, [...terminalDisputeStatuses]))))
+      .for('update');
+    if (disputed.length) {
+      await tx.update(invoices).set({ disputeStatus: closedTestDispute }).where(inArray(invoices.id, disputed.map((row) => row.id)));
+      await tx.insert(auditEvents).values(disputed.map((row) => ({ gymId, actorKind: 'user', actorUserId: userId,
+        action: 'billing.invoice.disputed', targetType: 'invoice', targetId: row.id,
+        before: { disputeId: row.disputeId, disputeStatus: row.disputeStatus },
+        after: { disputeId: row.disputeId, disputeStatus: closedTestDispute, reason: 'stripe_test_cleared' }, occurredAt: now })));
+    }
     const marked = await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(unmarkedCardPayments(boundary))
       .returning({ id: payments.id });
     const checkouts = [...sessions.flatMap((row) => row.sessionId ? [row.sessionId] : []), ...setups];
-    const cleared = { customers: linked.length, cards: cards.length, checkouts: checkouts.length, actionNeeded: actionNeeded.length, payments: marked.length };
+    const cleared = { customers: linked.length, cards: cards.length, checkouts: checkouts.length, actionNeeded: actionNeeded.length,
+      payments: marked.length, disputes: disputed.length };
     await writeAudit(tx, { gymId, actorKind: 'user', actorUserId: userId, action: testClearedAction, targetType: 'gym', targetId: gymId,
       before: null, after: { ...cleared, keptImportedCustomers: references.keptCustomers, keptImportedCards: references.keptCards,
-        reservations: sessions.length, abandonedCreations: pending.length, paymentIds: marked.map((row) => row.id) }, occurredAt: now });
+        reservations: sessions.length, abandonedCreations: pending.length, paymentIds: marked.map((row) => row.id),
+        disputedInvoiceIds: disputed.map((row) => row.id) }, occurredAt: now });
     return { checkouts, intents: actionNeeded.flatMap((row) => row.intentId ? [row.intentId] : []) };
   }
   /**

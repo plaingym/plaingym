@@ -53,7 +53,8 @@ Then:
 
 1. **Switch to the live Stripe key.** Paste the live key (`rk_live_…`). The page lists what
    switching clears (test customers, saved test cards, open payment pages) and what
-   stays; confirm it. Test payments stay on their invoices, marked "Stripe test mode".
+   stays; confirm it. Test payments stay on their invoices, marked "Stripe test mode", and
+   any open disputes on them are closed (they stay in Stripe's test mode).
 2. **Check backups.** The **System health** page should show a recent successful backup.
 3. **Check past billing dates.** Memberships whose next due date has already passed will
    be invoiced for each missed period once billing is on. Reconcile them against your

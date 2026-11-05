@@ -65,6 +65,14 @@ Skip reasons include `billing_disabled`, `not_payable`, `needs_review`,
 provider or touching Checkout; reservation repeats the same checks under the
 invoice lock. A skip is observable and is not a collection error.
 
+A switch from Stripe test mode to live (Settings → Payments) holds the gym row for
+its whole save. The reservation first takes `holdGymSettings` (before the invoice
+lock, in the switch's order), so it waits for a switch in progress, and compares the
+gym's latest `integrations.stripe_test_cleared` audit with the one read before the
+provider was resolved. If a switch committed in between, the provider may hold the
+old test key: nothing is reserved, and the charge starts again once with the
+provider resolved again (a second change skips with `collection_changed`).
+
 Each charge commits immutable amount, currency, customer and saved-method fields
 before adopting the stored customer or creating an unconfirmed PaymentIntent.
 Keys are `<invoiceId>:<attemptNumber>:create` and `:confirm`. An exit before
@@ -166,7 +174,9 @@ and completed retry windows never charge again. A queue failure propagates inste
 of acknowledging the callback without its continuation.
 
 Restore refreshes stored unresolved intents, payment Checkout sessions on open or
-past-due invoices, pending refunds, and open disputes on any invoice by ID. It reads
+past-due invoices, pending refunds, and open disputes on any invoice by ID, except
+a dispute on an invoice paid only by payments marked `Stripe test mode` (that
+dispute is in the test account, which the live key can't read). It reads
 only reference columns and does not sweep historical paid-invoice Checkouts.
 `Payments.listChangesSince` still discovers sessions changed since the snapshot,
 including sessions on paid invoices. It supplies all pages of events and

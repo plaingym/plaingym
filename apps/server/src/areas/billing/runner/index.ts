@@ -10,7 +10,8 @@ import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import type { Payments } from '../../../infra/payments/index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import { logError, logInfo } from '../../../core/log.js';
-import { assignmentInvoices, audit, generateCycle, latestAttempt, system } from './store.js';
+import { holdGymSettings } from '../../settings/settings.js';
+import { assignmentInvoices, audit, generateCycle, latestAttempt, latestTestSwitch, system } from './store.js';
 import { createReconciliation } from './reconciliation.js';
 import type { DisputeRefundOptions } from '../disputes-refunds.js';
 import { assignmentInvoiceCondition, eligibility, isAssignmentInvoice, retryAt, retryDeadlines, skipped, type ChargeMode,
@@ -50,11 +51,19 @@ export interface RunnerOptions {
 export function createChargeRunner(options: RunnerOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const reconciliation = createReconciliation({ ...options, scope, clock });
+  /**
+   * `switched` is the gym's latest switch from test to live as read before the provider was resolved. A switch holds the
+   * gym row for its whole save, so the reservation waits for one in progress; if one committed since, the provider may
+   * hold the old test key, and nothing is reserved (`switched`): the caller resolves the provider again.
+   */
   async function reserve(context: MutationContext, invoiceId: string, mode: ChargeMode, expiredSession: string | null,
-    jobId: string | undefined) {
+    jobId: string | undefined, switched: string | null) {
     const { gymId } = context;
     const gym = await options.settings.get(gymId);
     return scope(gymId, async tx => {
+      // Before the invoice lock: the switch locks the gym row first, then the payable invoices.
+      await holdGymSettings(tx, gymId);
+      if (await latestTestSwitch(tx, gymId) !== switched) return { status: 'switched' as const };
       const check = await eligibility(tx, gym, clock, invoiceId, mode, true);
       if (check.status === 'skipped') return check;
       const { invoice, latest, payment } = check;
@@ -71,14 +80,19 @@ export function createChargeRunner(options: RunnerOptions) {
       return { status: 'reserved' as const, attempt };
     });
   }
-  /** Rechecks eligibility under the invoice lock. Provider exceptions leave a pending attempt for reconciliation. */
-  async function charge(gymId: string, invoiceId: string, request: ChargeOptions = {}): Promise<ChargeResult> {
+  /**
+   * Rechecks eligibility under the invoice lock. Provider exceptions leave a pending attempt for reconciliation. A switch
+   * from test to live that commits after the provider was resolved makes the charge start again, once, with the provider
+   * resolved again (`resolvedAgain`).
+   */
+  async function charge(gymId: string, invoiceId: string, request: ChargeOptions = {}, resolvedAgain = false): Promise<ChargeResult> {
     const mode = request.mode ?? 'automatic';
     const context = request.mode === 'staff' ? request.context : system(gymId);
     if (context.gymId !== gymId || request.mode === 'staff' && context.actor.kind !== 'user')
       throw new Error('Staff charge requires this gym and a user actor');
     const gym = await options.settings.get(gymId);
-    const check = await scope(gymId, tx => eligibility(tx, gym, clock, invoiceId, mode));
+    const { check, switched } = await scope(gymId, async tx => ({
+      check: await eligibility(tx, gym, clock, invoiceId, mode), switched: await latestTestSwitch(tx, gymId) }));
     if (check.status === 'skipped') return check;
     const { invoice, latest } = check;
     if (invoice.amountCents === 0) {
@@ -95,7 +109,9 @@ export function createChargeRunner(options: RunnerOptions) {
       if (released === 'paid') return skipped('not_payable');
       if (released === 'changed') return skipped('checkout_changed');
     }
-    const reservation = await reserve(context, invoiceId, mode, null, request.mode === 'retry' ? request.jobId : undefined);
+    const reservation = await reserve(context, invoiceId, mode, null, request.mode === 'retry' ? request.jobId : undefined, switched);
+    if (reservation.status === 'switched')
+      return resolvedAgain ? skipped('collection_changed') : charge(gymId, invoiceId, request, true);
     if (reservation.status === 'skipped') return reservation;
     const { attempt } = reservation;
     let createStarted = false;

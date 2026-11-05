@@ -37,7 +37,11 @@ recorded dispute; it, and any dispute recorded without `disputeAlerts`, is found
 the hourly dispute scan. The adapter
 normalizes closed inquiries, refunded disputes, and prevented disputes to
 `closed`; this does not assert that either party won. Multiple dispute IDs on one
-invoice require staff resolution rather than overwriting the earlier dispute.
+invoice require staff resolution rather than overwriting the earlier dispute. The
+writer first takes `holdGymSettings`, so it waits for a switch from test to live in
+progress (which closes the open disputes of the card payments it marks `Stripe test
+mode`), and leaves a dispute of a marked payment unrecorded (`unchanged`, with no
+alert): it is in the test account, and the live key could never read or answer it.
 
 Completed setup collects the attached card for the existing household customer.
 Payment Checkout collects only when `session.savesCard` is true; a payment that

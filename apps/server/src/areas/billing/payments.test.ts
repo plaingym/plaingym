@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { auditEvents, invoices, paymentAttempts, paymentMethods, payments, signedLinks, uuidv7 } from '@plaingym/db';
+// eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a refund wait on the gym row lock.
+import { eq, sql } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
+import { auditEvents, gyms, invoices, paymentAttempts, paymentMethods, payments, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, createTranslator, type StaffRole } from '@plaingym/shared';
@@ -299,6 +301,47 @@ describe('one-off collection and payment durability', () => {
       .rejects.toMatchObject({ code: 'conflict', details: { reason: ['test_payment'] } });
     expect(refund).not.toHaveBeenCalled();
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).refunds).toHaveLength(0);
+  });
+  it('refuses a refund reserved while a switch to live holds the gym row once the switch marks its payment, without calling Stripe', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!;
+    const locked = Promise.withResolvers<number>(), release = Promise.withResolvers<void>();
+    let saving: Promise<void> | undefined;
+    const transition = f.options.transitions.refund.bind(f.options.transitions);
+    vi.spyOn(f.options.transitions, 'refund').mockImplementationOnce(async (context, request) => {
+      const reserved = await transition(context, request);
+      // The switch's save, after its in-flight check missed this reservation: it holds the gym row and marks the payment.
+      saving = db.forGym(f.gymId, async tx => {
+        // eslint-disable-next-line database/system-tables -- The holder's backend PID, for the lock-wait probe.
+        const { pid } = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!;
+        await tx.select({ id: gyms.id }).from(gyms).where(eq(gyms.id, f.gymId)).for('update');
+        await tx.update(payments).set({ reference: stripeTestPaymentReference }).where(eq(payments.id, payment.id));
+        locked.resolve(pid); await release.promise;
+      });
+      await locked.promise;
+      return reserved;
+    });
+    const refund = vi.spyOn(f.provider, 'refund');
+    const refunding = f.service.refund(f.context, payment.id, { amountCents: 500, currency: 'USD', reason: 'Returned item' });
+    let finished = false;
+    void refunding.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      const pid = await locked.promise;
+      let sawWait = false;
+      // From the system connection: the switch and the waiting refund hold both of the gym pool's connections.
+      for (let tries = 0; tries < 5_000 && !sawWait && !finished; tries++)
+        // eslint-disable-next-line database/system-tables -- The lock-wait probe.
+        sawWait = (await db.system.db.execute<{ n: number }>(
+          sql`select count(*)::int as n from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`))[0]!.n > 0;
+      expect(sawWait).toBe(true);
+      expect(finished).toBe(false);
+    } finally { release.resolve(); await saving; }
+    await expect(refunding).rejects.toMatchObject({ code: 'conflict', details: { reason: ['test_payment'] } });
+    expect(refund).not.toHaveBeenCalled();
+    // The reservation is released: it never reached Stripe.
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).refunds).toMatchObject([{ status: 'failed', amountCents: 500 }]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.refund.requested')));
+    expect(audits).toEqual([]);
   });
   it.each(['declined', 'authentication_required'] as const)('keeps a %s one-off open with no dunning or retry effects', async outcome => {
     const f = await fixture(); f.provider.respondNextConfirmation(outcome);

@@ -6,6 +6,7 @@ import * as c from '@plaingym/shared/contracts';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
+import { holdGymSettings } from '../settings/settings.js';
 import { catalogAudit } from './catalog.js';
 import { loadHousehold, loadInvoice, presentRefund, type PaymentOptions } from './payments.js';
 import { paymentConflict, paymentUnavailable } from './payments.errors.js';
@@ -79,14 +80,29 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
       if (payment.method === 'card' && (!provider || !payment.paymentIntentId)) paymentUnavailable('payments_unavailable', 'Payments are not configured');
       const refundId = pending?.id ?? uuidv7(), base = { invoiceId: invoice.id, paymentId, refundId, amountCents: request.amountCents, currency: request.currency };
       await transitions.refund(context, { ...base, status: 'pending' });
-      if (!pending || pending.reason === null) await scope(context.gymId, async tx => {
+      // A switch from test to live holds the gym row for its whole save. Waiting for it once the reservation has committed
+      // means the switch either sees this pending refund (and refuses to run) or committed first and marked the payment
+      // as test, which the refund then refuses. Nothing has reached Stripe yet.
+      const released = await scope(context.gymId, async tx => {
+        await holdGymSettings(tx, context.gymId);
         await loadInvoice(tx, invoice.id, true);
         const current = (await tx.select().from(refunds).where(eq(refunds.id, refundId)))[0] ?? notFound();
+        const [paid] = await tx.select({ reference: payments.reference }).from(payments).where(eq(payments.id, paymentId));
+        if (payment.method === 'card' && paid?.reference === c.stripeTestPaymentReference)
+          return current.status === 'pending' && current.processorId === null;
         if (current.reason !== null && current.reason !== request.reason) paymentConflict('pending_refund', 'Resolve the pending refund first');
-        await tx.update(refunds).set({ reason: request.reason }).where(eq(refunds.id, refundId));
-        await catalogAudit(tx, context, clock, 'billing.refund.requested', 'refund', refundId, undefined,
-          { paymentId, amountCents: request.amountCents, currency: request.currency });
+        if (current.reason === null) {
+          await tx.update(refunds).set({ reason: request.reason }).where(eq(refunds.id, refundId));
+          await catalogAudit(tx, context, clock, 'billing.refund.requested', 'refund', refundId, undefined,
+            { paymentId, amountCents: request.amountCents, currency: request.currency });
+        }
+        return null;
       });
+      if (released !== null) {
+        // The reservation never reached Stripe: it ends failed, with no processor refund, and releases its amount.
+        if (released) await transitions.refund(context, { ...base, status: 'failed' });
+        paymentConflict('test_payment', 'A Stripe test-mode payment can’t be refunded with the live key');
+      }
       if (provider) {
         // A lost response leaves this reservation pending. Reuse its key inside Stripe's retention window;
         // after that, reconcile known refunds by ID and refuse a new network refund.

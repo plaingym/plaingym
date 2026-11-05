@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, desc, eq, exists, inArray, isNull, lte, ne, notExists, or } from 'drizzle-orm';
+import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
@@ -154,7 +155,13 @@ export function createReconciliation(options: Options) {
           .where(inArray(paymentAttempts.status, ['pending', 'requires_action']));
         const checkouts = await tx.select({ checkoutSessionId: invoices.checkoutSessionId }).from(invoices)
           .where(inArray(invoices.status, ['open', 'past_due']));
-        const disputes = await tx.select({ disputeId: invoices.disputeId }).from(invoices).where(eq(invoices.disputeStatus, 'open'));
+        // A dispute on an invoice paid only by Stripe test-mode payments (marked by a switch to live) is in the test
+        // account, which the gym's live key can't read; the switch closed those it found.
+        const disputes = await tx.select({ disputeId: invoices.disputeId }).from(invoices).where(and(eq(invoices.disputeStatus, 'open'),
+          or(notExists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
+            eq(payments.reference, stripeTestPaymentReference)))),
+          exists(tx.select({ id: payments.id }).from(payments).where(and(eq(payments.invoiceId, invoices.id),
+            or(isNull(payments.reference), ne(payments.reference, stripeTestPaymentReference))))))));
         const returns = await tx.select({ processorId: refunds.processorId }).from(refunds).where(eq(refunds.status, 'pending'));
         return [
           ...attempts.flatMap(row => row.paymentIntentId ? [{ kind: 'charge' as const, id: row.paymentIntentId }] : []),

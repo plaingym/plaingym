@@ -44,7 +44,11 @@ the 23-hour window. Older pending refunds require reconciliation. A pending refu
 with a null reason can resume after a crash and save the requested reason. A card
 payment marked `Stripe test mode` by a switch from test to live is refused
 (`test_payment`) before anything is reserved: it lives in the test account, which
-the gym's live key can't refund. Manual refunds record money already returned to the payer. Routes restrict refunds to owners and
+the gym's live key can't refund. Once the reservation commits, and before Stripe is
+called, the refund takes `holdGymSettings` and checks the payment again: a switch in
+progress holds the gym row, so it either sees the pending refund (and refuses to
+run) or commits first, marking the payment; the refund is then refused
+(`test_payment`) and its reservation ends `failed`, with no processor refund. Manual refunds record money already returned to the payer. Routes restrict refunds to owners and
 admins; front desk may collect payments and remove a card.
 
 A one-off from a charge type needs only `payments.record`. A custom-amount one-off

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, eq, gte, isNotNull, isNull, max } from 'drizzle-orm';
-import { forGym, forSystem, stripeEvents, uuidv7 } from '@plaingym/db';
+import { and, count, desc, eq, gte, isNotNull, isNull, max } from 'drizzle-orm';
+import { auditEvents, forGym, forSystem, stripeEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { z } from 'zod';
 import { clock as systemClock } from '../../../core/clock.js';
@@ -8,15 +8,23 @@ import { recentWebhookFailureMs, type WebhookHealthQuery } from '../../../core/i
 import type { JobContext, Jobs } from '../../../infra/jobs/index.js';
 import type { PaymentEvent, Payments } from '../../../infra/payments/index.js';
 import { PaymentWebhookError } from '../../../infra/payments/webhook-error.js';
+import { stripeTestClearedAction } from '../customers.js';
 
 export const webhookDispatchJob = 'billing.webhooks.dispatch';
 export type PaymentsResolver = (gymId: string) => Promise<Payments | null>;
 /** Handlers re-read payment objects through Payments and apply idempotent transitions. */
 export type WebhookHandler = (event: PaymentEvent, context: JobContext & { payments: Payments }) => Promise<void>;
+/**
+ * `livemode` is stored with the event: the mode of the key that verified it, which the provider checks against the
+ * event's own. Events stored before it was recorded have none.
+ */
 const eventSchema = z.strictObject({
   id: z.string().min(1), type: z.string().min(1), gymId: z.uuid(), objectId: z.string().min(1),
   objectKind: z.enum(['charge', 'checkout', 'setup', 'payment_method', 'refund', 'dispute']),
+  livemode: z.boolean().optional(),
 });
+/** Audited when a Stripe test-mode event is finished, unread, for a gym whose key is now live. */
+export const testEventSkippedAction = 'billing.webhook.test_event_skipped';
 const dispatchSchema = z.strictObject({ eventId: z.string().min(1), replay: z.boolean().optional() });
 
 export function createWebhookInbox(options: {
@@ -35,6 +43,19 @@ export function createWebhookInbox(options: {
     if (!payments) throw new AppError('unavailable', 'Payments are not set up for this gym');
     return payments;
   }
+  /**
+   * Whether a stored event is from Stripe test mode: its recorded `livemode`, or, for one stored before that was recorded,
+   * whether it arrived before the gym's latest switch from test to live (the key was a test key until then).
+   */
+  async function testMode(gymId: string, row: typeof stripeEvents.$inferSelect, event: z.infer<typeof eventSchema>) {
+    if (event.livemode !== undefined) return !event.livemode;
+    return scope(gymId, async (tx) => {
+      const [latest] = await tx.select({ at: auditEvents.occurredAt }).from(auditEvents)
+        .where(and(eq(auditEvents.action, stripeTestClearedAction), eq(auditEvents.targetId, gymId)))
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+      return latest !== undefined && row.receivedAt < latest.at;
+    });
+  }
   async function stored(gymId: string, eventId: string) {
     return scope(gymId, async (tx) => (await tx.select().from(stripeEvents).where(match(gymId, eventId)))[0]);
   }
@@ -45,11 +66,13 @@ export function createWebhookInbox(options: {
     },
     async receive(gymId: string, body: Uint8Array, signature: string): Promise<void> {
       // Verification and any provider ownership lookups must finish before the inbox write.
-      const event = eventSchema.parse(await (await paymentsFor(gymId)).parseWebhook(body, signature));
+      const provider = await paymentsFor(gymId);
+      const event = eventSchema.parse(await provider.parseWebhook(body, signature));
       if (event.gymId !== gymId) throw new PaymentWebhookError('webhook_not_for_gym');
       const { timezone } = await options.gymSettings.get(gymId);
+      const payload = provider.keyMode ? { ...event, livemode: provider.keyMode === 'live' } : event;
       await system((tx) => tx.insert(stripeEvents).values({ eventId: event.id, gymId, type: event.type,
-        payload: event, receivedAt: clock.now() }).onConflictDoNothing({ target: stripeEvents.eventId }));
+        payload, receivedAt: clock.now() }).onConflictDoNothing({ target: stripeEvents.eventId }));
       // A delivery can die after insertion but before enqueue. A duplicate repairs that gap;
       // the queue's persistent idempotency key still creates only one dispatch job.
       const row = await stored(gymId, event.id);
@@ -66,9 +89,15 @@ export function createWebhookInbox(options: {
         if (event.gymId !== context.gymId || event.id !== row.eventId || event.type !== row.type)
           throw new Error('Invalid stored webhook identity');
         const handler = handlers.get(event.type);
-        if (handler) await handler(event, { ...context, payments: await paymentsFor(context.gymId) });
-        await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ processedAt: clock.now(), error: null })
-          .where(match(context.gymId, input.eventId)));
+        const payments = handler ? await paymentsFor(context.gymId) : null;
+        // The live key can't read a test-mode object, so its handler would fail every retry: the event is finished unread.
+        const skipped = payments?.keyMode === 'live' && await testMode(context.gymId, row, event);
+        if (handler && payments && !skipped) await handler(event, { ...context, payments });
+        await scope(context.gymId, async (tx) => {
+          await tx.update(stripeEvents).set({ processedAt: clock.now(), error: null }).where(match(context.gymId, input.eventId));
+          if (skipped) await writeAudit(tx, { gymId: context.gymId, actorKind: 'system', action: testEventSkippedAction,
+            targetType: 'stripe_event', targetId: row.id, before: null, after: { eventId: event.id, type: event.type }, occurredAt: clock.now() });
+        });
       } catch (error) {
         // Provider error messages may contain secrets or personal data. Keep a safe marker only.
         await scope(context.gymId, (tx) => tx.update(stripeEvents).set({ processedAt: null, error: 'handler_failed' })
