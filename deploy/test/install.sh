@@ -23,7 +23,7 @@ export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" HOSTS="$temporary/ho
 export SYSTEMD_UNIT_DIR="$temporary/units"
 mkdir "$STATE" "$SYSTEMD_UNIT_DIR"
 # 203.0.113.5 is this fixture server; 192.0.2.10 is someone else's.
-printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n' > "$HOSTS"
+printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n' > "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
 for command in apt-get systemctl ufw fallocate mkswap; do stub "$command" "printf '$command %s\n' \"\$*\" >> \"\$CALLS\""; done
 stub swapon 'echo /swapfile partition 1G 0B -2'
@@ -63,9 +63,16 @@ expect_refusal() {
   if grep -Eq '^(apt-get|ufw|systemctl|docker load)' "$CALLS"; then echo "Host changed before refusing: $*" >&2; exit 1; fi
 }
 
-expect_refusal --hostname does-not-exist.invalid --email owner@example.org
-expect_refusal --hostname elsewhere.localhost --email owner@example.org
-[ ! -e "$root" ]
+expect_dns_refusal() {
+  expect_refusal --hostname "$1" --email owner@example.org
+  grep -qF "$2" "$temporary/output"
+  grep -qF 'a few minutes' "$temporary/output"
+  grep -qF 're-run the same command' "$temporary/output"
+  [ ! -e "$root" ]
+}
+expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
+expect_dns_refusal elsewhere.localhost 'which is not this server'
+expect_dns_refusal loopback.invalid 'resolves to a loopback address'
 # The timer's unit names the directory, so odd characters are refused before anything changes.
 : > "$CALLS"
 if sh "$source_dir/install.sh" --directory "$temporary/with space" --image plaingym:v0.0.0-local --hostname gym.localhost --email owner@example.org > "$temporary/output" 2>&1; then exit 1; fi

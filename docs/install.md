@@ -22,7 +22,9 @@ guide writes `vX.Y.Z`, put the version you are installing.
    sign-in address.
 
 The installer checks the hostname before it changes anything. If it says the name
-doesn't resolve only to this server, fix DNS and run it again; nothing was changed.
+doesn't resolve only to this server, fix DNS. If you recently changed the record,
+it can take a few minutes to reach this server; re-run the same command to try
+again. The refusal confirms: "Nothing was changed."
 
 ## Route 1: one command
 
@@ -76,8 +78,9 @@ reviewed commit of the public repository.
 2. Create an Ubuntu 24.04 or 26.04 server with the file as user-data, and point the
    hostname's DNS at the server's address.
 3. The script runs once at first boot. Create the DNS record **before** boot, or
-   the installer stops at its DNS check; if that happened, SSH in and run
-   `sudo sh /root/install-plaingym.sh` again once DNS resolves.
+   the installer stops at its DNS check; if that happened, fix the record, then SSH
+   in and run `sudo sh /root/install-plaingym.sh` again. A record you just changed
+   can take a few minutes to reach the server.
 4. Read the setup link from the installer's output, or print it on the server:
 
    ```sh
