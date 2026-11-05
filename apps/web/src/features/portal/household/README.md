@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Portal billing, waivers and household pages
 
+Invoices below the card minimum or off the currency step show manual-payment
+instructions instead of a Pay now action. The server repeats the shared money check
+before creating a pay link or Checkout; amounts are never silently rounded.
+
 `/portal/billing` (payers) lists invoices with their lines, starts Stripe Checkout
 to pay an open or past-due invoice or to update the card, and prepares receipt
 downloads for paid invoices. The page never collects card details.

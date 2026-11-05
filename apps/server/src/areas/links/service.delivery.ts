@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import type { forGym } from '@plaingym/db';
+import { invoices, type forGym } from '@plaingym/db';
+import { and, eq } from 'drizzle-orm';
 import { AppError, type Translator } from '@plaingym/shared';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { SignedLinkRecord } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -47,8 +49,14 @@ export async function deliverSignedLink(input: {
     if (found.suppressed) throw new AppError('unavailable', 'Signed link recipient email is suppressed');
     return found.email;
   });
-  const url = new URL(`/l/${token}`, delivery.origin).href;
-  const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose }, delivery.t);
+  const manualPayment = link.purpose === 'pay_invoice' && await scope(context.gymId, async tx => {
+    const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)
+      .where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
+    if (!invoice) throw new AppError('not_found', 'Invoice not found');
+    return !!cardChargeIssue(invoice.amountCents, invoice.currency);
+  });
+  const url = manualPayment ? '' : new URL(`/l/${token}`, delivery.origin).href;
+  const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose, manualPayment }, delivery.t);
   if (!(await createGymSettingsAccessor({ scope }).get(context.gymId)).memberEmailsEnabled)
     throw new AppError('unavailable', 'Member email is disabled');
   const result = await delivery.email.sendEmail({ to: recipient, ...content });

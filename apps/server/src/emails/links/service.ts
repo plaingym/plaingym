@@ -6,14 +6,16 @@ import type { SignedLinkPurposeName } from '@plaingym/shared/contracts';
 import type { EmailTemplate } from '../../core/registry.js';
 import { EmailButton, EmailHeading, EmailText, renderEmail } from '../_shared/index.js';
 
-export function renderSignedLink(input: { gymName: string; url: string; purpose: SignedLinkPurposeName }, t: Translator) {
+export function renderSignedLink(input: { gymName: string; url: string; purpose: SignedLinkPurposeName; manualPayment?: boolean }, t: Translator) {
   const purpose = signedLinkPurposeSchema.parse(input.purpose);
   return renderEmail({
     gymName: input.gymName, t, subjectKey: `links/service:${purpose}.subject`, footerKey: 'links/service:footer',
     children: createElement('div', null,
       createElement(EmailHeading, { t, messageKey: `links/service:${purpose}.subject` }),
-      createElement(EmailText, { t, messageKey: 'links/service:description' }),
-      createElement(EmailButton, { t, messageKey: `links/service:${purpose}.button`, href: input.url })),
+      input.manualPayment
+        ? createElement(EmailText, { t, messageKey: 'links/service:manualPayment' })
+        : createElement('div', null, createElement(EmailText, { t, messageKey: 'links/service:description' }),
+          createElement(EmailButton, { t, messageKey: `links/service:${purpose}.button`, href: input.url }))),
   });
 }
 export const templates: readonly EmailTemplate[] = [{

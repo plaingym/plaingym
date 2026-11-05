@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { AmountInputError, amountInputPattern, amountInputStep, currencyExponent, formatMinorUnits, inputDecimals, minimumChargeAmount, minorUnitStep,
+import { AmountInputError, amountInputPattern, amountInputStep, cardChargeIssue, currencyExponent, formatMinorUnits, inputDecimals, minimumChargeAmount, minorUnitStep,
   minorUnitsToInput, onMinorUnitStep, parseMinorUnits } from './money.js';
 
 const nbsp = (value: string) => value.replace(/[\u00a0\u202f]/g, ' ');
@@ -122,6 +122,11 @@ describe('price input', () => {
 });
 
 describe('card amounts', () => {
+  it.each([
+    [32, 'USD', 'below_minimum'], [49, 'CAD', 'below_minimum'], [50, 'USD', null], [49, 'JPY', 'below_minimum'],
+    [1255, 'KWD', 'off_step'], [1250, 'KWD', null], [550, 'ISK', 'off_step'], [600, 'ISK', null],
+    [1.5, 'USD', 'below_minimum'], [51.5, 'USD', 'off_step'], [10, 'KWD', null],
+  ])('card charge check for %s %s is %s', (amount, currency, issue) => expect(cardChargeIssue(amount, currency)).toBe(issue));
   it.each([
     [555, 'ISK', false], [600, 'ISK', true], [1255, 'KWD', false], [1250, 'KWD', true], [1, 'USD', true], [1, 'JPY', true],
     [0, 'KWD', true], [1.5, 'USD', false],

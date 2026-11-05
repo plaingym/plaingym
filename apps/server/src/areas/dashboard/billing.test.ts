@@ -13,7 +13,7 @@ import { authorize } from '../staff/auth.permissions.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createMembershipService } from '../billing/memberships.js';
 import { createPaymentService } from '../billing/payments.js';
-import { createBillingDashboardService } from './billing.js';
+import { createBillingDashboardService, createSkippedCollectionsProvider } from './billing.js';
 import { createBillingDashboardRoutes } from './billing.routes.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
@@ -24,8 +24,8 @@ const services = { settings,
   payments: createPaymentService({ scope: database.forGym, settings, clock }),
 };
 const service = createBillingDashboardService(services);
-async function fixture() {
-  const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/Vancouver', currency: 'CAD' });
+async function fixture(currency = 'CAD') {
+  const gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/Vancouver', currency, billingEnabled: true });
   const user = await factory('authUser', gymId), household = await factory('households', gymId);
   const member = await factory('members', gymId, { householdId: household.id });
   const plan = await factory('plans', gymId);
@@ -49,6 +49,24 @@ async function read(f: Awaited<ReturnType<typeof fixture>>) {
   return billingDashboardResponseSchema.parse(await response.json()).data;
 }
 describe('billing dashboard through production route composition and real billing services', () => {
+  it.each([[32, 'CAD', 'below the card minimum'], [1255, 'KWD', 'amount is off the currency step']] as const)(
+    'lists due cycle collections of %s %s, isolates gyms, and denies coaches', async (amountCents, currency, reason) => {
+    const f = await fixture(currency), other = await fixture(currency);
+    const cycle = { kind: 'cycle', periodStartsOn: '2026-10-01', periodEndsOn: '2026-11-01', dueOn: '2026-10-31' };
+    const small = await f.invoice({ ...cycle, amountCents });
+    await other.invoice({ ...cycle, amountCents });
+    await f.invoice({ ...cycle, amountCents, status: 'paid', dueOn: '2026-10-30' });
+    await f.invoice({ ...cycle, amountCents, needsReview: true, dueOn: '2026-10-29' });
+    await f.invoice({ ...cycle, amountCents, dueOn: '2026-11-01' });
+    await f.invoice({ ...cycle, amountCents: 0, dueOn: '2026-10-28' });
+    await f.invoice({ amountCents });
+    const provider = createSkippedCollectionsProvider(services), context = { gymId: f.gymId, roles: ['owner'] as const, clock };
+    const widget = await provider.read(context);
+    expect(widget).toMatchObject({ count: 1, items: [{ href: `/admin/billing/invoices/${small.id}`, label: expect.stringContaining(reason) }] });
+    await expect(provider.read({ ...context, roles: ['coach'] })).rejects.toMatchObject({ code: 'forbidden' });
+    const disabled = createSkippedCollectionsProvider({ ...services, settings: { async get(gymId) { return { ...await settings.get(gymId), billingEnabled: false }; } } });
+    expect(await disabled.read(context)).toMatchObject({ count: 0, items: [] });
+  });
   it('normalizes annual MRR once, excludes frozen/trial/cancelled dues and estimates household cycles', async () => {
     const f = await fixture();
     await f.membership(); await f.membership({ interval: 'annual', amountCents: 12001 });

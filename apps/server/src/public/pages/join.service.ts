@@ -18,6 +18,7 @@ import { createMembershipService } from '../../areas/billing/memberships.js';
 import { calculateCycleInvoice, calculateOneOffInvoice } from '../../areas/billing/invoicing/index.js';
 import { issue, system } from '../../areas/billing/runner/store.js';
 import type { CheckoutReturn, createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import { createSignedLinksService } from '../../areas/links/service.js';
 import { assertPortalLoginTarget, requestPortalConfirmation } from '../../areas/members/household-users.js';
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
@@ -46,7 +47,7 @@ const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, me
 const received = admitted.extend({ linkId: c.idSchema, invoiceId: c.idSchema });
 const invoiced = z.strictObject({ invoiceId: c.idSchema, next: z.array(z.strictObject({ membershipId: c.idSchema, nextDueOn: c.dateSchema })) });
 /** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
-export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active'; householdId: string };
+export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string };
 
 export interface JoinOptions {
   scope?: typeof forGym;
@@ -356,10 +357,11 @@ export function createJoinService(options: JoinOptions) {
         const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt }).from(signedLinks).where(eq(signedLinks.id, linkId));
         const record = link ? await recorded(tx, 'public.join.received', link.householdId, received) : null;
         if (!link || !record || record.linkId !== linkId) return { status: 'missing' };
-        const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
+        const [bill] = await tx.select({ status: invoices.status, amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices).where(eq(invoices.id, record.invoiceId));
         // A paid invoice wins over a revoked link: staff may have collected it another way.
         if (!bill || !settled.includes(bill.status))
-          return bill?.status === 'void' || link.revokedAt ? { status: 'closed' } : { status: 'pending', householdId: link.householdId };
+          return bill?.status === 'void' || link.revokedAt ? { status: 'closed' }
+            : { status: bill && ['open', 'past_due'].includes(bill.status) && cardChargeIssue(bill.amountCents, bill.currency) ? 'manual' : 'pending', householdId: link.householdId };
         const rows = await tx.select({ status: memberships.status }).from(memberships).where(inArray(memberships.id, record.membershipIds));
         const active = rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
         return { status: active ? 'active' : 'pending', householdId: link.householdId };

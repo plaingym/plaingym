@@ -28,6 +28,12 @@ const fixtures: Record<string, PortalSignedLinkData> = {
   onboarding: { purpose: 'onboarding', members: [member], templates, signatures: [], paymentMethods: [] },
 };
 const errors: string[] = [];
+for (const [name, amountCents, currency] of [['manual_minimum', 32, 'USD'], ['manual_step', 1255, 'KWD']] as const) {
+  const source = fixtures.pay_invoice!;
+  if (source.purpose !== 'pay_invoice') throw new Error('Missing invoice fixture');
+  fixtures[name] = { ...source, invoice: { lines: source.invoice.lines.map(line => ({ ...line, amountCents, currency })),
+    invoice: { ...source.invoice.invoice, amountCents, currency } } };
+}
 let returnMode: 'none' | 'late' | 'never' = 'none', returnAttempts = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
@@ -75,6 +81,11 @@ try {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(origin + '/l/' + name);
     await page.waitForLoadState('networkidle');
+    if (name.startsWith('manual_')) {
+      if (!(await page.locator('main').textContent())?.includes('Contact the gym to arrange a manual payment'))
+        throw new Error('Missing manual payment guidance');
+      if (await page.locator('[data-checkout]').count()) throw new Error('Unexpected card payment action');
+    }
     if (errors.length) throw new Error(errors.join('\n'));
     const metrics = await page.evaluate(() => ({
       overflow: document.documentElement.scrollWidth > innerWidth,
@@ -173,7 +184,7 @@ try {
   await page.clock.fastForward(121_000);
   await page.waitForURL('**/l/cleared');
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log('Passed: four screens at 360 px and desktop, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
+  console.log('Passed: six screens at 360 px and desktop, including manual payment, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
 } finally {
   await browser.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

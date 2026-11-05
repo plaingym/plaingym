@@ -51,17 +51,17 @@ type Person = { firstName: string; lastName: string; dateOfBirth: string };
 const adult = (firstName = 'Avery'): Person => ({ firstName, lastName: 'Joiner', dateOfBirth: '1990-01-02' });
 const child = (firstName = 'Kai'): Person => ({ firstName, lastName: 'Joiner', dateOfBirth: '2016-05-06' });
 
-async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z') {
+async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z', currency = 'CAD') {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock(start);
-  await factory('gyms', gymId, { name: 'North <Gym>', currency: 'CAD', timezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
+  await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
   await factory('gyms', otherGym, { name: 'Other private gym', currency: 'CAD', timezone, billingEnabled: true });
-  const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', signupFeeCents: 5000 });
+  const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency, interval: 'monthly', signupFeeCents: 5000 });
   const gst = await factory('taxRates', gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false });
   await factory('planTaxRates', gymId, { planId: plan.id, taxRateId: gst.id });
-  const annual = await factory('plans', gymId, { name: 'Annual', amountCents: 150000, currency: 'CAD', interval: 'annual' });
-  const trial = await factory('plans', gymId, { name: 'Trial plan', currency: 'CAD', trialDays: 7 });
-  const free = await factory('plans', gymId, { name: 'Free plan', currency: 'CAD', amountCents: 0 });
-  const retired = await factory('plans', gymId, { name: 'Retired plan', currency: 'CAD', active: false });
+  const annual = await factory('plans', gymId, { name: 'Annual', amountCents: 150000, currency, interval: 'annual' });
+  const trial = await factory('plans', gymId, { name: 'Trial plan', currency, trialDays: 7 });
+  const free = await factory('plans', gymId, { name: 'Free plan', currency, amountCents: 0 });
+  const retired = await factory('plans', gymId, { name: 'Retired plan', currency, active: false });
   const foreignPlan = await factory('plans', otherGym, { name: 'Private other plan', currency: 'CAD' });
   const templates = [await factory('waiverTemplates', gymId, { name: 'Conduct', body: 'Follow the rules. <script>bad()</script>', kind: 'agreement' }),
     await factory('waiverTemplates', gymId, { name: 'Participation', body: 'I understand the training risks.' })];
@@ -139,6 +139,39 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     app, server, get, post, admit, body, submit, pay, rows, joined };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+it('shows manual payment for a newly issued first invoice below the card minimum', async () => {
+  const f = await fixture(), smallPlan = await factory('plans', f.gymId, { amountCents: 32, signupFeeCents: 0, trialDays: 0 });
+  const create = vi.spyOn(f.provider, 'createCheckout'), { cookie } = await f.submit([adult()], 'small@example.invalid', smallPlan.id);
+  const [home] = await f.joined(), bill = (await f.rows()).invoices.find(row => row.householdId === home!.id)!;
+  expect(bill.amountCents).toBe(32);
+  const page = await f.get('/join/checkout', cookie);
+  expect(page.status).toBe(200);
+  expect(await page.text()).toContain('Contact the gym to arrange a manual payment');
+  expect(create).not.toHaveBeenCalled();
+});
+it.each([[32, 'CAD'], [1255, 'KWD']] as const)('keeps a join of %s %s pending for manual payment without Checkout', async (amountCents, currency) => {
+  const f = await fixture('email', undefined, currency), { cookie } = await f.submit(), create = vi.spyOn(f.provider, 'createCheckout');
+  const [home] = await f.joined(), bill = (await f.rows()).invoices.find(row => row.householdId === home!.id)!;
+  await db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents }).where(eq(invoices.id, bill.id)));
+  for (const path of ['/join/checkout', '/join/return', '/join/cancelled']) {
+    const response = await f.get(path, cookie), html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain('Contact the gym to arrange a manual payment');
+    expect(html).not.toContain('href="/join/checkout"');
+    expect(html).not.toContain('data-join-confirming');
+  }
+  expect(create).not.toHaveBeenCalled();
+  expect((await f.rows()).memberships.filter(row => row.householdId === home!.id).every(row => row.status === 'pending')).toBe(true);
+  // A payment already being processed must keep confirming, rather than invite another payment.
+  await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'processing' }).where(eq(invoices.id, bill.id)));
+  expect(await (await f.get('/join/return', cookie)).text()).toContain('Confirming your payment');
+  await db.forGym(f.gymId, tx => tx.update(invoices).set({ status: 'open' }).where(eq(invoices.id, bill.id)));
+  // The ordinary paid-invoice effect activates the same saved join after staff collect it.
+  await f.transitions.manualPayment({ gymId: f.gymId, actor: { kind: 'system' } }, { invoiceId: bill.id, paymentId: uuidv7(), method: 'cash',
+    amountCents, currency, paidAt: f.clock.now().toISOString() });
+  await f.drain();
+  expect((await f.rows()).memberships.filter(row => row.householdId === home!.id).every(row => row.status === 'active')).toBe(true);
+});
 const cookieValue = (cookie: string) => decodeURIComponent(cookie.slice(joinCookie.length + 1));
 /** A valid signature PNG of incompressible pixels, close to the 256 KB cap, like a chosen photo of a signature. */
 function noisePng(width = 290, height = 290) {

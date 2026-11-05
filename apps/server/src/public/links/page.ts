@@ -3,6 +3,7 @@ import { jsx } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PortalSignedLinkData, WaiverTemplate } from '@plaingym/shared/contracts';
 import { zonedInstant } from '@plaingym/shared/time';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
 
@@ -41,7 +42,9 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
       h('dt', { class: 'min-w-0 break-words' }, l.description), h('dd', null, money(l.amountCents, l.currency))))),
     h('p', { class: 'text-xl font-semibold' }, text('total') + ': ' + money(data.invoice.invoice.amountCents, data.invoice.invoice.currency)),
     ['open', 'past_due'].includes(data.invoice.invoice.status)
-      ? h('button', { type: 'button', class: button, 'data-checkout': true }, text('pay'))
+      ? cardChargeIssue(data.invoice.invoice.amountCents, data.invoice.invoice.currency)
+        ? h('p', { role: 'status' }, text('manualPayment'))
+        : h('button', { type: 'button', class: button, 'data-checkout': true }, text('pay'))
       : h('p', null, text(['paid', 'partially_refunded', 'refunded'].includes(data.invoice.invoice.status) ? 'alreadyDoneBody' : 'paymentPending'))) : null;
   function form(member: { id: string; firstName: string; lastName: string; dateOfBirth: string | null }, template: WaiverTemplate) {
     if (!data || !('signatures' in data)) return null;

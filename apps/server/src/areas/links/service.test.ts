@@ -325,6 +325,17 @@ describe('signed link HTTP contracts and permissions', () => {
 });
 
 describe('email failure and suppression', () => {
+  it.each([[32, 'CAD'], [1255, 'KWD']] as const)('emails manual payment instructions for %s %s without a card link', async (amountCents, currency) => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency, memberEmailsEnabled: true });
+    const home = await factory('households', gymId, { email: 'payer@example.test' });
+    await factory('members', gymId, { householdId: home.id, email: home.email });
+    const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents, status: 'open', number: 50 });
+    await sending.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
+    const message = email.messages.at(-1)!;
+    expect(message.text).toContain('Contact the gym to arrange a manual payment');
+    expect(message.text).not.toContain('/l/');
+    expect(message.html).not.toContain('/l/');
+  });
   it('requires explicit delivery configuration and does not mint a token when absent', async () => {
     const before = (await service.list(gymA)).pagination.total;
     await expect(service.send(mutation, request())).rejects.toMatchObject({ code: 'unavailable' });

@@ -3,7 +3,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { billingRulesSchema } from '@plaingym/shared/contracts';
-import { minimumChargeAmount, onMinorUnitStep } from '@plaingym/shared/money';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
@@ -45,8 +45,8 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
   const latest = attempts.at(-1);
   if (invoice.amountCents === 0) return { status: 'eligible', invoice, latest, payment: null };
   // Stripe refuses these, so no attempt is reserved: the invoice stays open for a manual payment.
-  if (invoice.amountCents < (minimumChargeAmount(invoice.currency) ?? 0)) return skipped('below_minimum');
-  if (!onMinorUnitStep(invoice.amountCents, invoice.currency)) return skipped('off_step');
+  const issue = cardChargeIssue(invoice.amountCents, invoice.currency);
+  if (issue) return skipped(issue);
   const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;
   const method = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.householdId, home.id),
     eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))))[0];

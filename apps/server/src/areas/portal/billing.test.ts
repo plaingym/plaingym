@@ -34,8 +34,8 @@ const db = useTestDatabase(), factory = createFactories(db), origin = 'https://g
 const receiptKey = new Uint8Array(32).fill(7), receipts = checkoutReceipts(receiptKey);
 beforeAll(() => initializeDatabase(db.appUrl));
 afterAll(closeDatabase);
-async function fixture() {
-  const f = await portalFixture(factory, { billingEnabled: true, memberEmailsEnabled: true });
+async function fixture(currency = 'USD') {
+  const f = await portalFixture(factory, { currency, billingEnabled: true, memberEmailsEnabled: true });
   const clock = new TestClock('2026-10-29T16:00:00Z'), fake = new FakePayments(f.gymId, clock, secret), uploads = new FakeUploads(f.gymId, clock);
   fake.seedCustomer({ id: f.household.stripeCustomerId!, email: f.household.email! });
   const open = await factory('invoices', f.gymId, { householdId: f.household.id, number: 7, status: 'open', amountCents: 2500, dueOn: '2026-10-20' });
@@ -81,6 +81,17 @@ const routes = (invoiceId: string) => [['GET', '/api/portal/invoices'], ['GET', 
 const portalLinks = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.createdBy, f.payerUser.id)));
 
 describe('portal billing routes', () => {
+  it.each([[32, 'CAD', 'below_minimum'], [1255, 'KWD', 'off_step']] as const)(
+    'offers manual payment for %s %s without creating a pay link or Checkout', async (amountCents, currency, reason) => {
+      const f = await fixture(currency), create = vi.spyOn(f.fake, 'createCheckout');
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents }).where(eq(invoices.id, f.open.id)));
+      const response = await send(f.app(payerPrincipal(f)), 'POST', `/api/portal/invoices/${f.open.id}/checkout`);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: { details: { reason: [reason] }, message: expect.stringContaining('manual payment') } });
+      expect(create).not.toHaveBeenCalled();
+      expect(await portalLinks(f)).toHaveLength(0);
+      expect(await f.invoice(f.open.id)).toMatchObject({ status: 'open', checkoutSessionId: null });
+    });
   it('shows the payer invoices, details and saved cards, never drafts or revoked cards', async () => {
     const f = await fixture(), server = f.app(payerPrincipal(f));
     const list = await json(await server.request('/api/portal/invoices'), contracts.invoices.response);

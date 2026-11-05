@@ -130,7 +130,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
           waivers: images.data[i]!.map((image, j) => ({ ...image, consent: true, signer: signer(value, `waiver-${i}-${j}`) })) })) },
         context.gym.timezone, context.clientIp ?? 'unknown');
         remember(ctx, linkId);
-        return page(ctx, 'continue');
+        return page(ctx, (await service.state(gymId, linkId)).status === 'manual' ? 'manual' : 'continue');
       } catch (error) {
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         if (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
@@ -143,8 +143,10 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
       if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
       if (state.status === 'active') return ctx.redirect('/join/return', 303);
+      if (state.status === 'manual') return page(ctx, 'manual');
       try { return ctx.redirect(await service.checkout(gymOf(ctx), linkId!), 303); }
       catch (error) {
+        if (error instanceof AppError && ['below_minimum', 'off_step'].includes(error.details?.reason?.[0] ?? '')) return page(ctx, 'manual');
         // Paid, or a session being recorded, continues on the return page; a void invoice or revoked link cannot be paid here.
         if (settledOrGone(error)) return (await service.state(gymOf(ctx), linkId!)).status === 'closed' ? page(ctx, 'closed') : ctx.redirect('/join/return', 303);
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
@@ -157,6 +159,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
       if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
       if (state.status === 'pending') return page(ctx, 'confirming');
+      if (state.status === 'manual') return page(ctx, 'manual');
       return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail');
     }),
     route({ method: 'get', path: '/join/cancelled', permission: { kind: 'public' }, responses: html }, async ctx => {

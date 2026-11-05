@@ -65,6 +65,13 @@ export function minimumChargeAmount(currency: string): number | null {
   return minimumCharges[code(currency)] ?? null;
 }
 
+/** Why a positive invoice cannot go to a card. Zero invoices are settled locally by the runner. */
+export function cardChargeIssue(amount: number, currency: string): 'below_minimum' | 'off_step' | null {
+  if (amount < (minimumChargeAmount(currency) ?? 0)) return 'below_minimum';
+  if (!onMinorUnitStep(amount, currency)) return 'off_step';
+  return null;
+}
+
 /** The decimal places a person may type for a price in `currency`. */
 export function inputDecimals(currency: string): number {
   return currencyExponent(currency) - Math.log10(minorUnitStep(currency));

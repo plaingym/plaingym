@@ -30,9 +30,9 @@ import { customerUnlinkedAction } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const origin = 'https://gym.example.test', secret = 'synthetic-signing-secret';
-async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false) {
+async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false, currency = 'USD') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-27T12:00:00Z');
-  await factory('gyms', gymId, { billingEnabled: true, memberEmailsEnabled: true });
+  await factory('gyms', gymId, { currency, billingEnabled: true, memberEmailsEnabled: true });
   const household = await factory('households', gymId, { stripeCustomerId: 'cus_fixture', email: 'payer@example.test' });
   const member = await factory('members', gymId, { householdId: household.id });
   const invoice = await factory('invoices', gymId, { householdId: household.id, number: 1, status: 'open', amountCents: 100, kind: 'one_off' });
@@ -109,6 +109,21 @@ async function tapeFor(f: Awaited<ReturnType<typeof fixture>>, name: string, ext
 }
 
 describe('signed-link audit regressions with real PostgreSQL', () => {
+  it.each([[32, 'CAD', 'below_minimum'], [1255, 'KWD', 'off_step']] as const)(
+    'refuses an invoice of %s %s before Checkout, including a drop-in one-off', async (amountCents, currency, reason) => {
+      const f = await fixture('pay_invoice', true, currency);
+      // Replay only: a rejected invoice must consume no recorded Stripe exchange.
+      await tapeFor(f, 'pay_invoice');
+      const create = vi.spyOn(f.provider, 'createCheckout');
+      await db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents }).where(eq(invoices.id, f.invoice.id)));
+      const fee = await factory('chargeTypes', f.gymId, { name: 'Drop-in', amountCents: 1000 });
+      await factory('invoiceLineItems', f.gymId, { householdId: f.household.id, invoiceId: f.invoice.id, chargeTypeId: fee.id,
+        kind: 'charge', description: 'Drop-in', amountCents });
+      await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toMatchObject({ code: 'conflict', details: { reason: [reason] }, message: expect.stringContaining('manual payment') });
+      expect(create).not.toHaveBeenCalled();
+      const [invoice] = await db.forGym(f.gymId, tx => tx.select().from(invoices).where(eq(invoices.id, f.invoice.id)));
+      expect(invoice).toMatchObject({ status: 'open', checkoutSessionId: null, checkoutExpiresAt: null });
+    });
   for (const stripe of [false, true]) describe(stripe ? 'Stripe synthetic tapes' : 'fake provider', () => {
     async function payFixture() {
       const f = await fixture('pay_invoice', stripe);

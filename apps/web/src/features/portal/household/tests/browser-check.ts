@@ -23,13 +23,14 @@ const snapshot = JSON.stringify({ template: { id: ids.template, name: template.n
   signedAt: '2026-10-02T00:00:00.000Z', commitmentEndsOn: null, signatureImage: { key: 'k', hash: 'a'.repeat(64) } });
 const signature = { id: ids.signature, memberId: ids.child, templateId: ids.template, snapshot, snapshotHash: 'b'.repeat(64), signatureImageKey: 'k', signatureImageHash: 'a'.repeat(64), signedAt: '2026-10-02T00:00:00.000Z' };
 let role: 'payer' | 'member' = 'payer';
+let manualInvoice: { amountCents: number; currency: string } | undefined;
 const api = (path: string): unknown => {
   const self = role === 'member';
   if (path === '/api/demo') return { data: { mode: 'disabled' } };
   if (path === '/api/auth/bootstrap') return { data: bootstrap };
   if (path === '/api/portal/households') return { data: { current: ids.household, households: [{ householdId: ids.household, name: 'Rivera household', role }] } };
   if (path === '/api/portal/context') return { data: self ? { role, householdId: ids.household, memberId: ids.adult } : { role, householdId: ids.household, memberId: ids.payer } };
-  if (path === '/api/portal/invoices') return list([invoice(ids.invoice, 1042, 'past_due', null), invoice(ids.paid, 1041, 'partially_refunded', '2026-09-21T10:00:00.000Z')]);
+  if (path === '/api/portal/invoices') return list([{ ...invoice(ids.invoice, 1042, 'past_due', null), ...manualInvoice }, invoice(ids.paid, 1041, 'partially_refunded', '2026-09-21T10:00:00.000Z')]);
   if (path === `/api/portal/invoices/${ids.invoice}`) return { data: { invoice: invoice(ids.invoice, 1042, 'past_due', null), lines: [
     { id: id(20), kind: 'membership', description: 'Unlimited adult membership with a long plan name', amountCents: 10_000, currency: 'USD', quantity: 1, taxRateMillionths: null, taxInclusive: null },
     { id: id(21), kind: 'tax', description: 'Sales tax', amountCents: 2500, currency: 'USD', quantity: 1, taxRateMillionths: 25_000, taxInclusive: false }] } };
@@ -77,6 +78,13 @@ try {
     await page.goto(origin + '/portal/billing'); await expect(page.getByText('Invoice #1042')).toBeVisible();
     await page.getByRole('button', { name: 'Details' }).first().click(); await expect(page.getByText('Sales tax')).toBeVisible();
     await check('billing-payer');
+    for (const amount of [{ amountCents: 32, currency: 'USD' }, { amountCents: 1255, currency: 'KWD' }]) {
+      manualInvoice = amount;
+      await page.reload(); await expect(page.getByText('Contact the gym to arrange a manual payment.', { exact: false })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Pay now' })).toHaveCount(0);
+      await check('billing-manual-' + amount.currency);
+    }
+    manualInvoice = undefined;
     await page.goto(origin + '/portal/waivers'); await expect(page.getByText('Signed by Pat Rivera-Montgomery (guardian)')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Review and sign' })).toHaveCount(2);
     await check('waivers-payer');

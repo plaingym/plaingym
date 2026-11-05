@@ -80,6 +80,12 @@ Then:
    timezone, at its due date and amount. Dates up to seven days overdue are charged
    on that run; older ones are held for your review.
 
+The local card minimum check assumes the gym's currency is its Stripe account's
+settlement currency. If Stripe converts the charge, its settlement-currency minimum
+still applies and Stripe decides whether the converted amount meets it. Invoices
+below the local minimum or off the currency's charge step need a manual payment;
+pay links, the portal and online joining explain this instead of opening Checkout.
+
 ## 4. Watch the first cycle
 
 * **System health** shows the last charge run, failed jobs, Stripe webhook status and

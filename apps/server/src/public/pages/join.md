@@ -1,6 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Public join
 
+The first invoice uses the shared card minimum and currency-step check before
+Checkout. An unchargeable amount shows a manual-payment page, without polling
+Stripe or offering Checkout. The registration stays saved with pending memberships;
+recording its cash or check payment activates it through the ordinary paid-invoice
+effect. Legacy off-step invoices are never silently rounded.
+
 `/join` lists the plans a visitor can pay for online: active plans in the gym's
 currency with a price and no free trial. A plan's price and sign-up fee are shown
 as listed, followed by "+ tax" when a tax rate attached to the plan is exclusive and

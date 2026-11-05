@@ -1,5 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "manualPayment": "This invoice cannot be paid by card. Contact the gym to arrange a manual payment.",
   "title": "Billing",
   "description": "Invoices, receipts and the card your gym charges.",
   "invoices": "Invoices",

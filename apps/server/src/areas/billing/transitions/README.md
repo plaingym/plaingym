@@ -1,5 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
+Dunning notices use the shared card minimum and currency-step check. If an invoice
+cannot be charged, its email asks the payer to contact the gym for a manual payment,
+without minting pay or card-update links. Receipts and staff notices keep their usual
+behavior.
+
 `createInvoiceTransitions({ scope?, clock? })` implements the frozen
 `InvoiceTransitions` interface. Issued invoices are locked for every payment,
 failure and refund. Processor intent/Charge IDs and local payment/refund UUIDs

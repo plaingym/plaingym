@@ -1,6 +1,12 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Signed-link pages
 
+Card payment uses `cardChargeIssue` from `@plaingym/shared/money`, the same minimum
+and currency-step check as the saved-card runner. An invoice below the minimum or
+off the step shows manual-payment instructions and no Checkout action. The server
+checks again before reserving Checkout or contacting the payment provider. Pay-link
+emails also give manual-payment instructions without a card link for these amounts.
+
 `/l/<token>` renders invoice payment, card update, member waiver signing, or
 household onboarding without a login. Add `?tablet=1` for a front-desk tablet:
 large controls, a clear-screen action, and a two-minute inactivity reset. The

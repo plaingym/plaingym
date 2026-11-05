@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { auditEvents, forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import type { Payments, CheckoutSession } from '../../infra/payments/index.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
@@ -150,6 +151,8 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       .where(and(eq(paymentAttempts.invoiceId, invoice.id), eq(paymentAttempts.status, 'pending'))).limit(1);
     if (!['open', 'past_due'].includes(invoice.status) || invoice.amountCents <= 0 || invoice.needsReview || pending)
       throw new AppError('conflict', 'Invoice cannot be paid');
+    const issue = cardChargeIssue(invoice.amountCents, invoice.currency);
+    if (issue) throw new AppError('conflict', 'Contact the gym to arrange a manual payment; this invoice cannot be paid by card', { reason: [issue] });
   }
   async function start(gymId: string, linkId: string, renewed = false, flow?: CheckoutReturn): Promise<{ session: CheckoutSession; expiresAt: string }> {
     if (flow && (!returnPath.test(flow.successPath) || !returnPath.test(flow.cancelPath) || !Number.isSafeInteger(flow.lifetimeMs)

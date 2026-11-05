@@ -4,7 +4,7 @@ import { forGym, plans, taxRates, chargeTypes, planTaxRates, chargeTypeTaxRates,
   revisionGuard, assertRevised, RevisionConflictError, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
-import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
+import { z } from 'zod';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -15,10 +15,15 @@ import { gymSettingsAccessor } from '../settings/settings.js';
  * will be charged in (the request schemas check a request that names its currency). Otherwise unchanged amounts, even
  * ones stored off the step, are left alone.
  */
-function checkPriceStep(currency: string, changes: { amountCents?: number | undefined; signupFeeCents?: number | undefined }) {
-  for (const amount of [changes.amountCents, changes.signupFeeCents])
-    if (amount !== undefined && !onMinorUnitStep(amount, currency))
-      throw new AppError('invalid_request', 'Amounts in ' + currency + ' must be a multiple of ' + minorUnitStep(currency) + ' minor units.');
+type Prices = { currency: string; amountCents: number; signupFeeCents?: number | undefined };
+const priceStepSchema = z.object({ currency: c.currencySchema, amountCents: z.number().optional(), signupFeeCents: z.number().optional() })
+  .superRefine(c.refinePriceStep(['amountCents', 'signupFeeCents']));
+function checkPriceStep(before: Prices, changes: { [K in keyof Prices]?: Prices[K] | undefined }) {
+  const currency = changes.currency ?? before.currency, changedCurrency = currency !== before.currency;
+  const result = priceStepSchema.safeParse({ currency,
+    amountCents: changes.amountCents ?? (changedCurrency ? before.amountCents : undefined),
+    signupFeeCents: changes.signupFeeCents ?? (changedCurrency ? before.signupFeeCents : undefined) });
+  if (!result.success) throw new AppError('invalid_request', result.error.issues[0]!.message);
 }
 
 export function catalogMissing<T>(row: T | undefined): T {
@@ -169,8 +174,7 @@ export function createCatalogService(options: CatalogOptions = {}) {
       if (changes.currency !== undefined) await currency(context.gymId, changes.currency);
       return scope(context.gymId, async tx => {
         const before = catalogMissing((await tx.select().from(plans).where(eq(plans.id, id)).for('update'))[0]);
-        checkPriceStep(changes.currency ?? before.currency, (changes.currency ?? before.currency) === before.currency ? changes
-          : { amountCents: changes.amountCents ?? before.amountCents, signupFeeCents: changes.signupFeeCents ?? before.signupFeeCents });
+        checkPriceStep(before, changes);
         if (taxRateIds !== undefined) await validateTaxes(tx, taxRateIds, () => planTaxIds(tx, id));
         const beforeTaxes = await planTaxIds(tx, id);
         const guard = revisionGuard(plans.revision, revision);
@@ -215,7 +219,7 @@ export function createCatalogService(options: CatalogOptions = {}) {
       if (changes.currency !== undefined) await currency(context.gymId, changes.currency);
       return scope(context.gymId, async tx => {
         const before = catalogMissing((await tx.select().from(chargeTypes).where(eq(chargeTypes.id, id)).for('update'))[0]);
-        checkPriceStep(changes.currency ?? before.currency, (changes.currency ?? before.currency) === before.currency ? changes : { amountCents: changes.amountCents ?? before.amountCents });
+        checkPriceStep(before, changes);
         if (taxRateIds !== undefined) await validateTaxes(tx, taxRateIds, () => chargeTaxIds(tx, id));
         const beforeTaxes = await chargeTaxIds(tx, id);
         const guard = revisionGuard(chargeTypes.revision, revision);

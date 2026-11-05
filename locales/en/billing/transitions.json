@@ -1,5 +1,7 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "manualSubject": "Payment needed for invoice {number}",
+  "manualBody": "Invoice {number} for {amount} cannot be paid by card. Contact the gym to arrange a manual payment.",
   "receiptSubject": "Receipt for invoice {number}",
   "receiptBody": "Payment of {amount} received for invoice {number}. Thank you.",
   "failedSubject": "Payment needed for invoice {number}",

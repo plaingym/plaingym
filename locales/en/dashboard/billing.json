@@ -1,5 +1,9 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "skippedCollections": "Collections needing manual payment",
+  "skippedCollection": "Invoice {number}: {amount} — {reason}. Record a manual payment.",
+  "below_minimum": "below the card minimum",
+  "off_step": "amount is off the currency step",
   "title": "Billing overview",
   "mrr": "Monthly recurring revenue",
   "past_due": "Past due",

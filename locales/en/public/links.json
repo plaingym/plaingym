@@ -1,5 +1,6 @@
 {
   "_license": "SPDX-License-Identifier: AGPL-3.0-only",
+  "manualPayment": "This invoice cannot be paid by card. Contact the gym to arrange a manual payment.",
   "pay_invoice": "Pay invoice",
   "update_card": "Update your card",
   "sign_waiver": "Sign a waiver",

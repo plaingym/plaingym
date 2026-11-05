@@ -27,6 +27,18 @@ import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-tra
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+it.each([[32, 'CAD'], [1255, 'KWD']] as const)('sends manual payment guidance for %s %s without minting pay links', async (amountCents, currency) => {
+  const f = await fixture('cycle', currency);
+  for (const actionRequired of [false, true]) await f.notifications.dunning({ gymId: f.gymId,
+    invoice: { ...f.invoice, kind: 'cycle', status: 'open', paidAt: null, number: f.invoice.number!, amountCents }, actionRequired });
+  expect(f.email.messages).toHaveLength(2);
+  for (const message of f.email.messages) {
+    expect(message.text).toContain('Contact the gym to arrange a manual payment');
+    expect(message.text).not.toContain('/l/');
+    expect(message.html).not.toContain('/l/');
+  }
+  expect(await db.forGym(f.gymId, tx => tx.select().from(signedLinks))).toHaveLength(0);
+});
 async function fixture(kind: 'cycle' | 'one_off' = 'cycle', currency = 'CAD') {
   const gymId = uuidv7();
   await factory('gyms', gymId, { currency, timezone: 'America/Vancouver', billingEnabled: true, memberEmailsEnabled: true });

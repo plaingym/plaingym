@@ -87,7 +87,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
-  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge';
+  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual';
 /** Every step after the form. None of these pages grants anything; actions post back to fixed join routes.
  * In a demo sandbox, `testCardHint` names the test card on the steps that lead to payment. */
 export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; testCardHint?: string | undefined }) {
@@ -102,6 +102,7 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; te
   const [title, body, ...next] = {
     continue: ['continueTitle', 'continueBody', h('a', { href: '/join/checkout', class: button }, text('pay'))],
     confirming: ['confirmingTitle', 'confirmingBody', progress, stalled, h('a', { href: '/join/return', class: link }, text('checkAgain'))],
+    manual: ['manualTitle', 'manualBody', h('a', { href: '/join/return', class: link }, text('checkAgain'))],
     welcomeEmail: ['welcomeTitle', 'welcomeEmail', action('/join/sign-in', 'resend')],
     resent: ['welcomeTitle', 'resent', action('/join/sign-in', 'resend')],
     // Password mode: no account and no password until staff confirm the person and issue a printed invitation.

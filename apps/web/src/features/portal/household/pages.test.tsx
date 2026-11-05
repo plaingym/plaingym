@@ -51,6 +51,15 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor = ids
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('portal billing page', () => {
+  it.each([[32, 'USD'], [1255, 'KWD']] as const)('offers manual payment instead of a card action for %s %s', async (amountCents, currency) => {
+    const navigate = vi.fn();
+    mount(<PortalBillingPage navigate={navigate} />, path => path.startsWith('/api/portal/invoices?') ? page([
+      { id: ids.invoice, number: 7, kind: 'one_off', status: 'open', dueOn: '2026-10-20', amountCents, currency, paidAt: null },
+    ]) : path === '/api/portal/payment-methods' ? { data: [] } : undefined);
+    expect(await screen.findByText('This invoice cannot be paid by card. Contact the gym to arrange a manual payment.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Pay now' })).toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
+  });
   const invoice = (invoiceId: string, number: number, status: string, paidAt: string | null) => ({ id: invoiceId, number, kind: 'one_off', status, dueOn: '2026-10-20', amountCents: 2500, currency: 'USD', paidAt });
   const handle: Handler = (path, init) => {
     if (path.startsWith('/api/portal/invoices?')) return page([invoice(ids.invoice, 7, 'past_due', null), invoice(ids.paid, 6, 'paid', '2026-09-21T10:00:00.000Z')]);

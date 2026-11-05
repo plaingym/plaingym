@@ -9,6 +9,13 @@ import messages from '../../../../../locales/en/public/links.json' with { type: 
 const t = createTranslator({ 'public/links': messages });
 const now = new Date('2026-10-25T12:00:00Z');
 describe('signed-link presentation and return receipts', () => {
+  it.each([[32, 'USD'], [1255, 'KWD']] as const)('shows manual payment instead of Checkout for %s %s', (amountCents, currency) => {
+    const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
+      id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents, currency, paidAt: null,
+    } } } });
+    expect(page).toContain('Contact the gym to arrange a manual payment');
+    expect(page).not.toContain('data-checkout');
+  });
   it('escapes member names and template content and renders guardian consent', () => {
     const page = linkPage({ now, timezone: 'UTC', t, tablet: true, data: { purpose: 'sign_waiver',
       member: { id: 'member', firstName: '<script>alert(1)</script>', lastName: 'Child', dateOfBirth: '2020-01-01', revision: 1 },

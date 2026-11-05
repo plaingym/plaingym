@@ -108,6 +108,9 @@ try {
     await page.locator('button', { hasText: 'Send the sign-in link again' }).click(); await page.waitForURL('**/join/sign-in'); await check(page, width + '-resent');
     passwordMode = true; await page.goto(base + '/join/return'); await check(page, width + '-welcome-password');
     await expect(page.locator('main')).toContainText('The gym confirms your member portal login');
+    state = 'manual'; await page.goto(base + '/join/checkout'); await check(page, width + '-manual-payment');
+    await expect(page.locator('main')).toContainText('Contact the gym to arrange a manual payment');
+    await expect(page.locator('a[href="/join/checkout"]')).toHaveCount(0);
     state = 'closed'; await page.goto(base + '/join/checkout'); await check(page, width + '-closed');
     await expect(page.locator('main')).toContainText('Please contact the gym');
     const fresh = await browser.newContext({ viewport: { width, height: 900 } }), lost = await fresh.newPage();
@@ -135,5 +138,5 @@ try {
   expect(joins.every(c => c.body.members.length === 2 && c.body.members[1].waivers.every(w => w.signer.kind === 'guardian' && w.signer.relationship === 'Parent'))).toBe(true);
   expect(calls.filter(c => c.kind === 'admit').every(c => c.body.members.every(m => m.signatures.every(s => s.pngBase64.startsWith('iVBOR'))))).toBe(true);
   expect(calls.filter(c => c.kind === 'checkout')).toHaveLength(3);
-  console.log('360/1280 px: plans, two-person form, drawn/file signatures, confirming (spinner, polling on to Welcome, stalled after its limit), cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
+  console.log('360/1280 px: plans, two-person form, drawn/file signatures, manual payment, confirming (spinner, polling on to Welcome, stalled after its limit), cancelled, welcome (email and password), closed, resend, missing, native form and its too-large page, touch targets and axe passed.');
 } finally { await browser.close(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }

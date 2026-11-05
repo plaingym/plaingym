@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { forHousehold, uuidv7 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock, type Translator } from '@plaingym/shared';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import {
   portalInvoiceDetailSchema, portalInvoiceListQuerySchema, portalInvoiceSchema, portalPaymentMethodsResponseSchema,
   type PortalInvoice, type PortalInvoiceDetail,
@@ -116,6 +117,8 @@ export function createPortalBillingService(options: PortalBillingOptions) {
     async pay(identity: PortalIdentity, invoiceId: string) {
       const { invoice: row } = await detail(identity, invoiceId);
       if (!['open', 'past_due'].includes(row.status)) throw new AppError('conflict', 'Invoice cannot be paid');
+      const issue = cardChargeIssue(row.amountCents, row.currency);
+      if (issue) throw new AppError('conflict', 'Contact the gym to arrange a manual payment; this invoice cannot be paid by card', { reason: [issue] });
       return checkout(identity, { purpose: 'pay_invoice', invoiceId: row.id });
     },
     async paymentMethods(identity: PortalIdentity) {

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { billingDashboardWidgetSchema } from '@plaingym/shared/contracts';
-import { billingDashboardResponseSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
-import { AppError, canStaff } from '@plaingym/shared';
+import { billingDashboardWidgetSchema, billingDashboardResponseSchema, extensionDashboardWidgetSchema, terminalDisputeStatuses } from '@plaingym/shared/contracts';
+import { AppError, canStaff, createTranslator } from '@plaingym/shared';
 import { addDays, localDate } from '@plaingym/shared/time';
+import { cardChargeIssue, formatMinorUnits } from '@plaingym/shared/money';
+import { locales } from '@plaingym/shared/locales';
 import type { BillingDashboardWidget, ListResponse } from '@plaingym/shared/contracts';
 import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -18,6 +19,27 @@ export interface BillingDashboardServices {
   settings: GymSettingsAccessor;
   memberships: Pick<MembershipService, 'list'>;
   payments: Pick<PaymentService, 'listInvoices'>;
+}
+
+/** Uses the dashboard's existing shortlist extension; collection and email behavior stay with billing. */
+export function createSkippedCollectionsProvider(services: Pick<BillingDashboardServices, 'settings' | 'payments'>):
+DashboardWidgetProvider<ReturnType<typeof extensionDashboardWidgetSchema.parse>> {
+  const t = createTranslator(locales.en ?? {});
+  return { id: 'billing.skipped-collections', permission: 'billing.read', order: 45, schema: extensionDashboardWidgetSchema,
+    async read(context) {
+      if (!canStaff(context.roles, 'billing.read')) throw new AppError('forbidden', 'Access denied');
+      const gym = await services.settings.get(context.gymId), today = localDate(context.clock.now(), gym.timezone);
+      const rows = gym.billingEnabled ? (await Promise.all(['open', 'past_due'].map(status =>
+        allPages(page => services.payments.listInvoices(context.gymId, { ...page, status, dueThrough: today }))))).flat() : [];
+      const skipped = [...new Map(rows.map(row => [row.id, row])).values()]
+        .filter(row => row.kind === 'cycle' && row.amountCents > 0 && !row.needsReview && cardChargeIssue(row.amountCents, row.currency))
+        .sort((a, b) => a.dueOn.localeCompare(b.dueOn) || a.id.localeCompare(b.id));
+      return { id: 'billing.skipped-collections', titleKey: 'dashboard/billing:skippedCollections', status: 'ready', kind: 'count', count: skipped.length,
+        items: skipped.slice(0, 20).map(row => ({ href: `/admin/billing/invoices/${row.id}`,
+          label: t('dashboard/billing:skippedCollection', { number: row.number ?? '', amount: formatMinorUnits(row.amountCents, row.currency),
+            reason: t('dashboard/billing:' + cardChargeIssue(row.amountCents, row.currency)) }) })) };
+    },
+  };
 }
 async function allPages<T extends { id: string }>(read: (page: { limit: number; offset: number }) => Promise<ListResponse<T>>) {
   const rows = new Map<string, T>();

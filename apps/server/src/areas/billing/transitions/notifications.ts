@@ -3,6 +3,7 @@ import { forGym, type payments, type refunds } from '@plaingym/db';
 import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import type { InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
 import type { Email, EmailResult } from '../../../infra/email/index.js';
@@ -60,7 +61,8 @@ export function createTransitionNotifications(options: {
     let payUrl = '', updateUrl = '';
     const minted: string[] = [];
     try {
-      if (kind === 'action' || kind === 'failed') {
+      const manualPayment = (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
+      if ((kind === 'action' || kind === 'failed') && !manualPayment) {
         const context = { gymId, actor: { kind: 'system' as const } };
         const base = { householdId: invoice.householdId, expiresAt: new Date(clock.now().getTime() + 21 * 86400_000).toISOString() };
         const pay = await links.create(context, { ...base, purpose: 'pay_invoice', invoiceId: invoice.id });
@@ -71,7 +73,8 @@ export function createTransitionNotifications(options: {
         updateUrl = new URL(`/l/${update.token}`, origin).href;
       }
       const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency), payUrl, updateUrl };
-      const subject = t(`billing/transitions:${kind}Subject`, values), text = t(`billing/transitions:${kind}Body`, values);
+      const message = manualPayment ? 'manual' : kind;
+      const subject = t(`billing/transitions:${message}Subject`, values), text = t(`billing/transitions:${message}Body`, values);
       for (const to of new Set(recipients)) {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
         if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
