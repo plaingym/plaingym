@@ -2,7 +2,7 @@
 // node --test deploy/test/memory/budget.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { budget, evaluate, summarize } from './budget.mjs';
+import { assessRun, budget, evaluate, summarize } from './budget.mjs';
 
 const MiB = 1024 ** 2;
 const limits = { app: 512 * MiB, postgres: 384 * MiB, caddy: 128 * MiB };
@@ -31,6 +31,58 @@ const healthy = (name, seconds) => {
 };
 const judge = (samples, mode = 'capped', facts = { containers: { app: { oomKilled: false, restarts: 0 } }, nodeOptions: '--max-old-space-size=256' }) =>
   evaluate(summarize(samples, marks), { mode, facts });
+const healthySummary = summarize(run({ shape: healthy, capped: false }), marks);
+const judgeRun = (summary = healthySummary, failures = [], containers = {}) =>
+  assessRun(summary, { mode: 'uncapped', failures, facts: { containers } });
+
+test('healthy load passes; exceeding a memory ceiling exits 2', () => {
+  assert.equal(judgeRun().exitCode, 0);
+  const summary = structuredClone(healthySummary);
+  summary.services.app.peakProcessBytes = 900 * MiB;
+  assert.equal(judgeRun(summary).exitCode, 2);
+});
+
+test('a failed load or backup without kill evidence exits 1 and retains its failure', () => {
+  for (const failure of ['load exited 3', 'backup exited 1']) {
+    const result = judgeRun(healthySummary, [failure]);
+    assert.equal(result.exitCode, 1);
+    assert.ok(result.violations.includes(failure));
+  }
+});
+
+test('a failed workload with Docker OOM, restart or kill evidence exits 2, even without samples', () => {
+  for (const state of [{ oomKilled: true }, { restarts: 1 }, { exitCode: 137 }]) {
+    for (const summary of [healthySummary, null]) {
+      const result = judgeRun(summary, ['load exited 3', 'backup exited 1'], { app: state });
+      assert.equal(result.exitCode, 2);
+      assert.ok(result.violations.includes('load exited 3'));
+      assert.ok(result.violations.includes('backup exited 1'));
+    }
+  }
+});
+
+test('sampled cgroup OOM or host kills override a failed workload even when Docker reports no kill', () => {
+  for (const change of [
+    (s) => { s.services.app.oomEvents = 1; },
+    (s) => { s.services.app.oomKills = 1; },
+    (s) => { s.hostOomKills = 1; },
+  ]) {
+    const summary = structuredClone(healthySummary);
+    change(summary);
+    assert.equal(judgeRun(summary, ['load exited 3']).exitCode, 2);
+  }
+});
+
+test('without samples, an exit 2 still names the Docker kill evidence', () => {
+  const result = judgeRun(null, ['load exited 3'], { app: { oomKilled: true, restarts: 2 } });
+  assert.equal(result.exitCode, 2);
+  assert.ok(result.violations.includes('app container was OOM killed'));
+  assert.ok(result.violations.includes('app container restarted 2 time(s)'));
+});
+
+test('missing samples without kill evidence cannot pass', () => {
+  assert.equal(judgeRun(null, ['sampler results: No samples']).exitCode, 1);
+});
 
 test('a healthy run passes in both modes', () => {
   assert.deepEqual(judge(run({ shape: healthy })), []);

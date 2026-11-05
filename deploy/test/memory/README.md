@@ -5,13 +5,16 @@ The **Memory** workflow (`.github/workflows/memory.yml`) runs a whole self-hoste
 fails when it uses more memory than the budget, or when anything is killed for memory. It runs on
 every integration branch and push to `main`, nightly, and on demand.
 
-    node --test deploy/test/memory/budget.test.mjs     # the budget arithmetic, no Docker
+    node --test deploy/test/memory/budget.test.mjs    # budget arithmetic and failure classification, no Docker
     node deploy/test/memory/run.mjs --mode both        # builds committed HEAD, then measures it
 
 `run.mjs` needs Docker with Compose v2.24 or later and cgroup v2. Options: `--mode capped|uncapped|both`,
 `--image TAG` (skip the build; `MEMORY_IMAGE` works too), `--out DIR` (default `deploy/test/memory/out`,
-ignored by Git) and `--inject-leak`. Exit code 0 means within budget, 2 the budget was exceeded or
+ignored by Git), `--inject-leak` and `--leak-mib N` (1–4096, default 160; used with `--inject-leak`). Exit code 0 means within budget, 2 the budget was exceeded or
 something was killed, 1 the harness could not run (never a pass).
+If the load or backup fails, the runner still stops sampling, reads Docker's kill/restart facts,
+evaluates the samples and writes `summary.json`, including the workload failures and exit code.
+OOM, kill or restart evidence makes that run exit 2; without it, a failed workload exits 1.
 
 ## What runs
 
@@ -30,6 +33,9 @@ about the stack under test changes.
 
 The load generator and sampler run in containers of their own (CPU-capped, `nice`, with `timeout`),
 and the run is removed afterwards: containers, volumes, network and the image it built.
+SIGINT (Ctrl+C) and SIGTERM stop active commands and run the same cleanup, including the named
+load containers. Interrupted runs exit 130 or 143 respectively. An image supplied with `--image`
+is kept; only an image built by the runner is removed.
 
 ## What is measured
 
@@ -81,6 +87,9 @@ Raise a ceiling only with a new measurement, and update the Resource Budget in t
 
 `--inject-leak` starts a process in the app's cgroup that touches 160 MiB during the load. The
 workflow's `canary` job (nightly and on demand) runs it and passes only if the run exits 2.
+To exercise an actual kill under the shipped 512 MiB app limit, use
+`--mode capped --inject-leak --leak-mib 768`. The summary retains the OOM or restart evidence
+even when the kill breaks the traffic or backup.
 
 ## Real 1 GB machine
 

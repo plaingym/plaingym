@@ -108,10 +108,7 @@ export function evaluate(summary, { mode, facts = {} }) {
     if (service.oomEvents > 0 || service.oomKills > 0) bad.push(`${name} hit its memory limit (${service.oomEvents} oom, ${service.oomKills} oom_kill)`);
   }
   if (summary.hostOomKills > 0) bad.push(`the host killed ${summary.hostOomKills} process(es) for memory`);
-  for (const [name, state] of Object.entries(facts.containers ?? {})) {
-    if (state.oomKilled) bad.push(`${name} container was OOM killed`);
-    if (state.restarts > 0) bad.push(`${name} container restarted ${state.restarts} time(s)`);
-  }
+  bad.push(...containerViolations(facts));
 
   if (mode === 'capped') {
     for (const [name, mibLimit] of Object.entries(budget.limits)) {
@@ -133,6 +130,31 @@ export function evaluate(summary, { mode, facts = {} }) {
     limit('stack', 'uncapped whole-stack process memory peak', stack.peakProcessBytes, ceiling.stackPeakMiB);
   }
   return bad;
+}
+
+/** Docker's own kill facts for the stack's containers, as violations. */
+function containerViolations(facts) {
+  const bad = [];
+  for (const [name, state] of Object.entries(facts.containers ?? {})) {
+    if (state.oomKilled) bad.push(`${name} container was OOM killed`);
+    if (state.restarts > 0) bad.push(`${name} container restarted ${state.restarts} time(s)`);
+  }
+  return bad;
+}
+
+/**
+ * Judges a whole run, including one whose workload failed (`failures`) or whose samples are missing (`summary` null).
+ * A broken workload proves a memory failure only when Docker or the samples show a kill, OOM or restart: then the run
+ * exits 2, otherwise 1 (the harness could not run). A clean workload exits 2 on any violation and 0 without one.
+ */
+export function assessRun(summary, { mode, facts, failures }) {
+  const killed = Object.values(facts.containers).some((state) => state.oomKilled || state.restarts > 0 || state.exitCode === 137)
+    || (summary && (summary.hostOomKills > 0 || Object.values(summary.services).some((service) => service.oomEvents > 0 || service.oomKills > 0)));
+  // evaluate() reports the container facts itself; without samples, report them here so an exit 2 always says why.
+  const violations = summary ? evaluate(summary, { mode, facts }) : containerViolations(facts);
+  for (const [name, state] of Object.entries(facts.containers)) if (state.exitCode === 137) violations.push(`${name} container exited 137 (killed)`);
+  if (failures.length) violations.push(...failures);
+  return { violations, exitCode: killed ? 2 : failures.length ? 1 : violations.length ? 2 : 0 };
 }
 
 export function report(summary, violations, mode) {

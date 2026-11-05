@@ -2,7 +2,7 @@
 // The memory check (deploy/test/memory/README.md): the shipped Compose stack under its shipped limits, then again without
 // limits, each sampled while a representative workload runs, judged against budget.mjs.
 //
-//   node deploy/test/memory/run.mjs [--mode capped|uncapped|both] [--image TAG] [--inject-leak] [--out DIR]
+//   node deploy/test/memory/run.mjs [--mode capped|uncapped|both] [--image TAG] [--inject-leak [--leak-mib N]] [--out DIR]
 //
 // Exit codes: 0 within the budget, 2 the budget was exceeded or something was killed, 1 the harness itself failed
 // (a failed run proves nothing and is never reported as a pass).
@@ -12,56 +12,77 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
-import { budget, evaluate, report, summarize } from './budget.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
+import { assessRun, budget, report, summarize } from './budget.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url)), deploy = resolve(here, '../..'), root = resolve(deploy, '..');
 const nodeImage = 'node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205';
-const options = { mode: 'both', image: process.env.MEMORY_IMAGE ?? '', leak: false, out: join(here, 'out') };
+const options = { mode: 'both', image: process.env.MEMORY_IMAGE ?? '', leak: false, leakMiB: 160, out: join(here, 'out') };
 for (let index = 2; index < process.argv.length; index++) {
   const flag = process.argv[index];
   if (flag === '--mode') options.mode = process.argv[++index];
   else if (flag === '--image') options.image = process.argv[++index];
   else if (flag === '--out') options.out = resolve(process.argv[++index]);
   else if (flag === '--inject-leak') options.leak = true;
+  else if (flag === '--leak-mib') options.leakMiB = Number(process.argv[++index]);
   else throw new Error('Unknown option ' + flag);
 }
 if (!['capped', 'uncapped', 'both'].includes(options.mode)) throw new Error('--mode is capped, uncapped or both');
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+if (!Number.isSafeInteger(options.leakMiB) || options.leakMiB < 1 || options.leakMiB > 4096) throw new Error('--leak-mib must be an integer from 1 to 4096');
+const controller = new AbortController();
+const sleep = (ms) => delay(ms, undefined, { signal: controller.signal });
 const log = (line) => console.log(`[memory ${new Date().toISOString().slice(11, 19)}] ${line}`);
 
-function run(binary, args, { input, allowFailure = false, quiet = true, cwd = root } = {}) {
+// A hung command is killed after this long. It sits above the slowest step's own limits: the loaders' `timeout 600`,
+// and `compose up --wait-timeout 240` after its image pulls.
+const commandTimeoutMs = 900_000, cleanupTimeoutMs = 120_000;
+
+function run(binary, args, { input, allowFailure = false, quiet = true, cwd = root, cleanup = false } = {}) {
   return new Promise((done, fail) => {
-    const child = spawn(binary, args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true });
-    let out = '', error = '';
+    const timeout = cleanup ? cleanupTimeoutMs : commandTimeoutMs;
+    const child = spawn(binary, args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true,
+      signal: cleanup ? undefined : controller.signal, timeout, killSignal: 'SIGKILL' });
+    let out = '', error = '', spawnError;
     child.stdout.on('data', (chunk) => { out += chunk; if (!quiet) process.stdout.write(chunk); });
     child.stderr.on('data', (chunk) => { error += chunk; if (!quiet) process.stderr.write(chunk); });
-    child.on('error', fail);
+    child.on('error', (error) => { spawnError = error; });
     if (input !== undefined) child.stdin.end(input);
-    child.on('exit', (code) => (code === 0 || allowFailure ? done({ code, out, error }) : fail(new Error(`${binary} ${args.slice(0, 3).join(' ')} exited ${code}: ${(error || out).slice(-600)}`))));
+    child.on('close', (code, signal) => {
+      const ended = code === null ? `was killed (${signal}${signal === 'SIGKILL' ? `, possibly after its ${timeout / 1000} s limit` : ''})` : `exited ${code}`;
+      if (spawnError) fail(spawnError);
+      else if (code === 0 || allowFailure) done({ code, out, error });
+      else fail(new Error(`${binary} ${args.slice(0, 3).join(' ')} ${ended}: ${(error || out).slice(-600)}`));
+    });
   });
 }
 const docker = (...args) => run('docker', args);
 
 /** Build the committed source into the production image, as the End-to-end workflow does. */
-async function buildImage() {
-  const tag = 'plaingym:memory-' + randomBytes(4).toString('hex');
+async function buildImage(tag) {
   log('building ' + tag + ' from committed HEAD');
   await new Promise((done, fail) => {
-    const archive = spawn('git', ['-c', `safe.directory=${root.replaceAll('\\', '/')}`, 'archive', 'HEAD'], { cwd: root, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
-    const build = spawn('docker', ['build', '-t', tag, '-f', 'deploy/Dockerfile', '-'], { cwd: root, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true });
+    const childOptions = { cwd: root, windowsHide: true, signal: controller.signal, timeout: 1_200_000, killSignal: 'SIGKILL' };
+    const archive = spawn('git', ['-c', `safe.directory=${root.replaceAll('\\', '/')}`, 'archive', 'HEAD'], { ...childOptions, stdio: ['ignore', 'pipe', 'inherit'] });
+    const build = spawn('docker', ['build', '-t', tag, '-f', 'deploy/Dockerfile', '-'], { ...childOptions, stdio: ['pipe', 'inherit', 'inherit'] });
     archive.stdout.pipe(build.stdin);
     build.stdin.on('error', () => {});
-    let pending = 2, failed = false;
+    let pending = 2, failure;
     for (const child of [archive, build]) {
-      child.on('error', fail);
-      child.on('exit', (code) => { if (code !== 0 && !failed) { failed = true; fail(new Error('Image build failed')); } if (--pending === 0 && !failed) done(); });
+      child.on('error', (error) => { failure ??= error; });
+      child.on('close', (code) => {
+        if (code !== 0) {
+          failure ??= new Error('Image build failed');
+          for (const other of [archive, build]) if (other !== child) other.kill('SIGKILL');
+        }
+        if (--pending === 0) { if (failure) fail(failure); else done(); }
+      });
     }
   });
-  return tag;
 }
 
 async function oneRun(mode, image) {
   const id = randomBytes(4).toString('hex'), project = 'plaingym-memory-' + id, sampler = project + '-sampler';
+  const loaders = new Set();
   const work = await mkdtemp(join(tmpdir(), project + '-')), out = join(options.out, mode);
   await rm(out, { recursive: true, force: true });
   await mkdir(out, { recursive: true });
@@ -78,11 +99,20 @@ async function oneRun(mode, image) {
   }).map(([key, value]) => `${key}=${value}`).join('\n') + '\n', { mode: 0o600 });
   const compose = ['compose', '--project-name', project, '--project-directory', deploy, '--env-file', envFile,
     '-f', join(deploy, 'compose.yaml'), '-f', join(here, 'compose.memory.yaml')];
-  const mark = (name) => docker('exec', sampler, 'node', '/harness/mark.mjs', name);
-  const loadContainer = (command, extra = []) => ['run', '--rm', '--cpus', '1', '--network', project + '_web', '-v', `${out}:/out`, '-v', `${here}:/harness:ro`,
+  const phaseTimes = {};
+  const mark = (name) => {
+    // A restart may stop the sampler before it can record the final marks. Keep bounds for the samples it did record.
+    phaseTimes[name] = Date.now();
+    return docker('exec', sampler, 'node', '/harness/mark.mjs', name);
+  };
+  const loadContainer = (command, extra = []) => {
+    const name = project + '-' + command;
+    loaders.add(name);
+    return ['run', '--rm', '--name', name, '--cpus', '1', '--network', project + '_web', '-v', `${out}:/out`, '-v', `${here}:/harness:ro`,
     '-e', 'GYM_HOST=gym.localhost', '-e', 'PROXY_HOST=caddy', '-e', 'SETUP_TOKEN=' + secrets.setupToken, '-e', 'S3_ENDPOINT=http://s3:7070',
     '-e', 'S3_ACCESS_KEY=' + secrets.s3Access, '-e', 'S3_SECRET_KEY=' + secrets.s3Secret, '-e', 'STATE_FILE=/out/state.json', ...extra,
     nodeImage, 'nice', '-n', '10', 'timeout', '600', 'node', '/harness/load.mjs', command];
+  };
   const psql = (sql) => run('docker', [...compose, 'exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'plaingym', '-v', 'ON_ERROR_STOP=1', '-At', '-c', sql]);
   try {
     log(`${mode}: starting ${project}`);
@@ -101,67 +131,116 @@ async function oneRun(mode, image) {
       await sleep(500);
     }
     await mark('ready');
-    log('stack up; running the setup wizard through the API');
-    await run('docker', loadContainer('setup'), { quiet: false });
-    await run('docker', loadContainer('seed'), { quiet: false });
-    // A database bigger than shared_buffers, fully cached: Postgres at its warm worst, as the spike measured it.
-    await psql('create extension if not exists pg_prewarm');
-    await psql("create table memory_ballast as select g as id, repeat(md5(g::text), 20) as payload from generate_series(1, 180000) g");
-    await psql('grant select on memory_ballast to maintenance');
-    await psql("select pg_prewarm('memory_ballast')");
-    log('seeded; settling before the load');
-    await sleep(10_000);
-    await mark('loadStart');
-    const traffic = run('docker', loadContainer('load', ['-e', 'LOAD_SECONDS=45', '-e', 'LOAD_WORKERS=20']), { allowFailure: true, quiet: false });
-    await sleep(5000);
-    const backup = run('docker', [...compose, 'exec', '-T', 'app', 'node', '/app/maintenance.mjs', 'snapshot'], { allowFailure: true });
-    if (options.leak) {
-      // A stand-in for a leak: a process in the app's cgroup that keeps 160 MiB it has touched.
-      await sleep(3000);
-      await run('docker', [...compose, 'exec', '-T', '-d', 'app', 'node', '-e',
-        "const keep=[];let n=0;const t=setInterval(()=>{keep.push(Buffer.alloc(8<<20,1));if(++n>=20)clearInterval(t)},100);setTimeout(()=>{},120000)"]);
-    }
-    const [load, snapshot] = await Promise.all([traffic, backup]);
-    await mark('loadEnd');
-    if (load.code !== 0) throw new Error('The load did not run cleanly (exit ' + load.code + '): ' + load.out.slice(-500));
-    if (snapshot.code !== 0) throw new Error('The backup under load failed: ' + (snapshot.error || snapshot.out).slice(-400));
+    const failures = [];
+    const attempt = async (name, operation) => {
+      try { return await operation(); }
+      catch (error) {
+        controller.signal.throwIfAborted();
+        failures.push(`${name}: ${error.message}`);
+      }
+    };
+    await attempt('workload', async () => {
+      log('stack up; running the setup wizard through the API');
+      await run('docker', loadContainer('setup'), { quiet: false });
+      await run('docker', loadContainer('seed'), { quiet: false });
+      // A database bigger than shared_buffers, fully cached: Postgres at its warm worst, as the spike measured it.
+      await psql('create extension if not exists pg_prewarm');
+      await psql("create table memory_ballast as select g as id, repeat(md5(g::text), 20) as payload from generate_series(1, 180000) g");
+      await psql('grant select on memory_ballast to maintenance');
+      await psql("select pg_prewarm('memory_ballast')");
+      log('seeded; settling before the load');
+      await sleep(10_000);
+      await mark('loadStart');
+      // Attach handlers immediately: a failed spawn or an interrupt must not leave an unhandled rejection.
+      const observe = (name, operation) => attempt(name, async () => {
+        const result = await operation();
+        if (result.code !== 0) failures.push(`${name} exited ${result.code}: ${(result.error || result.out).slice(-500)}`);
+      });
+      await Promise.allSettled([
+        observe('load', () => run('docker', loadContainer('load', ['-e', 'LOAD_SECONDS=45', '-e', 'LOAD_WORKERS=20']), { allowFailure: true, quiet: false })),
+        observe('backup', async () => {
+          await sleep(5000);
+          return run('docker', [...compose, 'exec', '-T', 'app', 'node', '/app/maintenance.mjs', 'snapshot'], { allowFailure: true });
+        }),
+        options.leak ? attempt('leak injection', async () => {
+          // A process in the app's cgroup retains touched buffers, up to --leak-mib (160 MiB by default).
+          await sleep(8000);
+          await run('docker', [...compose, 'exec', '-T', '-d', 'app', 'node', '-e',
+            `const keep=[];let left=${options.leakMiB};const t=setInterval(()=>{const n=Math.min(8,left);keep.push(Buffer.alloc(n*1048576,1));if((left-=n)<=0)clearInterval(t)},100);setTimeout(()=>{},120000)`]);
+        }) : Promise.resolve(),
+      ]);
+      controller.signal.throwIfAborted();
+    });
+    await attempt('loadEnd mark', () => mark('loadEnd'));
     await sleep(12_000);
-    await mark('settled');
-    await docker('stop', '-t', '5', sampler);
-    const facts = { containers: {}, nodeOptions: undefined, jobs: (await psql('select status || \':\' || count(*) from jobs group by status order by status')).out.trim().split('\n') };
+    await attempt('settled mark', () => mark('settled'));
+    await attempt('stop sampler', () => docker('stop', '-t', '5', sampler));
+    const facts = { containers: {}, nodeOptions: undefined, jobs: [] };
     for (const service of ['app', 'postgres', 'caddy']) {
-      const [state] = JSON.parse((await docker('inspect', short[service])).out);
-      facts.containers[service] = { oomKilled: state.State.OOMKilled, restarts: state.RestartCount };
-      if (service === 'app') facts.nodeOptions = (state.Config.Env.find((entry) => entry.startsWith('NODE_OPTIONS=')) ?? '').slice(13);
+      await attempt('inspect ' + service, async () => {
+        const [state] = JSON.parse((await docker('inspect', short[service])).out);
+        facts.containers[service] = { oomKilled: state.State.OOMKilled, restarts: state.RestartCount, exitCode: state.State.ExitCode };
+        if (service === 'app') facts.nodeOptions = (state.Config.Env.find((entry) => entry.startsWith('NODE_OPTIONS=')) ?? '').slice(13);
+      });
     }
-    const samples = (await readFile(join(out, 'samples.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    const marks = Object.fromEntries((await readFile(join(out, 'marks.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).map((entry) => [entry.mark, entry.at]));
-    const summary = summarize(samples, marks);
-    const violations = evaluate(summary, { mode, facts });
-    await writeFile(join(out, 'summary.json'), JSON.stringify({ mode, image, budget, summary, facts, marks, violations, leakInjected: options.leak }, null, 2));
-    console.log(report(summary, violations, mode));
+    await attempt('job counts', async () => { facts.jobs = (await psql('select status || \':\' || count(*) from jobs group by status order by status')).out.trim().split('\n'); });
+    let summary = null, marks = {};
+    await attempt('sampler results', async () => {
+      const samples = (await readFile(join(out, 'samples.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      marks = { ...phaseTimes, ...Object.fromEntries((await readFile(join(out, 'marks.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).map((entry) => [entry.mark, entry.at])) };
+      summary = summarize(samples, marks);
+    });
+    const result = assessRun(summary, { mode, facts, failures });
+    await writeFile(join(out, 'summary.json'), JSON.stringify({ mode, image, budget, summary, facts, marks, ...result, failures,
+      leakInjected: options.leak, leakMiB: options.leak ? options.leakMiB : 0 }, null, 2));
+    if (summary) console.log(report(summary, result.violations, mode));
+    else console.error('No memory summary: ' + result.violations.join('; '));
     console.log('jobs: ' + (facts.jobs.join(', ') || 'none'));
-    return violations;
+    return result;
   } finally {
-    await run('docker', ['rm', '-f', '-v', sampler], { allowFailure: true });
-    await run('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { allowFailure: true });
-    await rm(work, { recursive: true, force: true });
+    // Abort stops Docker clients, not their containers. Remove the named loaders too, then the Compose volumes.
+    try { await run('docker', ['rm', '-f', '-v', sampler, ...loaders], { allowFailure: true, cleanup: true }); }
+    finally {
+      try { await run('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { cleanup: true }); }
+      finally { await rm(work, { recursive: true, force: true }); }
+    }
   }
 }
 
-let built = '';
-try {
-  const image = options.image || (built = await buildImage());
-  const modes = options.mode === 'both' ? ['capped', 'uncapped'] : [options.mode];
-  const violations = [];
-  for (const mode of modes) violations.push(...(await oneRun(mode, image)).map((line) => `${mode}: ${line}`));
-  if (violations.length) {
-    console.error('\nMemory check FAILED:\n  - ' + violations.join('\n  - '));
-    process.exitCode = 2;
-  } else console.log('\nMemory check passed.');
-} catch (error) {
-  console.error('Memory check could not run: ' + (error instanceof Error ? error.message : String(error)));
-  process.exitCode = 1;
-} finally {
-  if (built) await run('docker', ['rmi', built], { allowFailure: true });
+async function main() {
+  let built = '', interrupted;
+  const onSignal = (signal) => {
+    if (interrupted) return;
+    interrupted = signal;
+    process.exitCode = signal === 'SIGINT' ? 130 : 143;
+    log(signal + ': stopping the run and removing its resources');
+    controller.abort(new Error('Interrupted by ' + signal));
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  try {
+    const image = options.image || (built = 'plaingym:memory-' + randomBytes(4).toString('hex'));
+    if (built) await buildImage(built);
+    const modes = options.mode === 'both' ? ['capped', 'uncapped'] : [options.mode];
+    const violations = [];
+    for (const mode of modes) {
+      controller.signal.throwIfAborted();
+      const result = await oneRun(mode, image);
+      controller.signal.throwIfAborted();
+      violations.push(...result.violations.map((line) => `${mode}: ${line}`));
+      process.exitCode = Math.max(process.exitCode ?? 0, result.exitCode);
+    }
+    if (violations.length) console.error('\nMemory check FAILED:\n  - ' + violations.join('\n  - '));
+    else console.log('\nMemory check passed.');
+  } catch (error) {
+    console.error('Memory check could not run: ' + (error instanceof Error ? error.message : String(error)));
+    process.exitCode = interrupted === 'SIGINT' ? 130 : interrupted === 'SIGTERM' ? 143 : 1;
+  } finally {
+    try { if (built) await run('docker', ['rmi', built], { allowFailure: true, cleanup: true }); }
+    finally {
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+    }
+  }
 }
+await main();

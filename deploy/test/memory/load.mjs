@@ -28,6 +28,7 @@ class Client {
           ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }), ...this.headers },
       }, (res) => {
         const chunks = [];
+        res.on('error', reject);
         res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
@@ -165,5 +166,5 @@ async function load() {
 const command = process.argv[2];
 const commands = { setup, seed, load };
 if (!commands[command]) throw new Error('Usage: load.mjs setup|seed|load');
-await commands[command]();
-agent.destroy();
+try { await commands[command](); }
+finally { agent.destroy(); }

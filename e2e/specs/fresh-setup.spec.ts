@@ -6,8 +6,16 @@ import { accessibleLayout, reachable, sizes } from '../responsive.js';
 test('phone-first fresh wizard completes with disabled discovery, reachable actions and axe A/AA at three sizes', async ({ page }, info) => {
   test.setTimeout(240_000);
   const guest = new Client(gymOrigin);
-  expect((await guest.json<{ data: { currentStep: number; completed: boolean } }>('/api/setup')).data)
-    .toMatchObject({ currentStep: 0, completed: false });
+  const status = await guest.request<{ data: { currentStep: number; completed: boolean } }>('/api/setup');
+  expect(status.status, status.text).toBe(200);
+  expect(status.body.data).toMatchObject({ currentStep: 0, completed: false });
+  // A valid request with a bad snapshot reaches the runtime's restore coordinator without starting a restore.
+  const restore = await guest.request('/api/setup/restore', 'POST', {
+    choice: 'restore', snapshotPrefix: 'invalid-snapshot', privateKey: 'AGE-SECRET-KEY-1TEST',
+    source: { endpoint: 'https://s3.example.invalid', region: 'auto', bucket: 'backups', accessKeyId: 'test', secretAccessKey: 'test' },
+  }, { 'x-setup-token': process.env.E2E_SETUP_TOKEN! });
+  expect(restore.status, restore.text).toBe(400);
+  expect(restore.body).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid snapshot prefix' } });
   const probes: string[] = [];
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname;

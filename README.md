@@ -44,8 +44,10 @@ pnpm dev
 ```
 
 `pnpm dev:up` starts PostgreSQL and Mailpit and then runs `pnpm db:migrate`, which
-applies migrations as the `maintenance` role (`MAINTENANCE_DATABASE_URL`); run
-`pnpm db:migrate` again after pulling changes that add migrations.
+applies migrations as the `maintenance` role (`MAINTENANCE_DATABASE_URL`).
+`pnpm dev` also runs `pnpm db:migrate` before starting the servers, so restarting
+after pulling changes applies pending migrations. The database must be running;
+if migration fails, the servers do not start. Use `pnpm db:migrate` to migrate on its own.
 On Windows use `pnpm.cmd` if PowerShell blocks `pnpm.ps1`. The server is at
 `http://127.0.0.1:3000/healthz`, Vite at `http://127.0.0.1:5173`, and Mailpit at
 `http://127.0.0.1:8025` with the example ports. Vite proxies `/healthz` to the
