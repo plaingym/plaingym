@@ -365,14 +365,47 @@ describe('schedule cursors', () => {
     expect(await cursors()).toMatchObject([{ expression: '*/2 * * * *', lastOccurrence: new Date('2026-01-01T00:06:59.999Z') }]);
     expect(await occurrences()).toEqual(['00:00']);
     clock.set('2026-01-01T00:12:30Z'); await make().scheduleDue();
-    // Back to the first expression: its retained history is the watermark again.
-    expect(await occurrences()).toEqual(['00:00', '00:05', '00:10']);
+    // A returning expression starts now too, despite its retained occurrence history.
+    expect(await occurrences()).toEqual(['00:00']);
     gyms[0] = { gymId: gymA, timezone: 'America/Vancouver' };
     try {
       clock.set('2026-01-01T00:15:30Z'); await make().scheduleDue();
       expect(await cursors()).toMatchObject([{ timezone: 'America/Vancouver', lastOccurrence: new Date('2026-01-01T00:15:00Z') }]);
-      expect(await occurrences()).toEqual(['00:00', '00:05', '00:10', '00:15']);
+      expect(await occurrences()).toEqual(['00:00', '00:15']);
+      gyms[0] = { gymId: gymA, timezone: 'UTC' };
+      clock.set('2026-01-01T00:30:30Z'); await make().scheduleDue();
+      expect(await occurrences()).toEqual(['00:00', '00:15', '00:30']);
     } finally { gyms[0] = { gymId: gymA, timezone: 'UTC' }; }
+  });
+  it('decides history seeding per schedule when one gym has a replaced and a cursorless schedule in the same tick', async () => {
+    const make = (expression: string) => {
+      const q = queue({ listGyms: async () => gyms });
+      q.schedule('replaced', expression, async () => {}); q.schedule('upgrade', '*/5 * * * *', async () => {});
+      return q;
+    };
+    const times = async (name: string) => (await rows()).filter((r) => r.name === name)
+      .map((r) => (r.payload as { schedule: { at: string } }).schedule.at.slice(11, 16)).sort();
+    clock.set('2026-01-01T00:00:00Z'); await make('*/5 * * * *').scheduleDue();
+    clock.set('2026-01-01T00:10:00Z'); await make('*/10 * * * *').scheduleDue();
+    await database.forSystem((tx) => tx.delete(jobScheduleCursors).where(eq(jobScheduleCursors.name, 'upgrade')));
+    clock.set('2026-01-01T00:31:00Z'); await make('*/5 * * * *').scheduleDue();
+    // 'replaced' returns to an expression with history and starts now; 'upgrade' has no cursor and inherits its history.
+    expect(await times('replaced')).toEqual(['00:00', '00:10']);
+    expect(await times('upgrade')).toEqual(['00:00', '00:05', '00:10', '00:15', '00:20', '00:25', '00:30']);
+  });
+  it.each(['invalid timezone', 'deleted gym'])('reports a gym with %s and schedules the next gym in the same tick', async (failure) => {
+    const broken = failure === 'deleted gym' ? uuidv7() : gymA;
+    const q = queue({ listGyms: async () => [
+      { gymId: broken, timezone: failure === 'invalid timezone' ? 'Invalid/Timezone' : 'UTC' },
+      { gymId: gymB, timezone: 'UTC' },
+    ] });
+    q.schedule('tick', '* * * * *', async () => {});
+    const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+    try { await q.scheduleDue(); } finally { setLogSink(previous); }
+    expect(lines.map(line => JSON.parse(line))).toMatchObject([
+      { level: 'error', event: 'jobs.schedule_error', gymId: broken, error: { name: expect.any(String) } },
+    ]);
+    expect(await rows()).toMatchObject([{ gymId: gymB, name: 'tick' }]);
   });
   it('schedules from the worker once per clock minute, not on every poll', async () => {
     const q = make(); const tick = vi.spyOn(q, 'scheduleDue');

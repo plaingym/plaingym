@@ -45,7 +45,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       eq(auditEvents.action, effectCreated), gte(auditEvents.occurredAt, since), notInArray(auditEvents.targetId,
         tx.select({ id: auditEvents.targetId }).from(auditEvents)
           .where(and(eq(auditEvents.action, effectPublished), gte(auditEvents.occurredAt, since))))))
-      .orderBy(asc(auditEvents.id)).limit(100));
+      .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id)).limit(100));
     for (const row of rows) {
       const work = row.after as TransitionEffect;
       const runAt = work.kind === 'retry' ? retryAt(localDate(row.occurredAt, gym.timezone), work.retryDay!, gym.timezone)

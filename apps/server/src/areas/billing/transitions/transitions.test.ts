@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
 import { auditEvents, invoiceLineItems, invoices, members, memberships, paymentAttempts, payments, refunds, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -22,7 +22,7 @@ import { createTransitionEffects } from './effects.js';
 import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
-import { effectCreated, effectCompleted } from './store.js';
+import { effectCreated, effectCompleted, effectPublished } from './store.js';
 import { invoiceTransitionsContract } from '../../../core/interfaces/invoice-transitions.contract.js';
 import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions.js';
 
@@ -688,6 +688,40 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(await f.effects.publish(f.gymId)).toBe(0);
     f.clock.set('2028-03-11T17:00:00Z');
     expect(await f.effects.publish(f.gymId)).toBe(3);
+  });
+  it('publishes the same eligible effects across batches in a mixed, gym-isolated audit history', async () => {
+    const f = await fixture(), stranger = await fixture();
+    const since = new Date(f.clock.now().getTime() - 30 * 86_400_000);
+    const eligible: string[] = [];
+    for (let i = 0; i < 125; i++) {
+      const targetId = uuidv7();
+      const occurredAt = new Date(since.getTime() + Math.floor((124 - i) / 2) * 60_000);
+      await factory('auditEvents', f.gymId, { targetId, action: effectCreated, occurredAt,
+        after: { kind: 'receipt', invoiceId: f.invoice.id } });
+      if (i < 5) await factory('auditEvents', f.gymId, { targetId, action: effectPublished, occurredAt });
+      else eligible.push(targetId);
+      // Another gym's published marker must never suppress this gym's effect.
+      await factory('auditEvents', stranger.gymId, { targetId, action: effectPublished, occurredAt });
+    }
+    await factory('auditEvents', f.gymId, { action: effectCreated, occurredAt: new Date(since.getTime() - 1),
+      after: { kind: 'receipt', invoiceId: f.invoice.id } });
+    await factory('auditEvents', f.gymId, { action: 'unrelated.event', occurredAt: f.clock.now() });
+    await stranger.transitions.cardFailed(stranger.context, stranger.failure);
+    // The old ID-ordered query is the eligibility oracle, before publishing changes the audit history.
+    const old = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(and(
+      eq(auditEvents.action, effectCreated), gte(auditEvents.occurredAt, since), notInArray(auditEvents.targetId,
+        tx.select({ id: auditEvents.targetId }).from(auditEvents)
+          .where(and(eq(auditEvents.action, effectPublished), gte(auditEvents.occurredAt, since))))))
+      .orderBy(asc(auditEvents.id)));
+    expect(old.map(row => row.targetId).sort()).toEqual(eligible.sort());
+    const chronological = [...old].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime() || a.id.localeCompare(b.id));
+    const enqueue = vi.spyOn(f.jobs, 'enqueue');
+    expect(await f.effects.publish(f.gymId)).toBe(100);
+    expect(await f.effects.publish(f.gymId)).toBe(20);
+    expect(await f.effects.publish(f.gymId)).toBe(0);
+    expect(enqueue.mock.calls.map(call => (call[1] as { effectId: string }).effectId))
+      .toEqual(chronological.map(row => row.targetId));
+    expect(enqueue.mock.calls.every(call => call[2].gymId === f.gymId)).toBe(true);
   });
 });
 

@@ -57,7 +57,9 @@ preserve these records until the dedicated storage migration exists.
 `createTransitionEffects` takes Jobs, gym settings, the same transition service,
 MembershipLifecycle, a per-gym Payments resolver, notifications and a retry
 callback. `publish(gymId)` dispatches up to 100 unpublished instructions from the
-last 30 days with durable job idempotency keys. Publishing again after a lost
+last 30 days with durable job idempotency keys, oldest occurrence first (audit ID
+breaks timestamp ties). The query uses the gym/time index to bound history reads
+to that gym's window. Publishing again after a lost
 queue acknowledgement does not duplicate work. Pass
 `afterCommit: (gymId) => effects.publish(gymId)` to `createInvoiceTransitions` so
 work is published as soon as its transition commits; a failed publish is logged

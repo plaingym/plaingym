@@ -274,15 +274,16 @@ export class PostgresJobs implements Jobs, JobRecovery {
       .where(and(eq(jobs.id, jobId), eq(jobs.status, 'failed'))).returning({ id: jobs.id }));
     return reset.length > 0;
   }
-  /** Seeds missing or replaced cursors from the newest matching occurrence row, where earlier releases kept them. */
-  async #seed(gym: Gym, missing: readonly (readonly [string, string])[], now: Date): Promise<Map<string, Date>> {
+  /** Only schedules without a cursor inherit the occurrence watermark used by earlier releases. */
+  async #seed(gym: Gym, missing: readonly (readonly [string, string])[], existing: ReadonlySet<string>, now: Date): Promise<Map<string, Date>> {
     // On first registration the current minute is eligible.
     const initial = new Date(Math.floor(now.getTime() / 60_000) * 60_000 - 1);
     return this.#database.forGym(gym.gymId, async (tx) => {
-      const history = await tx.select({ name: jobs.name, at: sql<string | null>`max(${jobs.payload}->'schedule'->>'at')` })
-        .from(jobs).where(and(sql`${jobs.payload}->>'timezone' = ${gym.timezone}`, or(...missing.map(([name, expression]) =>
+      const upgrade = missing.filter(([name]) => !existing.has(name));
+      const history = upgrade.length ? await tx.select({ name: jobs.name, at: sql<string | null>`max(${jobs.payload}->'schedule'->>'at')` })
+        .from(jobs).where(and(sql`${jobs.payload}->>'timezone' = ${gym.timezone}`, or(...upgrade.map(([name, expression]) =>
           and(eq(jobs.name, name), sql`${jobs.payload}->'schedule'->>'expression' = ${expression}`)))))
-        .groupBy(jobs.name);
+        .groupBy(jobs.name) : [];
       const latest = new Map(history.map((row) => [row.name, row.at]));
       const saved = await tx.insert(jobScheduleCursors).values(missing.map(([name, expression]) => {
         const at = latest.get(name);
@@ -312,20 +313,23 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const cursors = Map.groupBy(await this.#database.forSystem((tx) => tx.select().from(jobScheduleCursors)
       .where(inArray(jobScheduleCursors.gymId, gyms.map((gym) => gym.gymId)))), (row) => row.gymId);
     for (const gym of gyms) {
-      const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
-        && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
-      // All of a gym's missing cursors are seeded in one transaction, before any of its occurrences is enqueued.
-      const missing = [...this.#schedules].filter(([name]) => !current.has(name));
-      if (missing.length) for (const [name, at] of await this.#seed(gym, missing, now)) current.set(name, at);
-      for (const [name, expression] of this.#schedules) {
-        let count = 0;
-        for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
-          if (count++ >= this.#maxScheduled) break;
-          await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
-            idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
-          gym.gymId, { name, expression, at: at.toISOString() });
+      try {
+        const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
+          && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
+        // All of a gym's missing cursors are seeded in one transaction, before any of its occurrences is enqueued.
+        const missing = [...this.#schedules].filter(([name]) => !current.has(name));
+        const existing = new Set((cursors.get(gym.gymId) ?? []).map((row) => row.name));
+        if (missing.length) for (const [name, at] of await this.#seed(gym, missing, existing, now)) current.set(name, at);
+        for (const [name, expression] of this.#schedules) {
+          let count = 0;
+          for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
+            if (count++ >= this.#maxScheduled) break;
+            await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
+              idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
+            gym.gymId, { name, expression, at: at.toISOString() });
+          }
         }
-      }
+      } catch (error) { logError('jobs.schedule_error', { gymId: gym.gymId }, error); }
     }
   }
   async #scheduleRetention(now: Date): Promise<void> {

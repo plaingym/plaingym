@@ -60,11 +60,14 @@ competing schedulers. On first registration the current minute is eligible;
 subsequent ticks and restarts catch up from the cursor, with at most 100
 occurrences per gym and schedule per tick. Schedule name, expression, and timezone
 identify a schedule generation: a different expression or timezone replaces the
-cursor and starts a new generation. A missing or replaced cursor is seeded from
+cursor and starts a new generation at the current minute, even when returning to
+an earlier expression or timezone. Only a schedule with no cursor is seeded from
 the newest occurrence row of that generation, as earlier releases kept it, so an
 upgrade neither skips nor repeats occurrences; all of a gym's missing cursors are
 seeded in one transaction before any of its occurrences is enqueued. Schedule
-handler effects need the same idempotency guarantees as other jobs.
+handler effects need the same idempotency guarantees as other jobs. A gym's
+scheduling failure is logged as `jobs.schedule_error` with its gym ID; the tick
+continues with the next gym.
 
 ## Batch lane
 
