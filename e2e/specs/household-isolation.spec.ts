@@ -93,7 +93,8 @@ async function sweepReads(own: Household, target: Household) {
       : ['/api/portal/invoices', '/api/portal/bookings'].includes(entry.path) ? '?limit=100&offset=0' : '';
     const response = await own.client.request(entry.path.replace(/\{(\w+)\}/g, (_, name: string) => ids[name]!) + query);
     // The self routes answer 404 to a payer login that has no member profile of its own.
-    expect(entry.path.includes('{') ? [200, 404, 503] : entry.path === '/api/portal/bookings' || entry.path.startsWith('/api/portal/waivers') ? [200, 404] : [200, 503],
+    // An invoice that isn't paid yet has no receipt (409), and which of the household's invoices comes first isn't fixed.
+    expect(entry.path.endsWith('/receipt') ? [200, 404, 409, 503] : entry.path.includes('{') ? [200, 404, 503] : entry.path === '/api/portal/bookings' || entry.path.startsWith('/api/portal/waivers') ? [200, 404] : [200, 503],
       `${key(entry)}: ${response.text}`).toContain(response.status);
     if (response.status === 200 && !entry.path.includes('/bookings')) expect((response.body as { householdId: string }).householdId, key(entry)).toBe(own.householdId);
     for (const secret of secrets(target)) expect(response.text, `${key(entry)} leaks`).not.toContain(secret);

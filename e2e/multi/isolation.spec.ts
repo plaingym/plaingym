@@ -49,7 +49,7 @@ class Sweep {
   credentials(route: Route, origin: string): Client | undefined {
     const { from } = this;
     if (route.kind === 'staff') return withCookie(origin, from.cookies.owner);
-    if (route.kind === 'member') return withCookie(origin, from.cookies.household);
+    if (route.kind === 'member') return withCookie(origin, from.cookies.household, { 'X-Portal-Household': from.householdId });
     if (route.kind === 'kiosk') return new Client(origin, { authorization: 'Bearer ' + from.kioskToken });
     if (route.kind === 'signed_link') { const link = this.links[route.purpose ?? '']; return link && new Client(origin, link.headers); }
     return undefined;
