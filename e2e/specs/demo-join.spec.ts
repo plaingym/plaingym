@@ -140,7 +140,11 @@ async function signInAgain(page: Page, info: TestInfo, origin: string, visitor: 
   const [verify] = await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/magic-link/verify'),
     page.getByRole('button', { name: 'Open my sign-in link', exact: true }).click()]);
   // A refused verify consumes nothing, so the same link opens once the limiter's window has passed.
-  if (verify.status() === 429) await openLimited(page, verify.url());
+  if (verify.status() === 429) {
+    // Let the refused page replace the form before the retry navigates away from it.
+    await expect(page.locator('body')).toContainText('Too many requests');
+    await openLimited(page, verify.url());
+  }
   await page.waitForURL(url => url.pathname.startsWith('/portal'));
   await expect(portal).toBeVisible();
   // The latest sign-in link to that address is the one just used: opening it again explains itself.
