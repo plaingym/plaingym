@@ -24,7 +24,7 @@ beforeAll(async () => {
   const env = { DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'cd'.repeat(32),
     AUTH_SECRET: 'runtime-portal-access-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on', TENANCY: 'single',
     PUBLIC_ORIGIN: origin, NODE_ENV: 'production', UPLOADS_DIR: join(directory, 'uploads') };
-  await factory('gyms', gymId);
+  await factory('gyms', gymId, { billingEnabled: true });
   accounts = createAccountService(authConfig(env), () => db.system.db);
   runtime = await startRuntime(env);
 });
@@ -122,4 +122,18 @@ it('shows the owner, never a coach, the households awaiting portal confirmation 
     id: 'members.portal-confirmations', kind: 'count', count: 1,
     items: [{ label: 'Waiting household', href: `/admin/members/${person.id}#memberTabs.portal-access` }] })]));
   expect((await widgets(await signIn('coach@example.test', 'coach-user-password'))).map(widget => widget.id)).not.toContain('members.portal-confirmations');
+});
+it('lists due cycle invoices below the card minimum on the billing staff dashboard, never a coach', async () => {
+  const home = await factory('households', gymId, { name: 'Skipped household' });
+  const invoice = await factory('invoices', gymId, { householdId: home.id, status: 'open', number: 7301, kind: 'cycle',
+    periodStartsOn: '2020-01-01', periodEndsOn: '2020-02-01', dueOn: '2020-01-31', amountCents: 32 });
+  const widgets = async (cookie: string) => {
+    const response = await runtime!.app.request(origin + '/api/dashboard', { headers: headers(cookie) });
+    expect(response.status).toBe(200);
+    return (await response.json()).data.widgets as { id: string }[];
+  };
+  const ownerWidgets = await widgets(await signIn('owner@example.test', 'owner-user-password'));
+  expect(ownerWidgets).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'billing.skipped-collections', kind: 'count', count: 1,
+    items: [expect.objectContaining({ href: `/admin/billing/invoices/${invoice.id}` })] })]));
+  expect((await widgets(await signIn('coach@example.test', 'coach-user-password'))).map(widget => widget.id)).not.toContain('billing.skipped-collections');
 });

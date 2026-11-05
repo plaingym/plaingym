@@ -37,6 +37,7 @@ import { configureStaffProfiles } from '../areas/staff/profiles.routes.js';
 import { createStaffInvitationService, smtpMailer } from '../areas/staff/profiles.invitations.js';
 import { configureDashboard } from '../areas/dashboard/dashboard.routes.js';
 import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js';
+import { createSkippedCollectionsProvider } from '../areas/dashboard/billing.js';
 import { configureImportStep } from '../areas/setup/import-step.js';
 import { createSetupRoutes } from '../areas/setup/setup.routes.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
@@ -248,8 +249,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const attendance = createAttendanceQueries({ clock });
   const criteria = configureRanks({ attendance, clock });
   const ranks = createRanksService({ clock, criteria });
-  // The dashboard and portal progress read through the same services, with the ranks criteria registry and clock.
-  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(), createPortalConfirmationWidgetProvider()]);
+  // The dashboard is configured after the payment service exists (below); portal progress reads through the same services.
   configurePortalProgress({ ranks, attendance });
   // Staff invitations use the gym's SMTP (or the demo outbox); photos use the gym's file storage.
   configureStaffProfiles({ invitations: createStaffInvitationService({ config, smtpConfigured,
@@ -342,6 +342,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     transitions: billing.transitions, runner, detachCard });
   configurePayments(payments);
   configureBillingDashboard({ settings, memberships, payments });
+  // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock; its
+  // skipped-collections entry needs the payment service, so it is configured here.
+  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
+    createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings, payments })]);
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
   // Portal billing seals its Checkout return into the signed-link receipt cookie, so both share one key.
   const receiptKey = new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32));
