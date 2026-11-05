@@ -67,6 +67,7 @@ if [ "$existing" = false ]; then
   for file in compose.yaml Caddyfile lib.sh; do install -m 0644 "$SOURCE/$file" "$ROOT/$file"; done
   install -m 0644 "$SOURCE/postgres/01-roles.sh" "$ROOT/postgres/01-roles.sh"
   install -m 0700 "$SOURCE/update.sh" "$ROOT/update.sh"
+  install -m 0700 "$SOURCE/rotate-key.sh" "$ROOT/rotate-key.sh"
   # Generate independent passwords; nothing is written to stdout.
   {
     printf 'COMPOSE_PROJECT_NAME=plaingym\nAPP_IMAGE=%s\nGYM_HOSTNAME=%s\nACME_EMAIL=%s\nPOSTGRES_DB=plaingym\n' "$image" "$hostname" "$email"

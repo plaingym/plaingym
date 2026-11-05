@@ -2,12 +2,12 @@
 import '@hono/zod-openapi';
 import { beforeAll, describe, expect, inject, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { backupRuns, encryptedFields, gyms } from '@plaingym/db';
+import { backupRuns, encryptedFields, gyms, uuidv7 } from '@plaingym/db';
 import { cloneDatabase } from '@plaingym/db/testing/database';
 // Test-only maintenance connection builds the pre-migration restore fixture.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection } from '@plaingym/db/client';
-import { decryptSecret } from '../../core/secrets.js';
+import { decryptSecret, openSecret } from '../../core/secrets.js';
 import { generateIdentity, identityToRecipient } from '../../infra/age/index.js';
 import { S3Uploads } from '../../infra/storage/index.js';
 import { PostgresMaintenance } from './backups.database.js';
@@ -35,7 +35,7 @@ describe('install snapshot contents after a restore', { timeout: 60_000 }, () =>
     expect(await new Response(await f.restoredUploads().get(gymId + '/s3-photo')).text()).toBe('S3 source bytes');
   });
 
-  it('restores every registered secret with a new app key and preserves the QR key, uploads, and forced RLS', async () => {
+  it('restores every registered secret as v2 under the new app key and preserves the QR key, uploads, and forced RLS', async () => {
     const snapshot = base;
     await f.restore().restore(snapshot.id, f.identity);
     const { gym, account } = await f.secretRows();
@@ -45,12 +45,15 @@ describe('install snapshot contents after a restore', { timeout: 60_000 }, () =>
       qr_key: gym.qrKey, backup_blob_key: gym.backupBlobKey, google_config: gym.googleConfig,
       oauth_access_token: account.accessToken, oauth_refresh_token: account.refreshToken, oauth_id_token: account.idToken,
     };
+    // The snapshot held v1 and v2 values; the re-key wrote every one as v2, bound to its row.
     for (const field of encryptedFields) {
-      expect(decryptSecret(f.currentKey, field.secretClass, values[field.secretClass]!)).toBe(
+      const value = values[field.secretClass]!, context = f.context(field.secretClass);
+      expect(openSecret(f.currentKey, context, value)).toEqual({ version: 'v2', plaintext:
         field.secretClass === 'backup_blob_key' ? f.blobKey.toString('hex') :
           field.secretClass === 'qr_key' ? 'stable-qr-secret' :
-            field.secretClass.replace('_config', '').replace('oauth_', '').replace('_token', '') + '-test');
-      expect(() => decryptSecret(f.oldKey, field.secretClass, values[field.secretClass]!)).toThrow();
+            field.secretClass.replace('_config', '').replace('oauth_', '').replace('_token', '') + '-test' });
+      expect(() => decryptSecret(f.oldKey, context, value)).toThrow();
+      expect(() => decryptSecret(f.currentKey, { ...context, owner: uuidv7() }, value)).toThrow();
     }
     const restored = f.restoredUploads();
     expect(await new Response(await restored.get(gymId + '/photo')).text()).toBe('original upload');

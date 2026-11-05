@@ -13,7 +13,7 @@ export async function reserveGym(input: {
     const id = uuidv7();
     const [created] = await tx.insert(gyms).values({ id, name: input.name, slug: input.slug, timezone: input.timezone, currency: input.currency,
       settings: { bootstrapOwnerEmail: input.ownerEmail },
-      qrKey: encryptSecret(options.key, 'qr_key', randomBytes(32).toString('base64url')),
+      qrKey: encryptSecret(options.key, { secretClass: 'qr_key', owner: id }, randomBytes(32).toString('base64url')),
       createdAt: options.clock.now(), updatedAt: options.clock.now(),
     }).onConflictDoNothing({ target: gyms.slug }).returning({ id: gyms.id });
     if (created) {

@@ -18,7 +18,7 @@ const service = createSettingsService({ scope: database.forGym, clock });
 const gymA = uuidv7(), gymB = uuidv7();
 let userId: string;
 beforeAll(async () => {
-  const secret = encryptSecret(parseEncryptionKey('aa'.repeat(32)), 'smtp_config', 'private-smtp-password');
+  const secret = encryptSecret(parseEncryptionKey('aa'.repeat(32)), { secretClass: 'smtp_config', owner: gymA }, 'private-smtp-password');
   await factory('gyms', gymA, { name: 'Gym A', smtpConfig: secret, settings: { privateConfig: 'secret' } });
   await factory('gyms', gymB, { name: 'Gym B' });
   userId = (await factory('authUser', gymA)).id;
@@ -142,6 +142,6 @@ describe('settings service and routes', () => {
       expect(response.status).toBe(400);
     }
     const row = await database.forGym(gymA, (tx) => tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymA)));
-    expect(row[0]!.smtp).toMatch(/^v1\./);
+    expect(row[0]!.smtp).toMatch(/^v2\./);
   });
 });

@@ -51,7 +51,7 @@ it('uses the runtime account service and refuses staff resets after the gym conf
     sessions: await db.system.db.select().from(authSession).where(eq(authSession.userId, target.userId)),
     audits: await db.forGym(gymId, tx => tx.select().from(auditEvents)),
   });
-  await db.forGym(gymId, tx => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(parseEncryptionKey(env.APP_ENCRYPTION_KEY), {
+  await db.forGym(gymId, tx => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(parseEncryptionKey(env.APP_ENCRYPTION_KEY), gymId, {
     host: 'smtp.gym.example.test', port: 587, security: 'starttls', from: 'desk@gym.example.test', username: 'gym', password: 'smtp-test-secret',
   }) }).where(eq(gyms.id, gymId)));
   const bootstrap = await runtime.app.request(env.PUBLIC_ORIGIN + '/api/auth/bootstrap', { headers: { host: 'gym.example.test', cookie } });

@@ -13,7 +13,7 @@ export function createGymKeyResolver(options: { key: Buffer; scope?: typeof forG
     const stored = await scope(gymId, async (tx) => (await tx.select({ qrKey: gyms.qrKey }).from(gyms).where(eq(gyms.id, gymId)))[0]?.qrKey);
     // Fail closed: a missing or short key must never fall back to a weaker secret.
     if (!stored) throw new AppError('unavailable', 'Gym key is not configured');
-    const value = Buffer.from(decryptSecret(options.key, 'qr_key', stored), 'base64url');
+    const value = Buffer.from(decryptSecret(options.key, { secretClass: 'qr_key', owner: gymId }, stored), 'base64url');
     if (value.byteLength < 32) throw new AppError('unavailable', 'Gym key is not configured');
     return value;
   };

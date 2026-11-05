@@ -187,7 +187,7 @@ describe('demo boundaries and sandbox lifecycle', () => {
     await f.deletion.remove(a.gymId, 2);
   });
   it('refuses encrypted live keys already stored in a gym', async () => {
-    const id = uuidv7(); await factory('gyms', id, { stripeConfig: encryptSecret(key, 'stripe_config', JSON.stringify({ secretKey: 'rk_live_private' })) });
+    const id = uuidv7(); await factory('gyms', id, { stripeConfig: encryptSecret(key, { secretClass: 'stripe_config', owner: id }, JSON.stringify({ secretKey: 'rk_live_private' })) });
     await expect(verifyDemoStoredKeys(key, db.forSystem)).rejects.toThrow(/live/);
     await db.forGym(id, (tx) => tx.update(gyms).set({ stripeConfig: null }).where(eq(gyms.id, id)));
   });
@@ -197,7 +197,7 @@ describe('outbox isolation, permissions, and external boundaries', () => {
   it('writes messages and audits in the same gym and never calls SMTP, even if it is configured', async () => {
     const smtp = vi.spyOn(SmtpEmail.prototype, 'sendEmail').mockRejectedValue(new Error('SMTP must not be called'));
     const id = infraContractGyms.b;
-    await db.forGym(infraContractGyms.a, (tx) => tx.update(gyms).set({ smtpConfig: encryptSecret(key, 'smtp_config', JSON.stringify({ host: 'smtp.example.test', password: 'secret' })) }).where(eq(gyms.id, infraContractGyms.a)));
+    await db.forGym(infraContractGyms.a, (tx) => tx.update(gyms).set({ smtpConfig: encryptSecret(key, { secretClass: 'smtp_config', owner: infraContractGyms.a }, JSON.stringify({ host: 'smtp.example.test', password: 'secret' })) }).where(eq(gyms.id, infraContractGyms.a)));
     await factory('emailOutbox', id, { subject: 'Other gym private message' });
     const mail = new OutboxEmail(infraContractGyms.a, clock(), db.forGym);
     const result = await mail.sendEmail({ to: 'member@example.test', subject: 'Only local', html: '<p>local</p>', text: 'local' });

@@ -12,7 +12,7 @@ const own = { host: 'smtp.gym-a.example', port: 587, security: 'starttls', from:
 const env = { SMTP_HOST: 'smtp.install.example', SMTP_PORT: '2525', SMTP_FROM: 'noreply@install.example', SMTP_USER: 'install', SMTP_PASS: 'install-secret' };
 const gymA = uuidv7(), gymB = uuidv7();
 beforeAll(async () => {
-  await factory('gyms', gymA, { smtpConfig: encryptSmtpConfig(key, own) });
+  await factory('gyms', gymA, { smtpConfig: encryptSmtpConfig(key, gymA, own) });
   await factory('gyms', gymB);
 });
 
@@ -46,6 +46,6 @@ describe('per-gym SMTP with an install-wide fallback', () => {
     expect(smtpFromEnvironment({ SMTP_HOST: 'mailpit', SMTP_PORT: '1025', SMTP_FROM: 'a@b.test', SMTP_SECURITY: 'plain' }))
       .toEqual({ host: 'mailpit', port: 1025, from: 'a@b.test', security: 'plain' });
     expect(() => smtpFromEnvironment({ SMTP_HOST: 'x', SMTP_SECURITY: 'ssl' })).toThrow('Invalid SMTP_SECURITY');
-    expect(() => encryptSmtpConfig(key, { ...own, from: 'not-an-email' })).toThrow();
+    expect(() => encryptSmtpConfig(key, gymA, { ...own, from: 'not-an-email' })).toThrow();
   });
 });

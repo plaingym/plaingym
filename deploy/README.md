@@ -213,12 +213,15 @@ does not establish correct role initialization.
 ### Which process holds the maintenance role
 
 The app connects as `app`, which row-level security confines to one gym at a
-time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups and restore.
+time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups, restore and
+key rotation.
 
 * **Single-gym installs** (`TENANCY=single`, this directory's `compose.yaml`):
   the app container holds `MAINTENANCE_PASSWORD` and `MAINTENANCE_DATABASE_URL`.
   Its entrypoint checks the roles, resumes an interrupted restore and migrates
-  before the server starts, and the server takes backups in-process.
+  before the server starts, and the server takes backups in-process. After the
+  migrations, the same step rewrites any stored secret still in a `v1` envelope
+  as `v2` with `APP_ENCRYPTION_KEY` (`docs/security-model.md`).
 * **Multi-gym installs** (`TENANCY=multi`, such as the [demo](demo/README.md)):
   the app container never holds the role, so a compromised app process can't
   reach every gym. A one-shot `migrate` service from the same image runs
@@ -230,6 +233,8 @@ time. The `maintenance` role (`BYPASSRLS`) runs migrations, backups and restore.
   `BACKUP_STAGING_DIR` (the Compose files leave it unset), so the setup
   wizard's restore answers that it isn't configured and no restore gate
   pauses requests, and the daily upload sweep runs without the backup lock.
+  The `migrate` service doesn't hold `APP_ENCRYPTION_KEY` either, so it skips
+  the `v1` rewrite: `v1` values stay readable until a save rewrites them.
 
 ## Logs
 
@@ -338,6 +343,50 @@ rollback that fails keeps the marker too, so each hourly run tries to start the
 pinned image again until it runs. Its log is in the journal:
 `journalctl -u plaingym-update`.
 
+### Rotating the encryption key
+
+`rotate-key.sh` replaces `APP_ENCRYPTION_KEY` and re-encrypts every stored
+secret with the new key ([docs/self-hosting.md](../docs/self-hosting.md#rotating-the-encryption-key)
+says when):
+
+```sh
+cd /opt/plaingym
+sudo ./rotate-key.sh
+```
+
+It takes the updater's lock, so it never runs beside `update.sh`; a new rotation
+requires the app to be running. It then:
+
+1. generates a new key and writes the current and new keys to
+   `.rotate-key.inflight` (mode 0600), before anything is encrypted with the new
+   one;
+2. stops the app and runs `node /app/maintenance.mjs rotate-key` in a one-off
+   app container, with the current key from `.env` and the new one in the
+   container's environment (`NEW_APP_ENCRYPTION_KEY`, never on a command line).
+   As the `maintenance` role and under the backup lock, the command refuses while
+   a restore is unfinished or any `app` role session is still connected, checks
+   that every value in the encrypted-field registry opens with one of the two
+   keys (if one doesn't, it lists where, by secret class and gym or sign-in
+   account ID, and changes nothing), then re-encrypts them as `v2` envelopes, a
+   page of sign-in accounts and then one gym per short transaction;
+3. writes the new key into `.env`, recreates the app from it, runs the health
+   check, and removes `.rotate-key.inflight`.
+
+A failure in step 2 leaves `.env` as it was and restarts the app with the current
+key; a run stopped by a signal, or one that can't write `.env` after step 2
+succeeded, leaves the app stopped, since the stored secrets may already open only
+with the new key. Either way
+`.rotate-key.inflight` stays, and running `rotate-key.sh` again finishes the same
+rotation: values that already open with the new key are done. Keep the file
+until a run finishes, because it holds the only copy of the new key until then.
+If the app doesn't start after step 3, `.env` already holds the new key; the
+next run only starts the app.
+
+The app also derives the signatures of local download links and the cookies of
+a join or Checkout return in progress from `APP_ENCRYPTION_KEY`, so those stop
+working when it restarts with the new key; starting them again works. Signed
+links (`/l/*`), sessions, PINs and check-in codes don't depend on it.
+
 ### Tests
 
 The host updater test drives `update.sh` with a Docker command fixture and
@@ -348,12 +397,18 @@ and real Ed25519 signatures: patch selection, a changed manifest, another key's
 signature, a wrong digest or version label, a patch that changes migrations, the
 switch off, no backups, a failed snapshot, rollback after a failed start, health
 check or second check, a failed rollback, the nightly window, results kept until
-the app can record them, and an interrupted run. The separate image smoke test
-uses actual PostgreSQL, app, and Caddy containers:
+the app can record them, and an interrupted run. The key rotation test drives
+`rotate-key.sh` with the same kind of fixture: the order (stop, rotate, `.env`,
+start, health check), `.env` changing only after the rotation, a restart with the
+current key after a failure, staying stopped when `.env` can't be written after
+the rotation, finishing with the same new key on the next run,
+the refusals, and that no key reaches a command line or the output. The separate
+image smoke test uses actual PostgreSQL, app, and Caddy containers:
 
 ```sh
 sudo sh deploy/test/update.sh
 sudo sh deploy/test/patch.sh
+sudo sh deploy/test/rotate-key.sh
 node deploy/test/smoke.mjs IMAGE
 ```
 

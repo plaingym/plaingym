@@ -24,7 +24,7 @@ const gymA = uuidv7(), gymB = uuidv7();
 let userId: string;
 beforeAll(async () => {
   const key = parseEncryptionKey('aa'.repeat(32));
-  await factory('gyms', gymA, { name: 'Gym A', stripeConfig: encryptSecret(key, 'stripe_config', 'rk_test_private'),
+  await factory('gyms', gymA, { name: 'Gym A', stripeConfig: encryptSecret(key, { secretClass: 'stripe_config', owner: gymA }, 'rk_test_private'),
     backupPublicKey: 'age1publickey', backupDestination: { endpoint: 'https://s3.example.test', region: 'auto', bucket: 'backups' },
     settings: { setup: { completedSteps: [0, 1, 2, 3, 4, 5, 6, 7, 8], completed: true }, privateConfig: 'secret' } });
   await factory('gyms', gymB, { name: 'Gym B', settings: { setup: { completedSteps: [0, 1], completed: false } } });

@@ -96,7 +96,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
   function gymSmtp(gym: Gym) {
     if (!gym.smtpConfig) return null;
-    try { return storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, 'smtp_config', gym.smtpConfig))); }
+    try { return storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gym.id }, gym.smtpConfig))); }
     catch (error) { logError('settings.smtp_config_unreadable', { gymId: gym.id }, error); return null; }
   }
   /** The email settings an audit records: never the username or password. */
@@ -425,7 +425,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     async saveGoogle(context: MutationContext, input: SaveGoogleLoginRequest): Promise<GoogleLogin> {
       assertGoogle();
       const userId = userOf(context);
-      const value = encryptGoogleConfig(options.key, { clientId: input.clientId, clientSecret: input.clientSecret });
+      const value = encryptGoogleConfig(options.key, context.gymId, { clientId: input.clientId, clientSecret: input.clientSecret });
       const after = await save(context, input.revision, async (gym) => ({ set: { googleConfig: value },
         action: 'integrations.google_saved', before: googleAudit(gym), after: googleAudit }));
       return googleLogin(after, userId);
@@ -458,7 +458,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       const stored = storedSmtpFromRequest(input);
       if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest))
         return { test: 'failed', integrations: await present(context.gymId, userId) };
-      await save(context, input.revision, async (gym) => ({ set: { smtpConfig: encryptSmtpConfig(options.key, stored) },
+      await save(context, input.revision, async (gym) => ({ set: { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) },
         action: 'integrations.email_saved', before: emailAudit(gym), after: emailAudit }));
       return { test: 'sent', integrations: await present(context.gymId, userId) };
     },
@@ -522,7 +522,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
           throw new AppError('conflict', 'Stripe customers were recorded while the key was checked; try again');
         if (switching) retire = await clearTestData(tx, gymId, userId);
         const was = readStripeConfig(options.key, before.stripeConfig, gymId);
-        return { set: { stripeConfig: encryptSecret(options.key, 'stripe_config', JSON.stringify(config)) }, action: 'integrations.stripe_saved',
+        return { set: { stripeConfig: encryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)) }, action: 'integrations.stripe_saved',
           before: { mode: was?.mode ?? null, endpointId: was?.endpointId ?? null },
           after: () => ({ mode: config.mode, endpointId: config.endpointId, endpointReused: reused, testDataCleared: switching }) };
       });
@@ -546,7 +546,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         throw new AppError('invalid_request', 'The storage destination refused the request', { destination: ['unreachable'] });
       }
       const { privateKey, publicKey } = await backupKeyPair();
-      const { destination, s3Config } = backupColumns(options.key, input.destination);
+      const { destination, s3Config } = backupColumns(options.key, context.gymId, input.destination);
       await save(context, input.revision, async (gym) => {
         const settings = gym.settings as { integrations?: Record<string, unknown> };
         return { set: { settings: { ...settings, integrations: { ...settings.integrations, backup: { destination, publicKey, s3Config } satisfies PendingBackup } } },
@@ -565,15 +565,17 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         const pending = pendingBackup(gym);
         if (!pending) throw new AppError('conflict', 'Generate a new backup key first', { privateKey: ['no_pending_key'] });
         if (pending.publicKey !== publicKey) throw new AppError('invalid_request', 'Backup key does not match', { privateKey: ['mismatch'] });
-        // The pending credentials sit in opaque settings, which a restore to a new APP_ENCRYPTION_KEY does not re-encrypt:
-        // only credentials this install can read become active.
-        try { decryptSecret(options.key, 's3_config', pending.s3Config); }
+        // The pending credentials sit in opaque settings, which neither a restore to a new APP_ENCRYPTION_KEY nor a key
+        // rotation re-encrypts: only credentials this install can read become active, stored afresh in their column.
+        const s3 = { secretClass: 's3_config', owner: context.gymId } as const;
+        let s3Config: string;
+        try { s3Config = encryptSecret(options.key, s3, decryptSecret(options.key, s3, pending.s3Config)); }
         catch { throw new AppError('conflict', 'Generate a new backup key first', { privateKey: ['no_pending_key'] }); }
         const settings = gym.settings as { integrations?: Record<string, unknown> };
         const integrations = { ...settings.integrations };
         delete integrations.backup;
-        return { set: { backupDestination: pending.destination, s3Config: pending.s3Config,
-          backupPublicKey: publicKey, backupBlobKey: gym.backupBlobKey ?? newBlobKey(options.key),
+        return { set: { backupDestination: pending.destination, s3Config,
+          backupPublicKey: publicKey, backupBlobKey: gym.backupBlobKey ?? newBlobKey(options.key, context.gymId),
           backupRetentionBytes: gym.backupRetentionBytes ?? defaultRetentionBytes, settings: { ...settings, integrations } },
         action: 'integrations.backup_key_confirmed', before: { destination: backups(gym)?.destination ?? null, publicKey: gym.backupPublicKey },
         after: (after) => ({ destination: backups(after)?.destination ?? null, publicKey: after.backupPublicKey }) };

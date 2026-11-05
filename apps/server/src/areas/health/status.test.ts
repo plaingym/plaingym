@@ -27,7 +27,7 @@ const providers = () => createStatusProviders({ env, scope: database.forGym, job
 const service = () => createHealthService(providers());
 let userId: string;
 beforeAll(async () => {
-  await factory('gyms', gymA, { smtpConfig: encryptSmtpConfig(key, { host: 'private.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'private-user', password: 'private-password' }) });
+  await factory('gyms', gymA, { smtpConfig: encryptSmtpConfig(key, gymA, { host: 'private.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'private-user', password: 'private-password' }) });
   await factory('gyms', gymB);
   userId = (await factory('authUser', gymA)).id;
   await factory('jobs', gymB, { status: 'failed' });

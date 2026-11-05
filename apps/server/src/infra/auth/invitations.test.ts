@@ -94,7 +94,7 @@ it('sends through the gym SMTP and accepts email invitations without passwords i
   const capture = await captureSmtp({ user: 'gym-user', pass: 'gym-pass' });
   try {
     const gymId = uuidv7(), owner = await factory('staffRoles', gymA, { role: 'owner' });
-    await factory('gyms', gymId, { smtpConfig: encryptSmtpConfig(key, { host: '127.0.0.1', port: capture.port, security: 'plain', from: 'gym@example.test', username: 'gym-user', password: 'gym-pass' }) });
+    await factory('gyms', gymId, { smtpConfig: encryptSmtpConfig(key, gymId, { host: '127.0.0.1', port: capture.port, security: 'plain', from: 'gym@example.test', username: 'gym-user', password: 'gym-pass' }) });
     await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
     const multi = createStaffInvitationService({ config: { ...config, tenancy: 'multi', passwordEnabled: false, passwordMode: 'off' }, smtpConfigured: smtp.configured, mailer: smtpMailer(smtp), database: () => db.system.db });
     const result = await multi.inviteStaff({ gymId, actorUserId: owner.userId, clock }, { email: 'email-invite@example.test', role: 'coach', delivery: 'email' }, 'https://email-gym.example.test');

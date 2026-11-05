@@ -13,8 +13,8 @@ export const storedSmtpSchema = z.strictObject({
 });
 export type StoredSmtpConfig = z.infer<typeof storedSmtpSchema>;
 
-export function encryptSmtpConfig(key: Buffer, config: StoredSmtpConfig): string {
-  return encryptSecret(key, 'smtp_config', JSON.stringify(storedSmtpSchema.parse(config)));
+export function encryptSmtpConfig(key: Buffer, gymId: string, config: StoredSmtpConfig): string {
+  return encryptSecret(key, { secretClass: 'smtp_config', owner: gymId }, JSON.stringify(storedSmtpSchema.parse(config)));
 }
 function fromStored(config: StoredSmtpConfig): SmtpConfig {
   return { host: config.host, port: config.port, security: config.security, from: config.from,
@@ -58,7 +58,7 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
   async function config(gymId: string): Promise<SmtpConfig | null> {
     const stored = await storedConfig(gymId);
     if (!stored) return fallback;
-    return fromStored(storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, 'smtp_config', stored))));
+    return fromStored(storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored))));
   }
   return { config, async configured(gymId) { return (await config(gymId)) !== null; },
     async source(gymId) { return await storedConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };

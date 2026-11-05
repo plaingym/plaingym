@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { logError } from '../core/log.js';
 import { BackupsNotSetUpError } from './restore.js';
+import { KeyRotationRefusedError } from './restore.rotate-key.js';
 
 /**
  * A failed maintenance command: a plain line for the person at the terminal, and the cause through the
@@ -8,8 +9,9 @@ import { BackupsNotSetUpError } from './restore.js';
  * that looks like one is logged.
  */
 export function reportMaintenanceFailure(args: readonly string[], error: unknown, stderr: (line: string) => void = (line) => process.stderr.write(line + '\n')): void {
-  // Its message is fixed text that names what to do, never a value.
-  stderr(error instanceof BackupsNotSetUpError ? error.message : 'Maintenance command failed; check configuration and restore state');
+  // Their messages are fixed text that names what to do, never a value.
+  stderr(error instanceof BackupsNotSetUpError || error instanceof KeyRotationRefusedError ? error.message
+    : 'Maintenance command failed; check configuration and restore state');
   const command = args[0];
   logError('cli.maintenance_failed', { command: command !== undefined && /^[a-z][a-z-]{0,31}$/.test(command) ? command : null }, error);
 }

@@ -20,7 +20,7 @@ export function provisionerFor(factory: ((key: string) => StripeProvisioner) | u
 export function readStripeConfig(key: Buffer, encrypted: string | null, gymId: string): StripeConfig | null {
   if (!encrypted) return null;
   try {
-    const config = JSON.parse(decryptSecret(key, 'stripe_config', encrypted)) as StripeConfig;
+    const config = JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, encrypted)) as StripeConfig;
     if (!['test', 'live'].includes(config.mode) || typeof config.apiKey !== 'string' || typeof config.endpointId !== 'string' || typeof config.webhookSecret !== 'string') throw new Error('Invalid Stripe configuration');
     return config;
   } catch (error) { logError('payments.stored_config_unreadable', { gymId }, error); return null; }
@@ -104,7 +104,7 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
         const guard = revisionGuard(gyms.revision, input.revision);
         assertRevised(gym.revision === input.revision ? [gym] : []);
         const updated = assertRevised(await tx.update(gyms).set({
-          stripeConfig: config ? encryptSecret(options.key, 'stripe_config', JSON.stringify(config)) : null,
+          stripeConfig: config ? encryptSecret(options.key, { secretClass: 'stripe_config', owner: context.gymId }, JSON.stringify(config)) : null,
           settings: { ...gym.settings as object, setup: { ...state.setup,
             completedSteps: [...new Set([...(state.setup.completedSteps ?? []), 6])].sort((a, b) => a - b) } },
           revision: guard.next, updatedAt: clock.now(),
@@ -124,7 +124,7 @@ export function createPaymentsResolver(options: { key: Buffer; scope?: typeof fo
   return async (gymId: string) => {
     const encrypted = await scope(gymId, async (tx) => (await tx.select({ config: gyms.stripeConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.config);
     if (!encrypted) return null;
-    const config = JSON.parse(decryptSecret(options.key, 'stripe_config', encrypted)) as StripeConfig;
+    const config = JSON.parse(decryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, encrypted)) as StripeConfig;
     if (!['test', 'live'].includes(config.mode) || !new RegExp('^rk_' + config.mode + '_[A-Za-z0-9]+$').test(config.apiKey)) throw new Error('Invalid Stripe configuration');
     return new StripePayments(gymId, { transport: stripeTransport(config.apiKey), webhookSecret: config.webhookSecret, mode: config.mode,
       ...(options.clock ? { clock: options.clock } : {}) });

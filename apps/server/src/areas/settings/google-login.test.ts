@@ -93,7 +93,7 @@ describe('Settings → Google sign-in', () => {
     const saved = googleLoginResponseSchema.parse((await save(server(), before.revision, ' ' + clientId + ' ')).json).data;
     // No email anywhere and no password of the owner's own: Google is now their only way in.
     expect(saved).toEqual({ source: 'gym', editable: true, clientId, clientSecretSet: true, removeBlocked: true, revision: before.revision + 1 });
-    expect(JSON.parse(decryptSecret(key, 'google_config', (await row()).googleConfig!))).toEqual({ clientId, clientSecret });
+    expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymA }, (await row()).googleConfig!))).toEqual({ clientId, clientSecret });
     expect(await read()).toEqual(saved);
     const [audit] = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.google_saved')));
     expect(audit).toMatchObject({ actorUserId: owner, targetId: gymA, before: { source: 'none' }, after: { source: 'gym', revision: saved.revision } });
@@ -103,7 +103,7 @@ describe('Settings → Google sign-in', () => {
     expect((await save(server(), current.revision - 1, 'stale-client')).status).toBe(409);
     const replaced = googleLoginResponseSchema.parse((await save(server(), current.revision, 'second-client', 'second-secret-never-shown')).json).data;
     expect(replaced).toMatchObject({ clientId: 'second-client', clientSecretSet: true, revision: current.revision + 1 });
-    expect(JSON.parse(decryptSecret(key, 'google_config', (await row()).googleConfig!))).toEqual({ clientId: 'second-client', clientSecret: 'second-secret-never-shown' });
+    expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymA }, (await row()).googleConfig!))).toEqual({ clientId: 'second-client', clientSecret: 'second-secret-never-shown' });
   });
   it('refuses to remove the client while Google is the owner’s only way to sign in, then removes it', async () => {
     // No email anywhere and password login off: the owner signs in only with Google.
@@ -131,7 +131,7 @@ describe('Settings → Google sign-in', () => {
   it('offers no form when the install’s configuration sets Google, which wins over a stored client', async () => {
     const installEnv = { ...env, ...installGoogle };
     const app = server({ routesService: createIntegrationsService({ ...base, env: installEnv }) });
-    await setStored(gymA, encryptGoogleConfig(key, { clientId, clientSecret }));
+    await setStored(gymA, encryptGoogleConfig(key, gymA, { clientId, clientSecret }));
     const status = await read(app);
     expect(status).toMatchObject({ source: 'install', editable: false, clientId: null, clientSecretSet: false, removeBlocked: false });
     const refused = await save(app, status.revision);
@@ -145,7 +145,7 @@ describe('Settings → Google sign-in', () => {
   it('ignores the stored column in multi-gym mode and offers no form there', async () => {
     const multiEnv = { ...env, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' };
     const multi = createIntegrationsService({ ...base, env: multiEnv, config: authConfig(multiEnv, true) });
-    await setStored(gymB, encryptGoogleConfig(key, { clientId, clientSecret }));
+    await setStored(gymB, encryptGoogleConfig(key, gymB, { clientId, clientSecret }));
     const app = server({ gymId: gymB, routesService: multi });
     const status = await read(app);
     expect(status).toMatchObject({ source: 'none', editable: false, clientId: null, clientSecretSet: false });
@@ -161,7 +161,7 @@ describe('Settings → Google sign-in', () => {
   });
   it('has no stored client in demo mode or a sandbox', async () => {
     const demoEnv = { ...env, DEMO_MODE: 'true', ...installGoogle };
-    await setStored(gymB, encryptGoogleConfig(key, { clientId, clientSecret }));
+    await setStored(gymB, encryptGoogleConfig(key, gymB, { clientId, clientSecret }));
     expect(await createGoogleClientResolver({ key, env: demoEnv, tenancy: 'single', scope: database.forGym }).credentials(gymB)).toBeNull();
     const sandbox = server({ gymId: gymB, routesService: createIntegrationsService({ ...base, sandbox: true }) });
     const status = await read(sandbox);
@@ -170,7 +170,7 @@ describe('Settings → Google sign-in', () => {
     await setStored(gymB, null);
   });
   it('treats an unreadable stored client as no client, logging no value', async () => {
-    await setStored(gymB, encryptSecret(Buffer.alloc(32, 1), 'google_config', JSON.stringify({ clientId, clientSecret })));
+    await setStored(gymB, encryptSecret(Buffer.alloc(32, 1), { secretClass: 'google_config', owner: gymB }, JSON.stringify({ clientId, clientSecret })));
     expect(await createGoogleClientResolver({ key, env, tenancy: 'single', scope: database.forGym }).credentials(gymB)).toBeNull();
     expect(logs.some((line) => line.includes('settings.google_config_unreadable'))).toBe(true);
     await setStored(gymB, null);

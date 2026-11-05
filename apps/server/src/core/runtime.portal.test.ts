@@ -31,7 +31,7 @@ it('serves the portal check-in, progress, waiver and billing routes from the run
   const env = { DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ef'.repeat(32),
     AUTH_SECRET: 'runtime-portal-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on', TENANCY: 'single',
     PUBLIC_ORIGIN: 'https://gym.example.test', NODE_ENV: 'production', UPLOADS_DIR: join(directory, 'uploads') };
-  const gymId = uuidv7(), qrKey = encryptSecret(parseEncryptionKey(env.APP_ENCRYPTION_KEY), 'qr_key', randomBytes(32).toString('base64url'));
+  const gymId = uuidv7(), qrKey = encryptSecret(parseEncryptionKey(env.APP_ENCRYPTION_KEY), { secretClass: 'qr_key', owner: gymId }, randomBytes(32).toString('base64url'));
   await factory('gyms', gymId, { billingEnabled: true, qrKey });
   const fake = new FakePayments(gymId, clock, 'synthetic-runtime-secret');
   fake.seedCustomer({ id: 'cus_portal', email: 'payer@example.test' });

@@ -83,7 +83,7 @@ async function call(app: ReturnType<typeof server>, method: string, path: string
 }
 const read = async (app = server()) => integrationsResponseSchema.parse((await call(app, 'GET', '')).json).data;
 const row = async (gymId = gymA) => (await database.forGym(gymId, (tx) => tx.select().from(gyms)))[0]!;
-const stripeOf = async (gymId = gymA) => { const gym = await row(gymId); return gym.stripeConfig ? JSON.parse(decryptSecret(key, 'stripe_config', gym.stripeConfig)) as StripeConfig : null; };
+const stripeOf = async (gymId = gymA) => { const gym = await row(gymId); return gym.stripeConfig ? JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, gym.stripeConfig)) as StripeConfig : null; };
 const email = (revision: number, overrides: Record<string, unknown> = {}) => ({ revision, host: 'smtp.gym.invalid', port: 465, secure: true,
   username: 'gym-user', password: smtpPassword, from: 'desk@gym.invalid', testTo: 'owner@gym.invalid', ...overrides });
 const destination = (bucket: string) => ({ endpoint: 'https://s3.example.test', region: 'auto', bucket, accessKeyId: storageKeyId, secretAccessKey: storageSecret });
@@ -123,7 +123,7 @@ describe('Settings → Email', () => {
       expect.objectContaining({ to: 'owner@gym.invalid' }));
     expect(saved).toMatchObject({ test: 'sent', integrations: { revision: before.revision + 1, email: { source: 'gym', host: 'smtp.gym.invalid',
       port: 465, security: 'tls', from: 'desk@gym.invalid', signIn: { password: false, magicLink: true }, signInAfterRemove: { password: true, magicLink: false } } } });
-    expect(JSON.parse(decryptSecret(key, 'smtp_config', (await row()).smtpConfig!))).toMatchObject({ username: 'gym-user', password: smtpPassword });
+    expect(JSON.parse(decryptSecret(key, { secretClass: 'smtp_config', owner: gymA }, (await row()).smtpConfig!))).toMatchObject({ username: 'gym-user', password: smtpPassword });
     const [audit] = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_saved')));
     expect(audit).toMatchObject({ actorUserId: owner, before: { source: 'none' }, after: { source: 'gym', host: 'smtp.gym.invalid', revision: before.revision + 1 } });
   });
@@ -417,7 +417,7 @@ describe('Settings → Backups', () => {
     expect(confirmed.backups).toEqual({ configured: true, destination: { endpoint: 'https://s3.example.test', region: 'auto', bucket: 'first' },
       publicKey: second.publicKey, pending: null, retentionBudgetBytes: 8_000_000_000 });
     const gym = await row();
-    expect(JSON.parse(decryptSecret(key, 's3_config', gym.s3Config!))).toEqual({ accessKeyId: storageKeyId, secretAccessKey: storageSecret });
+    expect(JSON.parse(decryptSecret(key, { secretClass: 's3_config', owner: gymA }, gym.s3Config!))).toEqual({ accessKeyId: storageKeyId, secretAccessKey: storageSecret });
     expect(gym.backupBlobKey).not.toBeNull();
     const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, gymA)));
     expect(audits.filter((audit) => audit.action.startsWith('integrations.backup_')).map((audit) => audit.action).sort())

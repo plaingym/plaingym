@@ -205,7 +205,7 @@ export function createSetupService(options: {
       const stored = storedSmtpFromRequest(input);
       if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest))
         return { configured: false, test: 'failed' as const, revision: input.revision };
-      const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, stored) });
+      const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) });
       return { configured: true, test: 'sent' as const, revision: gym.revision };
     },
     /**
@@ -215,7 +215,7 @@ export function createSetupService(options: {
     async google(context: MutationContext, input: SetupGoogleRequest) {
       if ((env.TENANCY ?? 'single') !== 'single' || env.DEMO_MODE === 'true') throw missing();
       if (googleFromEnvironment(env)) throw new AppError('conflict', 'This install’s configuration sets Google sign-in', { google: ['install_configured'] });
-      const value = encryptGoogleConfig(options.key, { clientId: input.clientId, clientSecret: input.clientSecret });
+      const value = encryptGoogleConfig(options.key, context.gymId, { clientId: input.clientId, clientSecret: input.clientSecret });
       const gym = await scope(context.gymId, async (tx) => {
         const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!before) throw missing();
@@ -238,11 +238,11 @@ export function createSetupService(options: {
     async backups(context: MutationContext, input: SetupBackupRequest) {
       const { state } = await current(context, input.revision, 7);
       const { privateKey, publicKey } = await backupKeyPair();
-      const { destination, s3Config } = backupColumns(options.key, input.destination);
+      const { destination, s3Config } = backupColumns(options.key, context.gymId, input.destination);
       // Do not activate backups until the owner proves they saved the matching private key.
       const gym = await save(context, input.revision, 7, {
         backupDestination: destination, s3Config,
-        backupPublicKey: null, backupBlobKey: newBlobKey(options.key),
+        backupPublicKey: null, backupBlobKey: newBlobKey(options.key, context.gymId),
         backupRetentionBytes: 8_000_000_000n,
       }, { completedSteps: state.completedSteps.filter((step) => step !== 7), backupRecipient: publicKey });
       return { privateKey, publicKey, revision: gym.revision };

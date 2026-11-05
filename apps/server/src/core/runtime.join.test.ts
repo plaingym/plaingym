@@ -49,7 +49,7 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   const gymId = uuidv7();
   // With SMTP configured, logins are passwordless, so the join proves the address with a sign-in link.
   await factory('gyms', gymId, { currency: 'CAD', billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false,
-    smtpConfig: encryptSmtpConfig(parseEncryptionKey(key), { host: 'smtp.example.invalid', port: 587, security: 'starttls',
+    smtpConfig: encryptSmtpConfig(parseEncryptionKey(key), gymId, { host: 'smtp.example.invalid', port: 587, security: 'starttls',
       from: 'desk@example.invalid', username: 'gym', password: 'private-smtp-secret' }) });
   const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency: 'CAD', interval: 'monthly', signupFeeCents: 5000 });
   const template = await factory('waiverTemplates', gymId);

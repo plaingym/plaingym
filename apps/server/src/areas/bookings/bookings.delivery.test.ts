@@ -126,7 +126,7 @@ describe('promotion jobs and notices', () => {
   it('sends the notice through this gym\'s encrypted SMTP configuration instead of the install fallback', async () => {
     const f = await fixture(), capture = await captureSmtp({ user: 'gym', pass: 'fixture' }), key = Buffer.alloc(32, 1);
     try {
-      const smtpConfig = encryptSmtpConfig(key, { host: '127.0.0.1', port: capture.port, security: 'plain',
+      const smtpConfig = encryptSmtpConfig(key, f.gymId, { host: '127.0.0.1', port: capture.port, security: 'plain',
         from: 'gym@example.invalid', username: 'gym', password: 'fixture' });
       await db.forGym(f.gymId, tx => tx.update(gyms).set({ smtpConfig }).where(eq(gyms.id, f.gymId)));
       const mailer = createBookingMailer({ scope: db.forGym, key, env: { SMTP_HOST: 'invalid.local', SMTP_FROM: 'install@example.invalid' } });

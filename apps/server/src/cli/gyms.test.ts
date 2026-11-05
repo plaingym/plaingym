@@ -20,7 +20,7 @@ it('commits one audited gym and domain before owner provisioning, including conc
   expect(provisionOwner).toHaveBeenCalledWith({ gymId: result.gymId, email: 'owner@example.test', name: 'Test Gym', origin: 'https://test.example.test' });
   const [gym] = await database.forGym(result.gymId, (tx) => tx.select().from(gyms));
   expect(gym).toMatchObject({ currency: 'CAD', timezone: 'America/Vancouver', billingEnabled: false, memberEmailsEnabled: false });
-  expect(decryptSecret(key, 'qr_key', gym!.qrKey!)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(decryptSecret(key, { secretClass: 'qr_key', owner: result.gymId }, gym!.qrKey!)).toMatch(/^[A-Za-z0-9_-]{43}$/);
   const domains = await database.forGym(result.gymId, (tx) => tx.select().from(gymDomains));
   expect(domains).toMatchObject([{ hostname: 'test.example.test', kind: 'default' }]);
   const audits = await database.forGym(result.gymId, (tx) => tx.select().from(auditEvents));

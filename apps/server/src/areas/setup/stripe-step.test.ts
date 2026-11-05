@@ -41,7 +41,7 @@ async function newGym() {
 }
 const stored = async (id: string) => {
   const [gym] = await database.forGym(id, (tx) => tx.select().from(gyms));
-  return gym!.stripeConfig ? JSON.parse(decryptSecret(key, 'stripe_config', gym!.stripeConfig)) as StripeConfig : null;
+  return gym!.stripeConfig ? JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: id }, gym!.stripeConfig)) as StripeConfig : null;
 };
 const revisionOf = async (id: string) => (await database.forGym(id, (tx) => tx.select().from(gyms)))[0]!.revision;
 beforeAll(async () => {
@@ -79,7 +79,7 @@ it('validates outside transactions, encrypts both secrets, audits, and advances 
   expect(await response.json()).toMatchObject({ data: { configured: true, mode: 'test', webhookRegistered: true, revision: 2 } });
   const [gym] = await database.forGym(gymId, (tx) => tx.select().from(gyms));
   expect(gym!.stripeConfig).not.toContain('rk_test_');
-  expect(JSON.parse(decryptSecret(key, 'stripe_config', gym!.stripeConfig!))).toEqual({ apiKey: 'rk_test_SYNTHETIC', endpointId: 'we_1', webhookSecret: 'fixture-signing-secret', mode: 'test' });
+  expect(JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, gym!.stripeConfig!))).toEqual({ apiKey: 'rk_test_SYNTHETIC', endpointId: 'we_1', webhookSecret: 'fixture-signing-secret', mode: 'test' });
   expect(gym!.settings).toMatchObject({ setup: { completedSteps: [0, 1, 2, 3, 4, 5, 6] } });
   const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
   expect(audits).toHaveLength(1);

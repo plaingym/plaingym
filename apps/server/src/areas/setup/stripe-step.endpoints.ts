@@ -22,7 +22,7 @@ export function createStripeEndpointCheck(options: { key: Buffer; gyms: () => Pr
     next: { endpointId: string; webhookSecret: string }, action: 'replaced' | 'recreated'): Promise<void> {
     const saved = await scope(gymId, async (tx) => {
       const rows = await tx.update(gyms).set({
-        stripeConfig: encryptSecret(options.key, 'stripe_config', JSON.stringify({ ...config, ...next })), updatedAt: clock.now(),
+        stripeConfig: encryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify({ ...config, ...next })), updatedAt: clock.now(),
       }).where(and(eq(gyms.id, gymId), eq(gyms.stripeConfig, encrypted))).returning({ id: gyms.id });
       if (!rows.length) return false;
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'payments.webhook_endpoint_' + action, targetType: 'gym', targetId: gymId,

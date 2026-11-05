@@ -20,8 +20,8 @@ import { createDemoPayments } from './payments.js';
 import { renderDemoLogin } from '../emails/demo/demo.js';
 
 export async function verifyDemoStoredKeys(key: Buffer, system: typeof forSystem = forSystem): Promise<void> {
-  const rows = await system((tx) => tx.select({ stripe: gyms.stripeConfig }).from(gyms));
-  for (const row of rows) if (row.stripe && /(?:sk|rk|pk)_live_/i.test(decryptSecret(key, 'stripe_config', row.stripe)))
+  const rows = await system((tx) => tx.select({ id: gyms.id, stripe: gyms.stripeConfig }).from(gyms));
+  for (const row of rows) if (row.stripe && /(?:sk|rk|pk)_live_/i.test(decryptSecret(key, { secretClass: 'stripe_config', owner: row.id }, row.stripe)))
     throw new Error('Demo mode refuses stored live Stripe keys');
 }
 /** Integration entry point. Call demoBootCheck before ordinary auth/payment initialization.

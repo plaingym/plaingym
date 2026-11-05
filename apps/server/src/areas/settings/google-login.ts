@@ -10,13 +10,13 @@ import { googleFromEnvironment, type GoogleCredentials } from '../../infra/auth/
 /** The gym's own Google OAuth client, stored encrypted in `gyms.google_config_encrypted` (secret class `google_config`). */
 export const storedGoogleSchema = z.strictObject({ clientId: googleClientValueSchema, clientSecret: googleClientValueSchema });
 
-export function encryptGoogleConfig(key: Buffer, credentials: GoogleCredentials): string {
-  return encryptSecret(key, 'google_config', JSON.stringify(storedGoogleSchema.parse(credentials)));
+export function encryptGoogleConfig(key: Buffer, gymId: string, credentials: GoogleCredentials): string {
+  return encryptSecret(key, { secretClass: 'google_config', owner: gymId }, JSON.stringify(storedGoogleSchema.parse(credentials)));
 }
 /** The stored client, or null when there is none or it can't be read (logged as `logError` does: never the message). */
 export function readGoogleConfig(key: Buffer, value: string | null, gymId: string): GoogleCredentials | null {
   if (!value) return null;
-  try { return storedGoogleSchema.parse(JSON.parse(decryptSecret(key, 'google_config', value))); }
+  try { return storedGoogleSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, value))); }
   catch (error) { logError('settings.google_config_unreadable', { gymId }, error); return null; }
 }
 

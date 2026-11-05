@@ -25,7 +25,7 @@ async function gymWithEndpoint(transport: StripeFixtures, events: string[]) {
   const endpoint = await transport.request({ method: 'POST', path: '/v1/webhook_endpoints', params: { url: origin + '/webhooks/stripe',
     api_version: STRIPE_API_VERSION, enabled_events: events, metadata: { gym_id: gymId } } });
   const config = { apiKey, mode: 'test', endpointId: endpoint.id, webhookSecret: 'whsec_runtime' };
-  await factory('gyms', gymId, { stripeConfig: encryptSecret(parseEncryptionKey(env().APP_ENCRYPTION_KEY), 'stripe_config', JSON.stringify(config)) });
+  await factory('gyms', gymId, { stripeConfig: encryptSecret(parseEncryptionKey(env().APP_ENCRYPTION_KEY), { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)) });
   return { gymId, endpointId: endpoint.id as string };
 }
 async function until(done: () => boolean) {

@@ -37,8 +37,10 @@ retention, encryption) is in [self-hosting.md](self-hosting.md#backups).
 
 The restore verifies the snapshot, loads the database and the uploaded files, and
 re-encrypts the gym's stored secrets for the new install (Stripe key, email
-password, backup settings). The wizard is skipped, because the restored gym is
-already set up.
+password, backup settings), with the `APP_ENCRYPTION_KEY` the backup carries as
+the old key. A backup taken before a key rotation
+([self-hosting.md](self-hosting.md#rotating-the-encryption-key)) restores the
+same way. The wizard is skipped, because the restored gym is already set up.
 
 ## What to check afterwards
 

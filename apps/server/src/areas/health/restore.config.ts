@@ -24,11 +24,11 @@ export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupCon
   if (!gym.backupPublicKey || !gym.backupBlobKey || !gym.s3Config || !gym.backupDestination)
     throw new Error('Backup destination and public key are not configured');
   const credentials = z.object({ accessKeyId: z.string(), secretAccessKey: z.string() })
-    .parse(JSON.parse(decryptSecret(appKey, 's3_config', gym.s3Config)));
+    .parse(JSON.parse(decryptSecret(appKey, { secretClass: 's3_config', owner: gym.id }, gym.s3Config)));
   const destination = destinationSchema.parse({ ...gym.backupDestination as object, ...credentials });
   const budgetBytes = Number(gym.backupRetentionBytes ?? 8_000_000_000n);
   if (!Number.isSafeInteger(budgetBytes)) throw new Error('Invalid retention budget');
-  return { recipient: gym.backupPublicKey, blobKey: parseEncryptionKey(decryptSecret(appKey, 'backup_blob_key', gym.backupBlobKey)),
+  return { recipient: gym.backupPublicKey, blobKey: parseEncryptionKey(decryptSecret(appKey, { secretClass: 'backup_blob_key', owner: gym.id }, gym.backupBlobKey)),
     appEncryptionKey: appKey, budgetBytes, destination, gymId: gym.id };
 }
 const notConfigured = ['Backup destination and public key are not configured', 'Install snapshots require exactly one configured gym'];

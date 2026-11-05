@@ -239,8 +239,25 @@ Details: `apps/server/src/core/app.md`.
 * **Encrypted at rest.** Stripe keys, SMTP passwords, backup destination
   credentials, a gym's own Google OAuth client, OAuth tokens (Google sign-in stores none), the gym's QR key and the backup blob-naming key are
   encrypted in the database with AES-256-GCM under `APP_ENCRYPTION_KEY`
-  (`packages/db/src/encrypted-fields.ts`). Passwords, PINs, check-in codes and
-  link tokens are hashed, not encrypted.
+  (`packages/db/src/encrypted-fields.ts`, `apps/server/src/core/secrets.ts`).
+  Passwords, PINs, check-in codes and link tokens are hashed, not encrypted.
+* **Bound to their row.** Each value is a `v2` envelope whose authenticated data
+  is its secret class, its table and column, and the ID of the row holding it
+  (the gym for `gyms` columns, the account for sign-in tokens). Someone who can
+  write to the database but doesn't have the key can't move one gym's Stripe or
+  email settings into another gym's row, or a value into another column: it no
+  longer decrypts there. Values stored before `v2` (`v1`, bound only to their
+  class) still read. On a single-gym install, the step after migrations at each
+  start rewrites every one it can open as `v2`, bound to the row it is in then;
+  every save, restore and key rotation writes `v2`.
+* **Key rotation.** `deploy/rotate-key.sh` replaces `APP_ENCRYPTION_KEY` with the
+  app stopped: the `maintenance` role re-encrypts every registered value from the
+  old key to the new one, gym by gym in short transactions under the backup lock,
+  after checking that each value opens with one of the two keys. It refuses while
+  the app is connected or a restore is unfinished, and a run that stops partway
+  finishes on the next run (`deploy/README.md`, "Rotating the encryption key").
+  The new key protects what is stored from then on; credentials a copy of the old
+  database holds must be replaced at their provider.
 * **Cards.** Cards are entered only on Stripe-hosted pages. PlainGym stores
   Stripe's IDs (`cus_…`, `pm_…`) and the card's brand, last four digits and
   expiry, never a card number. Each gym uses its own Stripe account; the app

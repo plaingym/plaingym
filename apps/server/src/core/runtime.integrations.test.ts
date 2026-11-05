@@ -48,7 +48,7 @@ it('serves Settings → Email, Payments and Backups with the runtime’s key, au
   expect(login.status).toBe(200);
   const cookie = login.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
   // The gym's own SMTP turns password login off under `auto`, so it is saved after signing in.
-  await db.forGym(gymId, (tx) => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(key, { host: 'smtp.gym.example.test', port: 587,
+  await db.forGym(gymId, (tx) => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(key, gymId, { host: 'smtp.gym.example.test', port: 587,
     security: 'starttls', from: 'desk@gym.example.test', username: 'gym', password: 'runtime-smtp-secret' }) }).where(eq(gyms.id, gymId)));
 
   const read = await request('/api/settings/integrations', 'GET', undefined, cookie);

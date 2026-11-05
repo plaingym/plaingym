@@ -11,6 +11,7 @@ import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
 import { RestoreService } from '../areas/health/restore.js';
 import { RestoreGate } from '../areas/health/restore.gate.js';
+import { rotateKey, upgradeStoredSecrets } from './restore.rotate-key.js';
 import { z } from 'zod';
 
 function required(name: string): string {
@@ -32,7 +33,21 @@ function restoreOptions(environment: ReturnType<typeof maintenanceEnvironment>) 
   return { ...options, ...(uploads.restoreStore ? { uploadsStore: uploads.restoreStore } : {}) };
 }
 export async function maintenanceCommand(args: readonly string[]): Promise<void> {
-  if (args[0] === 'migrate') { await new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')).migrate(); return; }
+  if (args[0] === 'migrate') {
+    const database = new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL'));
+    await database.migrate();
+    // Then the one-time v1 to v2 rewrite, which needs the app key; a migrate step without one (multi-gym installs) skips it.
+    if (process.env.APP_ENCRYPTION_KEY) await upgradeStoredSecrets(database, parseEncryptionKey(process.env.APP_ENCRYPTION_KEY));
+    return;
+  }
+  if (args[0] === 'rotate-key') {
+    if (args.length !== 1) throw new Error('Usage: rotate-key');
+    const staging = process.env.BACKUP_STAGING_DIR;
+    await rotateKey({ database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')),
+      currentKey: process.env.APP_ENCRYPTION_KEY, newKey: process.env.NEW_APP_ENCRYPTION_KEY,
+      gate: staging ? new RestoreGate(dirname(staging)) : null });
+    return;
+  }
   const environment = maintenanceEnvironment();
   try { await maintenance(args, environment); } finally { environment.uploads.close(); }
 }

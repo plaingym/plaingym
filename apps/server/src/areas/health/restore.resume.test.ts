@@ -18,7 +18,7 @@ describe('install restore after an interruption', () => {
       expect(await f.gate().isClosed()).toBe(true);
       await f.restore().resume();
       const { gym } = await f.secretRows();
-      expect(decryptSecret(f.currentKey, 'qr_key', gym.qrKey!)).toBe('stable-qr-secret');
+      expect(decryptSecret(f.currentKey, f.context('qr_key'), gym.qrKey!)).toBe('stable-qr-secret');
       expect(gym.billingEnabled).toBe(false);
       await f.restore().resume(); // Complete journals are harmless on every subsequent boot.
       expect(await f.gate().isClosed()).toBe(false);

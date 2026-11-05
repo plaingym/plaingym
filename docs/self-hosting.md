@@ -343,11 +343,42 @@ primary color also brand `/join`, `/trial` and `/drop-in`. With the website off,
 | Automatic updates | On by default; owners switch them in **Settings → Updates**. The timer's log: `journalctl -u plaingym-update` |
 | Restart | `sudo docker compose up -d` in `/opt/plaingym` |
 | Replay a Stripe event | `sudo docker compose exec -T app gym-app replay --gym <gym-id> <event-id>` |
+| Replace the encryption key | `sudo ./rotate-key.sh` in `/opt/plaingym` (below) |
 
 Run `docker compose` commands from `/opt/plaingym`. Everything the gym needs lives
 in the Docker volumes and `.env`; keep a copy of `.env` somewhere safe, since it
 holds `APP_ENCRYPTION_KEY`. Backups also carry that key, encrypted to your backup
 key.
+
+### Rotating the encryption key
+
+`APP_ENCRYPTION_KEY` encrypts the secrets stored in the database: the Stripe key,
+the email password, the backup storage keys, a Google sign-in client and the
+gym's QR key. Replace it when a copy of it may have left your hands: a copy of
+`.env` or of the whole server (a disk image, a snapshot at your provider) went
+somewhere it shouldn't, or someone who had root on the server no longer should.
+Never edit it in `.env` by hand: the stored secrets would no longer open.
+
+```sh
+cd /opt/plaingym
+sudo ./rotate-key.sh
+```
+
+The app stops for a few seconds while every stored secret is re-encrypted with a
+new key, then starts again with it, and `.env` then holds the new key. Keep a copy
+of the new `.env` somewhere safe and delete old copies. Backups taken from now on
+carry the new key; older backups still restore, with the key they carry. A file
+download link or a join a visitor is in the middle of stops working; starting it
+again works.
+
+If it stops partway (a lost connection, a reboot), run it again: it finishes the
+same rotation. If it says a stored secret opens with neither key, nothing was
+changed; remove that setting in the admin and enter it again, then rerun.
+
+A new key protects what is stored from now on. If a copy of the database may have
+left together with the old key, also replace the credentials themselves: a new
+Stripe restricted key, a new email password, new backup storage keys and a new
+Google client secret.
 
 ## Running several gyms
 

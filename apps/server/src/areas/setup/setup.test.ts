@@ -156,7 +156,7 @@ describe('first-boot setup', () => {
     const googleSaved = await call('/api/setup/google', 'PUT', { ...google, revision }, cookie);
     expect(await googleSaved.json()).toEqual({ data: { configured: true, revision: revision + 1 } });
     const [withGoogle] = await database.forSystem((tx) => tx.select().from(gyms));
-    expect(JSON.parse(decryptSecret(key, 'google_config', withGoogle!.googleConfig!))).toEqual(google);
+    expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, withGoogle!.googleConfig!))).toEqual(google);
     // It changes no step: payments come next.
     expect(await service.status()).toMatchObject({ currentStep: 6, completedSteps: [0, 1, 2, 3, 4, 5] });
     revision = (await service.status()).revision;
@@ -164,7 +164,7 @@ describe('first-boot setup', () => {
     expect(await stripe.json()).toMatchObject({ data: { configured: true, mode: 'test', webhookRegistered: true } });
     expect(registered).toHaveBeenCalledWith(gymId, origin, revision, undefined);
     const [configured] = await database.forSystem((tx) => tx.select().from(gyms));
-    expect(JSON.parse(decryptSecret(key, 'stripe_config', configured!.stripeConfig!))).toEqual({ apiKey: 'rk_test_PrivateSetupKey',
+    expect(JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, configured!.stripeConfig!))).toEqual({ apiKey: 'rk_test_PrivateSetupKey',
       mode: 'test', endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' });
     revision = (await service.status()).revision;
     const destination = { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'gym-backups', accessKeyId: 'access-key', secretAccessKey: 'private-storage-key' };
@@ -180,7 +180,7 @@ describe('first-boot setup', () => {
     expect(saved.recipient).toBe(keys.publicKey); expect(saved.blobKey).toHaveLength(32); expect(saved.budgetBytes).toBe(8_000_000_000);
     expect(saved.destination).toEqual(destination);
     const [row] = await database.forSystem((tx) => tx.select().from(gyms));
-    expect(decryptSecret(key, 's3_config', row!.s3Config!)).toContain('private-storage-key');
+    expect(decryptSecret(key, { secretClass: 's3_config', owner: gymId }, row!.s3Config!)).toContain('private-storage-key');
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);
     expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password|PrivateSetupKey|whsec_|private-google-secret|setup-client/);

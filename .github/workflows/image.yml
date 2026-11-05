@@ -73,6 +73,8 @@ jobs:
         run: sudo sh deploy/test/update.sh
       - name: Test automatic patch updates
         run: sudo sh deploy/test/patch.sh
+      - name: Test key rotation orchestration
+        run: sudo sh deploy/test/rotate-key.sh
       - name: Test the release scripts
         if: matrix.arch == 'amd64'
         run: sh deploy/test/release.sh

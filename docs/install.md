@@ -91,10 +91,12 @@ Use this on a server you already manage (Docker and Compose installed, ports 80
 and 443 free). The installer's host changes (firewall, swap, OS updates and the
 nightly update timer) are then yours to make.
 
-1. Copy `compose.yaml`, `Caddyfile`, `postgres/01-roles.sh`, `update.sh` and `lib.sh`
-   from `deploy/` into `/opt/plaingym`, keeping the `postgres/` folder. The other
-   guides assume that directory, and `update.sh` (which needs `lib.sh` beside it) is
-   how you update ([updating.md](updating.md)).
+1. Copy `compose.yaml`, `Caddyfile`, `postgres/01-roles.sh`, `update.sh`,
+   `rotate-key.sh` and `lib.sh` from `deploy/` into `/opt/plaingym`, keeping the
+   `postgres/` folder. The other guides assume that directory: `update.sh` (which
+   needs `lib.sh` beside it) is how you update ([updating.md](updating.md)), and
+   `rotate-key.sh` (also with `lib.sh`) replaces the encryption key
+   ([self-hosting.md](self-hosting.md#rotating-the-encryption-key)).
 2. Copy `deploy/.env.example` to `.env` there, and replace every placeholder:
    * `APP_IMAGE`: the version tag or digest;
    * `GYM_HOSTNAME` and `ACME_EMAIL`;

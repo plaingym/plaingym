@@ -33,7 +33,7 @@ const qr = createQrCheckin({ scope: db.forGym, clock, codes });
 let userId: string, deviceId: string, token: string;
 const context = () => ({ gymId: gymA, actor: { kind: 'user' as const, userId } });
 beforeAll(async () => {
-  for (const gym of [gymA, gymB]) await factory('gyms', gym, { qrKey: encryptSecret(encryptionKey, 'qr_key', randomBytes(32).toString('base64url')) });
+  for (const gym of [gymA, gymB]) await factory('gyms', gym, { qrKey: encryptSecret(encryptionKey, { secretClass: 'qr_key', owner: gym }, randomBytes(32).toString('base64url')) });
   userId = (await factory('authUser', gymA)).id;
   const registered = await devices.register({ gymId: gymA, actor: { kind: 'system' } }, { name: 'QR tablet' });
   deviceId = registered.device.id; token = registered.token;

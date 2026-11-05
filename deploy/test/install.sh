@@ -75,6 +75,7 @@ grep -q 'Nothing was changed' "$temporary/output"
 : > "$CALLS"
 install_gym --hostname gym.localhost --email owner@example.org
 [ "$(stat -c %a "$root/.env")" = 600 ]
+[ "$(stat -c %a "$root/rotate-key.sh")" = 700 ]
 grep -qx GYM_HOSTNAME=gym.localhost "$root/.env"
 # Backups use the setup wizard's key pair; nothing reads a BACKUP_RECIPIENT line.
 if grep -q BACKUP_RECIPIENT "$root/.env"; then echo 'A fresh .env names BACKUP_RECIPIENT.' >&2; exit 1; fi
@@ -113,7 +114,7 @@ grep -q 'use update.sh' "$temporary/output"
 # The bootstrap verifies the bundle before extracting or installing anything.
 bundle="$temporary/bundle"
 mkdir -p "$bundle/deploy/postgres" "$bundle/deploy/images" "$bundle/deploy/systemd"
-for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
+for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh rotate-key.sh postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
 # A bundle carries the release signing key; the installer puts it beside update.sh.
 printf 'fixture public key\n' > "$bundle/deploy/release-signing.pem"
 : > "$bundle/deploy/images/app.tar"

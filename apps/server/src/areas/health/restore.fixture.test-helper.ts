@@ -10,7 +10,8 @@ import { authAccount, gyms, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { TestClock } from '../../core/clock.js';
-import { encryptSecret } from '../../core/secrets.js';
+import { encryptSecret, type SecretClass, type SecretContext } from '../../core/secrets.js';
+import { legacySecret } from '../../core/secrets.test-helper.js';
 import { generateIdentity, identityToRecipient } from '../../infra/age/index.js';
 import { createS3Client, LocalUploads, S3BackupObjectStore } from '../../infra/storage/index.js';
 import { s3Server } from '../../infra/storage/s3-server.test-helper.js';
@@ -48,7 +49,9 @@ export function useRestoreFixture(options: { shared?: boolean } = {}) {
   const make = createFactories(source);
   const clock = new TestClock('2026-10-22T12:00:00Z');
   const oldKey = randomBytes(32), currentKey = randomBytes(32), blobKey = randomBytes(32);
-  const gymId = uuidv7(), shared = options.shared === true;
+  const gymId = uuidv7(), accountId = uuidv7(), shared = options.shared === true;
+  /** Where a value of `secretClass` is stored: the gym's row, or for sign-in tokens the account's. */
+  const context = (secretClass: SecretClass): SecretContext => ({ secretClass, owner: secretClass.startsWith('oauth_') ? accountId : gymId });
   const state = {} as {
     identity: string; recipient: string; root: string; prepared: string | undefined;
     sourceMaintenance: PostgresMaintenance; targetMaintenance: PostgresMaintenance;
@@ -75,19 +78,21 @@ export function useRestoreFixture(options: { shared?: boolean } = {}) {
     state.identity = await generateIdentity(); state.recipient = await identityToRecipient(state.identity);
     state.sourceMaintenance = new PostgresMaintenance(source.maintenanceUrl, dockerTools);
     state.targetMaintenance = new PostgresMaintenance(target.maintenanceUrl, dockerTools);
+    // A mix of v2 values and v1 ones, as a snapshot taken before v2 holds.
     await make('gyms', gymId, {
-      stripeConfig: encryptSecret(oldKey, 'stripe_config', 'stripe-test'),
-      smtpConfig: encryptSecret(oldKey, 'smtp_config', 'smtp-test'),
-      s3Config: encryptSecret(oldKey, 's3_config', 's3-test'),
-      qrKey: encryptSecret(oldKey, 'qr_key', 'stable-qr-secret'),
-      backupBlobKey: encryptSecret(oldKey, 'backup_blob_key', blobKey.toString('hex')),
-      googleConfig: encryptSecret(oldKey, 'google_config', 'google-test'),
+      stripeConfig: encryptSecret(oldKey, context('stripe_config'), 'stripe-test'),
+      smtpConfig: legacySecret(oldKey, 'smtp_config', 'smtp-test'),
+      s3Config: encryptSecret(oldKey, context('s3_config'), 's3-test'),
+      qrKey: legacySecret(oldKey, 'qr_key', 'stable-qr-secret'),
+      backupBlobKey: encryptSecret(oldKey, context('backup_blob_key'), blobKey.toString('hex')),
+      googleConfig: legacySecret(oldKey, 'google_config', 'google-test'),
       billingEnabled: true,
     });
     await make('authAccount', gymId, {
-      accessToken: encryptSecret(oldKey, 'oauth_access_token', 'access-test'),
-      refreshToken: encryptSecret(oldKey, 'oauth_refresh_token', 'refresh-test'),
-      idToken: encryptSecret(oldKey, 'oauth_id_token', 'id-test'),
+      id: accountId,
+      accessToken: encryptSecret(oldKey, context('oauth_access_token'), 'access-test'),
+      refreshToken: legacySecret(oldKey, 'oauth_refresh_token', 'refresh-test'),
+      idToken: encryptSecret(oldKey, context('oauth_id_token'), 'id-test'),
     });
     if (!shared) return;
     await openBucket();
@@ -117,7 +122,7 @@ export function useRestoreFixture(options: { shared?: boolean } = {}) {
   });
   afterAll(async () => { await dropPrepared(); if (shared) await closeBucket(); });
   return {
-    source, target, make, clock, oldKey, currentKey, blobKey, gymId,
+    source, target, make, clock, oldKey, currentKey, blobKey, gymId, accountId, context,
     get identity() { return state.identity; }, get recipient() { return state.recipient; },
     get root() { return state.root; }, get server() { return state.server; }, get client() { return state.client; },
     get store() { return state.store; }, get uploads() { return state.uploads; },

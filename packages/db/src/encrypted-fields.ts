@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-/** Values are versioned encrypted envelopes. Hashes and public keys are excluded. */
+/**
+ * Values are versioned encrypted envelopes. Hashes and public keys are excluded. A `v2` envelope is bound to its
+ * class, this table and column, and the ID of the row holding it (for `gyms`, the gym), so it opens nowhere else.
+ * Restore's re-key and a key rotation re-encrypt every column listed here, so register each new one.
+ */
 export const encryptedFields = [
   { table: 'gyms', column: 'stripe_config_encrypted', secretClass: 'stripe_config' },
   { table: 'gyms', column: 'smtp_config_encrypted', secretClass: 'smtp_config' },

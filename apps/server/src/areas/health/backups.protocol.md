@@ -9,9 +9,16 @@ node maintenance.mjs snapshot
 node maintenance.mjs snapshot pre-upgrade
 node maintenance.mjs restore SNAPSHOT_UUID --config /private/restore.json
 node maintenance.mjs resume
+node maintenance.mjs rotate-key
 ```
 
-It reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`,
+`migrate` then rewrites stored secrets still in `v1` envelopes as `v2` when
+`APP_ENCRYPTION_KEY` is set. `rotate-key` re-encrypts every registered secret
+from `APP_ENCRYPTION_KEY` to `NEW_APP_ENCRYPTION_KEY` under the backup lock, with
+the app stopped (`deploy/rotate-key.sh` runs it; `deploy/README.md`, "Rotating
+the encryption key").
+
+The bundle reads `MAINTENANCE_DATABASE_URL`, `APP_ENCRYPTION_KEY`, `BACKUP_STAGING_DIR`,
 `UPLOADS_DIR`, and the `UPLOADS_S3_*` settings when uploads live in S3: snapshots
 read uploads through the same storage resolver as the app. Snapshot creation also reads `DATABASE_URL` and the single gym's
 stored backup settings. The encrypted S3 configuration holds `accessKeyId` and
@@ -79,8 +86,10 @@ lease: the setup coordinator calls the service outside the wrapped request.
 
 After activation, the restore resets the owned schemas, runs transactional
 pg_restore, migrates forward, and applies the same security/catalog check as boot.
-One short transaction re-encrypts every field in the encrypted-field registry,
-preserves QR key plaintext, pauses billing, and writes restore audit events.
+One short transaction re-encrypts every field in the encrypted-field registry
+from the key the snapshot carries to this install's, as `v2` envelopes bound to
+their rows (`v1` ones from older snapshots included), preserves QR key
+plaintext, pauses billing, and writes restore audit events.
 The external journal commits each uploads rename before reopening admission.
 With S3 uploads, the switch instead marks every stored file that the snapshot
 doesn't contain as deleted (so the next sweep removes it, as the directory restore

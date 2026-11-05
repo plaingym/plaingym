@@ -28,12 +28,12 @@ async function gymWith(endpoint: (gymId: string, apiKey: string) => Promise<stri
   const gymId = uuidv7(), apiKey = 'rk_test_CHECK' + ++counter;
   const endpointId = await endpoint(gymId, apiKey);
   const config: StripeConfig = { apiKey, mode: 'test', endpointId, webhookSecret: 'whsec_stored_' + counter };
-  await factory('gyms', gymId, { stripeConfig: encryptSecret(key, 'stripe_config', JSON.stringify(config)) });
+  await factory('gyms', gymId, { stripeConfig: encryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)) });
   return { gymId, apiKey, config };
 }
 const readConfig = async (gymId: string) => {
   const [gym] = await database.forGym(gymId, (tx) => tx.select().from(gyms));
-  return gym!.stripeConfig ? JSON.parse(decryptSecret(key, 'stripe_config', gym!.stripeConfig)) as StripeConfig : null;
+  return gym!.stripeConfig ? JSON.parse(decryptSecret(key, { secretClass: 'stripe_config', owner: gymId }, gym!.stripeConfig)) as StripeConfig : null;
 };
 const checkFor = (list: readonly string[], overrides: Partial<Parameters<typeof createStripeEndpointCheck>[0]> = {}) => createStripeEndpointCheck({
   key, clock, scope: database.forGym, gyms: async () => list.map((gymId) => ({ gymId })), origin: async () => origin,
@@ -129,7 +129,7 @@ it('creates at most one endpoint when the recreation runs twice at once', async 
 });
 it('deletes the recreated endpoint if the settings changed meanwhile, and keeps it if the concurrent save stored it', async () => {
   const lost = await gymWith((gymId, apiKey) => deleted(gymId, apiKey)());
-  const changed = encryptSecret(key, 'stripe_config', JSON.stringify({ ...lost.config, webhookSecret: 'whsec_saved_meanwhile' }));
+  const changed = encryptSecret(key, { secretClass: 'stripe_config', owner: lost.gymId }, JSON.stringify({ ...lost.config, webhookSecret: 'whsec_saved_meanwhile' }));
   const racing = (apiKey: string): StripeProvisioner => {
     const real = stripeProvisioner(account(apiKey));
     return { ...real, async check(...args) {
@@ -149,7 +149,7 @@ it('deletes the recreated endpoint if the settings changed meanwhile, and keeps 
     return { ...real, async check(...args) {
       const result = await real.check(...args);
       if (result.status !== 'recreated') throw new Error('Expected a recreated endpoint');
-      const stored = encryptSecret(key, 'stripe_config', JSON.stringify({ ...won.config, ...result.registration }));
+      const stored = encryptSecret(key, { secretClass: 'stripe_config', owner: won.gymId }, JSON.stringify({ ...won.config, ...result.registration }));
       await database.forGym(won.gymId, (tx) => tx.update(gyms).set({ stripeConfig: stored }).where(eq(gyms.id, won.gymId)));
       return result;
     } };
@@ -213,7 +213,7 @@ it('stops between gyms once the server is stopping', async () => {
 });
 it('deletes the replacement it just created if the settings changed meanwhile, unless that was the saved endpoint', async () => {
   const gym = await gymWith((gymId, apiKey) => add(apiKey, params(gymId, { api_version: '2025-01-01.old' })));
-  const changed = encryptSecret(key, 'stripe_config', JSON.stringify({ ...gym.config, webhookSecret: 'whsec_saved_meanwhile' }));
+  const changed = encryptSecret(key, { secretClass: 'stripe_config', owner: gym.gymId }, JSON.stringify({ ...gym.config, webhookSecret: 'whsec_saved_meanwhile' }));
   const racing = (apiKey: string): StripeProvisioner => {
     const real = stripeProvisioner(account(apiKey));
     return { ...real, async check(...args) {

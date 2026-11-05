@@ -38,7 +38,7 @@ async function submit(kind: 'trial' | 'drop-in') {
     signer: { kind: 'self', name: 'Private Applicant' }, consent: true })) });
 }
 async function smtp(configured: boolean) {
-  await db.forGym(gymId, tx => tx.update(gyms).set({ smtpConfig: configured ? encryptSmtpConfig(parseEncryptionKey(key), {
+  await db.forGym(gymId, tx => tx.update(gyms).set({ smtpConfig: configured ? encryptSmtpConfig(parseEncryptionKey(key), gymId, {
     host: 'smtp.example.invalid', port: 587, security: 'starttls', from: 'desk@example.invalid', username: 'gym', password: 'private-smtp-secret',
   }) : null }).where(eq(gyms.id, gymId)));
 }
