@@ -14,7 +14,7 @@ import { createMemberHouseholdContext } from '../members/household-users.context
 import { createMembersService } from '../members/members.js';
 import { createPortalHouseholdService } from './household.js';
 import { createPortalHouseholdProfileRoutes } from './household.routes.js';
-import { adultPrincipal, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send, type PortalFixture } from './household.fixture.js';
+import { adultPrincipal, answerFor, bothHouseholds, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send, type PortalFixture } from './household.fixture.js';
 import type { Principal } from '../../core/context.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-29T16:00:00Z');
@@ -130,5 +130,16 @@ describe('portal household routes', () => {
     const f = await portalFixture(factory), server = app(f, payerPrincipal(f), true);
     expect((await server.request('/api/portal/household')).status).toBe(200);
     expect((await send(server, 'PATCH', `/api/portal/members/${f.child.id}`, { lastName: 'Rivera-Lee', revision: f.child.revision })).status).toBe(200);
+  });
+  it('names the household the session has open on every answer, for a login with two households', async () => {
+    const f = await portalFixture(factory), { home, other } = await bothHouseholds(factory, f), server = app(f, home);
+    for (const [method, path, body] of [['GET', '/api/portal/household'], ['GET', '/api/portal/members'], ['GET', `/api/portal/members/${f.child.id}`],
+      ['GET', `/api/portal/members/${f.child.id}/memberships`], ['PATCH', `/api/portal/members/${f.child.id}`, { firstName: 'Kimberly', revision: f.child.revision }],
+      ['PATCH', '/api/portal/household', { phone: '555-0199', revision: f.household.revision }]] as const)
+      await answerFor(await send(server, method, path, body), f.household.id, `${method} ${path}`);
+    const elsewhere = app(f, other);
+    for (const path of ['/api/portal/household', '/api/portal/members', `/api/portal/members/${f.outsider.id}`])
+      await answerFor(await elsewhere.request(path), f.otherHousehold.id, path);
+    await answerFor(await send(elsewhere, 'PATCH', '/api/portal/household', { phone: '555-0198', revision: f.otherHousehold.revision }), f.otherHousehold.id);
   });
 });

@@ -16,6 +16,14 @@ import {
 import { memberBookingSchema } from './bookings.js';
 import { rankSchema } from './ranks.js';
 
+/**
+ * A logged-in portal answer: the payload, plus the household it was read for. No portal request names a household; the
+ * server answers for the one the session has open, and says which, so a page can tell an answer for a household it didn't
+ * ask about (the session moved on meanwhile) from one for its own.
+ */
+export function portalAnswerSchema<S extends z.core.$ZodLooseShape, C extends z.core.$ZodObjectConfig>(schema: z.ZodObject<S, C>) {
+  return schema.extend({ householdId: idSchema });
+}
 export const portalMemberParamsSchema = z.strictObject({ memberId: idSchema });
 export const portalInvoiceParamsSchema = z.strictObject({ invoiceId: idSchema });
 // Context is resolved from the authenticated user, never accepted as request input.
@@ -120,7 +128,7 @@ export const portalMemberProgressResponseSchema = z.strictObject({
   data: portalProgressResponseSchema.shape.data.extend({ programs: z.array(portalProgressProgramSchema), ranks: z.array(portalProgressRankSchema) }),
 });
 export const portalScheduleContracts = {
-  members: { method: 'get', path: '/api/portal/schedule/members', permission: { kind: 'member', capability: 'bookings.self' }, response: portalScheduleMembersResponseSchema },
+  members: { method: 'get', path: '/api/portal/schedule/members', permission: { kind: 'member', capability: 'bookings.self' }, response: portalAnswerSchema(portalScheduleMembersResponseSchema) },
 } as const satisfies Record<string, EndpointContract>;
 export type PortalScheduleSession = z.infer<typeof portalScheduleSessionSchema>;
 export type PortalScheduleMember = z.infer<typeof portalScheduleMemberSchema>;
@@ -176,37 +184,37 @@ export const portalSignedLinkResponseSchema = z.strictObject({ data: portalSigne
 // Selectors identify resources only. forHousehold resolves the grant on every
 // operation; self waiver endpoints restrict to the linked member, while
 // household endpoints require the payer grant. An ID outside the grant returns not_found, including another household's ID.
-// Booking endpoints and projections are owned by bookings.ts.
+// Every answer names the household it was read for (portalAnswerSchema). Booking endpoints and projections are owned by bookings.ts.
 export const portalContracts = {
-  context: { method: 'get', path: '/api/portal/context', permission: { kind: 'member', capability: 'profile.read' }, response: portalContextResponseSchema },
-  profile: { method: 'get', path: '/api/portal/members/{memberId}', permission: { kind: 'member', capability: 'profile.read' }, params: portalMemberParamsSchema, response: portalMemberResponseSchema },
-  members: { method: 'get', path: '/api/portal/members', permission: { kind: 'member', capability: 'household.read' }, query: paginationSchema, response: portalMemberListResponseSchema },
-  updateMember: { method: 'patch', path: '/api/portal/members/{memberId}', permission: { kind: 'member', capability: 'household.manage' }, params: portalMemberParamsSchema, body: portalMemberUpdateRequestSchema, response: portalMemberResponseSchema },
-  household: { method: 'get', path: '/api/portal/household', permission: { kind: 'member', capability: 'household.read' }, response: portalHouseholdResponseSchema },
-  updateHousehold: { method: 'patch', path: '/api/portal/household', permission: { kind: 'member', capability: 'household.manage' }, body: portalHouseholdUpdateRequestSchema, response: portalHouseholdResponseSchema },
-  schedule: { method: 'get', path: '/api/portal/schedule', permission: { kind: 'member', capability: 'bookings.self' }, query: portalScheduleQuerySchema, response: portalScheduleSessionsResponseSchema },
-  memberships: { method: 'get', path: '/api/portal/members/{memberId}/memberships', permission: { kind: 'member', capability: 'profile.read' }, params: portalMemberParamsSchema, query: paginationSchema, response: portalMembershipListResponseSchema },
-  attendance: { method: 'get', path: '/api/portal/members/{memberId}/attendance', permission: { kind: 'member', capability: 'attendance.read' }, params: portalMemberParamsSchema, query: portalAttendanceQuerySchema, response: portalAttendanceResponseSchema },
-  progress: { method: 'get', path: '/api/portal/members/{memberId}/progress', permission: { kind: 'member', capability: 'progress.read' }, params: portalMemberParamsSchema, response: portalMemberProgressResponseSchema },
-  checkinCode: { method: 'get', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, response: portalCheckinCodeStateResponseSchema },
-  regenerateCheckin: { method: 'post', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, body: portalRegenerateCheckinRequestSchema, response: portalCheckinCodeResponseSchema },
-  invoices: { method: 'get', path: '/api/portal/invoices', permission: { kind: 'member', capability: 'billing.manage' }, query: portalInvoiceListQuerySchema, response: portalInvoiceListResponseSchema },
-  invoice: { method: 'get', path: '/api/portal/invoices/{invoiceId}', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalInvoiceResponseSchema },
-  receipt: { method: 'get', path: '/api/portal/invoices/{invoiceId}/receipt', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalReceiptResponseSchema },
-  payInvoice: { method: 'post', path: '/api/portal/invoices/{invoiceId}/checkout', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalCheckoutResponseSchema },
-  paymentMethods: { method: 'get', path: '/api/portal/payment-methods', permission: { kind: 'member', capability: 'billing.manage' }, response: portalPaymentMethodsResponseSchema },
-  updateCard: { method: 'post', path: '/api/portal/payment-methods/checkout', permission: { kind: 'member', capability: 'billing.manage' }, response: portalCheckoutResponseSchema },
-  pendingWaivers: { method: 'get', path: '/api/portal/waivers/pending', permission: { kind: 'member', capability: 'waivers.self' }, query: portalWaiverListQuerySchema, response: portalPendingWaiversResponseSchema },
-  signedWaivers: { method: 'get', path: '/api/portal/waivers', permission: { kind: 'member', capability: 'waivers.self' }, query: portalWaiverListQuerySchema, response: waiverSignatureListResponseSchema },
-  signWaiver: { method: 'post', path: '/api/portal/waivers', permission: { kind: 'member', capability: 'waivers.self' }, body: waiverSignRequestSchema, response: waiverSignatureResponseSchema },
-  pendingHouseholdWaivers: { method: 'get', path: '/api/portal/household/waivers/pending', permission: { kind: 'member', capability: 'waivers.household' }, query: portalWaiverListQuerySchema, response: portalPendingWaiversResponseSchema },
-  signedHouseholdWaivers: { method: 'get', path: '/api/portal/household/waivers', permission: { kind: 'member', capability: 'waivers.household' }, query: portalWaiverListQuerySchema, response: waiverSignatureListResponseSchema },
-  signHouseholdWaiver: { method: 'post', path: '/api/portal/household/waivers', permission: { kind: 'member', capability: 'waivers.household' }, body: waiverSignRequestSchema, response: waiverSignatureResponseSchema },
-  householdWaiverPdf: { method: 'get', path: '/api/portal/household/waivers/{signatureId}/pdf', permission: { kind: 'member', capability: 'waivers.household' }, params: waiverSignatureParamsSchema, response: waiverPdfResponseSchema },
-  waiverPdf: { method: 'get', path: '/api/portal/waivers/{signatureId}/pdf', permission: { kind: 'member', capability: 'waivers.self' }, params: waiverSignatureParamsSchema, response: waiverPdfResponseSchema },
+  context: { method: 'get', path: '/api/portal/context', permission: { kind: 'member', capability: 'profile.read' }, response: portalAnswerSchema(portalContextResponseSchema) },
+  profile: { method: 'get', path: '/api/portal/members/{memberId}', permission: { kind: 'member', capability: 'profile.read' }, params: portalMemberParamsSchema, response: portalAnswerSchema(portalMemberResponseSchema) },
+  members: { method: 'get', path: '/api/portal/members', permission: { kind: 'member', capability: 'household.read' }, query: paginationSchema, response: portalAnswerSchema(portalMemberListResponseSchema) },
+  updateMember: { method: 'patch', path: '/api/portal/members/{memberId}', permission: { kind: 'member', capability: 'household.manage' }, params: portalMemberParamsSchema, body: portalMemberUpdateRequestSchema, response: portalAnswerSchema(portalMemberResponseSchema) },
+  household: { method: 'get', path: '/api/portal/household', permission: { kind: 'member', capability: 'household.read' }, response: portalAnswerSchema(portalHouseholdResponseSchema) },
+  updateHousehold: { method: 'patch', path: '/api/portal/household', permission: { kind: 'member', capability: 'household.manage' }, body: portalHouseholdUpdateRequestSchema, response: portalAnswerSchema(portalHouseholdResponseSchema) },
+  schedule: { method: 'get', path: '/api/portal/schedule', permission: { kind: 'member', capability: 'bookings.self' }, query: portalScheduleQuerySchema, response: portalAnswerSchema(portalScheduleSessionsResponseSchema) },
+  memberships: { method: 'get', path: '/api/portal/members/{memberId}/memberships', permission: { kind: 'member', capability: 'profile.read' }, params: portalMemberParamsSchema, query: paginationSchema, response: portalAnswerSchema(portalMembershipListResponseSchema) },
+  attendance: { method: 'get', path: '/api/portal/members/{memberId}/attendance', permission: { kind: 'member', capability: 'attendance.read' }, params: portalMemberParamsSchema, query: portalAttendanceQuerySchema, response: portalAnswerSchema(portalAttendanceResponseSchema) },
+  progress: { method: 'get', path: '/api/portal/members/{memberId}/progress', permission: { kind: 'member', capability: 'progress.read' }, params: portalMemberParamsSchema, response: portalAnswerSchema(portalMemberProgressResponseSchema) },
+  checkinCode: { method: 'get', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, response: portalAnswerSchema(portalCheckinCodeStateResponseSchema) },
+  regenerateCheckin: { method: 'post', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, body: portalRegenerateCheckinRequestSchema, response: portalAnswerSchema(portalCheckinCodeResponseSchema) },
+  invoices: { method: 'get', path: '/api/portal/invoices', permission: { kind: 'member', capability: 'billing.manage' }, query: portalInvoiceListQuerySchema, response: portalAnswerSchema(portalInvoiceListResponseSchema) },
+  invoice: { method: 'get', path: '/api/portal/invoices/{invoiceId}', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalAnswerSchema(portalInvoiceResponseSchema) },
+  receipt: { method: 'get', path: '/api/portal/invoices/{invoiceId}/receipt', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalAnswerSchema(portalReceiptResponseSchema) },
+  payInvoice: { method: 'post', path: '/api/portal/invoices/{invoiceId}/checkout', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalAnswerSchema(portalCheckoutResponseSchema) },
+  paymentMethods: { method: 'get', path: '/api/portal/payment-methods', permission: { kind: 'member', capability: 'billing.manage' }, response: portalAnswerSchema(portalPaymentMethodsResponseSchema) },
+  updateCard: { method: 'post', path: '/api/portal/payment-methods/checkout', permission: { kind: 'member', capability: 'billing.manage' }, response: portalAnswerSchema(portalCheckoutResponseSchema) },
+  pendingWaivers: { method: 'get', path: '/api/portal/waivers/pending', permission: { kind: 'member', capability: 'waivers.self' }, query: portalWaiverListQuerySchema, response: portalAnswerSchema(portalPendingWaiversResponseSchema) },
+  signedWaivers: { method: 'get', path: '/api/portal/waivers', permission: { kind: 'member', capability: 'waivers.self' }, query: portalWaiverListQuerySchema, response: portalAnswerSchema(waiverSignatureListResponseSchema) },
+  signWaiver: { method: 'post', path: '/api/portal/waivers', permission: { kind: 'member', capability: 'waivers.self' }, body: waiverSignRequestSchema, response: portalAnswerSchema(waiverSignatureResponseSchema) },
+  pendingHouseholdWaivers: { method: 'get', path: '/api/portal/household/waivers/pending', permission: { kind: 'member', capability: 'waivers.household' }, query: portalWaiverListQuerySchema, response: portalAnswerSchema(portalPendingWaiversResponseSchema) },
+  signedHouseholdWaivers: { method: 'get', path: '/api/portal/household/waivers', permission: { kind: 'member', capability: 'waivers.household' }, query: portalWaiverListQuerySchema, response: portalAnswerSchema(waiverSignatureListResponseSchema) },
+  signHouseholdWaiver: { method: 'post', path: '/api/portal/household/waivers', permission: { kind: 'member', capability: 'waivers.household' }, body: waiverSignRequestSchema, response: portalAnswerSchema(waiverSignatureResponseSchema) },
+  householdWaiverPdf: { method: 'get', path: '/api/portal/household/waivers/{signatureId}/pdf', permission: { kind: 'member', capability: 'waivers.household' }, params: waiverSignatureParamsSchema, response: portalAnswerSchema(waiverPdfResponseSchema) },
+  waiverPdf: { method: 'get', path: '/api/portal/waivers/{signatureId}/pdf', permission: { kind: 'member', capability: 'waivers.self' }, params: waiverSignatureParamsSchema, response: portalAnswerSchema(waiverPdfResponseSchema) },
   // Signing needs an uploaded signature image first, as for staff; the member must be in the route's scope.
-  uploadSignature: { method: 'post', path: '/api/portal/waivers/signature-images', permission: { kind: 'member', capability: 'waivers.self' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
-  uploadHouseholdSignature: { method: 'post', path: '/api/portal/household/waivers/signature-images', permission: { kind: 'member', capability: 'waivers.household' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
+  uploadSignature: { method: 'post', path: '/api/portal/waivers/signature-images', permission: { kind: 'member', capability: 'waivers.self' }, body: waiverUploadRequestSchema, response: portalAnswerSchema(waiverUploadResponseSchema) },
+  uploadHouseholdSignature: { method: 'post', path: '/api/portal/household/waivers/signature-images', permission: { kind: 'member', capability: 'waivers.household' }, body: waiverUploadRequestSchema, response: portalAnswerSchema(waiverUploadResponseSchema) },
 } as const satisfies Record<string, EndpointContract>;
 
 // A verified link principal supplies linkId and the resource; no body may choose

@@ -42,6 +42,22 @@ export const otherPayerPrincipal = (f: PortalFixture): Principal => ({ kind: 'me
 export const outsidePrincipals = (f: PortalFixture): Principal[] => [{ kind: 'anonymous' },
   { kind: 'staff', gymId: f.gymId, userId: f.staffUser.id, roles: ['owner'] }, { kind: 'kiosk', gymId: f.gymId, deviceId: uuidv7() }];
 
+/**
+ * Links the payer's login to the second household as well, as its payer, and returns a principal for each: one login whose
+ * session can have either household open. A portal answer must name the one the session has open.
+ */
+export async function bothHouseholds(factory: Factory, f: PortalFixture) {
+  await factory('householdUsers', f.gymId, { householdId: f.otherHousehold.id, userId: f.payerUser.id, memberId: null, scope: 'payer' });
+  const other: Principal = { kind: 'member', userId: f.payerUser.id, scope: { gymId: f.gymId, householdId: f.otherHousehold.id, role: 'payer' } };
+  return { home: payerPrincipal(f), other };
+}
+/** Reads a 200 answer and checks it names the household the session had open. */
+export async function answerFor(response: Response, householdId: string, label = '') {
+  if (response.status !== 200) throw new Error(`${label}: expected 200, got ${response.status}`);
+  const body = await response.json() as { householdId?: unknown };
+  if (body.householdId !== householdId) throw new Error(`${label}: answered for ${String(body.householdId)}, not ${householdId}`);
+  return body;
+}
 /** Mounts routes the way the runtime does: the gym from the request, the principal from the session, portal authorization. */
 export function portalApp(db: Database, f: PortalFixture, principal: Principal, routes: readonly RouteRegistration[], clock: Clock) {
   return createApp({ clock, skipSetup: true, origin: 'http://localhost', contributions: { routes },

@@ -283,7 +283,7 @@ describe('portal invitations', () => {
     const post = (body: unknown, headers: Record<string, string> = { cookie }) => server.request(f.origin + '/api/portal/claims/complete', { method: 'POST', headers: { ...headers, origin: f.origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     expect((await post({ claim: callback.searchParams.get('claim') }, {})).status).toBe(401);
     expect((await post({ claim: callback.searchParams.get('claim') })).status).toBe(200);
-    expect(await (await server.request(f.origin + '/api/portal/context', { headers: { cookie } })).json()).toEqual({ data: { role: 'payer', householdId: f.home.id, memberId: null } });
+    expect(await (await server.request(f.origin + '/api/portal/context', { headers: { cookie } })).json()).toEqual({ data: { role: 'payer', householdId: f.home.id, memberId: null }, householdId: f.home.id });
     const [stored] = await db.system.db.select({ householdId: authSession.householdId }).from(authSession).where(and(eq(authSession.userId, existing.id), eq(authSession.gymId, f.gymId)));
     expect(stored?.householdId).toBe(f.home.id);
     await service.claimOnboarding(f.gymId, (await onboardingLink(f)).id, { email: existing.email }, clock);

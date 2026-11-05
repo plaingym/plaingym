@@ -9,9 +9,9 @@ import type { PortalContext } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
 import { PortalBillingPage } from '../billing/page.js';
-import { PortalWaiversPage } from '../waivers/page.js';
-import { PortalHouseholdPage } from './page.js';
-import { gymToday, knownMinor, needsGuardian } from './api.js';
+import { PortalWaivers } from '../waivers/page.js';
+import { PortalHousehold } from './page.js';
+import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalLoginKey } from './api.js';
 import { portalTestCache } from './test-cache.test-helper.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
@@ -23,18 +23,30 @@ const person = (memberId: string, firstName: string, dateOfBirth: string | null)
 const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim', '2016-06-01'), person(ids.adult, 'Alex', '1990-01-01'), person(id(12), 'Jordan', null)];
 const page = <T,>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
 type Handler = (path: string, init?: RequestInit) => unknown;
-function mount(element: ReactNode, handle: Handler) {
+/**
+ * Renders a page with the API answered by `handle`. Every portal answer names the household it was read for, `answeredFor`
+ * (the open household unless a test says otherwise); the household lists, which the pages read again after an answer for
+ * another household, keep naming the open one.
+ */
+function mount(element: ReactNode, handle: Handler, { context, answeredFor = ids.household }: { context?: PortalContext; answeredFor?: string } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const path = String(input), result = handle(path, init);
-    return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json(result);
+    const path = String(input);
+    if (path === '/api/portal/households') return Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Test household', role: 'payer' }] } });
+    // The role comes from the open household; the page's own reads are what a test may answer for another one.
+    if (path === '/api/portal/context' && context) return Response.json({ data: context, householdId: ids.household });
+    const result = handle(path, init);
+    return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json({ ...result as object, householdId: answeredFor });
   });
   vi.stubGlobal('fetch', fetcher);
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.gym, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
     session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
-  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={portalTestCache(ids.gym, ids.user, ids.household, { defaultOptions: { queries: { retry: false } } })}>{element}</QueryClientProvider></ShellServicesContext.Provider>);
+  const cache = portalTestCache(ids.gym, ids.user, ids.household, { defaultOptions: { queries: { retry: false } } });
+  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}>{element}</QueryClientProvider></ShellServicesContext.Provider>);
   const calls = (method: string, path: string) => fetcher.mock.calls.filter(([url, init]) => String(url).split('?')[0] === path && (init?.method ?? 'GET') === method);
-  return { fetcher, calls };
+  /** Nothing is cached under the open household's key: an answer for another household was never stored. */
+  const stored = () => cache.getQueryCache().findAll({ queryKey: portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household) }).filter(query => query.state.data !== undefined);
+  return { fetcher, calls, stored };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -71,6 +83,14 @@ describe('portal billing page', () => {
     expect((await screen.findByRole('alert')).textContent).toContain("Online payment isn't available");
     expect(navigate).not.toHaveBeenCalled();
   });
+  it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
+    const view = mount(<PortalBillingPage navigate={vi.fn()} />, handle, { answeredFor: id(99) });
+    await waitFor(() => expect(view.calls('GET', '/api/portal/households').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(2));
+    expect(screen.queryByText('Invoice #7')).toBeNull();
+    expect(screen.queryByText(/•••• 4242/)).toBeNull();
+    expect(view.stored()).toEqual([]);
+  });
 });
 
 describe('portal waivers page', () => {
@@ -83,14 +103,14 @@ describe('portal waivers page', () => {
   it('lets an adult member sign their own waiver through the self routes', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn() } as unknown as CanvasRenderingContext2D);
     vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,YQ==');
-    const view = mount(<PortalWaiversPage context={adult} />, (path, init) => {
+    const view = mount(<PortalWaivers />, (path, init) => {
       if (path === `/api/portal/members/${ids.adult}`) return { data: people[2] };
       if (path.startsWith('/api/portal/waivers/pending')) return page([{ memberId: ids.adult, template }]);
       if (path.startsWith('/api/portal/waivers?')) return page([]);
       if (path === '/api/portal/waivers/signature-images') return image;
       if (path === '/api/portal/waivers' && init?.method === 'POST') return { data: { ...signature, memberId: ids.adult } };
       return undefined;
-    }), user = userEvent.setup();
+    }, { context: adult }), user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Review and sign' }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).queryByLabelText('Relationship to the member')).toBeNull();
@@ -105,12 +125,12 @@ describe('portal waivers page', () => {
   });
   it('does not submit a blank canvas after switching away from a drawn signature', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn() } as unknown as CanvasRenderingContext2D);
-    const view = mount(<PortalWaiversPage context={adult} />, path => {
+    const view = mount(<PortalWaivers />, path => {
       if (path === `/api/portal/members/${ids.adult}`) return { data: people[2] };
       if (path.startsWith('/api/portal/waivers/pending')) return page([{ memberId: ids.adult, template }]);
       if (path.startsWith('/api/portal/waivers?')) return page([]);
       return undefined;
-    }), user = userEvent.setup();
+    }, { context: adult }), user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Review and sign' }));
     const dialog = screen.getByRole('dialog'), canvas = dialog.querySelector('canvas')!;
     await user.pointer([{ keys: '[MouseLeft>]', target: canvas, coords: { clientX: 5, clientY: 5 } }, { target: canvas, coords: { clientX: 20, clientY: 20 } }, { keys: '[/MouseLeft]' }]);
@@ -124,13 +144,13 @@ describe('portal waivers page', () => {
   });
   it('shows the payer every household member and asks for a guardian for children', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn() } as unknown as CanvasRenderingContext2D);
-    mount(<PortalWaiversPage context={payer} />, path => {
+    mount(<PortalWaivers />, path => {
       if (path.startsWith('/api/portal/members?')) return page(people);
       if (path.startsWith('/api/portal/household/waivers/pending')) return page([{ memberId: ids.child, template }, { memberId: ids.adult, template }, { memberId: id(12), template }]);
       if (path.startsWith('/api/portal/household/waivers?')) return page([signature]);
       if (path === `/api/portal/household/waivers/${ids.signature}/pdf`) return { data: { url: 'https://files.example.test/w.pdf', expiresAt: '2026-10-30T00:00:00.000Z' } };
       return undefined;
-    });
+    }, { context: payer });
     const user = userEvent.setup();
     expect(await screen.findByText(/Signed by Pat \(guardian\)/)).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Prepare PDF' }));
@@ -142,12 +162,26 @@ describe('portal waivers page', () => {
     expect(within(screen.getByRole('dialog')).getByText('For Kim Rivera')).toBeDefined();
     expect(within(screen.getByRole('dialog')).getByLabelText('Relationship to the member')).toBeDefined();
   });
+  it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
+    const view = mount(<PortalWaivers />, path => {
+      if (path.startsWith('/api/portal/members?')) return page(people);
+      if (path.startsWith('/api/portal/household/waivers/pending')) return page([{ memberId: ids.child, template }]);
+      if (path.startsWith('/api/portal/household/waivers?')) return page([signature]);
+      return undefined;
+    }, { context: payer, answeredFor: id(99) });
+    await waitFor(() => expect(view.calls('GET', '/api/portal/households').length).toBeGreaterThan(0));
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeDefined();
+    expect(screen.queryByText('Participation')).toBeNull();
+    expect(screen.queryByText(/Signed by Pat/)).toBeNull();
+    // Only the shared context, which the open household answered, is kept.
+    expect(view.stored().map(query => query.queryKey.slice(5))).toEqual([['context']]);
+  });
 });
 
 describe('portal household page', () => {
   const household = { id: ids.household, name: 'Rivera household', email: 'payer@example.test', phone: null, address: { line1: '1 Main St' }, billingDay: 1, revision: 3 };
   it('lets the payer edit household contacts and children, not other adults, and shows memberships read-only', async () => {
-    const view = mount(<PortalHouseholdPage context={payer} />, (path, init) => {
+    const view = mount(<PortalHousehold />, (path, init) => {
       if (path === '/api/portal/household' && init?.method === 'PATCH') return { data: { ...household, phone: '555-0199', revision: 4 } };
       if (path === '/api/portal/household') return { data: household };
       if (path.startsWith('/api/portal/members?')) return page(people);
@@ -155,7 +189,7 @@ describe('portal household page', () => {
       if (path.startsWith(`/api/portal/members/${ids.child}/memberships`)) return page([{ id: id(30), memberId: ids.child, planId: id(31), status: 'active',
         interval: 'monthly', startsOn: '2026-01-01', nextDueOn: '2026-11-01', trialEndsOn: null, commitmentEndsOn: null, revision: 1 }]);
       return undefined;
-    }), user = userEvent.setup();
+    }, { context: payer }), user = userEvent.setup();
     const phone = await screen.findByLabelText('Phone');
     await user.type(phone, '555-0199');
     await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -182,11 +216,23 @@ describe('portal household page', () => {
       emergencyContacts: [{ name: 'Grandparent', relationship: null, phone: '555-0100' }] });
   });
   it('shows an adult member only their own profile, read-only', async () => {
-    const view = mount(<PortalHouseholdPage context={adult} />, path => path === `/api/portal/members/${ids.adult}` ? { data: people[2] } : undefined);
+    const view = mount(<PortalHousehold />, path => path === `/api/portal/members/${ids.adult}` ? { data: people[2] } : undefined, { context: adult });
     expect(await screen.findByText(/^Alex Rivera/)).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull();
     expect(screen.queryByLabelText('Household name')).toBeNull();
-    expect(view.fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/portal/'))).toEqual([`/api/portal/members/${ids.adult}`]);
+    expect(view.fetcher.mock.calls.map(([path]) => String(path)).filter(path => path.startsWith('/api/portal/'))).toEqual(['/api/portal/context', `/api/portal/members/${ids.adult}`]);
+  });
+  it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
+    const view = mount(<PortalHousehold />, path => {
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page(people);
+      return undefined;
+    }, { context: payer, answeredFor: id(99) });
+    await waitFor(() => expect(view.calls('GET', '/api/portal/households').length).toBeGreaterThan(0));
+    expect((await screen.findAllByRole('button', { name: 'Try again' })).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Rivera household')).toBeNull();
+    expect(screen.queryByText(/^Kim Rivera/)).toBeNull();
+    expect(view.stored().map(query => query.queryKey.slice(5))).toEqual([['context']]);
   });
   it('asks for a guardian with no birthday but acts for children only with a recorded one', () => {
     expect(gymToday('UTC', new Date('2026-10-29T23:30:00Z'))).toBe('2026-10-29');

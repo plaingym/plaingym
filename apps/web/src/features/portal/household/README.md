@@ -13,7 +13,16 @@ as their parent or guardian; an adult member sees only their own documents.
 profile and children's profiles, and shows each member's memberships read-only.
 An adult member sees their own profile, read-only.
 
-Every query key is built by `usePortalKey`, which includes the open household, so one household's cached pages can't be reached from another's.
+Each page reads the open household once, with `usePortalScope` (or `usePortalMembers`,
+which also loads the members a login may act for), and builds every query key from its
+key, which includes the open household, so one household's cached pages can't be reached
+from another's. Pages that need the login's role share one context query
+(`usePortalContext`). Every portal answer names the household the server read it for;
+`PortalScope.own` passes on only an answer for the page's own household. An answer for
+another one (the session moved on, say because another tab switched) is never stored or
+shown: the read fails and the household lists are read again, after which every key is
+the other household's. `household/keys.test.ts` checks that every page key starts from
+the scope's key and stays out of the shell's reserved `shell` segment.
 The server is authoritative for every permission; the pages only hide actions a
 login cannot use.
 

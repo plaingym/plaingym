@@ -10,7 +10,7 @@ import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { money } from '../../billing/catalog/format.js';
-import { portalCall, portalReady, unavailable, usePortalKey } from '../household/api.js';
+import { portalCall, unavailable, usePortalScope, type PortalScope } from '../household/api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/billing:' + key, values);
 const payable = new Set(['open', 'past_due']), receipted = new Set(['paid', 'partially_refunded', 'refunded']);
@@ -22,16 +22,17 @@ const pageSize = 20;
 export function leave(url: string) { location.assign(url); }
 
 export function PortalBillingPage({ navigate = leave }: { navigate?: (url: string) => void }) {
-  const bootstrap = useBootstrap(), base = usePortalKey(), ready = portalReady(base), key = [...base, 'billing'], gym = bootstrap.data?.gym;
+  const bootstrap = useBootstrap(), scope = usePortalScope(), { ready, own } = scope, gym = bootstrap.data?.gym;
   const [offset, setOffset] = useState(0), [open, setOpen] = useState<string | null>(null), [receipt, setReceipt] = useState<string | null>(null);
-  const invoices = useQuery({ queryKey: [...key, 'invoices', offset], enabled: ready, queryFn: () => portalCall(contracts.invoices, undefined, {}, { limit: pageSize, offset }) });
-  const cards = useQuery({ queryKey: [...key, 'cards'], enabled: ready, queryFn: async () => (await portalCall(contracts.paymentMethods)).data });
+  const invoices = useQuery({ queryKey: [...scope.key, 'billing', 'invoices', offset], enabled: ready, queryFn: async () => own(await portalCall(contracts.invoices, undefined, {}, { limit: pageSize, offset })) });
+  const cards = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready, queryFn: async () => own(await portalCall(contracts.paymentMethods)).data });
   const checkout = useMutation({ mutationFn: async (invoiceId: string | null) => {
-    const started = invoiceId ? await portalCall(contracts.payInvoice, undefined, { invoiceId }) : await portalCall(contracts.updateCard);
+    // A Checkout started for another household than this page's is never followed.
+    const started = own(invoiceId ? await portalCall(contracts.payInvoice, undefined, { invoiceId }) : await portalCall(contracts.updateCard));
     navigate(started.data.url);
   } });
   const download = useMutation({ mutationFn: async (invoiceId: string) => {
-    setReceipt(null); setReceipt((await portalCall(contracts.receipt, undefined, { invoiceId })).data.url);
+    setReceipt(null); setReceipt(own(await portalCall(contracts.receipt, undefined, { invoiceId })).data.url);
   } });
   if (!gym) return null;
   const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
@@ -55,7 +56,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
           <div className="flex items-center gap-2"><Badge tone={tones[row.status]}>{text('status_' + row.status)}</Badge>
             <span className="font-semibold tabular-nums">{money(row.amountCents, row.currency)}</span></div>
         </div>
-        {open === row.id && <InvoiceLines invoiceId={row.id} queryKey={key} />}
+        {open === row.id && <InvoiceLines invoiceId={row.id} scope={scope} />}
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" aria-expanded={open === row.id} onClick={() => setOpen(open === row.id ? null : row.id)}>{text(open === row.id ? 'hideDetails' : 'details')}</Button>
           {payable.has(row.status) && <Button disabled={checkout.isPending} onClick={() => checkout.mutate(row.id)}>{text('pay')}</Button>}
@@ -82,8 +83,8 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
 }
 /** The routed page and portal registration. */
 export function PortalBilling() { return <PortalBillingPage />; }
-function InvoiceLines({ invoiceId, queryKey }: { invoiceId: string; queryKey: readonly unknown[] }) {
-  const detail = useQuery({ queryKey: [...queryKey, 'invoice', invoiceId], queryFn: async () => (await portalCall(contracts.invoice, undefined, { invoiceId })).data });
+function InvoiceLines({ invoiceId, scope }: { invoiceId: string; scope: PortalScope }) {
+  const detail = useQuery({ queryKey: [...scope.key, 'billing', 'invoice', invoiceId], queryFn: async () => scope.own(await portalCall(contracts.invoice, undefined, { invoiceId })).data });
   if (detail.isPending) return <LoadingState />;
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()} />;
   return <dl className="space-y-1 rounded-lg bg-muted/50 p-3 text-sm">

@@ -19,16 +19,16 @@ function CodeImage({ code, name }: { code: string; name: string }) {
   return <img src={url} width="288" height="288" alt={text('codeImage', { name })} className="mx-auto h-auto w-full max-w-72 rounded-lg bg-white p-2" />;
 }
 export function PortalCheckinPage({ client = portalClient }: { client?: PortalClient }) {
-  const cache = useQueryClient(), { key, members, memberId, member, choose } = usePortalMembers(client);
-  const codeKey = [...key, 'checkin-code', memberId];
-  const code = useQuery({ queryKey: codeKey, queryFn: () => client.checkinCode(memberId), enabled: !!memberId, staleTime: 0, gcTime: 0, retry: false });
+  const cache = useQueryClient(), { scope, members, memberId, member, choose } = usePortalMembers(client);
+  const code = useQuery({ queryKey: [...scope.key, 'checkin-code', memberId], queryFn: async () => scope.own(await client.checkinCode(memberId)).data, enabled: !!memberId, staleTime: 0, gcTime: 0, retry: false });
   const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const locked = useRef(false);
   async function regenerate() {
     if (!code.data || locked.current) return;
     locked.current = true; setBusy(true); setError('');
     try {
-      cache.setQueryData(codeKey, await client.regenerateCheckin(memberId, code.data.revision));
+      // A code regenerated in another household than this page's is never shown.
+      cache.setQueryData([...scope.key, 'checkin-code', memberId], scope.own(await client.regenerateCheckin(memberId, code.data.revision)).data);
       setConfirming(false);
     } catch (cause) {
       setError(cause instanceof ApiError && cause.status === 409 ? 'conflict' : 'error');

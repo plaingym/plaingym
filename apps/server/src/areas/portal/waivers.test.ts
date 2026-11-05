@@ -7,7 +7,7 @@ import { auditEvents, waiverSignatures } from '@plaingym/db';
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { portalContracts as contracts, waiverUploadResponseSchema } from '@plaingym/shared/contracts';
+import { portalContracts as contracts } from '@plaingym/shared/contracts';
 import { TestClock } from '../../core/clock.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import type { Principal } from '../../core/context.js';
@@ -17,7 +17,7 @@ import { createWaiversService } from '../waivers/waivers.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createPortalWaiverService } from './waivers.js';
 import { configurePortalWaivers, createPortalWaiverRoutes } from './waivers.routes.js';
-import { adultPrincipal, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send } from './household.fixture.js';
+import { adultPrincipal, answerFor, bothHouseholds, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send } from './household.fixture.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-10-29T16:00:00Z');
 const png = Buffer.from(demoSignaturePng()).toString('base64');
@@ -40,7 +40,7 @@ function app(f: Fixture, principal: Principal, production = false) {
 async function sign(server: ReturnType<typeof app>, base: string, memberId: string, templateId: string, signer: object = { kind: 'self', name: 'Alex Rivera' }) {
   const upload = await send(server, 'POST', `${base}/signature-images`, { memberId, pngBase64: png });
   expect(upload.status).toBe(200);
-  const image = waiverUploadResponseSchema.parse(await upload.json()).data;
+  const image = contracts.uploadSignature.response.parse(await upload.json()).data;
   return send(server, 'POST', base, { memberId, templateId, templateVersion: 1, signer, consent: true, ...image });
 }
 /** Every waiver route with a valid request for the member, so a denial is never a validation error. */
@@ -95,7 +95,7 @@ describe('portal waiver routes', () => {
   it('signs an agreement without letting the member set the commitment end date', async () => {
     const f = await fixture(), server = app(f, adultPrincipal(f));
     const upload = await send(server, 'POST', '/api/portal/waivers/signature-images', { memberId: f.adult.id, pngBase64: png });
-    const image = waiverUploadResponseSchema.parse(await upload.json()).data;
+    const image = contracts.uploadSignature.response.parse(await upload.json()).data;
     const body = { memberId: f.adult.id, templateId: f.agreement.id, templateVersion: 1, signer: { kind: 'self', name: 'Alex Rivera' }, consent: true, ...image };
     expect((await send(server, 'POST', '/api/portal/waivers', { ...body, commitmentEndsOn: '2026-10-30' })).status).toBe(400);
     expect(await db.forGym(f.gymId, tx => tx.select().from(waiverSignatures))).toEqual([]);
@@ -165,5 +165,16 @@ describe('portal waiver routes', () => {
   it('serves the production registrations with the configured waiver service', async () => {
     const f = await fixture(), server = app(f, adultPrincipal(f), true);
     expect((await sign(server, '/api/portal/waivers', f.adult.id, f.waiver.id)).status).toBe(200);
+  });
+  it('names the household the session has open on every answer, for a login with two households', async () => {
+    const f = await fixture(), { home, other } = await bothHouseholds(factory, f), payer = app(f, home), adult = app(f, adultPrincipal(f));
+    const guardian = { kind: 'guardian', name: 'Pat Rivera', relationship: 'Parent' };
+    for (const [server, base, memberId, signer] of [[payer, '/api/portal/household/waivers', f.child.id, guardian], [adult, '/api/portal/waivers', f.adult.id, undefined]] as const) {
+      await answerFor(await send(server, 'POST', `${base}/signature-images`, { memberId, pngBase64: png }), f.household.id, `${base}/signature-images`);
+      const signed = await answerFor(await sign(server, base, memberId, f.waiver.id, signer), f.household.id, base) as { data: { id: string } };
+      for (const path of [`${base}/pending`, base, `${base}/${signed.data.id}/pdf`]) await answerFor(await server.request(path), f.household.id, path);
+    }
+    const elsewhere = app(f, other);
+    for (const path of ['/api/portal/household/waivers/pending', '/api/portal/household/waivers']) await answerFor(await elsewhere.request(path), f.otherHousehold.id, path);
   });
 });

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { portalTestCache } from '../household/test-cache.test-helper.js';
+import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../household/test-cache.test-helper.js';
 import type { PortalClient } from '../schedule/client.js';
 import { PortalProgressPage } from './page.js';
 
@@ -21,13 +21,13 @@ const visit = (n: number) => ({ id: 'v' + n, memberId: child, sessionId: null, p
 const client = { context: vi.fn(), members: vi.fn(), progress: vi.fn(), attendance: vi.fn() };
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
-  client.context.mockResolvedValue({ role: 'payer', householdId: parent, memberId: parent });
-  client.members.mockResolvedValue([{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent' }]);
-  client.progress.mockImplementation(async (memberId: string) => memberId === child ? progress : { history: [], programs: [], ranks: [], criteria: [] });
-  client.attendance.mockImplementation(async (memberId: string, offset: number) => memberId !== child ? { data: [], pagination: { limit: 20, offset, total: 0 } }
-    : { data: [visit(offset + 1)], pagination: { limit: 1, offset, total: 2 } });
+  client.context.mockResolvedValue(answer({ role: 'payer', householdId: parent, memberId: parent }));
+  client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent' }]));
+  client.progress.mockImplementation(async (memberId: string) => answer(memberId === child ? progress : { history: [], programs: [], ranks: [], criteria: [] }));
+  client.attendance.mockImplementation(async (memberId: string, offset: number) => memberId !== child ? { data: [], pagination: { limit: 20, offset, total: 0 }, householdId: 'household' }
+    : { data: [visit(offset + 1)], pagination: { limit: 1, offset, total: 2 }, householdId: 'household' });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const page = () => render(<QueryClientProvider client={portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } })}>
   <PortalProgressPage client={client as unknown as PortalClient} /></QueryClientProvider>);
 
@@ -49,25 +49,35 @@ describe('portal progress', () => {
   });
   it('shows the current rank the server chose, even when a same-time promotion is listed first', async () => {
     const tied = { ...progress.history[0], id: 'h2', subRank: 0 };
-    client.progress.mockResolvedValue({ ...progress, history: [tied, ...progress.history] });
+    client.progress.mockResolvedValue(answer({ ...progress, history: [tied, ...progress.history] }));
     page();
     await screen.findByText('Current: First, One stripe');
     expect(screen.queryByText('Current: First')).toBeNull();
   });
   it('explains a program without a current rank', async () => {
-    client.progress.mockResolvedValue({ ...progress, programs: [{ ...progress.programs[0], current: null }] });
+    client.progress.mockResolvedValue(answer({ ...progress, programs: [{ ...progress.programs[0], current: null }] }));
     page();
     await screen.findByText('No rank yet in this program.');
     expect(screen.getByText('Next: Second')).toBeDefined();
   });
   it('marks the top rank', async () => {
-    client.progress.mockResolvedValue({ ...progress, programs: [{ ...progress.programs[0], next: null }], criteria: [] });
+    client.progress.mockResolvedValue(answer({ ...progress, programs: [{ ...progress.programs[0], next: null }], criteria: [] }));
     page();
     await screen.findByText('No further rank in this program.');
   });
   it('marks met requirements while the coach still decides', async () => {
-    client.progress.mockResolvedValue({ ...progress, criteria: [{ ...progress.criteria[0], current: 2, eligible: true }] });
+    client.progress.mockResolvedValue(answer({ ...progress, criteria: [{ ...progress.criteria[0], current: 2, eligible: true }] }));
     page();
     await screen.findByText('Requirements met');
+  });
+  it('never shows progress or visits answered for another household than the open one, and reads the household lists again', async () => {
+    const reads = stubHouseholdLists(), cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
+    client.progress.mockResolvedValue(answer(progress, 'other'));
+    client.attendance.mockResolvedValue({ data: [visit(1)], pagination: { limit: 1, offset: 0, total: 1 }, householdId: 'other' });
+    render(<QueryClientProvider client={cache}><PortalProgressPage client={client as unknown as PortalClient} /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getAllByText("We couldn't load progress. Please try again.")).toHaveLength(2));
+    await waitFor(() => expect(reads()).toBeGreaterThan(0));
+    expect(screen.queryByText('Grappling')).toBeNull();
+    expect(storedFor(cache, 'gym', 'user', 'household')).toEqual(['act-for', 'context']);
   });
 });

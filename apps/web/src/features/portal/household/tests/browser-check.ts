@@ -47,7 +47,9 @@ const api = (path: string): unknown => {
 const server = createServer(async (req, res) => {
   const path = new URL(req.url ?? '/', 'http://localhost').pathname;
   if (path.startsWith('/api/')) {
-    const body = api(path); res.setHeader('Content-Type', 'application/json');
+    // Every portal answer but the household lists names the household it was read for, as the server does.
+    const answer = api(path), body = answer !== undefined && path.startsWith('/api/portal/') && path !== '/api/portal/households' ? { ...answer as object, householdId: ids.household } : answer;
+    res.setHeader('Content-Type', 'application/json');
     if (body === undefined) res.statusCode = 404;
     res.end(JSON.stringify(body ?? { error: { code: 'not_found', message: 'Not found' } })); return;
   }

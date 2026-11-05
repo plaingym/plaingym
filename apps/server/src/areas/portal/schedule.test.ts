@@ -110,4 +110,25 @@ describe('portal schedule', () => {
     expect(page.pagination).toEqual({ limit: 1, offset: 1, total: 2 });
     expect(page.data.map(row => row.id)).toEqual([f.open.id]);
   });
+  it('names the household the session has open on every schedule, check-in and progress answer, for a login with two households', async () => {
+    const f = await portalFixture(factory);
+    // The payer's login is also the other household's payer; the session can have either open.
+    await factory('householdUsers', f.gymId, { householdId: f.other.householdId, userId: f.payer.id, memberId: null, scope: 'payer' });
+    const otherChild = await factory('members', f.gymId, { householdId: f.other.householdId, firstName: 'Robin', lastName: 'Other', status: 'active', dateOfBirth: '2017-02-01' });
+    const home = services.app(f.gymId, f.principal('payer'));
+    const other = services.app(f.gymId, { kind: 'member', userId: f.payer.id, scope: { gymId: f.gymId, householdId: f.other.householdId, role: 'payer' } });
+    const answer = async (response: Response, householdId: string, label: string) => {
+      expect(response.status, label).toBe(200);
+      expect((await response.json() as { householdId: unknown }).householdId, label).toBe(householdId);
+    };
+    const code = portalContracts.checkinCode.response.parse(await (await home.request(`/api/portal/members/${f.child.id}/checkin-code`)).json());
+    for (const [server, householdId, memberId] of [[home, f.householdId, f.child.id], [other, f.other.householdId, otherChild.id]] as const) {
+      for (const path of ['/api/portal/schedule' + range, '/api/portal/schedule/members', `/api/portal/members/${memberId}/checkin-code`,
+        `/api/portal/members/${memberId}/progress`, `/api/portal/members/${memberId}/attendance`])
+        await answer(await server.request(path), householdId, path);
+    }
+    await answer(await post(home, `/api/portal/members/${f.child.id}/checkin-code`, { revision: code.data.revision }), f.householdId, 'regenerate');
+    // Same ID shape, other household: the open household decides, so the home household's member is not found here.
+    expect((await other.request(`/api/portal/members/${f.child.id}/checkin-code`)).status).toBe(404);
+  });
 });

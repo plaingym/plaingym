@@ -15,7 +15,14 @@ linked to a household. Otherwise it chooses one household link in this gym:
   households gets the portal's household picker.
 
 No request body or parameter supplies the household scope, and the portal never
-shows several households at once.
+shows several households at once. Instead every logged-in portal answer
+(`portalContracts` and `portalScheduleContracts`) names the household it was
+read for: `{ data, householdId }` (plus `pagination` on lists), built with
+`portalAnswer` from the household this request resolved to. The household can
+change between two requests (another tab switches, or a revoked link falls back
+to another household), so the portal compares it with the household it asked
+under and never keeps an answer for another one. Signed-link answers name no
+household.
 
 ## Choosing a household
 

@@ -13,30 +13,31 @@ import { Card } from '../../../components/ui/card.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
-import { conflict, gymToday, knownMinor, portalCall, portalReady, usePortalContext, usePortalKey } from './api.js';
+import { conflict, gymToday, knownMinor, portalCall, usePortalContext, usePortalScope, type PortalScope } from './api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/household:' + key, values);
 const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
 
+/** Reads the open household once; everything below is keyed by it and checks each answer was for it. */
 export function PortalHousehold() {
-  const context = usePortalContext();
+  const scope = usePortalScope(), context = usePortalContext(scope);
   if (context.isPending) return <LoadingState />;
   if (context.isError) return <ErrorState onRetry={() => void context.refetch()} />;
-  return <PortalHouseholdPage context={context.data} />;
+  return <PortalHouseholdPage context={context.data} scope={scope} />;
 }
-export function PortalHouseholdPage({ context }: { context: PortalContext }) {
-  const bootstrap = useBootstrap(), base = usePortalKey(), ready = portalReady(base), key = [...base, 'household'], payer = context.role === 'payer';
+function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
+  const bootstrap = useBootstrap(), { ready, own } = scope, payer = context.role === 'payer';
   const [editing, setEditing] = useState<PortalMember | null>(null), [saved, setSaved] = useState(false);
-  const household = useQuery({ queryKey: [...key, 'details'], enabled: ready && payer, queryFn: async () => (await portalCall(contracts.household)).data });
-  const members = useQuery({ queryKey: [...key, 'members'], enabled: ready, queryFn: async () => payer
-    ? (await portalCall(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
-    : [(await portalCall(contracts.profile, undefined, { memberId: context.memberId! })).data] });
+  const household = useQuery({ queryKey: [...scope.key, 'household', 'details'], enabled: ready && payer, queryFn: async () => own(await portalCall(contracts.household)).data });
+  const members = useQuery({ queryKey: [...scope.key, 'household', 'members'], enabled: ready, queryFn: async () => payer
+    ? own(await portalCall(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
+    : [own(await portalCall(contracts.profile, undefined, { memberId: context.memberId! })).data] });
   const timezone = bootstrap.data?.gym.timezone ?? 'UTC', today = gymToday(timezone);
   const editable = (member: PortalMember) => payer && (member.id === context.memberId || knownMinor(member.dateOfBirth, today));
   return <Page className="max-w-3xl">
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {payer && (household.isPending ? <LoadingState /> : household.isError ? <ErrorState onRetry={() => void household.refetch()} />
-      : <HouseholdForm key={household.data.revision} household={household.data} queryKey={key} saved={saved} setSaved={setSaved} />)}
+      : <HouseholdForm key={household.data.revision} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />)}
     <PageSection title={text(payer ? 'members' : 'profile')}>
       {members.isPending && <LoadingState />}
       {members.isError && <ErrorState onRetry={() => void members.refetch()} />}
@@ -53,19 +54,19 @@ export function PortalHouseholdPage({ context }: { context: PortalContext }) {
         {member.emergencyContacts.length > 0 && <div className="text-sm"><p className="font-medium">{text('contacts')}</p>
           <ul className="space-y-1">{member.emergencyContacts.map((item, index) => <li key={index} className="break-words">{item.name}
             {item.relationship && <span className="text-muted-foreground"> · {item.relationship}</span>} · {item.phone}{item.email && ` · ${item.email}`}</li>)}</ul></div>}
-        <Memberships memberId={member.id} queryKey={key} />
+        <Memberships memberId={member.id} scope={scope} />
         {editable(member) && <div><Button variant="outline" onClick={() => setEditing(member)}>{text('edit')}</Button></div>}
       </StackedItem>)}</StackedList>}
       <p className="text-sm text-muted-foreground">{text(payer ? 'adultNote' : 'memberNote')}</p>
     </PageSection>
-    {editing && <EditMember key={editing.id} member={editing} queryKey={key} close={() => setEditing(null)} />}
+    {editing && <EditMember key={editing.id} member={editing} scope={scope} close={() => setEditing(null)} />}
   </Page>;
 }
 /** Memberships are shown for reference; the gym makes every membership change. */
-function Memberships({ memberId, queryKey }: { memberId: string; queryKey: readonly unknown[] }) {
+function Memberships({ memberId, scope }: { memberId: string; scope: PortalScope }) {
   const [open, setOpen] = useState(false);
-  const rows = useQuery({ queryKey: [...queryKey, 'memberships', memberId], enabled: open,
-    queryFn: async () => (await portalCall(contracts.memberships, undefined, { memberId }, { limit: 50, offset: 0 })).data });
+  const rows = useQuery({ queryKey: [...scope.key, 'household', 'memberships', memberId], enabled: open,
+    queryFn: async () => scope.own(await portalCall(contracts.memberships, undefined, { memberId }, { limit: 50, offset: 0 })).data });
   return <div className="space-y-2">
     <Button variant="ghost" className="px-0" aria-expanded={open} onClick={() => setOpen(!open)}>{text(open ? 'hideMemberships' : 'showMemberships')}</Button>
     {open && (rows.isPending ? <LoadingState /> : rows.isError ? <ErrorState onRetry={() => void rows.refetch()} />
@@ -79,13 +80,13 @@ function Memberships({ memberId, queryKey }: { memberId: string; queryKey: reado
 }
 const addressFields = ['line1', 'line2', 'city', 'region', 'postalCode', 'countryCode'] as const;
 /** Keyed by revision so a save shows the stored values; the confirmation lives in the parent and survives that remount. */
-function HouseholdForm({ household, queryKey, saved, setSaved }: { household: PortalHousehold; queryKey: readonly unknown[]; saved: boolean; setSaved(value: boolean): void }) {
+function HouseholdForm({ household, scope, saved, setSaved }: { household: PortalHousehold; scope: PortalScope; saved: boolean; setSaved(value: boolean): void }) {
   const cache = useQueryClient();
   const save = useMutation({ mutationFn: async (form: FormData) => {
     const value = (name: string) => String(form.get(name) ?? '').trim();
     const address = Object.fromEntries(addressFields.map(field => [field, field === 'countryCode' ? value(field).toUpperCase() : value(field)]).filter(([, entry]) => entry));
-    await portalCall(contracts.updateHousehold, { name: value('name'), email: value('email') || null, phone: value('phone') || null, address, revision: household.revision });
-  }, onSuccess: async () => { setSaved(true); await cache.invalidateQueries({ queryKey }); } });
+    scope.own(await portalCall(contracts.updateHousehold, { name: value('name'), email: value('email') || null, phone: value('phone') || null, address, revision: household.revision }));
+  }, onSuccess: async () => { setSaved(true); await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); } });
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setSaved(false); save.mutate(new FormData(event.currentTarget)); }
   return <Card className="p-4 sm:p-6"><form className="space-y-4" onSubmit={submit} aria-labelledby="household-contact">
     <h2 id="household-contact" className="text-lg font-semibold">{text('contactTitle')}</h2>
@@ -106,16 +107,16 @@ function Field({ name, label, value, prefix = 'household', ...props }: { name: s
   & Omit<ComponentProps<typeof Input>, 'name' | 'value' | 'defaultValue' | 'prefix'>) {
   return <div className="min-w-0"><Label htmlFor={`${prefix}-${name}`}>{label}</Label><Input id={`${prefix}-${name}`} name={name} defaultValue={value} {...props} /></div>;
 }
-function EditMember({ member, queryKey, close }: { member: PortalMember; queryKey: readonly unknown[]; close: () => void }) {
+function EditMember({ member, scope, close }: { member: PortalMember; scope: PortalScope; close: () => void }) {
   const cache = useQueryClient();
   const [contacts, setContacts] = useState<PortalEmergencyContact[]>(member.emergencyContacts), [changed, setChanged] = useState(false);
   const save = useMutation({ mutationFn: async (form: FormData) => {
     const value = (name: string) => String(form.get(name) ?? '').trim();
-    await portalCall(contracts.updateMember, { firstName: value('firstName'), lastName: value('lastName'), email: value('email') || null, phone: value('phone') || null,
+    scope.own(await portalCall(contracts.updateMember, { firstName: value('firstName'), lastName: value('lastName'), email: value('email') || null, phone: value('phone') || null,
       dateOfBirth: value('dateOfBirth') || null, revision: member.revision,
       emergencyContacts: contacts.map(item => ({ name: item.name.trim(), relationship: item.relationship?.trim() || null, phone: item.phone.trim(),
-        ...(item.email?.trim() ? { email: item.email.trim() } : {}) })) }, { memberId: member.id });
-  }, onSuccess: async () => { await cache.invalidateQueries({ queryKey }); close(); } });
+        ...(item.email?.trim() ? { email: item.email.trim() } : {}) })) }, { memberId: member.id }));
+  }, onSuccess: async () => { await cache.invalidateQueries({ queryKey: [...scope.key, 'household'] }); close(); } });
   const update = (index: number, field: keyof PortalEmergencyContact, value: string) => {
     setChanged(true); setContacts(contacts.map((item, position) => position === index ? { ...item, [field]: value } : item));
   };

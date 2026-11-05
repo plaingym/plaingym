@@ -25,7 +25,7 @@ it('loads member context, renders the portal, and clears access when signing out
   const userId = '00000000-0000-7000-8000-000000000001', householdId = '00000000-0000-7000-8000-000000000002';
   const fetcher = vi.fn(async (path: string) => Response.json(path === '/api/demo' ? { data: { mode: 'disabled' } }
     : path === '/api/portal/households' ? { data: { current: householdId, households: [{ householdId, name: 'Only household', role: 'payer' }] } }
-    : { data: { role: 'payer', householdId, memberId: null } }));
+    : { data: { role: 'payer', householdId, memberId: null }, householdId }));
   vi.stubGlobal('fetch', fetcher);
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: userId, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const router = createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] })); render(<App services={services} router={router} />);
@@ -75,13 +75,13 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
     }
     // A portal page: it answers for the household the server has open when the request arrives, numbered 11 or 22 by household.
     if (path.startsWith('/api/portal/invoices?')) {
-      const number = current === ids.first ? 11 : 22, answer = { data: [{ id: ids.invoice, number, kind: 'one_off', status: 'past_due', dueOn: '2026-10-20', amountCents: 2500, currency: 'USD', paidAt: null }], pagination: { limit: 20, offset: 0, total: 1 } };
+      const number = current === ids.first ? 11 : 22, answer = { data: [{ id: ids.invoice, number, kind: 'one_off', status: 'past_due', dueOn: '2026-10-20', amountCents: 2500, currency: 'USD', paidAt: null }], pagination: { limit: 20, offset: 0, total: 1 }, householdId: current };
       if (holdInvoices && !released) { const held = gate(); invoiceGates.push(held); await held.wait; }
       return Response.json(answer);
     }
-    if (path === '/api/portal/payment-methods') return Response.json({ data: [] });
-    if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', householdId: ids.first, memberId: null } })
-      : current === ids.second ? Response.json({ data: { role: 'member', householdId: ids.second, memberId: ids.member } }) : new Response(null, { status: 404 });
+    if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId: current });
+    if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', householdId: ids.first, memberId: null }, householdId: ids.first })
+      : current === ids.second ? Response.json({ data: { role: 'member', householdId: ids.second, memberId: ids.member }, householdId: ids.second }) : new Response(null, { status: 404 });
     return new Response(null, { status: 404 });
   });
   vi.stubGlobal('fetch', fetcher);
@@ -255,7 +255,7 @@ it('discards only the previous household\'s entries on a switch, and refetches n
   const discovery = f.cache.getQueryCache().findAll({ queryKey: ['demo', 'discovery'] })[0];
   expect(discovery?.state.status).toBe('success');
   const discoveryLoaded = discovery!.state.dataUpdatedAt, discoveryCalls = fetchCount(f, '/api/demo'), contextCalls = fetchCount(f, '/api/portal/context');
-  const oldContext = [...household(ids.first), 'context'];
+  const oldContext = [...household(ids.first), 'shell', 'context'];
   expect(f.cache.getQueryData(oldContext)).toBeDefined();
   await user.selectOptions(screen.getByRole('combobox'), ids.second);
   await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
@@ -264,7 +264,7 @@ it('discards only the previous household\'s entries on a switch, and refetches n
   expect(fetchCount(f, '/api/demo')).toBe(discoveryCalls);
   // Nothing is left under the previous household's prefix, and the only context asked for since is the new household's.
   expect(f.cache.getQueryCache().findAll({ queryKey: household(ids.first) })).toEqual([]);
-  expect(f.cache.getQueryData([...household(ids.second), 'context'])).toEqual({ role: 'member', householdId: ids.second, memberId: ids.member });
+  expect(f.cache.getQueryData([...household(ids.second), 'shell', 'context'])).toEqual({ role: 'member', householdId: ids.second, memberId: ids.member });
   expect(fetchCount(f, '/api/portal/context')).toBe(contextCalls + 1);
   // The household lists are not the previous household's: they stay, and now name the new one.
   expect(f.cache.getQueryData([...base, 'households'])).toMatchObject({ current: ids.second });
@@ -273,7 +273,7 @@ it('discards only the previous household\'s entries on a switch, and refetches n
 // H: the household lists answer, which is when the change is noticed. A: a page load that started for the previous household
 // answers. B: the bootstrap refetch answers. P: the page load for the new household answers. Only H comes first among H, B and P.
 it.each(['AHBP', 'AHPB', 'HABP', 'HAPB', 'HBAP', 'HBPA', 'HPAB', 'HPBA'])('shows nothing of the previous household once the server opened another on its own, whatever the answering order (%s)', async order => {
-  // The billing page is a real portal page: its key comes from `usePortalKey`, and it answers for the household open when asked.
+  // The billing page is a real portal page: its key comes from `usePortalScope`, and it answers for the household open when asked.
   const f = portal(ids.first, { path: '/portal/billing', hold: true, holdHouseholds: true, holdInvoices: true });
   await waitFor(() => expect(f.invoiceGates).toHaveLength(1)); f.invoiceGates[0]!.settle();
   await waitFor(() => expect(bodyText()).toContain('Invoice #11'));
@@ -348,7 +348,7 @@ it('never stores the new household\'s context under the old household\'s key whe
   const f = portal(ids.first, { hold: true, holdHouseholds: true });
   await screen.findByRole('combobox');
   await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
-  const contextCalls = fetchCount(f, '/api/portal/context'), oldContext = [...household(ids.first), 'context'];
+  const contextCalls = fetchCount(f, '/api/portal/context'), oldContext = [...household(ids.first), 'shell', 'context'];
   f.serverOpens(ids.second);
   act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
   // The context answers first, for the household the server has open now, and the lists have not said so yet.
@@ -368,7 +368,7 @@ it('shows a generic label, never an ID, for a session the server could not name'
   const householdId = ids.first;
   vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(path === '/api/demo' ? { data: { mode: 'disabled' } }
     : path === '/api/portal/households' ? { data: { current: householdId, households: [{ householdId, name: 'Only household', role: 'payer' }] } }
-    : { data: { role: 'payer', householdId, memberId: null } })));
+    : { data: { role: 'payer', householdId, memberId: null }, householdId })));
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.user, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: ids.user, displayName: null, roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(async () => undefined), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   render(<App services={services} router={createAppRouter(createMemoryHistory({ initialEntries: ['/portal'] }))} />);
   await waitFor(() => expect(screen.getByTestId('signed-in-identity').textContent).toBe('Signed in · Account holder'));

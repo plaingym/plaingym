@@ -62,11 +62,11 @@ describe('multiple households per login', () => {
     expect((await f.call(cookie, '/api/portal/households')).body).toEqual({ data: { current: null, households: [
       { householdId: f.first.id, name: 'Alder household', role: 'payer' }, { householdId: f.second.id, name: 'Birch household', role: 'member' }] } });
     expect((await f.call(cookie, '/api/portal/households/current', 'POST', select(f.second.id))).status).toBe(200);
-    expect((await f.call(cookie, '/api/portal/context')).body).toEqual({ data: { role: 'member', householdId: f.second.id, memberId: f.adult.id } });
+    expect((await f.call(cookie, '/api/portal/context')).body).toEqual({ data: { role: 'member', householdId: f.second.id, memberId: f.adult.id }, householdId: f.second.id });
     expect((await f.call(cookie, '/api/portal/households')).body?.data.current).toBe(f.second.id);
     // Switching replaces the scope; the request itself never names a household.
     expect((await f.call(cookie, '/api/portal/households/current', 'POST', select(f.first.id))).status).toBe(200);
-    expect((await f.call(cookie, '/api/portal/context')).body).toEqual({ data: { role: 'payer', householdId: f.first.id, memberId: null } });
+    expect((await f.call(cookie, '/api/portal/context')).body).toEqual({ data: { role: 'payer', householdId: f.first.id, memberId: null }, householdId: f.first.id });
     const [stored] = await db.system.db.select({ householdId: authSession.householdId }).from(authSession).where(and(eq(authSession.userId, f.user.id), eq(authSession.gymId, f.gymId)));
     expect(stored?.householdId).toBe(f.first.id);
     expect(await db.forGym(f.gymId, tx => tx.$count(auditEvents, eq(auditEvents.action, 'portal.household_selected')))).toBe(2);
@@ -75,8 +75,8 @@ describe('multiple households per login', () => {
     const f = await fixture(), phone = await f.signIn(), laptop = await f.signIn();
     await f.call(phone, '/api/portal/households/current', 'POST', select(f.first.id));
     await f.call(laptop, '/api/portal/households/current', 'POST', select(f.second.id));
-    expect((await f.call(phone, '/api/portal/context')).body?.data.householdId).toBe(f.first.id);
-    expect((await f.call(laptop, '/api/portal/context')).body?.data.householdId).toBe(f.second.id);
+    expect((await f.call(phone, '/api/portal/context')).body).toMatchObject({ data: { householdId: f.first.id }, householdId: f.first.id });
+    expect((await f.call(laptop, '/api/portal/context')).body).toMatchObject({ data: { householdId: f.second.id }, householdId: f.second.id });
   });
   it('refuses households from another gym or without this login, and requires a session', async () => {
     const f = await fixture(), cookie = await f.signIn();

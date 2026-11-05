@@ -39,7 +39,9 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost'), path = url.pathname;
   if (path.startsWith('/api/')) {
     res.setHeader('Content-Type', 'application/json');
-    const send = (data: unknown) => res.end(JSON.stringify(data));
+    // Portal answers name the household they were read for, as the server does; the household lists and booking answers name none.
+    const named = path.startsWith('/api/portal/') && path !== '/api/portal/households' && !path.includes('/bookings');
+    const send = (data: unknown) => res.end(JSON.stringify(named ? { ...data as object, householdId: household } : data));
     if (path === '/api/demo') return send({ data: { mode: 'disabled' } });
     if (path === '/api/auth/bootstrap') return send({ data: bootstrap });
     if (path === '/api/portal/households') return send({ data: { current: household, households: [{ householdId: household, name: 'Parent household', role }] } });

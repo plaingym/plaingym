@@ -21,21 +21,21 @@ describe('portal schedule, check-in and progress projections', () => {
     const { members } = portalScheduleContracts;
     expect(isRoutePermission(members.permission)).toBe(true);
     expect(members.permission.kind === 'member' && canMember('member', members.permission.capability)).toBe(true);
-    expect(members.response.safeParse({ data: [{ id, name: 'Alex Example' }] }).success).toBe(true);
-    expect(members.response.safeParse({ data: [{ id, name: 'Alex Example', email: 'a@example.test' }] }).success).toBe(false);
+    expect(members.response.safeParse({ householdId: id, data: [{ id, name: 'Alex Example' }] }).success).toBe(true);
+    expect(members.response.safeParse({ householdId: id, data: [{ id, name: 'Alex Example', email: 'a@example.test' }] }).success).toBe(false);
   });
   it('reads a missing code as null, while regeneration always returns one', () => {
     const data = { memberId: id, code: null, version: 2, revision: 3 };
-    expect(portalContracts.checkinCode.response.safeParse({ data }).success).toBe(true);
-    expect(portalContracts.regenerateCheckin.response.safeParse({ data }).success).toBe(false);
+    expect(portalContracts.checkinCode.response.safeParse({ householdId: id, data }).success).toBe(true);
+    expect(portalContracts.regenerateCheckin.response.safeParse({ householdId: id, data }).success).toBe(false);
   });
   it('adds only gym names, colors and sub-ranks to progress', () => {
     const data = { history: [], criteria: [], programs: [{ id, name: 'Program', current: null, next: { rankId: id, subRank: 1 } }],
       ranks: [{ id, name: 'Level', color: '#123456', subRanks: [{ id: 'one', name: 'One' }] }] };
-    expect(portalContracts.progress.response.safeParse({ data }).success).toBe(true);
-    expect(portalContracts.progress.response.safeParse({ data: { ...data, ranks: [{ ...data.ranks[0], criteria: [] }] } }).success).toBe(false);
-    expect(portalContracts.progress.response.safeParse({ data: { ...data, programs: [{ ...data.programs[0], rankSystemId: id }] } }).success).toBe(false);
-    expect(portalContracts.progress.response.safeParse({ data: { ...data, programs: [{ ...data.programs[0], current: { rankId: id, subRank: 0 } }] } }).success).toBe(true);
-    expect(portalContracts.progress.response.safeParse({ data: { ...data, programs: [{ id, name: 'Program', next: null }] } }).success).toBe(false);
+    expect(portalContracts.progress.response.safeParse({ householdId: id, data }).success).toBe(true);
+    expect(portalContracts.progress.response.safeParse({ householdId: id, data: { ...data, ranks: [{ ...data.ranks[0], criteria: [] }] } }).success).toBe(false);
+    expect(portalContracts.progress.response.safeParse({ householdId: id, data: { ...data, programs: [{ ...data.programs[0], rankSystemId: id }] } }).success).toBe(false);
+    expect(portalContracts.progress.response.safeParse({ householdId: id, data: { ...data, programs: [{ ...data.programs[0], current: { rankId: id, subRank: 0 } }] } }).success).toBe(true);
+    expect(portalContracts.progress.response.safeParse({ householdId: id, data: { ...data, programs: [{ id, name: 'Program', next: null }] } }).success).toBe(false);
   });
 });

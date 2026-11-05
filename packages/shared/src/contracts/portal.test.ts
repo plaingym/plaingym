@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { canMember, isRoutePermission } from '../permissions.js';
 import type { households, members, memberships, paymentMethods, classSessions, attendances, memberRanks } from '../../../db/src/schema/index.js';
 import {
-  portalContracts, portalSignedLinkContracts, portalContextSchema,
+  portalContracts, portalScheduleContracts, portalSignedLinkContracts, portalContextSchema,
   portalMemberSchema, portalMemberUpdateRequestSchema, portalHouseholdUpdateRequestSchema,
   portalHouseholdSchema, portalScheduleQuerySchema, portalSessionSchema, portalInvoiceResponseSchema, portalPaymentMethodsResponseSchema, portalPaymentMethodSchema,
   portalSignedLinkDataSchema, portalCheckinCodeResponseSchema,
@@ -21,9 +21,19 @@ const card = { id, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 20
 describe('portal access and safe projections', () => {
   it('leaves booking endpoints to their area and gives receipts their own response schema', () => {
     expect(Object.values(portalContracts).some(contract => contract.path.includes('/bookings'))).toBe(false);
-    const receipt = { data: { url: 'https://gym.example/receipt.pdf', expiresAt: '2026-10-21T12:00:00Z' } };
+    const receipt = { data: { url: 'https://gym.example/receipt.pdf', expiresAt: '2026-10-21T12:00:00Z' }, householdId: id };
     expect(portalContracts.receipt.response.parse(receipt)).toEqual(receipt);
     expect(portalContracts.receipt.response).not.toBe(portalContracts.waiverPdf.response);
+  });
+  it('has every logged-in portal answer name the household it was read for, beside its data', () => {
+    for (const [name, contract] of [...Object.entries(portalContracts), ...Object.entries(portalScheduleContracts)]) {
+      const shape: Record<string, { safeParse(value: unknown): { success: boolean } }> = contract.response.shape;
+      expect(Object.keys(shape), name).toEqual(expect.arrayContaining(['data', 'householdId']));
+      expect(shape.householdId!.safeParse(undefined).success, name).toBe(false);
+      expect(shape.householdId!.safeParse(id).success, name).toBe(true);
+    }
+    // A signed link grants one resource and names no household.
+    for (const contract of Object.values(portalSignedLinkContracts)) expect(contract.response.shape, contract.path).not.toHaveProperty('householdId');
   });
   it('declares the payer/adult access split for every endpoint', () => {
     const payerOnly = new Set(['members', 'updateMember', 'household', 'updateHousehold', 'invoices', 'invoice', 'receipt', 'payInvoice', 'paymentMethods', 'updateCard', 'pendingHouseholdWaivers', 'signedHouseholdWaivers', 'signHouseholdWaiver', 'householdWaiverPdf', 'uploadHouseholdSignature']);

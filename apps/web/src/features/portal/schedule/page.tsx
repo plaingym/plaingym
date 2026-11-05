@@ -39,10 +39,10 @@ function status(booking: MemberBooking) {
 
 export function PortalSchedulePage({ client = portalClient, now = () => new Date() }: { client?: PortalClient; now?: () => Date }) {
   const bootstrap = useBootstrap(), cache = useQueryClient(), timezone = bootstrap.data?.gym.timezone ?? 'UTC';
-  const { key, ready, context, members, memberId, member, choose } = usePortalMembers(client);
+  const { scope, context, members, memberId, member, choose } = usePortalMembers(client);
   const [week, setWeek] = useState(0), [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string }>();
   const range = weekRange(localDate(now(), timezone), week, timezone);
-  const schedule = useQuery({ queryKey: [...key, 'schedule', range.from], enabled: ready, queryFn: () => client.schedule(range.from, range.to), staleTime: 0 });
+  const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await client.schedule(range.from, range.to)).data, staleTime: 0 });
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>
       input.action === 'book' ? client.book(input.context, input.member.id, input.session.id) : client.cancel(input.context, input.member.id, input.booking!.id),
@@ -50,7 +50,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
     onSuccess: (row, input) => setMessage({ tone: 'success', text: row.status === 'cancelled' ? text('cancelledSaved', { name: input.member.name })
       : row.status === 'waitlisted' ? text('waitlistSaved', { name: input.member.name, rank: row.queueRank }) : text('bookedSaved', { name: input.member.name }) }),
     onError: error => setMessage({ tone: 'error', text: text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error') }),
-    onSettled: () => cache.invalidateQueries({ queryKey: [...key, 'schedule'] }),
+    onSettled: () => cache.invalidateQueries({ queryKey: [...scope.key, 'schedule'] }),
   });
   const dateLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, weekday: 'long', month: 'long', day: 'numeric' });
   const timeLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' });

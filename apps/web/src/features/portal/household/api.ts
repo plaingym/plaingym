@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { portalAccessContracts, portalContracts, type EndpointContract } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
@@ -25,23 +25,43 @@ export function portalHouseholdsOptions(login: ReturnType<typeof portalLoginKey>
   return { queryKey: portalHouseholdsKey(login), enabled,
     queryFn: async () => portalAccessContracts.households.response.parse(await createJsonTransport()('/api/portal/households')).data, retry: false, staleTime: 0 } as const;
 }
+export type PortalKey = ReturnType<typeof portalHouseholdKey>;
+/** Portal queries wait for the signed-in gym, user and open household, so their keys never change underneath them. */
+export const portalReady = (key: PortalKey) => !!key[1] && !!key[2] && !!key[4];
+/** The answer was for another household than the key it was asked under; the household lists are being read again. */
+export class HouseholdMoved extends Error {}
+/**
+ * Passes an answer on only if it names the household its key does. Every portal answer says which household the server read it
+ * for, the one the session has open; if that is another one, the server moved on since the lists were read (a revoked link fell
+ * back to another household, or another tab switched). Such an answer is never stored or shown: this throws, so the query fails
+ * or the action reports a failure, and the lists are read again (joining a load already under way). Once they name the other
+ * household, every key is that household's.
+ */
+export function ownAnswer<T extends { householdId: string }>(cache: QueryClient, key: PortalKey, answer: T): T {
+  if (answer.householdId === key[4]) return answer;
+  // Fetched here rather than refetched, so the lists are read again even where nothing else is watching them.
+  void cache.fetchQuery(portalHouseholdsOptions([key[0], key[1], key[2]], true)).catch(() => undefined);
+  throw new HouseholdMoved();
+}
+/** The open household as a page sees it: the key its queries are built from, and the check every answer passes. */
+export interface PortalScope { readonly key: PortalKey; readonly ready: boolean; own<T extends { householdId: string }>(answer: T): T }
 /**
  * The one key every portal query is built from: the login plus the open household, read from the household lists. When the open
  * household changes, the key changes in the same render, so the previous household's entries are unreachable by construction.
- * Pages are only mounted once the lists name a household.
+ * Pages are only mounted once the lists name a household. A page reads it once and passes the scope to whatever needs it.
  */
-export function usePortalKey() {
-  const login = usePortalLogin();
+export function usePortalScope(): PortalScope {
+  const login = usePortalLogin(), cache = useQueryClient();
   // Reads the lists (and re-renders with them) without ever loading them; the shell owns the load.
   const households = useQuery({ ...portalHouseholdsOptions(login, false) });
-  return portalHouseholdKey(login, households.data?.current);
+  const key = portalHouseholdKey(login, households.data?.current);
+  return { key, ready: portalReady(key), own: answer => ownAnswer(cache, key, answer) };
 }
-/** Portal queries wait for the signed-in gym, user and open household, so their keys never change underneath them. */
-export const portalReady = (key: ReturnType<typeof usePortalKey>) => !!key[1] && !!key[2] && !!key[4];
-export function usePortalContext() {
-  const key = usePortalKey();
-  return useQuery({ queryKey: [...key, 'context', 'pages'], enabled: portalReady(key), queryFn: async () => (await portalCall(portalContracts.context)).data });
+/** The open household's context (role and member), one query shared by every page; the shell keeps its own under `shell`. */
+export function usePortalContext(scope: PortalScope, load: () => Promise<PortalContextAnswer> = () => portalCall(portalContracts.context)) {
+  return useQuery({ queryKey: [...scope.key, 'context'], enabled: scope.ready, queryFn: async () => scope.own(await load()).data, staleTime: 0 });
 }
+export type PortalContextAnswer = ReturnType<typeof portalContracts.context.response.parse>;
 /** Unavailable (Stripe or storage not set up) gets its own message; everything else is a generic failure. */
 export const unavailable = (error: unknown) => error instanceof ApiError && error.status === 503;
 export const forbidden = (error: unknown) => error instanceof ApiError && error.status === 403;

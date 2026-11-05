@@ -13,7 +13,7 @@ import { CheckboxField } from '../../../components/ui/select.js';
 import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
-import { conflict, gymToday, knownMinor, needsGuardian, portalCall, portalReady, usePortalContext, usePortalKey } from '../household/api.js';
+import { conflict, gymToday, knownMinor, needsGuardian, portalCall, usePortalContext, usePortalScope, type PortalScope } from '../household/api.js';
 import { portalWaiverEndpoints, type PortalWaiverEndpoints } from './endpoints.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/waivers:' + key, values);
@@ -21,21 +21,22 @@ type Person = { id: string; firstName: string; lastName: string; dateOfBirth: st
 
 /** Payers see and sign for every current household member; an adult member sees only their own documents. */
 export function PortalWaivers() {
-  const context = usePortalContext();
+  // The open household is read once; everything below is keyed by it and checks each answer was for it.
+  const scope = usePortalScope(), context = usePortalContext(scope);
   if (context.isPending) return <LoadingState />;
   if (context.isError) return <ErrorState onRetry={() => void context.refetch()} />;
-  return <PortalWaiversPage context={context.data} />;
+  return <PortalWaiversPage context={context.data} scope={scope} />;
 }
-export function PortalWaiversPage({ context }: { context: PortalContext }) {
-  const bootstrap = useBootstrap(), cache = useQueryClient(), payer = context.role === 'payer';
-  const endpoints = portalWaiverEndpoints(payer), base = usePortalKey(), ready = portalReady(base), key = [...base, 'waivers', context.role];
+function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
+  const bootstrap = useBootstrap(), cache = useQueryClient(), payer = context.role === 'payer', { ready, own } = scope;
+  const endpoints = portalWaiverEndpoints(payer);
   const [signing, setSigning] = useState<{ template: WaiverTemplate; member: Person } | null>(null);
-  const people = useQuery({ queryKey: [...key, 'people'], enabled: ready, queryFn: async (): Promise<Person[]> => payer
-    ? (await portalCall(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
-    : [(await portalCall(contracts.profile, undefined, { memberId: context.memberId! })).data] });
-  const pending = useQuery({ queryKey: [...key, 'pending'], enabled: ready, queryFn: () => portalCall(endpoints.pending, undefined, {}, { limit: 100, offset: 0 }) });
-  const signed = useQuery({ queryKey: [...key, 'signed'], enabled: ready, queryFn: () => portalCall(endpoints.signed, undefined, {}, { limit: 100, offset: 0 }) });
-  const pdf = useMutation({ mutationFn: async (signatureId: string) => (await portalCall(endpoints.pdf, undefined, { signatureId })).data.url });
+  const people = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'people'], enabled: ready, queryFn: async (): Promise<Person[]> => payer
+    ? own(await portalCall(contracts.members, undefined, {}, { limit: 100, offset: 0 })).data
+    : [own(await portalCall(contracts.profile, undefined, { memberId: context.memberId! })).data] });
+  const pending = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'pending'], enabled: ready, queryFn: async () => own(await portalCall(endpoints.pending, undefined, {}, { limit: 100, offset: 0 })) });
+  const signed = useQuery({ queryKey: [...scope.key, 'waivers', context.role, 'signed'], enabled: ready, queryFn: async () => own(await portalCall(endpoints.signed, undefined, {}, { limit: 100, offset: 0 })) });
+  const pdf = useMutation({ mutationFn: async (signatureId: string) => own(await portalCall(endpoints.pdf, undefined, { signatureId })).data.url });
   const gym = bootstrap.data?.gym;
   if (!gym) return null;
   const name = (memberId: string) => { const person = people.data?.find(row => row.id === memberId); return person ? `${person.firstName} ${person.lastName}` : ''; };
@@ -72,14 +73,14 @@ export function PortalWaiversPage({ context }: { context: PortalContext }) {
         })}</StackedList>}
       </PageSection>
     </>}
-    {signing && <SignWaiver key={signing.template.id + signing.member.id} template={signing.template} member={signing.member} endpoints={endpoints}
+    {signing && <SignWaiver key={signing.template.id + signing.member.id} template={signing.template} member={signing.member} endpoints={endpoints} own={own}
       minor={needsGuardian(signing.member.dateOfBirth, today)} close={() => setSigning(null)}
-      saved={async () => { await cache.invalidateQueries({ queryKey: key }); setSigning(null); }} />}
+      saved={async () => { await cache.invalidateQueries({ queryKey: [...scope.key, 'waivers', context.role] }); setSigning(null); }} />}
   </Page>;
 }
 /** Draw or type a signature; the server validates the template version, guardian rule and image, and stores one immutable snapshot. */
-export function SignWaiver({ template, member, minor, endpoints, close, saved }: { template: WaiverTemplate; member: Person; minor: boolean;
-  endpoints: PortalWaiverEndpoints; close: () => void; saved: () => Promise<void> }) {
+export function SignWaiver({ template, member, minor, endpoints, own, close, saved }: { template: WaiverTemplate; member: Person; minor: boolean;
+  endpoints: PortalWaiverEndpoints; own: PortalScope['own']; close: () => void; saved: () => Promise<void> }) {
   const canvas = useRef<HTMLCanvasElement>(null), drawing = useRef(false), hasInk = useRef(false);
   const uploaded = useRef<{ signatureImageKey: string; signatureImageHash: string } | null>(null);
   const [typed, setTyped] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [changed, setChanged] = useState(false);
@@ -92,9 +93,9 @@ export function SignWaiver({ template, member, minor, endpoints, close, saved }:
       const signer = String(data.get('signer')).trim(), node = canvas.current!, ctx = node.getContext('2d')!;
       if (typed) { ctx.clearRect(0, 0, node.width, node.height); ctx.fillStyle = '#000'; ctx.font = '32px sans-serif'; ctx.fillText(signer, 12, 65, 560); }
       else if (!hasInk.current) { setError(text('signatureRequired')); return; }
-      uploaded.current ??= (await portalCall(endpoints.upload, { memberId: member.id, pngBase64: node.toDataURL('image/png').split(',')[1] })).data;
-      await portalCall(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
-        signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer } });
+      uploaded.current ??= own(await portalCall(endpoints.upload, { memberId: member.id, pngBase64: node.toDataURL('image/png').split(',')[1] })).data;
+      own(await portalCall(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
+        signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer } }));
       await saved();
     } catch (failure) { setError(text(conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }
   }

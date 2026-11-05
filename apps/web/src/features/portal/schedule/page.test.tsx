@@ -2,10 +2,10 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { portalTestCache } from '../household/test-cache.test-helper.js';
+import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../household/test-cache.test-helper.js';
 import type { PortalScheduleSession } from '@plaingym/shared/contracts';
 import { ApiError } from '../../../lib/api.js';
 import { breaksAnywhere } from '../../../components/ui/wrap.test-helper.js';
@@ -25,13 +25,13 @@ const client = { context: vi.fn(), members: vi.fn(), schedule: vi.fn(), book: vi
 const payer = { role: 'payer', householdId: id, memberId: parent };
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
-  client.context.mockResolvedValue(payer);
-  client.members.mockResolvedValue([{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent' }]);
-  client.schedule.mockResolvedValue([session]);
+  client.context.mockResolvedValue(answer(payer));
+  client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent' }]));
+  client.schedule.mockResolvedValue(answer([session]));
   client.book.mockResolvedValue(booking);
   client.cancel.mockResolvedValue({ ...booking, status: 'cancelled', cancelledAt: now.toISOString() });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function view(node: ReactNode) {
   const cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={cache}>{node}</QueryClientProvider>);
@@ -63,7 +63,7 @@ describe('portal schedule page', () => {
     await screen.findByText('Fundamentals');
     expect(client.schedule).toHaveBeenCalledWith('2026-10-29T00:00:00.000Z', '2026-11-05T00:00:00.000Z');
     await user.selectOptions(screen.getByLabelText('Booking for'), child);
-    client.schedule.mockResolvedValue([{ ...session, placesLeft: 3, bookings: [booking] }]);
+    client.schedule.mockResolvedValue(answer([{ ...session, placesLeft: 3, bookings: [booking] }]));
     await user.click(screen.getByRole('button', { name: 'Book Fundamentals for Casey Parent' }));
     await screen.findByText('Casey Parent is booked.');
     expect(client.book).toHaveBeenCalledWith(payer, child, id);
@@ -73,8 +73,8 @@ describe('portal schedule page', () => {
   });
   it('lets class and member names with no break opportunity wrap instead of widening the page', async () => {
     const long = 'U'.padEnd(56, 'x');
-    client.members.mockResolvedValue([{ id: parent, name: 'Pat Parent' }, { id: child, name: long }]);
-    client.schedule.mockResolvedValue([{ ...session, name: long + 'c', bookings: [booking] }]);
+    client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: long }]));
+    client.schedule.mockResolvedValue(answer([{ ...session, name: long + 'c', bookings: [booking] }]));
     page();
     // jsdom has no layout; the 360 px overflow itself is checked in the End-to-end suite (demo-join.spec.ts).
     for (const element of [await screen.findByText(long + 'c'), within(await screen.findByRole('list', { name: 'Household places' })).getByText(long)]) {
@@ -82,8 +82,8 @@ describe('portal schedule page', () => {
     }
   });
   it('hides cancel after the cutoff and reports engine conflicts without server details', async () => {
-    client.schedule.mockResolvedValue([{ ...session, cancelBefore: '2026-10-29T15:00:00.000Z', bookings: [{ ...booking, memberId: parent }] },
-      { ...session, id: 'second', name: 'Advanced', placesLeft: 0 }]);
+    client.schedule.mockResolvedValue(answer([{ ...session, cancelBefore: '2026-10-29T15:00:00.000Z', bookings: [{ ...booking, memberId: parent }] },
+      { ...session, id: 'second', name: 'Advanced', placesLeft: 0 }]));
     client.book.mockRejectedValue(new ApiError(409, 'request_failed'));
     const user = userEvent.setup(); page();
     await screen.findByText(/cancellation cutoff has passed/);
@@ -92,8 +92,8 @@ describe('portal schedule page', () => {
     await screen.findByText(/This change isn't available any more/);
   });
   it('an adult member has no picker and books only for themself', async () => {
-    client.context.mockResolvedValue({ role: 'member', householdId: id, memberId: child });
-    client.members.mockResolvedValue([{ id: child, name: 'Casey Parent' }]);
+    client.context.mockResolvedValue(answer({ role: 'member', householdId: id, memberId: child }));
+    client.members.mockResolvedValue(answer([{ id: child, name: 'Casey Parent' }]));
     const user = userEvent.setup(); page();
     await screen.findByText('Fundamentals');
     expect(screen.queryByLabelText('Booking for')).toBeNull();
@@ -104,9 +104,18 @@ describe('portal schedule page', () => {
     const user = userEvent.setup(); page();
     await screen.findByText('Fundamentals');
     expect((screen.getByRole('button', { name: 'Previous week' }) as HTMLButtonElement).disabled).toBe(true);
-    client.schedule.mockResolvedValue([]);
+    client.schedule.mockResolvedValue(answer([]));
     await user.click(screen.getByRole('button', { name: 'Next week' }));
     await screen.findByText('No classes this week');
     expect(client.schedule).toHaveBeenLastCalledWith('2026-11-05T00:00:00.000Z', '2026-11-12T00:00:00.000Z');
+  });
+  it('never shows a schedule answered for another household than the open one, and reads the household lists again', async () => {
+    const reads = stubHouseholdLists(), cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
+    client.schedule.mockResolvedValue(answer([session], 'other'));
+    render(<QueryClientProvider client={cache}><PortalSchedulePage client={client as unknown as PortalClient} now={() => now} /></QueryClientProvider>);
+    await screen.findByText("We couldn't load the schedule. Please try again.");
+    await waitFor(() => expect(reads()).toBeGreaterThan(0));
+    expect(screen.queryByText('Fundamentals')).toBeNull();
+    expect(storedFor(cache, 'gym', 'user', 'household')).toEqual(['act-for', 'context']);
   });
 });

@@ -25,10 +25,11 @@ function Swatch({ ranks, rankId }: { ranks: readonly Rank[]; rankId: string }) {
 }
 export function PortalProgressPage({ client = portalClient }: { client?: PortalClient }) {
   const bootstrap = useBootstrap(), timezone = bootstrap.data?.gym.timezone ?? 'UTC';
-  const { key, members, memberId, choose } = usePortalMembers(client);
-  const progress = useQuery({ queryKey: [...key, 'progress', memberId], queryFn: () => client.progress(memberId), enabled: !!memberId, staleTime: 0 });
-  const attendance = useInfiniteQuery({ queryKey: [...key, 'attendance', memberId], enabled: !!memberId, initialPageParam: 0, staleTime: 0,
-    queryFn: ({ pageParam }) => client.attendance(memberId, pageParam),
+  const { scope, members, memberId, choose } = usePortalMembers(client);
+  const progress = useQuery({ queryKey: [...scope.key, 'progress', memberId], queryFn: async () => scope.own(await client.progress(memberId)).data, enabled: !!memberId, staleTime: 0 });
+  // Each page of visits is checked on its own, so a later page read for another household is never added.
+  const attendance = useInfiniteQuery({ queryKey: [...scope.key, 'attendance', memberId], enabled: !!memberId, initialPageParam: 0, staleTime: 0,
+    queryFn: async ({ pageParam }) => scope.own(await client.attendance(memberId, pageParam)),
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
   const date = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium' });
   const dateTime = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });

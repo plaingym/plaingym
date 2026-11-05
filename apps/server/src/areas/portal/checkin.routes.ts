@@ -3,7 +3,7 @@ import { portalContracts } from '@plaingym/shared/contracts';
 import type { RouteRegistration } from '../../core/registry.js';
 import { route } from '../../core/registry.js';
 import type { CheckinCodeService } from '../members/checkin-code.js';
-import { portalIdentity } from './auth.permissions.js';
+import { portalAnswer, portalIdentity } from './auth.permissions.js';
 import { createPortalCheckinService, type PortalCheckinService } from './checkin.js';
 
 let configured: CheckinCodeService | undefined;
@@ -15,13 +15,13 @@ export function createPortalCheckinRoutes(service: PortalCheckinService = create
     route({ ...checkinCode, request: { params: checkinCode.params }, responses: { 200: { description: 'Member check-in code', content: { 'application/json': { schema: checkinCode.response } } } } },
       async c => {
         c.header('Cache-Control', 'no-store');
-        return c.json(checkinCode.response.parse({ data: await service.read(portalIdentity(c.get('context')), c.req.valid('param').memberId) }), 200);
+        return c.json(checkinCode.response.parse(portalAnswer(c.get('context'), { data: await service.read(portalIdentity(c.get('context')), c.req.valid('param').memberId) })), 200);
       }),
     route({ ...regenerateCheckin, request: { params: regenerateCheckin.params, body: { required: true, content: { 'application/json': { schema: regenerateCheckin.body } } } },
       responses: { 200: { description: 'Regenerated check-in code', content: { 'application/json': { schema: regenerateCheckin.response } } } } },
     async c => {
       c.header('Cache-Control', 'no-store');
-      return c.json(regenerateCheckin.response.parse({ data: await service.regenerate(portalIdentity(c.get('context')), c.req.valid('param').memberId, c.req.valid('json')) }), 200);
+      return c.json(regenerateCheckin.response.parse(portalAnswer(c.get('context'), { data: await service.regenerate(portalIdentity(c.get('context')), c.req.valid('param').memberId, c.req.valid('json')) })), 200);
     }),
   ];
 }

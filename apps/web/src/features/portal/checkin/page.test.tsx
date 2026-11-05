@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { portalTestCache } from '../household/test-cache.test-helper.js';
+import { answer, portalTestCache, storedFor, stubHouseholdLists } from '../household/test-cache.test-helper.js';
 import { ApiError } from '../../../lib/api.js';
 import type { PortalClient } from '../schedule/client.js';
 import { PortalCheckinPage } from './page.js';
@@ -15,12 +15,12 @@ const code = 'pgci1_' + 'a'.repeat(43);
 const client = { context: vi.fn(), members: vi.fn(), checkinCode: vi.fn(), regenerateCheckin: vi.fn() };
 beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
-  client.context.mockResolvedValue({ role: 'payer', householdId: parent, memberId: parent });
-  client.members.mockResolvedValue([{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent' }]);
-  client.checkinCode.mockImplementation(async (memberId: string) => ({ memberId, code: memberId === child ? null : code, version: 1, revision: 4 }));
-  client.regenerateCheckin.mockImplementation(async (memberId: string) => ({ memberId, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 }));
+  client.context.mockResolvedValue(answer({ role: 'payer', householdId: parent, memberId: parent }));
+  client.members.mockResolvedValue(answer([{ id: parent, name: 'Pat Parent' }, { id: child, name: 'Casey Parent' }]));
+  client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code: memberId === child ? null : code, version: 1, revision: 4 }));
+  client.regenerateCheckin.mockImplementation(async (memberId: string) => answer({ memberId, code: 'pgci1_' + 'b'.repeat(43), version: 2, revision: 5 }));
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const page = () => render(<QueryClientProvider client={portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } })}>
   <PortalCheckinPage client={client as unknown as PortalClient} /></QueryClientProvider>);
 
@@ -50,5 +50,26 @@ describe('portal check-in code', () => {
     client.checkinCode.mockRejectedValue(new ApiError(503, 'request_failed'));
     page();
     await screen.findByText(/Check-in codes aren't available right now/);
+  });
+  it('never shows a code answered for another household than the open one, and reads the household lists again', async () => {
+    const reads = stubHouseholdLists(), cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
+    client.checkinCode.mockImplementation(async (memberId: string) => answer({ memberId, code, version: 1, revision: 4 }, 'other'));
+    render(<QueryClientProvider client={cache}><PortalCheckinPage client={client as unknown as PortalClient} /></QueryClientProvider>);
+    await screen.findByText("We couldn't load the check-in code. Please try again.");
+    await waitFor(() => expect(reads()).toBeGreaterThan(0));
+    expect(screen.queryByAltText(/QR check-in code/)).toBeNull();
+    expect(storedFor(cache, 'gym', 'user', 'household')).toEqual(['act-for', 'context']);
+  });
+  it('never shows a regenerated code answered for another household', async () => {
+    const reads = stubHouseholdLists(), cache = portalTestCache('gym', 'user', 'household', { defaultOptions: { queries: { retry: false } } });
+    client.regenerateCheckin.mockImplementation(async (memberId: string) => answer({ memberId, code: 'pgci1_' + 'c'.repeat(43), version: 2, revision: 5 }, 'other'));
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={cache}><PortalCheckinPage client={client as unknown as PortalClient} /></QueryClientProvider>);
+    await user.selectOptions(await screen.findByLabelText('Code for'), child);
+    await user.click(await screen.findByRole('button', { name: 'Create a code' }));
+    await waitFor(() => expect(reads()).toBeGreaterThan(0));
+    expect((await screen.findAllByRole('alert')).length).toBeGreaterThan(0);
+    expect(screen.queryByAltText('QR check-in code for Casey Parent')).toBeNull();
+    expect(cache.getQueryCache().findAll().some(query => JSON.stringify(query.state.data ?? null).includes('c'.repeat(43)))).toBe(false);
   });
 });

@@ -28,7 +28,7 @@ import { composeBillingWebhooks } from '../billing/webhooks/handlers/composition
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createPortalBillingService } from './billing.js';
 import { configurePortalBilling, createPortalBillingRoutes } from './billing.routes.js';
-import { adultPrincipal, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send } from './household.fixture.js';
+import { adultPrincipal, answerFor, bothHouseholds, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send } from './household.fixture.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test', secret = 'synthetic-signing-secret';
 const receiptKey = new Uint8Array(32).fill(7), receipts = checkoutReceipts(receiptKey);
@@ -212,5 +212,14 @@ describe('portal billing routes', () => {
     const f = await fixture(), server = f.app(payerPrincipal(f), true);
     expect((await server.request('/api/portal/invoices')).status).toBe(200);
     expect((await send(server, 'POST', '/api/portal/payment-methods/checkout')).status).toBe(200);
+  });
+  it('names the household the session has open on every answer, for a login with two households', async () => {
+    const f = await fixture(), { home, other } = await bothHouseholds(factory, f), server = f.app(home);
+    for (const [method, path] of [['GET', '/api/portal/invoices'], ['GET', `/api/portal/invoices/${f.open.id}`], ['GET', `/api/portal/invoices/${f.paid.id}/receipt`],
+      ['POST', `/api/portal/invoices/${f.open.id}/checkout`], ['GET', '/api/portal/payment-methods'], ['POST', '/api/portal/payment-methods/checkout']] as const)
+      await answerFor(await send(server, method, path), f.household.id, `${method} ${path}`);
+    const elsewhere = f.app(other);
+    for (const path of ['/api/portal/invoices', `/api/portal/invoices/${f.other.id}`, '/api/portal/payment-methods'])
+      await answerFor(await elsewhere.request(path), f.otherHousehold.id, path);
   });
 });

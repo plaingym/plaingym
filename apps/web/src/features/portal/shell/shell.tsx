@@ -3,12 +3,12 @@ import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode 
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
-import { portalContextResponseSchema, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
+import { portalContracts, type PortalContext, type PortalHouseholdChoice as HouseholdChoice } from '@plaingym/shared/contracts';
 import { bootstrapKey, useBootstrap, useShellServices } from '../../../app/context.js';
 import { sessionName } from '../../../app/identity.js';
 import { createRegistries } from '../../../lib/registries.js';
 import { createJsonTransport } from '../../../lib/api.js';
-import { portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey } from '../household/api.js';
+import { HouseholdMoved, ownAnswer, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey } from '../household/api.js';
 import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
@@ -69,11 +69,9 @@ async function refreshName(cache: QueryClient, userId: string, change: symbol) {
     if (!mine()) stop(); else if (settled()) { stop(); lift(); }
   });
 }
-/** The context answer was for another household than the key it was asked under; the household lists are being read again. */
-class HouseholdMoved extends Error {}
 /**
  * Drops everything cached for any household but the open one. Every portal query is keyed by the open household
- * (`usePortalKey`), so nothing of it can be reached from the household now open; this only cancels what is still loading and
+ * (`usePortalScope`), so nothing of it can be reached from the household now open; this only cancels what is still loading and
  * frees the entries. The household lists, the bootstrap and root queries such as demo discovery are not under this prefix.
  */
 function discardOtherHouseholds(cache: QueryClient, login: ReturnType<typeof portalLoginKey>, open: string | null) {
@@ -137,17 +135,15 @@ function AuthenticatedPortal() {
   const gymId = bootstrap.data?.gym.id, userId = session?.userId, login = portalLoginKey(gymId, userId);
   const households = useQuery(portalHouseholdsOptions(login, member));
   const current = households.data?.current ?? null;
-  // The shell's own context query lives in the open household's subtree like every portal query, so it is unreachable from any other.
-  const context = useQuery({ queryKey: [...portalHouseholdKey(login, current), 'context'], enabled: member && !!current,
-    queryFn: async () => {
-      const answer = portalContextResponseSchema.parse(await createJsonTransport()('/api/portal/context')).data;
-      // The server answers for the household it has open. If the lists this key came from name another one, the server moved
-      // on (a revoked link fell back to another household) and this answer is the new household's: it is never stored under
-      // the old household's key. The lists are read again (joining a load already under way); once they name the other
-      // household, this key is no longer the open one.
-      if (answer.householdId !== current) { void cache.refetchQueries({ queryKey: portalHouseholdsKey(login) }, { cancelRefetch: false }); throw new HouseholdMoved(); }
-      return answer;
-    }, retry: false, staleTime: 0 });
+  // The shell's own context query lives in the open household's subtree like every portal query, so it is unreachable from any
+  // other, under the reserved `shell` segment no page key uses, so no page's query or invalidation reaches it.
+  const householdKey = portalHouseholdKey(login, current);
+  const context = useQuery({ queryKey: [...householdKey, 'shell', 'context'], enabled: member && !!current,
+    // The server answers for the household it has open. If the lists this key came from name another one, the server moved on
+    // (a revoked link fell back to another household) and this answer is the new household's: it is never stored under the
+    // old household's key, and the lists are read again; once they name the other household, this key is no longer the open one.
+    queryFn: async () => ownAnswer(cache, householdKey, portalContracts.context.response.parse(await createJsonTransport()(portalContracts.context.path))).data,
+    retry: false, staleTime: 0 });
   // While the name may still be the previous household's, the header says nothing about who is signed in. Only the shell's own
   // entries (the mark and the bootstrap) can change that, so no other cache event wakes this.
   const nameStale = useSyncExternalStore(useCallback(notify => cache.getQueryCache().subscribe(event => { if (event.query.queryKey[0] === 'shell') notify(); }), [cache]),

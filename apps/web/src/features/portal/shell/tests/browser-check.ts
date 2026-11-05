@@ -40,7 +40,7 @@ const server = createServer(async (req, res) => {
     if (path === '/api/portal/households/current') { let body = ''; for await (const chunk of req) body += chunk; current = (JSON.parse(body) as { householdId: string }).householdId; res.end(JSON.stringify({ data: null })); return; }
     if (path === '/api/portal/context') {
       if (!current) { res.statusCode = 404; res.end(JSON.stringify({ error: { code: 'not_found' } })); return; }
-      res.end(JSON.stringify({ data: current === household ? { role: 'payer', householdId: household, memberId: member } : { role: 'member', householdId: second, memberId: member } })); return;
+      res.end(JSON.stringify({ data: current === household ? { role: 'payer', householdId: household, memberId: member } : { role: 'member', householdId: second, memberId: member }, householdId: current })); return;
     }
     if (path === '/api/portal/invitations/accept') { res.end(JSON.stringify({ data: { status: 'claimed' } })); return; }
     if (path === '/api/members/' + member) { res.end(JSON.stringify({ data: person })); return; }

@@ -12,6 +12,13 @@ export function portalIdentity(context: RequestContext): PortalIdentity {
   if (principal.kind !== 'member' || principal.scope.gymId !== gym.gymId) notFound();
   return { gymId: gym.gymId, userId: principal.userId, householdId: principal.scope.householdId };
 }
+/**
+ * A portal answer, naming the household it was read for: the session's open household as this request resolved it, the
+ * one every service call in the handler is scoped to. Pages compare it with the household they asked under.
+ */
+export function portalAnswer<T extends object>(context: RequestContext, body: T): T & { householdId: string } {
+  return { ...body, householdId: portalIdentity(context).householdId };
+}
 /** Mount portal routes with this middleware; cached/request-supplied roles never authorize a request. */
 export function createPortalAuthorization(households: MemberHouseholdContext = createMemberHouseholdContext()): PermissionMiddleware {
   return permission => permission.kind !== 'member' ? authorize(permission) : async (ctx, next) => {
