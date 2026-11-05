@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { goLiveChecklistResponseSchema, type GoLiveSwitches, type GymSettings } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
-import { useGymSettings, type SaveResult } from './gym-settings.js';
+import { SaveTimeoutError, useGymSettings, type SaveResult } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
 import { Button } from '../../components/ui/button.js';
 import { Alert } from '../../components/ui/alert.js';
@@ -19,14 +19,25 @@ function parseChecklist(response: unknown): Checklist {
 }
 const label = (key: string, values?: Record<string, string>) => t('settings/go-live:' + key, values);
 const statusTone = { ready: 'success', needs_attention: 'warning', not_applicable: 'muted' } as const;
+/**
+ * The restore check answers only once it has read every payment change since the snapshot from Stripe, which can take
+ * minutes, so its save waits this long rather than the usual timeout. Saves from other sections wait behind it.
+ */
+export const reconcileTimeoutMs = 5 * 60_000;
+/** The server names a check still running for the restore with this code, so a second one never overlaps it. */
+const checkRunning = (body: unknown) => {
+  const codes = (body as { error?: { details?: { restoreId?: unknown } } } | undefined)?.error?.details?.restoreId;
+  return Array.isArray(codes) && codes.includes('check_running');
+};
 
 /** Shows the billing and member-email switches with the readiness checklist from the go-live contract. */
 export function GoLiveSettings() {
   const [checklist, setChecklist] = useState<Checklist | null>(null);
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'changed' | 'justSaved' | null>(null);
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState<'error' | 'timeout' | 'changed' | 'justSaved' | null>(null);
+  const [readError, setReadError] = useState(false);
   const [reload, setReload] = useState(0);
   const [confirmBilling, setConfirmBilling] = useState(false), [confirmed, setConfirmed] = useState(false);
-  const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState(false);
+  const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState<'reconcileError' | 'reconcileTimeout' | 'reconcileBusy' | null>(null);
   // The switches save the gym revision that every section of the page shares, so another section's save doesn't stale them.
   const gym = useGymSettings(), settings = gym.settings;
   const adopt = (data: unknown, current: GymSettings): GymSettings => {
@@ -36,8 +47,11 @@ export function GoLiveSettings() {
   // The readiness items follow the settings: fetch the checklist again when another section's save moved the revision.
   // Until it arrives the switches and past-due dates on screen are older than the revision they would save, so they wait.
   // While a read has failed the switches wait for the retry: a save would be refused, and its own alert would sit beside the read's.
-  const behind = !!settings && !!checklist && settings.revision > checklist.revision, locked = busy || behind || gym.failed;
-  const checklistFailed = message === 'error' && (!checklist || behind), readFailed = gym.failed || checklistFailed;
+  // A checklist read that failed leaves the one on screen (if any) older than the settings, or older than a refused switch.
+  const behind = !!settings && !!checklist && settings.revision > checklist.revision, locked = busy || behind || gym.failed || readError;
+  const checklistFailed = readError, readFailed = gym.failed || checklistFailed;
+  // A refusal whose follow-up read failed says why the switch didn't change, in the read failure's own alert.
+  const refusedUnread = readFailed && (message === 'changed' || message === 'justSaved') ? message : null;
   useEffect(() => { if (behind) setReload((value) => value + 1); }, [behind, settings?.revision]);
   useEffect(() => {
     let active = true;
@@ -45,8 +59,8 @@ export function GoLiveSettings() {
     void api.GET('/api/settings/go-live').then((result) => {
       if (!result.response.ok) throw new Error();
       const next = parseChecklist(result.data);
-      if (active) setChecklist(next);
-    }).catch(() => { if (active) setMessage('error'); })
+      if (active) { setChecklist(next); setReadError(false); }
+    }).catch(() => { if (active) setReadError(true); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [reload]);
@@ -62,7 +76,7 @@ export function GoLiveSettings() {
   }
   /** Retries every read that failed: the shared settings, and the checklist. */
   function retry() {
-    setMessage(null);
+    setMessage(null); setReadError(false);
     if (gym.failed) gym.reload();
     if (checklistFailed) setReload((value) => value + 1);
   }
@@ -80,25 +94,31 @@ export function GoLiveSettings() {
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
       setConfirmBilling(false); setConfirmed(false);
-    } catch { setMessage('error'); }
+    } catch (error) { setMessage(error instanceof SaveTimeoutError ? 'timeout' : 'error'); }
     finally { setBusy(false); }
   }
   async function rerunReconciliation() {
     if (!checklist?.restoreReconciliation || !settings || locked) return;
-    setBusy(true); setChecking(true); setCheckError(false); setMessage(null);
+    setBusy(true); setChecking(true); setCheckError(null); setMessage(null);
     try {
       const restoreId = checklist.restoreReconciliation.restoreId;
-      const result = await gym.save((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }), { adopt, readAt: checklist.revision });
+      const result = await gym.save((revision, signal) => api.POST('/api/settings/go-live/reconciliation', { signal, body: { revision, restoreId } }),
+        { adopt, readAt: checklist.revision, timeoutMs: reconcileTimeoutMs });
+      // A check already running for this restore (another tab, or one this page stopped waiting for) is left to finish.
+      if (result.status === 409 && checkRunning(result.error)) { setCheckError('reconcileBusy'); setReload((value) => value + 1); return; }
       if (result.status === 409) { conflict(result, checklist.revision); return; }
       if (result.status >= 300) throw new Error();
       setChecklist(parseChecklist(result.data));
-    } catch { setCheckError(true); setReload(value => value + 1); }
+    } catch (error) {
+      // A check the page stopped waiting for may still be running on the server: say so rather than that it failed.
+      setCheckError(error instanceof SaveTimeoutError ? 'reconcileTimeout' : 'reconcileError'); setReload((value) => value + 1);
+    }
     finally { setBusy(false); setChecking(false); }
   }
   return <section className="space-y-4" aria-label={label('title')}>
     <h2 className="text-lg font-semibold">{label('title')}</h2>
     <p className="text-sm text-muted-foreground">{label('help')}</p>
-    {readFailed ? <Alert>{label('error')}
+    {readFailed ? <Alert>{refusedUnread && label(refusedUnread + 'Unread') + ' '}{label('error')}
       <Button variant="outline" className="mt-3 sm:ml-3 sm:mt-0" onClick={retry}>{label('retry')}</Button></Alert>
       : message && <Alert>{label(message)}</Alert>}
     {!checklist || !settings ? (busy || gym.loading) && <LoadingState label={label('loading')}/> : <>
@@ -124,7 +144,7 @@ export function GoLiveSettings() {
           ? label('reconcileResult', { at: checklist.restoreReconciliation.checkedAt,
             inspected: String(checklist.restoreReconciliation.inspected), unresolved: String(checklist.restoreReconciliation.unresolved) })
           : label('reconcilePending')}</p>
-        {checkError && <Alert>{label('reconcileError')}</Alert>}
+        {checkError && <Alert>{label(checkError)}</Alert>}
         {checklist.billingEnabled && <p className="text-sm text-muted-foreground">{label('reconcilePause')}</p>}
         <Button variant="outline" disabled={locked || checklist.billingEnabled || !checklist.restoreReconciliation.snapshotAt}
           onClick={() => void rerunReconciliation()}>{label('reconcileRerun')}</Button>

@@ -30,7 +30,7 @@ describe('Settings → Backups', () => {
     await user.type(within(setup).getByLabelText('Storage access key ID'), 'access-id');
     await user.type(within(setup).getByLabelText('Storage secret access key'), 'access-secret');
     await user.click(within(setup).getByRole('button', { name: 'Generate backup key' }));
-    expect(client.POST).toHaveBeenCalledWith('/api/settings/integrations/backups', { body: { revision: 3, destination: { endpoint: 'https://s3.example.test',
+    expect(client.POST).toHaveBeenCalledWith('/api/settings/integrations/backups', { signal: expect.any(AbortSignal), body: { revision: 3, destination: { endpoint: 'https://s3.example.test',
       region: 'auto', bucket: 'new-bucket', accessKeyId: 'access-id', secretAccessKey: 'access-secret' } } });
     expect(await screen.findByText(privateKey)).toBeDefined();
     expect(screen.getByText(/It is shown once/)).toBeDefined();
@@ -42,7 +42,7 @@ describe('Settings → Backups', () => {
     expect(client.POST).toHaveBeenCalledTimes(1);
     await user.click(within(confirm).getByRole('checkbox', { name: /I saved my private key/ }));
     await user.click(within(confirm).getByRole('button', { name: 'Confirm and start using it' }));
-    expect(client.POST).toHaveBeenLastCalledWith('/api/settings/integrations/backups/confirm', { body: { revision: 5, privateKey } });
+    expect(client.POST).toHaveBeenLastCalledWith('/api/settings/integrations/backups/confirm', { signal: expect.any(AbortSignal), body: { revision: 5, privateKey } });
     expect((await screen.findByRole('status')).textContent).toContain('now use the new destination');
     expect(document.body.textContent).not.toContain(privateKey);
     expect(document.body.textContent).not.toContain('access-secret');

@@ -5,7 +5,8 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { GymSettings } from '@plaingym/shared/contracts';
-import { gymSettingsKey, saveTimeoutMs, useGymSettings } from './gym-settings.js';
+import { abortWithin, gymSettingsKey, SaveTimeoutError, saveTimeoutMs, useGymSettings } from './gym-settings.js';
+import { holdTimeouts } from './save-timeout.test-helper.js';
 
 const server = vi.hoisted(() => ({ GET: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: server }));
@@ -253,5 +254,87 @@ describe('the gym settings save queue', () => {
     gym = { ...gym, revision: 9 };
     expect((await result.current.save(sent, { readAt: 9 })).status).toBe(409);
     expect(sent).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the refusal body, so a section can show the fields it names', async () => {
+    const { result } = await mount();
+    const body = { error: { code: 'invalid_request', message: 'The request is invalid.', details: { timezone: ['invalid_timezone'], name: ['invalid'] } } };
+    const outcome = await result.current.save(async () => ({ response: { ok: false, status: 400 }, error: body }));
+    expect(outcome).toMatchObject({ status: 400, data: undefined, error: body, moved: false, settings: { revision: 3 } });
+    const saved = await result.current.save(save({ name: 'Renamed' }));
+    expect(saved).toMatchObject({ status: 200, error: undefined, moved: false, data: { data: { name: 'Renamed' } } });
+  });
+
+  it('says whether a 409 left the latest settings on screen or kept every section\'s input', async () => {
+    const { result } = await mount();
+    // Refused for something the gym revision doesn't cover: nothing moved.
+    expect(await result.current.save(async () => reply(409))).toMatchObject({ status: 409, moved: false });
+    // Another tab saved: the reload brings the latest values.
+    gym = { ...gym, name: 'Renamed elsewhere', revision: 4 };
+    expect(await result.current.save(save())).toMatchObject({ status: 409, moved: true, settings: { revision: 4 } });
+    // The reload after a conflict failed: the sections keep what they show.
+    gym = { ...gym, revision: 5 };
+    server.GET.mockImplementation(async () => reply(500));
+    await waitFor(() => expect(result.current.settings?.revision).toBe(4));
+    expect(await result.current.save(save())).toMatchObject({ status: 409, moved: false, settings: { revision: 4 } });
+  });
+
+  it('marks a save refused after a reload as moved, and one refused after another section saved as not', async () => {
+    const { result } = await mount();
+    const stale = result.current.save;
+    await result.current.save(save({ retryDays: [1] }));
+    expect(await result.current.save(vi.fn(), { readAt: 3 })).toMatchObject({ refused: 'saved', moved: false });
+    gym = { ...gym, revision: 9 };
+    result.current.reload();
+    await waitFor(() => expect(result.current.settings?.revision).toBe(9));
+    expect(await stale(vi.fn())).toMatchObject({ refused: 'reloaded', moved: true });
+  });
+
+  it('throws a SaveTimeoutError, after reloading, when a save stalls past its own timeout', async () => {
+    const { result } = await mount();
+    const longer = saveTimeoutMs * 10, timers = holdTimeouts(longer);
+    try {
+      let signal!: AbortSignal;
+      const started = Promise.withResolvers<void>();
+      const stalled = result.current.save((_revision, aborted) => { signal = aborted; started.resolve(); return new Promise(() => undefined); },
+        { timeoutMs: longer });
+      const failure = expect(stalled).rejects.toBeInstanceOf(SaveTimeoutError);
+      await started.promise;
+      // Only the longer timer was set for this save; the usual timeout doesn't apply to it.
+      expect(timers.held(longer)).toBe(1);
+      timers.expire();
+      await failure;
+      expect(signal.aborted).toBe(true);
+      expect(reads()).toBe(2);
+    } finally { timers.restore(); }
+  });
+
+  it('aborts a settings read that TanStack Query cancels, and one that stalls past the timeout', async () => {
+    await mount();
+    const signals: AbortSignal[] = [];
+    server.GET.mockImplementation((_path: string, init: { signal: AbortSignal }) => { signals.push(init.signal); return new Promise(() => undefined); });
+    void client.refetchQueries({ queryKey: gymSettingsKey });
+    await waitFor(() => expect(signals).toHaveLength(1));
+    await client.cancelQueries({ queryKey: gymSettingsKey });
+    expect(signals[0]!.aborted).toBe(true);
+  });
+
+  it('combines a signal with a timeout, also where AbortSignal.any is missing', async () => {
+    const any = AbortSignal.any;
+    try {
+      for (const combine of [any, undefined]) {
+        Object.defineProperty(AbortSignal, 'any', { value: combine, configurable: true, writable: true });
+        const source = new AbortController(), combined = abortWithin(source.signal, 60_000);
+        expect(combined.aborted).toBe(false);
+        source.abort('superseded');
+        expect(combined.aborted).toBe(true);
+        expect(combined.reason).toBe('superseded');
+        const done = new AbortController(); done.abort();
+        expect(abortWithin(done.signal, 60_000).aborted).toBe(true);
+        const timed = abortWithin(new AbortController().signal, 5);
+        await waitFor(() => expect(timed.aborted).toBe(true));
+      }
+      expect(abortWithin(undefined, 60_000).aborted).toBe(false);
+    } finally { Object.defineProperty(AbortSignal, 'any', { value: any, configurable: true, writable: true }); }
   });
 });

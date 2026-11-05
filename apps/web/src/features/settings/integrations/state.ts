@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { integrationsResponseSchema, type Integrations } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
-import { useGymSettings } from '../gym-settings.js';
+import { SaveTimeoutError, useGymSettings, type Sent } from '../gym-settings.js';
 
 export const integrationsKey = ['settings', 'integrations'] as const;
 export const text = (key: string, values?: Record<string, string | number>) => t('settings/integrations:' + key, values);
@@ -13,9 +13,16 @@ async function fetchIntegrations(): Promise<Integrations> {
   if (!result.response.ok) throw new Error('The integrations request failed');
   return integrationsResponseSchema.parse(result.data).data;
 }
-/** The reply to one change: its HTTP status, the server's refusal reason (`details` codes, never its message) and the picked result. */
-export interface ChangeResult<T> { status: number; reason: string | null; result: T | null }
-type Reply = { response: { ok: boolean; status: number }; data?: unknown; error?: unknown };
+/**
+ * The reply to one change: its HTTP status, the server's refusal reason (`details` codes, never its message), the picked
+ * result, and whether a conflict left the latest saved settings on screen (`moved`) or kept what was there.
+ */
+export interface ChangeResult<T> { status: number; reason: string | null; result: T | null; moved: boolean }
+/** The text for a refusal no section names in its own words: a conflict says whether the latest settings are shown. */
+export const refusedText = (reply: { status: number; moved: boolean }) =>
+  text(reply.status === 409 ? (reply.moved ? 'conflict' : 'conflictKept') : 'error');
+/** The text for a change that threw: one that timed out may still have gone through. */
+export const failedText = (error: unknown) => text(error instanceof SaveTimeoutError ? 'timeout' : 'error');
 const reasonOf = (body: unknown) => {
   const details = (body as { error?: { details?: Record<string, unknown> } } | undefined)?.error?.details;
   const first = details ? Object.values(details)[0] : undefined;
@@ -31,18 +38,15 @@ export function useIntegrations() {
   const cache = useQueryClient(), gym = useGymSettings();
   const query = useQuery({ queryKey: integrationsKey, queryFn: fetchIntegrations, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
   const reload = useCallback(() => { gym.reload(); void query.refetch(); }, [gym.reload, query.refetch]);
-  async function change<T>(send: (revision: number) => Promise<Reply>, pick: (data: unknown) => { integrations: Integrations; result: T }): Promise<ChangeResult<T>> {
-    const saved = await gym.save(async (revision) => {
-      const reply = await send(revision);
-      return { response: reply.response, data: reply.response.ok ? reply.data : reply.error };
-    }, { adopt: (data, current) => ({ ...current, revision: pick(data).integrations.revision }) });
+  async function change<T>(send: (revision: number, signal: AbortSignal) => Promise<Sent>, pick: (data: unknown) => { integrations: Integrations; result: T }): Promise<ChangeResult<T>> {
+    const saved = await gym.save(send, { adopt: (data, current) => ({ ...current, revision: pick(data).integrations.revision }) });
     if (saved.status < 300) {
       const picked = pick(saved.data);
       cache.setQueryData(integrationsKey, picked.integrations);
-      return { status: saved.status, reason: null, result: picked.result };
+      return { status: saved.status, reason: null, result: picked.result, moved: false };
     }
     if (saved.status === 409) await query.refetch();
-    return { status: saved.status, reason: reasonOf(saved.data), result: null };
+    return { status: saved.status, reason: reasonOf(saved.error), result: null, moved: saved.moved };
   }
   return { integrations: query.data, ready: Boolean(query.data && gym.settings), failed: query.isError || gym.failed, reload, change };
 }

@@ -5,6 +5,7 @@ import { cleanup, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { health, integrations, refusal, renderSection, reply, serve } from './fixtures.test-helper.js';
+import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
@@ -28,7 +29,7 @@ describe('Settings → Payments', () => {
     const user = userEvent.setup(); renderSection();
     expect(await screen.findByText(/Stripe isn’t connected/)).toBeDefined();
     const payments = await submit(user, 'rk_test_abc123');
-    expect(client.PUT).toHaveBeenCalledWith('/api/settings/integrations/stripe', { body: { revision: 3, restrictedKey: 'rk_test_abc123' } });
+    expect(client.PUT).toHaveBeenCalledWith('/api/settings/integrations/stripe', { signal: expect.any(AbortSignal), body: { revision: 3, restrictedKey: 'rk_test_abc123' } });
     expect((await screen.findByRole('status')).textContent).toBe('The new Stripe key is saved.');
     expect(screen.getByText('Stripe is connected in test mode.')).toBeDefined();
     expect(screen.getByText(/Webhook endpoint registered/)).toBeDefined();
@@ -78,7 +79,7 @@ describe('Settings → Payments', () => {
     client.PUT.mockResolvedValueOnce(reply(200, { data: live }));
     await user.click(within(confirm).getByRole('checkbox', { name: /I understand the test data/ }));
     await user.click(within(confirm).getByRole('button', { name: 'Clear test data and switch to live' }));
-    expect(client.PUT).toHaveBeenLastCalledWith('/api/settings/integrations/stripe', { body: { revision: 3, restrictedKey: 'rk_live_abc123', clearTestData: true } });
+    expect(client.PUT).toHaveBeenLastCalledWith('/api/settings/integrations/stripe', { signal: expect.any(AbortSignal), body: { revision: 3, restrictedKey: 'rk_live_abc123', clearTestData: true } });
     expect((await screen.findByRole('status')).textContent).toContain('Stripe is now in live mode');
     expect(screen.getByText('Stripe is connected in live mode.')).toBeDefined();
     expect(screen.queryByRole('form', { name: 'Switch to live mode' })).toBeNull();
@@ -113,5 +114,18 @@ describe('Settings → Payments', () => {
     const user = userEvent.setup(); renderSection();
     await submit(user, 'rk_test_abc');
     expect((await screen.findByRole('alert')).textContent).toContain('couldn’t check the key');
+  });
+  it('aborts a key check that times out and says it may still have gone through', async () => {
+    const user = userEvent.setup(); renderSection();
+    await form();
+    const stalled = stalledRequests(), timers = holdTimeouts();
+    try {
+      client.PUT.mockImplementation(stalled.answer);
+      await submit(user, 'rk_test_abc123');
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      timers.expire();
+      expect(stalled.signals[0]!.aborted).toBe(true);
+      expect((await screen.findByRole('alert')).textContent).toContain('may still have gone through');
+    } finally { timers.restore(); }
   });
 });

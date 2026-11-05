@@ -18,13 +18,14 @@ const timezoneMessage = 'Use UTC or a region such as America/Vancouver';
 /** `Etc/GMT+5` is UTC−5: the sign is inverted, and a region form exists for every offset. */
 const fixedOffsetZone = /^Etc\/GMT[+-]\d+$/i;
 /**
- * The rule for a new timezone in setup, settings and the `gyms create` CLI: `UTC` or a region form such as
+ * The rule for a new timezone in setup, settings and the `gyms create` CLI: after trimming surrounding spaces (a pasted
+ * ` America/Vancouver` is the same zone everywhere), `UTC` or a region form such as
  * `America/Vancouver` that `Intl` knows, stored in its canonical case (`america/vancouver` becomes
  * `America/Vancouver`). Links are kept as given rather than resolved: `Intl` resolves current names to retired
  * ones (`Asia/Kolkata` to `Asia/Calcutta`, `Europe/Kyiv` to `Europe/Kiev`). `Etc/GMT±N` is refused. A gym's already
  * stored zone (for example `CET`) is read with `storedTimezoneSchema` and is never rewritten by this rule.
  */
-export const gymTimezoneSchema = z.string().regex(/^(utc|[a-z_]+(?:\/[a-z0-9_+-]+)+)$/i, timezoneMessage)
+export const gymTimezoneSchema = z.string().trim().regex(/^(utc|[a-z_]+(?:\/[a-z0-9_+-]+)+)$/i, timezoneMessage)
   .refine(knownZone, timezoneMessage).refine((zone) => !fixedOffsetZone.test(zone), timezoneMessage)
   .transform((zone, context) => {
     try { return timeZoneId(zone); }

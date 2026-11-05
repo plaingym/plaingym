@@ -66,6 +66,9 @@
   "error": "The request failed. Please try again.",
   "changed": "These settings changed elsewhere. The latest values are shown; try again.",
   "justSaved": "Settings were just saved on this page. Check what is shown and try again.",
+  "changedUnread": "These settings changed elsewhere, so the switch was not changed, and the latest values could not be loaded.",
+  "justSavedUnread": "Settings were just saved on this page, so the switch was not changed, and the latest values could not be loaded.",
+  "timeout": "The save took too long to answer and may still have gone through. Check the switches shown before trying again.",
   "retry": "Try again",
   "reconcileTitle": "Restored payments",
   "reconcileHelp": "After resolving payment issues, check again before turning billing on. This check never turns billing on.",
@@ -75,6 +78,8 @@
   "reconcileResult": "Last check: {at}. Objects checked: {inspected}. Unresolved: {unresolved}.",
   "reconcilePause": "Pause billing before checking restored payments.",
   "reconcileError": "The payment check failed. Billing stays paused. Check your payment configuration and try again.",
+  "reconcileTimeout": "The payment check is taking longer than this page waits and may still be running. Billing stays paused. Reload this page in a few minutes to see its result.",
+  "reconcileBusy": "A payment check for this restore is still running. Billing stays paused. Wait for its result, then check again if needed.",
   "notFound": "Gym not found.",
   "unavailable": "Go-live settings are not available right now."
 }

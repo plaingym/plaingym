@@ -48,7 +48,7 @@ describe('billing retry settings', () => {
     await user.clear(field); if (value) await user.type(field, value);
     expect(screen.getByText(new RegExp('Maximum dunning emails.*' + (days.length + 1) + '\\.'))).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Save retry schedule' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/billing', { body: { revision: 3, retryDays: days } });
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/billing', { signal: expect.any(AbortSignal), body: { revision: 3, retryDays: days } });
     expect((await screen.findByRole('status')).textContent).toBe('Retry schedule saved.');
   });
   it('answers a change made elsewhere with a conflict, reloads the settings and saves against the reloaded revision', async () => {
@@ -61,7 +61,7 @@ describe('billing retry settings', () => {
     await vi.waitFor(() => expect(field.value).toBe('4, 10'));
     expect(client.GET).toHaveBeenCalledTimes(2);
     await user.type(field, ', 12'); await user.click(screen.getByRole('button', { name: 'Save retry schedule' }));
-    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings/billing', { body: { revision: 5, retryDays: [4, 10, 12] } });
+    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings/billing', { signal: expect.any(AbortSignal), body: { revision: 5, retryDays: [4, 10, 12] } });
     expect((await screen.findByRole('status')).textContent).toBe('Retry schedule saved.');
   });
   it('reloads the saved schedule on request', async () => {

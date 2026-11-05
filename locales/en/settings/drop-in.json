@@ -12,6 +12,8 @@
   "reload": "Reload saved drop-in fee",
   "saved": "Drop-in fee saved.",
   "conflict": "The drop-in fee or the charge type changed elsewhere. The latest values are shown; review your choice and try again.",
+  "conflictKept": "The charge type or the settings changed elsewhere, so the drop-in fee wasn’t saved. The charge types were reloaded and the saved fee is shown; review your choice and try again.",
+  "timeout": "The save took too long to answer and may still have gone through. Check the drop-in fee shown before saving again.",
   "archivedChoice": "The saved charge type is archived. Choose an active charge type, or no drop-in fee.",
   "missing": "That charge type is no longer available. Reload and choose again.",
   "error": "The request failed. Please try again.",

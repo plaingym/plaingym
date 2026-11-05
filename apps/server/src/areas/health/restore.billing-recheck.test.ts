@@ -37,7 +37,7 @@ describe('restored billing through production restore, jobs and go-live routes',
     expect((await b.rerun()).status).toBe(200);
     expect((await b.enable()).status).toBe(200);
   });
-  it('keeps a newer failed check blocked when an earlier in-flight check later succeeds', async () => {
+  it('refuses a rerun while an earlier check is in flight, then lets a failed rerun block and a later one clear', async () => {
     await f.restore().restore(base, f.identity);
     const b = await restored(); await b.queue.runNext();
     let entered!: () => void, release!: (value: Awaited<ReturnType<FakePayments['listChangesSince']>>) => void;
@@ -49,8 +49,15 @@ describe('restored billing through production restore, jobs and go-live routes',
     try {
       await began;
       expect((await b.enable()).status).toBe(409);
-      expect((await b.rerun()).status).toBe(503);
-    } finally { release({ changes: [], nextCursor: null }); await running; list.mockRestore(); }
+      // A second check would run beside the first, which could then finish over it: it waits for the first's result.
+      const overlapping = await b.rerun();
+      expect(overlapping.status).toBe(409);
+      expect(await overlapping.json()).toMatchObject({ error: { details: { restoreId: ['check_running'] } } });
+    } finally { release({ changes: [], nextCursor: null }); expect((await running).status).toBe(200); }
+    expect((await b.read()).restoreReconciliation!.unresolved).toBe(0);
+    // The next rerun runs, and its failure blocks billing until a later one clears it.
+    expect((await b.rerun()).status).toBe(503);
+    list.mockRestore();
     expect((await b.read()).restoreReconciliation!.unresolved).toBe(1);
     expect((await b.enable()).status).toBe(409);
     expect((await b.rerun()).status).toBe(200);

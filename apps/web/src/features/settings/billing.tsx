@@ -7,7 +7,7 @@ import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { ErrorState, LoadingState } from '../../components/ui/states.js';
-import { useGymSettings } from './gym-settings.js';
+import { SaveTimeoutError, useGymSettings } from './gym-settings.js';
 
 const text = (key: string) => t('settings/billing:' + key);
 export function BillingSettings() {
@@ -23,11 +23,11 @@ export function BillingSettings() {
     if (!rules.success) { setFieldError(true); return; }
     setBusy(true); setFieldError(false);
     try {
-      const result = await gym.save((revision) => api.PATCH('/api/settings/billing', { body: { revision, ...rules.data } }));
+      const result = await gym.save((revision, signal) => api.PATCH('/api/settings/billing', { signal, body: { revision, ...rules.data } }));
       if (result.status === 400) setFieldError(true);
-      else if (result.status >= 300) setMessage(text(result.status === 409 ? 'conflict' : 'error'));
+      else if (result.status >= 300) setMessage(text(result.status === 409 ? (result.moved ? 'conflict' : 'conflictKept') : 'error'));
       else { setDays(result.settings.retryDays.join(', ')); setMessage(text('saved')); }
-    } catch { setMessage(text('error')); }
+    } catch (error) { setMessage(text(error instanceof SaveTimeoutError ? 'timeout' : 'error')); }
     finally { setBusy(false); }
   }
   if (!settings) return gym.failed

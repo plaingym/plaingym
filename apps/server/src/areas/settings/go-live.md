@@ -44,7 +44,17 @@ and enabled billing. The page's **Check restored payments again** button calls
 the same configured runner as the worker, outside any transaction. It displays
 progress, safe errors, the last result time and inspected/unresolved counts from
 `restoreReconciliation`. A requested or interrupted check invalidates the prior
-success until the new check completes. Provider failures record an unresolved
+success until the new check completes. A rerun is refused (409, `details`
+`{ restoreId: ["check_running"] }`) while a check of the same restore is running: one
+started without a result, or a rerun asked for whose check has neither started nor
+failed. That test runs under the gym row lock every rerun takes first, so two reruns
+can't both start. The restore job's own retries don't take this test, so a retry
+can still start beside a rerun's check. A rerun whose
+check fails before it starts records `settings.go_live.reconciliation_failed`, so
+the next one may run; a check that started more than `restoreCheckLifetimeMs` (15
+minutes) ago without a result is taken to have died with its process. The page
+waits up to five minutes for the check (other saves wait 20 seconds) and, past
+that, says the check may still be running. Provider failures record an unresolved
 result; managers can correct configuration or payment issues and rerun. The check
 never enables billing. Existing runtime runner configuration serves this action
 without additional wiring.

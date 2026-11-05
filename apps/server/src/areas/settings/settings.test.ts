@@ -97,9 +97,28 @@ describe('settings service and routes', () => {
     expect(renamed.status).toBe(200);
     const saved = (await renamed.json() as { data: { revision: number; timezone: string; name: string } }).data;
     expect(saved).toMatchObject({ name: 'Renamed', timezone: 'CET' });
-    // A new zone is stored under its canonical name.
+    // A new zone is stored under its canonical name, and spaces around it are dropped, as in setup and `gyms create`.
     expect((await patch(app, '/api/settings', { revision: saved.revision, timezone: 'america/vancouver' })).status).toBe(200);
     expect((await service.get(gymId)).timezone).toBe('America/Vancouver');
+    expect((await patch(app, '/api/settings', { revision: saved.revision + 1, timezone: ' America/Toronto ' })).status).toBe(200);
+    expect((await service.get(gymId)).timezone).toBe('America/Toronto');
+  });
+  it('names every refused field of a general update, each with its own code, and leaves the gym unchanged', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const app = server('owner', gymId);
+    const before = await service.get(gymId);
+    const response = await patch(app, '/api/settings', { revision: before.revision, name: ' ', timezone: 'PST',
+      address: { country: 'canada' }, existingSiteUrl: 'ftp://example.org' });
+    expect(response.status).toBe(400);
+    expect((await response.json() as { error: { details: unknown } }).error.details).toEqual({
+      name: ['invalid'], timezone: ['invalid_timezone'], 'address.country': ['invalid'], existingSiteUrl: ['invalid'] });
+    // One bad field that isn't the timezone is named too, and a body that supplies no change names none.
+    const named = await patch(app, '/api/settings', { revision: before.revision, existingSiteUrl: 'ftp://example.org' });
+    expect((await named.json() as { error: { details: unknown } }).error.details).toEqual({ existingSiteUrl: ['invalid'] });
+    const empty = await patch(app, '/api/settings', { revision: before.revision });
+    expect(empty.status).toBe(400);
+    expect((await empty.json() as { error: { details?: unknown } }).error.details).toBeUndefined();
+    expect(await service.get(gymId)).toEqual(before);
   });
   it('serializes racing saves so only one update wins', async () => {
     const revision = (await service.get(gymA)).revision;

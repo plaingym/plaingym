@@ -6,7 +6,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
-import { integrationsOf, text, type useIntegrations } from './state.js';
+import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 
 const label = (key: string) => text('backups.' + key);
 const gigabytes = (bytes: number) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(bytes / 1e9) + ' GB';
@@ -28,27 +28,27 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
   const [message, setMessage] = useState<{ kind: 'status' | 'alert'; text: string } | null>(null);
   const run = async (action: () => Promise<void>) => {
     setMessage(null); setBusy(true);
-    try { await action(); } catch { setMessage({ kind: 'alert', text: text('error') }); } finally { setBusy(false); }
+    try { await action(); } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); } finally { setBusy(false); }
   };
   const generate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '');
     void run(async () => {
-      const reply = await state.change((revision) => api.POST('/api/settings/integrations/backups', { body: { revision, destination: {
+      const reply = await state.change((revision, signal) => api.POST('/api/settings/integrations/backups', { signal, body: { revision, destination: {
         endpoint: field('endpoint'), region: field('region'), bucket: field('bucket'), accessKeyId: field('accessKeyId'), secretAccessKey: field('secretAccessKey') } } }),
       (data) => { const parsed = createBackupKeyResponseSchema.parse(data).data; return { integrations: parsed.integrations, result: { privateKey: parsed.privateKey, publicKey: parsed.publicKey } }; });
       if (reply.result) { setCreated(reply.result); setOpen(false); }
-      else setMessage({ kind: 'alert', text: reply.reason === 'unreachable' ? label('unreachable') : text(reply.status === 409 ? 'conflict' : 'error') });
+      else setMessage({ kind: 'alert', text: reply.reason === 'unreachable' ? label('unreachable') : refusedText(reply) });
     });
   };
   const confirm = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const privateKey = String(new FormData(event.currentTarget).get('privateKey') ?? '').trim();
     void run(async () => {
-      const reply = await state.change((revision) => api.POST('/api/settings/integrations/backups/confirm', { body: { revision, privateKey } }), integrationsOf);
+      const reply = await state.change((revision, signal) => api.POST('/api/settings/integrations/backups/confirm', { signal, body: { revision, privateKey } }), integrationsOf);
       if (reply.status < 300) { setCreated(null); setMessage({ kind: 'status', text: label('confirmed') }); }
       else setMessage({ kind: 'alert', text: reply.reason === 'mismatch' || reply.status === 400 ? label('mismatch')
-        : reply.reason === 'no_pending_key' ? label('noPending') : text(reply.status === 409 ? 'conflict' : 'error') });
+        : reply.reason === 'no_pending_key' ? label('noPending') : refusedText(reply) });
     });
   };
   const download = (privateKey: string) => {

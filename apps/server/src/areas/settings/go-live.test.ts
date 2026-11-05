@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { auditEvents, gyms, uuidv7, RevisionConflictError } from '@plaingym/db';
+import { auditEvents, gyms, uuidv7, writeAudit, RevisionConflictError } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { staffRoles, type StaffRole } from '@plaingym/shared';
@@ -14,7 +14,7 @@ import { authorize } from '../staff/auth.permissions.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
 import { encryptSecret, parseEncryptionKey } from '../../core/secrets.js';
-import { createGoLiveService } from './go-live.js';
+import { createGoLiveService, restoreCheckLifetimeMs } from './go-live.js';
 import { createGoLiveRoutes } from './go-live.routes.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-10-22T12:00:00Z');
@@ -101,5 +101,71 @@ describe('go-live switches and checklist', () => {
       before: { billingEnabled: false, memberEmailsEnabled: before.memberEmailsEnabled }, after: { billingEnabled: true, memberEmailsEnabled: false } });
     expect(JSON.stringify(audits)).not.toMatch(/rk_test|privateConfig|age1/);
     expect((await service.checklist(gymB)).billingEnabled).toBe(false);
+  });
+});
+
+describe('restore check reruns', () => {
+  /** A gym restored from a snapshot, with the check's markers written as the billing runner writes them. */
+  async function restoredGym() {
+    const gymId = uuidv7(); await factory('gyms', gymId);
+    const restore = await database.forGym(gymId, (tx) => writeAudit(tx, { gymId, actorKind: 'system', action: 'restore.completed',
+      targetType: 'gym', targetId: gymId, occurredAt: clock.now() }));
+    await database.forGym(gymId, (tx) => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_requested',
+      targetType: 'restore', targetId: restore.id, after: { snapshotAt: '2026-10-20T12:00:00.000Z' }, occurredAt: clock.now() }));
+    return { gymId, restoreId: restore.id };
+  }
+  const start = (gymId: string, restoreId: string, at: Date) => database.forGym(gymId, (tx) => writeAudit(tx, { gymId, actorKind: 'system',
+    action: 'billing.runner.restore_check_started', targetType: 'restore', targetId: restoreId, occurredAt: at }));
+  const finish = (gymId: string, checkId: string, at: Date) => database.forGym(gymId, (tx) => writeAudit(tx, { gymId, actorKind: 'system',
+    action: 'billing.runner.restore_checked', targetType: 'restore_check', targetId: checkId, occurredAt: at, after: { inspected: 1, unresolved: 0 } }));
+  const busy = { code: 'conflict', details: { restoreId: ['check_running'] } };
+
+  it('refuses a rerun while another for the same restore is running, before or after its check starts, and allows one once it is done', async () => {
+    const { gymId, restoreId } = await restoredGym(), local = new TestClock('2026-10-22T12:00:00Z');
+    let release!: () => void, entered!: () => void;
+    const began = new Promise<void>((resolve) => { entered = resolve; }), held = new Promise<void>((resolve) => { release = resolve; });
+    // The first check waits before it records its start, as a check does while it resolves its provider.
+    const restoreCheck = vi.fn(async (id: string, _at: Date, restore: string) => {
+      if (restoreCheck.mock.calls.length === 1) { entered(); await held; }
+      const check = await start(id, restore, local.now()); await finish(id, check.id, local.now());
+      return { inspected: 1, readyForOwnerReview: true, issues: [] };
+    });
+    const reruns = createGoLiveService({ scope: database.forGym, clock: local, smtpConfigured, restoreCheck });
+    const context = { gymId, actor: { kind: 'user' as const, userId } }, { revision } = await reruns.checklist(gymId);
+    const first = reruns.rerunReconciliation(context, { revision, restoreId });
+    await began;
+    await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject(busy);
+    release();
+    expect((await first).restoreReconciliation).toMatchObject({ restoreId, unresolved: 0 });
+    // Once the first has its result, a rerun starts its own check.
+    await reruns.rerunReconciliation(context, { revision, restoreId });
+    expect(restoreCheck).toHaveBeenCalledTimes(2);
+    const requested = await database.forGym(gymId, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.go_live.reconciliation_requested')));
+    expect(requested).toHaveLength(2);
+  });
+  it('allows a rerun after one that failed before its check started, and after a check that stopped without a result long ago', async () => {
+    const { gymId, restoreId } = await restoredGym(), local = new TestClock('2026-10-22T12:00:00Z');
+    const restoreCheck = vi.fn(async () => { throw new Error('Charge runner is not configured'); });
+    const reruns = createGoLiveService({ scope: database.forGym, clock: local, smtpConfigured, restoreCheck });
+    const context = { gymId, actor: { kind: 'user' as const, userId } }, { revision } = await reruns.checklist(gymId);
+    await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject({ code: 'unavailable' });
+    expect(restoreCheck).toHaveBeenCalledTimes(2);
+    // A check whose process died after it started holds reruns back until its lifetime has passed.
+    await start(gymId, restoreId, local.now());
+    local.advance(restoreCheckLifetimeMs - 1000);
+    await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject(busy);
+    local.advance(1000);
+    await expect(reruns.rerunReconciliation(context, { revision, restoreId })).rejects.toMatchObject({ code: 'unavailable' });
+    expect(restoreCheck).toHaveBeenCalledTimes(3);
+  });
+  it('answers an overlapping rerun with 409 and the field code', async () => {
+    const { gymId, restoreId } = await restoredGym();
+    await start(gymId, restoreId, clock.now());
+    const app = server('owner', gymId), { revision } = await service.checklist(gymId);
+    const response = await app.request('/api/settings/go-live/reconciliation', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ revision, restoreId }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: 'conflict', details: { restoreId: ['check_running'] } } });
   });
 });

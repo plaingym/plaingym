@@ -120,9 +120,11 @@ describe('first-boot setup', () => {
     expect((await call('/api/setup/website', 'PUT', { revision, websiteEnabled: true, existingSiteUrl: null }, cookie)).status).toBe(409);
     // Settings and the shell bootstrap read the same address shape, so setup must not store any other.
     expect((await call('/api/setup/gym', 'PUT', { ...details, address: { street: '123 Main' }, revision }, cookie)).status).toBe(400);
-    const updated = await call('/api/setup/gym', 'PUT', { ...details, revision }, cookie); expect(updated.status).toBe(200);
-    const [stored] = await database.forSystem((tx) => tx.select({ address: gyms.address }).from(gyms));
+    // A pasted zone with spaces around it is the same zone here as in settings and `gyms create`.
+    const updated = await call('/api/setup/gym', 'PUT', { ...details, timezone: ' America/Vancouver ', revision }, cookie); expect(updated.status).toBe(200);
+    const [stored] = await database.forSystem((tx) => tx.select({ address: gyms.address, timezone: gyms.timezone }).from(gyms));
     expect(gymAddressSchema.parse(stored!.address)).toEqual({ line1: '123 Main' });
+    expect(stored!.timezone).toBe('America/Vancouver');
     expect((await call('/api/setup/gym', 'PUT', { ...details, revision }, cookie)).status).toBe(409);
     revision = (await service.status()).revision;
     expect((await call('/api/setup/packs', 'POST', { revision, packs: [{ packId: 'unknown', version: 1 }] }, cookie)).status).toBe(400);

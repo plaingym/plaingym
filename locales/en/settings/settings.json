@@ -30,5 +30,12 @@
   "loading": "Loading settings…",
   "error": "Unable to save or load settings.",
   "conflict": "Settings changed elsewhere. The latest values are shown; review them and try again.",
+  "conflictKept": "Something changed elsewhere, so your changes weren't saved. They're still in the form; reload settings to see the latest values, then try again.",
+  "timeout": "The save took too long to answer and may still have gone through. Check the settings shown before saving again.",
+  "nameInvalid": "Enter the gym's name.",
+  "countryInvalid": "Use a two-letter country code such as CA or US.",
+  "primaryColorInvalid": "Choose a color.",
+  "existingSiteInvalid": "Use a web address that starts with http:// or https://.",
+  "fieldInvalid": "This value can't be used. Check it and try again.",
   "reload": "Reload settings"
 }

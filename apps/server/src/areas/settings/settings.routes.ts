@@ -5,17 +5,31 @@ import type { MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from '../../core/context.js';
 import { route } from '../../core/registry.js';
 import { createSettingsService } from './settings.js';
-// Runs after authorization and before the shared validator, whose generic error hides field details.
-const fieldErrors = (schema: typeof updateBillingRulesRequestSchema | typeof updateGymSettingsRequestSchema, field: string, code: string): MiddlewareHandler<RequestEnvironment> =>
+/** The field an issue is about: its path up to the first list index (`address.country`, and `retryDays` for `retryDays.1`). */
+const fieldOf = (path: readonly PropertyKey[]) => {
+  const names: string[] = [];
+  for (const key of path) { if (typeof key !== 'string') break; names.push(key); }
+  return names.join('.');
+};
+/**
+ * Runs after authorization and before the shared validator, whose generic error hides field details: a body that fails
+ * names every refused field in `details`, with its own code from `codes` or `invalid`. An issue about the body as a
+ * whole (no change supplied, a body that isn't an object) names no field and is left to the validator.
+ */
+const fieldErrors = (schema: typeof updateBillingRulesRequestSchema | typeof updateGymSettingsRequestSchema, codes: Record<string, string>): MiddlewareHandler<RequestEnvironment> =>
   async (c, next) => {
     const parsed = schema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success && parsed.error.issues.some((issue) => issue.path[0] === field))
-      throw new AppError('invalid_request', 'The request is invalid.', { [field]: [code] });
+    const details: Record<string, string[]> = {};
+    for (const issue of parsed.error?.issues ?? []) {
+      const field = fieldOf(issue.path);
+      if (field) details[field] = [codes[field] ?? 'invalid'];
+    }
+    if (Object.keys(details).length) throw new AppError('invalid_request', 'The request is invalid.', details);
     await next();
   };
 const middleware = {
-  updateBillingRules: fieldErrors(updateBillingRulesRequestSchema, 'retryDays', 'invalid_retry_days'),
-  updateGeneral: fieldErrors(updateGymSettingsRequestSchema, 'timezone', 'invalid_timezone'),
+  updateBillingRules: fieldErrors(updateBillingRulesRequestSchema, { retryDays: 'invalid_retry_days' }),
+  updateGeneral: fieldErrors(updateGymSettingsRequestSchema, { timezone: 'invalid_timezone' }),
 } as const;
 const kinds = { updateGeneral: 'general', updateBookingRules: 'booking', updateBillingRules: 'billing', updateCurrency: 'currency', updateDropIn: 'drop_in' } as const;
 export function createSettingsRoutes(service = createSettingsService()) {

@@ -51,7 +51,7 @@ describe('drop-in fee settings', () => {
     await user.selectOptions(await field(), mat.id);
     expect(screen.getByText('The drop-in page shows: CA$25.00')).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { body: { revision: 3, dropInChargeTypeId: mat.id } });
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { signal: expect.any(AbortSignal), body: { revision: 3, dropInChargeTypeId: mat.id } });
     expect((await screen.findByRole('status')).textContent).toBe('Drop-in fee saved.');
     expect(invalidate).toHaveBeenCalledWith({ queryKey: bootstrapKey });
   });
@@ -70,7 +70,7 @@ describe('drop-in fee settings', () => {
     client.PATCH.mockResolvedValueOnce(reply(200, { data: { ...settings, revision: 6, dropInChargeTypeId: mat.id } }));
     await user.selectOptions(select, mat.id);
     await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
-    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings/drop-in', { body: { revision: 5, dropInChargeTypeId: mat.id } });
+    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings/drop-in', { signal: expect.any(AbortSignal), body: { revision: 5, dropInChargeTypeId: mat.id } });
   });
   it('reloads the charge types when the chosen one is gone, so it is no longer offered', async () => {
     client.PATCH.mockResolvedValue(reply(404));
@@ -90,7 +90,7 @@ describe('drop-in fee settings', () => {
     expect((await field()).value).toBe('');
     expect(screen.getByText(contactGym)).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { body: { revision: 3, dropInChargeTypeId: null } });
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { signal: expect.any(AbortSignal), body: { revision: 3, dropInChargeTypeId: null } });
     expect((await screen.findByRole('status')).textContent).toBe('Drop-in fee saved.');
   });
   it('clears the fee by saving null', async () => {
@@ -101,7 +101,7 @@ describe('drop-in fee settings', () => {
     expect(select.value).toBe(mat.id);
     await user.selectOptions(select, '');
     await user.click(screen.getByRole('button', { name: 'Save drop-in fee' }));
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { body: { revision: 3, dropInChargeTypeId: null } });
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings/drop-in', { signal: expect.any(AbortSignal), body: { revision: 3, dropInChargeTypeId: null } });
     expect(select.value).toBe('');
   });
   it('shows a saved archived charge type as archived and not shown to visitors, and won\'t save it again', async () => {

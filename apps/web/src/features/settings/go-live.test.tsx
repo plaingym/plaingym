@@ -6,7 +6,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { goLiveChecklistItemSchema, settingsContracts, type GymSettings, type UpdateGoLiveRequest } from '@plaingym/shared/contracts';
 import { canStaff, staffRoles } from '@plaingym/shared';
-import { GoLiveSettings } from './go-live.js';
+import { GoLiveSettings, reconcileTimeoutMs } from './go-live.js';
+import { saveTimeoutMs } from './gym-settings.js';
+import { holdTimeouts, stalledRequests } from './save-timeout.test-helper.js';
 import { registration } from './go-live.registrations.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PATCH: vi.fn(), POST: vi.fn() }));
 /** The checklist reads; the shared gym settings read goes through `client.GET` to `settingsReads`. */
@@ -117,6 +119,51 @@ describe('go-live settings', () => {
     await user.click(screen.getByRole('button', { name: 'Check restored payments again' }));
     expect(await screen.findByText(/Unresolved: 0/)).toBeDefined();
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('holds the switches and the rerun while the checklist read after a failed rerun has failed, until it is retried', async () => {
+    live.mockResolvedValueOnce(reply(200, restored(0))).mockResolvedValueOnce(reply(500)).mockResolvedValue(reply(200, restored(1)));
+    client.POST.mockResolvedValueOnce(reply(503));
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Check restored payments again' }));
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Turn on: Member emails' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Check restored payments again' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(/Unresolved: 1/)).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Turn on: Member emails' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+  it('waits longer than other saves for the restore check, and says a check it stopped waiting for may still be running', async () => {
+    live.mockResolvedValue(reply(200, restored()));
+    expect(reconcileTimeoutMs).toBeGreaterThan(saveTimeoutMs);
+    const user = userEvent.setup(); start();
+    const rerun = await screen.findByRole('button', { name: 'Check restored payments again' });
+    const stalled = stalledRequests(), timers = holdTimeouts(saveTimeoutMs, reconcileTimeoutMs);
+    try {
+      client.POST.mockImplementation(stalled.answer);
+      const reads = live.mock.calls.length;
+      await user.click(rerun);
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      // The usual timeout would give up on it; only the longer one is set for the check.
+      expect(timers.held(saveTimeoutMs)).toBe(0);
+      expect(timers.held(reconcileTimeoutMs)).toBe(1);
+      timers.expire(reconcileTimeoutMs);
+      expect(stalled.signals[0]!.aborted).toBe(true);
+      expect((await screen.findByRole('alert')).textContent).toContain('may still be running');
+      expect(screen.queryByText(/payment check failed/)).toBeNull();
+      await vi.waitFor(() => expect(live.mock.calls.length).toBe(reads + 1));
+    } finally { timers.restore(); }
+  });
+  it('waits for a check already running for the restore instead of reporting a change elsewhere', async () => {
+    live.mockResolvedValueOnce(reply(200, restored(null))).mockResolvedValue(reply(200, restored(0)));
+    client.POST.mockResolvedValue({ response: { ok: false, status: 409 },
+      error: { error: { code: 'conflict', message: 'private', details: { restoreId: ['check_running'] } }, requestId: 'r' } });
+    const user = userEvent.setup(); start();
+    await user.click(await screen.findByRole('button', { name: 'Check restored payments again' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('is still running');
+    expect(screen.queryByText(/changed elsewhere/)).toBeNull();
+    // The checklist is read again, so the running check's result shows once it has one.
+    expect(await screen.findByText(/Unresolved: 0/)).toBeDefined();
   });
   it('reloads stale rerun requests and disables rerunning while billing is enabled', async () => {
     live.mockResolvedValueOnce(reply(200, restored())).mockResolvedValue(reply(200, restored(0, true)));

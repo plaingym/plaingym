@@ -6,7 +6,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField, Select } from '../../../components/ui/select.js';
-import { integrationsOf, text, type useIntegrations } from './state.js';
+import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 
 const presets = [['smtp.postmarkapp.com', 'Postmark'], ['smtp-relay.brevo.com', 'Brevo'], ['email-smtp.us-east-1.amazonaws.com', 'Amazon SES'], ['smtp.gmail.com', 'Gmail']];
 const label = (key: string) => text('email.' + key);
@@ -33,7 +33,7 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
     const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '');
     setBusy('save');
     try {
-      const reply = await state.change((revision) => api.PUT('/api/settings/integrations/email', { body: { revision, host: field('host').trim(),
+      const reply = await state.change((revision, signal) => api.PUT('/api/settings/integrations/email', { signal, body: { revision, host: field('host').trim(),
         port: Number(field('port')), secure: form.has('secure'), username: field('username'), password: field('password'),
         from: field('from'), testTo: field('testTo') } }), (data) => {
         const parsed = saveEmailIntegrationResponseSchema.parse(data).data;
@@ -41,18 +41,18 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
       });
       if (reply.result === 'sent') { setMessage({ kind: 'status', text: label('saved') }); setOpen(false); }
       else if (reply.result === 'failed') setMessage({ kind: 'alert', text: label('testFailed') });
-      else setMessage({ kind: 'alert', text: reply.reason === 'port_not_allowed' ? label('portNotAllowed') : text(reply.status === 409 ? 'conflict' : 'error') });
-    } catch { setMessage({ kind: 'alert', text: text('error') }); }
+      else setMessage({ kind: 'alert', text: reply.reason === 'port_not_allowed' ? label('portNotAllowed') : refusedText(reply) });
+    } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setBusy(null); }
   }
   async function remove() {
     setMessage(null); setBusy('remove');
     try {
-      const reply = await state.change((revision) => api.DELETE('/api/settings/integrations/email', { body: { revision } }), integrationsOf);
+      const reply = await state.change((revision, signal) => api.DELETE('/api/settings/integrations/email', { signal, body: { revision } }), integrationsOf);
       if (reply.status < 300) { setMessage({ kind: 'status', text: label('removed') }); setHost(''); }
       else setMessage({ kind: 'alert', text: reply.reason === 'only_sign_in' ? label('onlySignIn') : reply.reason === 'not_configured' ? label('notConfigured')
-        : text(reply.status === 409 ? 'conflict' : 'error') });
-    } catch { setMessage({ kind: 'alert', text: text('error') }); }
+        : refusedText(reply) });
+    } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setBusy(null); }
   }
   return <div className="grid min-w-0 gap-4">

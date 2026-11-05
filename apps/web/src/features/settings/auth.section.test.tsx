@@ -8,6 +8,7 @@ import type { GoogleLogin } from '@plaingym/shared/contracts';
 import { GoogleLoginSettings, googleCallbackPath } from './auth.js';
 import { registration } from './auth.registrations.js';
 import { refusal, reply, settings } from './integrations/fixtures.test-helper.js';
+import { holdTimeouts, stalledRequests } from './save-timeout.test-helper.js';
 
 const server = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../lib/api.js', async (original) => ({ ...await original<typeof import('../../lib/api.js')>(), api: server, createApiClient: () => server }));
@@ -57,7 +58,7 @@ describe('Settings → Google sign-in', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Saved. The next Google sign-in uses this client.');
     expect(server.PUT).toHaveBeenCalledWith('/api/settings/integrations/google',
-      { body: { revision: 3, clientId: 'gym-client.apps.googleusercontent.com', clientSecret: 'gym-secret' } });
+      { signal: expect.any(AbortSignal), body: { revision: 3, clientId: 'gym-client.apps.googleusercontent.com', clientSecret: 'gym-secret' } });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['shell', 'bootstrap'] });
     expect(screen.getByText('Client ID: gym-client.apps.googleusercontent.com')).toBeDefined();
     expect(screen.getByText('Client secret: set')).toBeDefined();
@@ -85,7 +86,7 @@ describe('Settings → Google sign-in', () => {
     server.DELETE.mockImplementation(async () => { google = { ...off, revision: 4 }; return reply(200, { data: google }); });
     await userEvent.click(screen.getByRole('button', { name: 'Turn off Google sign-in' }));
     expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Google sign-in is off.');
-    expect(server.DELETE).toHaveBeenLastCalledWith('/api/settings/integrations/google', { body: { revision: 3 } });
+    expect(server.DELETE).toHaveBeenLastCalledWith('/api/settings/integrations/google', { signal: expect.any(AbortSignal), body: { revision: 3 } });
     expect(screen.getByLabelText('Client ID')).toBeDefined();
   });
   it('says when the settings could not be loaded', async () => {
@@ -93,5 +94,20 @@ describe('Settings → Google sign-in', () => {
     section();
     expect(await screen.findByText('Google sign-in settings could not be loaded.')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Reload' })).toBeDefined();
+  });
+  it('aborts a save that times out', async () => {
+    section();
+    expect(await screen.findByText(/Google sign-in is off/)).toBeDefined();
+    const stalled = stalledRequests(), timers = holdTimeouts();
+    try {
+      server.PUT.mockImplementation(stalled.answer);
+      await userEvent.type(screen.getByLabelText('Client ID'), 'gym-client.apps.googleusercontent.com');
+      await userEvent.type(screen.getByLabelText('Client secret'), 'gym-secret');
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(stalled.signals).toHaveLength(1));
+      timers.expire();
+      expect(stalled.signals[0]!.aborted).toBe(true);
+      expect(await screen.findByRole('alert')).toBeDefined();
+    } finally { timers.restore(); }
   });
 });

@@ -6,7 +6,7 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { CheckboxField } from '../../../components/ui/select.js';
-import { integrationsOf, text, type ChangeResult, type useIntegrations } from './state.js';
+import { failedText, integrationsOf, refusedText, text, type ChangeResult, type useIntegrations } from './state.js';
 
 const label = (key: string) => text('payments.' + key);
 const refusals: Record<string, string> = { missing_permission: 'missingPermission', account_locked: 'accountLocked', mode_locked: 'modeLocked',
@@ -16,7 +16,7 @@ type Message = { kind: 'status' | 'alert'; text: string };
 function refusal(reply: ChangeResult<unknown>, mode: PaymentsIntegration['mode']): Message {
   const reason = reply.reason === 'mode_locked' && mode === 'live' ? 'modeLockedLive' : reply.reason ? refusals[reply.reason] : undefined;
   return { kind: 'alert', text: reason ? label(reason)
-    : reply.status === 409 ? text('conflict') : reply.status === 400 ? label('invalid') : label('failed') };
+    : reply.status === 409 ? refusedText(reply) : reply.status === 400 ? label('invalid') : label('failed') };
 }
 
 /**
@@ -30,8 +30,8 @@ export function PaymentsIntegrationSection({ payments, lastEventAt, state }: {
 }) {
   const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [switchKey, setSwitchKey] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
-  const send = (restrictedKey: string, clearTestData: boolean) => state.change((revision) => api.PUT('/api/settings/integrations/stripe',
-    { body: { revision, restrictedKey, ...(clearTestData ? { clearTestData } : {}) } }), integrationsOf);
+  const send = (restrictedKey: string, clearTestData: boolean) => state.change((revision, signal) => api.PUT('/api/settings/integrations/stripe',
+    { signal, body: { revision, restrictedKey, ...(clearTestData ? { clearTestData } : {}) } }), integrationsOf);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage(null); setSwitchKey(null);
     if (!/^rk_(test|live)_[A-Za-z0-9]+$/.test(key)) { setMessage({ kind: 'alert', text: label('invalid') }); return; }
@@ -41,7 +41,7 @@ export function PaymentsIntegrationSection({ payments, lastEventAt, state }: {
       if (reply.status < 300) setMessage({ kind: 'status', text: label('saved') });
       else if (reply.reason === 'mode_locked' && payments.mode === 'test' && key.startsWith('rk_live_')) setSwitchKey(key);
       else setMessage(refusal(reply, payments.mode));
-    } catch { setMessage({ kind: 'alert', text: text('error') }); }
+    } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setKey(''); setBusy(false); }
   }
   async function confirmSwitch(event: FormEvent<HTMLFormElement>) {
@@ -52,7 +52,7 @@ export function PaymentsIntegrationSection({ payments, lastEventAt, state }: {
       const reply = await send(switchKey, true);
       if (reply.status < 300) { setSwitchKey(null); setMessage({ kind: 'status', text: label('switched') }); }
       else setMessage(refusal(reply, payments.mode));
-    } catch { setMessage({ kind: 'alert', text: text('error') }); }
+    } catch (error) { setMessage({ kind: 'alert', text: failedText(error) }); }
     finally { setBusy(false); }
   }
   const counts = payments.testData;

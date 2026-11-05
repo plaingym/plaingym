@@ -2,7 +2,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { gyms } from '../../../db/src/schema/index.js';
 import {
-  gymSettingsSchema, gymTimezoneSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema,
+  gymSettingsSchema, gymTimezoneSchema, setupTimezoneSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema,
   updateGymCurrencyRequestSchema, updateGoLiveRequestSchema, updateDropInSettingsRequestSchema, settingsContracts,
   errorResponse, AppError, type GymSettings, type BookingRules, type GoLiveSwitches,
 } from './index.js';
@@ -78,6 +78,10 @@ describe('gym settings contracts', () => {
     expect(request('america/vancouver')).toMatchObject({ success: true, data: { timezone: 'America/Vancouver' } });
     expect(request('utc')).toMatchObject({ success: true, data: { timezone: 'UTC' } });
     expect(gymTimezoneSchema.parse('AMERICA/VANCOUVER')).toBe('America/Vancouver');
+    // Spaces around a pasted zone are dropped, so setup, settings and `gyms create` accept the same input.
+    expect(gymTimezoneSchema.parse(' America/Vancouver\t')).toBe('America/Vancouver');
+    expect(setupTimezoneSchema.parse(' utc ')).toBe('UTC');
+    expect(request('   ').success).toBe(false);
     // Current names are kept, though `Intl` resolves them to retired ones (`Asia/Calcutta`, `Europe/Kiev`); a link stays as given.
     for (const [typed, stored] of [['asia/kolkata', 'Asia/Kolkata'], ['Europe/Kyiv', 'Europe/Kyiv'], ['America/Nuuk', 'America/Nuuk'], ['us/pacific', 'US/Pacific']] as const)
       expect(gymTimezoneSchema.parse(typed)).toBe(stored);

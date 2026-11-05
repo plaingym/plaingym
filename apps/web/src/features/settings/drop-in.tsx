@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { ChargeType } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
 import { api } from '../../lib/api.js';
-import { useGymSettings } from './gym-settings.js';
+import { SaveTimeoutError, useGymSettings } from './gym-settings.js';
 import { t } from '../../lib/i18n.js';
 import { billingClient } from '../billing/catalog/api.js';
 import { money } from '../billing/catalog/format.js';
@@ -39,18 +39,18 @@ export function DropInSettings() {
     if (choice && !charges.find((charge) => charge.id === choice)?.active) { setMessage(text('archivedChoice')); return; }
     setBusy(true);
     try {
-      const result = await gym.save((revision) => api.PATCH('/api/settings/drop-in', { body: { revision, dropInChargeTypeId: choice || null } }));
+      const result = await gym.save((revision, signal) => api.PATCH('/api/settings/drop-in', { signal, body: { revision, dropInChargeTypeId: choice || null } }));
       if (result.status >= 300) {
         // A 409 is a changed revision (the hook reloads the settings) or a charge type archived since, and a 404 a charge
         // type removed since; reload the list in both.
         if (result.status === 409 || result.status === 404) void loadCharges();
-        setMessage(text(result.status === 409 ? 'conflict' : result.status === 404 ? 'missing' : 'error'));
+        setMessage(text(result.status === 409 ? (result.moved ? 'conflict' : 'conflictKept') : result.status === 404 ? 'missing' : 'error'));
         return;
       }
       setChoice(result.settings.dropInChargeTypeId ?? ''); setMessage(text('saved'));
       // Every gym settings save refreshes the shell's cached gym summary, so it never lags a save made here.
       void cache.invalidateQueries({ queryKey: bootstrapKey });
-    } catch { setMessage(text('error')); }
+    } catch (error) { setMessage(text(error instanceof SaveTimeoutError ? 'timeout' : 'error')); }
     finally { setBusy(false); }
   }
   if (!settings || !charges) return failed

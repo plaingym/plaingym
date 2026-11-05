@@ -70,9 +70,9 @@ export function GoogleLoginSettings() {
   if (!google || (google.source === 'none' && !google.editable)) return null;
 
   /** Goes through the settings page's save queue with its one gym revision; the reply's revision is adopted. */
-  async function change(send: (revision: number) => Promise<Reply>): Promise<{ status: number; reason: string | null }> {
-    const saved = await gym.save(async (revision) => {
-      const reply = await send(revision);
+  async function change(send: (revision: number, signal: AbortSignal) => Promise<Reply>): Promise<{ status: number; reason: string | null }> {
+    const saved = await gym.save(async (revision, signal) => {
+      const reply = await send(revision, signal);
       return { response: reply.response, data: reply.response.ok ? reply.data : reply.error };
     }, { adopt: (data, current) => ({ ...current, revision: googleLoginResponseSchema.parse(data).data.revision }) });
     if (saved.status < 300) {
@@ -91,7 +91,7 @@ export function GoogleLoginSettings() {
     const form = new FormData(event.currentTarget), field = (name: string) => String(form.get(name) ?? '').trim();
     setBusy('save');
     try {
-      const reply = await change((revision) => api.PUT('/api/settings/integrations/google', { body: { revision, clientId: field('clientId'), clientSecret: field('clientSecret') } }));
+      const reply = await change((revision, signal) => api.PUT('/api/settings/integrations/google', { signal, body: { revision, clientId: field('clientId'), clientSecret: field('clientSecret') } }));
       if (reply.status < 300) { setMessage({ kind: 'status', text: label('saved') }); setOpen(false); }
       else failure(reply.status, reply.reason);
     } catch { setMessage({ kind: 'alert', text: label('error') }); }
@@ -100,7 +100,7 @@ export function GoogleLoginSettings() {
   async function remove() {
     setMessage(null); setBusy('remove');
     try {
-      const reply = await change((revision) => api.DELETE('/api/settings/integrations/google', { body: { revision } }));
+      const reply = await change((revision, signal) => api.DELETE('/api/settings/integrations/google', { signal, body: { revision } }));
       if (reply.status < 300) setMessage({ kind: 'status', text: label('removed') });
       else failure(reply.status, reply.reason);
     } catch { setMessage({ kind: 'alert', text: label('error') }); }

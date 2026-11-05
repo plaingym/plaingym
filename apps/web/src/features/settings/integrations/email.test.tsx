@@ -6,7 +6,8 @@ import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { createRegistries } from '../../../lib/registries.js';
 import { IntegrationsSettings } from './section.js';
-import { integrations, refusal, renderSection, reply, serve } from './fixtures.test-helper.js';
+import { integrations, refusal, renderSection, reply, serve, settings } from './fixtures.test-helper.js';
+import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
@@ -45,7 +46,7 @@ describe('Settings → Email', () => {
     client.PUT.mockResolvedValue(reply(200, { data: { test: 'sent', integrations: gymEmail } }));
     await user.click(within(form).getByRole('checkbox', { name: /I understand/ }));
     await user.click(within(form).getByRole('button', { name: 'Send test email and save' }));
-    expect(client.PUT).toHaveBeenCalledWith('/api/settings/integrations/email', { body: { revision: 3, host: 'smtp.postmarkapp.com', port: 587, secure: false,
+    expect(client.PUT).toHaveBeenCalledWith('/api/settings/integrations/email', { signal: expect.any(AbortSignal), body: { revision: 3, host: 'smtp.postmarkapp.com', port: 587, secure: false,
       username: 'user', password: 'smtp-secret', from: 'desk@gym.test', testTo: 'owner@gym.test' } });
     expect((await screen.findByRole('status')).textContent).toContain('Test email sent');
     expect(screen.getByText('Sends through your own SMTP service: smtp.gym.test, port 465 (TLS), from desk@gym.test.')).toBeDefined();
@@ -74,7 +75,7 @@ describe('Settings → Email', () => {
     const user = userEvent.setup(); renderSection();
     expect(await screen.findByText('Removing changes sign-in to: passwords.')).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
-    expect(client.DELETE).toHaveBeenCalledWith('/api/settings/integrations/email', { body: { revision: 3 } });
+    expect(client.DELETE).toHaveBeenCalledWith('/api/settings/integrations/email', { signal: expect.any(AbortSignal), body: { revision: 3 } });
     expect((await screen.findByRole('status')).textContent).toContain('removed');
   });
   it('names only the action in progress, and forgets a removed host', async () => {
@@ -115,5 +116,33 @@ describe('Settings → Email', () => {
     await user.click(await screen.findByRole('button', { name: 'Remove (the gym will have no email)' }));
     expect((await screen.findByRole('alert')).textContent).toContain('only way to sign in');
     expect(document.body.textContent).not.toContain('private server text');
+  });
+  it('aborts a change that times out, reloads, and says it may still have gone through', async () => {
+    current = gymEmail;
+    const user = userEvent.setup(); renderSection();
+    const remove = await screen.findByRole('button', { name: 'Remove (the gym will have no email)' });
+    const stalled = stalledRequests(), timers = holdTimeouts();
+    try {
+      client.DELETE.mockImplementation(stalled.answer);
+      await user.click(remove);
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      timers.expire();
+      expect(stalled.signals[0]!.aborted).toBe(true);
+      expect((await screen.findByRole('alert')).textContent).toContain('may still have gone through');
+      expect(screen.queryByText(/The request failed/)).toBeNull();
+    } finally { timers.restore(); }
+  });
+  it('words a conflict by whether the latest settings are shown', async () => {
+    current = gymEmail;
+    const user = userEvent.setup(); renderSection();
+    client.DELETE.mockResolvedValue(reply(409));
+    await user.click(await screen.findByRole('button', { name: 'Remove (the gym will have no email)' }));
+    // The gym revision didn't move: what the section shows stays.
+    expect((await screen.findByRole('alert')).textContent).toContain('so this change wasn’t saved');
+    // Another tab saved: the reload brings the latest settings.
+    const read = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: { ...settings, revision: 4 } }) : read(path));
+    await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The latest saved settings are shown'));
   });
 });

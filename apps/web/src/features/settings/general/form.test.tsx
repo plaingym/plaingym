@@ -53,7 +53,7 @@ describe('general settings timezone', () => {
     fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
     const error = await within(general).findByRole('alert');
     expect(error.textContent).toContain('Use UTC or a region such as America/Vancouver');
-    expect(client.PATCH).toHaveBeenCalledWith('/api/settings', { body: expect.objectContaining({ timezone: 'PST' }) });
+    expect(client.PATCH).toHaveBeenCalledWith('/api/settings', { signal: expect.any(AbortSignal), body: expect.objectContaining({ timezone: 'PST' }) });
     expect(field.getAttribute('aria-invalid')).toBe('true');
     expect(field.getAttribute('aria-describedby')).toContain(error.id);
     // The refusal is about the field, not the page: no generic failure message, and the typed value stays.
@@ -84,6 +84,41 @@ describe('general settings timezone', () => {
     const field = within(screen.getByRole('form', { name: 'Gym details' })).getByLabelText('Timezone');
     expect(within(screen.getByRole('form', { name: 'Gym details' })).queryByRole('alert')).toBeNull();
     expect(field.getAttribute('aria-invalid')).toBe('false');
+  });
+  it('shows every field the server refused at its own input, and clears each one as it is edited', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.',
+      details: { name: ['invalid'], timezone: ['invalid_timezone'], 'address.country': ['invalid'], existingSiteUrl: ['invalid'], 'branding.logoKey': ['invalid'] } }, requestId: 'r' } });
+    const general = await renderForm(settings);
+    fireEvent.change(within(general).getByLabelText('Timezone'), { target: { value: 'PST' } });
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    await vi.waitFor(() => expect(within(general).getAllByRole('alert')).toHaveLength(5));
+    const said = { 'Gym name': 'Enter the gym', Timezone: 'Use UTC or a region', 'Country code': 'two-letter country code',
+      'Existing website URL': 'http:// or https://', 'Logo storage key': 'This value can' };
+    for (const [label, text] of Object.entries(said)) {
+      const input = within(general).getByLabelText(label);
+      expect(input.getAttribute('aria-invalid'), label).toBe('true');
+      const error = document.getElementById(input.getAttribute('aria-describedby')!.split(' ').pop()!)!;
+      expect(error.textContent, label).toContain(text);
+    }
+    // The timezone keeps its help text beside its error.
+    expect(within(general).getByLabelText('Timezone').getAttribute('aria-describedby')).toMatch(/-timezone-help /);
+    expect(within(general).getByLabelText('Street address').getAttribute('aria-invalid')).toBe('false');
+    // Every refused field has its place in the form, so the page shows no generic failure.
+    expect(screen.queryByText('Unable to save or load settings.')).toBeNull();
+    fireEvent.change(within(general).getByLabelText('Country code'), { target: { value: 'CA' } });
+    expect(within(general).getByLabelText('Country code').getAttribute('aria-invalid')).toBe('false');
+    expect(within(general).getAllByRole('alert')).toHaveLength(4);
+    expect(within(general).getByLabelText('Gym name').getAttribute('aria-invalid')).toBe('true');
+  });
+  it('adds the page message when a refusal also names something the form has no input for', async () => {
+    client.PATCH.mockReset();
+    client.PATCH.mockResolvedValueOnce({ response: { ok: false, status: 400 }, error: { error: { code: 'invalid_request', message: 'The request is invalid.',
+      details: { name: ['invalid'], revision: ['invalid'] } }, requestId: 'r' } });
+    const general = await renderForm(settings);
+    fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Unable to save or load settings.')).toBeDefined();
+    expect(within(general).getByLabelText('Gym name').getAttribute('aria-invalid')).toBe('true');
   });
   it('keeps the generic message for a 400 about another field', async () => {
     client.PATCH.mockReset();
@@ -121,7 +156,7 @@ describe('general settings and the cached shell summary', () => {
     const currency = await screen.findByRole('form', { name: 'Billing currency' });
     fireEvent.change(within(currency).getByLabelText('Billing currency'), { target: { value: 'usd' } });
     fireEvent.click(within(currency).getByRole('button', { name: 'Save changes' }));
-    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings/currency', { body: { revision: 3, currency: 'USD' } }));
+    await vi.waitFor(() => expect(client.PATCH).toHaveBeenCalledWith('/api/settings/currency', { signal: expect.any(AbortSignal), body: { revision: 3, currency: 'USD' } }));
     expect(await within(editor).findByLabelText('Amount (USD)')).toBeDefined();
     expect(loadBootstrap).toHaveBeenCalledTimes(2);
 
@@ -130,6 +165,6 @@ describe('general settings and the cached shell summary', () => {
     fireEvent.change(within(general).getByLabelText('Timezone'), { target: { value: 'America/Toronto' } });
     fireEvent.click(within(general).getByRole('button', { name: 'Save changes' }));
     await vi.waitFor(() => expect(loadBootstrap).toHaveBeenCalledTimes(3));
-    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings', { body: expect.objectContaining({ revision: 4, timezone: 'America/Toronto' }) });
+    expect(client.PATCH).toHaveBeenLastCalledWith('/api/settings', { signal: expect.any(AbortSignal), body: expect.objectContaining({ revision: 4, timezone: 'America/Toronto' }) });
   });
 });

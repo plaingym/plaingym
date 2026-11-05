@@ -10,6 +10,8 @@
   "reload": "Reload saved schedule",
   "saved": "Retry schedule saved.",
   "conflict": "Settings changed elsewhere. The latest saved schedule is shown; review it and try again.",
+  "conflictKept": "Something changed elsewhere, so the schedule wasn’t saved. Your entry is still here; reload the saved schedule to see the latest, then try again.",
+  "timeout": "The save took too long to answer and may still have gone through. Check the schedule shown before saving again.",
   "error": "The request failed. Please try again.",
   "loading": "Loading billing settings…"
 }
