@@ -125,7 +125,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
     if (await mutate(action === 'freeze' ? 'freezeMembership' : 'resumeMembership', { revision: row.revision, ...input }, row.id)) setAction(null);
   }
   return <li className="min-w-0 space-y-3 rounded-lg border p-4">
-    <div><h3 className="break-words font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
+    <div><h3 className="font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
       {customPrice && <p className="text-sm text-muted-foreground">{text('customPrice')} ({text('planPrice')}: {money(plan.amountCents, plan.currency)})</p>}</div>
     <dl className="grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-2">
       <div><dt className="text-muted-foreground">{text('nextDueOn')}</dt><dd>{row.nextDueOn}</dd></div>

@@ -28,6 +28,37 @@ describe('shared page components', () => {
     render(<Page><p className="wrap-normal">{'reset'}</p></Page>);
     expect(breaksAnywhere(screen.getByText('reset'))).toBe(false);
   });
+  it('decides by the generated rule order, not the class order, and honors rules from ancestors', () => {
+    // `wrap-normal` is emitted after `wrap-anywhere`, so it wins whichever order the classes are written in.
+    render(<><p className="wrap-anywhere wrap-normal">{'one'}</p><p className="wrap-normal wrap-anywhere">{'two'}</p></>);
+    expect(breaksAnywhere(screen.getByText('one'))).toBe(false);
+    expect(breaksAnywhere(screen.getByText('two'))).toBe(false);
+    // A descendant rule on an ancestor (`[&_table]:wrap-normal`) reaches the cell, and beats the cell's own inherited value.
+    render(<Page><table><tbody><tr><td>{'cell'}</td></tr></tbody></table><TableContainer label="Scroller"><table><tbody><tr><td>{'boxed'}</td></tr></tbody></table></TableContainer></Page>);
+    expect(breaksAnywhere(screen.getByText('cell'))).toBe(false);
+    expect(breaksAnywhere(screen.getByText('boxed'))).toBe(false);
+    // A rule that sits behind a variant doesn't apply to a resting element.
+    render(<p className="hover:wrap-anywhere">{'hover'}</p>);
+    expect(breaksAnywhere(screen.getByText('hover'))).toBe(false);
+  });
+  it('scores pseudo-class wrappers by what a browser counts', () => {
+    // `:first-child` (0,2,0) beats `:where(:is(ul)) .in-[ul]` (0,1,0), though the latter is emitted later.
+    render(<ul><li className="first:wrap-anywhere in-[ul]:wrap-normal">{'first'}</li></ul>);
+    expect(breaksAnywhere(screen.getByText('first'))).toBe(true);
+    // `:has(:is(p))` adds a type (0,1,1), so `:first-child` (0,2,0) still wins.
+    render(<div><div className="first:wrap-normal has-[p]:wrap-anywhere"><p>{'has'}</p></div></div>);
+    expect(breaksAnywhere(screen.getByText('has'))).toBe(false);
+  });
+  it('keeps app labels whole beside a long name, and lets a button that carries a name wrap it', () => {
+    const long = 'U'.padEnd(56, 'x');
+    render(<Page><PageSection title="Programs"><ul><li><span>{long}</span><Badge tone="success">Active</Badge><Button>Save</Button>
+      <Button className="wrap-anywhere">{'Edit ' + long}</Button></li></ul></PageSection></Page>);
+    expect(breaksAnywhere(screen.getByText(long))).toBe(true);
+    expect(breaksAnywhere(screen.getByText('Active'))).toBe(false);
+    expect(screen.getByText('Active').className).toContain('shrink-0');
+    expect(breaksAnywhere(screen.getByRole('button', { name: 'Save' }))).toBe(false);
+    expect(breaksAnywhere(screen.getByRole('button', { name: 'Edit ' + long }))).toBe(true);
+  });
   it('wraps titles used outside a page', () => {
     const long = 'U'.padEnd(56, 'x');
     render(<><PageHeader title={long + 'a'} /><PageSection title={long + 'b'}><p>body</p></PageSection></>);

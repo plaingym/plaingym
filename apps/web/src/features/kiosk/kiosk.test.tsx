@@ -8,6 +8,7 @@ import { playTone } from './feedback.js';
 import { qrCheckin } from './qr.api.js';
 import { scanQrCamera } from './qr.scanner.js';
 import { KioskApp } from './kiosk.js';
+import { breaksAnywhere } from '../../components/ui/wrap.test-helper.js';
 
 vi.mock('./api.js', async (original) => ({ ...await original<typeof import('./api.js')>(),
   kioskApi: { lookup: vi.fn(), checkin: vi.fn() }, readToken: vi.fn(), saveToken: vi.fn(), forgetToken: vi.fn() }));
@@ -138,6 +139,15 @@ describe('kiosk check-in screen', () => {
     expect(screen.getByText('Checked in')).toBeDefined();
     expect(playTone).toHaveBeenCalledWith('success');
   });
+  it('wraps a class name with no break opportunity inside its button and keeps the other labels whole', async () => {
+    const long = 'Fundamentals'.padEnd(56, 'x');
+    vi.mocked(kioskApi.checkin).mockResolvedValue([{ status: 'select_session', member: parent, sessions: [{ ...session, name: long }] }]);
+    render(<KioskApp/>);
+    await submit();
+    expect(breaksAnywhere(screen.getByRole('button', { name: new RegExp(long) }))).toBe(true);
+    expect(breaksAnywhere(screen.getByRole('button', { name: 'Open mat' }))).toBe(false);
+  });
+
   it('keeps the current household roster only in memory and clears it on Done', async () => {
     vi.mocked(kioskApi.checkin).mockResolvedValueOnce([{ status: 'checked_in', member: parent }, { status: 'checked_in', member: child }]);
     render(<KioskApp/>);

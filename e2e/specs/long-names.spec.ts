@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
-import type { Page } from '@playwright/test';
-import { test, expect, createClass, demoClient, Client, type Person, type RecordId, type Sandbox } from '../support.js';
-import { horizontalOverflow } from '../responsive.js';
+import type { Locator, Page } from '@playwright/test';
+import { test, expect, createClass, demoClient, Client, type Person, type Program, type RecordId, type Sandbox } from '../support.js';
+import { accessibleLayout, horizontalOverflow } from '../responsive.js';
 import { claimPortal, outboxIds, outboxLink } from '../portal.js';
 
 // Cookies and links are bearer credentials. Keep them out of traces and screenshots.
@@ -13,6 +13,14 @@ const unbreakable = (prefix: string) => (prefix + randomBytes(2).toString('hex')
 
 async function noSideways(page: Page, surface: string) {
   expect(await horizontalOverflow(page), surface + ': horizontal scroll at 360 px').toBeUndefined();
+}
+/** Whether a label sits on one line. A word that breaks in the middle has a line box for each piece. */
+async function onOneLine(label: Locator) {
+  return label.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return new Set([...range.getClientRects()].map((box) => Math.round(box.top))).size === 1;
+  });
 }
 async function admin(page: Page, sandbox: Sandbox, owner: Client, path: string) {
   await owner.browser(page.context());
@@ -85,7 +93,39 @@ test('the campaigns list wraps a campaign name with no break opportunity', async
   await noSideways(page, 'campaign recipients');
 });
 
-test('the portal schedule wraps class and member names with no break opportunity', async ({ page, sandboxes }) => {
+test('the ranks page wraps a program name and keeps the status badge beside it whole', async ({ page, sandboxes }) => {
+  const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Zetaprogram');
+  const first = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data.find((program) => program.rankSystemId)!;
+  await owner.json('/api/programs', 'POST', { name, rankSystemId: first.rankSystemId, active: true });
+  // A coach reads the programs as a list with a status badge; an owner edits them in forms.
+  await admin(page, sandbox, await demoClient(sandbox, 'coach'), '/admin/ranks');
+  const row = page.getByRole('listitem').filter({ hasText: name });
+  await expect(row).toBeVisible();
+  const badge = row.getByText('Active', { exact: true });
+  await expect(badge).toBeVisible();
+  expect(await onOneLine(badge), 'the badge keeps its word beside a long name').toBe(true);
+  await noSideways(page, 'ranks page');
+});
+
+test('the member profile and its attendance breakdown wrap long names', async ({ page, sandboxes }) => {
+  const { sandbox, owner } = await sandboxOwner(sandboxes), program = unbreakable('Zetabreakdown');
+  const first = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data.find((item) => item.rankSystemId)!;
+  const created = (await owner.json<{ data: Program }>('/api/programs', 'POST', { name: program, rankSystemId: first.rankSystemId, active: true })).data;
+  const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: unbreakable('Home') })).data;
+  const lastName = unbreakable('Member').slice(0, 55);
+  const member = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'M', lastName, status: 'active' })).data;
+  await owner.json('/api/attendance', 'POST', { memberId: member.id, sessionId: null, programId: created.id });
+  await admin(page, sandbox, owner, '/admin/members/' + member.id);
+  await expect(page.getByRole('heading', { level: 1, name: 'M ' + lastName })).toBeVisible();
+  await noSideways(page, 'member profile');
+  await page.getByRole('tab', { name: 'Attendance', exact: true }).click();
+  const breakdown = page.getByRole('region', { name: 'Visits by program' });
+  await expect(breakdown.getByText(program, { exact: true })).toBeVisible();
+  // The table keeps its column width and scrolls in its own region, so a long program name can't widen the profile.
+  await noSideways(page, 'attendance breakdown');
+});
+
+test('the portal schedule wraps class and member names with no break opportunity', async ({ page, sandboxes }, info) => {
   test.setTimeout(180_000);
   const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Unbreakable'), email = `wrap-${randomBytes(4).toString('hex')}@example.invalid`;
   const session = await createClass(owner, name);
@@ -107,5 +147,6 @@ test('the portal schedule wraps class and member names with no break opportunity
   await expect(loading).toHaveCount(0);
   await expect(page.getByText(name, { exact: true })).toBeVisible();
   await expect(page.getByRole('list', { name: 'Household places' }).getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
-  await noSideways(page, 'portal schedule');
+  // The full layout check (axe, touch targets, horizontal scroll).
+  await accessibleLayout(page, info, 'portal schedule');
 });

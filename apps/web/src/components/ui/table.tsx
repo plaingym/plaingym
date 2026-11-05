@@ -19,5 +19,5 @@ export function Badge({ tone = 'default', className, ...props }: ComponentProps<
     default: 'bg-secondary text-secondary-foreground', success: 'bg-success/10 text-success', warning: 'bg-warning/10 text-warning',
     destructive: 'bg-destructive/10 text-destructive', muted: 'bg-muted text-muted-foreground',
   };
-  return <span className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium', tones[tone], className)} {...props} />;
+  return <span className={cn('inline-flex shrink-0 items-center rounded-full wrap-normal px-2.5 py-0.5 text-xs font-medium', tones[tone], className)} {...props} />;
 }

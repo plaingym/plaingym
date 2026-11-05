@@ -51,11 +51,11 @@ function Profile({ memberId, gymId, roles, enabledModules }: { memberId: string;
       {member.anonymizedAt ? <Alert>{text('anonymized')}</Alert> : <div className="grid items-start gap-6 lg:grid-cols-2"><div className="min-w-0 space-y-6">
         <Panel title="profile">{manage ? <MemberForm member={member} householdId={member.householdId}/> : <>
           <dl className="grid gap-3 sm:grid-cols-2">{(['status', 'email', 'phone', 'dateOfBirth'] as const).map((field) => <div key={field} className="min-w-0"><dt className="text-sm text-muted-foreground">{text(field)}</dt>
-            <dd className="break-words">{field === 'status' ? text('status.' + member.status) : member[field] || '—'}</dd></div>)}</dl>
+            <dd>{field === 'status' ? text('status.' + member.status) : member[field] || '—'}</dd></div>)}</dl>
           <h3 className="font-medium">{text('emergencyContacts')}</h3>
           {member.emergencyContacts.length ? <ul className="space-y-2">{member.emergencyContacts.map((contact, index) => <li key={index} className="rounded-lg border border-border p-3">
             <p className="font-medium">{contact.name}{contact.relationship && <span className="font-normal text-muted-foreground"> · {contact.relationship}</span>}</p>
-            <p className="break-words text-sm">{contact.phone}{contact.email && ' · ' + contact.email}</p></li>)}</ul>
+            <p className="text-sm">{contact.phone}{contact.email && ' · ' + contact.email}</p></li>)}</ul>
             : <p className="text-sm text-muted-foreground">{text('noContacts')}</p>}
         </>}</Panel>
         <Photo member={member} manage={manage}/><MemberTags gymId={gymId} memberId={memberId} manage={canStaff(roles, 'tags.manage')}/>
@@ -84,7 +84,7 @@ function MedicalNotes({ gymId, memberId, manage }: { gymId: string; memberId: st
 }
 function MedicalForm({ notes, manage }: { notes: c.MemberMedicalNotes; manage: boolean }) {
   const draft = useDraft({ medicalNotes: notes.medicalNotes ?? '' }), state = useMemberSave(), value = draft.values.medicalNotes;
-  if (!manage) return value ? <p className="whitespace-pre-wrap break-words">{value}</p> : <p className="text-sm text-muted-foreground">{text('noMedicalNotes')}</p>;
+  if (!manage) return value ? <p className="whitespace-pre-wrap">{value}</p> : <p className="text-sm text-muted-foreground">{text('noMedicalNotes')}</p>;
   return <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void state.save(async () => {
     const { medicalNotes } = draft.changes();
     if (medicalNotes === undefined) return;

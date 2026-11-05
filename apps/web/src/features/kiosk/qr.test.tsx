@@ -6,6 +6,7 @@ import { QrCheckin } from './qr.js';
 import { qrCheckin } from './qr.api.js';
 import { KioskAuthError } from './api.js';
 import { scanQrCamera } from './qr.scanner.js';
+import { breaksAnywhere } from '../../components/ui/wrap.test-helper.js';
 
 vi.mock('./qr.api.js', () => ({ qrCheckin: vi.fn() }));
 vi.mock('./qr.scanner.js', () => ({ scanQrCamera: vi.fn() }));
@@ -37,6 +38,14 @@ it('scans, prompts for a class or open mat, then clears the person and code', as
   fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
   expect(screen.queryByText('Dana P.')).toBeNull(); expect(stop).toHaveBeenCalled();
   expect(props.onClose).toHaveBeenCalledOnce();
+});
+it('wraps a class name with no break opportunity inside its button and keeps the other labels whole', async () => {
+  const long = 'Fundamentals'.padEnd(56, 'x');
+  vi.mocked(qrCheckin).mockResolvedValue({ status: 'select_session', member,
+    sessions: [{ id: '00000000-0000-7000-8000-000000000003', name: long, startsAt: '2026-10-22T18:00:00Z', endsAt: '2026-10-22T19:00:00Z' }] });
+  render(<QrCheckin {...flow()}/>); await start(); await scan();
+  expect(breaksAnywhere(screen.getByRole('button', { name: new RegExp(long) }))).toBe(true);
+  expect(breaksAnywhere(screen.getByRole('button', { name: 'Open mat' }))).toBe(false);
 });
 it('shows only the neutral message for a revoked code or standing failure', async () => {
   vi.mocked(qrCheckin).mockResolvedValue({ status: 'see_front_desk' });

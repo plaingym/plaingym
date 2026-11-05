@@ -15,7 +15,7 @@ export function Autocomplete({ label, value, query, options, onQueryChange, onCh
   useEffect(() => { input.current?.setCustomValidity(required && !value ? t('shell/shell:selectSuggestion') : ''); }, [required, value]);
   useEffect(() => { if (open) document.getElementById(id + '-option-' + active)?.scrollIntoView?.({ block: 'nearest' }); }, [active, open, id]);
   function choose(item: { id: string; label: string }) { onQueryChange(item.label); onChange(item.id); setOpen(false); }
-  return <div className="min-w-0 space-y-2">
+  return <div className="min-w-0 space-y-2 wrap-anywhere">
     <Label htmlFor={id}>{label}</Label>
     <Input ref={input} id={id} role="combobox" autoComplete="off" value={query} required={required}
       aria-autocomplete="list" aria-expanded={open} aria-controls={listId} aria-activedescendant={option ? id + '-option-' + active : undefined}
@@ -33,7 +33,7 @@ export function Autocomplete({ label, value, query, options, onQueryChange, onCh
     {open && <div className="rounded-lg border border-input bg-background p-1">
       <ul id={listId} role="listbox" aria-label={label} className="max-h-56 overflow-y-auto">
         {!loading && options.map((item, index) => <li key={item.id} id={id + '-option-' + index} role="option" aria-selected={item.id === value}
-          className={'flex min-h-11 cursor-pointer items-center rounded px-3 py-2 text-sm ' + (index === active ? 'bg-secondary' : '')}
+          className={'flex min-h-11 cursor-pointer items-center rounded px-3 py-2 text-sm wrap-anywhere ' + (index === active ? 'bg-secondary' : '')}
           onPointerMove={() => setActive(index)} onMouseDown={event => event.preventDefault()} onClick={() => choose(item)}>{item.label}</li>)}
       </ul>
       <p role="status" className="px-3 py-2 text-sm text-muted-foreground">{t(loading ? 'shell/shell:loading' : options.length ? 'shell/shell:suggestionsHelp' : 'shell/shell:noSuggestions')}</p>

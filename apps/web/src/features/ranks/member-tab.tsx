@@ -54,10 +54,10 @@ export function MemberRanksPanel({ gymId, memberId, promote, client = ranksClien
       <ol className="space-y-3">{history.data.map((entry) => {
         const rank = catalog.data.ranks.find((item) => item.id === entry.rankId);
         return <li key={entry.id} className="space-y-1 rounded-lg border border-border p-3" data-rank-system={entry.rankSystemId}>
-          <p className="break-words font-medium">{catalog.data.programs.find((item) => item.id === entry.programId)?.name} — {rank?.name} {entry.subRank > 0 ? rank?.subRanks[entry.subRank - 1]?.name ?? entry.subRank : ''}</p>
+          <p className="font-medium">{catalog.data.programs.find((item) => item.id === entry.programId)?.name} — {rank?.name} {entry.subRank > 0 ? rank?.subRanks[entry.subRank - 1]?.name ?? entry.subRank : ''}</p>
           <p className="text-sm text-muted-foreground">{text('system')}: {catalog.data.systems.find((item) => item.id === entry.rankSystemId)?.name}</p>
           <p className="text-sm"><time dateTime={entry.promotedAt}>{new Date(entry.promotedAt).toLocaleString()}</time></p>
-          {entry.notes && <p className="whitespace-pre-wrap break-words">{entry.notes}</p>}
+          {entry.notes && <p className="whitespace-pre-wrap">{entry.notes}</p>}
         </li>;
       })}</ol>
     </div>

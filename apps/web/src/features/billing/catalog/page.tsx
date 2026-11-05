@@ -7,7 +7,9 @@ import { useBootstrap } from '../../../app/context.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
 import { Card } from '../../../components/ui/card.js';
+import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
+import { cn } from '../../../lib/utils.js';
 import { billingClient, type BillingClient } from './api.js';
 import { ArchiveConfirmation, CatalogEditor, say, type CatalogKind, type CatalogRecord } from './editor.js';
 import { money, saveError, text } from './format.js';
@@ -67,7 +69,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     await cache.invalidateQueries({ queryKey: key });
   });
   const switchTo = (value: CatalogKind) => { setKind(value); setEditor(null); setArchive(null); setMessage(''); };
-  return <div className="min-w-0 space-y-5 wrap-anywhere">
+  return <div className={cn('min-w-0 space-y-5', userNames)}>
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
     {data.isPending && <p role="status">{text('loading')}</p>}
     {data.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
@@ -88,13 +90,13 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
           {'signupFeeCents' in record && <p className="text-sm">{text('signupFee')}: {money(record.signupFeeCents, record.currency)} · {text('trialDays')}: {record.trialDays}</p>}
           {priced && archived.length > 0 && <Alert role="note" className="mt-3 space-y-2">
             <p>{say('interval' in priced ? 'archivedOnPlan' : 'archivedOnCharge', { names: archived.map(rate => rate.name).join(', ') })}</p>
-            <Button variant="outline" className="w-full sm:w-auto" disabled={busy} onClick={() => void removeArchived(priced, archived)}>{say('removeArchived', { name: record.name })}</Button>
+            <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeArchived(priced, archived)}>{say('removeArchived', { name: record.name })}</Button>
           </Alert>}
           {carriers > 0 && 'rateMillionths' in record && <Alert role="note" className="mt-3 space-y-2">
             <p>{say('archivedRate', { count: carriers })}</p>
-            <Button variant="outline" className="w-full sm:w-auto" disabled={busy} onClick={() => void removeEverywhere(record)}>{say('removeEverywhere', { name: record.name })}</Button>
+            <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeEverywhere(record)}>{say('removeEverywhere', { name: record.name })}</Button>
           </Alert>}
-          <Button className="mt-3 w-full sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); }} disabled={busy}>{text('edit')} {record.name}</Button>
+          <Button className="mt-3 w-full wrap-anywhere sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); }} disabled={busy}>{text('edit')} {record.name}</Button>
         </li>;
       })}</ul>
     </>}

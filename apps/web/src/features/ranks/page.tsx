@@ -94,8 +94,8 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
         : !ranks.data.length ? <EmptyState title={text('noRanks')} description={configure ? text('noRanksHelp') : undefined}/>
         : <StackedList>{ranks.data.map((rank) => <StackedItem key={rank.id} className="flex-row items-center gap-3">
           {rank.color ? <Swatch color={rank.color}/> : <span className="w-10 shrink-0" aria-hidden="true"/>}
-          <div className="min-w-0 flex-1"><p className="break-words font-medium">{rank.position}. {rank.name}</p>
-            {rank.subRanks.length > 0 && <p className="break-words text-sm text-muted-foreground">{rank.subRanks.map((subRank) => subRank.name).join(', ')}</p>}</div>
+          <div className="min-w-0 flex-1"><p className="font-medium">{rank.position}. {rank.name}</p>
+            {rank.subRanks.length > 0 && <p className="text-sm text-muted-foreground">{rank.subRanks.map((subRank) => subRank.name).join(', ')}</p>}</div>
           {configure && <Button variant="outline" className="shrink-0" aria-label={text('edit') + ' ' + rank.name} onClick={() => setEditor(rank)}>{text('edit')}</Button>}
         </StackedItem>)}</StackedList>}
     </PageSection>}
@@ -141,7 +141,7 @@ export function RanksWorkspace({ gymId, configure, promote, client = ranksClient
       {configure ? programs.data.map((program) => <ProgramForm key={program.id + ':' + program.revision} program={program} systems={systems.data} busy={busy}
         save={(form) => run(() => client.call('updateProgram', { revision: program.revision, name: value(form, 'name'), rankSystemId: value(form, 'system') || null, active: form.has('active') }, program.id))}/>)
         : programs.data.length > 0 && <ul className="divide-y divide-border">{programs.data.map((program) => <li key={program.id} className="flex items-center justify-between gap-3 py-3">
-          <span className="break-words">{program.name}</span><Badge tone={program.active ? 'success' : 'muted'}>{text(program.active ? 'active' : 'inactive')}</Badge></li>)}</ul>}
+          <span className="min-w-0">{program.name}</span><Badge tone={program.active ? 'success' : 'muted'}>{text(program.active ? 'active' : 'inactive')}</Badge></li>)}</ul>}
       {configure && <form onSubmit={(event) => formAction(event, (form) => client.call('createProgram', {
         name: value(form, 'name'), rankSystemId: value(form, 'system') || null, active: true,
       }))} className="grid gap-3 border-t border-border pt-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">

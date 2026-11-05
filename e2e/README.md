@@ -113,10 +113,12 @@ The checks cover:
   reaching `/trial`. Turned off, `/` redirects to `/portal`, the website's pages answer
   404 and `/trial` still loads.
 * Names with no break opportunity (56 characters) stay inside a 360 px screen on the admin bookings panel, dashboard
-  widgets, autocomplete options, billing catalog, campaigns and the portal schedule (`long-names.spec.ts`; the portal
-  check uses a household of its own). `responsive.spec.ts` checks the layout helper itself on pages it serves: a
-  static ancestor with `transform`, `filter`, `contain`, `will-change`, `perspective` or the individual transform
-  properties is the containing block of its absolute and fixed descendants, and a clipped `html` can't scroll sideways.
+  widgets, autocomplete options, billing catalog, campaigns, the ranks page (whose status badge keeps its word beside the
+  name), the member profile and its attendance breakdown, and the portal schedule (`long-names.spec.ts`; the portal
+  check runs the full layout check, and uses a household of its own). `responsive.spec.ts` checks the layout helper itself
+  on pages it serves: a static ancestor with `transform`, `filter`, `contain`, `content-visibility`,
+  `will-change`, `perspective` or the individual transform properties is the containing block of its absolute and fixed
+  descendants, paint containment clips like `overflow`, and a clipped `html` can't scroll sideways.
 * Local demo owner/coach switching from the demo menu, seeded members, schedule, staff and dashboard,
   disabled uploads, and invitations captured in the outbox.
 * Login errors and a successful password sign-in; the demo entry button creating

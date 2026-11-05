@@ -56,7 +56,7 @@ export function CampaignWorkspace({ gymId, timezone, client = campaignClient }: 
         {!list.data.data.length && <EmptyState title={text('empty')} description={text('help')} />}
         <ul className="space-y-3">{list.data.data.map(item => <li key={item.campaign.id}><Card className="min-w-0 space-y-3">
           <h2 className="text-lg font-medium">{item.campaign.name}</h2><p>{text(item.campaign.purpose)}</p><Progress detail={item} />
-          <Button variant="outline" onClick={() => { setSelected(item.campaign.id); setRecipientOffset(0); setFilter('pending'); setMessage(''); }}>{text('view')} {item.campaign.name}</Button>
+          <Button variant="outline" className="wrap-anywhere" onClick={() => { setSelected(item.campaign.id); setRecipientOffset(0); setFilter('pending'); setMessage(''); }}>{text('view')} {item.campaign.name}</Button>
         </Card></li>)}</ul><Pager offset={offset} total={list.data.pagination.total} change={setOffset} />
       </>}
     </> : <>

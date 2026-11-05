@@ -10,7 +10,7 @@ import { qrCheckin } from './qr.api.js';
 import { scanQrCamera, type CameraScan } from './qr.scanner.js';
 
 const text = (key: string) => t('kiosk/qr:' + key);
-const big = 'h-auto min-h-12 whitespace-normal break-words p-3 text-lg sm:min-h-16 sm:text-xl';
+const big = 'h-auto min-h-12 whitespace-normal p-3 text-lg sm:min-h-16 sm:text-xl';
 const hasCamera = () => typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function';
 /** The QR flow itself: the kiosk page owns whether it is open and mounts it only then; every way out calls `onClose`. Its device token grants only check-in endpoints. */
 export function QrCheckin({ token, onUnauthorized, onClose, onNamePin }: { token: string; onUnauthorized: () => void; onClose: () => void; onNamePin: () => void }) {
@@ -65,7 +65,7 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin }: { token
       {result.status !== 'see_front_desk' && <p className="break-words text-2xl">{result.member.firstName} {result.member.lastInitial}.</p>}
       <p className="text-xl font-semibold">{text(result.status)}</p>
       {result.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">{result.sessions.map((session) =>
-        <Button className={big} disabled={busy} key={session.id} onClick={() => { if (code.current) void submit(code.current, session.id); }}>{session.name} · {new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(session.startsAt))}</Button>)}
+        <Button className={big + ' wrap-anywhere'} disabled={busy} key={session.id} onClick={() => { if (code.current) void submit(code.current, session.id); }}>{session.name} · {new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(session.startsAt))}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => { if (code.current) void submit(code.current, null); }}>{text('openMat')}</Button>
       </div>}
     </div>}

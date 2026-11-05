@@ -55,7 +55,7 @@ export function InvoiceList({ gymId, householdId, access, custom, catalog, clien
 }
 function HouseholdName({ gymId, householdId, client }: { gymId: string; householdId: string; client: InvoiceClient }) {
   const household = useQuery({ queryKey: ['billing', gymId, 'household', householdId], queryFn: () => client.household(householdId) });
-  return <p className="break-words text-sm text-muted-foreground">{household.data?.name ?? text('household')}</p>;
+  return <p className="text-sm text-muted-foreground">{household.data?.name ?? text('household')}</p>;
 }
 function useInvoiceAccess() {
   const bootstrap = useBootstrap(), roles = bootstrap.data?.session?.roles ?? [];

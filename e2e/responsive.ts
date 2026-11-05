@@ -13,7 +13,7 @@ function findHorizontalOverflow(): string | undefined {
   // With a visible root, the body's overflow applies to the viewport instead.
   const rootOverflow = getComputedStyle(root).overflowX;
   if (['hidden', 'clip'].includes(rootOverflow === 'visible' ? getComputedStyle(document.body).overflowX : rootOverflow)) return undefined;
-  interface Style { position: string; overflowX: string; positioned: boolean; formsBlock: boolean }
+  interface Style { position: string; clipsX: boolean; positioned: boolean; formsBlock: boolean }
   // Each element's style is read once; ancestors are shared by many elements.
   const styles = new Map<Element, Style>();
   const styleOf = (element: Element): Style => {
@@ -24,8 +24,13 @@ function findHorizontalOverflow(): string | undefined {
       // when it is `position: static`. (A fixed element inside one isn't fixed to the viewport.)
       const formsBlock = computed.transform !== 'none' || computed.translate !== 'none' || computed.rotate !== 'none' || computed.scale !== 'none'
         || computed.filter !== 'none' || computed.backdropFilter !== 'none' || computed.perspective !== 'none'
-        || /\b(layout|paint|strict|content)\b/.test(computed.contain) || /\b(transform|perspective|filter)\b/.test(computed.willChange);
-      style = { position: computed.position, overflowX: computed.overflowX, positioned: computed.position !== 'static', formsBlock };
+        || /\b(layout|paint|strict|content)\b/.test(computed.contain) || /\b(transform|perspective|filter)\b/.test(computed.willChange)
+        // `content-visibility` other than `visible` applies layout containment. `container-type` doesn't: it applies size and style containment only.
+        || computed.contentVisibility !== 'visible';
+      // Paint containment clips to the padding box like `overflow: hidden`, with no overflow setting: `contain: paint`, `strict`
+      // and `content`, and `content-visibility: auto` or `hidden`.
+      const clipsX = computed.overflowX !== 'visible' || /\b(paint|strict|content)\b/.test(computed.contain) || computed.contentVisibility !== 'visible';
+      style = { position: computed.position, clipsX, positioned: computed.position !== 'static', formsBlock };
       styles.set(element, style);
     }
     return style;
@@ -48,7 +53,7 @@ function findHorizontalOverflow(): string | undefined {
         if (!parent || parent === document.body || parent === root) parent = null;
       }
       known = position === 'fixed' && !parent || (!!parent && parent !== document.body && parent !== root
-        && (styleOf(parent).overflowX !== 'visible' || clipped(parent)));
+        && (styleOf(parent).clipsX || clipped(parent)));
       clips.set(element, known);
     }
     return known;

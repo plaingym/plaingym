@@ -20,7 +20,7 @@ type Screen =
   | { kind: 'select'; name: string; pin: string; members: KioskMemberIdentity[]; chosen: Set<string> }
   | { kind: 'results'; name: string; pin: string; members: KioskMemberIdentity[]; rows: Row[] };
 const settled = (rows: readonly Row[]) => rows.every((row) => row.result && row.result.status !== 'select_session');
-const big = 'min-h-12 h-auto whitespace-normal break-words px-3 py-3 text-lg sm:min-h-16 sm:text-xl';
+const big = 'min-h-12 h-auto whitespace-normal px-3 py-3 text-lg sm:min-h-16 sm:text-xl';
 
 export function KioskApp() {
   const [token, setToken] = useState<string | null>(() => readToken());
@@ -164,7 +164,7 @@ function Results({ screen, busy, onChoose, onDone, onMembers }: { screen: Extrac
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"><Person member={member}/>
         <span className="text-xl font-medium">{text(!result ? 'error' : result.status === 'select_session' ? 'chooseClass' : result.status)}</span></div>
       {result?.status === 'select_session' && <div className="grid gap-3 sm:grid-cols-2">
-        {result.sessions.map((session) => <Button key={session.id} className={big} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: time(session) })}</Button>)}
+        {result.sessions.map((session) => <Button key={session.id} className={big + ' wrap-anywhere'} disabled={busy} onClick={() => onChoose(member.id, session.id)}>{text('session', { name: session.name, time: time(session) })}</Button>)}
         <Button variant="outline" className={big} disabled={busy} onClick={() => onChoose(member.id, null)}>{text('openMat')}</Button></div>}
     </li>)}</ul>
     <div className="grid gap-3 sm:grid-cols-2"><Button variant="outline" className={big} disabled={busy} onClick={onMembers}>{text('changeMembers')}</Button>

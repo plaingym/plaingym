@@ -94,11 +94,11 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         const reserved = data.refunds.filter(r => r.paymentId === payment.id && !refundReleased(r)).reduce((sum, r) => sum + r.amountCents, 0);
         return <StackedItem key={payment.id}><span>{text(payment.method)} · {money(payment.amountCents, payment.currency)}</span>
           <span className="text-sm text-muted-foreground">{new Date(payment.paidAt).toLocaleString()}</span>
-          {payment.reference && <p className="break-words">{payment.reference}</p>}
+          {payment.reference && <p>{payment.reference}</p>}
           {access.refund && reserved < payment.amountCents && <Button variant="outline" onClick={() => open({ kind: 'refund', payment })}>{text('refund')}</Button>}
         </StackedItem>;
       })}</StackedList>
-      {data.refunds.length > 0 && <StackedList aria-label={text('refunds')}>{data.refunds.map(r => <StackedItem key={r.id}>{money(r.amountCents, r.currency)} · {text(r.status)}{r.reason && <p className="break-words">{r.reason}</p>}</StackedItem>)}</StackedList>}
+      {data.refunds.length > 0 && <StackedList aria-label={text('refunds')}>{data.refunds.map(r => <StackedItem key={r.id}>{money(r.amountCents, r.currency)} · {text(r.status)}{r.reason && <p>{r.reason}</p>}</StackedItem>)}</StackedList>}
     </PageSection>
     <PageSection title={text('cards')}>
       {cards.isPending && <LoadingState/>}{cards.isError && <ErrorState onRetry={() => void cards.refetch()}/>}
@@ -150,7 +150,7 @@ function refundable(data: InvoiceDetail, payment: Payment) {
 }
 function LineItems({ data }: { data: InvoiceDetail }) {
   return <StackedList>{data.lineItems.map(line => <StackedItem key={line.id}>
-    <p className="break-words font-medium">{line.description}</p><p>{line.quantity} × {money(line.amountCents, line.currency)}</p>
+    <p className="font-medium">{line.description}</p><p>{line.quantity} × {money(line.amountCents, line.currency)}</p>
     {line.kind === 'tax' && <p className="text-sm text-muted-foreground">{text(line.taxInclusive ? 'inclusive' : 'exclusive')}</p>}
   </StackedItem>)}</StackedList>;
 }

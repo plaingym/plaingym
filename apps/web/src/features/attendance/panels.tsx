@@ -8,6 +8,7 @@ import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
+import { TableContainer } from '../../components/ui/table.js';
 import { EmptyState, LoadingState } from '../../components/ui/states.js';
 import { useNotifySessionChanged } from '../../lib/session-summary.js';
 import { attendanceClient } from './client.js';
@@ -62,7 +63,7 @@ function Roster({ sessionId }: { sessionId: string }) {
     {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((member) => {
       const name = `${member.firstName} ${member.lastName}`, done = checked.has(member.id);
       return <li key={member.id} className="flex items-center justify-between gap-3 px-4 py-2">
-        <span className="min-w-0 break-words font-medium">{name}</span>
+        <span className="min-w-0 font-medium">{name}</span>
         <Button variant={done ? 'secondary' : 'default'} className={done ? 'shrink-0 bg-success/10 text-success disabled:opacity-100' : 'shrink-0'} disabled={busy || done} onClick={() => void checkIn(member.id)}
           aria-label={text(done ? 'checkedNamed' : 'checkInNamed', { name })}>
           {done && <span aria-hidden="true">✓</span>}{text(done ? 'checked' : 'checkIn')}</Button>
@@ -80,11 +81,11 @@ export function MemberAttendancePanel({ memberId }: ExtensionViewProps) {
   return memberId ? <MemberAttendance key={memberId} memberId={memberId}/> : null;
 }
 function Breakdown({ caption, heading, rows }: { caption: string; heading: string; rows: { id: string; name: string; count: number }[] }) {
-  return <table className="w-full text-left text-sm"><caption className="pb-2 text-left font-semibold">{caption}</caption>
+  return <TableContainer label={caption} className="px-3"><table className="w-full text-left text-sm"><caption className="pb-2 text-left font-semibold">{caption}</caption>
     <thead className="sr-only sm:not-sr-only"><tr className="text-muted-foreground"><th scope="col" className="py-2 font-medium">{heading}</th><th scope="col" className="py-2 text-right font-medium">{text('count')}</th></tr></thead>
     <tbody className="divide-y divide-border border-y border-border">{rows.length ? rows.map((row) => <tr key={row.id}>
-      <th scope="row" className="break-words py-2 font-normal">{row.name}</th><td className="py-2 text-right tabular-nums">{row.count}</td>
-    </tr>) : <tr><td colSpan={2} className="py-2 text-muted-foreground">{text('none')}</td></tr>}</tbody></table>;
+      <th scope="row" className="py-2 font-normal">{row.name}</th><td className="py-2 text-right tabular-nums">{row.count}</td>
+    </tr>) : <tr><td colSpan={2} className="py-2 text-muted-foreground">{text('none')}</td></tr>}</tbody></table></TableContainer>;
 }
 function MemberAttendance({ memberId }: { memberId: string }) {
   const selectId = useId();

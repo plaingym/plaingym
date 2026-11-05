@@ -58,7 +58,7 @@ function Roster({ gymId, manage }: { gymId: string; manage: boolean }) {
         <p className="text-sm text-muted-foreground" aria-live="polite">{t('members/members:showing', { from: offset + 1, to: offset + rows.length, total })}</p>
         <ul className="divide-y divide-border rounded-xl border border-border md:hidden" aria-label={text('title')}>{rows.map((member) => <li key={member.id}>
           <Link to="/admin/members/$memberId" params={{ memberId: member.id }} className="flex min-h-11 items-center justify-between gap-3 p-4 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <span className="min-w-0"><span className="block break-words font-medium">{member.firstName} {member.lastName}</span>
+            <span className="min-w-0"><span className="block font-medium">{member.firstName} {member.lastName}</span>
               {member.email && <span className="block truncate text-sm text-muted-foreground">{member.email}</span>}</span>
             <StatusBadge status={member.status}/>
           </Link></li>)}</ul>
