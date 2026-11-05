@@ -11,6 +11,7 @@ import { portalClaimCodeSchema } from '@plaingym/shared/contracts';
 import type { Auth, Session } from './index.js';
 import { passwordLogin, type AuthConfig } from './config.js';
 import { passwordAdapter } from './password.js';
+import { accountLimitedPaths, consumeAccountAttempt, signInLimits, type SignInRule } from './account-limit.js';
 
 export interface ResolvedAuthGym {
   readonly gymId: string;
@@ -45,7 +46,12 @@ export interface AuthServiceOptions {
   readonly sendMagicLink?: (data: { email: string; url: string; gymId: string }) => Promise<void>;
   readonly magicLinkTtl?: number;
   readonly google?: GoogleAuthExtension;
-  readonly rateLimit?: { window: number; max: number };
+  /** Each sign-in endpoint's limit per client address (default `signInLimits.address`). */
+  readonly rateLimit?: SignInRule;
+  /** Password and login-link sign-in's limit per account (default `signInLimits.account`). */
+  readonly accountRateLimit?: SignInRule;
+  /** Epoch milliseconds for the per-account windows (default `Date.now`). */
+  readonly now?: () => number;
 }
 /** The only post-login destination besides the admin: completing a portal claim the user proved by email. */
 export const portalClaimCallbackPath = '/portal/claim';
@@ -77,7 +83,11 @@ export const authEndpoints = [
 export function createAuthService(options: AuthServiceOptions) {
   const { config } = options;
   if (config.smtpConfigured && !options.sendMagicLink) throw new Error('Configured SMTP requires a magic-link sender');
-  const database = options.database ?? systemDatabase;
+  const database = options.database ?? systemDatabase, now = options.now ?? Date.now;
+  const addressRule = options.rateLimit ?? signInLimits.address, accountRule = options.accountRateLimit ?? signInLimits.account;
+  /** A refusal with the standard `Retry-After` beside Better Auth's own `X-Retry-After`. */
+  const tooManyRequests = (seconds: number) => Response.json({ message: 'Too many requests. Please try again later.' }, { status: 429,
+    headers: { 'retry-after': String(seconds), 'x-retry-after': String(seconds), 'cache-control': 'no-store' } });
   return {
     config,
     bind(gym: ResolvedAuthGym) {
@@ -122,8 +132,7 @@ export function createAuthService(options: AuthServiceOptions) {
             update: { before: async (account) => ({ data: withoutOAuthTokens(account, false) }) } },
         },
         rateLimit: { enabled: true, storage: 'database', window: 60, max: 100,
-          customRules: { '/sign-in/email': options.rateLimit ?? { window: 60, max: 5 }, '/sign-in/magic-link': options.rateLimit ?? { window: 60, max: 5 }, '/magic-link/verify': options.rateLimit ?? { window: 60, max: 5 },
-            '/sign-in/social': options.rateLimit ?? { window: 60, max: 5 } } },
+          customRules: { '/sign-in/email': addressRule, '/sign-in/magic-link': addressRule, '/magic-link/verify': addressRule, '/sign-in/social': addressRule } },
         plugins: [magicLink({
           expiresIn: options.magicLinkTtl ?? 300, storeToken: 'hashed', disableSignUp: true,
           generateToken: () => `${gym.gymId}.${randomBytes(32).toString('base64url')}`,
@@ -208,6 +217,11 @@ export function createAuthService(options: AuthServiceOptions) {
             try { input = await request.json(); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
             if (typeof input !== 'object' || input === null) return new Response(null, { status: 400 });
             const fields = input as Record<string, unknown>;
+            // Each account has its own budget beside the address's (Better Auth's limiter, applied when dispatched below).
+            if (accountLimitedPaths.includes(path) && typeof fields.email === 'string') {
+              const wait = await consumeAccountAttempt(database(), path, fields.email, accountRule, now());
+              if (wait !== null) return tooManyRequests(wait);
+            }
             body = JSON.stringify({ ...fields, ...(typeof fields.email === 'string' ? { email: fields.email.toLowerCase() } : {}),
               callbackURL: new URL('/admin', origin).href, newUserCallbackURL: new URL('/admin', origin).href, errorCallbackURL: new URL('/login', origin).href });
           }
@@ -217,6 +231,8 @@ export function createAuthService(options: AuthServiceOptions) {
           }
           const response = await (google ? build(google) : auth).handler(new Request(safeUrl, { method: request.method, headers: headers(request), ...(body ? { body } : {}) }));
           response.headers.set('cache-control', 'no-store');
+          const retryAfter = response.status === 429 ? response.headers.get('x-retry-after') : null;
+          if (retryAfter && /^\d+$/.test(retryAfter)) response.headers.set('retry-after', retryAfter);
           if (response.headers.get('content-type')?.includes('application/json') && response.ok) {
             const value: unknown = await response.json();
             if (value && typeof value === 'object') {

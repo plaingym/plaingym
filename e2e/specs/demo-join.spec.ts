@@ -4,7 +4,7 @@ import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect, Client, demoClient, showWeek, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
-import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, retryLimited, stripeOrigin } from '../portal.js';
+import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, stripeOrigin } from '../portal.js';
 
 // Join cookies, outbox sign-in links and the check-in code are bearer credentials. Keep them out of traces and screenshots.
 test.use({ trace: 'off', screenshot: 'off' });
@@ -78,17 +78,9 @@ async function join(page: Page, info: TestInfo, origin: string, visitor: Visitor
   await page.waitForURL(url => url.pathname === '/join/checkout' || url.origin === stripeOrigin);
 }
 /** Follows the join's passwordless sign-in link from the sandbox outbox into the portal. */
-/** Opens a sign-in link in the page. Every sign-in of a run shares one limiter window, so a refused open waits for the next one. */
-async function openLimited(page: Page, href: string) {
-  const opened = await retryLimited(async () => {
-    const response = await page.goto(href), retry = Number((await response?.allHeaders())?.['x-retry-after'] ?? NaN);
-    return { status: response?.status() ?? 0, ...(Number.isFinite(retry) ? { retryAfter: retry } : {}) };
-  });
-  expect(opened.status).not.toBe(429);
-}
 async function signInToPortal(page: Page, info: TestInfo, owner: Client, visitor: Visitor, before: Set<string>) {
   const signIn = await outboxLink(owner, visitor.email, /^\/api\/auth\//, before);
-  await openLimited(page, signIn.href);
+  await page.goto(signIn.href);
   await page.waitForURL(url => url.pathname.startsWith('/portal') && !url.pathname.startsWith('/portal/claim'));
   await expect(page.getByRole('heading', { name: 'Welcome to your member portal', exact: true })).toBeVisible();
   await bothWidths(page, info, 'portal-home');
@@ -96,8 +88,7 @@ async function signInToPortal(page: Page, info: TestInfo, owner: Client, visitor
 
 // Both tests use the run's second sandbox, created fresh by this run: sandbox creation allows three per address an hour.
 test('a visitor joins with the test card, and only the signed checkout webhook activates the join and its portal login', async ({ page, sandboxes }, info) => {
-  // Room for waiting out the sign-in limiter's window twice while the member signs in again.
-  test.setTimeout(300_000);
+  test.setTimeout(180_000);
   const sandbox = sandboxes[1]!, owner = await demoClient(sandbox, 'owner'), visitor = newVisitor();
   await join(page, info, sandbox.origin, visitor);
   // Checkout is hosted by the payment provider; in this stack the fake's page takes the test card.
@@ -137,20 +128,13 @@ async function signInAgain(page: Page, info: TestInfo, origin: string, visitor: 
   await page.getByRole('button', { name: 'Email me a sign-in link', exact: true }).click();
   await expect(page.getByText(/the link went to the demo outbox/)).toBeVisible();
   await bothWidths(page, info, 'login-outbox-link');
-  const [verify] = await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/magic-link/verify'),
-    page.getByRole('button', { name: 'Open my sign-in link', exact: true }).click()]);
-  // A refused verify consumes nothing, so the same link opens once the limiter's window has passed.
-  if (verify.status() === 429) {
-    // Let the refused page replace the form before the retry navigates away from it.
-    await expect(page.locator('body')).toContainText('Too many requests');
-    await openLimited(page, verify.url());
-  }
+  await page.getByRole('button', { name: 'Open my sign-in link', exact: true }).click();
   await page.waitForURL(url => url.pathname.startsWith('/portal'));
   await expect(portal).toBeVisible();
   // The latest sign-in link to that address is the one just used: opening it again explains itself.
   const used = (await new Client(origin).json<{ data: { href: string } }>('/api/demo/sign-in-link', 'POST', { email: visitor.email })).data.href;
   await page.context().clearCookies();
-  await openLimited(page, origin + used);
+  await page.goto(origin + used);
   await page.waitForURL(url => url.pathname === '/login' && url.searchParams.get('error') === 'INVALID_TOKEN');
   await expect(page.getByRole('alert')).toHaveText('This sign-in link was already used or has expired. Request a new one below.');
   await bothWidths(page, info, 'login-used-link');

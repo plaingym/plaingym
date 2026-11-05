@@ -182,8 +182,18 @@ by setup, the gym CLI, staff and portal invitations, and the join flow.
   sign-up, no sign-in with a bare ID token) and joins an identity by email only when
   both Google's address and the identity's own are verified. The app keeps the
   Google account's ID and none of its tokens.
-* **Rate limits.** Password, magic-link and Google sign-in allow 5 attempts per
-  minute per client address, counted in the database so every app process shares them.
+* **Rate limits.** Two limits, both counted in the database so every app process
+  shares them, and both answered with 429 and `Retry-After`:
+  * **Per client address:** 20 attempts a minute at each of password sign-in,
+    magic-link requests, magic-link verification and Google sign-in. This bounds
+    one address trying many accounts, while a class signing in from the gym's Wi-Fi
+    or visitors behind a carrier's shared address aren't locked out together.
+  * **Per account:** 10 attempts in each fixed ten-minute window at password
+    sign-in, and separately at magic-link requests, keyed by the normalized email
+    whether or not an account has it. This bounds guessing one account's password
+    from many addresses and the sign-in emails one address can be sent. Anyone can
+    use up an account's window, which then refuses that account until it ends;
+    Google sign-in and an already-sent link still work.
 * **Resets.** Staff may reset the password only of users whose roles are all below
   their own (a member who is also staff counts as staff). An owner resets their
   own password with `gym-app auth reset-password <email>` on the server. A reset

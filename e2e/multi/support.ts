@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { Client, cached, expect, missingId, type Person, type Program, type RecordId } from '../support.js';
-import { claimPortal, retryLimited, signaturePng } from '../portal.js';
+import { claimPortal, signaturePng } from '../portal.js';
 
 /** The two gyms of the multi-gym install, each on its own hostname. */
 export const gyms = [
@@ -48,7 +48,7 @@ const cookieOf = (cookies: string[]) => cookies.map((value) => value.split(';')[
 /** Verifies an emailed sign-in link on its own gym's hostname and returns the session cookie. */
 export async function verifyLink(origin: string, link: URL) {
   expect(link.origin).toBe(origin);
-  const response = await retryLimited(() => new Client(origin).request(link.pathname + link.search));
+  const response = await new Client(origin).request(link.pathname + link.search);
   expect([302, 303], response.text).toContain(response.status);
   const cookie = cookieOf(response.cookies);
   expect(cookie).toContain('session_token=');
@@ -57,7 +57,7 @@ export async function verifyLink(origin: string, link: URL) {
 /** Asks for a magic link as the sign-in page does, and follows the emailed link. */
 export async function signIn(origin: string, email: string) {
   const before = await mailIds();
-  const asked = await retryLimited(() => new Client(origin).request('/api/auth/sign-in/magic-link', 'POST', { email }));
+  const asked = await new Client(origin).request('/api/auth/sign-in/magic-link', 'POST', { email });
   expect(asked.status, asked.text).toBe(200);
   return verifyLink(origin, await mailLink(email, /^\/api\/auth\//, before));
 }

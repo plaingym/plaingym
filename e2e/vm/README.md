@@ -60,7 +60,7 @@ shipped source map; types are stripped on the maintainer machine before sampling
 The workload runs as a separate Node process inside the same app cgroup and
 records its two-slot bound, queue peak, latency and RSS. SQL reads verify the
 stored Argon2id parameters. HTTP checks prove a decomposed-Unicode password works
-and a wrong password fails, within the production five-sign-ins/minute limit.
+and a wrong password fails, within the production sign-in limits.
 The extra maintenance snapshot is a QA load generator after the unattended owner
 flow has passed. No auth throttling is disabled.
 The benchmark temporarily caps that app container at one CPU, runs with

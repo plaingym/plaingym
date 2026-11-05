@@ -45,21 +45,9 @@ export async function outboxIds(owner: Client) {
   return new Set((await owner.json<{ data: OutboxMessage[] }>('/api/demo/outbox?limit=100')).data.map(message => message.id));
 }
 
-/** Every request of a run reaches the app from Caddy's one address, so sign-ins share one limiter window; a refused
- * attempt consumes nothing, so wait for the next window. */
-export async function retryLimited<T extends { status: number; retryAfter?: number }>(attempt: () => Promise<T>) {
-  let result = await attempt();
-  for (let tries = 0; result.status === 429 && tries < 3; tries++) {
-    // The limiter says how long its window has left; without a hint, wait out a whole minute's window.
-    await new Promise(resolve => setTimeout(resolve, (Math.min(result.retryAfter ?? 60, 60) + 1) * 1000));
-    result = await attempt();
-  }
-  return result;
-}
-
 /** Follows an emailed portal sign-in link and completes its claim, returning the household's session. */
 export async function claimPortal(origin: string, link: URL) {
-  const client = new Client(origin), verified = await retryLimited(() => client.request(link.pathname + link.search));
+  const client = new Client(origin), verified = await client.request(link.pathname + link.search);
   expect([302, 303], verified.text).toContain(verified.status);
   const callback = new URL(verified.location!, origin);
   expect(callback.pathname).toBe('/portal/claim');

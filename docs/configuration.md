@@ -118,7 +118,7 @@ similar): mail sent directly from a server usually lands in spam.
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `AUTH_PASSWORD_LOGIN` | `auto` | `auto`: password sign-in only for a gym with no email set up, magic links otherwise. `on`: always offer passwords. `off`: never (required in multi-gym mode); a single-gym install without email then has no way to sign in. |
-| `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. Sign-in, kiosk PINs and CSP reports keep their own limits. |
+| `RATE_LIMIT_PER_MINUTE` | `300` | Requests per minute per gym and client address before the app answers 429, from 1 to 100,000. Sign-in, kiosk PINs and CSP reports keep their own limits; sign-in's, per client address and per account, have no setting (`security-model.md`, Sign-in). |
 | `UPDATE_CHECK` | `on` | `off` stops the app asking GitHub once a day for the newest release (the "Update available" banner and the Health page's update tile), for an install that must not call out; so does any value other than `on`, `true` or `1`. It sends no token and no data about the install. A multi-gym install never checks. The banner reads the releases of `RELEASE_REPOSITORY` (see [Automatic patch updates](#automatic-patch-updates)). |
 | `GOOGLE_CLIENT_ID` | unset | The client ID of a Google OAuth client. With `GOOGLE_CLIENT_SECRET`, turns on **Sign in with Google** for staff and members (see below), and wins over a client the owner entered in the app. Set both or neither; an empty value counts as unset. Ignored in demo mode. |
 | `GOOGLE_CLIENT_SECRET` | unset | That client's secret. |

@@ -91,8 +91,8 @@ demo**. Use that HTTPS address instead of `localhost:5173`; sandbox redirects,
 secure cookies and Vite's HMR websocket then use the same origin on port 443.
 No DNS or hosts-file changes are needed in Chrome/Edge for `.localhost` names.
 
-`compose.dev-proxy.yaml` runs a pinned Caddy image, sharing its demo TLS/routing
-configuration with the browser tests. It forwards to `host.docker.internal:5173`.
+`compose.dev-proxy.yaml` runs a pinned Caddy image with the same demo hostnames
+and local TLS as the browser tests. It forwards to `host.docker.internal:5173`.
 Docker Desktop can reach Vite's default loopback listener. If the proxy returns
 502 on native Linux, set `VITE_HOST=0.0.0.0` in `.env` and restart `pnpm dev`;
 this exposes the dev listener on other host interfaces, so use a trusted network.

@@ -1,13 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-import /etc/caddy/demo.Caddyfile
-https://gym.localhost {
+{
+  admin off
+  auto_https disable_redirects
+  # The specs act as many visitors: each API client sends its own address in X-Forwarded-For (support.ts), which
+  # Caddy accepts from the test runner, its private or loopback peer. The apps trust Caddy (TRUST_PROXY), so
+  # per-address limits count each client apart. A request without the header (the browser's) keeps the peer's address.
+  servers {
+    trusted_proxies static private_ranges
+  }
+}
+# An app behind this proxy: it receives the client's address as the only X-Forwarded-For entry.
+(app) {
   tls internal
-  reverse_proxy app:3000
+  reverse_proxy {args[0]} {
+    header_up X-Forwarded-For {client_ip}
+  }
+}
+https://gym.localhost {
+  import app app:3000
+}
+https://demo.localhost, https://*.demo.localhost {
+  import app demo:3000
 }
 # The multi-gym install: one hostname per gym, and its mail catcher's API for the specs.
 https://alpha.multi.localhost, https://beta.multi.localhost {
-  tls internal
-  reverse_proxy multi:3000
+  import app multi:3000
 }
 https://mail.localhost {
   tls internal

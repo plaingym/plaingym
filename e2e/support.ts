@@ -23,10 +23,22 @@ export interface Operation {
 }
 export interface Document { paths: Record<string, Record<string, Operation>> }
 
+let clients = 0;
+/**
+ * The next client address, from 198.18.0.0/15 (set aside for network tests): 4,096 for each Playwright worker, so a
+ * worker that replaces a failed one starts with fresh ones. The stack's Caddy passes it on as the request's client
+ * address (Caddyfile), so each client meets the production per-address limits on its own, as a separate visitor would.
+ */
+export function clientAddress() {
+  const index = (Number(process.env.TEST_WORKER_INDEX ?? 0) * 4096 + clients++ % 4096) % 131_072;
+  return `198.${18 + (index >> 16)}.${(index >> 8) & 255}.${index & 255}`;
+}
+
 /** Route every local test hostname to loopback while preserving Host, Origin,
- * TLS SNI and cookies. Node does not resolve wildcard .localhost like Chromium. */
+ * TLS SNI and cookies. Node does not resolve wildcard .localhost like Chromium. Each client has its own address. */
 export class Client {
   cookie = '';
+  readonly address = clientAddress();
   constructor(readonly origin: string, readonly headers: Record<string, string> = {}) {}
   async request<T>(path: string, method = 'GET', body?: unknown, extra: Record<string, string> = {}) {
     const url = new URL(path, this.origin);
@@ -34,7 +46,7 @@ export class Client {
     return new Promise<{ status: number; body: T; text: string; cookies: string[]; location?: string; retryAfter?: number }>((resolve, reject) => {
       const req = httpsRequest({ hostname: loopback, port: 443, servername: url.hostname,
         rejectUnauthorized: false, path: url.pathname + url.search, method,
-        headers: { host: url.host, origin: this.origin, ...(this.cookie ? { cookie: this.cookie } : {}),
+        headers: { host: url.host, origin: this.origin, 'x-forwarded-for': this.address, ...(this.cookie ? { cookie: this.cookie } : {}),
           ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) }),
           ...this.headers, ...extra }, timeout: 75_000 }, (res) => {
         const chunks: Buffer[] = [];
@@ -43,7 +55,7 @@ export class Client {
           const text = Buffer.concat(chunks).toString('utf8');
           let body: T;
           try { body = JSON.parse(text) as T; } catch { body = text as T; }
-          const retry = Number(res.headers['x-retry-after'] ?? res.headers['retry-after']);
+          const retry = Number(res.headers['retry-after'] ?? NaN);
           resolve({ status: res.statusCode!, body, text, cookies: res.headers['set-cookie'] ?? [], location: res.headers.location,
             ...(Number.isFinite(retry) ? { retryAfter: retry } : {}) });
         });

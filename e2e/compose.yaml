@@ -31,8 +31,11 @@ x-app-env: &app-env
   APP_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:?required}
   SETUP_TOKEN: ${E2E_SETUP_TOKEN:?required}
   UPLOADS_DIR: /var/lib/plaingym/uploads
-  # Every browser and API request reaches the app from Caddy's one address; the default
-  # 300 per minute would make the specs wait for fresh windows (unit tests cover the limiter).
+  # As in ../deploy/compose.yaml, Caddy is the app's only peer, and the last X-Forwarded-For entry is
+  # the client: each API client of the specs has its own address there (see Caddyfile).
+  TRUST_PROXY: 'true'
+  # Every browser request still arrives from the one address of the test runner, and a page load
+  # makes many; the default 300 per minute would refuse them (unit tests cover the limiter).
   RATE_LIMIT_PER_MINUTE: '20000'
 services:
   postgres: *postgres
@@ -188,9 +191,7 @@ services:
   caddy:
     image: caddy:2.11.7-alpine@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525
     ports: ['${E2E_LOOPBACK:-127.0.0.1}:443:443']
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ../dev/https/Caddyfile:/etc/caddy/demo.Caddyfile:ro
+    volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro']
     depends_on:
       app: {condition: service_healthy}
       demo: {condition: service_healthy}

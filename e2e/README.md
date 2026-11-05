@@ -126,6 +126,9 @@ The checks cover:
   uses the full name Marcus Rivera and PIN 2468, avoiding ambiguous households.
   Outbox preview dialogs are checked too; axe excludes the email iframe, whose
   sandbox deliberately forbids scripts, while the test checks its sandbox and title.
+* The production sign-in limits (`sign-in-limits.spec.ts`): one address refused with 429 and `Retry-After`
+  after 20 password attempts in a minute while another address signs in, and one account refused after 10
+  attempts from different addresses while another account is still tried.
 * The enforced Content Security Policy, in every spec that takes `test` from `support.ts`:
   the automatic `cspGuard` fixture fails a test whose pages, in the default context (when
   the test uses it) or any context the test opens itself, log a CSP violation to the
@@ -200,9 +203,14 @@ from `support.ts` with `createClass` and `showWeek`, keep to these rules:
 covers Sunday 23:59, Monday 00:00, month ends and both daylight saving changes in UTC and the
 zones the specs use.
 
-Every browser and API request reaches the app from Caddy's one address, so the
-stack sets `RATE_LIMIT_PER_MINUTE=20000` instead of the default 300; the limiter
-itself is covered by unit tests. A full run takes a few minutes. Failed runs
+The specs meet the production limits as separate visitors would, with no test setting for
+sign-in. Each API client (`Client` in `support.ts`) sends its own address from
+198.18.0.0/15 in `X-Forwarded-For`; the stack's Caddy trusts the test runner as a proxy and
+passes that address on as the only entry, and the apps run with `TRUST_PROXY=true`, as behind
+the production Caddy. So no spec waits for a limiter's window. The browser's requests carry no
+such header and share the runner's one address, so the stack sets `RATE_LIMIT_PER_MINUTE=20000`
+instead of the default 300 for page loads; the limiter itself is covered by unit tests. A full
+run takes a few minutes. Failed runs
 retain screenshots, traces, the HTML report and container logs in `e2e/coverage/`
 (ignored by Git and lint). Open the
 report with `pnpm --dir e2e exec playwright show-report coverage/report`.
