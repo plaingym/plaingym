@@ -128,7 +128,7 @@ again, and every change is recorded in the audit log without them.
   install's settings, or to no email. Either change can switch how people sign in
   (`AUTH_PASSWORD_LOGIN=auto`: emailed links with email, passwords without); the
   page says how before you save. Removing email is refused while it is your only
-  way to sign in (your account has no password).
+  way to sign in (your account has no password and the gym has no Google client).
 * **Payments** shows the Stripe mode (test or live) and whether the webhook
   endpoint is registered. A new restricted key is checked and its webhook endpoint
   kept or replaced exactly as in setup. Once any household has a Stripe customer,

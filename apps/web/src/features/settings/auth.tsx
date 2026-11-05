@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { googleLoginResponseSchema, type GoogleLogin } from '@plaingym/shared/contracts';
+import { googleCallbackPath, googleLoginResponseSchema, type GoogleLogin } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
@@ -11,8 +11,6 @@ import { Label } from '../../components/ui/label.js';
 import { ErrorState } from '../../components/ui/states.js';
 import { useGymSettings } from './gym-settings.js';
 
-/** Must match the server's Google callback path (`infra/auth/google.ts`). */
-export const googleCallbackPath = '/api/auth/callback/google';
 export const googleLoginKey = ['settings', 'google-login'] as const;
 const label = (key: string, values?: Record<string, string>) => t('auth/google:' + key, values);
 type Message = { kind: 'status' | 'alert'; text: string };
@@ -23,6 +21,12 @@ async function fetchGoogleLogin(): Promise<GoogleLogin> {
   if (!result.response.ok) throw new Error('The Google sign-in request failed');
   return googleLoginResponseSchema.parse(result.data).data;
 }
+/** The gym's Google sign-in settings, shared by the section and the settings page's decision to list it. */
+export function useGoogleLogin(enabled: boolean) {
+  return useQuery({ queryKey: googleLoginKey, queryFn: fetchGoogleLogin, enabled, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
+}
+/** Whether the settings page lists the section: not where the gym can't have Google sign-in (no client, and none to enter). */
+export const googleSectionListed = (google: GoogleLogin | undefined) => google !== undefined && (google.source !== 'none' || google.editable);
 /** The server's refusal reason (`details` codes, never its message). */
 const reasonOf = (body: unknown) => {
   const details = (body as { error?: { details?: Record<string, unknown> } } | undefined)?.error?.details;
@@ -63,11 +67,11 @@ export function GoogleClientFields({ idPrefix }: { idPrefix: string }) {
  */
 export function GoogleLoginSettings() {
   const cache = useQueryClient(), gym = useGymSettings();
-  const query = useQuery({ queryKey: googleLoginKey, queryFn: fetchGoogleLogin, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
+  const query = useGoogleLogin(true);
   const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null), [open, setOpen] = useState(false);
   if (query.isError) return <ErrorState message={label('loadError')} onRetry={() => void query.refetch()} retryLabel={label('reload')}/>;
   const google = query.data;
-  if (!google || (google.source === 'none' && !google.editable)) return null;
+  if (!google || !googleSectionListed(google)) return null;
 
   /** Goes through the settings page's save queue with its one gym revision; the reply's revision is adopted. */
   async function change(send: (revision: number, signal: AbortSignal) => Promise<Reply>): Promise<{ status: number; reason: string | null }> {

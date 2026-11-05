@@ -20,6 +20,7 @@ import { createGoogleAuthExtension } from '../../infra/auth/google.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
 import { createGoogleClientResolver, encryptGoogleConfig } from './google-login.js';
+import { encryptSmtpConfig } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-11-04T12:00:00Z');
 const key = Buffer.alloc(32, 9);
@@ -174,6 +175,35 @@ describe('Settings → Google sign-in', () => {
     expect(await createGoogleClientResolver({ key, env, tenancy: 'single', scope: database.forGym }).credentials(gymB)).toBeNull();
     expect(logs.some((line) => line.includes('settings.google_config_unreadable'))).toBe(true);
     await setStored(gymB, null);
+  });
+  it('counts a stored or install Google client as a way in when the owner removes the gym’s email settings', async () => {
+    const smtp = encryptSmtpConfig(key, { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'gym-user', password: 'smtp-secret-never-shown' });
+    const gym = (gymId: string, values: Partial<typeof gyms.$inferInsert>) => database.forGym(gymId, (tx) => tx.update(gyms).set(values).where(eq(gyms.id, gymId)));
+    await gym(gymB, { smtpConfig: smtp });
+    // No password and no other email: removing the gym's email would leave the owner no way in.
+    const withoutGoogle = server({ gymId: gymB });
+    const emailRemove = (app: ReturnType<typeof server>, revision: number) => app.request('/api/settings/integrations/email', {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision }) });
+    const integrations = async (app: ReturnType<typeof server>) => (await (await app.request('/api/settings/integrations')).json() as { data: { email: { removeBlocked: boolean }; revision: number } }).data;
+    let current = await integrations(withoutGoogle);
+    expect(current.email.removeBlocked).toBe(true);
+    expect((await emailRemove(withoutGoogle, current.revision)).status).toBe(409);
+    expect((await row(gymB)).smtpConfig).not.toBeNull();
+    // A client the owner stored counts, so they can remove the email settings and still sign in with Google.
+    await setStored(gymB, encryptGoogleConfig(key, { clientId, clientSecret }));
+    current = await integrations(withoutGoogle);
+    expect(current.email.removeBlocked).toBe(false);
+    expect((await emailRemove(withoutGoogle, current.revision)).status).toBe(200);
+    expect((await row(gymB)).smtpConfig).toBeNull();
+    // So does the install's own client, which the stored one never overrides.
+    await setStored(gymB, null);
+    await gym(gymB, { smtpConfig: smtp });
+    const installEnv = { ...env, ...installGoogle };
+    const withInstall = server({ gymId: gymB, routesService: createIntegrationsService({ ...base, env: installEnv }) });
+    current = await integrations(withInstall);
+    expect(current.email.removeBlocked).toBe(false);
+    expect((await emailRemove(withInstall, current.revision)).status).toBe(200);
+    expect((await row(gymB)).smtpConfig).toBeNull();
   });
 });
 

@@ -48,6 +48,8 @@ export const setupSmtpResponseSchema = z.strictObject({ data: z.strictObject({
 }) });
 /** A Google OAuth client ID or secret as entered: no spaces, at most 512 characters (the rule for `GOOGLE_*` too). */
 export const googleClientValueSchema = z.string().trim().min(1).max(512).regex(/^\S+$/);
+/** Each gym's origin plus this path is an authorized redirect URI of its Google OAuth client; the server serves it and the web app shows it. */
+export const googleCallbackPath = '/api/auth/callback/google';
 /**
  * The optional Google sign-in page after the email step (step 5): the gym's own OAuth client, stored encrypted. It
  * changes no step; skipping it sends nothing. Refused when the install's configuration sets Google.

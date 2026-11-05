@@ -4,6 +4,7 @@ import { addOAuthServerContext, createAuthMiddleware } from 'better-auth/api';
 import { eq } from 'drizzle-orm';
 import { systemDatabase, type Database } from '@plaingym/db/client';
 import { authVerification } from '@plaingym/db';
+import { googleCallbackPath } from '@plaingym/shared/contracts';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { GoogleAuthExtension, ResolvedAuthGym } from './service.js';
 
@@ -12,8 +13,7 @@ export interface GoogleCredentials {
   readonly clientId: string;
   readonly clientSecret: string;
 }
-/** Each gym's origin plus this path is an authorized redirect URI of the OAuth client. */
-export const googleCallbackPath = '/api/auth/callback/google';
+export { googleCallbackPath };
 /** Where the sign-in hook writes the issuing gym into the OAuth state; Better Auth keeps server context apart from client data. */
 export const googleStateGymKey = 'plaingymGymId';
 

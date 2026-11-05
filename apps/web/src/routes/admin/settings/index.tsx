@@ -6,21 +6,26 @@ import { createRegistries } from '../../../lib/registries.js';
 import { t } from '../../../lib/i18n.js';
 import { Page, PageHeader } from '../../../components/ui/page.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
+import { googleSectionListed, useGoogleLogin } from '../../../features/settings/auth.js';
+const googleSectionId = 'settingsSections.settings.auth';
 export function SettingsPage() {
   const bootstrap = useBootstrap();
+  const roles = bootstrap.data?.session?.roles ?? [], modules = new Set(bootstrap.data?.gym.enabledModules ?? []);
+  // The Google section is listed only where the gym can have Google sign-in (the section shares this query), so the empty state never counts a section with nothing to show.
+  const google = useGoogleLogin(canStaff(roles, 'integrations.manage'));
   if (bootstrap.isPending) return <Page><LoadingState label={t('settings/settings:loading')}/></Page>;
   if (bootstrap.isError) return <Page><ErrorState message={t('settings/settings:error')} onRetry={() => void bootstrap.refetch()}/></Page>;
-  const roles = bootstrap.data?.session?.roles ?? [], modules = new Set(bootstrap.data?.gym.enabledModules ?? []);
   // Presentation only: each section's API enforces its own permission.
   const sections = createRegistries().settingsSections.forModules(modules)
-    .filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability));
+    .filter((entry) => entry.enabled && entry.permission.kind === 'staff' && canStaff(roles, entry.permission.capability))
+    // While the answer is pending the section waits; if it failed, the section is listed and shows its own retry.
+    .filter((entry) => entry.id !== googleSectionId || google.isError || googleSectionListed(google.data));
   return <Page className="max-w-3xl">
     <PageHeader title={t('settings/settings:title')}/>
     {!sections.length && <EmptyState title={t('settings/settings:noSections')} description={t('settings/settings:noSectionsHelp')}/>}
     {sections.map((entry) => {
       const Component = entry.component;
-      // A section with nothing to show for this install (such as Google sign-in without a client) renders empty and is hidden.
-      return <section key={entry.id} aria-label={t(entry.labelKey)} className="min-w-0 rounded-xl border border-border bg-card p-4 empty:hidden sm:p-6"><Component/></section>;
+      return <section key={entry.id} aria-label={t(entry.labelKey)} className="min-w-0 rounded-xl border border-border bg-card p-4 sm:p-6"><Component/></section>;
     })}
   </Page>;
 }

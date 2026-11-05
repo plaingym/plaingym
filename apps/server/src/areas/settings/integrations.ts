@@ -111,7 +111,9 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     // A sandbox signs in through the demo outbox, whatever is stored.
     const now = signIn(sandbox || source !== 'none');
     const afterRemove = source === 'gym' && !sandbox ? signIn(installSmtp) : null;
-    const removeBlocked = afterRemove !== null && !afterRemove.magicLink && !(afterRemove.password && await options.hasPassword(userId));
+    // Removing the gym's email leaves the install's, the owner's password and the gym's Google client (the install's or a stored one).
+    const removeBlocked = afterRemove !== null && !afterRemove.magicLink && !(afterRemove.password && await options.hasPassword(userId))
+      && !await google.credentials(gym.id);
     return { source: source as EmailIntegration['source'], host, port, security, from, signIn: now, signInAfterSave: signIn(true),
       signInAfterRemove: afterRemove, removeBlocked };
   }

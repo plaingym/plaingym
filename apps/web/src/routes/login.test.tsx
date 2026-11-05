@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { App } from '../app.js';
@@ -54,6 +54,78 @@ describe('a sign-in that came back with an error', () => {
   ])('keeps the Google messages for the Google code %s', async (code, message) => {
     start('/login?error=' + code);
     expect((await screen.findByRole('alert')).textContent).toMatch(message);
+  });
+});
+
+describe('Google sign-in on the login page', () => {
+  const withGoogle: ShellBootstrap = { ...anonymous, login: { password: true, magicLink: true, google: true } };
+  function googleServices(signInWithGoogle: () => Promise<string>) {
+    return { ...services(), loadBootstrap: vi.fn().mockResolvedValue(withGoogle), signInWithGoogle };
+  }
+  const open = (shell: ShellServices, path = '/login') => render(<App services={shell} router={createAppRouter(createMemoryHistory({ initialEntries: [path] }))} />);
+  it('keeps the button pending through the navigation and disables the email form meanwhile', async () => {
+    const signInWithGoogle = vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=one');
+    open(googleServices(signInWithGoogle));
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://accounts.google.test/auth?state=one'));
+    // The request has resolved, yet the browser hasn't left: nothing can start a second sign-in.
+    const button = screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).not.toBe('Sign in with Google');
+    expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Password') as HTMLInputElement).disabled).toBe(true);
+    for (const submit of screen.getAllByRole('button').filter((control) => (control as HTMLButtonElement).type === 'submit')) expect((submit as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(button);
+    expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+  });
+  it('starts afresh when the page comes back from the back-forward cache', async () => {
+    const signInWithGoogle = vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=one');
+    open(googleServices(signInWithGoogle));
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    // A plain pageshow (not from the cache) changes nothing.
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: false }));
+    expect((screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement).disabled).toBe(true);
+    window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false));
+    expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
+  });
+  it('offers the sign-in methods again when the browser never leaves', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      open(googleServices(vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=stopped')));
+      await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+      await waitFor(() => expect(assign).toHaveBeenCalled());
+      expect((screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement).disabled).toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect((screen.getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+  it('enables everything again when starting Google fails', async () => {
+    open(googleServices(vi.fn().mockRejectedValue(new Error('down'))));
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    expect(await screen.findByRole('alert')).toBeDefined();
+    expect(assign).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
+  });
+  it('takes a returned link error down when a new attempt starts, whichever way', async () => {
+    const message = 'This sign-in link was already used or has expired. Request a new one below.';
+    const shell = googleServices(vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=two'));
+    open(shell, '/login?error=INVALID_TOKEN');
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@gym.test');
+    await userEvent.click(screen.getByRole('button', { name: /link/i }));
+    await waitFor(() => expect(shell.requestMagicLink).toHaveBeenCalledWith('owner@gym.test'));
+    expect(screen.queryByText(message)).toBeNull();
+  });
+  it('takes a returned error down when Google starts', async () => {
+    open(googleServices(vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=three')), '/login?error=access_denied');
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Google sign-in was cancelled/);
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    expect(screen.queryByText(/Google sign-in was cancelled/)).toBeNull();
   });
 });
 
