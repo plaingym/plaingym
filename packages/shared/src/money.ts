@@ -46,6 +46,25 @@ export function minorUnitStep(currency: string): number {
   return 1;
 }
 
+/** Whether `amount` minor units is a whole number of `currency`'s steps, as Stripe requires of a card charge or refund. */
+export function onMinorUnitStep(amount: number, currency: string): boolean {
+  return Number.isSafeInteger(amount) && amount % minorUnitStep(currency) === 0;
+}
+
+/**
+ * Stripe's minimum card charge, in minor units, for a charge in its account's settlement currency (Stripe's
+ * table of minimum charge amounts). Stripe sets no fixed minimum for other currencies: a charge converted into
+ * the settlement currency must meet that currency's minimum, so those return `null` and only Stripe decides.
+ */
+const minimumCharges: Readonly<Record<string, number>> = {
+  USD: 50, AED: 200, ARS: 50, AUD: 50, BRL: 50, CAD: 50, CHF: 50, COP: 50, CZK: 1500, DKK: 250, EUR: 50, GBP: 30,
+  HKD: 400, HUF: 17500, IDR: 50, ILS: 50, INR: 50, JPY: 50, KRW: 50, MXN: 1000, MYR: 200, NOK: 300, NZD: 50,
+  PHP: 50, PLN: 200, RON: 200, RUB: 50, SEK: 300, SGD: 50, THB: 1000, ZAR: 50,
+};
+export function minimumChargeAmount(currency: string): number | null {
+  return minimumCharges[code(currency)] ?? null;
+}
+
 /** The decimal places a person may type for a price in `currency`. */
 export function inputDecimals(currency: string): number {
   return currencyExponent(currency) - Math.log10(minorUnitStep(currency));

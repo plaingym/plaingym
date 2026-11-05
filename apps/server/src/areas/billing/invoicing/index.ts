@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { currencySchema, idSchema } from '@plaingym/shared/contracts';
 import type { Currency, Id, Invoice, InvoiceLineItem, IsoDate, TaxRate } from '@plaingym/shared/contracts';
+import { minorUnitStep } from '@plaingym/shared/money';
 import type { AssignMembership, MembershipSnapshot } from '../../../core/interfaces/membership-lifecycle.js';
 import { billingDay, calendarDate, calendarDaysBetween, householdDateOnOrAfter, nextBillingDate, previousBillingDate } from './calendar.js';
 import { allocate, cents, checkedCents, nonnegativeInteger, roundRatio } from './money.js';
@@ -117,6 +118,8 @@ function membershipPrice(item: PricedMembership, amountCents = item.membership.a
   return { kind: 'membership', description: item.description, amountCents, currency: item.membership.currency,
     quantity: 1, membershipId: item.membership.id, chargeTypeId: null, taxRates: item.taxRates };
 }
+/** The currency's charge step: every amount the engine rounds lands on it, so a card charge in ISK or KWD is never refused. */
+function step(currency: Currency): bigint { return BigInt(minorUnitStep(currency)); }
 function compareIds(a: { id: Id }, b: { id: Id }): number { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; }
 
 /** One exact due date at a time; older dates are separate invocations, oldest first. */
@@ -162,7 +165,7 @@ function cycleTerms(input: HouseholdPricing, item: PricedMembership): { nextDueO
       const billedDays = calendarDaysBetween(membership.nextDueOn, householdDate);
       const periodDays = calendarDaysBetween(periodStartsOn, householdDate);
       return { nextDueOn: householdDate,
-        amountCents: checkedCents(roundRatio(BigInt(membership.amountCents) * BigInt(billedDays), BigInt(periodDays))) };
+        amountCents: checkedCents(roundRatio(BigInt(membership.amountCents) * BigInt(billedDays), BigInt(periodDays), step(input.currency))) };
     }
   }
   return { nextDueOn: nextBillingDate(calendar(input, item)), amountCents: membership.amountCents };
@@ -185,7 +188,7 @@ export function calculateFirstPeriod(input: FirstPeriodInput): FirstPeriodResult
   const billedDays = calendarDaysBetween(input.membership.startsOn, periodEndsOn);
   const result = { periodStartsOn, periodEndsOn, periodDays, billedDays };
   if (billedDays === 0) return { ...result, invoice: null };
-  const amount = checkedCents(roundRatio(BigInt(input.membership.amountCents) * BigInt(billedDays), BigInt(periodDays)));
+  const amount = checkedCents(roundRatio(BigInt(input.membership.amountCents) * BigInt(billedDays), BigInt(periodDays), step(input.currency)));
   return { ...result, invoice: { householdId: input.householdId, kind: 'one_off', dueOn: input.membership.startsOn,
     periodStartsOn: null, periodEndsOn: null,
     ...calculatePrices(input.currency, [membershipPrice(input, amount)], input.familyDiscountBasisPoints, input.discountDescription) } };
@@ -204,6 +207,7 @@ export function calculateOneOffInvoice(input: OneOffInvoiceInput): CalculatedInv
 }
 
 function calculatePrices(currency: Currency, prices: readonly Price[], discountBasisPoints: number, discountDescription: string) {
+  let unit = step(currency);
   const taxSnapshots = new Map<Id, string>();
   const gross = prices.map((price) => {
     description(price.description); cents(price.amountCents);
@@ -226,9 +230,12 @@ function calculatePrices(currency: Currency, prices: readonly Price[], discountB
     checkedCents(amount);
     return amount;
   });
+  // A price stored off the step (from before prices were checked) can't land on it, and rounding it to whole steps
+  // could take more discount or net than the line holds, so such an invoice is calculated in single minor units.
+  if (gross.some((amount) => amount % unit !== 0n)) unit = 1n;
   const grossTotal = gross.reduce((sum, amount) => sum + amount, 0n);
-  const discount = roundRatio(grossTotal * BigInt(discountBasisPoints), 10_000n);
-  const discounts = allocate(discount, gross);
+  const discount = roundRatio(grossTotal * BigInt(discountBasisPoints), 10_000n, unit);
+  const discounts = allocate(discount, gross, unit);
   const lineItems: CalculatedLineItem[] = [];
   for (const [index, price] of prices.entries()) {
     const amount = gross[index]!;
@@ -236,7 +243,7 @@ function calculatePrices(currency: Currency, prices: readonly Price[], discountB
     const taxes = price.taxRates.toSorted(compareIds);
     const included = taxes.filter((tax) => tax.inclusive);
     const includedRate = included.reduce((sum, tax) => sum + BigInt(tax.rateMillionths), 0n);
-    const net = (value: bigint) => roundRatio(value * 1_000_000n, 1_000_000n + includedRate);
+    const net = (value: bigint) => roundRatio(value * 1_000_000n, 1_000_000n + includedRate, unit);
     const beforeDiscount = net(amount);
     const taxable = net(discounted);
     const fields = { currency, membershipId: price.membershipId, chargeTypeId: price.chargeTypeId, quantity: 1 };
@@ -245,10 +252,10 @@ function calculatePrices(currency: Currency, prices: readonly Price[], discountB
       taxRateId: null, taxRateMillionths: null, taxInclusive: null });
     if (beforeDiscount !== taxable) lineItems.push({ ...fields, kind: 'discount', description: discountDescription,
       amountCents: -checkedCents(beforeDiscount - taxable), taxRateId: null, taxRateMillionths: null, taxInclusive: null });
-    const inclusiveAmounts = allocate(discounted - taxable, included.map((tax) => BigInt(tax.rateMillionths)));
+    const inclusiveAmounts = allocate(discounted - taxable, included.map((tax) => BigInt(tax.rateMillionths)), unit);
     const amountsById = new Map(included.map((tax, i) => [tax.id, inclusiveAmounts[i]!]));
     for (const tax of taxes) lineItems.push({ ...fields, kind: 'tax', description: tax.name,
-      amountCents: checkedCents(tax.inclusive ? amountsById.get(tax.id)! : roundRatio(taxable * BigInt(tax.rateMillionths), 1_000_000n)),
+      amountCents: checkedCents(tax.inclusive ? amountsById.get(tax.id)! : roundRatio(taxable * BigInt(tax.rateMillionths), 1_000_000n, unit)),
       taxRateId: tax.id, taxRateMillionths: tax.rateMillionths, taxInclusive: tax.inclusive });
   }
   const amountCents = checkedCents(lineItems.reduce((sum, line) => sum + BigInt(line.amountCents), 0n));

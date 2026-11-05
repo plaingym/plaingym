@@ -2,6 +2,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { refundReleased, type InvoiceDetail, type MaskedPaymentMethod, type Payment } from '@plaingym/shared/contracts';
+import { AmountInputError } from '@plaingym/shared/money';
 import { invoiceClient, invoiceError, type InvoiceClient } from './api.js';
 import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
@@ -48,7 +49,9 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         setMessage(text(result.data.status === 'succeeded' ? 'paid' : result.data.status === 'failed' ? 'chargeFailed'
           : result.data.status === 'requires_action' ? 'requiresAction' : 'pendingCharge'));
       }
-      if (action.kind === 'refund') await client.call('createRefund', { amountCents: parseMinorUnits(String(form.get('amount')), action.payment.currency, { anyMinorUnit: true }),
+      // A card refund goes to Stripe, which takes only whole steps of the currency; a manual refund may take any minor unit.
+      if (action.kind === 'refund') await client.call('createRefund', { amountCents: parseMinorUnits(String(form.get('amount')), action.payment.currency,
+        { anyMinorUnit: action.payment.method !== 'card' }),
         currency: action.payment.currency, reason: form.get('reason') || null }, { paymentId: action.payment.id });
       if (action.kind === 'revoke' || action.kind === 'default') await client.call(action.kind === 'revoke' ? 'revokePaymentMethod' : 'setDefaultPaymentMethod', {},
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
@@ -63,7 +66,10 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });
       markSaved(); setDraft(false);
       if (action.kind !== 'link') setAction(null);
-    } catch (error) { setError(invoiceError(error)); await cache.invalidateQueries({ queryKey: key }); } finally { setBusy(false); }
+    } catch (error) {
+      if (error instanceof AmountInputError) { setError(text(error.reason === 'step' ? 'errors.refund_off_step' : 'errors.invalid_amount')); return; }
+      setError(invoiceError(error)); await cache.invalidateQueries({ queryKey: key });
+    } finally { setBusy(false); }
   }
   if (detail.isPending) return <LoadingState/>;
   if (detail.isError) return <ErrorState onRetry={() => void detail.refetch()}/>;

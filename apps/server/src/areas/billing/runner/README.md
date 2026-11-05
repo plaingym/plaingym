@@ -60,8 +60,13 @@ The default mode is automatic; the retry callback selects `{ mode: 'retry' }`.
 
 Skip reasons include `billing_disabled`, `not_payable`, `needs_review`,
 `pending_attempt`, `no_saved_card`, `already_attempted`, `outside_retry_window`,
-`not_auto_collectable`, `not_due`, `checkout_changed`, `reservation_lost`, and
-`action_required`, and `collection_changed`. A read-only eligibility check runs before resolving the
+`not_auto_collectable`, `not_due`, `checkout_changed`, `reservation_lost`,
+`action_required`, `collection_changed`, `below_minimum` and `off_step`. A card charge Stripe would
+refuse reserves no attempt and reaches no provider: `below_minimum` when the total is under
+Stripe's minimum charge for its currency (`minimumChargeAmount` from `@plaingym/shared/money`:
+$0.50, ¥50, ...; currencies without a fixed minimum are left to Stripe), and `off_step` when
+the total is finer than the currency's charge step (an amount stored before prices were
+checked). Either invoice stays open for a cash or check payment. A read-only eligibility check runs before resolving the
 provider or touching Checkout; reservation repeats the same checks under the
 invoice lock. A skip is observable and is not a collection error.
 

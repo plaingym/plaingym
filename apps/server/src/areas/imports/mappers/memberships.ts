@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { households, members, memberships, plans, RevisionConflictError, assertRevised, revisionGuard,
   uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { dateSchema, idSchema, type ImportIssue, type ImportPlanRequest, type ImportTargetField } from '@plaingym/shared/contracts';
+import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
 import { isCalendarDate, localDate } from '@plaingym/shared/time';
 import { householdDateOnOrAfter } from '../../billing/invoicing/calendar.js';
 import type { CsvRow } from '../pipeline.csv.js';
@@ -96,6 +97,7 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
     if (people.length !== 1 || selected.length !== 1 || !selected[0]!.active) return [];
     const member = people[0]!, selectedPlan = selected[0]!;
     if (source.currency && source.currency !== selectedPlan.currency) return [];
+    if (source.amountCents !== null && !onMinorUnitStep(source.amountCents, selectedPlan.currency)) return [];
     return [{ source, member, plan: selectedPlan, interval: source.interval ?? selectedPlan.interval }];
   });
   const firstRows = new Map<string, (typeof resolved)[number]>();
@@ -115,6 +117,9 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
         const interval = source.interval ?? selectedPlan.interval;
         const duplicates = livePair(existing, member.id, selectedPlan.id);
         if (source.currency && source.currency !== selectedPlan.currency) fail('currency', 'currency_mismatch', 'currencyMismatch');
+        // Stripe charges only whole steps of the currency (100 for ISK, 10 for KWD), so an imported price must be one.
+        else if (source.amountCents !== null && !onMinorUnitStep(source.amountCents, selectedPlan.currency))
+          fail('amountCents', 'invalid_value', 'offStepPrice', { step: minorUnitStep(selectedPlan.currency), currency: selectedPlan.currency });
         const first = firstRows.get(key(member.id, selectedPlan.id));
         if (first && first.source.rowNumber < source.rowNumber) fail('plan', 'duplicate', 'duplicateRow', { row: first.source.rowNumber });
         if (plan.duplicatePolicy === 'update' && duplicates.length === 1) {

@@ -207,7 +207,8 @@ describe('payment route permissions and tenant isolation', () => {
 
 describe('one-off collection and payment durability', () => {
   it.each(['billing_disabled', 'not_payable', 'needs_review', 'pending_attempt', 'no_saved_card', 'already_attempted',
-    'outside_retry_window', 'not_auto_collectable', 'not_due', 'checkout_changed', 'reservation_lost', 'action_required', 'collection_changed'] as const)(
+    'outside_retry_window', 'not_auto_collectable', 'not_due', 'checkout_changed', 'reservation_lost', 'action_required', 'collection_changed',
+    'below_minimum', 'off_step'] as const)(
     'preserves the runner skip reason: %s', async reason => {
       const f = await fixture(), charge = vi.fn(async (): Promise<ChargeResult> => ({ status: 'skipped', reason }));
       const service = createPaymentService({ ...f.options, runner: { charge } });

@@ -48,7 +48,10 @@ the gym's live key can't refund. Once the reservation commits, and before Stripe
 called, the refund takes `holdGymSettings` and checks the payment again: a switch in
 progress holds the gym row, so it either sees the pending refund (and refuses to
 run) or commits first, marking the payment; the refund is then refused
-(`test_payment`) and its reservation ends `failed`, with no processor refund. Manual refunds record money already returned to the payer. Routes restrict refunds to owners and
+(`test_payment`) and its reservation ends `failed`, with no processor refund. A card refund must be a whole step of its currency (whole ISK or UGX, a last
+digit of 0 in KWD), as Stripe refuses others: one off the step is refused (`refund_off_step`)
+before anything is reserved. Manual refunds record money already returned to the payer, in any
+minor unit. Routes restrict refunds to owners and
 admins; front desk may collect payments and remove a card.
 
 A one-off from a charge type needs only `payments.record`. A custom-amount one-off

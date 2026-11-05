@@ -5,7 +5,7 @@ import {
   amountCentsSchema, dateSchema, idSchema, instantSchema, listResponseSchema,
   moneySchema, paginationSchema, revisionSchema,
 } from '../common.js';
-import { billingIntervalSchema } from './catalog.js';
+import { billingIntervalSchema, refinePriceStep } from './catalog.js';
 
 export { membershipStatusSchema } from '../states.js';
 export const membershipSchema = z.strictObject({
@@ -54,7 +54,7 @@ export const updateMembershipRequestSchema = z.strictObject({
   nextDueOn: dateSchema.optional(),
   interval: billingIntervalSchema.optional(),
   // A price override always includes its currency; the service checks the gym.
-  price: moneySchema.extend({ amountCents: amountCentsSchema.nonnegative() }).optional(),
+  price: moneySchema.extend({ amountCents: amountCentsSchema.nonnegative() }).superRefine(refinePriceStep(['amountCents'])).optional(),
 }).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.');
 export const activateMembershipRequestSchema = z.strictObject({ revision: revisionSchema });
 export const freezeMembershipRequestSchema = z.strictObject({

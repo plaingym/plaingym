@@ -53,7 +53,8 @@ Each row needs an email (or both names), the **plan's name** (or its ID) exactly
 it is in **Billing catalog**, and **Next due date** as `YYYY-MM-DD`. Optional: amount in
 cents, billing interval (`monthly` or `annual`), currency (it must equal the plan's),
 commitment end date, billing day. Missing prices and intervals use the plan's. The
-catalog is never changed by a price in the file.
+catalog is never changed by a price in the file. An amount must be one Stripe can charge:
+a multiple of 100 in ISK and UGX (whole units), and of 10 in BHD, JOD, KWD, OMR and TND.
 
 Check the next due dates. Each membership keeps the date as given, even a past one.
 When billing is later turned on, a membership due in the past is invoiced for each

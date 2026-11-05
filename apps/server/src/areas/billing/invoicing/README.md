@@ -13,7 +13,7 @@ An empty or entirely frozen cycle has no invoice. Free active plans produce a
 zero-total invoice and advance normally.
 
 There is no database access, clock read, ID allocation, state transition, or I/O.
-Inputs are not mutated. All outputs use integer cents and the supplied gym currency;
+Inputs are not mutated. All outputs use integer minor units and the supplied gym currency;
 membership and charge currencies must match it. Lines are projections of the shared
 `InvoiceLineItem` contract without persistence IDs. No dependency was added.
 
@@ -57,7 +57,16 @@ recurring membership invoices.
 
 All multiplication/division uses `bigint`; output line amounts and invoice totals
 must fit PostgreSQL signed integer cents. Nonnegative rational amounts round to
-the nearest cent, with exact halves rounded upward.
+the nearest multiple of the currency's charge step (`minorUnitStep` from
+`@plaingym/shared/money`), with exact halves rounded upward: one minor unit for most
+currencies, 100 for ISK and UGX (Stripe charges them in whole units written with two
+decimals), and 10 for BHD, JOD, KWD, OMR and TND (Stripe wants a last digit of 0).
+Prorations, the family discount, the net of an inclusive quote and each exclusive
+tax round to that step, and allocations hand out whole steps, so every line and the
+total of an invoice whose prices are on the step land on it too: 5 ISK with 11 % tax
+on top is 6 ISK, never 5.55. An invoice with a price stored off the step (from before
+prices were checked) is calculated in single minor units, as before; the charge runner
+then skips it (`off_step`) and leaves it for a manual payment.
 
 1. Round the household percentage discount **once** on the sum of the membership
    quotes being billed. Allocate that amount proportionally to their quotes by

@@ -126,7 +126,10 @@ PostgreSQL holds everything except file contents. The rules that matter most:
 * Money is an integer in the currency's minor units, as Stripe takes it (cents
   for USD, whole yen for JPY, fils for KWD), with a currency. Any currency is
   accepted; `@plaingym/shared/money` holds each currency's decimal places and is
-  the only code that converts amounts for display or from a typed price.
+  the only code that converts amounts for display or from a typed price. Prices,
+  invoice totals and card refunds land on the step Stripe charges in (whole units for
+  ISK and UGX, a last digit of 0 for the three-decimal currencies); a saved-card
+  charge below Stripe's minimum, or off the step, is skipped and left for a manual payment.
   Timestamps are `timestamptz`; billing dates are computed in the gym's timezone.
 * Secrets stored in the database (Stripe keys, SMTP passwords, backup credentials,
   the gym's QR key) are encrypted with `APP_ENCRYPTION_KEY`.

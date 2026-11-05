@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { plans, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, type StaffRole } from '@plaingym/shared';
@@ -22,8 +23,8 @@ const operations = ['listTaxRates', 'getTaxRate', 'getTaxRateUsage', 'createTaxR
   'listChargeTypes', 'getChargeType', 'createChargeType', 'updateChargeType', 'listMemberships', 'getMembership', 'assignMembership',
   'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership', 'cancelMembership'] as const;
 type Operation = typeof operations[number];
-async function fixture() {
-  const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'CAD' });
+async function fixture(currency = 'CAD') {
+  const gymId = uuidv7(); await factory('gyms', gymId, { currency });
   const user = await factory('authUser', gymId), home = await factory('households', gymId, { billingDay: 31 });
   const member = await factory('members', gymId, { householdId: home.id }), plan = await factory('plans', gymId);
   const tax = await factory('taxRates', gymId), charge = await factory('chargeTypes', gymId);
@@ -128,5 +129,36 @@ describe('all billing catalog and membership routes', () => {
       expect(response.headers.get('Cache-Control')).toBe('no-store');
       expect((await request(app, operation, f)).status).toBe(409);
     }
+  });
+});
+
+describe('catalog prices on the currency step', () => {
+  it.each([['KWD', 1_255, 1_250], ['ISK', 550, 500]] as const)('refuses a %s price of %i through the API and takes %i', async (currency, offStep, onStep) => {
+    const f = await fixture(currency), app = server(f, staff(f, 'owner'));
+    const plan = { name: 'Plan', currency, interval: 'monthly', amountCents: onStep, signupFeeCents: onStep };
+    const charge = { name: 'Charge', currency, amountCents: onStep };
+    const refused = async (operation: Operation, body: unknown) => {
+      const response = await request(app, operation, f, body);
+      expect(response.status, operation + ' ' + JSON.stringify(body)).toBe(400);
+      expect(JSON.stringify(await response.json())).toContain('must be a multiple of');
+    };
+    await refused('createPlan', { ...plan, amountCents: offStep });
+    await refused('createPlan', { ...plan, signupFeeCents: offStep });
+    await refused('createChargeType', { ...charge, amountCents: offStep });
+    // Without a currency in the request, the service checks the amount against the stored one.
+    await refused('updatePlan', { revision: 1, amountCents: offStep });
+    await refused('updatePlan', { revision: 1, signupFeeCents: offStep });
+    await refused('updateChargeType', { revision: 1, amountCents: offStep });
+    await refused('updateMembership', { revision: 1, price: { amountCents: offStep, currency } });
+    expect((await request(app, 'createPlan', f, plan)).status).toBe(201);
+    expect((await request(app, 'createChargeType', f, charge)).status).toBe(201);
+    expect((await request(app, 'updatePlan', f, { revision: 1, amountCents: onStep })).status).toBe(200);
+    expect((await request(app, 'updateChargeType', f, { revision: 1, amountCents: onStep, currency })).status).toBe(200);
+    expect((await request(app, 'updateMembership', f, { revision: 1, price: { amountCents: onStep, currency } })).status).toBe(200);
+  });
+  it('leaves a stored off-step price alone when an update changes something else', async () => {
+    const f = await fixture('KWD'), app = server(f, staff(f, 'owner'));
+    await db.forGym(f.gymId, tx => tx.update(plans).set({ amountCents: 1_255 }).where(eq(plans.id, f.plan.id)));
+    expect((await request(app, 'updatePlan', f, { revision: 1, name: 'Renamed' })).status).toBe(200);
   });
 });

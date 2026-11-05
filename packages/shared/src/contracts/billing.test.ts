@@ -328,3 +328,28 @@ describe('locked schema compatibility', () => {
     }
   });
 });
+
+describe('prices on the currency step', () => {
+  const id = '00000000-0000-7000-8000-000000000001';
+  it.each([['KWD', 1_255, 1_250], ['ISK', 550, 500], ['UGX', 101, 100]] as const)('refuses %s %i and takes %i', (currency, offStep, onStep) => {
+    const plan = { name: 'Plan', currency, interval: 'monthly', amountCents: onStep, signupFeeCents: onStep };
+    const oneOff = { source: 'custom', householdId: id, dueOn: '2026-03-01', description: 'Item', currency, amountCents: onStep };
+    const cases = [
+      [createPlanRequestSchema, plan, { ...plan, amountCents: offStep }],
+      [createPlanRequestSchema, plan, { ...plan, signupFeeCents: offStep }],
+      [updatePlanRequestSchema, { revision: 1, currency, amountCents: onStep }, { revision: 1, currency, amountCents: offStep }],
+      [createChargeTypeRequestSchema, { name: 'Charge', currency, amountCents: onStep }, { name: 'Charge', currency, amountCents: offStep }],
+      [updateChargeTypeRequestSchema, { revision: 1, currency, amountCents: onStep }, { revision: 1, currency, amountCents: offStep }],
+      [createOneOffInvoiceRequestSchema, oneOff, { ...oneOff, amountCents: offStep }],
+      [updateMembershipRequestSchema, { revision: 1, price: { currency, amountCents: onStep } }, { revision: 1, price: { currency, amountCents: offStep } }],
+    ] as const;
+    for (const [schema, accepted, refused] of cases) {
+      expect(schema.safeParse(accepted).success, JSON.stringify(accepted)).toBe(true);
+      expect(schema.safeParse(refused).success, JSON.stringify(refused)).toBe(false);
+    }
+  });
+  it('leaves an amount without its currency to the service', () => {
+    expect(updatePlanRequestSchema.safeParse({ revision: 1, amountCents: 1_255 }).success).toBe(true);
+    expect(createChargeTypeRequestSchema.safeParse({ name: 'Charge', currency: 'usd', amountCents: 1 }).success).toBe(false);
+  });
+});

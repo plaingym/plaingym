@@ -5,6 +5,11 @@ sets active=false; it never deletes a referenced plan or tax. New assignments an
 new tax links require active records; existing memberships keep their price,
 interval, currency, and original commitment when a catalog item is edited.
 
+A price, sign-up fee or membership price override must be a whole step of its currency
+(`minorUnitStep`: 100 for ISK and UGX, 10 for the three-decimal currencies), as Stripe charges
+nothing finer. The request schemas refuse one that names its currency; an update that changes an
+amount alone is checked against the stored currency. Unchanged amounts are left alone.
+
 A tax rate is never archived while charge types or plans carry it. Archiving
 (`active: false`) an active rate that something carries is a conflict whose
 details list the charge types, the plans and the memberships (not cancelled) on

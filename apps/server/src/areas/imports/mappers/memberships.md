@@ -15,7 +15,8 @@ match; ambiguous plan names need a plan UUID. Source IDs are not persisted as
 member identifiers by the people mapper, so `externalId` cannot locate a member.
 
 Optional `amountCents` is a nonnegative integer number of cents (including zero,
-at most 2147483647); `interval` is `monthly` or `annual`. Missing prices and
+at most 2147483647), and a multiple of the plan currency's charge step (100 for ISK and
+UGX, 10 for the three-decimal currencies; a row error otherwise); `interval` is `monthly` or `annual`. Missing prices and
 intervals use the selected plan. Currency defaults to the plan's currency and
 must match it when supplied. `commitmentEndsOn` can record a calendar date.
 Unmapped or empty commitment dates preserve existing values on update. The

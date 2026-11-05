@@ -153,7 +153,7 @@ export function registerBillingWebhookHandlers(inbox: Pick<WebhookInbox, 'regist
         if (outcome.status !== 'succeeded' || !outcome.latestChargeId) throw new Error('Completed Checkout payment is unresolved');
         await options.transitions.cardSucceeded(system(gymId), { invoiceId: invoice.id, paymentId: payment?.id ?? uuidv7(),
           paymentIntentId: outcome.id, chargeId: outcome.latestChargeId, amountCents: outcome.amount,
-          currency: outcome.currency.toUpperCase() as 'USD' | 'CAD', paidAt: successTime(outcome) });
+          currency: outcome.currency.toUpperCase(), paidAt: successTime(outcome) });
         if (session.savesCard) {
           if (!session.paymentMethodId) throw new Error('Collected payment method is unresolved');
           await cards.collect(gymId, provider, session.customerId, session.paymentMethodId);

@@ -4,10 +4,22 @@ import { forGym, plans, taxRates, chargeTypes, planTaxRates, chargeTypeTaxRates,
   revisionGuard, assertRevised, RevisionConflictError, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
+import { minorUnitStep, onMinorUnitStep } from '@plaingym/shared/money';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
+
+/**
+ * An update's new amounts, and every amount when it changes the currency, must sit on the step of the currency they
+ * will be charged in (the request schemas check a request that names its currency). Otherwise unchanged amounts, even
+ * ones stored off the step, are left alone.
+ */
+function checkPriceStep(currency: string, changes: { amountCents?: number | undefined; signupFeeCents?: number | undefined }) {
+  for (const amount of [changes.amountCents, changes.signupFeeCents])
+    if (amount !== undefined && !onMinorUnitStep(amount, currency))
+      throw new AppError('invalid_request', 'Amounts in ' + currency + ' must be a multiple of ' + minorUnitStep(currency) + ' minor units.');
+}
 
 export function catalogMissing<T>(row: T | undefined): T {
   if (!row) throw new AppError('not_found', 'Resource not found');
@@ -157,6 +169,8 @@ export function createCatalogService(options: CatalogOptions = {}) {
       if (changes.currency !== undefined) await currency(context.gymId, changes.currency);
       return scope(context.gymId, async tx => {
         const before = catalogMissing((await tx.select().from(plans).where(eq(plans.id, id)).for('update'))[0]);
+        checkPriceStep(changes.currency ?? before.currency, (changes.currency ?? before.currency) === before.currency ? changes
+          : { amountCents: changes.amountCents ?? before.amountCents, signupFeeCents: changes.signupFeeCents ?? before.signupFeeCents });
         if (taxRateIds !== undefined) await validateTaxes(tx, taxRateIds, () => planTaxIds(tx, id));
         const beforeTaxes = await planTaxIds(tx, id);
         const guard = revisionGuard(plans.revision, revision);
@@ -201,6 +215,7 @@ export function createCatalogService(options: CatalogOptions = {}) {
       if (changes.currency !== undefined) await currency(context.gymId, changes.currency);
       return scope(context.gymId, async tx => {
         const before = catalogMissing((await tx.select().from(chargeTypes).where(eq(chargeTypes.id, id)).for('update'))[0]);
+        checkPriceStep(changes.currency ?? before.currency, (changes.currency ?? before.currency) === before.currency ? changes : { amountCents: changes.amountCents ?? before.amountCents });
         if (taxRateIds !== undefined) await validateTaxes(tx, taxRateIds, () => chargeTaxIds(tx, id));
         const beforeTaxes = await chargeTaxIds(tx, id);
         const guard = revisionGuard(chargeTypes.revision, revision);

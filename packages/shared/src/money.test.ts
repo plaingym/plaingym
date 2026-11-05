@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { AmountInputError, amountInputPattern, amountInputStep, currencyExponent, formatMinorUnits, inputDecimals, minorUnitStep, minorUnitsToInput, parseMinorUnits } from './money.js';
+import { AmountInputError, amountInputPattern, amountInputStep, currencyExponent, formatMinorUnits, inputDecimals, minimumChargeAmount, minorUnitStep,
+  minorUnitsToInput, onMinorUnitStep, parseMinorUnits } from './money.js';
 
 const nbsp = (value: string) => value.replace(/[\u00a0\u202f]/g, ' ');
 
@@ -12,6 +13,10 @@ describe('currencyExponent', () => {
   ])('%s has %i decimal places', (currency, exponent) => expect(currencyExponent(currency)).toBe(exponent));
 
   it('agrees with Intl wherever Stripe does not say otherwise', () => {
+    // The lists below were written against this ICU. A Node update that brings other ICU data can fail this case with
+    // no code change: review the lists against Stripe's currency tables and the new ICU, then update the version.
+    const writtenFor = '78.3', icu = process.versions.icu ?? 'none';
+    const why = (currency: string) => `${currency}: the lists were written for ICU ${writtenFor}; this runtime has ICU ${icu}`;
     // Stripe charges these in two decimals; recent ICU displays them with none.
     const stripeTwoDecimal = new Set(['AFN', 'ALL', 'COP', 'HUF', 'IDR', 'ISK', 'LAK', 'LBP', 'MMK', 'PKR', 'SLL', 'SOS', 'UGX', 'YER']);
     // Stripe doesn't charge in these; ISO 4217 gives them minor units that ICU doesn't display.
@@ -19,7 +24,7 @@ describe('currencyExponent', () => {
     for (const currency of Intl.supportedValuesOf('currency')) {
       const intl = new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits;
       const expected = stripeTwoDecimal.has(currency) ? 2 : iso.get(currency) ?? intl;
-      expect([currency, currencyExponent(currency)]).toEqual([currency, expected]);
+      expect(currencyExponent(currency), why(currency)).toBe(expected);
     }
   });
 
@@ -114,4 +119,18 @@ describe('price input', () => {
       for (const amount of [0, 100, 1000, 2500, 123_400, 2_147_483_600])
         expect(parseMinorUnits(minorUnitsToInput(amount, currency), currency)).toBe(amount);
   });
+});
+
+describe('card amounts', () => {
+  it.each([
+    [555, 'ISK', false], [600, 'ISK', true], [1255, 'KWD', false], [1250, 'KWD', true], [1, 'USD', true], [1, 'JPY', true],
+    [0, 'KWD', true], [1.5, 'USD', false],
+  ])('%s %s is on the charge step: %s', (amount, currency, expected) => expect(onMinorUnitStep(amount, currency)).toBe(expected));
+
+  it.each([
+    ['USD', 50], ['CAD', 50], ['EUR', 50], ['GBP', 30], ['JPY', 50], ['KRW', 50], ['HUF', 17_500], ['MXN', 1000], ['THB', 1000],
+    ['CZK', 1500], ['HKD', 400], ['KWD', null], ['ISK', null],
+  ])('the minimum card charge in %s is %s minor units', (currency, expected) => expect(minimumChargeAmount(currency)).toBe(expected));
+
+  it('refuses a malformed currency code', () => expect(() => minimumChargeAmount('usd')).toThrow(RangeError));
 });

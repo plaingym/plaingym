@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
+import { minorUnitStep, onMinorUnitStep } from '../../money.js';
 import { billingIntervalSchema } from '../states.js';
 import {
   amountCentsSchema, currencySchema, idSchema, instantSchema, listResponseSchema,
@@ -17,6 +18,24 @@ const priceFields = {
   ...moneySchema.shape,
   amountCents: amountCentsSchema.nonnegative(),
 };
+/**
+ * Refuses a price finer than its currency's charge step (`minorUnitStep`: 100 for ISK and UGX, 10 for the
+ * three-decimal currencies), which Stripe would refuse to charge. An update that changes an amount without its
+ * currency is checked by the service against the stored one.
+ */
+export function refinePriceStep(fields: readonly ('amountCents' | 'signupFeeCents')[]) {
+  return (value: object, context: z.RefinementCtx) => {
+    const prices = value as Partial<Record<'currency' | 'amountCents' | 'signupFeeCents', unknown>>;
+    const currency = currencySchema.safeParse(prices.currency);
+    if (!currency.success) return;
+    for (const field of fields) {
+      const amount = prices[field];
+      if (typeof amount === 'number' && !onMinorUnitStep(amount, currency.data)) context.addIssue({ code: 'custom', path: [field],
+        message: `Amounts in ${currency.data} must be a multiple of ${minorUnitStep(currency.data)} minor units.` });
+    }
+  };
+}
+const planPrices = refinePriceStep(['amountCents', 'signupFeeCents']), chargePrices = refinePriceStep(['amountCents']);
 
 const taxRateFieldsSchema = z.strictObject({
   name: nameSchema,
@@ -73,10 +92,10 @@ export const createPlanRequestSchema = planFieldsSchema.extend({
   commitmentMonths: planFieldsSchema.shape.commitmentMonths.default(null),
   active: planFieldsSchema.shape.active.default(true),
   taxRateIds: taxRateIdsSchema.default([]),
-});
+}).superRefine(planPrices);
 export const updatePlanRequestSchema = planFieldsSchema.partial().extend({
   revision: revisionSchema,
-}).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.');
+}).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.').superRefine(planPrices);
 export const planSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,
@@ -101,10 +120,10 @@ const chargeTypeFieldsSchema = z.strictObject({
 });
 export const createChargeTypeRequestSchema = chargeTypeFieldsSchema.extend({
   active: z.boolean().default(true), taxRateIds: taxRateIdsSchema.default([]),
-});
+}).superRefine(chargePrices);
 export const updateChargeTypeRequestSchema = chargeTypeFieldsSchema.partial().extend({
   revision: revisionSchema,
-}).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.');
+}).refine((value) => Object.keys(value).some((key) => key !== 'revision'), 'Supply a change.').superRefine(chargePrices);
 export const chargeTypeSchema = z.strictObject({
   id: idSchema,
   createdAt: instantSchema,

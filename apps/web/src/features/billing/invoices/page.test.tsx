@@ -247,6 +247,8 @@ describe('invoice and household payment UI', () => {
     ['reservation_lost', 'The card charge reservation changed. Check back shortly.'],
     ['action_required', 'The existing card payment needs the payer’s authentication.'],
     ['collection_changed', 'The invoice, customer or saved card changed before confirmation. Reload the invoice.'],
+    ['below_minimum', 'This invoice is below the smallest card charge Stripe takes in its currency. Record a cash or check payment instead.'],
+    ['off_step', 'This invoice amount is finer than a card charge in its currency allows. Record a cash or check payment instead.'],
     ['already_paid', 'This invoice is already paid. Do not take another payment.'],
   ])('shows the translated server reason for %s', async (reason, message) => {
     const f = transport(), original = f.fetcher.getMockImplementation()!;
@@ -283,6 +285,22 @@ describe('invoice and household payment UI', () => {
     const button = await screen.findByRole('button', { name: 'Charge saved card' });
     await waitFor(() => expect(f.fetcher.mock.calls.filter(([path]) => String(path).includes('/payment-methods')).length).toBe(2));
     expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+  it.each([['card', false], ['cash', true]] as const)('takes a %s refund of 1.255 KWD only when it is manual (%s)', async (method, sends) => {
+    const paid = { ...invoice, status: 'paid' as const, paidAt: createdAt, amountCents: 12_500, currency: 'KWD' };
+    const kwd = { ...payment, method, amountCents: 12_500, currency: 'KWD' };
+    const f = transport({ invoice: paid, payments: [kwd], lineItems: [] });
+    start(<InvoiceDetails gymId={gymId} invoiceId={invoice.id} access={admin} client={f.client}/>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Refund' }));
+    const dialog = screen.getByRole('region'); fireEvent.change(within(dialog).getByLabelText('Amount'), { target: { value: '1.255' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    const alert = await within(dialog).findByRole('alert');
+    const sent = f.fetcher.mock.calls.find(([path]) => String(path).endsWith('/refunds'));
+    if (sends) expect(JSON.parse(String(sent?.[1]?.body))).toMatchObject({ amountCents: 1255, currency: 'KWD' });
+    else {
+      expect(sent).toBeUndefined();
+      expect(alert.textContent).toBe('Stripe refunds this currency to the card only in whole steps: whole ISK or UGX, or a last decimal of 0 in a three-decimal currency such as KWD. Enter a rounded amount.');
+    }
   });
   it('shows the remaining refundable amount after pending and successful refunds, releasing failed and canceled ones', async () => {
     const f = transport({ invoice: { ...invoice, status: 'paid', paidAt: createdAt }, payments: [payment], refunds: [

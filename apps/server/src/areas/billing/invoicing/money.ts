@@ -10,13 +10,20 @@ export function checkedCents(value: bigint): number {
   if (value < 0n || value > MAX_CENTS) throw new RangeError('Invoice amount exceeds integer cents range');
   return Number(value);
 }
-/** Round nonnegative rational amounts to the nearest cent, ties upward. */
-export function roundRatio(numerator: bigint, denominator: bigint): bigint {
-  if (numerator < 0n || denominator <= 0n) throw new RangeError('Invalid money ratio');
-  return (2n * numerator + denominator) / (2n * denominator);
+/**
+ * Round a nonnegative rational amount to the nearest multiple of `step` minor units, ties upward. The step is the
+ * currency's charge step (`minorUnitStep` from `@plaingym/shared/money`): 1 for most, 100 for ISK, 10 for KWD.
+ */
+export function roundRatio(numerator: bigint, denominator: bigint, step = 1n): bigint {
+  if (numerator < 0n || denominator <= 0n || step <= 0n) throw new RangeError('Invalid money ratio');
+  return (2n * numerator + denominator * step) / (2n * denominator * step) * step;
 }
-/** Exact largest-remainder allocation; array order breaks equal-remainder ties. */
-export function allocate(total: bigint, weights: readonly bigint[]): bigint[] {
+/**
+ * Exact largest-remainder allocation in multiples of `step`; array order breaks equal-remainder ties. A total that
+ * isn't itself a multiple of `step` (only from an amount stored off the step) is allocated in single minor units.
+ */
+export function allocate(total: bigint, weights: readonly bigint[], step = 1n): bigint[] {
+  if (step > 1n && total % step === 0n) return allocate(total / step, weights).map((share) => share * step);
   const sum = weights.reduce((value, weight) => value + weight, 0n);
   if (sum === 0n) {
     if (total !== 0n) throw new RangeError('Cannot allocate to zero weights');

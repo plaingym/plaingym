@@ -395,3 +395,77 @@ describe('invalid billing inputs fail closed', () => {
     expect(() => calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-01', charges: [] })).toThrow();
   });
 });
+
+describe('currencies with a charge step', () => {
+  // Stripe charges ISK and UGX in whole units written with two decimals (a step of 100) and the three-decimal
+  // currencies with a last digit of 0 (a step of 10); every amount the engine rounds lands on that step.
+  const onStep = (calculated: CalculatedInvoice, step: number) => {
+    for (const line of calculated.lineItems) expect(Math.abs(line.amountCents % step), line.kind + ' ' + line.amountCents).toBe(0);
+    expect(calculated.amountCents % step).toBe(0);
+    checkContract(calculated);
+  };
+  it('rounds ISK tax on top to whole krónur: 5 ISK with 11 % is 6 ISK', () => {
+    const result = calculateOneOffInvoice({ householdId, currency: 'ISK', dueOn: '2026-03-16', charges: [
+      { kind: 'charge', description: 'Drop-in', amountCents: 500, currency: 'ISK', taxRates: [tax(110_000)] },
+    ] });
+    expect(result.lineItems.map((line) => line.amountCents)).toEqual([500, 100]);
+    expect(result.amountCents).toBe(600);
+  });
+  it('lands an ISK family discount and both tax treatments on the step', () => {
+    const result = invoice(cycle({ currency: 'ISK', familyDiscountBasisPoints: 1_500, memberships: [
+      priced({ currency: 'ISK', amountCents: 12_300 }, [tax(110_000)]),
+      priced({ id: id(11), currency: 'ISK', amountCents: 4_500 }, [tax(240_000, true, 51)]),
+    ] }));
+    // 15 % of 168 ISK is 25.20, so 25 ISK, split 18 and 7 by largest remainder. 105 ISK at 11 % is 11.55, so 12 ISK;
+    // 38 ISK including 24 % holds 30.65 net, so 31 ISK and 7 ISK of tax (the net of 45 ISK is 36.29, so 36 ISK).
+    expect(result.lineItems.map((line) => [line.membershipId, line.kind, line.amountCents])).toEqual([
+      [id(10), 'membership', 12_300], [id(10), 'discount', -1_800], [id(10), 'tax', 1_200],
+      [id(11), 'membership', 3_600], [id(11), 'discount', -500], [id(11), 'tax', 700],
+    ]);
+    expect(result.amountCents).toBe(15_500);
+    onStep(result, 100);
+  });
+  it('lands a KWD proration, family discount and tax on the step', () => {
+    const result = calculateFirstPeriod(first({ currency: 'KWD', familyDiscountBasisPoints: 1_250,
+      ...priced({ currency: 'KWD', startsOn: '2026-03-16', nextDueOn: '2026-04-01', amountCents: 25_000, status: 'pending' }, [tax(50_000)]) }));
+    // 16 of 31 days of 25.000 KWD is 12.9032, so 12.900; 12.5 % of it is 1.6125, so 1.610; 5 % of 11.290 is 0.5645, so 0.560.
+    expect(result.invoice?.lineItems.map((line) => line.amountCents)).toEqual([12_900, -1_610, 560]);
+    expect(result.invoice?.amountCents).toBe(11_850);
+    onStep(result.invoice!, 10);
+  });
+  it('lands an off-day ISK cycle proration on the step', () => {
+    // A trial that ended on March 10 in a household billed on the 1st pays 22 of 31 days: 70.97 ISK, so 71 ISK.
+    const result = invoice(cycle({ currency: 'ISK', dueOn: '2026-03-10', memberships: [
+      priced({ currency: 'ISK', amountCents: 10_000, nextDueOn: '2026-03-10' }, [tax(110_000)]),
+    ] }));
+    expect(result.lineItems.map((line) => line.amountCents)).toEqual([7_100, 800]);
+    onStep(result, 100);
+  });
+  it.each([['ISK', 100], ['UGX', 100], ['KWD', 10], ['BHD', 10], ['JOD', 10], ['OMR', 10], ['TND', 10]] as const)(
+    'keeps every %s line a multiple of %i across discounts, taxes and prorations', (currency, step) => {
+      for (const amountCents of [step, 7 * step, 12_345 * step, 99_999 * step])
+        for (const familyDiscountBasisPoints of [0, 333, 1_500])
+          for (const taxes of [[tax(110_000)], [tax(240_000, true)], [tax(70_000, true), tax(55_000, false, 51)]]) {
+            onStep(invoice(cycle({ currency, familyDiscountBasisPoints, memberships: [
+              priced({ currency, amountCents }, taxes), priced({ id: id(11), currency, amountCents: amountCents + step }, taxes),
+            ] })), step);
+            const prorated = calculateFirstPeriod(first({ currency, familyDiscountBasisPoints,
+              ...priced({ currency, startsOn: '2026-03-16', nextDueOn: '2026-04-01', amountCents, status: 'pending' }, taxes) })).invoice!;
+            onStep(prorated, step);
+          }
+    });
+  it('keeps an amount stored off the step exactly where no rounding applies', () => {
+    const result = invoice(cycle({ currency: 'ISK', memberships: [priced({ currency: 'ISK', amountCents: 555 })] }));
+    expect(result.amountCents).toBe(555);
+  });
+  it('calculates an invoice with an amount stored off the step in single minor units', () => {
+    // On the ISK step, 1.90 ISK including 24 % would net 2 ISK and 0.60 ISK at 50 % would take a whole 1 ISK of discount.
+    const inclusive = invoice(cycle({ currency: 'ISK', memberships: [priced({ currency: 'ISK', amountCents: 190 }, [tax(240_000, true)])] }));
+    expect(inclusive.lineItems.map((line) => [line.kind, line.amountCents])).toEqual([['membership', 153], ['tax', 37]]);
+    const discounted = invoice(cycle({ currency: 'ISK', familyDiscountBasisPoints: 5_000, memberships: [
+      priced({ currency: 'ISK', amountCents: 60 }), priced({ id: id(11), currency: 'ISK', amountCents: 60 }),
+    ] }));
+    expect(discounted.amountCents).toBe(60);
+    checkContract(discounted);
+  });
+});

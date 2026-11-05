@@ -14,7 +14,7 @@ export async function applyChargeOutcome(transitions: InvoiceTransitions, contex
     const chargeId = identity.chargeId ?? outcome.latestChargeId;
     if (!chargeId) conflict('Successful payment requires its processor Charge ID');
     return transitions.cardSucceeded(context, { ...identity, chargeId, paymentIntentId: outcome.id,
-      amountCents: outcome.amount, currency: outcome.currency.toUpperCase() as 'USD' | 'CAD' });
+      amountCents: outcome.amount, currency: outcome.currency.toUpperCase() });
   }
   if (!identity.attemptId) conflict('Failed payment requires its attempt ID');
   const failure = { invoiceId: identity.invoiceId, attemptId: identity.attemptId, paymentIntentId: outcome.id };

@@ -84,7 +84,7 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
       return processorRefundId(gymId, value.id);
     });
     const apply = (id: string) => options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
-      refundId: id, processorId: value.id, amountCents: value.amount, currency: currency as 'USD' | 'CAD', status: value.status });
+      refundId: id, processorId: value.id, amountCents: value.amount, currency: currency, status: value.status });
     try {
       await apply(refundId);
     } catch (error) {

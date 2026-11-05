@@ -142,7 +142,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           throw new Error('Refund identity or money mismatch');
         await options.transitions.refund(system(gymId), { invoiceId: invoice.id, paymentId: payment.id,
           refundId: reservation.id, processorId: refund.id, amountCents: refund.amount,
-          currency: payment.currency as 'USD' | 'CAD', status: refund.status });
+          currency: payment.currency, status: refund.status });
       }
     }
     await scope(gymId, async tx => {

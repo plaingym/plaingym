@@ -3,6 +3,7 @@ import { and, asc, desc, eq } from 'drizzle-orm';
 import { forGym, paymentMethods, payments, refunds, uuidv7 } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
+import { onMinorUnitStep } from '@plaingym/shared/money';
 import { notFound, type MutationContext } from '../../core/interfaces/common.js';
 import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -68,6 +69,9 @@ export function createPaymentMutations({ scope, clock, settings, transitions, jo
         const payment = (await tx.select().from(payments).where(eq(payments.id, c.idSchema.parse(paymentId))))[0] ?? notFound();
         const invoice = await loadInvoice(tx, payment.invoiceId, true);
         if (request.currency !== payment.currency || request.amountCents > payment.amountCents) paymentConflict('refund_mismatch', 'Refund amount or currency does not match');
+        // Stripe refuses a card refund off the currency's step (5.50 ISK, 1.255 KWD); a manual refund may take any minor unit.
+        if (payment.method === 'card' && !onMinorUnitStep(request.amountCents, request.currency))
+          paymentConflict('refund_off_step', 'A card refund must be a whole step of its currency');
         // Marked by a switch to live: the payment is in the test account, which the gym's live key can't refund.
         if (payment.method === 'card' && payment.reference === c.stripeTestPaymentReference)
           paymentConflict('test_payment', 'A Stripe test-mode payment can’t be refunded with the live key');

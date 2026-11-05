@@ -5,6 +5,7 @@
   "missingDueDate": "Supply the next billing date from the previous system.",
   "invalidDate": "Use a real calendar date in YYYY-MM-DD format.",
   "invalidPrice": "Enter a nonnegative whole number of cents, at most 2147483647.",
+  "offStepPrice": "In {currency} the price in cents must be a multiple of {step}, the smallest step Stripe charges.",
   "invalidInterval": "Use monthly or annual for the billing interval.",
   "invalidCurrency": "Use a three-letter currency code.",
   "invalidDay": "Billing day must be a whole number from 1 to 31.",

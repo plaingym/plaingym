@@ -3,6 +3,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { households, invoices, paymentAttempts, paymentMethods, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { billingRulesSchema } from '@plaingym/shared/contracts';
+import { minimumChargeAmount, onMinorUnitStep } from '@plaingym/shared/money';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import { isAssignmentInvoice } from '../assignment-invoices.js';
@@ -12,7 +13,7 @@ export { assignmentInvoiceCondition, isAssignmentInvoice } from '../assignment-i
 export type ChargeMode = 'automatic' | 'retry' | 'staff';
 export type SkipReason = 'billing_disabled' | 'not_payable' | 'needs_review' | 'pending_attempt' | 'no_saved_card'
   | 'already_attempted' | 'outside_retry_window' | 'not_auto_collectable' | 'not_due' | 'checkout_changed'
-  | 'reservation_lost' | 'action_required' | 'collection_changed';
+  | 'reservation_lost' | 'action_required' | 'collection_changed' | 'below_minimum' | 'off_step';
 export const skipped = (reason: SkipReason) => ({ status: 'skipped' as const, reason });
 export type Skipped = ReturnType<typeof skipped>;
 export interface Eligible {
@@ -43,6 +44,9 @@ export async function eligibility(tx: Transaction, gym: GymSettings, clock: Cloc
   } else if (mode === 'automatic' && attempts.some(row => !abandonedAttempt(row))) return skipped('already_attempted');
   const latest = attempts.at(-1);
   if (invoice.amountCents === 0) return { status: 'eligible', invoice, latest, payment: null };
+  // Stripe refuses these, so no attempt is reserved: the invoice stays open for a manual payment.
+  if (invoice.amountCents < (minimumChargeAmount(invoice.currency) ?? 0)) return skipped('below_minimum');
+  if (!onMinorUnitStep(invoice.amountCents, invoice.currency)) return skipped('off_step');
   const home = (await tx.select().from(households).where(eq(households.id, invoice.householdId)))[0]!;
   const method = (await tx.select().from(paymentMethods).where(and(eq(paymentMethods.householdId, home.id),
     eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt))))[0];

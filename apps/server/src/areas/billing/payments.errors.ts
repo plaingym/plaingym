@@ -9,6 +9,8 @@ const skipMessages = {
   not_auto_collectable: 'Invoice cannot be collected automatically', not_due: 'Invoice is not due yet',
   checkout_changed: 'Checkout changed during collection; reload the invoice', reservation_lost: 'The charge reservation changed; check back shortly',
   action_required: 'The existing card payment needs authentication', collection_changed: 'Invoice, customer or saved card changed before confirmation',
+  below_minimum: 'Invoice is below the smallest card charge Stripe takes in its currency; record a manual payment',
+  off_step: 'Invoice amount is finer than a card charge in its currency allows; record a manual payment',
 } satisfies Record<SkipReason, string>;
 export function chargeSkipped(reason: SkipReason): never { return paymentConflict(reason, skipMessages[reason]); }
 export function paymentConflict(reason: string, message: string): never { throw new AppError('conflict', message, { reason: [reason] }); }

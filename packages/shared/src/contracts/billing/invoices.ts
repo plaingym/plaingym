@@ -5,6 +5,7 @@ import {
   amountCentsSchema, dateSchema, idSchema, instantSchema, listResponseSchema,
   moneySchema, paginationSchema, taxRateMillionthsSchema,
 } from '../common.js';
+import { refinePriceStep } from './catalog.js';
 import { paymentSchema, refundSchema } from './payments.js';
 import type { EndpointContract } from '../definition.js';
 
@@ -120,7 +121,7 @@ export const createOneOffInvoiceRequestSchema = z.discriminatedUnion('source', [
     amountCents: amountCentsSchema.nonnegative(),
     taxRateIds: z.array(idSchema).refine((ids) => new Set(ids).size === ids.length, 'Tax rates must be distinct.').default([]),
   }),
-]);
+]).superRefine(refinePriceStep(['amountCents']));
 
 export type InvoiceKind = z.infer<typeof invoiceKindSchema>;
 export type InvoiceStatus = z.infer<typeof invoiceStatusSchema>;

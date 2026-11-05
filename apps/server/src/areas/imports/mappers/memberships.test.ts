@@ -418,6 +418,18 @@ describe('membership renewals through the durable pipeline', () => {
     const planned = await database.forGym(gymId, tx => membershipsMapper.analyze(tx, document.rows.slice(0, 1), plan, context));
     expect(planned[0]).toMatchObject({ action: 'create', values: { billingDay: 15 }, issues: [] });
   });
+  it('reports a price off the plan currency step as a row error', async () => {
+    gymId = uuidv7(); await factory('gyms', gymId, { timezone: 'America/Vancouver', currency: 'KWD', billingEnabled: true });
+    const off = await fixture(), on = await fixture();
+    const batch = await analyzed([
+      { email: off.member.email!, plan: off.plan.id, nextDueOn: '2026-11-15', amountCents: '1255' },
+      { email: on.member.email!, plan: on.plan.id, nextDueOn: '2026-11-15', amountCents: '1250' },
+    ]);
+    expect(batch.planned[0]).toMatchObject({ action: 'error', issues: [{ code: 'invalid_value', column: 'amountCents',
+      message: 'In KWD the price in cents must be a multiple of 10, the smallest step Stripe charges.' }] });
+    expect(batch.planned[1]).toMatchObject({ action: 'create', issues: [], values: { amountCents: 1250, currency: 'KWD' } });
+    expect(await batch.commit()).toBe(1);
+  });
   it('reports a standalone currency mismatch as a row error', async () => {
     const f = await fixture(), source = await services().load([{ email: f.member.email!, plan: f.plan.id, currency: 'USD', nextDueOn: '2026-11-15' }]);
     expect((await source.preview()).summary.errors).toBe(1); expect((await source.run()).committedRows).toBe(0);
