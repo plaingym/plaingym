@@ -1,116 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
-import { test, expect, Client, missingId, type Document, type Operation, type RecordId } from '../support.js';
+import { test, expect, Client, missingId } from '../support.js';
 import { signaturePng } from '../portal.js';
 import { multiGyms, withCookie, type Context } from './support.js';
+import { bodiesOf, hasJsonBody, namesTarget, outOfScope, pathFor, pathParams, queryOf, routeKey, routesOf, snapshot, targetOf,
+  type ApiDocument, type Aim, type Route, type Target } from './probe.js';
 
-interface Entry { method: string; path: string; permission: Operation['permission'] & { purpose?: string } }
+interface Entry { method: string; path: string; permission: { kind: string } }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
-const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 
 // Signed-link tokens, session cookies and device tokens are bearer credentials. Keep them out of traces.
 test.use({ trace: 'off', screenshot: 'off' });
-
-/** What one gym holds that no other gym may ever see: its resource IDs, names and addresses. */
-interface Target { ids: Record<string, string>; secrets: string[]; revisions: Record<string, number>; checkinCode: string }
-
-async function targetOf(gym: Context): Promise<Target> {
-  const { owner } = gym;
-  const roles = (await owner.json<{ data: (RecordId & { userId: string })[] }>('/api/staff/roles?limit=100')).data;
-  const profiles = (await owner.json<{ data: RecordId[] }>('/api/staff/profiles?limit=100')).data;
-  const household = (await owner.json<{ data: RecordId }>('/api/households/' + gym.householdId)).data;
-  const session = (await owner.json<{ data: RecordId }>('/api/schedule/sessions/' + gym.sessionId)).data;
-  const householdUsers = (await owner.json<{ data: RecordId[] }>(`/api/households/${gym.householdId}/users?limit=100`)).data;
-  // An invitation nobody has accepted, so revoking one is aimed at a real record too.
-  await owner.json(`/api/households/${gym.householdId}/portal-invitations`, 'POST', { email: `pending@${gym.slug}.example.invalid`, delivery: 'print', scope: 'payer' });
-  const invitations = (await owner.json<{ data: RecordId[] }>(`/api/households/${gym.householdId}/portal-invitations`)).data;
-  // The member's QR check-in code, issued by the household (reading it shows no code until one is issued).
-  const codePath = `/api/portal/members/${gym.student.id}/checkin-code`;
-  const state = (await gym.household.json<{ data: { revision: number } }>(codePath)).data;
-  const checkin = (await gym.household.json<{ data: { code: string } }>(codePath, 'POST', { revision: state.revision })).data;
-  expect(checkin.code).toBeTruthy();
-  const ids: Record<string, string> = { memberId: gym.student.id, householdId: gym.householdId, sessionId: gym.sessionId, bookingId: gym.bookingId,
-    invoiceId: gym.invoiceId, signatureId: gym.signatureId, deviceId: gym.deviceId, tagId: gym.tagId, programId: gym.program.id, rankSystemId: gym.rankSystemId,
-    rankId: gym.rankId, staffRoleId: roles.at(-1)?.id ?? missingId, userId: roles.at(-1)?.userId ?? missingId, staffProfileId: profiles[0]?.id ?? missingId,
-    templateId: gym.templateId, planId: gym.planId, householdUserId: householdUsers[0]?.id ?? missingId, invitationId: invitations[0]?.id ?? missingId };
-  const secrets = [...new Set([...Object.values(ids).filter((value) => value !== missingId), gym.gymId, gym.name, gym.student.lastName, gym.sessionName,
-    `@${gym.slug}.example.invalid`, gym.kioskToken, checkin.code])];
-  return { ids, secrets, checkinCode: checkin.code,
-    revisions: { household: household.revision, session: session.revision, member: gym.student.revision, program: gym.program.revision } };
-}
-
-/** The ID in `target` that a path parameter of `entry` names. Parameters with no resource of the kind in a fresh gym get an ID nothing holds. */
-function idFor(entry: Entry, name: string, target: Target) {
-  const { ids } = target;
-  if (name === 'id') {
-    const path = entry.path;
-    if (path.startsWith('/api/bookings') || path.includes('/bookings/{id}')) return ids.bookingId!;
-    if (path.startsWith('/api/programs')) return ids.programId!;
-    if (path.startsWith('/api/rank-systems')) return ids.rankSystemId!;
-    if (path.startsWith('/api/ranks')) return ids.rankId!;
-    if (path.startsWith('/api/schedule/sessions')) return ids.sessionId!;
-    if (path.startsWith('/api/kiosk/devices')) return ids.deviceId!;
-    return missingId;
-  }
-  return ids[name] ?? missingId;
-}
-function queryFor(operation: Operation | undefined, target: Target) {
-  const query = new URLSearchParams();
-  const from = new Date(Date.now() - 7 * 86_400_000).toISOString(), until = new Date(Date.now() + 14 * 86_400_000).toISOString();
-  const known: Record<string, string> = { memberId: target.ids.memberId!, programId: target.ids.programId!, rankId: target.ids.rankId!,
-    rankSystemId: target.ids.rankSystemId!, sessionId: target.ids.sessionId!, householdId: target.ids.householdId!, from, until, to: until, limit: '100', offset: '0' };
-  for (const parameter of operation?.parameters ?? []) if (parameter.in === 'query' && parameter.required) query.set(parameter.name, known[parameter.name] ?? 'invalid');
-  const text = query.toString();
-  return text ? '?' + text : '';
-}
-
-/** Valid bodies for mutations, aimed at the target's records: a route that skipped its gym check would change them.
- * Routes with no ID in their path name the target's records in the body. */
-function bodies(from: Context, target: Target, images: Record<'link' | 'household', SignatureImage>): Record<string, unknown> {
-  const { ids, revisions } = target;
-  const promotion = { programId: ids.programId, rankId: ids.rankId, rankSystemId: ids.rankSystemId, subRank: 0, promotedAt: new Date().toISOString(), notes: null };
-  const start = Date.now() + 2 * 86_400_000;
-  return {
-    // The caller's own name and PIN, or the target's check-in code, with the target's member: see `refusedWith200`.
-    'POST /api/kiosk/checkin': { name: from.student.fullName, pin: from.pin, checkins: [{ memberId: ids.memberId, sessionId: null }] },
-    'POST /api/kiosk/checkin/qr': { code: target.checkinCode, sessionId: null },
-    'POST /api/portal/bookings': { sessionId: ids.sessionId, allowWaitlist: true },
-    'POST /api/promotions': { ...promotion, memberId: ids.memberId },
-    'POST /api/promotions/bulk': { ...promotion, memberIds: [ids.memberId] },
-    'POST /api/programs': { name: 'Leaked program', rankSystemId: ids.rankSystemId, active: true },
-    'POST /api/ranks': { rankSystemId: ids.rankSystemId, name: 'Leaked rank', position: 9, subRanks: [], criteria: [] },
-    'POST /api/schedule/sessions': { name: 'Leaked class', startsAt: new Date(start).toISOString(), endsAt: new Date(start + 3_600_000).toISOString(),
-      coachId: null, capacity: 5, notes: null, kind: 'class', programIds: [ids.programId], tagIds: [] },
-    'POST /api/schedule/templates': { name: 'Leaked template', weekday: 3, localStartTime: '12:00', durationMinutes: 60, coachId: null, capacity: 5,
-      notes: null, kind: 'class', programIds: [ids.programId], tagIds: [] },
-    'POST /api/staff/roles': { userId: ids.userId, role: 'coach' },
-    'POST /api/staff/profiles': { displayName: 'Leaked profile', userId: ids.userId, memberId: ids.memberId },
-    'POST /api/links/sign-waiver': { templateId: ids.templateId, templateVersion: 1, signer: { kind: 'guardian', name: 'Cross gym', relationship: 'Parent' },
-      ...images.link, consent: true },
-    'PATCH /api/members/{memberId}': { revision: revisions.member, firstName: 'Leaked' },
-    'POST /api/members/{memberId}/anonymize': { revision: revisions.member },
-    'PATCH /api/members/{memberId}/medical-notes': { revision: revisions.member, medicalNotes: 'Leaked' },
-    'POST /api/members/{memberId}/tags': { tagId: ids.tagId },
-    'PATCH /api/households/{householdId}': { revision: revisions.household, name: 'Leaked' },
-    'PUT /api/households/{householdId}/pin': { revision: revisions.household, pin: '9999' },
-    'DELETE /api/households/{householdId}': { revision: revisions.household },
-    'POST /api/households/{householdId}/portal-invitations': { email: 'leak@example.invalid', delivery: 'print', scope: 'payer' },
-    'PATCH /api/programs/{id}': { revision: revisions.program, name: 'Leaked' },
-    'POST /api/schedule/sessions/{id}/cancel': { revision: revisions.session },
-    'PATCH /api/schedule/sessions/{id}/notes': { revision: revisions.session, notes: 'Leaked' },
-    'PATCH /api/schedule/sessions/{id}/capacity': { revision: revisions.session, capacity: 5 },
-    'POST /api/attendance': { memberId: ids.memberId, sessionId: null, programId: null },
-    'POST /api/bookings': { memberId: ids.memberId, sessionId: ids.sessionId, allowWaitlist: true },
-    'POST /api/bookings/{id}/cancel': {},
-    'POST /api/kiosk/devices/{id}/revoke': {},
-    'POST /api/members': { householdId: ids.householdId, firstName: 'Leaked', lastName: 'Person' },
-    'POST /api/portal/members/{memberId}/bookings': { sessionId: ids.sessionId, allowWaitlist: true },
-    'POST /api/portal/members/{memberId}/bookings/{id}/cancel': {},
-    'PATCH /api/portal/members/{memberId}': { revision: revisions.member, firstName: 'Leaked' },
-    'POST /api/portal/invoices/{invoiceId}/checkout': {},
-    'POST /api/staff/users/{userId}/reset-password': { password: 'leaked-password-for-tests' },
-  };
-}
 
 const unreached = [400, 401, 403, 404, 405, 413, 415, 422, 429];
 /** Kiosk check-ins answer a shared screen: a member the device can't check in is sent to the front desk, with status 200. */
@@ -119,125 +19,216 @@ const refusedWith200: Record<string, unknown> = {
   'POST /api/kiosk/checkin/qr': { data: { status: 'see_front_desk' } },
 };
 interface SignatureImage { signatureImageKey: string; signatureImageHash: string }
+type Images = Record<'link' | 'household' | 'staff' | 'onboarding', SignatureImage>;
 
-/** Every request of `from`'s credentials against `to`'s IDs, answered 4xx and without anything `to` holds. */
-async function sweep(from: Context, to: Context, target: Target, document: Document, results: string[]) {
-  const links: Record<string, Client> = {};
-  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
-  for (const [purpose, extra] of [['onboarding', {}], ['update_card', {}], ['sign_waiver', { memberId: from.student.id }], ['pay_invoice', { invoiceId: from.invoiceId }]] as const) {
-    const created = await from.owner.json<{ data: { token: string } }>('/api/links', 'POST', { purpose, householdId: from.householdId, expiresAt, ...extra });
-    links[purpose] = new Client(from.origin, { authorization: 'Bearer ' + created.data.token });
+/** One run's view of a pair of gyms: the credentials of the caller, and what it aims at. */
+class Sweep {
+  readonly links: Record<string, Client> = {};
+  images!: Images;
+  private pngBase64 = '';
+  private readonly revisions = new Map<string, number>();
+  constructor(readonly from: Context, readonly to: Context, readonly own: Target, readonly target: Target, readonly document: ApiDocument) {}
+
+  async prepare() {
+    const { from } = this, expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+    for (const [purpose, extra] of [['onboarding', {}], ['update_card', {}], ['sign_waiver', { memberId: from.student.id }], ['pay_invoice', { invoiceId: from.invoiceId }]] as const) {
+      const created = await from.owner.json<{ data: { token: string } }>('/api/links', 'POST', { purpose, householdId: from.householdId, expiresAt, ...extra });
+      this.links[purpose] = new Client(from.origin, { authorization: 'Bearer ' + created.data.token });
+    }
+    // Real signature images of the caller's own, so a waiver signed for the target's member or template fails on the gym boundary.
+    const pngBase64 = this.pngBase64 = signaturePng().toString('base64'), image = async (client: Client, path: string, body: Record<string, unknown>) =>
+      (await client.json<{ data: SignatureImage }>(path, 'POST', body)).data;
+    this.images = {
+      link: await image(this.links.sign_waiver!, '/api/links/sign-waiver/signature-images', { pngBase64 }),
+      onboarding: await image(this.links.onboarding!, '/api/links/onboarding/signature-images', { memberId: from.student.id, pngBase64 }),
+      household: await image(from.household, '/api/portal/household/waivers/signature-images', { memberId: from.student.id, pngBase64 }),
+      staff: await image(from.owner, '/api/waivers/signature-images', { memberId: from.student.id, pngBase64 }),
+    };
   }
-  const credentials = (entry: Entry, origin: string): Client | undefined => {
-    const kind = entry.permission.kind;
-    if (kind === 'staff') return withCookie(origin, from.cookies.owner);
-    if (kind === 'member') return withCookie(origin, from.cookies.household);
-    if (kind === 'kiosk') return new Client(origin, { authorization: 'Bearer ' + from.kioskToken });
-    if (kind === 'signed_link') { const link = links[entry.permission.purpose ?? '']; return link && new Client(origin, link.headers); }
+
+  credentials(route: Route, origin: string): Client | undefined {
+    const { from } = this;
+    if (route.kind === 'staff') return withCookie(origin, from.cookies.owner);
+    if (route.kind === 'member') return withCookie(origin, from.cookies.household);
+    if (route.kind === 'kiosk') return new Client(origin, { authorization: 'Bearer ' + from.kioskToken });
+    if (route.kind === 'signed_link') { const link = this.links[route.purpose ?? '']; return link && new Client(origin, link.headers); }
     return undefined;
-  };
-  // Real signature images of the caller's own, so a waiver signed for the target's member or template fails on the gym boundary.
-  const image = signaturePng().toString('base64');
-  const images = {
-    link: (await links.sign_waiver!.json<{ data: SignatureImage }>('/api/links/sign-waiver/signature-images', 'POST', { pngBase64: image })).data,
-    household: (await from.household.json<{ data: SignatureImage }>('/api/portal/household/waivers/signature-images', 'POST',
-      { memberId: from.student.id, pngBase64: image })).data,
-  };
-  const valid = bodies(from, target, images);
-  for (const entry of inventory) {
-    if (entry.permission.kind === 'public') continue;
-    const names = [...entry.path.matchAll(/\{(\w+)\}/g)].map((match) => match[1]!);
-    const path = entry.path.replace(/\{(\w+)\}/g, (_, name: string) => idFor(entry, name, target));
-    const operation = document.paths[entry.path]?.[entry.method.toLowerCase()];
-    const url = path + (entry.method === 'GET' ? queryFor(operation, target) : '');
-    let body: unknown = entry.method === 'GET' ? undefined : valid[key(entry)] ?? {};
-    // Signed-link and portal routes that name a member or an image in the body aim it at the target.
-    if (entry.path.endsWith('/signature-images')) body = { memberId: target.ids.memberId, pngBase64: image };
-    if (entry.path.endsWith('/waivers') && entry.method === 'POST') body = { memberId: target.ids.memberId, templateId: target.ids.templateId, templateVersion: 1,
-      signer: { kind: 'guardian', name: 'Cross gym', relationship: 'Parent' }, ...images.household, consent: true };
-    // The caller's credentials on its own hostname with the target's IDs, and on the target's hostname.
-    for (const [where, origin] of [['own host', from.origin], ['foreign host', to.origin]] as const) {
-      const client = credentials(entry, origin);
-      if (!client) continue;
-      // A signed link opens its own purpose only, and a GET of it on its own host shows the caller's own data.
-      if (where === 'own host' && entry.permission.kind === 'signed_link' && entry.method === 'GET') {
-        const own = await client.request(url);
-        expect(own.status, `${key(entry)}: ${own.text}`).toBe(200);
-        for (const secret of target.secrets) expect(own.text, `${key(entry)} leaks`).not.toContain(secret);
-        continue;
+  }
+
+  /** The revision a body must carry to edit the record at the route's path, read by the gym that owns it. */
+  async revisionOf(route: Route, owner: Context, pathTarget: Target) {
+    const path = pathFor(route, pathTarget);
+    if (!this.document.paths[route.path]?.get || route.kind === 'signed_link') return 1;
+    if (!this.revisions.has(path)) {
+      const response = await (route.kind === 'member' ? withCookie(owner.origin, owner.cookies.household) : owner.owner).request<{ data?: { revision?: number } }>(path);
+      this.revisions.set(path, response.body?.data?.revision ?? 1);
+    }
+    return this.revisions.get(path)!;
+  }
+
+  /** Bodies naming the caller's own gym where the route's own purpose needs it (a name and PIN, a check-in code, signed waivers). */
+  overrides(route: Route): unknown[] | undefined {
+    const { from, target, images } = this, { ids } = target;
+    const signer = { kind: 'guardian', name: 'Cross gym', relationship: 'Parent' };
+    const signed = (image: SignatureImage) => ({ memberId: ids.memberId, templateId: ids.templateId, templateVersion: 1, signer, ...image, consent: true });
+    const table: Record<string, unknown> = {
+      // The caller's own name and PIN, or the target's check-in code, with the target's member: see `refusedWith200`.
+      'POST /api/kiosk/checkin': { name: from.student.fullName, pin: from.pin, checkins: [{ memberId: ids.memberId, sessionId: null }] },
+      'POST /api/kiosk/checkin/qr': { code: target.checkinCode, sessionId: null },
+      'POST /api/links/sign-waiver': (({ memberId: _member, ...rest }) => rest)(signed(images.link)),
+      'POST /api/links/onboarding/waivers': signed(images.onboarding),
+      'POST /api/portal/waivers': signed(images.household),
+      'POST /api/portal/household/waivers': signed(images.household),
+      'POST /api/waivers/signatures': signed(images.staff),
+      'POST /api/links/onboarding/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
+      'POST /api/portal/household/waivers/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
+      'POST /api/portal/waivers/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
+      'POST /api/waivers/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
+    };
+    return routeKey(route) in table ? [table[routeKey(route)]] : undefined;
+  }
+
+  /** Every request of the caller's credentials against the target's IDs, answered 4xx and without anything the target holds. */
+  async aimAtTarget(route: Route, results: string[]) {
+    const { from, to, target } = this;
+    const aim: Aim = { target, optionalIds: true, revision: await this.revisionOf(route, to, target) };
+    const path = pathFor(route, target), names = pathParams(route);
+    const url = path + queryOf(route, aim);
+    const bodies = route.method === 'GET' || route.method === 'DELETE' && !hasJsonBody(route) ? [undefined] : this.overrides(route) ?? (hasJsonBody(route) ? bodiesOf(route, aim) : [{}]);
+    // A request that names the target in its query, as a filter, is aimed at it too.
+    const filtered = namesTarget(Object.fromEntries(new URLSearchParams(url.split('?')[1] ?? '')), target);
+    for (const body of bodies) {
+      // The caller's credentials on its own hostname with the target's IDs, and on the target's hostname.
+      for (const [where, origin] of [['own host', from.origin], ['foreign host', to.origin]] as const) {
+        const client = this.credentials(route, origin);
+        if (!client) continue;
+        // A signed link opens its own purpose only, and a GET of it on its own host shows the caller's own data.
+        if (where === 'own host' && route.kind === 'signed_link' && route.method === 'GET') {
+          const own = await client.request(url);
+          expect(own.status, `${routeKey(route)}: ${own.text}`).toBe(200);
+          for (const secret of target.secrets) expect(own.text, `${routeKey(route)} leaks`).not.toContain(secret);
+          continue;
+        }
+        // On its own host a route with no ID in its path, and nothing of the target in its body or query, shows only the caller's
+        // own data (the reads sweep checks the lists, and the other gym's hostname refuses the rest).
+        if (where === 'own host' && !names.length && !filtered && !namesTarget(body, target) && !(routeKey(route) in refusedWith200)) continue;
+        const response = await client.request(url, route.method, body);
+        results.push(`${from.slug}->${to.slug} ${where} ${routeKey(route)} ${response.status}`);
+        const detail = `${from.slug}'s credentials against ${to.slug} (${where}): ${routeKey(route)}: ${response.status} ${response.text}`;
+        if (where === 'own host' && routeKey(route) in refusedWith200) {
+          expect(response.status, detail).toBe(200);
+          expect(JSON.parse(response.text), detail).toEqual(refusedWith200[routeKey(route)]);
+        } else if (route.method === 'GET' && where === 'own host' && !names.length) expect(response.status, detail).toBeLessThan(500);
+        else expect(unreached, detail).toContain(response.status);
+        for (const secret of target.secrets) expect(response.text, detail).not.toContain(secret);
       }
-      // On its own host a route with no ID in its path is a list of the caller's own data (the reads sweep checks those),
-      // unless its body names the target.
-      if (where === 'own host' && !names.length && !(key(entry) in valid) && !(entry.method === 'POST' && /(signature-images|waivers)$/.test(entry.path))) continue;
-      const response = await client.request(url, entry.method, body);
-      results.push(`${from.slug}->${to.slug} ${where} ${entry.method} ${path} ${response.status}`);
-      const detail = `${from.slug}'s credentials against ${to.slug} (${where}): ${key(entry)}: ${response.status} ${response.text}`;
-      if (where === 'own host' && key(entry) in refusedWith200) {
-        expect(response.status, detail).toBe(200);
-        expect(JSON.parse(response.text), detail).toEqual(refusedWith200[key(entry)]);
-      } else expect(unreached, detail).toContain(response.status);
+    }
+  }
+
+  /** The caller's own record in the path, and the target's records in the body: a route that checks the path's gym but not the
+   * body's would join the two gyms. */
+  async aimOwnPath(route: Route, statuses: Map<number, number>): Promise<string[]> {
+    const { from, target, own } = this;
+    const client = this.credentials(route, from.origin);
+    if (!client || !pathParams(route).length || route.kind === 'signed_link' || !hasJsonBody(route)) return [];
+    const aim: Aim = { target, optionalIds: true, revision: await this.revisionOf(route, from, own) };
+    const bodies = bodiesOf(route, aim).filter((body) => namesTarget(body, target));
+    if (!bodies.length) return [];
+    const probed: string[] = [];
+    for (const body of bodies) {
+      const response = await client.request(pathFor(route, own) + queryOf(route, { ...aim, target: own }), route.method, body);
+      statuses.set(response.status, (statuses.get(response.status) ?? 0) + 1);
+      probed.push(`${from.slug} ${routeKey(route)} ${response.status}`);
+      const detail = `${from.slug}'s own ${routeKey(route)} with ${this.to.slug}'s IDs in the body: ${response.status} ${response.text}`;
+      expect(unreached, detail).toContain(response.status);
       for (const secret of target.secrets) expect(response.text, detail).not.toContain(secret);
+    }
+    return probed;
+  }
+}
+
+/** Reads that take no ID show only the caller's own gym, to every kind of credential, with or without a filter naming the target. */
+async function sweepReads(from: Context, own: Target, target: Target, routes: Route[], open: Route[]) {
+  for (const route of [...routes, ...open]) {
+    if (route.method !== 'GET' || route.path.includes('{')) continue;
+    const client = route.kind === 'staff' ? from.owner : route.kind === 'member' ? from.household
+      : route.kind === 'kiosk' ? from.device : route.kind === 'public' ? new Client(from.origin) : undefined;
+    if (!client) continue;
+    for (const aimed of [own, target]) {
+      const response = await client.request(route.path + queryOf(route, { target: aimed, optionalIds: true }));
+      expect(response.status, `${routeKey(route)}: ${response.text}`).toBeLessThan(500);
+      for (const secret of target.secrets) expect(response.text, `${from.slug} ${routeKey(route)} shows ${secret}`).not.toContain(secret);
     }
   }
 }
 
-/** Reads that take no ID show only the caller's own gym, to every kind of credential. */
-async function sweepReads(from: Context, own: Target, target: Target, document: Document) {
-  for (const entry of inventory) {
-    if (entry.method !== 'GET' || entry.path.includes('{')) continue;
-    const client = entry.permission.kind === 'staff' ? from.owner : entry.permission.kind === 'member' ? from.household
-      : entry.permission.kind === 'kiosk' ? from.device : entry.permission.kind === 'public' ? new Client(from.origin) : undefined;
-    if (!client) continue;
-    const response = await client.request(entry.path + queryFor(document.paths[entry.path]?.get, own));
-    expect(response.status, `${key(entry)}: ${response.text}`).toBeLessThan(500);
-    for (const secret of target.secrets) expect(response.text, `${from.slug} ${key(entry)} shows ${secret}`).not.toContain(secret);
-  }
-}
-
 test('no route answers a gym\'s credentials with another gym\'s data, in either direction', async () => {
-  test.setTimeout(600_000);
+  test.setTimeout(900_000);
   const [alpha, beta] = await multiGyms();
   const [alphaTarget, betaTarget] = [await targetOf(alpha), await targetOf(beta)];
-  const document = await alpha.owner.json<Document>('/api/openapi.json');
-  // What the body-aimed mutations would add to a gym if they crossed over: visits, promotions, programs, classes, staff and portal access.
-  const records = async (gym: Context) => Promise.all([`/api/attendance?memberId=${gym.student.id}&limit=100`, `/api/promotions?memberId=${gym.student.id}&limit=100`,
-    '/api/programs?limit=100', `/api/ranks?rankSystemId=${gym.rankSystemId}&limit=100`, '/api/schedule/templates?limit=100', '/api/staff/roles?limit=100',
-    '/api/staff/profiles?limit=100', `/api/households/${gym.householdId}/users?limit=100`, `/api/households/${gym.householdId}/portal-invitations`,
-    `/api/bookings?memberId=${gym.student.id}&limit=100`, `/api/waivers/signatures?memberId=${gym.student.id}&limit=100`]
-    .map(async (path) => [path, (await gym.owner.json<{ data: RecordId[] }>(path)).data.map((row) => row.id).sort()] as const));
-  const recordsBefore = [await records(alpha), await records(beta)];
-  const results: string[] = [];
-  await sweep(alpha, beta, betaTarget, document, results);
-  await sweep(beta, alpha, alphaTarget, document, results);
-  await sweepReads(alpha, alphaTarget, betaTarget, document);
-  await sweepReads(beta, betaTarget, alphaTarget, document);
-  expect(results.length).toBeGreaterThan(300);
+  const document = await alpha.owner.json<ApiDocument>('/api/openapi.json');
+  // Every non-public operation is swept, except the few left out for a stated reason: a route added later is covered without a list to widen.
+  const { swept, excluded, open } = routesOf(document);
+  for (const entry of outOfScope) expect(excluded.some((route) => entry.pattern.test(route.path)), `nothing matches the exclusion: ${entry.reason}`).toBe(true);
+  // The single-gym suite's reviewed inventory is covered too: each of its routes is swept or left out for a stated reason.
+  for (const entry of inventory) if (entry.permission.kind !== 'public') expect([...swept, ...excluded].map(routeKey), 'the reviewed inventory is inside the sweep').toContain(routeKey(entry));
+  test.info().annotations.push({ type: 'coverage', description: `${swept.length} non-public operations swept; ${excluded.length} left out (${outOfScope.map((entry) => entry.reason).join('; ')}); ${open.length} public` });
+  console.log(`Cross-gym sweep: ${swept.length} non-public operations (${excluded.length} left out, ${open.length} public)`);
+  expect(swept.length).toBeGreaterThan(200);
+  // Every path ID names a real record of the target: a refusal for an ID nothing holds would prove nothing.
+  for (const target of [alphaTarget, betaTarget])
+    expect(swept.filter((route) => pathFor(route, target).includes(missingId)).map(routeKey), 'routes whose path names no fixture record').toEqual([]);
+
+  // Each caller's own signed links and signature images are made first, so the gyms' full lists are compared over the sweep alone.
+  const sweeps = [new Sweep(alpha, beta, alphaTarget, betaTarget, document), new Sweep(beta, alpha, betaTarget, alphaTarget, document)];
+  for (const sweep of sweeps) await sweep.prepare();
+  const snapshots = async () => [await snapshot(alpha, alphaTarget, swept), await snapshot(beta, betaTarget, swept)];
+  const before = await snapshots();
+  const results: string[] = [], statuses = new Map<number, number>(), secondPass: string[] = [];
+  for (const sweep of sweeps) {
+    for (const route of swept) await sweep.aimAtTarget(route, results);
+    for (const route of swept) secondPass.push(...await sweep.aimOwnPath(route, statuses));
+  }
+  await sweepReads(alpha, alphaTarget, betaTarget, swept, open);
+  await sweepReads(beta, betaTarget, alphaTarget, swept, open);
+  console.log(`Cross-gym sweep: ${results.length} requests aimed at the other gym; ${secondPass.length} own-path probes (statuses ${JSON.stringify(Object.fromEntries(statuses))})`);
+  expect(results.length).toBeGreaterThan(500);
+  expect(secondPass.length).toBeGreaterThan(20);
+  // A probe that reaches the gym check is refused for the other gym's record: a request refused for its own shape (or a missing
+  // credential) would prove nothing about the boundary, so no request that reaches a gym's own host may be.
+  expect([...statuses.keys()].filter((status) => status !== 404), 'own-path probes answer 404 for the other gym\'s record').toEqual([]);
+  const shape = results.filter((line) => / own host /.test(line) && / (400|415|422)$/.test(line));
+  expect(shape, 'own-host probes refused for the shape of their request').toEqual([]);
+
+  // Nothing of either gym changed: the same records, at the same revisions.
+  expect(await snapshots()).toEqual(before);
 
   // Controls: the same credentials do reach the gym's own records, so the refusals above are the gym boundary and not broken requests.
-  for (const gym of [alpha, beta]) {
-    for (const path of [`/api/members/${gym.student.id}`, `/api/households/${gym.householdId}`, `/api/schedule/sessions/${gym.sessionId}`,
-      `/api/programs?limit=100`, `/api/bookings?memberId=${gym.student.id}`, `/api/attendance/totals?memberId=${gym.student.id}`])
-      expect((await gym.owner.request(path)).status, `${gym.slug} ${path}`).toBe(200);
-    for (const path of [`/api/portal/invoices/${gym.invoiceId}`, `/api/portal/members/${gym.student.id}`, `/api/portal/household/waivers`,
-      `/api/portal/members/${gym.student.id}/bookings?limit=100&offset=0`])
-      expect((await gym.household.request(path)).status, `${gym.slug} ${path}`).toBe(200);
+  for (const [gym, own] of [[alpha, alphaTarget], [beta, betaTarget]] as const) {
+    const unread: string[] = [];
+    for (const route of swept.filter((entry) => entry.method === 'GET' && pathParams(entry).length && entry.kind !== 'signed_link' && entry.kind !== 'kiosk')) {
+      const client = route.kind === 'member' ? gym.household : gym.owner;
+      const response = await client.request(pathFor(route, own) + queryOf(route, { target: own, optionalIds: true }));
+      if (response.status !== 200) unread.push(`${routeKey(route)} ${response.status}`);
+    }
+    // Only what a fresh gym lacks answers its own owner with 404: a photo nobody uploaded, and a signed waiver for the household login's own
+    // (self-signed) waivers, which the fixture's guardian-signed one isn't.
+    expect(unread.filter((line) => !/\/photo |^GET \/api\/portal\/waivers\/\{signatureId\}\/pdf /.test(line)), `${gym.slug}'s own reads`).toEqual([]);
+    for (const [path, status] of [[`/api/members/${gym.student.id}`, 200], [`/api/households/${gym.householdId}`, 200], [`/api/schedule/sessions/${gym.sessionId}`, 200],
+      [`/api/billing/payments`, 200], [`/api/billing/refunds`, 200], [`/api/billing/memberships/${gym.membershipId}`, 200]] as const)
+      expect((await gym.owner.request(path)).status, `${gym.slug} ${path}`).toBe(status);
     expect((await gym.household.json<{ data: { id: string }[] }>('/api/portal/household/waivers')).data.map((row) => row.id)).toContain(gym.signatureId);
-  }
-
-  // Nothing of the target changed.
-  expect([await records(alpha), await records(beta)]).toEqual(recordsBefore);
-  for (const [gym, name] of [[alpha, 'Alpha'], [beta, 'Beta']] as const) {
-    const member = (await gym.owner.json<{ data: { firstName: string; lastName: string } }>('/api/members/' + gym.student.id)).data;
-    expect(member).toMatchObject({ firstName: 'Casey', lastName: name + 'Student' });
-    const home = (await gym.owner.json<{ data: { name: string } }>('/api/households/' + gym.householdId)).data;
-    expect(home.name).toBe(`${gym.name} family`);
-    const session = (await gym.owner.json<{ data: { status: string; capacity: number } }>('/api/schedule/sessions/' + gym.sessionId)).data;
-    expect(session).toMatchObject({ status: 'scheduled', capacity: 10 });
-    const bookings = (await gym.owner.json<{ data: { id: string; status: string }[] }>('/api/bookings?memberId=' + gym.student.id)).data;
-    expect(bookings.find((booking) => booking.id === gym.bookingId)?.status).toBe('booked');
     expect((await gym.device.request('/api/kiosk/lookup', 'POST', { name: gym.student.fullName, pin: gym.pin })).status).toBe(200);
-    expect((await gym.owner.json<{ data: unknown[] }>('/api/member-tags')).data.length).toBeGreaterThan(0);
-    expect((await gym.household.json<{ data: { id: string } }>('/api/portal/household')).data.id).toBe(gym.householdId);
+  }
+  // A body naming the caller's own records, in the shape the second pass sends the other gym's, is accepted: the shape is valid.
+  for (const gym of [alpha, beta]) {
+    const session = (await gym.owner.json<{ data: { revision: number; startsAt: string; endsAt: string; name: string } }>('/api/schedule/sessions/' + gym.sessionId)).data;
+    await gym.owner.json('/api/schedule/sessions/' + gym.sessionId, 'PUT', { name: session.name, startsAt: session.startsAt, endsAt: session.endsAt, coachId: null,
+      capacity: 10, notes: null, kind: 'class', programIds: [gym.program.id], tagIds: [gym.classTagId], revision: session.revision });
+    const template = (await gym.owner.json<{ data: { revision: number; name: string } }>('/api/schedule/templates/' + gym.scheduleTemplateId)).data;
+    await gym.owner.json('/api/schedule/templates/' + gym.scheduleTemplateId, 'PUT', { name: template.name, weekday: 3, localStartTime: '12:00', durationMinutes: 60,
+      coachId: null, capacity: 10, notes: null, kind: 'class', programIds: [gym.program.id], tagIds: [gym.classTagId], revision: template.revision });
+    expect((await gym.owner.request(`/api/members/${gym.student.id}/tags`, 'POST', { tagId: gym.tagId })).status).toBeLessThan(300);
   }
   // Controls for the body-aimed kiosk probes, last because they record visits: a gym's own device does check in its own code.
   for (const [gym, target] of [[alpha, alphaTarget], [beta, betaTarget]] as const) {

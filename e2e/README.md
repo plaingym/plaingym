@@ -145,25 +145,55 @@ The checks cover:
 
 The `multi-gym` Playwright project (`multi/`) uses the multi-gym install without demo mode: `gym-app gyms create`
 makes two gyms, `alpha.multi.localhost` and `beta.multi.localhost`, and each owner signs in by the emailed magic
-link, read from Mailpit's API at `https://mail.localhost`. Each gym gets a coach, a rank system and program, a
-household with a minor who signed the waiver and a PIN, a class and booking, a kiosk device, a plan, an invoice, a
-household portal login, and a Stripe key saved in its own settings (both gyms save the same key for the fake Stripe, whose
-records aren't kept apart per key). Every invitation and sign-in link a gym hands out must name its own hostname. The checks cover:
+link, read from Mailpit's API at `https://mail.localhost`. Every invitation and sign-in link a gym hands out must
+name its own hostname. Each gym's fixtures (`multi/support.ts`) hold one record of every kind the staff API
+serves: a coach, a rank system, rank and program, a household with a minor who signed the waiver and a PIN with its
+QR check-in code, a class (made with `createClass`, so its time is clear of midnight at any hour of the run) and
+its booking, a member tag, a kiosk device, a plan, a waiver template, two invoices (one paid at the desk, with
+its payment and a refund), a charge type, a tax rate, a membership, a card saved through hosted Checkout and the
+gym's signed webhook, a signed link and a campaign, a schedule template, a class tag, a data export, an import run
+(a dry run of an uploaded CSV), pending invitations, and the household's portal login. Each build step is saved
+as it finishes, so a worker started after a failure resumes the half-built gym instead of failing on "Account is
+already staff".
 
-* In each gym (`flows.spec.ts`): the admin, portal and kiosk (name and PIN) show that gym only, a session or device
-  token copied to the other hostname is refused, and a visitor joins at 360 px, is paid at the desk and gets a portal login,
-  without the other gym ever seeing the prospect.
-* A cross-gym sweep (`isolation.spec.ts`) over every non-public route in `authorization-inventory.json`, in both directions:
-  gym A's owner session, household login, kiosk device and signed links, aimed at gym B's member, household, session, booking,
-  invoice, signature, device, program, rank, staff, portal login and invitation IDs, on gym A's hostname and on gym B's,
-  must answer 4xx and never contain anything of gym B. Mutations get valid bodies, and those with no ID in their path
-  (bookings, check-ins, promotions, programs, ranks, classes, staff roles and profiles, waiver signatures) name gym B's
-  records in the body; a kiosk check-in of gym B's member or QR code answers, as for any unknown member, with the front
-  desk. Every ID-free read and public page of a gym is checked for the other gym's IDs and names, controls prove the same
-  credentials reach their own records, and both gyms' records are unchanged afterwards. Resources a fresh gym has none of
-  (imports, exports, schedule templates and tags) use an ID nothing holds. Routes outside the inventory (such as the staff
-  billing and waiver APIs) aren't in this sweep; the password-reset routes are refused anyway, since a multi-gym install
-  has no password login.
+Each gym saves its own restricted Stripe key (derived from the run's, per gym). The fake Stripe keeps one
+account per key: its own objects, idempotency replies and webhook endpoints, so a call made with one gym's key
+never reads or changes another's. Endpoints keep the signing secret returned when they were created, and the
+specs sign events through the fake's `/test/sign-webhook` (open to the install's secret key only) and post them
+to the gym's own hostname (`deliverStripeEvent` in `multi/support.ts`), as Stripe would. The checks cover:
+
+* In each gym (`flows.spec.ts`): the admin, portal and kiosk (name and PIN) show that gym only, and each schedule
+  shows that gym's own class (opened with `showWeek`, and **Next week** on the portal when the class falls
+  there), so an empty page doesn't pass; a session or device token copied to the other hostname is refused; and a
+  visitor joins at 360 px and pays by card on the hosted Checkout page. Returning from Checkout grants nothing;
+  the gym's signed `checkout.session.completed` activates the join and its portal login. An event signed with
+  the other gym's secret, or sent to the other gym's endpoint, is refused with 400, the other gym never sees
+  the prospect, and the payment is in the paying gym's ledger only.
+* Stripe accounts (`flows.spec.ts`, last): each key lists its own customers, Checkout sessions, cards and
+  payment intents, none appears in the other account, every object the gym tagged carries its own gym ID, and the
+  other key gets 404 for each by ID.
+* A cross-gym sweep (`isolation.spec.ts`) of every non-public operation of the running OpenAPI document, in both
+  directions (232 operations when written). Nothing is listed by hand: a route added to the application is swept
+  without widening a list. Only the demo routes, the single-gym setup wizard and the install's own release state
+  are left out (`outOfScope` in `multi/probe.ts`, which fails if an exclusion stops matching a route), and every
+  route of `authorization-inventory.json` must be swept or left out. Gym A's owner session, household login, kiosk
+  device and signed links, aimed at gym B's records of every kind (member, household, class, booking, invoice,
+  payment, refund, card, plan, membership, charge type, tax rate, waiver template and signature, link, campaign,
+  schedule template, class tag, tag, export, import, staff, portal login and invitation), on gym A's hostname and on
+  gym B's, must answer 4xx and never contain anything of gym B. Bodies and queries are built from each
+  operation's schema (`multi/probe.ts`), with gym B's IDs wherever a path or property names a record (the sweep
+  fails if a path names no fixture record), so a request is refused for the gym boundary and not for its shape: no
+  probe on a gym's own hostname may answer 400, 415 or 422.
+  Routes with no ID in their path whose body or query names gym B's records are probed on gym A's hostname too; a
+  kiosk check-in of gym B's member or QR code answers, as for any unknown member, with the front desk.
+* A second pass aims a caller's own record in the path at gym B's IDs in the body (an own class or schedule
+  template given gym B's programs, an own member given gym B's tag, an own household given gym B's member or
+  login, a membership or plan given gym B's plan): every one must answer 404, and the controls then send the same
+  shape with the caller's own IDs and are accepted.
+* Every ID-free read and public page of a gym is checked for the other gym's IDs and names, with and without a
+  filter naming the other gym's records. Controls prove the same credentials read each of their own records
+  (every GET with an ID in its path, but the photos nobody uploaded). The full, unfiltered lists of both gyms (IDs,
+  and revisions of the records staff edit) are the same afterwards.
 
 Browser specs and their helpers import only e2e tooling and local test helpers.
 The End-to-end workflow installs this package independently of the application.

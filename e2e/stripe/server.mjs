@@ -2,11 +2,22 @@
 // A small, stateful stand-in for the Stripe API calls the demo install makes, plus a minimal hosted
 // Checkout page. It exists only in the e2e stack, which reaches it as api.stripe.com over a test CA.
 import { createServer } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 const secretKey = process.env.STRIPE_SECRET_KEY, restrictedKey = process.env.STRIPE_RESTRICTED_KEY, checkoutOrigin = process.env.CHECKOUT_ORIGIN;
 if (!secretKey || !restrictedKey || !checkoutOrigin) throw new Error('STRIPE_SECRET_KEY, STRIPE_RESTRICTED_KEY and CHECKOUT_ORIGIN are required');
-const objects = new Map(), replies = new Map();
+// Each API key is its own Stripe account: its own objects, idempotency replies and webhook endpoints, so a call made with one
+// key can never read or change what another key created. `objects` and `replies` always belong to the request being handled
+// (handlers run synchronously once the body is read).
+const accounts = new Map();
+let objects, replies;
+/** The account a bearer key opens: the demo install's secret key, the legacy restricted key, or any restricted test key a gym saves. */
+function accountOf(key) {
+  if (!(key === secretKey || key === restrictedKey || /^rk_test_[0-9a-f]{16,}$/.test(key))) return undefined;
+  if (!accounts.has(key)) accounts.set(key, { objects: new Map(), replies: new Map() });
+  return accounts.get(key);
+}
+const select = (account) => { ({ objects, replies } = account); };
 const newId = (prefix) => prefix + '_' + randomBytes(12).toString('hex');
 const now = () => Math.floor(Date.now() / 1000);
 // Underscored fields are this fake's own state and never leave it.
@@ -161,9 +172,10 @@ const routes = [
   ['GET', /^\/v1\/charges$/, (_body, query) => list('ch', query)],
   // Webhook endpoints: a gym registers one when it saves its key. Only creation returns the signing secret, as Stripe does.
   ['POST', /^\/v1\/webhook_endpoints$/, (body) => {
+    const secret = 'whsec_' + randomBytes(16).toString('hex');
     const endpoint = store({ id: newId('we'), object: 'webhook_endpoint', created: now(), livemode: false, url: body.url,
-      api_version: body.api_version ?? null, enabled_events: body.enabled_events ?? [], metadata: body.metadata ?? {}, status: 'enabled' });
-    return { ...endpoint, secret: 'whsec_' + randomBytes(16).toString('hex') };
+      api_version: body.api_version ?? null, enabled_events: body.enabled_events ?? [], metadata: body.metadata ?? {}, status: 'enabled', _secret: secret });
+    return { ...visible(endpoint), secret };
   }],
   ['GET', /^\/v1\/webhook_endpoints$/, (_body, query) => list('we', query)],
   ['GET', /^\/v1\/webhook_endpoints\/(\w+)$/, (_body, _query, id) => find('we', id) ?? missing(id)],
@@ -228,7 +240,10 @@ createServer(async (request, response) => {
     if (url.pathname === '/health') return send(response, 200, { ok: true });
     const hosted = url.pathname.match(/^\/pay\/(cs_test_\w+)$/);
     if (hosted) {
-      const session = find('cs', hosted[1]);
+      // The hosted page is reached by the Checkout session's own URL, whichever account made it.
+      const owner = [...accounts.values()].find((account) => account.objects.has(hosted[1]));
+      if (owner) select(owner);
+      const session = owner && find('cs', hosted[1]);
       if (!session) return send(response, 404, 'Unknown session', 'text/plain');
       if (request.method === 'GET') return send(response, 200, page(session), 'text/html; charset=utf-8');
       try {
@@ -239,8 +254,21 @@ createServer(async (request, response) => {
         throw error;
       }
     }
-    if (![secretKey, restrictedKey].some((key) => request.headers.authorization === 'Bearer ' + key))
-      return send(response, 401, { error: { type: 'invalid_request_error', message: 'Invalid API Key provided' } });
+    const bearer = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    // Test control, for the specs only (they hold the install's secret key): signs a webhook body as Stripe would for the account
+    // of `key`, with the signing secret returned when that account's endpoint was created.
+    if (url.pathname === '/test/sign-webhook' && request.method === 'POST') {
+      if (bearer !== secretKey) return send(response, 401, { error: { message: 'Invalid API Key provided' } });
+      const { key, body } = JSON.parse(text), account = accountOf(key);
+      const endpoints = account ? [...account.objects.values()].filter((object) => object.object === 'webhook_endpoint' && object.status === 'enabled') : [];
+      const endpoint = endpoints.sort((a, b) => b.created - a.created)[0];
+      if (!endpoint) return send(response, 404, { error: { message: 'No webhook endpoint registered for this key' } });
+      const created = now();
+      return send(response, 200, { endpointId: endpoint.id, url: endpoint.url, signature: `t=${created},v1=${createHmac('sha256', endpoint._secret).update(`${created}.${body}`).digest('hex')}` });
+    }
+    const account = accountOf(bearer);
+    if (!account) return send(response, 401, { error: { type: 'invalid_request_error', message: 'Invalid API Key provided' } });
+    select(account);
     const idempotency = request.method === 'POST' && request.headers['idempotency-key'];
     const replayKey = idempotency && `${request.method} ${url.pathname} ${idempotency}`;
     if (replayKey && replies.has(replayKey)) {

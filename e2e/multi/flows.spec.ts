@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page } from '@playwright/test';
-import { test, expect, Client, type Person, type RecordId } from '../support.js';
+import { test, expect, Client, gymTimezone, showWeek, type Person, type RecordId } from '../support.js';
 import { claimPortal } from '../portal.js';
-import { mailIds, mailLink, multiGyms, withCookie, type Context } from './support.js';
+import { stripeOrigin } from '../portal.js';
+import { mailIds, mailLink, multiGyms, postStripeEvent, signStripeEvent, deliverStripeEvent, stripeAs, withCookie, type Context } from './support.js';
 
 // Sign-in links, join cookies and device tokens are bearer credentials. Keep them out of traces and screenshots.
 test.use({ trace: 'off', screenshot: 'off' });
@@ -39,8 +40,11 @@ for (const index of [0, 1] as const) {
     await page.goto(own.origin + '/admin/members');
     await expect(page.locator('body')).toContainText(own.student.lastName);
     await expectOnlyOwn(page, own, other, 'the member list');
+    // The gym's own class, created with the date helpers, shows in its week; a page with no classes at all would not pass.
     await page.goto(own.origin + '/admin/schedule');
     await expect(page.getByRole('heading', { name: 'Schedule', exact: true })).toBeVisible();
+    await showWeek(page, await gymTimezone(own.owner), Date.parse(own.session.startsAt));
+    await expect(page.getByText(own.sessionName).first()).toBeVisible();
     await expectOnlyOwn(page, own, other, 'the schedule');
     const members = (await own.owner.json<{ data: Person[] }>('/api/members?limit=100')).data;
     expect(members.map((member) => member.id)).toEqual([own.student.id]);
@@ -64,13 +68,26 @@ for (const index of [0, 1] as const) {
     await expect(page.getByRole('heading', { name: 'Welcome to your member portal', exact: true })).toBeVisible();
     await page.goto(own.origin + '/portal/schedule');
     await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
+    // The class is in the portal's current or next week, whichever day the run starts.
+    const loading = page.getByText('Loading classes…', { exact: true }), ownClass = page.getByText(own.sessionName).first();
+    await expect(loading).toHaveCount(0);
+    if (!await ownClass.isVisible()) {
+      await page.getByRole('button', { name: 'Next week', exact: true }).click();
+      await expect(loading).toHaveCount(0);
+    }
+    await expect(ownClass).toBeVisible();
     await expectOnlyOwn(page, own, other, 'the portal schedule');
     const household = await own.household.json<{ data: { id: string } }>('/api/portal/household');
     expect(household.data.id).toBe(own.householdId);
     const members = await own.household.json<{ data: Person[] }>('/api/portal/members');
     expect(members.data.map((member) => member.id)).toEqual([own.student.id]);
     const invoices = await own.household.json<{ data: RecordId[] }>('/api/portal/invoices?limit=100&offset=0');
-    expect(invoices.data.map((invoice) => invoice.id)).toEqual([own.invoiceId]);
+    // The household's invoices: the open one and the one paid at the desk, and none of the other gym's.
+    const mine = invoices.data.map((invoice) => invoice.id);
+    expect(mine).toEqual(expect.arrayContaining([own.invoiceId, own.paidInvoiceId]));
+    const theirs = (await other.owner.json<{ data: RecordId[] }>('/api/billing/invoices?limit=100')).data.map((invoice) => invoice.id);
+    expect(theirs.length).toBeGreaterThan(0);
+    expect(mine.filter((id) => theirs.includes(id))).toEqual([]);
     // A household login has no staff access.
     expect([401, 403]).toContain((await own.household.request('/api/members')).status);
   });
@@ -137,20 +154,41 @@ for (const index of [0, 1] as const) {
       await waiver.getByLabel('I have read and agree to this document.', { exact: true }).check();
     }
     await page.getByRole('button', { name: 'Continue to payment', exact: true }).click();
-    await page.waitForURL((url) => url.pathname === '/join/checkout' || url.origin === 'https://stripe.localhost');
-    // The prospect exists in this gym only; staff record the first invoice paid at the desk, which activates the join.
+    // The gym's own Checkout, on the fake Stripe's hosted page: the visitor pays with the test card there.
+    await page.waitForURL((url) => url.origin === stripeOrigin, { timeout: 15_000 });
+    const sessionId = new URL(page.url()).pathname.split('/').pop()!;
+    // The prospect exists in this gym only.
     const prospects = async (gym: Context) => (await gym.owner.json<{ data: (Person & { status: string })[] }>('/api/members?search=' + last)).data;
-    const [prospect] = await prospects(own);
-    expect(prospect).toMatchObject({ status: 'prospect' });
+    expect((await prospects(own)).map((member) => member.status)).toEqual(['prospect']);
     expect(await prospects(other)).toEqual([]);
-    const [invoice] = (await own.owner.json<{ data: (RecordId & { amountCents: number; currency: string })[] }>('/api/billing/invoices?householdId=' + prospect!.householdId)).data;
+    await page.getByLabel('Card number', { exact: true }).fill('4242 4242 4242 4242');
+    await page.getByRole('button', { name: 'Pay', exact: true }).click();
+    await page.waitForURL((url) => url.origin === own.origin && url.pathname === '/join/return');
+    await expect(page.getByRole('heading', { name: 'Confirming your payment', exact: true })).toBeVisible();
+    // Returning from Checkout grants nothing; only the gym's signed webhook does. The session lives in this gym's Stripe account alone.
+    expect((await prospects(own)).map((member) => member.status)).toEqual(['prospect']);
+    const session = await stripeAs(own.stripeKey).json<Record<string, unknown>>('/v1/checkout/sessions/' + sessionId);
+    expect(session).toMatchObject({ status: 'complete', mode: 'payment', metadata: { gym_id: own.gymId } });
+    expect((await stripeAs(other.stripeKey).request('/v1/checkout/sessions/' + sessionId)).status).toBe(404);
+    // An event signed with the other gym's secret is refused by this gym's endpoint (the same event, from the other gym's account);
+    // so is one signed for this gym but sent to the other gym's endpoint.
+    const forged = await signStripeEvent(other, 'checkout.session.completed', session);
+    expect((await postStripeEvent(own.origin, forged)).status).toBe(400);
+    const misdirected = await signStripeEvent(own, 'checkout.session.completed', session);
+    expect((await postStripeEvent(other.origin, misdirected)).status).toBe(400);
+    expect((await prospects(own)).map((member) => member.status)).toEqual(['prospect']);
     const before = await mailIds();
-    await own.owner.json(`/api/billing/invoices/${invoice!.id}/payments`, 'POST', { amountCents: invoice!.amountCents, currency: invoice!.currency,
-      method: 'cash', reference: null, paidAt: new Date().toISOString() });
-    await page.goto(own.origin + '/join/return');
+    await deliverStripeEvent(own, 'checkout.session.completed', session);
     await expect(page.getByRole('heading', { name: 'Welcome', exact: true })).toBeVisible({ timeout: 30_000 });
     expect((await prospects(own)).map((member) => member.status)).toEqual(['active']);
     expect(await prospects(other)).toEqual([]);
+    // The card payment is in this gym's ledger, and not in the other's.
+    const [member] = await prospects(own);
+    const [invoice] = (await own.owner.json<{ data: { id: string; status: string }[] }>('/api/billing/invoices?householdId=' + member!.householdId)).data;
+    expect(invoice).toMatchObject({ status: 'paid' });
+    const payments = async (gym: Context) => (await gym.owner.json<{ data: { invoiceId: string }[] }>('/api/billing/payments?limit=100')).data;
+    expect((await payments(own)).some((payment) => payment.invoiceId === invoice!.id)).toBe(true);
+    expect((await payments(other)).some((payment) => payment.invoiceId === invoice!.id)).toBe(false);
     // The emailed sign-in link opens this gym's portal.
     const link = await mailLink(email, /^\/api\/auth\//, before);
     expect(link.origin).toBe(own.origin);
@@ -160,3 +198,26 @@ for (const index of [0, 1] as const) {
     expect([401, 403, 404]).toContain((await withCookie(other.origin, visitor.cookie).request('/api/portal/household')).status);
   });
 }
+
+// After both gyms' paid joins: each gym's Stripe account holds its own customers, Checkout sessions and cards, and its key reads nothing of the other's.
+test('each gym\'s Stripe key reaches its own objects only', async () => {
+  const [alpha, beta] = await multiGyms();
+  const kinds = ['customers', 'checkout/sessions', 'payment_methods', 'payment_intents', 'charges', 'setup_intents', 'refunds'];
+  interface Listed { id: string; metadata?: { gym_id?: string } }
+  const held = async (gym: Context) => Object.fromEntries(await Promise.all(kinds.map(async (kind) =>
+    [kind, (await stripeAs(gym.stripeKey).json<{ data: Listed[] }>(`/v1/${kind}?limit=100`)).data] as const)));
+  const [alphaHeld, betaHeld] = [await held(alpha), await held(beta)];
+  for (const [own, other, mine, theirs] of [[alpha, beta, alphaHeld, betaHeld], [beta, alpha, betaHeld, alphaHeld]] as const) {
+    // Each gym joined a visitor by card and saved a household card, so these hold something.
+    for (const kind of ['customers', 'checkout/sessions', 'payment_methods', 'payment_intents'])
+      expect(mine[kind]!.length, `${own.slug}'s account holds ${kind}`).toBeGreaterThan(0);
+    for (const kind of kinds) {
+      const ids = new Set(mine[kind]!.map((object) => object.id));
+      expect(theirs[kind]!.filter((object) => ids.has(object.id)), `${kind} in both accounts`).toEqual([]);
+      // Objects the gym tagged with a gym are tagged with its own.
+      for (const object of mine[kind]!) if (object.metadata?.gym_id) expect(object.metadata.gym_id, `${own.slug}'s ${kind}`).toBe(own.gymId);
+      // The other key can't read any of them by ID.
+      for (const object of mine[kind]!) expect((await stripeAs(other.stripeKey).request(`/v1/${kind}/${object.id}`)).status, `${other.slug}'s key reads ${kind}/${object.id}`).toBe(404);
+    }
+  }
+});

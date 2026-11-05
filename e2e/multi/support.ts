@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { execFile } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { Client, cached, expect, missingId, type Person, type Program, type RecordId } from '../support.js';
-import { claimPortal, signaturePng } from '../portal.js';
+import { Client, cached, createClass, expect, missingId, type ClassSession, type Person, type Program, type RecordId } from '../support.js';
+import { claimPortal, signaturePng, stripeOrigin } from '../portal.js';
 
 /** The two gyms of the multi-gym install, each on its own hostname. */
 export const gyms = [
@@ -12,11 +13,36 @@ export const gyms = [
 ] as const;
 export type Slug = (typeof gyms)[number]['slug'];
 export const mailOrigin = 'https://mail.localhost';
-export const stripeRestrictedKey = () => {
-  const value = process.env.E2E_STRIPE_RESTRICTED_KEY;
+const stripeSecret = (name: 'E2E_STRIPE_KEY' | 'E2E_STRIPE_RESTRICTED_KEY') => {
+  const value = process.env[name];
   if (!value) throw new Error('Run through pnpm --dir e2e test to configure the fake Stripe');
   return value;
 };
+/** A gym's own restricted test key. The fake Stripe keeps one account per key, so no two gyms ever share objects. */
+export const stripeKeyOf = (slug: Slug) => 'rk_test_' + createHash('sha256').update(`${stripeSecret('E2E_STRIPE_RESTRICTED_KEY')}:${slug}`).digest('hex').slice(0, 32);
+/** The fake Stripe API as the account of one key. */
+export const stripeAs = (key: string) => new Client(stripeOrigin, { authorization: 'Bearer ' + key });
+
+/** Sends a Stripe event for a gym's account, signed as Stripe signs it: with the secret returned when the gym's endpoint was
+ * created, which the fake Stripe holds. The gym's own hostname receives it, as its registered endpoint would. */
+export async function deliverStripeEvent(gym: { origin: string; stripeKey: string }, type: string, object: Record<string, unknown>) {
+  const response = await postStripeEvent(gym.origin, await signStripeEvent(gym, type, object));
+  expect(response.status, `${type}: ${response.text}`).toBe(200);
+  return response;
+}
+/** An event for a gym's Stripe account with the signature Stripe would give it. */
+export async function signStripeEvent(gym: { origin: string; stripeKey: string }, type: string, object: Record<string, unknown>) {
+  const created = Math.floor(Date.now() / 1000);
+  const body = JSON.stringify({ id: 'evt_' + randomBytes(12).toString('hex'), object: 'event', api_version: '2026-09-30.endive',
+    created, livemode: false, pending_webhooks: 1, request: { id: null, idempotency_key: null }, type, data: { object } });
+  const signed = await stripeAs(stripeSecret('E2E_STRIPE_KEY')).json<{ endpointId: string; url: string; signature: string }>(
+    '/test/sign-webhook', 'POST', { key: gym.stripeKey, body });
+  expect(new URL(signed.url).origin, 'the gym registered its own hostname as its webhook endpoint').toBe(gym.origin);
+  return { type, body, signature: signed.signature };
+}
+/** Posts a signed event to the webhook endpoint on `origin`: the gym's own, or (to prove it is refused) another gym's. */
+export const postStripeEvent = (origin: string, event: { body: string; signature: string }) =>
+  new Client(origin).request('/webhooks/stripe', 'POST', Buffer.from(event.body), { 'stripe-signature': event.signature });
 
 interface Mail { ID: string; To: { Address: string }[]; Created: string }
 /** The IDs of every message the mail catcher holds. */
@@ -64,14 +90,23 @@ export async function signIn(origin: string, email: string) {
 export const withCookie = (origin: string, cookie: string, headers: Record<string, string> = {}) =>
   Object.assign(new Client(origin, headers), { cookie });
 
-/** One gym's fixtures: staff sessions, a household with a portal login, a class, and a kiosk device. */
+/** One gym's fixtures: staff sessions, a household with a portal login, and a record of every kind the staff API holds. */
 export interface GymFixture {
-  slug: Slug; name: string; origin: string; gymId: string; ownerEmail: string; coachEmail: string;
+  slug: Slug; name: string; origin: string; gymId: string; ownerEmail: string; coachEmail: string; stripeKey: string;
   cookies: { owner: string; coach: string; household: string };
   program: Program; rankSystemId: string; rankId: string;
   student: Person & { fullName: string }; householdId: string; pin: string;
-  sessionId: string; sessionName: string; bookingId: string; invoiceId: string; signatureId: string;
-  deviceId: string; kioskToken: string; planId: string; templateId: string; tagId: string;
+  /** The gym's class: created through `createClass`, so its start is clear of local midnight at any hour. */
+  session: ClassSession; sessionId: string; sessionName: string; bookingId: string;
+  invoiceId: string; signatureId: string; deviceId: string; kioskToken: string; planId: string; templateId: string; tagId: string;
+  /** Billing: a second invoice paid at the desk, that payment and its refund, a charge type, a tax rate and a membership. */
+  paidInvoiceId: string; paymentId: string; refundId: string; chargeTypeId: string; taxRateId: string; membershipId: string;
+  /** A card saved through hosted Checkout and the signed setup webhook. */
+  paymentMethodId: string;
+  /** A signed link, and a campaign that sent one. */
+  linkId: string; campaignId: string;
+  /** A weekly schedule template, a class tag, a data export, and an import run (dry run) with its CSV upload. */
+  scheduleTemplateId: string; classTagId: string; exportId: string; importId: string; uploadId: string;
 }
 export interface Context extends GymFixture {
   owner: Client; coach: Client; household: Client; device: Client;
@@ -80,84 +115,196 @@ export const contextOf = (fixture: GymFixture): Context => ({ ...fixture,
   owner: withCookie(fixture.origin, fixture.cookies.owner), coach: withCookie(fixture.origin, fixture.cookies.coach),
   household: withCookie(fixture.origin, fixture.cookies.household), device: new Client(fixture.origin, { authorization: 'Bearer ' + fixture.kioskToken }) });
 
+/** A multipart/form-data body with one file part, as a browser upload sends it. */
+export function multipart(field: string, filename: string, type: string, content: Buffer) {
+  const boundary = '----plaingym' + randomBytes(8).toString('hex');
+  const head = Buffer.from(`--${boundary}\r\ncontent-disposition: form-data; name="${field}"; filename="${filename}"\r\ncontent-type: ${type}\r\n\r\n`);
+  return { body: Buffer.concat([head, content, Buffer.from(`\r\n--${boundary}--\r\n`)]), headers: { 'content-type': 'multipart/form-data; boundary=' + boundary } };
+}
+
+/** The gym's fixture is built in named steps, each saved as it finishes, so a run that fails halfway resumes where it stopped:
+ * the next worker neither creates the gym again (and fails on "Account is already staff") nor hides the first failure. */
 async function createGym(gym: (typeof gyms)[number]): Promise<GymFixture> {
+  const step = <T>(name: string, create: () => Promise<T>) => cached(`multi:${gym.slug}:${name}`, create);
+  const stripeKey = stripeKeyOf(gym.slug);
+
   // The supported CLI creates the gym and emails its owner a login link.
-  const before = await mailIds();
-  const created = await promisify(execFile)('docker', ['compose', '--project-name', process.env.E2E_COMPOSE_PROJECT!, '--file', 'compose.yaml',
-    'exec', '-T', 'multi', 'gym-app', 'gyms', 'create', gym.slug, new URL(gym.origin).hostname, gym.ownerEmail, gym.name, 'UTC', 'USD'], {
-    cwd: fileURLToPath(new URL('../', import.meta.url)), windowsHide: true, timeout: 60_000 });
-  const result = JSON.parse(created.stdout.trim().split('\n').at(-1)!) as { gymId: string; delivery: string };
-  expect(result.delivery).toBe('email');
-  const ownerCookie = await verifyLink(gym.origin, await mailLink(gym.ownerEmail, /^\/api\/auth\//, before));
+  const opened = await step('gym', async () => {
+    const before = await mailIds();
+    let created: { stdout: string };
+    try {
+      created = await promisify(execFile)('docker', ['compose', '--project-name', process.env.E2E_COMPOSE_PROJECT!, '--file', 'compose.yaml',
+        'exec', '-T', 'multi', 'gym-app', 'gyms', 'create', gym.slug, new URL(gym.origin).hostname, gym.ownerEmail, gym.name, 'UTC', 'USD'], {
+        cwd: fileURLToPath(new URL('../', import.meta.url)), windowsHide: true, timeout: 60_000 });
+    } catch (error) {
+      // A gym that already exists (the run stopped after creating it) is reused: its owner signs in by email. Only the CLI's own
+      // refusal leads here, so a failure of the first build after the gym was created (its owner link, say) still fails the run.
+      const known = await new Client(gym.origin).request('/api/public/config');
+      if (known.status !== 200) throw error;
+      const ownerCookie = await signIn(gym.origin, gym.ownerEmail);
+      const bootstrap = await withCookie(gym.origin, ownerCookie).json<{ data: { gym: { id: string } } }>('/api/auth/bootstrap');
+      return { gymId: bootstrap.data.gym.id, ownerCookie };
+    }
+    const result = JSON.parse(created.stdout.trim().split('\n').at(-1)!) as { gymId: string; delivery: string };
+    expect(result.delivery).toBe('email');
+    return { gymId: result.gymId, ownerCookie: await verifyLink(gym.origin, await mailLink(gym.ownerEmail, /^\/api\/auth\//, before)) };
+  });
+  const ownerCookie = opened.ownerCookie;
   const owner = withCookie(gym.origin, ownerCookie), guest = new Client(gym.origin);
 
   // A coach, invited by the owner. The install has no passwords, so the invitee signs in by email.
   const coachEmail = `coach@${gym.slug}.example.invalid`;
-  const invite = await owner.json<{ data: { invitationUrl: string } }>('/api/staff/invitations', 'POST', { email: coachEmail, role: 'coach', delivery: 'print' });
-  // Every link a gym hands out names its own hostname.
-  expect(new URL(invite.data.invitationUrl).origin).toBe(gym.origin);
-  await guest.json('/api/staff/invitations/accept', 'POST', { token: new URL(invite.data.invitationUrl).hash.slice(1), name: `${gym.name} coach` });
-  const coachCookie = await signIn(gym.origin, coachEmail);
+  const coachCookie = await step('coach', async () => {
+    const invite = await owner.json<{ data: { invitationUrl: string } }>('/api/staff/invitations', 'POST', { email: coachEmail, role: 'coach', delivery: 'print' });
+    // Every link a gym hands out names its own hostname.
+    expect(new URL(invite.data.invitationUrl).origin).toBe(gym.origin);
+    await guest.json('/api/staff/invitations/accept', 'POST', { token: new URL(invite.data.invitationUrl).hash.slice(1), name: `${gym.name} coach` });
+    return signIn(gym.origin, coachEmail);
+  });
 
   // Gym data: a rank system with a program, a household with a member who has a PIN, a class and a booking.
-  const system = (await owner.json<{ data: RecordId }>('/api/rank-systems', 'POST', { name: gym.name + ' belts' })).data;
-  const rank = (await owner.json<{ data: RecordId }>('/api/ranks', 'POST', { rankSystemId: system.id, name: gym.name + ' white', position: 0, subRanks: [], criteria: [] })).data;
-  const program = (await owner.json<{ data: Program }>('/api/programs', 'POST', { name: gym.name + ' fundamentals', rankSystemId: system.id, active: true })).data;
-  const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: `${gym.name} family`, email: `family@${gym.slug}.example.invalid` })).data;
-  const lastName = gym.slug[0]!.toUpperCase() + gym.slug.slice(1) + 'Student';
-  const student = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'Casey', lastName, dateOfBirth: '2014-03-04', status: 'active' })).data;
+  const ranks = await step('ranks', async () => {
+    const system = (await owner.json<{ data: RecordId }>('/api/rank-systems', 'POST', { name: gym.name + ' belts' })).data;
+    const rank = (await owner.json<{ data: RecordId }>('/api/ranks', 'POST', { rankSystemId: system.id, name: gym.name + ' white', position: 0, subRanks: [], criteria: [] })).data;
+    const program = (await owner.json<{ data: Program }>('/api/programs', 'POST', { name: gym.name + ' fundamentals', rankSystemId: system.id, active: true })).data;
+    return { systemId: system.id, rankId: rank.id, program };
+  });
   const pin = gym.slug === 'alpha' ? '2468' : '1357';
-  const current = await owner.json<{ data: RecordId }>('/api/households/' + home.id);
-  await owner.json(`/api/households/${home.id}/pin`, 'PUT', { revision: current.data.revision, pin });
-  const minute = 60_000, start = Math.ceil(Date.now() / (5 * minute)) * 5 * minute + 6 * 60 * minute;
-  const sessionName = `${gym.name} open mat`;
-  const session = (await owner.json<{ data: RecordId }>('/api/schedule/sessions', 'POST', { name: sessionName, startsAt: new Date(start).toISOString(),
-    endsAt: new Date(start + 60 * minute).toISOString(), coachId: null, capacity: 10, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
-  const booking = (await owner.json<{ data: RecordId }>('/api/bookings', 'POST', { memberId: student.id, sessionId: session.id, allowWaitlist: false })).data;
-  const tag = (await owner.json<{ data: RecordId }>('/api/member-tags', 'POST', { name: gym.name + ' tag' })).data;
-  const device = (await owner.json<{ data: { token: string; device: RecordId } }>('/api/kiosk/devices', 'POST', { name: gym.name + ' tablet' })).data;
+  const people = await step('people', async () => {
+    const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: `${gym.name} family`, email: `family@${gym.slug}.example.invalid` })).data;
+    const lastName = gym.slug[0]!.toUpperCase() + gym.slug.slice(1) + 'Student';
+    const student = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'Casey', lastName, dateOfBirth: '2014-03-04', status: 'active' })).data;
+    const current = await owner.json<{ data: RecordId }>('/api/households/' + home.id);
+    await owner.json(`/api/households/${home.id}/pin`, 'PUT', { revision: current.data.revision, pin });
+    return { householdId: home.id, student };
+  });
+  const { householdId, student } = people;
+  // The class starts a day or so ahead, on a 5-minute mark clear of the gym's midnight, whatever time the run starts.
+  const klass = await step('class', async () => {
+    const session = await createClass(owner, `${gym.name} open mat`, { capacity: 10 });
+    const booking = (await owner.json<{ data: RecordId }>('/api/bookings', 'POST', { memberId: student.id, sessionId: session.id, allowWaitlist: false })).data;
+    return { session, bookingId: booking.id };
+  });
+  const tag = await step('member-tag', async () => (await owner.json<{ data: RecordId }>('/api/member-tags', 'POST', { name: gym.name + ' tag' })).data);
+  const device = await step('device', async () => (await owner.json<{ data: { token: string; device: RecordId } }>('/api/kiosk/devices', 'POST', { name: gym.name + ' tablet' })).data);
 
   // Billing: the gym's own (fake) Stripe key, one plan, one current waiver, and an invoice for the household.
-  const integrations = await owner.json<{ data: { revision: number } }>('/api/settings/integrations');
-  await owner.json('/api/settings/integrations/stripe', 'PUT', { revision: integrations.data.revision, restrictedKey: stripeRestrictedKey() });
-  const plan = (await owner.json<{ data: RecordId }>('/api/billing/plans', 'POST', { name: gym.name + ' monthly', amountCents: 9000, currency: 'USD', interval: 'monthly' })).data;
-  const template = (await owner.json<{ data: RecordId }>('/api/waivers/templates', 'POST', { name: gym.name + ' liability waiver', kind: 'waiver',
-    body: `I understand that training at ${gym.name} carries a risk of injury and I accept it.` })).data;
-  const switches = await owner.json<{ data: { revision: number } }>('/api/settings/go-live');
-  await owner.json('/api/settings/go-live', 'PATCH', { revision: switches.data.revision, billingEnabled: true, memberEmailsEnabled: true });
-  const invoice = (await owner.json<{ data: RecordId }>('/api/billing/invoices/one-off', 'POST', { householdId: home.id, dueOn: new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10),
-    source: 'custom', description: gym.name + ' gear', currency: 'USD', amountCents: 2500, taxRateIds: [] })).data;
+  const billing = await step('billing', async () => {
+    const integrations = await owner.json<{ data: { revision: number } }>('/api/settings/integrations');
+    await owner.json('/api/settings/integrations/stripe', 'PUT', { revision: integrations.data.revision, restrictedKey: stripeKey });
+    const plan = (await owner.json<{ data: RecordId }>('/api/billing/plans', 'POST', { name: gym.name + ' monthly', amountCents: 9000, currency: 'USD', interval: 'monthly' })).data;
+    const template = (await owner.json<{ data: RecordId }>('/api/waivers/templates', 'POST', { name: gym.name + ' liability waiver', kind: 'waiver',
+      body: `I understand that training at ${gym.name} carries a risk of injury and I accept it.` })).data;
+    const switches = await owner.json<{ data: { revision: number } }>('/api/settings/go-live');
+    await owner.json('/api/settings/go-live', 'PATCH', { revision: switches.data.revision, billingEnabled: true, memberEmailsEnabled: true });
+    const dueOn = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const oneOff = (description: string) => owner.json<{ data: RecordId }>('/api/billing/invoices/one-off', 'POST', { householdId, dueOn,
+      source: 'custom', description, currency: 'USD', amountCents: 2500, taxRateIds: [] });
+    const invoice = (await oneOff(gym.name + ' gear')).data, paidInvoice = (await oneOff(gym.name + ' towels')).data;
+    return { planId: plan.id, templateId: template.id, invoiceId: invoice.id, paidInvoiceId: paidInvoice.id };
+  });
+  // The records the billing API holds besides plans and invoices: a payment (recorded at the desk) and its refund, a charge type,
+  // a tax rate and a membership.
+  const payment = await step('payment', async () => {
+    const recorded = (await owner.json<{ data: RecordId }>(`/api/billing/invoices/${billing.paidInvoiceId}/payments`, 'POST',
+      { amountCents: 2500, currency: 'USD', method: 'cash', reference: null, paidAt: new Date().toISOString() })).data;
+    const payments = (await owner.json<{ data: { id: string; invoiceId: string }[] }>('/api/billing/payments?limit=100')).data;
+    const paymentId = payments.find((row) => row.invoiceId === billing.paidInvoiceId)?.id ?? recorded.id;
+    return { paymentId, refundId: (await owner.json<{ data: RecordId }>(`/api/billing/payments/${paymentId}/refunds`, 'POST',
+      { amountCents: 500, currency: 'USD', reason: gym.name + ' refund' })).data.id };
+  });
+  const taxes = await step('taxes', async () => {
+    const taxRate = (await owner.json<{ data: RecordId }>('/api/billing/tax-rates', 'POST', { name: gym.name + ' sales tax', rateMillionths: 50_000, inclusive: false })).data;
+    const chargeType = (await owner.json<{ data: RecordId }>('/api/billing/charge-types', 'POST', { name: gym.name + ' drop-in', amountCents: 2000, currency: 'USD', taxRateIds: [taxRate.id] })).data;
+    return { taxRateId: taxRate.id, chargeTypeId: chargeType.id };
+  });
+  const membershipId = await step('membership', async () => {
+    // A household with no live membership bills from its join date, so the first due date is the start date: a week out, so no
+    // charge run issues its invoice while the run is going (a run near midnight would otherwise change the gym's invoice list).
+    const startsOn = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    return (await owner.json<{ data: RecordId }>('/api/billing/memberships', 'POST', { householdId, memberId: student.id, planId: billing.planId,
+      startsOn, nextDueOn: startsOn, firstPeriod: 'next_billing_date' })).data.id;
+  });
+  const ledger = { ...payment, ...taxes, membershipId };
 
   // The household's portal login, claimed from its emailed invitation.
-  const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST',
-    { email: `family@${gym.slug}.example.invalid`, delivery: 'print', scope: 'payer' });
-  expect(new URL(invitation.data.invitationUrl).origin).toBe(gym.origin);
-  const beforePortal = await mailIds();
-  const accepted = await guest.json<{ data: { status: string } }>('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1) });
-  expect(accepted.data.status).toBe('email_sent');
-  const portalLink = await mailLink(`family@${gym.slug}.example.invalid`, /^\/api\/auth\//, beforePortal);
-  expect(portalLink.origin).toBe(gym.origin);
-  const portal = await claimPortal(gym.origin, portalLink);
+  const portalCookie = await step('portal', async () => {
+    const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${householdId}/portal-invitations`, 'POST',
+      { email: `family@${gym.slug}.example.invalid`, delivery: 'print', scope: 'payer' });
+    expect(new URL(invitation.data.invitationUrl).origin).toBe(gym.origin);
+    const beforePortal = await mailIds();
+    const accepted = await guest.json<{ data: { status: string } }>('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1) });
+    expect(accepted.data.status).toBe('email_sent');
+    const portalLink = await mailLink(`family@${gym.slug}.example.invalid`, /^\/api\/auth\//, beforePortal);
+    expect(portalLink.origin).toBe(gym.origin);
+    return (await claimPortal(gym.origin, portalLink)).cookie;
+  });
+  const portal = withCookie(gym.origin, portalCookie);
 
   // The member signs the gym's current waiver through the household login, as the kiosk requires.
-  const image = await portal.json<{ data: { signatureImageKey: string; signatureImageHash: string } }>('/api/portal/household/waivers/signature-images', 'POST',
-    { memberId: student.id, pngBase64: signaturePng().toString('base64') });
-  const signed = await portal.json<{ data: RecordId }>('/api/portal/household/waivers', 'POST', { memberId: student.id, templateId: template.id, templateVersion: 1,
-    signer: { kind: 'guardian', name: gym.name + ' parent', relationship: 'Parent' }, ...image.data, consent: true });
+  const signatureId = await step('signature', async () => {
+    const image = await portal.json<{ data: { signatureImageKey: string; signatureImageHash: string } }>('/api/portal/household/waivers/signature-images', 'POST',
+      { memberId: student.id, pngBase64: signaturePng().toString('base64') });
+    const signed = await portal.json<{ data: RecordId }>('/api/portal/household/waivers', 'POST', { memberId: student.id, templateId: billing.templateId, templateVersion: 1,
+      signer: { kind: 'guardian', name: gym.name + ' parent', relationship: 'Parent' }, ...image.data, consent: true });
+    return signed.data.id;
+  });
 
-  return { slug: gym.slug, name: gym.name, origin: gym.origin, gymId: result.gymId, ownerEmail: gym.ownerEmail, coachEmail,
-    cookies: { owner: ownerCookie, coach: coachCookie, household: portal.cookie }, program, rankSystemId: system.id, rankId: rank.id,
-    student: { ...student, fullName: `${student.firstName} ${student.lastName}` }, householdId: home.id, pin, sessionId: session.id, sessionName,
-    bookingId: booking.id, invoiceId: invoice.id, signatureId: signed.data.id, deviceId: device.device.id, kioskToken: device.token, planId: plan.id, templateId: template.id, tagId: tag.id };
+  // A card saved the way a household saves one: hosted Checkout in setup mode, then the gym's signed webhook.
+  const paymentMethodId = await step('payment-method', async () => {
+    const started = await portal.json<{ data: { url: string } }>('/api/portal/payment-methods/checkout', 'POST', {});
+    const sessionId = new URL(started.data.url).pathname.split('/').pop()!;
+    const paid = await new Client(stripeOrigin).request('/pay/' + sessionId, 'POST', Buffer.from('card=4242424242424242'));
+    expect(paid.status, paid.text).toBe(303);
+    const session = await stripeAs(stripeKey).json<Record<string, unknown>>('/v1/checkout/sessions/' + sessionId);
+    expect(session).toMatchObject({ status: 'complete', mode: 'setup', metadata: { gym_id: opened.gymId } });
+    await deliverStripeEvent({ origin: gym.origin, stripeKey }, 'checkout.session.completed', session);
+    let found: string | undefined;
+    await expect.poll(async () => {
+      const methods = await owner.json<{ data: { id: string }[] }>(`/api/billing/households/${householdId}/payment-methods?limit=100`);
+      found = methods.data[0]?.id;
+      return found;
+    }, { timeout: 30_000, message: 'The signed setup webhook saves the household card' }).toBeTruthy();
+    return found!;
+  });
+
+  // Signed links and a campaign that sent one, a schedule template and a class tag, an export, and an import run.
+  const extras = await step('extras', async () => {
+    const expiresAt = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const campaign = (await owner.json<{ data: { campaign: RecordId } }>('/api/link-campaigns', 'POST', { name: gym.name + ' cards', purpose: 'update_card', expiresAt,
+      reminderSchedule: [], recipients: [{ householdId }] })).data.campaign;
+    const link = (await owner.json<{ data: { link: RecordId } }>('/api/links', 'POST', { purpose: 'onboarding', householdId, expiresAt })).data.link;
+    const scheduleTemplate = (await owner.json<{ data: RecordId }>('/api/schedule/templates', 'POST', { name: gym.name + ' weekly', weekday: 3, localStartTime: '12:00',
+      durationMinutes: 60, coachId: null, capacity: 10, notes: null, kind: 'class', programIds: [ranks.program.id], tagIds: [] })).data;
+    const classTag = (await owner.json<{ data: RecordId }>('/api/schedule/tags', 'POST', { name: gym.name + ' gi' })).data;
+    const exported = (await owner.json<{ data: RecordId }>('/api/exports', 'POST', { format: 'csv' })).data;
+    const csv = Buffer.from(`First,Last\r\nPlaced,${gym.slug[0]!.toUpperCase() + gym.slug.slice(1)}Import\r\n`);
+    const file = multipart('file', 'people.csv', 'text/csv', csv);
+    const upload = (await owner.json<{ data: { id: string } }>('/api/imports/uploads', 'POST', file.body, file.headers)).data;
+    const imported = (await owner.json<{ data: RecordId }>('/api/imports', 'POST', { uploadId: upload.id, mapper: 'people', duplicatePolicy: 'skip', dryRun: true,
+      mapping: [{ sourceColumn: 'First', targetField: 'firstName' }, { sourceColumn: 'Last', targetField: 'lastName' }] })).data;
+    return { campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id };
+  });
+
+  return { slug: gym.slug, name: gym.name, origin: gym.origin, gymId: opened.gymId, ownerEmail: gym.ownerEmail, coachEmail, stripeKey,
+    cookies: { owner: ownerCookie, coach: coachCookie, household: portalCookie }, program: ranks.program, rankSystemId: ranks.systemId, rankId: ranks.rankId,
+    student: { ...student, fullName: `${student.firstName} ${student.lastName}` }, householdId, pin, session: klass.session, sessionId: klass.session.id,
+    sessionName: klass.session.name, bookingId: klass.bookingId, invoiceId: billing.invoiceId, signatureId, deviceId: device.device.id, kioskToken: device.token,
+    planId: billing.planId, templateId: billing.templateId, tagId: tag.id, paidInvoiceId: billing.paidInvoiceId, ...ledger, paymentMethodId, ...extras };
 }
 
-/** Both gyms, created once per run. */
+let built: Promise<GymFixture[]> | undefined;
+/** Both gyms, created once per run. Each step of a gym's build is saved on its own (`cached` doesn't nest: an outer call would write
+ * its whole file again over the steps saved inside it), so a worker started after a failure resumes instead of starting over. */
 export async function multiGyms(): Promise<[Context, Context]> {
-  const fixtures = await cached('multi-gyms', async () => {
+  built ??= (async () => {
     const created: GymFixture[] = [];
     for (const gym of gyms) created.push(await createGym(gym));
     return created;
-  });
-  return [contextOf(fixtures[0]!), contextOf(fixtures[1]!)];
+  })();
+  try {
+    const fixtures = await built;
+    return [contextOf(fixtures[0]!), contextOf(fixtures[1]!)];
+  } catch (error) { built = undefined; throw error; }
 }
 export { missingId };
