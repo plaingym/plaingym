@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BookingRosterPanel, MemberBookingsPanel } from './panels.js';
 import { registration } from './registrations.js';
 import { ApiError } from '../../lib/api.js';
-import { SessionCountsProvider, type SessionCounts } from '../../lib/session-summary.js';
-import { useState } from 'react';
+import { SessionCountsProvider, useSessionChanged, type SessionCounts } from '../../lib/session-summary.js';
+import { memo, useState } from 'react';
 
 const client = vi.hoisted(() => ({ roster: vi.fn(), list: vi.fn(), members: vi.fn(), member: vi.fn(), session: vi.fn(), sessions: vi.fn(), book: vi.fn(), cancel: vi.fn() }));
 vi.mock('./client.js', () => ({ bookingClient: client }));
@@ -73,7 +73,46 @@ describe('staff booking panels', () => {
     expect(publish).toHaveBeenCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1 });
     view.rerender(<SessionCountsProvider publish={publish} changed={2}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
     await waitFor(() => expect(screen.queryByTestId('roster-counts')).toBeNull());
-    expect(publish).toHaveBeenLastCalledWith(null);
+    await waitFor(() => expect(publish).toHaveBeenLastCalledWith(null));
+  });
+  it('keeps an unread error, shows no loading state and looks up only new members on a reload the dialog asks for', async () => {
+    const other = { ...booking, id: 'other', memberId: 'other-member' };
+    const page = (rows: unknown[]) => ({ data: rows, pagination: { total: rows.length }, counts: { booked: rows.length, waitlisted: 0, checkedIn: 0 } });
+    client.roster.mockResolvedValueOnce(page([{ booking, attendance: null }])).mockResolvedValueOnce(page([{ booking, attendance: null }, { booking: other, attendance: null }]));
+    client.member.mockImplementation(async (id: string) => id === memberId ? member : { id, firstName: 'Sam', lastName: 'Ng' });
+    client.cancel.mockRejectedValueOnce(new Error('down'));
+    const tree = (changed: number) => <SessionCountsProvider publish={() => undefined} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
+    const user = userEvent.setup(); const view = render(tree(0));
+    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+    await screen.findByRole('alert');
+    view.rerender(tree(1));
+    await screen.findByText('Sam Ng');
+    expect(screen.getByRole('alert')).toBeDefined();
+    expect(screen.queryByText('Loading bookings…')).toBeNull();
+    expect(client.member.mock.calls.map(call => call[0])).toEqual([memberId, 'other-member']);
+  });
+  it('keeps the provider value stable across renders', () => {
+    // A memoized consumer re-renders only when the context value changes; the provider is rerendered with the same inputs.
+    const publish = vi.fn(); let renders = 0;
+    const Consumer = memo(function Consumer() { useSessionChanged(); renders++; return null; });
+    const tree = <SessionCountsProvider publish={publish} changed={1}><Consumer/></SessionCountsProvider>;
+    const view = render(tree);
+    view.rerender(<SessionCountsProvider publish={publish} changed={1}><Consumer/></SessionCountsProvider>);
+    expect(renders).toBe(1);
+    view.rerender(<SessionCountsProvider publish={publish} changed={2}><Consumer/></SessionCountsProvider>);
+    expect(renders).toBe(2);
+  });
+  it('refetches the counts when the window regains focus and on an interval', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<BookingRosterPanel sessionId={sessionId}/>);
+      await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(1));
+      act(() => { window.dispatchEvent(new Event('focus')); });
+      await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      await waitFor(() => expect(client.roster.mock.calls.length).toBeGreaterThanOrEqual(3));
+      expect(screen.queryByText('Loading bookings…')).toBeNull();
+    } finally { vi.useRealTimers(); }
   });
   it('clears the published counts when the panel closes, and member tabs publish none', async () => {
     client.roster.mockResolvedValue({ data: [], pagination: { total: 0 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } });

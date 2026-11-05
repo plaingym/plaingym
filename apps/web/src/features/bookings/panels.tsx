@@ -15,6 +15,7 @@ import { EmptyState, LoadingState } from '../../components/ui/states.js';
 import { usePublishSessionCounts, useSessionChanged } from '../../lib/session-summary.js';
 import { bookingClient } from './client.js';
 
+const REFETCH_MS = 45_000;
 const text = (key: string, values?: Record<string, string | number>) => t('bookings/bookings:' + key, values);
 const status = (booking: ClassBooking) => text(booking.status, { rank: booking.queueRank ?? 0 });
 const errorText = (error: unknown) => text(error instanceof ApiError && error.status === 409 ? 'conflict' : 'error');
@@ -29,18 +30,32 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   const [total, setTotal] = useState(0), [counts, setCounts] = useState<BookingSessionCounts | null>(null), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [error, setError] = useState(''), [notice, setNotice] = useState('');
   const changed = useSessionChanged(), seenChanged = useRef(changed);
+  const [tick, setTick] = useState(0), seenTick = useRef(tick), seenScope = useRef(''), names = useRef(new Map<string, string>());
+  // An open dialog follows changes made elsewhere: refetch on focus and every minute.
+  useEffect(() => {
+    if (!sessionId) return;
+    const bump = () => setTick(value => value + 1);
+    const timer = setInterval(bump, REFETCH_MS);
+    window.addEventListener('focus', bump);
+    return () => { clearInterval(timer); window.removeEventListener('focus', bump); };
+  }, [sessionId]);
   useEffect(() => {
     if (!timezone) return;
-    // A change reported by the dialog refreshes in place; the list doesn't blank while it reloads.
-    const quiet = seenChanged.current !== changed; seenChanged.current = changed;
-    let active = true; setLoading(true); setError(''); if (!quiet) setRows([]);
+    // A reload the dialog or a timer asks for refreshes in place: the list stays, the error stays, and there is no loading state.
+    // A page, session or manual reload in the same render is never quiet.
+    const scope = [sessionId, memberId, offset, reload].join('|'), sameScope = seenScope.current === scope;
+    const quiet = sameScope && (seenChanged.current !== changed || seenTick.current !== tick);
+    seenChanged.current = changed; seenTick.current = tick; seenScope.current = scope;
+    let active = true;
+    if (!quiet) { setLoading(true); setError(''); setRows([]); }
     async function load() {
       if (sessionId) {
         const page = await bookingClient.roster(sessionId, offset);
         const rows = await Promise.all(page.data.map(async (row: BookingRosterEntry) => {
           const id = row.booking?.memberId ?? row.attendance!.memberId;
-          const member = await bookingClient.member(id);
-          return { key: id, name: `${member.firstName} ${member.lastName}`, booking: row.booking, checked: !!row.attendance };
+          let name = names.current.get(id);
+          if (name === undefined) { const member = await bookingClient.member(id); name = `${member.firstName} ${member.lastName}`; names.current.set(id, name); }
+          return { key: id, name, booking: row.booking, checked: !!row.attendance };
         }));
         return { rows, total: page.pagination.total, counts: page.counts };
       }
@@ -51,7 +66,7 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
     void load().then(value => { if (active) { setRows(value.rows); setTotal(value.total); setCounts(value.counts); } })
       .catch(error => { if (active) { setError(errorText(error)); setCounts(null); } }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [sessionId, memberId, timezone, offset, reload, changed]);
+  }, [sessionId, memberId, timezone, offset, reload, changed, tick]);
   async function cancel(id: string) {
     if (saving) return; setSaving(true); setError(''); setNotice('');
     try { await bookingClient.cancel(id); setNotice(text('cancelledSaved')); setReload(value => value + 1); }

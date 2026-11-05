@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useState, type FormEvent, type ReactNode } from 'react';
 import { canStaff, type StaffRole } from '@plaingym/shared';
 import { classSessionResponseSchema, updateClassSessionRequestSchema, type ClassSession, type ClassTag } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -51,6 +51,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
   const [counts, setCounts] = useState<SessionCounts | null>(null), [changed, setChanged] = useState(0);
   useDialogOperation(busy);
   const markSaved = useDialogSaved();
+  const notify = useCallback(() => setChanged((value) => value + 1), []);
   const manage = canStaff(roles, 'schedule.manage'), notes = canStaff(roles, 'class_notes.manage');
   async function change(kind: 'coach' | 'notes' | 'capacity' | 'cancel', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
@@ -99,7 +100,7 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
     {notes && <form key={'notes-' + session.revision} onSubmit={(event) => void change('notes', event)} className="space-y-2">
       <Field label={text('notes')}><Textarea name="notes" defaultValue={session.notes ?? ''} disabled={busy}/></Field>
       <Button type="submit" className="w-full sm:w-auto" disabled={busy}>{text('saveNotes')}</Button></form>}
-    <SessionCountsProvider publish={setCounts} changed={changed} notify={() => setChanged((value) => value + 1)}><SessionPanels sessionId={session.id} roles={roles} enabledModules={enabledModules} {...(registries ? { registries } : {})}/></SessionCountsProvider>
+    <SessionCountsProvider publish={setCounts} changed={changed} notify={notify}><SessionPanels sessionId={session.id} roles={roles} enabledModules={enabledModules} {...(registries ? { registries } : {})}/></SessionCountsProvider>
   </div>;
 }
 /** Edits or moves one session through the full, revision-checked session update. Notes keep their own form. */
