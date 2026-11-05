@@ -10,7 +10,7 @@ import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 // Test-only maintenance connection reads the stored envelopes while the app's pools are closed.
 // eslint-disable-next-line no-restricted-imports
-import { openConnection } from '@plaingym/db/client';
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { setLogSink } from '../core/log.js';
 import { encryptSecret, openSecret } from '../core/secrets.js';
 import { legacySecret } from '../core/secrets.test-helper.js';
@@ -58,7 +58,7 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
       [{ newKey: hex(current).toUpperCase() }, 'NEW_APP_ENCRYPTION_KEY is the current key; generate a new one'],
     ] as const) expect((await refusal(options)).message).toBe(message);
     expect(output).toEqual([]);
-    expect(await storedValues()).toEqual(before);
+    expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
   });
 
   it('refuses during a restore, and while the app is connected to the database', async () => {
@@ -70,7 +70,7 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     // The factories above used the app's pool, whose connections are still open.
     expect(await new PostgresMaintenance(db.maintenanceUrl).appSessions()).toBeGreaterThan(0);
     expect((await refusal({ gate })).message).toBe('The app is still connected to the database; stop it, then rotate the key');
-    expect(await storedValues()).toEqual(before);
+    expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
   });
 
   it('re-encrypts the stored secrets once the app is stopped, printing a count and no key or value', async () => {
@@ -80,8 +80,10 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     await rotateKey({ database: new PostgresMaintenance(db.maintenanceUrl), currentKey: hex(current), newKey: hex(next), gate: new RestoreGate(directory), ...io() });
     expect(output).toEqual(['Stored secrets re-encrypted with the new key (2 values changed)']);
     const after = await storedValues();
-    expect(openSecret(next, stripe, after.stripe)).toEqual({ version: 'v2', plaintext: 'stripe-private' });
-    expect(openSecret(next, smtp, after.smtp)).toEqual({ version: 'v2', plaintext: 'smtp-private' });
+    const openedStripe = openSecret(next, stripe, after.stripe);
+    expect(openedStripe.version === 'v2' && openedStripe.plaintext === 'stripe-private').toBe(true);
+    const openedSmtp = openSecret(next, smtp, after.smtp);
+    expect(openedSmtp.version === 'v2' && openedSmtp.plaintext === 'smtp-private').toBe(true);
   });
 
   it('names the values neither key opens, and the maintenance CLI prints its refusal as written', async () => {
@@ -95,28 +97,41 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     expect(error.message).toBe('1 stored secrets open with neither key, so nothing was changed. Check that APP_ENCRYPTION_KEY is the key '
       + 'the install runs with; a setting listed above that is already unreadable can be removed and entered again');
     expect(output).toEqual(['Opens with neither key: smtp_config of gym ' + gymId]);
-    expect(await storedValues()).toEqual(before);
+    expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
     const lines: string[] = [], logs: string[] = [], previous = setLogSink((line) => logs.push(line));
     try { reportMaintenanceFailure(['rotate-key'], error, (line) => lines.push(line)); } finally { setLogSink(previous); }
     expect(lines).toEqual([error.message]);
-    for (const text of [...output, ...lines, ...logs]) for (const key of [current, next, third]) expect(text).not.toContain(hex(key));
+    for (const text of [...output, ...lines, ...logs]) for (const key of [current, next, third]) expect(text.includes(hex(key))).toBe(false);
   });
 
-  it('rewrites v1 values as v2 when it migrates, with the app key it is given', async () => {
+  it('rewrites both gyms\' v1 values in a multi-gym migrate run with the app key it is given', async () => {
+    const otherGym = uuidv7();
     const connection = openConnection(db.maintenanceUrl, 1);
-    try { await connection.sql`update gyms set smtp_config_encrypted = ${legacySecret(next, 'smtp_config', 'smtp-again')} where id = ${gymId}::uuid`; }
+    try {
+      await connection.sql`update gyms set smtp_config_encrypted = ${legacySecret(next, 'smtp_config', 'smtp-again')} where id = ${gymId}::uuid`;
+      await createFactories(scopedDatabase(connection.db))('gyms', otherGym,
+        { smtpConfig: legacySecret(next, 'smtp_config', 'other-smtp') });
+    }
     finally { await connection.close(); }
-    const saved = { url: process.env.MAINTENANCE_DATABASE_URL, key: process.env.APP_ENCRYPTION_KEY };
+    const saved = { url: process.env.MAINTENANCE_DATABASE_URL, key: process.env.APP_ENCRYPTION_KEY, tenancy: process.env.TENANCY };
     const logs: string[] = [], previous = setLogSink((line) => logs.push(line));
     try {
       process.env.MAINTENANCE_DATABASE_URL = db.maintenanceUrl; process.env.APP_ENCRYPTION_KEY = hex(next);
+      process.env.TENANCY = 'multi';
       await maintenanceCommand(['migrate']);
     } finally {
       setLogSink(previous);
-      for (const [name, value] of [['MAINTENANCE_DATABASE_URL', saved.url], ['APP_ENCRYPTION_KEY', saved.key]] as const)
+      for (const [name, value] of [['MAINTENANCE_DATABASE_URL', saved.url], ['APP_ENCRYPTION_KEY', saved.key], ['TENANCY', saved.tenancy]] as const)
         if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
-    expect(openSecret(next, smtp, (await storedValues()).smtp)).toEqual({ version: 'v2', plaintext: 'smtp-again' });
-    expect(logs.map((line) => JSON.parse(line) as Record<string, unknown>)).toEqual([expect.objectContaining({ event: 'secrets.upgraded', rewritten: 1, unreadable: 0 })]);
+    const opened = openSecret(next, smtp, (await storedValues()).smtp);
+    expect(opened.version === 'v2' && opened.plaintext === 'smtp-again').toBe(true);
+    const check = openConnection(db.maintenanceUrl, 1);
+    try {
+      const [row] = await check.sql<{ value: string }[]>`select smtp_config_encrypted as value from gyms where id = ${otherGym}::uuid`;
+      const opened = openSecret(next, { secretClass: 'smtp_config', owner: otherGym }, row!.value);
+      expect(opened.version === 'v2' && opened.plaintext === 'other-smtp').toBe(true);
+    } finally { await check.close(); }
+    expect(logs.map((line) => JSON.parse(line) as Record<string, unknown>)).toEqual([expect.objectContaining({ event: 'secrets.upgraded', rewritten: 2, unreadable: 0 })]);
   });
 });

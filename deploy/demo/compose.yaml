@@ -25,6 +25,7 @@ services:
     entrypoint: [/app/deploy/database.sh, prepare]
     environment:
       NODE_OPTIONS: ${NODE_OPTIONS:---max-old-space-size=256}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?required}
       POSTGRES_DB: ${POSTGRES_DB:-plaingym}
       APP_PASSWORD: ${APP_PASSWORD:?required}
       MAINTENANCE_PASSWORD: ${MAINTENANCE_PASSWORD:?required}

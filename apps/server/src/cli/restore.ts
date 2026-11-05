@@ -38,7 +38,7 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
   if (args[0] === 'migrate') {
     const database = new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL'));
     await database.migrate();
-    // Then the one-time v1 to v2 rewrite, which needs the app key; a migrate step without one (multi-gym installs) skips it.
+    // Then the one-time v1 to v2 rewrite; both install modes supply the app key to their migrate step.
     if (process.env.APP_ENCRYPTION_KEY) await upgradeStoredSecrets(database, parseEncryptionKey(process.env.APP_ENCRYPTION_KEY));
     return;
   }

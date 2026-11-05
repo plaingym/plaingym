@@ -59,6 +59,19 @@ for stage in pull snapshot startup health; do
   fi
 done
 make_install locked
+touch "$case_dir/.rotate-key.inflight"
+for arguments in 'example:v1.0.1' '--patch --now'; do
+  status=0
+  # shellcheck disable=SC2086
+  sh "$case_dir/update.sh" $arguments > "$temporary/output" 2>&1 || status=$?
+  # A requested update fails; the nightly patch run exits cleanly.
+  case $arguments in --patch*) [ "$status" -eq 0 ] ;; *) [ "$status" -eq 1 ] ;; esac
+  grep -q 'Key rotation is unfinished; update skipped' "$temporary/output"
+  grep -qx APP_IMAGE=example:v1.0.0 "$case_dir/.env"
+  [ -f "$case_dir/.rotate-key.inflight" ]
+  [ ! -s "$CALLS" ]
+done
+rm "$case_dir/.rotate-key.inflight"
 if flock "$case_dir/.update.lock" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then exit 1; fi
 [ ! -s "$CALLS" ]
 if sh "$case_dir/update.sh" example:latest >/dev/null 2>&1; then exit 1; fi

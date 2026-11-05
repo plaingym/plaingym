@@ -233,8 +233,9 @@ key rotation.
   `BACKUP_STAGING_DIR` (the Compose files leave it unset), so the setup
   wizard's restore answers that it isn't configured and no restore gate
   pauses requests, and the daily upload sweep runs without the backup lock.
-  The `migrate` service doesn't hold `APP_ENCRYPTION_KEY` either, so it skips
-  the `v1` rewrite: `v1` values stay readable until a save rewrites them.
+  The `migrate` service holds `APP_ENCRYPTION_KEY` and runs the same `v1` to
+  `v2` rewrite after migrations. `v1` values still read for compatibility
+  (`docs/security-model.md`).
 
 ## Logs
 
@@ -368,7 +369,12 @@ requires the app to be running. It then:
    that every value in the encrypted-field registry opens with one of the two
    keys (if one doesn't, it lists where, by secret class and gym or sign-in
    account ID, and changes nothing), then re-encrypts them as `v2` envelopes, a
-   page of sign-in accounts and then one gym per short transaction;
+   page of sign-in accounts and then one gym per short transaction. Pending
+   backup credentials in settings are included (ones neither key opens are left
+   as they are; confirming them asks for a new backup key). Before reporting
+   success it checks again for app sessions and verifies every value opens as
+   `v2` with the new key, still under the backup lock; a failed check requires a
+   rerun with the same keys;
 3. writes the new key into `.env`, recreates the app from it, runs the health
    check, and removes `.rotate-key.inflight`.
 

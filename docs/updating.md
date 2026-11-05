@@ -65,6 +65,18 @@ the next nightly check tries the newest.
 
 ### Update
 
+Host files are copied only at installation; updating the app image does not
+refresh scripts, Compose files, systemd units or `release-signing.pem`. Follow
+the release's instructions to copy new or changed host files from its `deploy/`
+directory into `/opt/plaingym` by hand, preserving your `.env` and local settings.
+Installs made before key rotation was added must copy `rotate-key.sh` from the
+release and make it executable before using it. Keep its companion `lib.sh` and
+other host files at the versions required by that release.
+
+While `/opt/plaingym/.rotate-key.inflight` exists, a manual update fails and
+the nightly update skips, both saying that key rotation is unfinished. Rerun `rotate-key.sh` to finish
+the rotation before updating; keep the marker and both keys until it succeeds.
+
 On the server:
 
 ```sh

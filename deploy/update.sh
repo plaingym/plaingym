@@ -27,6 +27,14 @@ STATE="$ROOT/auto-update.state"
 PENDING="$ROOT/auto-update.result"
 INFLIGHT="$ROOT/.auto-update.inflight"
 work=
+# A requested update fails; the nightly patch run has nothing to do.
+rotation_check() {
+  [ -f "$ROOT/.rotate-key.inflight" ] || return 0
+  message='Key rotation is unfinished; update skipped. Rerun rotate-key.sh before updating.'
+  [ "$patch" = true ] || fail "$message"
+  echo "$message"
+  exit 0
+}
 
 # --- Swapping the app image, shared by both paths ---------------------------------------------------------
 # `stage` says how far a swap got, so the exit handler knows what to undo and the patch path what to report.
@@ -98,6 +106,7 @@ if [ "$patch" = false ]; then
   [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
   exec 9>"$ROOT/.update.lock"
   flock -n 9 || fail 'Another update is running.'
+  rotation_check
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
   swap_image "$target"
@@ -169,6 +178,7 @@ download() { # URL FILE [MAX_BYTES]
 
 exec 9>"$ROOT/.update.lock"
 flock -n 9 || { echo 'Another update is running; this run does nothing.'; exit 0; }
+rotation_check
 trap cleanup EXIT
 trap 'interrupted=true; exit 130' HUP INT TERM
 work=$(mktemp -d)

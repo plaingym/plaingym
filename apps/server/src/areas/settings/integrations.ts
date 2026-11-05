@@ -567,8 +567,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         const pending = pendingBackup(gym);
         if (!pending) throw new AppError('conflict', 'Generate a new backup key first', { privateKey: ['no_pending_key'] });
         if (pending.publicKey !== publicKey) throw new AppError('invalid_request', 'Backup key does not match', { privateKey: ['mismatch'] });
-        // The pending credentials sit in opaque settings, which neither a restore to a new APP_ENCRYPTION_KEY nor a key
-        // rotation re-encrypts: only credentials this install can read become active, stored afresh in their column.
+        // Restore and key rotation re-encrypt the pending credentials too. Check they still open before activating
+        // them, stored afresh in their column; corrupt or unreadable pending credentials require a new backup key.
         const s3 = { secretClass: 's3_config', owner: context.gymId } as const;
         let s3Config: string;
         try { s3Config = encryptSecret(options.key, s3, decryptSecret(options.key, s3, pending.s3Config)); }

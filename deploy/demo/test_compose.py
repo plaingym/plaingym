@@ -506,6 +506,11 @@ class HardeningTests(unittest.TestCase):
         self.assertTrue(services["migrate"]["read_only"])
         self.assertEqual(services["migrate"]["cap_drop"], ["ALL"])
 
+    def test_demo_migrate_step_receives_the_app_key_for_the_secret_upgrade(self):
+        services = self.render([DEPLOY / "compose.yaml", HERE / "compose.yaml"], DEMO_ENV)
+        key = services["migrate"]["environment"].get("APP_ENCRYPTION_KEY")
+        self.assertTrue(bool(key) and key == services["app"]["environment"]["APP_ENCRYPTION_KEY"])
+
     def test_end_to_end_migrate_step_is_hardened_like_the_app(self):
         services = self.render([DEPLOY.parent / "e2e" / "compose.yaml"], E2E_ENV)
         # The throwaway End-to-end stack has no log rotation.

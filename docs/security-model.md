@@ -253,14 +253,24 @@ Details: `apps/server/src/core/app.md`.
   write to the database but doesn't have the key can't move one gym's Stripe or
   email settings into another gym's row, or a value into another column: it no
   longer decrypts there. Values stored before `v2` (`v1`, bound only to their
-  class) still read. On a single-gym install, the step after migrations at each
-  start rewrites every one it can open as `v2`, bound to the row it is in then;
-  every save, restore and key rotation writes `v2`.
+  class) still read for compatibility until a later release refuses them. The
+  step after migrations at each start, including the multi-gym one-shot migrate
+  service, receives the app key and rewrites every value it can open as `v2`,
+  bound to the row it is in then. This rewrite does not reject a saved `v1`
+  value put back into the database afterwards. Every save, restore and key
+  rotation writes `v2`.
 * **Key rotation.** `deploy/rotate-key.sh` replaces `APP_ENCRYPTION_KEY` with the
   app stopped: the `maintenance` role re-encrypts every registered value from the
   old key to the new one, gym by gym in short transactions under the backup lock,
   after checking that each value opens with one of the two keys. It refuses while
-  the app is connected or a restore is unfinished, and a run that stops partway
+  the app is connected or a restore is unfinished. Before reporting success,
+  under the same backup lock, it checks again for app sessions and verifies that
+  every value opens as `v2` with the new key. A failed final check leaves the
+  host's key unchanged; run `rotate-key.sh` again to finish with the same two
+  keys. Pending
+  backup credentials awaiting confirmation are re-encrypted by rotation and
+  restore too; ones that open with neither key are left as they are, and
+  confirming them asks staff to generate a new backup key. A run that stops partway
   finishes on the next run (`deploy/README.md`, "Rotating the encryption key").
   The new key protects what is stored from then on; credentials a copy of the old
   database holds must be replaced at their provider.

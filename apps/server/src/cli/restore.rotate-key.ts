@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { logInfo } from '../core/log.js';
 import { parseEncryptionKey } from '../core/secrets.js';
-import { UnreadableSecretsError, type PostgresMaintenance } from '../areas/health/backups.database.js';
+import { KeyRotationIncompleteError, UnreadableSecretsError, type PostgresMaintenance } from '../areas/health/backups.database.js';
 import type { RestoreGate } from '../areas/health/restore.gate.js';
 
-/** A rotation that didn't start or changed nothing. Its message is fixed text saying what to do, never a value. */
+/** A refused or incomplete rotation. Its message is fixed text saying what to do, never a value. */
 export class KeyRotationRefusedError extends Error {
   constructor(message: string) { super(message); this.name = 'KeyRotationRefusedError'; }
 }
@@ -40,6 +40,7 @@ export async function rotateKey(options: KeyRotationOptions): Promise<void> {
     logInfo('secrets.key_rotated', { rewritten });
     stdout('Stored secrets re-encrypted with the new key (' + rewritten + ' values changed)');
   } catch (error) {
+    if (error instanceof KeyRotationIncompleteError) throw new KeyRotationRefusedError(error.message);
     if (!(error instanceof UnreadableSecretsError)) throw error;
     for (const value of error.unreadable)
       stderr('Opens with neither key: ' + value.secretClass + ' of ' + (value.secretClass.startsWith('oauth_') ? 'sign-in account ' : 'gym ') + value.owner);

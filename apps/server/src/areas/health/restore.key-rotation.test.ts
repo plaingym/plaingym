@@ -6,9 +6,12 @@ import { eq } from 'drizzle-orm';
 import { authAccount, encryptedFields, gyms, uuidv7 } from '@plaingym/db';
 import { cloneDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+// Maintenance fixtures must not keep an app session connected during a rotation.
+// eslint-disable-next-line no-restricted-imports
+import { openConnection, scopedDatabase } from '@plaingym/db/client';
 import { decryptSecret, encryptSecret, openSecret, type SecretClass, type SecretContext } from '../../core/secrets.js';
 import { legacySecret } from '../../core/secrets.test-helper.js';
-import { PostgresMaintenance, UnreadableSecretsError } from './backups.database.js';
+import { KeyRotationIncompleteError, PostgresMaintenance, UnreadableSecretsError } from './backups.database.js';
 
 const oldKey = randomBytes(32), newKey = randomBytes(32);
 const columns = {
@@ -25,7 +28,9 @@ const contextOf = (where: string): SecretContext => {
  * the rest as v2 ones, and one column left empty. Its own database, so a rotation sees only these rows.
  */
 async function install(key: Buffer) {
-  const database = await cloneDatabase(inject('testDatabase')), make = createFactories(database);
+  const clone = await cloneDatabase(inject('testDatabase'));
+  const connection = openConnection(clone.maintenanceUrl, 1);
+  const database = { ...clone, ...scopedDatabase(connection.db) }, make = createFactories(database);
   // In ID order, the order a rotation takes them in (UUIDv7s made in the same millisecond needn't be).
   const gymIds = [uuidv7(), uuidv7()].sort(), accountIds = [uuidv7(), uuidv7()].sort();
   const value = (secretClass: SecretClass, owner: string, legacy: boolean) =>
@@ -48,7 +53,8 @@ async function install(key: Buffer) {
     }
     return result;
   }
-  return { database, gymIds, accountIds, stored, maintenance: new PostgresMaintenance(database.maintenanceUrl), cleanup: database.cleanup };
+  return { database, gymIds, accountIds, stored, maintenance: new PostgresMaintenance(database.maintenanceUrl),
+    cleanup: async () => { await connection.close(); await database.cleanup(); } };
 }
 type Install = Awaited<ReturnType<typeof install>>;
 async function withInstall(key: Buffer, test: (install: Install) => Promise<void>) {
@@ -59,12 +65,57 @@ async function withInstall(key: Buffer, test: (install: Install) => Promise<void
 function expectRotated(values: ReadonlyMap<string, string>, key: Buffer, other: Buffer) {
   for (const [where, value] of values) {
     const context = contextOf(where);
-    expect(openSecret(key, context, value)).toEqual({ version: 'v2', plaintext: plaintext(context) });
+    const opened = openSecret(key, context, value);
+    expect(opened.version === 'v2' && opened.plaintext === plaintext(context)).toBe(true);
     expect(() => decryptSecret(other, context, value)).toThrow('Unable to decrypt secret');
   }
 }
 
 describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
+  it.each(['old-v1', 'old-v2', 'new-v1'] as const)('refuses a %s write into an already rotated row, then resumes', async (version) => {
+    await withInstall(oldKey, async ({ database, stored, maintenance, gymIds }) => {
+      const gymId = gymIds[0]!, context = { secretClass: 'smtp_config', owner: gymId } as const;
+      let commits = 0;
+      await expect(maintenance.rotateKey(oldKey, newKey, async (table) => {
+        if (table !== 'gyms' || ++commits !== 2) return;
+        const value = version !== 'old-v2' ? legacySecret(version === 'new-v1' ? newKey : oldKey, 'smtp_config', plaintext(context))
+          : encryptSecret(oldKey, context, plaintext(context));
+        await database.forGym(gymId, (tx) => tx.update(gyms).set({ smtpConfig: value }).where(eq(gyms.id, gymId)));
+      })).rejects.toThrow(KeyRotationIncompleteError);
+      expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(1);
+      expectRotated(await stored(), newKey, oldKey);
+    });
+  });
+
+  it('refuses an app session opened after the first committed page, even with every value rotated', async () => {
+    await withInstall(oldKey, async ({ database, maintenance }) => {
+      const app = openConnection(database.appUrl, 1);
+      try {
+        await expect(maintenance.rotateKey(oldKey, newKey, async () => {
+          await app.sql`select 1`;
+        })).rejects.toThrow('The app reconnected during key rotation');
+      } finally { await app.close(); }
+      expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(0);
+    });
+  });
+
+  it('leaves pending backup credentials that neither key opens alone, in a rotation and in restore\'s re-key', async () => {
+    await withInstall(oldKey, async ({ database, stored, maintenance, gymIds }) => {
+      const gymId = gymIds[0]!;
+      const stale = encryptSecret(randomBytes(32), { secretClass: 's3_config', owner: gymId }, 'pending under an earlier key');
+      await database.forGym(gymId, (tx) => tx.update(gyms).set({ settings: { integrations: { backup: { s3Config: stale } } } })
+        .where(eq(gyms.id, gymId)));
+      const pending = async () => (await database.forSystem((tx) => tx.select().from(gyms).where(eq(gyms.id, gymId))))[0]!
+        .settings as { integrations: { backup: { s3Config: string } } };
+      await maintenance.rotateKey(oldKey, newKey);
+      expectRotated(await stored(), newKey, oldKey);
+      expect((await pending()).integrations.backup.s3Config === stale).toBe(true);
+      await maintenance.rekey(newKey, oldKey, { now: () => new Date() });
+      expectRotated(await stored(), oldKey, newKey);
+      expect((await pending()).integrations.backup.s3Config === stale).toBe(true);
+    });
+  });
+
   it('re-encrypts every stored secret, v1 or v2, as v2 under the new key, each bound to its own row', async () => {
     await withInstall(oldKey, async ({ stored, maintenance, gymIds }) => {
       const before = await stored();
@@ -79,7 +130,7 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       expect(() => decryptSecret(newKey, { secretClass: 'smtp_config', owner: gymIds[0]! }, stripeA)).toThrow();
       // Done is done: running it again changes nothing.
       expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(0);
-      expect(await stored()).toEqual(after);
+      expect(JSON.stringify([...(await stored())]) === JSON.stringify([...after])).toBe(true);
     });
   });
 
@@ -95,15 +146,15 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       const interrupted = await stored();
       for (const [where, value] of interrupted) {
         const context = contextOf(where), done = context.owner !== gymIds[1];
-        expect(decryptSecret(done ? newKey : oldKey, context, value)).toBe(plaintext(context));
-        if (!done) expect(value).toBe(before.get(where));
+        expect(decryptSecret(done ? newKey : oldKey, context, value) === plaintext(context)).toBe(true);
+        if (!done) expect(value === before.get(where)).toBe(true);
       }
       expect(accountIds.every((id) => interrupted.get('oauth_id_token:' + id) !== before.get('oauth_id_token:' + id))).toBe(true);
       // Run again with the same keys: only gym B's five values are left.
       expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(5);
       const after = await stored();
       expectRotated(after, newKey, oldKey);
-      for (const [where, value] of interrupted) if (contextOf(where).owner !== gymIds[1]) expect(after.get(where)).toBe(value);
+      for (const [where, value] of interrupted) if (contextOf(where).owner !== gymIds[1]) expect(after.get(where) === value).toBe(true);
     });
   });
 
@@ -115,8 +166,8 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       const { unreadable, message } = error as UnreadableSecretsError;
       expect(unreadable.map((value) => value.secretClass + ':' + value.owner).sort()).toEqual([...before.keys()].sort());
       expect(message).toBe('Stored secrets open with neither key');
-      for (const key of [oldKey, newKey, wrong]) expect(JSON.stringify({ message, unreadable })).not.toContain(key.toString('hex'));
-      expect(await stored()).toEqual(before);
+      for (const key of [oldKey, newKey, wrong]) expect(JSON.stringify({ message, unreadable }).includes(key.toString('hex'))).toBe(false);
+      expect(JSON.stringify([...(await stored())]) === JSON.stringify([...before])).toBe(true);
     });
   });
 
@@ -128,7 +179,7 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       const before = await stored();
       const error = await maintenance.rotateKey(oldKey, newKey).catch((caught: unknown) => caught);
       expect((error as UnreadableSecretsError).unreadable).toEqual([{ secretClass: 'stripe_config', owner: gymB }]);
-      expect(await stored()).toEqual(before);
+      expect(JSON.stringify([...(await stored())]) === JSON.stringify([...before])).toBe(true);
       // Once gym B's row holds its own value again, the rotation goes through.
       await database.forGym(gymB, (tx) => tx.update(gyms).set({ stripeConfig: encryptSecret(oldKey, { secretClass: 'stripe_config', owner: gymB },
         plaintext({ secretClass: 'stripe_config', owner: gymB })) }).where(eq(gyms.id, gymB)));
@@ -150,7 +201,7 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       // What committed before stays rotated; gym B's row is untouched.
       const interrupted = await stored();
       expect(openSecret(newKey, { secretClass: 'qr_key', owner: gymIds[0]! }, interrupted.get('qr_key:' + gymIds[0])!).version).toBe('v2');
-      expect(decryptSecret(oldKey, { secretClass: 'qr_key', owner: gymB }, interrupted.get('qr_key:' + gymB)!)).toBe(plaintext({ secretClass: 'qr_key', owner: gymB }));
+      expect(decryptSecret(oldKey, { secretClass: 'qr_key', owner: gymB }, interrupted.get('qr_key:' + gymB)!) === plaintext({ secretClass: 'qr_key', owner: gymB })).toBe(true);
       await set(encryptSecret(oldKey, stripe, plaintext(stripe)));
       await maintenance.rotateKey(oldKey, newKey);
       expectRotated(await stored(), newKey, oldKey);
@@ -178,20 +229,21 @@ describe('the one-time v1 to v2 rewrite after migrations', { timeout: 60_000 }, 
       const gymB = gymIds[1]!, unreadable = legacySecret(randomBytes(32), 'qr_key', 'under another key');
       await database.forGym(gymB, (tx) => tx.update(gyms).set({ qrKey: unreadable }).where(eq(gyms.id, gymB)));
       const before = await stored(), legacy = [...before].filter(([, value]) => value.startsWith('v1.'));
-      expect(legacy).toHaveLength(8);
+      expect(legacy.length).toBe(8);
       expect(await maintenance.upgradeSecrets(oldKey)).toEqual({ rewritten: 7, unreadable: 1 });
       const after = await stored();
       for (const [where, value] of after) {
-        if (where === 'qr_key:' + gymB) { expect(value).toBe(unreadable); continue; }
+        if (where === 'qr_key:' + gymB) { expect(value === unreadable).toBe(true); continue; }
         const context = contextOf(where);
-        expect(openSecret(oldKey, context, value)).toEqual({ version: 'v2', plaintext: plaintext(context) });
-        if (!before.get(where)!.startsWith('v1.')) expect(value).toBe(before.get(where));
+        const opened = openSecret(oldKey, context, value);
+        expect(opened.version === 'v2' && opened.plaintext === plaintext(context)).toBe(true);
+        if (!before.get(where)!.startsWith('v1.')) expect(value === before.get(where)).toBe(true);
       }
       // Each rewritten value is now bound to its gym: gym B's former v1 Stripe settings don't open in gym A's row.
       expect(() => decryptSecret(oldKey, { secretClass: 'stripe_config', owner: gymIds[0]! }, after.get('stripe_config:' + gymB)!)).toThrow();
       // Nothing more to do on the next start; the unreadable value is counted again and left alone.
       expect(await maintenance.upgradeSecrets(oldKey)).toEqual({ rewritten: 0, unreadable: 1 });
-      expect(await stored()).toEqual(after);
+      expect(JSON.stringify([...(await stored())]) === JSON.stringify([...after])).toBe(true);
     });
   });
 });
