@@ -57,7 +57,9 @@ is no collection audit watermark or payment-history lookup. Reverse and concurre
 deliveries converge on the newer card. `payment_method.updated` and
 `payment_method.automatically_updated` refresh only known cards, including expiry
 and processor time, without changing the selected default. No event re-enables a
-revoked card. Changes retain ordinary payment-method audits.
+revoked card. Changes retain ordinary payment-method audits. The campaign
+editor's "Needs a card" filter reads these rows in SQL, so each of these events
+updates it with no Stripe call (`areas/links/campaigns.README.md`).
 
 ## Production composition
 

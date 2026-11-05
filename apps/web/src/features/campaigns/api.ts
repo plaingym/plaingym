@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { billingContracts, linksContracts, membersContracts, type CampaignRecipientState, type CreateLinkCampaignRequest, type Household } from '@plaingym/shared/contracts';
+import { linksContracts, membersContracts, type CampaignRecipientState, type CreateLinkCampaignRequest, type Household,
+  type HouseholdsNeedingCardResponse } from '@plaingym/shared/contracts';
 import { api, ApiError } from '../../lib/api.js';
 
 function checked<T>(result: { response: Response; data?: T; error?: unknown }): T {
@@ -11,9 +12,8 @@ function checked<T>(result: { response: Response; data?: T; error?: unknown }): 
 }
 export const campaignClient = {
   async needsCard(households: Household[]) {
-    return householdsNeedingCard(households, async (householdId, offset) =>
-      billingContracts.listPaymentMethods.response.parse(checked(await api.GET('/api/billing/households/{householdId}/payment-methods',
-        { params: { path: { householdId }, query: { limit: 100, offset } } }))));
+    return householdsNeedingCard(households, async offset => linksContracts.listHouseholdsNeedingCard.response.parse(
+      checked(await api.GET('/api/link-campaign-households/needing-card', { params: { query: { limit: 100, offset } } }))));
   },
   async list(offset = 0) {
     return linksContracts.listCampaigns.response.parse(checked(await api.GET('/api/link-campaigns', { params: { query: { limit: 20, offset } } })));
@@ -44,23 +44,18 @@ export const campaignClient = {
 };
 export type CampaignClient = typeof campaignClient;
 
-/** Load only when the filter is requested, with bounded concurrency and complete pagination. */
-export async function householdsNeedingCard(households: Household[], load: (householdId: string, offset: number) =>
-  Promise<ReturnType<typeof billingContracts.listPaymentMethods.response.parse>>) {
+/**
+ * Loaded only when the filter is requested: the server answers for the whole gym a page of 100 at a time, so the request
+ * count follows the households without a card, not every household. Keeps the editor's households, in their order.
+ */
+export async function householdsNeedingCard(households: Household[], load: (offset: number) => Promise<HouseholdsNeedingCardResponse>) {
   const missing = new Set<string>();
-  let next = 0;
-  async function worker() {
-    while (next < households.length) {
-      const household = households[next++]!;
-      for (let offset = 0; ; ) {
-        const page = await load(household.id, offset);
-        if (page.data.some(card => card.revokedAt === null)) break;
-        offset += page.data.length;
-        if (offset >= page.pagination.total) { missing.add(household.id); break; }
-        if (!page.data.length) throw new Error('Incomplete payment method list');
-      }
-    }
+  for (let offset = 0; ; ) {
+    const page = await load(offset);
+    for (const row of page.data) missing.add(row.householdId);
+    offset += page.data.length;
+    if (offset >= page.pagination.total) break;
+    if (!page.data.length) throw new Error('Incomplete household list');
   }
-  await Promise.all(Array.from({ length: Math.min(4, households.length) }, () => worker()));
   return households.filter(h => missing.has(h.id)).map(h => h.id);
 }

@@ -83,7 +83,7 @@ async function fixture() {
 const post = (app: ReturnType<Awaited<ReturnType<typeof fixture>>['server']>, path: string, body?: unknown) => app.request(path, {
   method: 'POST', headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}),
 });
-const paths = ['createCampaign', 'listCampaigns', 'getCampaign', 'listCampaignRecipients', 'remindCampaign'] as const;
+const paths = ['createCampaign', 'listCampaigns', 'getCampaign', 'listCampaignRecipients', 'remindCampaign', 'listHouseholdsNeedingCard'] as const;
 async function request(f: Awaited<ReturnType<typeof fixture>>, name: typeof paths[number], id: string, principal: Principal) {
   const contract = linksContracts[name], path = contract.path.replace('{campaignId}', id), app = f.server(principal);
   return contract.method === 'get' ? app.request(path) : post(app, path, name === 'createCampaign' ? f.input() : undefined);
@@ -166,6 +166,25 @@ describe('campaign contract, authorization and isolation', () => {
     expect((await f.service.list(f.gymId, { purpose: 'update_card' })).data).toHaveLength(1);
     expect((await f.service.list(f.gymId, { limit: 1, offset: 1 })).pagination).toEqual({ total: 2, limit: 1, offset: 1 });
     expect(JSON.stringify([detail, await f.service.recipients(f.gymId, created.campaign.id)])).not.toMatch(/token|stripe_customer|processor/i);
+  });
+  it('lists only this gym households without a saved card that is not removed, in pages, without Stripe', async () => {
+    const f = await fixture(), b = await fixture();
+    const [revokedOnly, active, other] = await Promise.all([0, 1, 2].map(() => factory('households', f.gymId)));
+    await factory('paymentMethods', f.gymId, { householdId: revokedOnly!.id, processorId: 'pm_revoked', revokedAt: f.clock.now() });
+    await factory('paymentMethods', f.gymId, { householdId: active!.id, processorId: 'pm_active', isDefault: true });
+    // A card that is saved but not the default still counts as a card, as the editor showed before.
+    await factory('paymentMethods', f.gymId, { householdId: other!.id, processorId: 'pm_other' });
+    await factory('paymentMethods', b.gymId, { householdId: b.household.id, processorId: 'pm_b', isDefault: true });
+    const expected = [f.household.id, revokedOnly!.id].sort();
+    const response = await f.server().request('/api/link-campaign-households/needing-card');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(linksContracts.listHouseholdsNeedingCard.response.parse(await response.json())).toEqual({
+      data: expected.map(householdId => ({ householdId })), pagination: { total: 2, limit: 50, offset: 0 } });
+    expect(await f.service.householdsNeedingCard(f.gymId, { limit: 1, offset: 1 }))
+      .toEqual({ data: [{ householdId: expected[1] }], pagination: { total: 2, limit: 1, offset: 1 } });
+    // Gym B sees only its own household, which has a card; gym A's households never appear.
+    expect(await b.service.householdsNeedingCard(b.gymId)).toEqual({ data: [], pagination: { total: 0, limit: 50, offset: 0 } });
+    expect(f.paymentsFor).not.toHaveBeenCalled();
   });
 });
 
@@ -536,6 +555,102 @@ describe('campaign customer matching', () => {
     await Promise.all([f.household.id, other.id].map(id => matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, id)));
     const matches = await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.stripeCustomerId, 'cus_unique')));
     expect(matches).toHaveLength(1);
+  });
+  it('never links a customer whose metadata names another household, and prefers one naming this household', async () => {
+    const f = await fixture(), other = await factory('households', f.gymId, { email: 'payer@example.test' });
+    const match = () => matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, f.household.id);
+    const linked = async () => (await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))[0]!.stripeCustomerId;
+    // The only customer with this email is household B's own, so household A stays unlinked.
+    f.provider.seedCustomer({ id: 'cus_other_household', email: 'payer@example.test', householdId: other.id });
+    await match(); expect(await linked()).toBeNull();
+    // B's customer doesn't make an untagged one ambiguous: the untagged one is A's only candidate.
+    f.provider.seedCustomer({ id: 'cus_untagged', email: 'payer@example.test' });
+    f.provider.seedCustomer({ id: 'cus_own', email: 'payer@example.test', householdId: f.household.id });
+    await match(); expect(await linked()).toBe('cus_own');
+    const audit = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_matched')));
+    expect(audit.map(a => a.after)).toEqual([{ matched: true, customerId: 'cus_own', tagged: true }]);
+    // Household B's turn: its own customer, never A's.
+    await matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, other.id);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, other.id))))[0]!.stripeCustomerId).toBe('cus_other_household');
+  });
+  it('links the untagged match when the other household customers are excluded', async () => {
+    const f = await fixture(), other = await factory('households', f.gymId, { email: 'payer@example.test' });
+    f.provider.seedCustomer({ id: 'cus_other_household', email: 'payer@example.test', householdId: other.id });
+    f.provider.seedCustomer({ id: 'cus_untagged', email: 'payer@example.test' });
+    await matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, f.household.id);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(households).where(eq(households.id, f.household.id))))[0]!.stripeCustomerId).toBe('cus_untagged');
+  });
+});
+
+describe('campaign matching after a customer creation reservation', () => {
+  const minutes = (n: number) => n * 60 * 1000;
+  async function reserved(outcome: 'lost' | 'failed') {
+    const f = await fixture(), customers = createCustomersService({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor });
+    // A lost reply leaves a customer at the provider naming this household; a failed call leaves none.
+    if (outcome === 'lost') f.provider.loseNextResponse('createCustomer');
+    else vi.spyOn(f.provider, 'createCustomer').mockRejectedValueOnce(new Error('Stripe unavailable'));
+    await expect(customers.ensureCustomer(f.gymId, f.household.id)).rejects.toThrow();
+    const match = () => matchCampaignCustomer({ scope: db.forGym, clock: f.clock, paymentsFor: f.paymentsFor }, f.gymId, f.household.id);
+    const read = () => db.forGym(f.gymId, async tx => ({
+      customer: (await tx.select().from(households).where(eq(households.id, f.household.id)))[0]!.stripeCustomerId,
+      audits: (await tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.household.id))).map(a => a.action).sort(),
+    }));
+    return { ...f, customers, match, read };
+  }
+  it('leaves an active reservation alone, without a provider lookup, for its whole 15-minute lease', async () => {
+    const f = await reserved('failed');
+    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    const lookup = vi.spyOn(f.provider, 'findCustomerByEmail');
+    f.clock.advance(minutes(15) - 1); await f.match();
+    expect(lookup).not.toHaveBeenCalled();
+    expect((await f.read()).customer).toBeNull();
+  });
+  it('adopts the customer a lost creation reply made once the lease ends, without releasing the reservation', async () => {
+    const f = await reserved('lost');
+    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    const [created] = (await f.provider.findCustomerByEmail('payer@example.test')).filter(c => c.householdId === f.household.id);
+    f.clock.advance(minutes(15)); await f.match();
+    expect(await f.read()).toEqual({ customer: created!.id,
+      audits: ['billing.customer.creation_reserved', 'link_campaign.customer_matched'] });
+    // The creation now finds the household linked and makes no second customer.
+    const create = vi.spyOn(f.provider, 'createCustomer');
+    expect(await f.customers.ensureCustomer(f.gymId, f.household.id)).toBe(created!.id);
+    expect(create).not.toHaveBeenCalled();
+  });
+  it('releases a failed creation reservation once the lease ends and links the email match', async () => {
+    const f = await reserved('failed');
+    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    f.clock.advance(minutes(15)); await f.match();
+    expect(await f.read()).toEqual({ customer: 'cus_dashboard',
+      audits: ['billing.customer.creation_released', 'billing.customer.creation_reserved', 'link_campaign.customer_matched'] });
+  });
+  it('releases once with no match, and a retried creation renews the lease', async () => {
+    const f = await reserved('failed');
+    f.clock.advance(minutes(20)); await f.match(); await f.match();
+    expect((await f.read()).audits).toEqual(['billing.customer.creation_released', 'billing.customer.creation_reserved']);
+    // The creation replays its reservation (and fails again): matching waits another lease from that retry.
+    vi.spyOn(f.provider, 'createCustomer').mockRejectedValueOnce(new Error('Stripe unavailable'));
+    await expect(f.customers.ensureCustomer(f.gymId, f.household.id)).rejects.toThrow();
+    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    f.clock.advance(minutes(14)); await f.match();
+    expect((await f.read()).customer).toBeNull();
+    f.clock.advance(minutes(1)); await f.match();
+    expect(await f.read()).toEqual({ customer: 'cus_dashboard', audits: ['billing.customer.creation_released', 'billing.customer.creation_released',
+      'billing.customer.creation_reserved', 'billing.customer.creation_retried', 'link_campaign.customer_matched'] });
+  });
+  it('does not act when a creation retries between the lookup and the link', async () => {
+    const f = await reserved('failed');
+    f.provider.seedCustomer({ id: 'cus_dashboard', email: 'payer@example.test' });
+    f.clock.advance(minutes(16));
+    const original = f.provider.findCustomerByEmail.bind(f.provider);
+    vi.spyOn(f.provider, 'findCustomerByEmail').mockImplementationOnce(async email => {
+      const create = vi.spyOn(f.provider, 'createCustomer').mockRejectedValueOnce(new Error('Stripe unavailable'));
+      await expect(f.customers.ensureCustomer(f.gymId, f.household.id)).rejects.toThrow();
+      create.mockRestore();
+      return original(email);
+    });
+    await f.match();
+    expect(await f.read()).toEqual({ customer: null, audits: ['billing.customer.creation_reserved', 'billing.customer.creation_retried'] });
   });
 });
 

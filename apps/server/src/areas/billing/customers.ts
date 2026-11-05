@@ -27,7 +27,6 @@ export interface CustomersOptions {
 export function createCustomersService(options: CustomersOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const sleep = options.sleep ?? pause;
-  const reservationAction = 'billing.customer.creation_reserved';
   function details(household: typeof households.$inferSelect, unlinked: string | null = null) {
     if (!household.email?.trim() || !household.name.trim()) throw new CustomerUnavailable('missing_details');
     return { email: household.email, name: household.name, householdId: household.id,
@@ -37,20 +36,6 @@ export function createCustomersService(options: CustomersOptions) {
     gymId, actorKind: 'system', action, targetType: 'household', targetId: householdId,
     before: null, after, occurredAt: clock.now(),
   });
-
-  /**
-   * The household's creation generation: `unlinked` is its latest `customerUnlinkedAction` audit (null before any), and
-   * `reservation` the creation reserved in that generation, which records the unlink it followed. A creation reserved
-   * before an unlink made the old customer, in another mode or account, and must neither block nor replay a new one.
-   * Unlinks and reservations are written under the household's row lock, so they never interleave.
-   */
-  async function currentReservation(tx: Transaction, householdId: string) {
-    const rows = (action: string) => tx.select().from(auditEvents).where(and(eq(auditEvents.targetType, 'household'),
-      eq(auditEvents.targetId, householdId), eq(auditEvents.action, action))).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id));
-    const [unlinked] = await rows(customerUnlinkedAction).limit(1), generation = unlinked?.id ?? null;
-    const reservation = (await rows(reservationAction)).find((row) => ((row.after as { unlinked?: string } | null)?.unlinked ?? null) === generation);
-    return { reservation, unlinked: generation };
-  }
 
   /** The gym's latest switch from test to live (its audit's ID), or null. */
   async function lastSwitch(tx: Transaction, gymId: string): Promise<string | null> {
@@ -88,6 +73,8 @@ export function createCustomersService(options: CustomersOptions) {
         if (clock.now().getTime() >= reservation.occurredAt.getTime() + 23 * 60 * 60 * 1000)
           throw new CustomerUnavailable('creation_expired');
       }
+      // A replay renews the reservation's lease, so campaign matching doesn't act while this attempt may still create.
+      if (reservation) await audit(tx, gymId, householdId, creationRetriedAction, { reservation: reservation.id });
       const stored = reservation ?? await audit(tx, gymId, householdId, reservationAction, { requestHash, ...(unlinked ? { unlinked } : {}) });
       return { kind: 'create' as const, request, unlinked, reservedUntil: stored.occurredAt.getTime() + 23 * 60 * 60 * 1000 };
     });
@@ -174,6 +161,55 @@ export function createCustomersService(options: CustomersOptions) {
  * reservation made before it belonged to the old customer and no longer counts.
  */
 export const customerUnlinkedAction = 'billing.customer.unlinked';
+/** Audited (under the household's row lock) before a customer creation calls Stripe; a failed call leaves it in place. */
+export const reservationAction = 'billing.customer.creation_reserved';
+/** Audited when a creation replays its reservation (`after.reservation`), renewing the lease. */
+export const creationRetriedAction = 'billing.customer.creation_retried';
+/**
+ * Audited by campaign matching once a lease has run out and no Stripe customer tagged with the household was found
+ * (`after.attempt`: the reservation or retry whose lease it ends). It only lets matching link a customer; a later
+ * creation still replays the reservation with its own key, which renews the lease.
+ */
+export const creationReleasedAction = 'billing.customer.creation_released';
+/** How long a creation reservation or its latest retry holds off campaign matching. */
+export const creationLeaseMs = 15 * 60 * 1000;
+
+/**
+ * The household's creation generation: `unlinked` is its latest `customerUnlinkedAction` audit (null before any), and
+ * `reservation` the creation reserved in that generation, which records the unlink it followed. A creation reserved
+ * before an unlink made the old customer, in another mode or account, and must neither block nor replay a new one.
+ * Unlinks and reservations are written under the household's row lock, so they never interleave.
+ */
+export async function currentReservation(tx: Transaction, householdId: string) {
+  const [unlinked] = await householdAudits(tx, householdId, customerUnlinkedAction).limit(1), generation = unlinked?.id ?? null;
+  const reservation = (await householdAudits(tx, householdId, reservationAction))
+    .find((row) => ((row.after as { unlinked?: string } | null)?.unlinked ?? null) === generation);
+  return { reservation, unlinked: generation };
+}
+
+export type CreationLease =
+  | { state: 'none' }
+  /** `attempt` is the reservation or its latest retry, which the lease runs from. */
+  | { state: 'active' | 'expired' | 'released'; reservation: string; attempt: string };
+/**
+ * Whether the household's current creation reservation still holds off campaign matching: for `creationLeaseMs` after it,
+ * or after its latest retry. An expired lease is `released` once matching recorded that no customer of the household exists.
+ */
+export async function creationLease(tx: Transaction, householdId: string, now: Date): Promise<CreationLease> {
+  const { reservation } = await currentReservation(tx, householdId);
+  if (!reservation) return { state: 'none' };
+  const names = (action: string, key: string, id: string) => householdAudits(tx, householdId, action)
+    .then(rows => rows.filter(row => (row.after as Record<string, unknown> | null)?.[key] === id));
+  const [latest = reservation] = await names(creationRetriedAction, 'reservation', reservation.id);
+  const lease = { reservation: reservation.id, attempt: latest.id };
+  if (now.getTime() < latest.occurredAt.getTime() + creationLeaseMs) return { state: 'active', ...lease };
+  return { state: (await names(creationReleasedAction, 'attempt', latest.id)).length ? 'released' : 'expired', ...lease };
+}
+/** The household's audits of one action, newest first. */
+function householdAudits(tx: Transaction, householdId: string, action: string) {
+  return tx.select().from(auditEvents).where(and(eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, householdId),
+    eq(auditEvents.action, action))).orderBy(desc(auditEvents.createdAt), desc(auditEvents.id));
+}
 /**
  * Audited (target: the gym) by a switch from test to live; the latest one is the gym's test-data boundary. A creation
  * that started before it and wasn't cleared by it is abandoned when it comes to link (`ensureCustomer`).

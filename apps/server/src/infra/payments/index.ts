@@ -42,6 +42,12 @@ export interface CreateCustomer {
   readonly householdId: string;
   readonly idempotencyKey: string;
 }
+/** A customer found by email. A customer this app created names its household; an imported or dashboard one may not. */
+export interface CustomerMatch {
+  readonly id: string;
+  readonly email: string;
+  readonly householdId?: string;
+}
 /** Only an in-flight request using the same key can be retried automatically. */
 export class CustomerCreationInProgress extends Error {
   constructor(options?: ErrorOptions) {
@@ -171,7 +177,8 @@ export interface Payments {
   refund(request: { chargeId: string; amount: number; idempotencyKey: string }): Promise<Refund>;
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
   expireCheckout(id: string): Promise<CheckoutExpiry>;
-  findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]>;
+  /** The gym's customers with this email; `householdId` is the household a customer's metadata names, when it names one. */
+  findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]>;
   /**
    * Tags a customer created outside this app (an imported Stripe customer ID) with this gym, so charges and
    * Checkout accept it. Idempotent; refuses a customer tagged for another gym, and raises `CustomerDeleted` for a deleted one.
@@ -334,7 +341,7 @@ export class FakePayments implements Payments {
     else this.#uncertain.delete(id);
   }
   /** `deleted` seeds a customer the provider has deleted: reads of it raise `CustomerDeleted`. */
-  seedCustomer(customer: { id: string; email: string; gymId?: string; deleted?: boolean } & CustomerDetails): void {
+  seedCustomer(customer: { id: string; email: string; gymId?: string; householdId?: string; deleted?: boolean } & CustomerDetails): void {
     this.#customers.push({ ...customer, gymId: customer.gymId ?? this.gymId });
   }
   /** Sets what an attached card holds about its owner (its billing details), as a dashboard or Checkout would. */
@@ -725,11 +732,13 @@ export class FakePayments implements Payments {
       nextCursor: start + limit < records.length ? String(start + limit) : null,
     });
   }
-  async findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]> {
+  async findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]> {
     assertNoTransaction('payments.findCustomerByEmail');
     return structuredClone(
-      this.#customers.filter((customer) => customer.gymId === this.gymId && customer.email?.toLowerCase() === email.toLowerCase())
-        .map(({ id, email }) => ({ id, email: email! })),
+      // Stripe's customer list leaves out deleted customers.
+      this.#customers.filter((customer) => customer.gymId === this.gymId && !customer.deleted
+        && customer.email?.toLowerCase() === email.toLowerCase())
+        .map(({ id, email, householdId }) => ({ id, email: email!, ...(householdId ? { householdId } : {}) })),
     );
   }
   /** Seeded customers belong to this gym; unknown IDs fail like a missing Stripe customer. */

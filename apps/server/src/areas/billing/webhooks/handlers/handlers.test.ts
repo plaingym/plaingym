@@ -24,6 +24,7 @@ import { createWebhookInboxJobs } from '../inbox.jobs.js';
 import { createTransitionJobs } from '../../transitions/transitions.jobs.js';
 import { composeBillingWebhooks } from './composition.js';
 import { billingWebhookTypes, registerBillingWebhookHandlers } from './index.js';
+import { createCampaignsService } from '../../../links/campaigns.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 const secret = 'whsec_SYNTHETIC';
@@ -255,6 +256,46 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
     f.clock.advance(5 * 86400000); await f.run('payment_intent.payment_failed', undefined, provider);
     expect((await f.read()).invoice.paidAt).toEqual(succeededAt);
     expect((await f.read()).payments[0]!.paidAt).toEqual(succeededAt);
+  });
+  it('keeps the campaign Needs a card filter current through every card webhook kind', async () => {
+    const f = await fixture(), cardless = await factory('households', f.gymId);
+    const campaigns = createCampaignsService({ scope: db.forGym, clock: f.clock, jobs: f.jobs, delivery: { prepare: vi.fn() },
+      paymentsFor: vi.fn(async () => { throw new Error('The filter must not call Stripe'); }) });
+    const needing = async () => (await campaigns.householdsNeedingCard(f.gymId)).data.map(row => row.householdId).sort();
+    const revoke = (processorId: string) => db.forGym(f.gymId, tx => tx.update(paymentMethods)
+      .set({ revokedAt: f.clock.now(), isDefault: false }).where(eq(paymentMethods.processorId, processorId)));
+    expect(await needing()).toEqual([f.household.id, cardless.id].sort());
+    const session = await f.provider.createCheckout({ mode: 'setup', customerId: 'cus_fixture', successUrl: 'https://gym.example.invalid/ok',
+      cancelUrl: 'https://gym.example.invalid/cancel', saveForOffSession: true, idempotencyKey: 'setup' });
+    f.transport.completeCheckout(session.id);
+    await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
+    expect(await needing()).toEqual([cardless.id]);
+    // Refreshes keep the card; a removed card stays removed through them.
+    for (const type of ['payment_method.updated', 'payment_method.automatically_updated'] as const) {
+      await f.run(type, { kind: 'payment_method', id: 'pm_3155' });
+      expect(await needing(), type).toEqual([cardless.id]);
+    }
+    await revoke('pm_3155');
+    for (const type of ['payment_method.updated', 'payment_method.automatically_updated'] as const) {
+      await f.run(type, { kind: 'payment_method', id: 'pm_3155' });
+      expect(await needing(), type).toEqual([f.household.id, cardless.id].sort());
+    }
+    setup(f, 'seti_old', 'pm_4242');
+    await f.run('setup_intent.succeeded', { kind: 'setup', id: 'seti_old' });
+    expect(await needing()).toEqual([cardless.id]);
+  });
+  it('drops a household from the Needs a card filter when a payment Checkout saves its card', async () => {
+    const f = await fixture('one_off');
+    const campaigns = createCampaignsService({ scope: db.forGym, clock: f.clock, jobs: f.jobs, delivery: { prepare: vi.fn() },
+      paymentsFor: vi.fn(async () => { throw new Error('The filter must not call Stripe'); }) });
+    await db.forGym(f.gymId, tx => tx.update(paymentAttempts).set({ paymentIntentId: 'pi_runner' }).where(eq(paymentAttempts.id, f.attempt.id)));
+    expect((await campaigns.householdsNeedingCard(f.gymId)).data).toEqual([{ householdId: f.household.id }]);
+    const session = await f.provider.createCheckout({ mode: 'payment', amount: 10000, currency: 'usd', invoiceId: f.invoice.id,
+      customerId: 'cus_fixture', successUrl: 'https://gym.example.invalid/ok', cancelUrl: 'https://gym.example.invalid/cancel',
+      saveForOffSession: true, idempotencyKey: 'checkout' });
+    f.transport.completeCheckout(session.id).amount = 10000;
+    await f.run('checkout.session.completed', { kind: 'checkout', id: session.id });
+    expect((await campaigns.householdsNeedingCard(f.gymId)).data).toEqual([]);
   });
   it('refreshes known cards on automatic updates, without collecting unknown or re-enabling revoked cards', async () => {
     const f = await fixture(); setup(f);

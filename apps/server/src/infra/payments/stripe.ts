@@ -6,7 +6,7 @@ import { clock as systemClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
-  type PaymentEvent, type Refund } from './index.js';
+  type PaymentEvent, type Refund, type CustomerMatch } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 
@@ -445,15 +445,21 @@ export class StripePayments implements Payments {
     if (owner === undefined) await this.#post(path, { metadata: { gym_id: this.gymId } }, 'customer:' + customerId + ':adopt');
     return { id: id(customer.id), email: typeof customer.email === 'string' ? customer.email : null };
   }
-  async findCustomerByEmail(email: string): Promise<readonly { id: string; email: string }[]> {
+  async findCustomerByEmail(email: string): Promise<readonly CustomerMatch[]> {
     assertNoTransaction('payments.findCustomerByEmail');
-    const matches: { id: string; email: string }[] = [];
+    const matches: CustomerMatch[] = [];
     let cursor: string | undefined;
     do {
       const page = await this.#get('/v1/customers', { email, limit: 100, ...(cursor ? { starting_after: cursor } : {}) });
       const objects = (page.data as Json[]).map(data);
-      for (const object of objects) if (data(object.metadata ?? {}).gym_id === this.gymId)
-        matches.push({ id: id(object.id), email: String(object.email) });
+      for (const object of objects) {
+        const metadata = data(object.metadata ?? {});
+        if (metadata.gym_id !== this.gymId) continue;
+        // Any value names a household, so a malformed one still excludes the customer from other households' matches.
+        const household = metadata.household_id;
+        matches.push({ id: id(object.id), email: String(object.email),
+          ...(household !== undefined && household !== '' ? { householdId: String(household) } : {}) });
+      }
       cursor = page.has_more ? id(objects.at(-1)?.id) : undefined;
       if (page.has_more && !objects.length) throw new Error('Invalid Stripe page');
     } while (cursor);

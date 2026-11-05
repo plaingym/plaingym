@@ -122,6 +122,9 @@ export const campaignRecipientListResponseSchema = listResponseSchema(campaignRe
 export const remindLinkCampaignResponseSchema = z.strictObject({
   data: z.strictObject({ queued: z.int().nonnegative() }),
 });
+/** Households of the gym with no saved card that isn't removed, in ID order: the campaign editor's "Needs a card" filter. */
+export const householdsNeedingCardQuerySchema = paginationSchema;
+export const householdsNeedingCardResponseSchema = listResponseSchema(z.strictObject({ householdId: idSchema }));
 
 /**
  * API declarations only. Creation and sending mint a fresh single-use link; later metadata
@@ -152,6 +155,9 @@ export const linksContracts = {
     params: linkCampaignParamsSchema, query: campaignRecipientListQuerySchema, response: campaignRecipientListResponseSchema },
   remindCampaign: { method: 'post', path: '/api/link-campaigns/{campaignId}/remind', permission: { kind: 'staff', capability: 'links.send' },
     params: linkCampaignParamsSchema, response: remindLinkCampaignResponseSchema },
+  listHouseholdsNeedingCard: { method: 'get', path: '/api/link-campaign-households/needing-card',
+    permission: { kind: 'staff', capability: 'links.send' }, additionalPermissions: [{ kind: 'staff', capability: 'billing.read' }],
+    query: householdsNeedingCardQuerySchema, response: householdsNeedingCardResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type SignedLinkPurposeName = z.infer<typeof signedLinkPurposeSchema>;
@@ -171,3 +177,4 @@ export type CampaignRecipient = z.infer<typeof campaignRecipientSchema>;
 export type LinkCampaignResponse = z.infer<typeof linkCampaignResponseSchema>;
 export type LinkCampaignListResponse = z.infer<typeof linkCampaignListResponseSchema>;
 export type CampaignRecipientListResponse = z.infer<typeof campaignRecipientListResponseSchema>;
+export type HouseholdsNeedingCardResponse = z.infer<typeof householdsNeedingCardResponseSchema>;

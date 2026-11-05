@@ -25,6 +25,7 @@ async function fixture() {
   }));
   return { gymId, clock, household, provider, paymentsFor, options, service, read };
 }
+const actions = ({ audits }: { audits: { action: string }[] }) => audits.map(a => a.action).sort();
 
 describe('household Stripe customer reservations with PostgreSQL', () => {
   it('links and audits once without putting payer details into the audit log', async () => {
@@ -63,7 +64,8 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     const ids = await Promise.all([f.service, createCustomersService(f.options)].map(s => s.ensureCustomer(f.gymId, f.household.id)));
     expect(ids[0]).toBe(ids[1]);
     expect(await f.provider.findCustomerByEmail(f.household.email!)).toHaveLength(1);
-    expect((await f.read()).audits).toHaveLength(2);
+    // The second opener replays the first one's reservation, which renews its lease.
+    expect(actions(await f.read())).toEqual(['billing.customer.creation_reserved', 'billing.customer.creation_retried', 'billing.customer.linked']);
   });
   it('recovers a lost creation response on restart inside the reserved window', async () => {
     const f = await fixture(); f.provider.loseNextResponse('createCustomer');
@@ -71,7 +73,7 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect((await f.read()).household.stripeCustomerId).toBeNull();
     f.clock.advance(22 * 60 * 60 * 1000);
     const id = await createCustomersService(f.options).ensureCustomer(f.gymId, f.household.id);
-    expect(await f.provider.findCustomerByEmail(f.household.email!)).toEqual([{ id, email: f.household.email }]);
+    expect(await f.provider.findCustomerByEmail(f.household.email!)).toEqual([{ id, email: f.household.email, householdId: f.household.id }]);
   });
   it.each([23, 25])('refuses an unresolved response at %s hours without another provider call', async hours => {
     const f = await fixture(), create = vi.spyOn(f.provider, 'createCustomer');
@@ -91,8 +93,8 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     } });
     await expect(service.ensureCustomer(f.gymId, f.household.id)).rejects.toThrow('before save');
     const id = await createCustomersService(f.options).ensureCustomer(f.gymId, f.household.id);
-    expect(await f.provider.findCustomerByEmail(f.household.email!)).toEqual([{ id, email: f.household.email }]);
-    expect((await f.read()).audits).toHaveLength(2);
+    expect(await f.provider.findCustomerByEmail(f.household.email!)).toEqual([{ id, email: f.household.email, householdId: f.household.id }]);
+    expect(actions(await f.read())).toEqual(['billing.customer.creation_reserved', 'billing.customer.creation_retried', 'billing.customer.linked']);
   });
   it('starts the reservation after a delayed provider resolver, not before it', async () => {
     const f = await fixture(), create = vi.spyOn(f.provider, 'createCustomer');
@@ -152,7 +154,7 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     expect(conflicts[0]).toBeInstanceOf(CustomerCreationInProgress);
     expect(ids[0]).toBe(ids[1]);
     expect(await f.provider.findCustomerByEmail(f.household.email!)).toHaveLength(1);
-    expect((await f.read()).audits).toHaveLength(2);
+    expect(actions(await f.read())).toEqual(['billing.customer.creation_reserved', 'billing.customer.creation_retried', 'billing.customer.linked']);
   });
   it('bounds conflict retries to three short backoffs and never retries other provider errors', async () => {
     const f = await fixture(), conflict = new CustomerCreationInProgress();
@@ -167,7 +169,7 @@ describe('household Stripe customer reservations with PostgreSQL', () => {
     await expect(service.ensureCustomer(f.gymId, f.household.id)).rejects.toBe(error);
     expect(create).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
-    expect((await f.read()).audits).toHaveLength(1);
+    expect(actions(await f.read())).toEqual(['billing.customer.creation_reserved', 'billing.customer.creation_retried']);
   });
   it('does not retry past the reservation boundary or after a slow conflict response', async () => {
     for (const nearExpiry of [true, false]) {

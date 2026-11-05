@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { sql } from 'drizzle-orm';
-import { check, foreignKey, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
+import { check, foreignKey, index, jsonb, pgTable, text, unique, uuid } from 'drizzle-orm/pg-core';
 import { authUser } from './auth.js';
 import { invoices } from './billing.js';
 import { base, choice, instant, ref, scoped, sha256Check } from './common.js';
@@ -22,6 +22,8 @@ export const signedLinks = pgTable('signed_links', {
   createdBy: uuid('created_by').references(() => authUser.id),
 }, (t) => [...scoped('signed_links', t), ref('signed_links_household_fk', t.gymId, t.householdId, households),
   ref('signed_links_campaign_fk', t.gymId, t.campaignId, linkCampaigns),
+  // Campaign progress, recipient pages and sends read a campaign's links in ID order.
+  index('signed_links_campaign_idx').on(t.gymId, t.campaignId, t.id),
   foreignKey({ name: 'signed_links_invoice_fk', columns: [t.gymId, t.householdId, t.invoiceId],
     foreignColumns: [invoices.gymId, invoices.householdId, invoices.id] }),
   foreignKey({ name: 'signed_links_member_fk', columns: [t.gymId, t.householdId, t.memberId],

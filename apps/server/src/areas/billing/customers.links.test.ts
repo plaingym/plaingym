@@ -143,7 +143,7 @@ describe('new household billing through production route registrations', () => {
     expect((await f.request('/complete', cookie)).status).toBe(200);
     expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('used');
     expect((await f.read()).methods).toMatchObject([{ isDefault: true, householdId: f.householdId }]);
-    expect(await f.provider.findCustomerByEmail('payer@example.invalid')).toEqual([{ id: customerId, email: 'payer@example.invalid' }]);
+    expect(await f.provider.findCustomerByEmail('payer@example.invalid')).toEqual([{ id: customerId, email: 'payer@example.invalid', householdId: f.householdId }]);
   });
   it.each([false, true])('one-off payment collects no card and preserves an existing default: %s', async existingCard => {
     const f = await fixture('pay_invoice', 'one_off'), sessions = vi.spyOn(f.provider, 'createCheckout');

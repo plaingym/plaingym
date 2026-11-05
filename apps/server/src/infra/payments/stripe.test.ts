@@ -595,6 +595,8 @@ it('clears a fake card’s billing details only on an erasure detach, and a dele
   const payments = new FakePayments(gymId);
   payments.seedCustomer({ id: 'cus_cards', email: 'cards@example.invalid' });
   payments.seedCustomer({ id: 'cus_gone', email: 'gone@example.invalid', deleted: true, taxIds: ['DE1'] });
+  // As Stripe's customer list, an email lookup leaves out deleted customers.
+  expect(await payments.findCustomerByEmail('gone@example.invalid')).toEqual([]);
   for (const id of ['pm_staff', 'pm_erased']) {
     payments.recordPaymentMethod({ id, customerId: 'cus_cards', brand: 'visa', last4: '4242', expiresMonth: 12, expiresYear: 2030 });
     payments.setBillingDetails(id, { name: 'Pat Payer', email: 'pat@example.invalid' });

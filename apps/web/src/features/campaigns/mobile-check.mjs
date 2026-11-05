@@ -21,7 +21,7 @@ try {
       const request = route.request(), url = new URL(request.url()), list = data => ({ data, pagination: { limit: 20, offset: 0, total: data.length } });
       if (url.pathname === '/api/households') return route.fulfill({ json: list([{ id: householdId, name: 'Chen household with a long descriptive name',
         email: 'payer.with.a.long.address@example.test', phone: null, address: {}, revision: 1, createdAt }]) });
-      if (url.pathname.endsWith('/payment-methods')) return route.fulfill({ json: list([]) });
+      if (url.pathname === '/api/link-campaign-households/needing-card') return route.fulfill({ json: list([{ householdId }]) });
       if (request.method() === 'POST') {
         if (fail) return route.fulfill({ status: 503, json: { error: { code: 'unavailable' } } });
         if (url.pathname.endsWith('/remind')) return route.fulfill({ json: { data: { queued: 1 } } });

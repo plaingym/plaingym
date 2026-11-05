@@ -400,7 +400,7 @@ describe('fake payment outcomes', () => {
       await payments.readPaymentObject({ kind: 'payment_method', id: completed.paymentMethodId! }),
     ).toMatchObject({ status: 'found', value: { object: { expiresYear: 2035 } } });
     expect(await payments.findCustomerByEmail('parent@example.test')).toEqual([
-      { id: completed.customerId, email: 'parent@example.test' },
+      { id: completed.customerId, email: 'parent@example.test', householdId: 'household' },
     ]);
     expect(await payments.readPaymentObject({ kind: 'setup', id: 'missing' })).toMatchObject({
       status: 'unknown',

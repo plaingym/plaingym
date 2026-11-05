@@ -63,6 +63,18 @@ service refuses another create request. Gym staff must reconcile the original
 customer before linking an existing ID through the people import. An empty
 Stripe search result is never proof that creation failed.
 
+Each retry of a reserved request writes `billing.customer.creation_retried`
+(naming the reservation) under the household lock before calling Stripe. It
+doesn't move the 23-hour deadline, which still runs from the reservation. It renews
+the reservation's 15-minute lease (`creationLeaseMs`), which holds off campaign
+email matching while a creation may still make a customer. `creationLease(tx,
+householdId, now)` reports the current generation's reservation as `active`,
+`expired`, or `released` once campaign matching found no customer naming the
+household after the lease and wrote `billing.customer.creation_released` (naming
+the reservation and the attempt whose lease ended). A release changes nothing here:
+the next creation replays the reservation and its key, and renews the lease
+(`areas/links/campaigns.README.md`).
+
 Only the typed in-flight idempotency conflict is retried automatically, with at
 most three backoffs of 100, 250 and 500 ms and a 2.5-second retry scheduling budget.
 Every attempt rechecks the reservation's deadline. Other failures, including

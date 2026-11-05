@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gt, inArray, isNull } from 'drizzle-orm';
-import { auditEvents, forGym, linkCampaigns, signedLinks, writeAudit } from '@plaingym/db';
+import { and, asc, count, desc, eq, gt, isNull, notExists } from 'drizzle-orm';
+import { auditEvents, forGym, households, linkCampaigns, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
-import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, linkCampaignListQuerySchema,
+import { campaignRecipientListQuerySchema, createLinkCampaignRequestSchema, householdsNeedingCardQuerySchema, linkCampaignListQuerySchema,
   type CreateLinkCampaignRequest, type CreateSignedLinkRequest } from '@plaingym/shared/contracts';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -13,7 +13,7 @@ import type { Payments } from '../../infra/payments/index.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createSignedLinksIn } from './service.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
-import { campaignDetail, campaignRecipient } from './campaigns.model.js';
+import { campaignDetail, campaignRecipient, campaignTallies, recipientState } from './campaigns.model.js';
 import { deliverCampaignLink } from './campaigns.delivery.js';
 import { matchCampaignCustomer } from './campaigns.customers.js';
 import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
@@ -48,8 +48,7 @@ export function createCampaignsService(options: CampaignsOptions) {
     return scope(gymId, async tx => {
       const [row] = await tx.select().from(linkCampaigns).where(eq(linkCampaigns.id, campaignId));
       if (!row) return missing();
-      const links = await tx.select().from(signedLinks).where(eq(signedLinks.campaignId, campaignId));
-      return campaignDetail(row, links.map(link => campaignRecipient(link, clock.now())));
+      return campaignDetail(row, (await campaignTallies(tx, gymId, [row.id], clock.now())).get(row.id));
     });
   }
   /** Retries published, unreserved sends whose jobs used up their attempts, at most once per gym-local day. */
@@ -142,18 +141,38 @@ export function createCampaignsService(options: CampaignsOptions) {
         const [total] = await tx.select({ value: count() }).from(linkCampaigns).where(filter);
         const rows = await tx.select().from(linkCampaigns).where(filter).orderBy(desc(linkCampaigns.createdAt), desc(linkCampaigns.id))
           .limit(query.limit).offset(query.offset);
-        const links = rows.length ? await tx.select().from(signedLinks).where(inArray(signedLinks.campaignId, rows.map(r => r.id))) : [];
-        return { data: rows.map(row => campaignDetail(row, links.filter(l => l.campaignId === row.id).map(l => campaignRecipient(l, clock.now())))),
+        const tallies = await campaignTallies(tx, gymId, rows.map(r => r.id), clock.now());
+        return { data: rows.map(row => campaignDetail(row, tallies.get(row.id))),
           pagination: { total: total!.value, limit: query.limit, offset: query.offset } };
       });
     },
     async recipients(gymId: string, campaignId: string, input: z.input<typeof campaignRecipientListQuerySchema> = {}) {
       const query = campaignRecipientListQuerySchema.parse(input);
-      await get(gymId, campaignId);
-      const rows = await scope(gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.campaignId, campaignId)).orderBy(asc(signedLinks.id)));
-      const recipients = rows.map(r => campaignRecipient(r, clock.now())).filter(r => !query.state || r.state === query.state);
-      return { data: recipients.slice(query.offset, query.offset + query.limit),
-        pagination: { total: recipients.length, limit: query.limit, offset: query.offset } };
+      return scope(gymId, async tx => {
+        const [campaign] = await tx.select({ id: linkCampaigns.id }).from(linkCampaigns).where(eq(linkCampaigns.id, campaignId));
+        if (!campaign) return missing();
+        // One clock reading, so the page and its total partition the states alike.
+        const now = clock.now(), where = and(eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, campaignId),
+          query.state ? recipientState(query.state, now) : undefined);
+        const total = await tx.$count(signedLinks, where);
+        const rows = await tx.select().from(signedLinks).where(where).orderBy(asc(signedLinks.id)).limit(query.limit).offset(query.offset);
+        return { data: rows.map(row => campaignRecipient(row, now)), pagination: { total, limit: query.limit, offset: query.offset } };
+      });
+    },
+    /**
+     * The "Needs a card" filter, answered from the gym's saved cards in one query: the payment-method webhooks and card flows
+     * keep `payment_methods` current, and the charge runner charges only cards recorded there. No Stripe call.
+     */
+    async householdsNeedingCard(gymId: string, input: z.input<typeof householdsNeedingCardQuerySchema> = {}) {
+      const query = householdsNeedingCardQuerySchema.parse(input);
+      return scope(gymId, async tx => {
+        const where = and(eq(households.gymId, gymId), notExists(tx.select({ id: paymentMethods.id }).from(paymentMethods).where(and(
+          eq(paymentMethods.gymId, gymId), eq(paymentMethods.householdId, households.id), isNull(paymentMethods.revokedAt)))));
+        const total = await tx.$count(households, where);
+        const rows = await tx.select({ householdId: households.id }).from(households).where(where)
+          .orderBy(asc(households.id)).limit(query.limit).offset(query.offset);
+        return { data: rows, pagination: { total, limit: query.limit, offset: query.offset } };
+      });
     },
     async remindCampaign(context: MutationContext, campaignId: string) {
       await get(context.gymId, campaignId);

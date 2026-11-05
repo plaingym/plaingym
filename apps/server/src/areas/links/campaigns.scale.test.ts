@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
-import { households, uuidv7, type Transaction } from '@plaingym/db';
+import { asc, inArray } from 'drizzle-orm';
+import { households, paymentMethods, signedLinks, uuidv7, type Transaction } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createTranslator } from '@plaingym/shared';
@@ -56,4 +57,99 @@ it('creates 2000 recipients in chunked multi-row inserts with only one publish j
   const sends = jobs.jobs.filter(j => j.name === campaignSendJob);
   expect(sends).toHaveLength(2000); expect(new Set(sends.map(j => j.options.idempotencyKey)).size).toBe(2000);
   expect(email.messages).toHaveLength(0);
+}, 90_000);
+
+interface Read { sql: string; rows: number }
+/** A scope that records each select it runs inside forGym, with the number of rows the database returned for it. */
+function recording(reads: Read[]): typeof db.forGym {
+  const watch = <T extends object>(builder: T): T => new Proxy(builder, { get(target, key, receiver) {
+    const value = Reflect.get(target, key) as unknown;
+    // Drizzle recognizes a builder (a subquery, say) by its constructor.
+    if (typeof value !== 'function' || key === 'constructor') return value;
+    if (key === 'then') return (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) => {
+      const sql = (target as unknown as { toSQL(): { sql: string } }).toSQL().sql;
+      return (target as unknown as PromiseLike<unknown>).then(rows => {
+        reads.push({ sql, rows: Array.isArray(rows) ? rows.length : 1 });
+        return resolve(rows);
+      }, reject);
+    };
+    // Builder steps return the builder itself, or (from) the next builder: keep both watched.
+    return (...args: unknown[]) => {
+      const result = (value as (...a: unknown[]) => unknown).apply(target, args);
+      return result === target ? receiver : typeof result === 'object' && result !== null && 'toSQL' in result ? watch(result) : result;
+    };
+  } });
+  return (gymId, fn) => db.forGym(gymId, tx => fn(new Proxy(tx, { get(target, key) {
+    const value = Reflect.get(target, key) as unknown;
+    if (key === 'select' && typeof value === 'function') return (...args: unknown[]) => watch((value as (...a: unknown[]) => object).apply(target, args));
+    return typeof value === 'function' ? value.bind(target) : value;
+  } })));
+}
+
+it('serves a 320-household campaign with batched creation, grouped progress, SQL recipient pages and a Stripe-free card filter', async () => {
+  const gymId = uuidv7(), clock = new TestClock('2026-10-26T12:00:00Z'), size = 320;
+  await factory('gyms', gymId, { memberEmailsEnabled: true, billingEnabled: true, timezone: 'America/Los_Angeles' });
+  const people = await db.forGym(gymId, tx => tx.insert(households).values(Array.from({ length: size }, (_, i) => ({
+    gymId, name: 'Household ' + i, email: `payer${i}@example.test` }))).returning({ id: households.id }));
+  // Every third household has a saved card; one of those was removed.
+  const carded = people.filter((_, i) => i % 3 === 0);
+  await db.forGym(gymId, tx => tx.insert(paymentMethods).values(carded.map((p, i) => ({ gymId, householdId: p.id,
+    processorId: 'pm_' + i, last4: '4242', isDefault: i !== 0, revokedAt: i === 0 ? clock.now() : null }))));
+  const paymentsFor = vi.fn(async () => { throw new Error('The card filter must not call Stripe'); });
+  const reads: Read[] = [];
+  let inserts = 0;
+  const watched = recording(reads);
+  const service = createCampaignsService({ scope: (id, fn) => watched(id, tx => fn(new Proxy(tx, { get(target, key) {
+    if (key === 'insert') inserts++;
+    const value = Reflect.get(target, key) as unknown;
+    return typeof value === 'function' ? value.bind(target) : value;
+  } }))), clock, jobs: new FakeJobs(clock), delivery: { prepare: vi.fn() }, paymentsFor });
+  const c = await service.create({ gymId, actor: { kind: 'system' } }, { name: 'Collect cards', purpose: 'update_card',
+    expiresAt: '2026-11-26T12:00:00Z', reminderSchedule: [3], recipients: people.map(p => ({ householdId: p.id })) });
+  expect(inserts).toBe(4); // The campaign, one multi-row insert of 320 links and one of their audits, and the campaign audit.
+  expect(c.progress).toEqual({ total: size, pending: size, completed: 0, expired: 0, revoked: 0 });
+
+  // 100 used, 40 revoked, 30 expired, 150 pending.
+  const ids = (await db.forGym(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).orderBy(asc(signedLinks.id)))).map(r => r.id);
+  const used = ids.slice(0, 100), revoked = ids.slice(100, 140), expired = ids.slice(140, 170), pending = ids.slice(170);
+  await db.forGym(gymId, async tx => {
+    await tx.update(signedLinks).set({ usedAt: clock.now() }).where(inArray(signedLinks.id, used));
+    await tx.update(signedLinks).set({ revokedAt: clock.now() }).where(inArray(signedLinks.id, revoked));
+    await tx.update(signedLinks).set({ expiresAt: clock.now() }).where(inArray(signedLinks.id, expired));
+  });
+  const progress = { total: size, completed: 100, revoked: 40, expired: 30, pending: 150 };
+
+  // Progress: one campaign row and two grouped counts, a row each, whatever the recipient count.
+  reads.length = 0;
+  expect((await service.get(gymId, c.campaign.id)).progress).toEqual(progress);
+  expect(reads.map(r => r.rows)).toEqual([1, 1, 1]);
+  expect(reads.slice(1).every(r => /group by "signed_links"."campaign_id"/.test(r.sql))).toBe(true);
+  reads.length = 0;
+  expect((await service.list(gymId)).data.map(d => d.progress)).toEqual([progress]);
+  expect(Math.max(...reads.map(r => r.rows))).toBe(1);
+
+  // Recipients: a page of the state's links in ID order, limited and offset in SQL.
+  for (const [state, expected] of [['pending', pending], ['completed', used], ['revoked', revoked], ['expired', expired], [undefined, ids]] as const) {
+    reads.length = 0;
+    const page = await service.recipients(gymId, c.campaign.id, { ...(state ? { state } : {}), limit: 20, offset: 20 });
+    expect(page.pagination, String(state)).toEqual({ total: expected.length, limit: 20, offset: 20 });
+    expect(page.data.map(r => r.link.id), String(state)).toEqual(expected.slice(20, 40));
+    expect(page.data.every(r => r.state === (state ?? r.state))).toBe(true);
+    const listed = reads.at(-1)!;
+    expect(listed.rows).toBe(expected.slice(20, 40).length); expect(listed.sql).toMatch(/limit \$\d+ offset \$\d+$/);
+  }
+
+  // The filter: the gym's households without a usable card, a page at a time, from the database alone.
+  const needing = people.filter((_, i) => i % 3 !== 0 || i === 0).map(p => p.id).sort();
+  const found: string[] = [];
+  reads.length = 0;
+  for (let offset = 0; offset < needing.length; offset += 100) {
+    const page = await service.householdsNeedingCard(gymId, { limit: 100, offset });
+    expect(page.pagination.total).toBe(needing.length);
+    found.push(...page.data.map(r => r.householdId));
+  }
+  expect(found).toEqual(needing);
+  expect(reads).toHaveLength(Math.ceil(needing.length / 100));
+  expect(reads.every(r => r.rows <= 100 && /not exists/.test(r.sql))).toBe(true);
+  expect(paymentsFor).not.toHaveBeenCalled();
 }, 90_000);

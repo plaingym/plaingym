@@ -13,7 +13,14 @@ function mutation(context: RequestContext) {
 export function createCampaignRoutes(read: () => CampaignsService = campaignService) {
   const create = linksContracts.createCampaign, list = linksContracts.listCampaigns, get = linksContracts.getCampaign;
   const recipients = linksContracts.listCampaignRecipients, remind = linksContracts.remindCampaign;
+  const needingCard = linksContracts.listHouseholdsNeedingCard;
   return [
+    route({ ...needingCard, request: { query: needingCard.query },
+      responses: { 200: { description: 'Households without a saved card', content: { 'application/json': { schema: needingCard.response } } } },
+    }, async c => {
+      c.header('Cache-Control', 'no-store');
+      return c.json(await read().householdsNeedingCard(c.get('context').gym.gymId, c.req.valid('query')), 200);
+    }),
     route({ ...create, request: { body: { required: true, content: { 'application/json': { schema: create.body } } } },
       responses: { 200: { description: 'Campaign queued for delivery', content: { 'application/json': { schema: create.response } } } },
     }, async c => {

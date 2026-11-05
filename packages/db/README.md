@@ -48,6 +48,8 @@ security, and the drop-in fee reader also matches it on `gym_id`, so a stale or 
 Migration `0017_google_config.sql` adds nullable `gyms.google_config_encrypted`, a gym's own Google
 OAuth client (secret class `google_config`). Existing gyms keep null, which leaves Google sign-in to
 the install's `GOOGLE_*` variables as before.
+Migration `0018_signed_links_campaign_index.sql` adds `signed_links_campaign_idx` on
+`(gym_id, campaign_id, id)`, for campaign progress counts, recipient pages and sends. It changes no data.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
