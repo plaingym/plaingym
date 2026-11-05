@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from '@hono/zod-openapi';
-import { idSchema, revisionSchema } from '@plaingym/shared/contracts';
+import { idSchema, maxWebsitePhotos, websitePhotoTypes, websiteSettingsSchema as sharedSettingsSchema } from '@plaingym/shared/contracts';
 
-// TODO(CCR): move these request and response schemas into the shared contracts (`websiteContracts`).
-export const maxPhotos = 8;
-export const photoTypes = ['image/png', 'image/jpeg', 'image/webp'] as const;
+// The request and response schemas live in the shared contracts (`websiteContracts`); this file keeps what is stored.
+export { removeWebsiteLogoRequestSchema as removeLogoRequestSchema, updateWebsiteRequestSchema, uploadWebsiteLogoRequestSchema as uploadLogoRequestSchema,
+  uploadWebsitePhotoRequestSchema as uploadPhotoRequestSchema, type UpdateWebsiteRequest, type WebsiteSettings } from '@plaingym/shared/contracts';
+export const maxPhotos = maxWebsitePhotos;
+export const photoTypes = websitePhotoTypes;
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const optionalText = (max: number) => z.string().trim().max(max).nullable();
 
@@ -26,27 +28,8 @@ export const storedContent = (value: unknown): StoredContent => {
   return parsed.success ? parsed.data : emptyContent;
 };
 
-const photoSchema = z.strictObject({ id: idSchema, alt: z.string() });
-export const websiteSettingsSchema = z.strictObject({
-  revision: revisionSchema, tagline: z.string().nullable(), about: z.string().nullable(), phone: z.string().nullable(),
-  email: z.string().nullable(), accentColor: z.string().nullable(), primaryColor: z.string().nullable(),
-  logo: z.boolean(), photos: z.array(photoSchema),
-}).openapi('WebsiteSettings');
+/** The OpenAPI document names the settings component. */
+export const websiteSettingsSchema = sharedSettingsSchema.openapi('WebsiteSettings');
 export const websiteSettingsResponseSchema = z.strictObject({ data: websiteSettingsSchema });
-export type WebsiteSettings = z.infer<typeof websiteSettingsSchema>;
-
-/** Text, colors and the photo list. Photos are added by upload; this reorders them, edits their text and removes any left out. */
-export const updateWebsiteRequestSchema = z.strictObject({
-  revision: revisionSchema, tagline: optionalText(160), about: optionalText(5000), phone: optionalText(40),
-  email: z.email().max(254).nullable(), accentColor: color.nullable(), primaryColor: color.nullable(),
-  photos: z.array(z.strictObject({ id: idSchema, alt: z.string().trim().max(200) })).max(maxPhotos)
-    .refine((photos) => new Set(photos.map((photo) => photo.id)).size === photos.length, 'List each photo once'),
-});
-export type UpdateWebsiteRequest = z.infer<typeof updateWebsiteRequestSchema>;
-/** Base64 image bytes, at most 512 KiB once decoded (the same limit as staff and member photos). */
-const imageUpload = { revision: revisionSchema, contentType: z.enum(photoTypes), base64: z.string().min(1).max(700_000).regex(/^[A-Za-z0-9+/]+={0,2}$/) };
-export const uploadPhotoRequestSchema = z.strictObject({ ...imageUpload, alt: z.string().trim().max(200) });
-export const uploadLogoRequestSchema = z.strictObject(imageUpload);
-export const removeLogoRequestSchema = z.strictObject({ revision: revisionSchema });
 export const photoParamsSchema = z.object({ photoId: idSchema });
 export const coachParamsSchema = z.object({ staffProfileId: idSchema });

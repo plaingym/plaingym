@@ -324,7 +324,7 @@ for you to run the updater.
 
 **Settings → Gym details → Enable gym website** turns the built-in website on or
 off. While it's on, `/` is its home page, with pages for programs, the weekly
-schedule, memberships (the active plans, with "+ tax" where tax is added on top),
+schedule (with this week's cancelled, one-off and moved classes), memberships (the active plans, with "+ tax" where tax is added on top),
 coaches (staff profiles marked **Show on the public website**) and location and
 contact, plus a sitemap and `LocalBusiness` structured data for search engines.
 **Settings → Website** sets the logo, the primary and accent colors, up to eight

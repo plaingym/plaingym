@@ -2,7 +2,7 @@
 import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import { formatMoney } from '../../core/money.js';
-import type { Site, SiteClass, SitePlan } from './service.js';
+import type { Site, SiteClass, SitePlan, SiteSession } from './service.js';
 
 // The shared public stylesheet is built from the classes in every public page file, including this one
 // (`public/links/styles.build.mjs`). Write class names out in full: a class assembled at runtime won't compile.
@@ -39,7 +39,8 @@ export const weekdayName = (weekday: number, locale = 'en') =>
 const addressLines = (address: Site['gym']['address']) => [address.line1, address.line2,
   [address.city, address.region, address.postalCode].filter(Boolean).join(', '), address.country].filter((line): line is string => !!line && !!line.trim());
 const photoUrl = (id: string) => '/website/photos/' + id;
-const logoUrl = (site: Site) => '/public/pages/logo/' + site.gym.revision;
+/** Versioned by the logo file, so the address survives settings saves (search engines and open pages keep it). */
+const logoUrl = (site: Site) => '/public/pages/logo/' + site.gym.logoVersion;
 
 /** Structured data for search engines: the gym as a schema.org `LocalBusiness`. */
 export function localBusiness(site: Site, origin: string) {
@@ -51,7 +52,7 @@ export function localBusiness(site: Site, origin: string) {
     '@context': 'https://schema.org', '@type': 'LocalBusiness', name: site.gym.name, url: origin + '/',
     ...(description ? { description } : {}),
     ...(site.content.phone ? { telephone: site.content.phone } : {}), ...(site.content.email ? { email: site.content.email } : {}),
-    ...(site.gym.logo ? { logo: origin + logoUrl(site) } : {}),
+    ...(site.gym.logoVersion ? { logo: origin + logoUrl(site) } : {}),
     ...(site.content.photos.length ? { image: site.content.photos.map((photo) => origin + photoUrl(photo.id)) } : {}),
     ...(Object.keys(postal).length ? { address: { '@type': 'PostalAddress', ...postal } } : {}),
   };
@@ -97,7 +98,7 @@ function layout(input: SitePageInput, content: Node) {
       h('header', { class: 'relative border-b border-border bg-background' },
         h('div', { class: 'mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 py-2 sm:px-6' },
           h('a', { href: '/', class: 'flex min-h-11 min-w-0 items-center gap-3 font-bold no-underline' },
-            site.gym.logo ? h('img', { src: logoUrl(site), alt: '', width: 40, height: 40, class: 'h-10 w-10 shrink-0 object-contain' }) : null,
+            site.gym.logoVersion ? h('img', { src: logoUrl(site), alt: '', width: 40, height: 40, class: 'h-10 w-10 shrink-0 object-contain' }) : null,
             h('span', { class: 'min-w-0 break-words' }, site.gym.name)),
           h('div', { class: 'hidden items-center gap-2 lg:flex' },
             navigation(input, text('nav.label'), 'flex flex-wrap items-center gap-1', navLink),
@@ -130,13 +131,19 @@ function calls(t: Translator, extra = false) {
 const section = (title: string, ...children: (Node | null)[]) => h('section', { class: 'space-y-4' }, h('h2', { class: heading }, title), ...children);
 const empty = (message: string) => h('p', { class: card }, message);
 
-function classLine(item: SiteClass, input: SitePageInput, programNames: ReadonlyMap<string, string>, withDay: boolean) {
+type Line = Pick<SiteClass, 'name' | 'localStartTime' | 'durationMinutes' | 'kind' | 'coach' | 'programIds'>;
+/** A date as a heading, such as "Wednesday, Nov 4"; `date` is a calendar date, so the zone is fixed. */
+const dateHeading = (date: string, locale = 'en') =>
+  new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'short', day: 'numeric', timeZone: 'UTC' }).format(Date.parse(date + 'T00:00:00Z'));
+function classLine(item: Line, input: SitePageInput, programNames: ReadonlyMap<string, string>, day: number | null, change?: SiteSession['change']) {
   const text = textFor(input.t), locale = input.locale;
   const time = text('timeRange', { start: wallTime(item.localStartTime, 0, locale), end: wallTime(item.localStartTime, item.durationMinutes, locale) });
   const names = item.programIds.map((id) => programNames.get(id)).filter((name): name is string => !!name);
   return h('li', { class: 'min-w-0 space-y-1 border-t border-border py-3 first:border-t-0' },
-    h('p', { class: 'font-semibold' }, withDay ? text('dayTime', { day: weekdayName(item.weekday, locale), time }) : time),
-    h('p', { class: 'break-words' }, item.name, item.kind === 'open_mat' ? h('span', { class: 'ml-2 rounded bg-muted px-2 py-0.5 text-sm' }, text('openMat')) : null),
+    h('p', { class: 'font-semibold' }, day !== null ? text('dayTime', { day: weekdayName(day, locale), time }) : time),
+    h('p', { class: change === 'cancelled' ? 'break-words line-through' : 'break-words' }, item.name,
+      change ? h('span', { class: 'ml-2 rounded bg-muted px-2 py-0.5 text-sm font-semibold' }, text('change.' + change)) : null,
+      item.kind === 'open_mat' ? h('span', { class: 'ml-2 rounded bg-muted px-2 py-0.5 text-sm' }, text('openMat')) : null),
     item.coach ? h('p', { class: 'break-words text-muted-foreground' }, text('coach', { name: item.coach })) : null,
     names.length ? h('p', { class: 'break-words text-sm text-muted-foreground' }, names.join(' · ')) : null);
 }
@@ -168,8 +175,18 @@ function programsPage(input: SitePageInput) {
     site.programs.length ? h('ul', { class: 'grid gap-4 md:grid-cols-2' }, ...site.programs.map((program) => {
       const classes = site.classes.filter((item) => item.programIds.includes(program.id));
       return h('li', { class: card + ' space-y-2' }, h('h2', { class: 'break-words text-xl font-semibold' }, program.name),
-        classes.length ? h('ul', null, ...classes.map((item) => classLine(item, input, names, true))) : h('p', { class: 'text-muted-foreground' }, text('noProgramClasses')));
+        classes.length ? h('ul', null, ...classes.map((item) => classLine(item, input, names, item.weekday))) : h('p', { class: 'text-muted-foreground' }, text('noProgramClasses')));
     })) : empty(text('noPrograms')), calls(input.t)];
+}
+/** This week's cancelled, one-off and moved sessions by date, or nothing when the week runs as the timetable says. */
+function weekChanges(input: SitePageInput, names: ReadonlyMap<string, string>) {
+  const text = textFor(input.t), { sessions } = input.site;
+  if (!sessions.length) return null;
+  const dates = [...new Set(sessions.map((session) => session.date))];
+  return section(text('thisWeek'), h('p', null, text('thisWeekIntro')),
+    h('div', { class: 'grid gap-4 md:grid-cols-2 lg:grid-cols-3' }, ...dates.map((date) =>
+      h('section', { class: card }, h('h3', { class: 'text-lg font-semibold' }, dateHeading(date, input.locale)),
+        h('ul', null, ...sessions.filter((session) => session.date === date).map((session) => classLine(session, input, names, null, session.change)))))));
 }
 function schedulePage(input: SitePageInput) {
   const text = textFor(input.t), { site } = input, names = new Map(site.programs.map((program) => [program.id, program.name]));
@@ -178,8 +195,9 @@ function schedulePage(input: SitePageInput) {
     h('p', null, text('scheduleIntro', { timezone: site.gym.timezone })),
     days.length ? h('div', { class: 'grid gap-4 md:grid-cols-2 lg:grid-cols-3' }, ...days.map((day) =>
       h('section', { class: card }, h('h2', { class: 'text-lg font-semibold' }, weekdayName(day, input.locale)),
-        h('ul', null, ...site.classes.filter((item) => item.weekday === day).map((item) => classLine(item, input, names, false))))))
+        h('ul', null, ...site.classes.filter((item) => item.weekday === day).map((item) => classLine(item, input, names, null))))))
       : empty(text('noClasses')),
+    weekChanges(input, names),
     h('p', null, text('bookInPortal'), ' ', h('a', { href: '/portal', class: 'inline-flex min-h-11 items-center underline' }, text('memberSignIn'))), calls(input.t)];
 }
 function planLine(plan: SitePlan, input: SitePageInput) {

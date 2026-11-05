@@ -5,6 +5,7 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { gymBrandingSchema, type GymBranding } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
+import { gymProjection, presentGym } from './settings.js';
 
 /** A feature module's stored settings, the gym's branding and the gym revision both are saved under. */
 export interface ModuleSettings { readonly value: unknown; readonly branding: GymBranding; readonly revision: number }
@@ -26,6 +27,14 @@ export async function readModuleSettings(tx: Transaction, gymId: string, moduleI
   const [row] = await tx.select({ settings: gyms.settings, branding: gyms.branding, revision: gyms.revision }).from(gyms).where(eq(gyms.id, gymId));
   if (!row) throw new AppError('not_found', 'Gym not found');
   return read(row, moduleId);
+}
+
+/** The gym's settings and a module's settings from one read of the gym row, for a page that shows both. */
+export async function readGymAndModuleSettings(tx: Transaction, gymId: string, moduleId: string) {
+  const [row] = await tx.select({ ...gymProjection, settings: gyms.settings }).from(gyms).where(eq(gyms.id, gymId));
+  if (!row) throw new AppError('not_found', 'Gym not found');
+  const { settings, ...gymRow } = row;
+  return { gym: presentGym(gymRow), module: read({ settings, branding: row.branding, revision: row.revision }, moduleId) };
 }
 
 /**

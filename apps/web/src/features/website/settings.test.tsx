@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { GymSettings } from '@plaingym/shared/contracts';
+import type { GymSettings, WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
 import { createRegistries } from '../../lib/registries.js';
-import { WebsiteSettings, type WebsiteSettingsData } from './settings.js';
+import { WebsiteSettings } from './settings.js';
 import { prepareImage } from './images.js';
 import { gymSettingsKey } from '../settings/gym-settings.js';
 

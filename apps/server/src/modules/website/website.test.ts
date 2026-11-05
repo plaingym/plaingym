@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,9 @@ import { authorize } from '../../areas/staff/auth.permissions.js';
 import { createSettingsService } from '../../areas/settings/settings.js';
 import { createModuleSettings } from '../../areas/settings/module-settings.js';
 import { configurePublicPages } from '../../public/pages/pages.routes.js';
+import { logoVersion } from '../../public/pages/service.js';
+import { setLogSink } from '../../core/log.js';
+import { zonedInstant } from '@plaingym/shared/time';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { websiteModule } from './index.js';
@@ -327,7 +330,7 @@ describe('the customization API', () => {
     const first = (await settings.get(gymA)).branding.logoKey!;
     expect(first.startsWith(`${gymA}/website/logo/`)).toBe(true);
     expect((await get('/public/pages/logo/' + await revision())).status).toBe(200);
-    expect(await (await get('/')).text()).toContain(`/public/pages/logo/${await revision()}`);
+    expect(await (await get('/')).text()).toContain(`/public/pages/logo/${logoVersion(first)}`);
     expect((await send('POST', '/api/website/logo', { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64') })).status).toBe(200);
     expect((await uploads.get(gymA)!.head(first))?.deletedAt).toBeTruthy();
     const second = (await settings.get(gymA)).branding.logoKey!;
@@ -340,5 +343,206 @@ describe('the customization API', () => {
     const files = (await uploads.get(gymA)!.list(`${gymA}/website/logo/`)).length;
     expect((await send('POST', '/api/website/logo', { revision: 1, contentType: 'image/png', base64: png.toString('base64') })).status).toBe(409);
     expect((await uploads.get(gymA)!.list(`${gymA}/website/logo/`)).length).toBe(files);
+  });
+});
+
+describe('follow-ups', () => {
+  const system = { gymId: gymA, actor: { kind: 'system' as const } };
+  const store = () => uploads.get(gymA)!;
+  const restoreLog = { current: undefined as ReturnType<typeof setLogSink> | undefined };
+  const capture = () => { const lines: string[] = []; restoreLog.current = setLogSink((line) => { lines.push(line); }); return lines; };
+  afterEach(() => { vi.restoreAllMocks(); if (restoreLog.current) { setLogSink(restoreLog.current); restoreLog.current = undefined; } });
+  const logoUrlOn = async (path: string) => /<img src="(\/public\/pages\/logo\/[^"]+)"/.exec(await (await get(path)).text())?.[1];
+  const uploadLogo = (bytes = png, contentType = 'image/png') => async () =>
+    send('POST', '/api/website/logo', { revision: await revision(), contentType, base64: bytes.toString('base64') });
+  beforeAll(async () => {
+    await service.update(system, { ...editable(await service.settings(gymA)), photos: [] });
+    if ((await service.settings(gymA)).logo) await service.removeLogo(system, { revision: await revision() });
+  });
+
+  it('keeps the logo address through settings saves, and changes it only with the logo file', async () => {
+    expect((await uploadLogo()()).status).toBe(200);
+    const url = (await logoUrlOn('/'))!;
+    expect(url).toMatch(/^\/public\/pages\/logo\/[0-9a-f]{12}$/);
+    expect((await get(url)).status).toBe(200);
+    const page = await (await get('/')).text();
+    expect(JSON.parse(/<script type="application\/ld\+json"[^>]*>(.*?)<\/script>/s.exec(page)![1]!).logo).toBe(origin + url);
+    // Any save moves the gym revision, in this section or another.
+    const before = await revision();
+    expect((await send('PUT', '/api/website', { ...editable(await service.settings(gymA)), tagline: 'A new tagline' })).status).toBe(200);
+    await toggle(gymA, true);
+    expect(await revision()).toBeGreaterThan(before);
+    expect((await get(url)).status).toBe(200);
+    expect(await logoUrlOn('/')).toBe(url);
+    // A different file is a different address, and the old one stops answering.
+    expect((await uploadLogo(jpeg, 'image/jpeg')()).status).toBe(200);
+    const replaced = (await logoUrlOn('/'))!;
+    expect(replaced).not.toBe(url);
+    expect((await get(replaced)).status).toBe(200);
+    expect((await get(url)).status).toBe(404);
+    expect((await get('/public/pages/logo/' + 'f'.repeat(12))).status).toBe(404);
+    expect((await get('/public/pages/logo/' + 'f'.repeat(12), app(gymB))).status).toBe(404);
+    expect((await get(replaced, app(gymB))).status).toBe(404);
+  });
+
+  it('answers a stored logo or photo that is over the size cap with 404', async () => {
+    const big = Buffer.concat([png, Buffer.alloc(2_000_001 - png.length)]);
+    const logoKey = `${gymA}/website/logo/${uuidv7()}`, photoKey = `${gymA}/website/photos/${uuidv7()}`, photoId = uuidv7();
+    await store().put(logoKey, big, 'image/png'); await store().put(photoKey, big, 'image/png');
+    const content = createModuleSettings({ scope: db.forGym, clock });
+    const original = await content.get(gymA, 'website');
+    await content.save(system, 'website', original.revision, ({ value, branding }) => ({
+      value: { ...(value as object), photos: [{ id: photoId, key: photoKey, contentType: 'image/png', alt: 'Too big' }] }, branding: { ...branding, logoKey } }));
+    try {
+      expect((await get('/public/pages/logo/' + logoVersion(logoKey))).status).toBe(404);
+      expect((await get('/website/photos/' + photoId)).status).toBe(404);
+      // Just under the cap is served.
+      const fine = `${gymA}/website/logo/${uuidv7()}`;
+      await store().put(fine, big.subarray(0, 2_000_000), 'image/png');
+      const current = await content.get(gymA, 'website');
+      await content.save(system, 'website', current.revision, ({ value, branding }) => ({ value, branding: { ...branding, logoKey: fine } }));
+      expect((await get('/public/pages/logo/' + logoVersion(fine))).status).toBe(200);
+    } finally {
+      const current = await content.get(gymA, 'website');
+      await content.save(system, 'website', current.revision, ({ value, branding }) => ({ value: { ...(value as object), photos: [] }, branding: { ...branding, logoKey: null } }));
+    }
+  });
+
+  it('logs a storage failure after a committed save and reports the save, for the logo and for photos', async () => {
+    const lines = capture();
+    expect((await uploadLogo()()).status).toBe(200);
+    const failing = vi.spyOn(store(), 'markDeleted').mockRejectedValue(new Error('storage unavailable'));
+    // Replacing the logo releases the old file, which fails after the save committed.
+    const replaced = await uploadLogo(jpeg, 'image/jpeg')();
+    expect(replaced.status).toBe(200);
+    const body = (await replaced.json() as { data: { revision: number; logo: boolean } }).data;
+    expect(body.logo).toBe(true); expect(body.revision).toBe(await revision());
+    expect(failing).toHaveBeenCalledTimes(1);
+    // The revision it reported is current: the next save is not a conflict.
+    expect((await send('PUT', '/api/website', { ...editable(await service.settings(gymA)), tagline: 'After the failure' })).status).toBe(200);
+    // Removing a photo from the list does the same.
+    expect((await send('POST', '/api/website/photos', { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64'), alt: 'Short lived' })).status).toBe(200);
+    const removed = await send('PUT', '/api/website', { ...editable(await service.settings(gymA)), photos: [] });
+    expect(removed.status).toBe(200);
+    expect((await service.settings(gymA)).photos).toEqual([]);
+    expect(failing).toHaveBeenCalledTimes(2);
+    // Removing the logo too.
+    expect((await send('DELETE', '/api/website/logo', { revision: await revision() })).status).toBe(200);
+    expect(failing).toHaveBeenCalledTimes(3);
+    const logged = lines.filter((line) => line.includes('"event":"website.release_failed"'));
+    expect(logged).toHaveLength(3);
+    for (const line of logged) { expect(line).toContain(`"gymId":"${gymA}"`); expect(line).not.toContain('storage unavailable'); }
+    failing.mockRestore();
+    expect((await service.settings(gymA)).logo).toBe(false);
+  });
+
+  it('reads the gym once for a page view', async () => {
+    const reads = { count: 0 };
+    const counting: typeof db.forGym = (gymId, run) => db.forGym(gymId, (tx) => run(new Proxy(tx, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property !== 'select') return typeof value === 'function' ? value.bind(target) : value;
+        return (...args: unknown[]) => {
+          const builder = value.apply(target, args);
+          return new Proxy(builder, { get(inner, name) {
+            const member = Reflect.get(inner, name, inner);
+            if (name === 'from') return (table: unknown) => { if ((table as Record<symbol, unknown>)[Symbol.for('drizzle:Name')] === 'gyms') reads.count++; return member.call(inner, table); };
+            return typeof member === 'function' ? member.bind(inner) : member;
+          } });
+        };
+      } }) as typeof tx));
+    const counted = createWebsiteService({ scope: counting, clock, uploadsFor });
+    const site = await counted.site(gymA, ['programs', 'classes', 'sessions', 'plans', 'coaches']);
+    expect(site.gym.name).toBe('North <Gym>'); expect(site.plans.length).toBeGreaterThan(0);
+    expect(reads.count).toBe(1);
+  });
+
+  it('serves theme.css as immutable only for the revision it names', async () => {
+    const current = String(await revision());
+    const matching = await get('/website/theme.css?v=' + current);
+    expect(matching.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    expect(matching.headers.get('content-type')).toContain('text/css');
+    const page = await (await get('/')).text();
+    expect(page).toContain(`href="/website/theme.css?v=${current}"`);
+    for (const path of ['/website/theme.css', '/website/theme.css?v=' + (Number(current) - 1), '/website/theme.css?v=']) {
+      expect((await get(path)).headers.get('cache-control'), path).toBe('no-cache');
+    }
+  });
+
+  describe('the schedule', () => {
+    // Wall times in the gym's zone, through the shared time helper, so the tests don't depend on the zone data's rules.
+    const zone = 'America/Vancouver';
+    const local = (date: string, time: string) => zonedInstant(date, time, zone, { gap: 'shift' })!;
+    const at = (date: string, time: string, minutes = 60) => {
+      const startsAt = local(date, time);
+      return { startsAt, endsAt: new Date(startsAt.getTime() + minutes * 60_000) };
+    };
+    beforeAll(async () => {
+      // The week of the test clock (Tuesday 2026-11-03) runs Monday 2 to Sunday 8 November.
+      const template = await factory('classTemplates', gymA, { name: 'Evening kids', weekday: 4, localStartTime: '18:00', durationMinutes: 60 });
+      const cancelled = at('2026-11-05', '18:00');
+      await factory('classSessions', gymA, { name: 'Evening kids', templateId: template.id, status: 'cancelled', occurrenceStartsAt: cancelled.startsAt, ...cancelled });
+      await factory('classSessions', gymA, { name: 'Guest seminar', templateId: null, occurrenceStartsAt: null, coachId: ids.coach, kind: 'open_mat', ...at('2026-11-07', '10:00', 120) });
+      await factory('classSessions', gymA, { name: 'Moved basics', templateId: template.id, occurrenceStartsAt: local('2026-11-04', '18:00'), ...at('2026-11-04', '19:30') });
+      const regular = await factory('classTemplates', gymA, { name: 'Wednesday basics', weekday: 3, localStartTime: '09:30', durationMinutes: 60 });
+      const onTime = at('2026-11-04', '09:30');
+      await factory('classSessions', gymA, { name: 'Regular session', templateId: regular.id, occurrenceStartsAt: onTime.startsAt, ...onTime });
+      // Left by a deleted template: detached, but still at its occurrence.
+      const detached = at('2026-11-06', '07:00');
+      await factory('classSessions', gymA, { name: 'Detached class', templateId: null, occurrenceStartsAt: detached.startsAt, ...detached });
+      // The template moved to 12:00 after this week's session was generated at 11:00, which it keeps.
+      const edited = await factory('classTemplates', gymA, { name: 'Lunch class', weekday: 5, localStartTime: '12:00', durationMinutes: 60 });
+      const kept = at('2026-11-06', '11:00');
+      await factory('classSessions', gymA, { name: 'Kept at old time', templateId: edited.id, occurrenceStartsAt: kept.startsAt, ...kept });
+      // This Sunday's occurrence, moved into next week.
+      const sunday = await factory('classTemplates', gymA, { name: 'Sunday drills', weekday: 0, localStartTime: '17:00', durationMinutes: 60 });
+      await factory('classSessions', gymA, { name: 'Moved to Monday', templateId: sunday.id, occurrenceStartsAt: local('2026-11-08', '17:00'), ...at('2026-11-09', '17:00') });
+      const nextWeek = at('2026-11-10', '18:00');
+      await factory('classSessions', gymA, { name: 'Next week cancelled', templateId: template.id, status: 'cancelled', occurrenceStartsAt: nextWeek.startsAt, ...nextWeek });
+      await factory('classSessions', gymA, { name: 'Last week one-off', templateId: null, occurrenceStartsAt: null, ...at('2026-11-01', '10:00') });
+      await factory('classSessions', gymA, { name: 'Hidden coach cancelled', templateId: null, status: 'cancelled', coachId: ids.hidden, ...at('2026-11-08', '09:00') });
+      await factory('classSessions', gymB, { name: 'Other gym cancelled', status: 'cancelled', startsAt: new Date('2026-11-06T12:00:00Z'), endsAt: new Date('2026-11-06T13:00:00Z') });
+    });
+
+    it("lists this week's cancelled, one-off and moved sessions by local date, and nothing that runs as scheduled", async () => {
+      const response = await get('/schedule'), body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain('Changes this week');
+      const week = body.slice(body.indexOf('Changes this week'));
+      expect(week).toContain('Thursday, Nov 5');
+      expect(week).toMatch(/Evening kids<span[^>]*>Cancelled<\/span>/);
+      expect(week).toContain('line-through');
+      expect(week).toContain('Saturday, Nov 7');
+      expect(week).toMatch(/Guest seminar<span[^>]*>One-off<\/span>/);
+      expect(week).toContain('10:00 AM–12:00 PM'); expect(week).toContain('With Coach Public');
+      expect(week).toMatch(/Moved basics<span[^>]*>Moved<\/span>/);
+      expect(week).toContain('7:30 PM–8:30 PM');
+      expect(week).toContain('Hidden coach cancelled'); expect(week).not.toContain('Coach Hidden');
+      expect(week.indexOf('Wednesday, Nov 4')).toBeLessThan(week.indexOf('Thursday, Nov 5'));
+      expect(week.indexOf('Thursday, Nov 5')).toBeLessThan(week.indexOf('Saturday, Nov 7'));
+      // Measured against the timetable as it is now: a detached session, one kept at a template's old time, and this
+      // week's occurrence moved into the next.
+      expect(week).toMatch(/Detached class<span[^>]*>One-off<\/span>/);
+      expect(week).toMatch(/Kept at old time<span[^>]*>Moved<\/span>/); expect(week).toContain('11:00 AM–12:00 PM');
+      expect(week).toMatch(/Moved to Monday<span[^>]*>Moved<\/span>/); expect(week).toContain('Monday, Nov 9');
+      for (const hidden of ['Regular session', 'Next week cancelled', 'Last week one-off', 'Other gym cancelled']) expect(body, hidden).not.toContain(hidden);
+      // The weekly timetable stays.
+      expect(body).toContain('Morning basics'); expect(body).toContain('Sunday open mat');
+      // Other pages don't list sessions, and another gym's host shows only its own.
+      expect(await (await get('/programs')).text()).not.toContain('Guest seminar');
+      const other = await (await get('/schedule', app(gymB))).text();
+      expect(other).toContain('Other gym cancelled'); expect(other).not.toContain('Guest seminar'); expect(other).not.toContain('Evening kids');
+    });
+
+    it('shows no section when the week runs as scheduled, and follows the week as the clock moves', async () => {
+      const onlyRegular = new TestClock('2026-11-17T12:00:00Z');
+      const week = createWebsiteService({ scope: db.forGym, clock: onlyRegular, uploadsFor });
+      expect((await week.site(gymA, ['sessions'])).sessions).toEqual([]);
+      // Sunday night, local time, is still the week of 2 to 8 November; an hour into Monday starts the next one.
+      const later = createWebsiteService({ scope: db.forGym, clock: new TestClock(local('2026-11-08', '23:30')), uploadsFor });
+      expect((await later.site(gymA, ['sessions'])).sessions.map((session) => session.name)).toContain('Guest seminar');
+      const next = createWebsiteService({ scope: db.forGym, clock: new TestClock(local('2026-11-09', '01:00')), uploadsFor });
+      expect((await next.site(gymA, ['sessions'])).sessions.map((session) => session.name)).toEqual(['Moved to Monday', 'Next week cancelled']);
+    });
   });
 });

@@ -20,6 +20,7 @@ const projection = {
 };
 type Row = { createdAt: Date; updatedAt: Date } & Record<string, unknown>;
 const present = (row: Row) => gymSettingsSchema.parse({ ...row, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
+export { projection as gymProjection, present as presentGym };
 /** The gym's settings, read inside a caller's gym scope so other reads share its transaction and connection (at READ COMMITTED, not one snapshot). */
 export async function readGymSettings(tx: Transaction, gymId: string) {
   const [row] = await tx.select(projection).from(gyms).where(eq(gyms.id, gymId));

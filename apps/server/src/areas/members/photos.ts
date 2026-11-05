@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { uuidv7, RevisionConflictError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
+import { logError } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import type { MembersService } from './members.js';
@@ -14,6 +15,16 @@ export function validatePhoto(bytes: Uint8Array, contentType: string) {
   if (!bytes.length || bytes.length > maxPhotoBytes || !(contentType === 'image/png' && png || contentType === 'image/jpeg' && jpeg || contentType === 'image/webp' && webp))
     throw new AppError('invalid_request', 'Invalid photo');
 }
+/**
+ * Marks files deleted after the save that released them committed. A storage failure is logged, not thrown: the save
+ * stands (reporting it as failed would leave the caller on a stale revision), and the file stays for the uploads sweep.
+ */
+export async function releaseFiles(gymId: string, keys: readonly string[], uploadsFor: MemberUploads, event = 'photo.release_failed') {
+  for (const key of keys) {
+    try { await (await uploadsFor(gymId)).markDeleted(key); }
+    catch (error) { logError(event, { gymId, key }, error); }
+  }
+}
 export function createMemberPhotoService(members: MembersService, uploadsFor: MemberUploads) {
   return {
     async upload(context: MutationContext, memberId: string, revision: number, bytes: Uint8Array, contentType: string) {
@@ -26,7 +37,7 @@ export function createMemberPhotoService(members: MembersService, uploadsFor: Me
       let saved;
       try { saved = await members.attachPhoto(context, memberId, revision, key); }
       catch (error) { await uploads.markDeleted(key); throw error; }
-      if (before.photoKey) await uploads.markDeleted(before.photoKey);
+      if (before.photoKey) await releaseFiles(context.gymId, [before.photoKey], async () => uploads, 'member.photo.release_failed');
       return saved;
     },
     async read(gymId: string, memberId: string) {
@@ -41,14 +52,13 @@ export function createMemberPhotoService(members: MembersService, uploadsFor: Me
     /** Storage calls happen after the erasure commits: the photo and signed-waiver images it released. */
     async anonymize(context: MutationContext, memberId: string, revision: number) {
       const { member, files } = await members.eraseMember(context, memberId, { revision });
-      const uploads = files.length ? await uploadsFor(context.gymId) : undefined;
-      for (const key of files) await uploads!.markDeleted(key);
+      await releaseFiles(context.gymId, files, uploadsFor, 'member.photo.release_failed');
       return member;
     },
     async update(context: MutationContext, memberId: string, input: Parameters<MembersService['updateMember']>[2]) {
       const before = await members.getMember(context.gymId, memberId);
       const saved = await members.updateMember(context, memberId, input);
-      if (before.photoKey && saved.photoKey === null) await (await uploadsFor(context.gymId)).markDeleted(before.photoKey);
+      if (before.photoKey && saved.photoKey === null) await releaseFiles(context.gymId, [before.photoKey], uploadsFor, 'member.photo.release_failed');
       return saved;
     },
   };

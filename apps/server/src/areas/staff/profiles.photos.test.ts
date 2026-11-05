@@ -9,6 +9,7 @@ import { FakeUploads } from '../../infra/storage/index.js';
 import { createStaffPhotoService, createStaffPhotoRoutes } from './profiles.photos.js';
 import { createStaffProfileService } from './profiles.js';
 import { TestClock } from '../../core/clock.js';
+import { setLogSink } from '../../core/log.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { errorHandler } from '../../core/errors.js';
 import { authorize } from './auth.permissions.js';
@@ -87,4 +88,21 @@ it('marks the new upload deleted if a concurrent edit wins before attachment', a
   expect((await profiles.getProfile(gymA, profile.id)).data).toMatchObject({ revision: 2, photoKey: null, bio: 'Won the race' });
   const objects = await store.list(`${gymA}/staff/${profile.id}/`);
   expect(objects).toHaveLength(1); expect(objects[0]!.deletedAt).not.toBeNull();
+});
+it('logs a storage failure that follows a committed photo save and keeps the save', async () => {
+  const profile = (await profiles.createProfile(actor(), { displayName: 'Release failure' })).data;
+  const store = stores.get(gymA)!, first = (await service.upload(actor(), profile.id, 1, jpeg, 'image/jpeg')).data;
+  const lines: string[] = [], previous = setLogSink((line) => { lines.push(line); });
+  const failing = vi.spyOn(store, 'markDeleted').mockRejectedValue(new Error('storage unavailable'));
+  try {
+    // Replacing the photo releases the old file, which fails; the new photo is saved and the revision moved on.
+    const second = (await service.upload(actor(), profile.id, 2, jpeg, 'image/jpeg')).data;
+    expect(second.revision).toBe(3); expect(second.photoKey).not.toBe(first.photoKey);
+    const cleared = (await service.update(actor(), profile.id, { revision: 3, photoKey: null })).data;
+    expect(cleared.photoKey).toBeNull();
+    expect(failing).toHaveBeenCalledTimes(2);
+  } finally { failing.mockRestore(); setLogSink(previous); }
+  expect(lines.filter((line) => line.includes('"event":"staff.photo.release_failed"'))).toHaveLength(2);
+  expect((await profiles.getProfile(gymA, profile.id)).data.revision).toBe(4);
+  expect((await store.head(first.photoKey!))!.deletedAt).toBeUndefined();
 });

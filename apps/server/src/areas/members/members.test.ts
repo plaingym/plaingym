@@ -408,6 +408,25 @@ describe('members and households', () => {
     const abandoned = (await uploads.list(`${gymA}/members/${person.id}/`)).filter((object) => object.key !== first.photoKey && object.key !== second.photoKey);
     expect(abandoned).toHaveLength(1); expect(abandoned[0]!.deletedAt).toBeDefined();
   });
+  it('logs a storage failure that follows a committed photo save and reports the save', async () => {
+    const { person } = await routeFixture(gymA), uploads = await uploadsFor(gymA);
+    const first = await photos.upload(context(), person.id, 1, png, 'image/png');
+    const lines: string[] = [], previous = setLogSink((line) => { lines.push(line); });
+    const failing = vi.spyOn(uploads, 'markDeleted').mockRejectedValue(new Error('storage unavailable'));
+    try {
+      // Replacing the photo releases the old file, which fails; the new photo is saved and the revision moved on.
+      const second = await photos.upload(context(), person.id, 2, png, 'image/png');
+      expect(second.revision).toBe(3); expect(second.photoKey).not.toBe(first.photoKey);
+      // Clearing the photo through an update does the same.
+      const cleared = await photos.update(context(), person.id, { revision: 3, photoKey: null });
+      expect(cleared.photoKey).toBeNull();
+      expect(failing).toHaveBeenCalledTimes(2);
+    } finally { failing.mockRestore(); setLogSink(previous); }
+    expect(lines.filter((line) => line.includes('"event":"member.photo.release_failed"'))).toHaveLength(2);
+    expect((await service.getMember(gymA, person.id)).revision).toBe(4);
+    // The released file stays readable until the uploads sweep marks it.
+    expect((await uploads.head(first.photoKey!))!.deletedAt).toBeUndefined();
+  });
   it('retires uploads left by crashes without allowing an unfinished attachment to reuse the key', async () => {
     const { person } = await routeFixture(gymA), uploads = await uploadsFor(gymA);
     const key = `${gymA}/members/${person.id}/${uuidv7()}`;

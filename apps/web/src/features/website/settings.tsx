@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { GymSettings } from '@plaingym/shared/contracts';
+import { maxWebsitePhotos, websiteSettingsResponseSchema, type GymSettings, type WebsiteSettings as WebsiteSettingsData } from '@plaingym/shared/contracts';
 import { bootstrapKey } from '../../app/context.js';
 import { api } from '../../lib/api.js';
 import { t } from '../../lib/i18n.js';
@@ -14,12 +14,7 @@ import { ErrorState, LoadingState } from '../../components/ui/states.js';
 import { prepareImage } from './images.js';
 
 const text = (key: string, values?: Record<string, string>) => t('website/website:' + key, values);
-const maxPhotos = 8;
-/** What `GET /api/website` answers: the website's text, colors and photos, and whether the gym has a logo. */
-export interface WebsiteSettingsData {
-  revision: number; tagline: string | null; about: string | null; phone: string | null; email: string | null;
-  accentColor: string | null; primaryColor: string | null; logo: boolean; photos: { id: string; alt: string }[];
-}
+const maxPhotos = maxWebsitePhotos;
 type Draft = Omit<WebsiteSettingsData, 'revision' | 'logo'>;
 const draftOf = ({ revision: _revision, logo: _logo, ...draft }: WebsiteSettingsData): Draft => draft;
 type Sent = { response: { ok: boolean; status: number }; data?: unknown };
@@ -67,12 +62,12 @@ export function WebsiteSettings() {
     try {
       const result = await api.GET('/api/website');
       if (!result.response.ok || !result.data) throw new Error('The website settings request failed');
-      show(result.data.data as WebsiteSettingsData, true);
+      show(websiteSettingsResponseSchema.parse(result.data).data, true);
     } catch { setFailed(true); }
   }
   // Read again whenever the gym settings come from the server: a reload, a conflict, or this section's own save.
   useEffect(() => { void load(); }, [gym.epoch]);
-  const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: (body as { data: WebsiteSettingsData }).data.revision });
+  const adopt = (body: unknown, current: GymSettings): GymSettings => ({ ...current, revision: websiteSettingsResponseSchema.parse(body).data.revision });
   /** `kind` says what the save changed: the text and colors, a photo, or the logo. */
   async function run(send: (revision: number, signal: AbortSignal) => Promise<Sent>, done: string, kind: 'content' | 'photo' | 'logo') {
     setBusy(true); setMessage(null);
@@ -86,7 +81,7 @@ export function WebsiteSettings() {
         if (result.status === 409 || result.status === 404) void load();
         return;
       }
-      show((result.data as { data: WebsiteSettingsData }).data, kind !== 'content'); setMessage({ text: text(done), error: false });
+      show(websiteSettingsResponseSchema.parse(result.data).data, kind !== 'content'); setMessage({ text: text(done), error: false });
       // The logo and the primary color also show in General, which would otherwise save back what it read before.
       if (kind !== 'photo') { gym.reload(); void cache.invalidateQueries({ queryKey: bootstrapKey }); }
     } catch { setMessage({ text: text('error'), error: true }); }

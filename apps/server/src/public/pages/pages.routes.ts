@@ -61,7 +61,7 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
       ctx.header('Content-Type', 'text/css; charset=utf-8'); return ctx.body(themeCss((await options().service.config(ctx.get('context').gym.gymId)).data.gym.primaryColor));
     }),
     route({ method: 'get', path: '/public/pages/logo/{revision}', permission: { kind: 'public' },
-      request: { params: z.object({ revision: z.string().regex(/^[1-9]\d*$/) }) }, responses: { 200: { description: 'Gym logo' } } }, async ctx => {
+      request: { params: z.object({ revision: z.string().regex(/^(?:[1-9]\d*|[0-9a-f]{12})$/) }) }, responses: { 200: { description: 'Gym logo' } } }, async ctx => {
       const logo = await options().service.logo(ctx.get('context').gym.gymId, ctx.req.valid('param').revision);
       ctx.header('Content-Type', logo.contentType); return ctx.body(logo.stream);
     }),

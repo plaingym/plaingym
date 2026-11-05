@@ -3,6 +3,7 @@ import { z } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { AppError, createTranslator, type RoutePermission, type Translator } from '@plaingym/shared';
+import { websiteContracts } from '@plaingym/shared/contracts';
 import type { RequestEnvironment } from '../../core/context.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import { cspNonce, setPolicy } from '../../core/csp.js';
@@ -33,9 +34,8 @@ export function configureWebsite(options: WebsiteOptions & { origin?: WebsiteRou
 const siteDirectives = (nonce: string) => [`default-src 'none'`, `script-src 'nonce-${nonce}'`, `style-src 'self'`, `img-src 'self'`,
   `base-uri 'none'`, `form-action 'self'`, `frame-ancestors 'none'`];
 const parts: Record<SitePage, readonly SitePart[]> = {
-  home: ['programs'], programs: ['programs', 'classes'], schedule: ['programs', 'classes'], plans: ['plans'], coaches: ['coaches'], contact: [],
+  home: ['programs'], programs: ['programs', 'classes'], schedule: ['programs', 'classes', 'sessions'], plans: ['plans'], coaches: ['coaches'], contact: [],
 };
-const manage: RoutePermission = { kind: 'staff', capability: 'settings.manage' };
 const publicAccess: RoutePermission = { kind: 'public' };
 const tooLarge = bodyLimit({ maxSize: 720_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
 const settingsResponses = { 200: { description: 'Website settings', content: { 'application/json': { schema: websiteSettingsResponseSchema } } } };
@@ -46,10 +46,10 @@ function staff(c: Ctx): MutationContext {
   if (principal.kind !== 'staff' || principal.gymId !== gym.gymId) throw new AppError('not_found', 'Gym not found');
   return { gymId: gym.gymId, actor: { kind: 'user', userId: principal.userId } };
 }
-const image = (c: Ctx, file: { body: ReadableStream | Uint8Array; contentType: string }) => {
+const image = (c: Ctx, file: { stream: ReadableStream | Uint8Array; contentType: string }) => {
   // Public, but a removed photo should not linger in caches for long.
   c.header('Cache-Control', 'public, max-age=3600'); c.header('X-Content-Type-Options', 'nosniff'); c.header('Content-Type', file.contentType);
-  return c.body(file.body as ReadableStream);
+  return c.body(file.stream as ReadableStream);
 };
 
 export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly RouteRegistration[] {
@@ -70,7 +70,9 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
     })),
     route({ method: 'get', path: '/website/theme.css', permission: publicAccess, responses: { 200: { description: 'Website colors' } } }, async (c) => {
       const site = await options().service.site(c.get('context').gym.gymId);
-      c.header('Content-Type', 'text/css; charset=utf-8'); c.header('Cache-Control', 'no-cache'); c.header('X-Content-Type-Options', 'nosniff');
+      // The pages link it as `?v=<revision>`, so a matching `v` names these exact colors; any other request revalidates.
+      c.header('Content-Type', 'text/css; charset=utf-8'); c.header('X-Content-Type-Options', 'nosniff');
+      c.header('Cache-Control', c.req.query('v') === String(site.gym.revision) ? 'public, max-age=31536000, immutable' : 'no-cache');
       return c.body(siteThemeCss(site.gym.primaryColor, site.content.accentColor));
     }),
     route({ method: 'get', path: '/website/photos/{photoId}', permission: publicAccess, request: { params: photoParamsSchema },
@@ -91,16 +93,16 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
       return c.body(['User-agent: *', ...['/admin', '/portal', '/kiosk', '/api/', '/l/', '/login', '/setup'].map((path) => 'Disallow: ' + path),
         'Allow: /', '', 'Sitemap: ' + originOf(c) + '/sitemap.xml', ''].join('\n'));
     }),
-    route({ method: 'get', path: '/api/website', permission: manage, responses: settingsResponses }, async (c) => {
+    route({ ...websiteContracts.get, responses: settingsResponses }, async (c) => {
       staff(c); return settingsData(c, options().service.settings(c.get('context').gym.gymId));
     }),
-    route({ method: 'put', path: '/api/website', permission: manage, request: json(updateWebsiteRequestSchema), responses: settingsResponses }, async (c) =>
+    route({ ...websiteContracts.update, request: json(updateWebsiteRequestSchema), responses: settingsResponses }, async (c) =>
       settingsData(c, options().service.update(staff(c), c.req.valid('json')))),
-    route({ method: 'post', path: '/api/website/photos', permission: manage, middleware: tooLarge, request: json(uploadPhotoRequestSchema), responses: settingsResponses },
+    route({ ...websiteContracts.uploadPhoto, middleware: tooLarge, request: json(uploadPhotoRequestSchema), responses: settingsResponses },
       async (c) => settingsData(c, options().service.uploadPhoto(staff(c), c.req.valid('json')))),
-    route({ method: 'post', path: '/api/website/logo', permission: manage, middleware: tooLarge, request: json(uploadLogoRequestSchema), responses: settingsResponses },
+    route({ ...websiteContracts.uploadLogo, middleware: tooLarge, request: json(uploadLogoRequestSchema), responses: settingsResponses },
       async (c) => settingsData(c, options().service.uploadLogo(staff(c), c.req.valid('json')))),
-    route({ method: 'delete', path: '/api/website/logo', permission: manage, request: json(removeLogoRequestSchema), responses: settingsResponses },
+    route({ ...websiteContracts.removeLogo, request: json(removeLogoRequestSchema), responses: settingsResponses },
       async (c) => settingsData(c, options().service.removeLogo(staff(c), c.req.valid('json')))),
   ];
 }
