@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
 import { googleClientValueSchema } from '@plaingym/shared/contracts';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
-import { logError } from '../../core/log.js';
+import { readStoredSecret } from './unreadable-secret.js';
 import { googleFromEnvironment, type GoogleCredentials } from '../../infra/auth/google.js';
 
 /** The gym's own Google OAuth client, stored encrypted in `gyms.google_config_encrypted` (secret class `google_config`). */
@@ -13,25 +13,10 @@ export const storedGoogleSchema = z.strictObject({ clientId: googleClientValueSc
 export function encryptGoogleConfig(key: Buffer, gymId: string, credentials: GoogleCredentials): string {
   return encryptSecret(key, { secretClass: 'google_config', owner: gymId }, JSON.stringify(storedGoogleSchema.parse(credentials)));
 }
-// Shared by settings and sign-in resolvers using this key. Keep only the last failed ciphertext per gym,
-// never a decrypted value; a changed value or key is tried again.
-const unreadable = new WeakMap<Buffer, Map<string, string>>();
 /** The stored client, or null when there is none or it can't be read (logged as `logError` does: never the message). */
 export function readGoogleConfig(key: Buffer, value: string | null, gymId: string): GoogleCredentials | null {
-  const failed = unreadable.get(key);
-  if (!value) { failed?.delete(gymId); return null; }
-  if (failed?.get(gymId) === value) return null;
-  try {
-    const credentials = storedGoogleSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, value)));
-    failed?.delete(gymId);
-    return credentials;
-  } catch (error) {
-    const cache = failed ?? new Map<string, string>();
-    cache.set(gymId, value);
-    unreadable.set(key, cache);
-    logError('settings.google_config_unreadable', { gymId }, error);
-    return null;
-  }
+  return readStoredSecret(key, 'google_config', gymId, value, () =>
+    storedGoogleSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, value!))));
 }
 
 export interface GoogleClientOptions {

@@ -11,6 +11,7 @@ import { createAccountService } from '../../infra/auth/accounts.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createSmtpResolver, encryptSmtpConfig, sendSmtpTest, storedSmtpFromRequest, type SendSmtpTest } from '../settings/smtp.js';
 import { encryptGoogleConfig } from '../settings/google-login.js';
+import { requireBackupDestination, type CheckBackupDestination } from '../settings/backup-destination.js';
 import { googleFromEnvironment } from '../../infra/auth/google.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from './backup-key.js';
 import { loadContentPacks } from '../ranks/packs.loader.js';
@@ -39,6 +40,8 @@ export function createSetupService(options: {
   /** The runtime's own key, origin and environment; setup reads nothing from the process environment. */
   key: Buffer; origin: string; env: NodeJS.ProcessEnv; clock?: Clock; scope?: typeof forGym; system?: typeof forSystem;
   provisionOwner?: ProvisionOwner; sendTest?: SendSmtpTest;
+  /** Tests replace the storage probe; production checks write, read and delete permissions. */
+  checkDestination?: CheckBackupDestination;
   stripeProvisioner?: Parameters<typeof createStripeStep>[0]['provisioner'];
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem, clock = options.clock ?? defaultClock;
@@ -237,6 +240,7 @@ export function createSetupService(options: {
     stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },
     async backups(context: MutationContext, input: SetupBackupRequest) {
       const { state } = await current(context, input.revision, 7);
+      await requireBackupDestination(input.destination, context.gymId, options.checkDestination);
       const { privateKey, publicKey } = await backupKeyPair();
       const { destination, s3Config } = backupColumns(options.key, context.gymId, input.destination);
       // Do not activate backups until the owner proves they saved the matching private key.

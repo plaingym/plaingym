@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { smtpPresets } from '../../../lib/integration-setup.js';
 import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { saveEmailIntegrationResponseSchema, type EmailIntegration, type SignInMethods } from '@plaingym/shared/contracts';
@@ -9,7 +10,6 @@ import { Label } from '../../../components/ui/label.js';
 import { CheckboxField, Select } from '../../../components/ui/select.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 
-const presets = [['smtp.postmarkapp.com', 'Postmark'], ['smtp-relay.brevo.com', 'Brevo'], ['email-smtp.us-east-1.amazonaws.com', 'Amazon SES'], ['smtp.gmail.com', 'Gmail']];
 const label = (key: string) => text('email.' + key);
 export const methods = (signIn: SignInMethods) =>
   label('methods_' + (signIn.magicLink && signIn.password ? 'both' : signIn.magicLink ? 'magicLink' : signIn.password ? 'password' : 'none'));
@@ -78,7 +78,7 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
             <Label htmlFor="integrations-email-preset">{label('preset')}</Label>
             <Select id="integrations-email-preset" defaultValue="" onChange={(event) => { if (event.target.value) setHost(event.target.value); }}>
               <option value="">{label('custom')}</option>
-              {presets.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
+              {smtpPresets.map(([value, name]) => <option key={value} value={value}>{name}</option>)}
             </Select>
           </div>
           <Field name="host" value={host} onChange={setHost}/>

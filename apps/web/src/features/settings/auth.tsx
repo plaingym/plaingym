@@ -118,15 +118,16 @@ export function GoogleLoginSettings() {
     {google.source === 'install' && <p className="text-sm text-muted-foreground">{label('source')}</p>}
     {google.source === 'gym' && <div className="min-w-0 space-y-1 text-sm">
       <p>{label('sourceGym')}</p>
-      <p className="[overflow-wrap:anywhere]">{label('clientIdShown', { clientId: google.clientId ?? label('unreadable') })}</p>
-      <p>{label(google.clientSecretSet ? 'secretSet' : 'secretNotSet')}</p>
+      <p className="[overflow-wrap:anywhere]">{label('clientIdShown', { clientId: google.clientId ?? '' })}</p>
+      <p>{label('secretSet')}</p>
     </div>}
+    {google.unreadable && <p role="alert" className="text-sm">{label('unreadable')}</p>}
     {message && <p role={message.kind} className="rounded-md border border-border p-3 text-sm">{message.text}</p>}
     <GoogleRedirect/>
-    {google.source === 'gym' && <div className="grid min-w-0 gap-2">
+    {(google.source === 'gym' || google.unreadable) && <div className="grid min-w-0 gap-2">
       {google.removeBlocked && <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>}
       <div className="flex flex-col gap-3 sm:flex-row">
-        {!open && <Button type="button" variant="outline" disabled={busy !== null} onClick={() => { setMessage(null); setOpen(true); }}>{label('replace')}</Button>}
+        {!formOpen && <Button type="button" variant="outline" disabled={busy !== null} onClick={() => { setMessage(null); setOpen(true); }}>{label('replace')}</Button>}
         <Button type="button" variant="outline" disabled={busy !== null || google.removeBlocked} onClick={() => void remove()}>{label(busy === 'remove' ? 'removing' : 'remove')}</Button>
       </div>
     </div>}

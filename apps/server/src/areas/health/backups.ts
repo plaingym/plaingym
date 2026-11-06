@@ -107,7 +107,7 @@ export class BackupService {
         });
         const manifestPath = join(staging, 'manifest.age');
         const manifestInfo = await saveStream(manifestPath, await encrypt(o.recipient, bytesStream(JSON.stringify(manifest))));
-        const snapshot: Snapshot = { version: 1, id, kind, startedAt: startedAt.toISOString(),
+        const snapshot: Snapshot = { version: 1, id, kind, startedAt: startedAt.toISOString(), recipient: o.recipient,
           database: encryptedDump, manifest: manifestInfo, uploads: publicReferences(references, o.blobKey) };
         const referencePath = join(staging, 'references.json');
         const referenceInfo = await saveStream(referencePath, referenceStream(snapshot, o.blobKey));

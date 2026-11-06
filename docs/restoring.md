@@ -8,6 +8,13 @@ retention, encryption) is in [self-hosting.md](self-hosting.md#backups).
 
 ## What you need
 
+Settings and System health report the last restorable snapshot for the current
+backup key and destination. After changing either, they report none under that
+key yet until a matching snapshot succeeds. Keep older private keys to restore
+older snapshots; replacing a key does not make those snapshots open with the new
+one. Older snapshots without recipient metadata remain restorable with their
+original key, but do not establish the current-key health status.
+
 * **The backup private key** shown once when backups were set up (a block of text
   beginning `AGE-SECRET-KEY-`, or the file you downloaded). Without it no one can
   open the snapshots.

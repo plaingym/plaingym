@@ -4,7 +4,7 @@ import { canStaff, isRoutePermission, staffRoles } from '../permissions.js';
 import {
   integrationsContracts, integrationsSchema, saveEmailIntegrationRequestSchema, saveStripeIntegrationRequestSchema,
   createBackupKeyRequestSchema, createBackupKeyResponseSchema, confirmBackupKeyRequestSchema, removeEmailIntegrationRequestSchema,
-  googleLoginSchema, saveGoogleLoginRequestSchema,
+  googleLoginSchema, saveGoogleLoginRequestSchema, setupSmtpRequestSchema,
 } from './index.js';
 
 const signIn = { password: false, magicLink: true };
@@ -19,6 +19,17 @@ const integrations = {
 };
 
 describe('integration settings contracts', () => {
+  it('derives the Settings email fields and defaults from the configure step', () => {
+    const input = { revision: 1, host: ' smtp.example.test ', username: 'user', password: 'secret', from: 'desk@example.test', testTo: 'owner@example.test' };
+    const { choice, ...configured } = setupSmtpRequestSchema.parse({ choice: 'configure', ...input });
+    expect(choice).toBe('configure');
+    expect(saveEmailIntegrationRequestSchema.parse(input)).toEqual(configured);
+    expect(saveEmailIntegrationRequestSchema.safeParse({ ...input, choice: 'configure' }).success).toBe(false);
+    for (const port of [0, 65536]) {
+      expect(setupSmtpRequestSchema.safeParse({ choice: 'configure', ...input, port }).success).toBe(false);
+      expect(saveEmailIntegrationRequestSchema.safeParse({ ...input, port }).success).toBe(false);
+    }
+  });
   it('lets only owners reach every route, under /api/settings/integrations', () => {
     for (const contract of Object.values(integrationsContracts)) {
       expect(isRoutePermission(contract.permission)).toBe(true);
@@ -42,7 +53,7 @@ describe('integration settings contracts', () => {
   });
   it('returns Google sign-in without its client secret and takes both values on a save', () => {
     const google = { source: 'gym', editable: true, clientId: 'client.apps.googleusercontent.com', clientSecretSet: true, removeBlocked: false, revision: 4 };
-    expect(googleLoginSchema.parse(google)).toEqual(google);
+    expect(googleLoginSchema.parse(google)).toEqual({ ...google, unreadable: false });
     expect(googleLoginSchema.safeParse({ ...google, clientSecret: 'secret' }).success).toBe(false);
     expect(saveGoogleLoginRequestSchema.parse({ revision: 1, clientId: ' id ', clientSecret: 'secret' })).toEqual({ revision: 1, clientId: 'id', clientSecret: 'secret' });
     for (const values of [{ clientId: 'id' }, { clientId: 'an id', clientSecret: 'secret' }, { clientId: 'id', clientSecret: 'x'.repeat(513) }, { clientId: '', clientSecret: 'secret' }])

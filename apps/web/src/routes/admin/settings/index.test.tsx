@@ -26,7 +26,7 @@ vi.mock('../../../lib/registries.js', async () => {
     ...(auth.settingsSections ?? []).map((entry) => ({ ...entry, id: 'renamed.auth' }))] } }) };
 });
 
-const off: GoogleLogin = { source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
+const off: GoogleLogin = { source: 'none', editable: true, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
 let google: GoogleLogin;
 const page = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><SettingsPage/></QueryClientProvider>);
 // The empty state is always in the DOM and CSS shows it, which jsdom doesn't apply: check what the rule depends on.

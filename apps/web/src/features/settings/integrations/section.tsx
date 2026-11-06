@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../../lib/response.js';
 import { useQuery } from '@tanstack/react-query';
-import { healthResponseSchema } from '@plaingym/shared/contracts';
+import { healthResponseSchema, type BackupsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
 import { Button } from '../../../components/ui/button.js';
 import { ErrorState, LoadingState } from '../../../components/ui/states.js';
@@ -11,8 +11,8 @@ import { PaymentsIntegrationSection } from './payments.js';
 import { BackupsIntegrationSection, type LastSnapshot } from './backups.js';
 
 /** The last Stripe event and the last restorable snapshot come from the health checks, which read them. */
-function useHealthDetails(enabled: boolean) {
-  return useQuery({ queryKey: ['settings', 'integrations', 'health'], enabled, staleTime: 60_000, refetchOnWindowFocus: false, retry: false,
+function useHealthDetails(enabled: boolean, backups: BackupsIntegration | null | undefined) {
+  return useQuery({ queryKey: ['settings', 'integrations', 'health', backups?.publicKey, backups?.destination], enabled, staleTime: 60_000, refetchOnWindowFocus: false, retry: false,
     queryFn: async ({ signal }) => {
       const result = await api.GET('/api/health', { signal, cache: 'no-store' });
       if (!result.response.ok) throw new Error('The health request failed');
@@ -21,7 +21,7 @@ function useHealthDetails(enabled: boolean) {
       return {
         lastEventAt: stripe?.id === 'stripe_webhooks' && stripe.details ? stripe.details.lastReceivedAt : null,
         lastSnapshot: (backup?.id === 'last_backup' && backup.details && !backup.details.pruningStopped
-          ? { at: backup.details.latestRestorableAt } : 'unknown') as LastSnapshot,
+          ? { at: backup.details.latestRestorableAt, noneUnderCurrentKey: backup.details.noneUnderCurrentKey } : 'unknown') as LastSnapshot,
       };
     } });
 }
@@ -31,7 +31,7 @@ function useHealthDetails(enabled: boolean) {
  */
 export function IntegrationsSettings() {
   const state = useIntegrations(), integrations = state.integrations;
-  const health = useHealthDetails(Boolean(integrations && !integrations.sandbox && (integrations.payments.configured || integrations.backups?.configured)));
+  const health = useHealthDetails(Boolean(integrations && !integrations.sandbox && (integrations.payments.configured || integrations.backups?.configured)), integrations?.backups);
   if (!state.ready) return state.failed
     ? <ErrorState message={text('error')} onRetry={state.reload} retryLabel={text('reload')}/>
     : <LoadingState label={text('loading')}/>;

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { restrictedKeyPattern } from '@plaingym/shared/contracts';
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '../../components/ui/button.js';
@@ -18,7 +19,7 @@ export function StripeStep({ fetcher = fetch, onComplete }: { fetcher?: typeof f
   const queries = useQueryClient();
   async function save(choice: 'configure' | 'skip') {
     if (busy) return;
-    if (choice === 'configure' && !/^rk_(test|live)_[A-Za-z0-9]+$/.test(restrictedKey)) { setFailure('invalid'); return; }
+    if (choice === 'configure' && !restrictedKeyPattern.test(restrictedKey)) { setFailure('invalid'); return; }
     setBusy(true); setFailure(null);
     try {
       const { revision } = await client.call('status');

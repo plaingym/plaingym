@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { downloadBackupKey } from '../../../lib/integration-setup.js';
 import { parseResponse } from '../../../lib/response.js';
 import { useState, type FormEvent } from 'react';
 import { createBackupKeyResponseSchema, type BackupsIntegration } from '@plaingym/shared/contracts';
@@ -10,9 +11,14 @@ import { CheckboxField } from '../../../components/ui/select.js';
 import { failedText, integrationsOf, refusedText, text, type useIntegrations } from './state.js';
 
 const label = (key: string) => text('backups.' + key);
+/**
+ * Making a key first lists, writes, reads and deletes a probe at the destination, each a request of its own or several.
+ * Giving up sooner would leave the server saving a pending key whose private half this page never receives.
+ */
+export const destinationCheckTimeoutMs = 2 * 60_000;
 const gigabytes = (bytes: number) => new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(bytes / 1e9) + ' GB';
 /** What the health check knows about the last snapshot: undefined while it loads or when it couldn't be checked. */
-export type LastSnapshot = { at: string | null } | 'unknown' | undefined;
+export type LastSnapshot = { at: string | null; noneUnderCurrentKey?: boolean } | 'unknown' | undefined;
 function Field({ name, type = 'text', value }: { name: string; type?: string; value?: string | undefined }) {
   return <div className="grid min-w-0 gap-2">
     <Label htmlFor={'integrations-backup-' + name}>{label(name)}</Label>
@@ -37,7 +43,8 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     void run(async () => {
       const reply = await state.change((revision, signal) => api.POST('/api/settings/integrations/backups', { signal, body: { revision, destination: {
         endpoint: field('endpoint'), region: field('region'), bucket: field('bucket'), accessKeyId: field('accessKeyId'), secretAccessKey: field('secretAccessKey') } } }),
-      (data) => { const parsed = parseResponse(createBackupKeyResponseSchema, data).data; return { integrations: parsed.integrations, result: { privateKey: parsed.privateKey, publicKey: parsed.publicKey } }; });
+      (data) => { const parsed = parseResponse(createBackupKeyResponseSchema, data).data; return { integrations: parsed.integrations, result: { privateKey: parsed.privateKey, publicKey: parsed.publicKey } }; },
+      { timeoutMs: destinationCheckTimeoutMs });
       if (reply.result) { setCreated(reply.result); setOpen(false); }
       else setMessage({ kind: 'alert', text: reply.reason === 'unreachable' ? label('unreachable') : refusedText(reply) });
     });
@@ -52,10 +59,6 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
         : reply.reason === 'no_pending_key' ? label('noPending') : refusedText(reply) });
     });
   };
-  const download = (privateKey: string) => {
-    const url = URL.createObjectURL(new Blob([privateKey + '\n'], { type: 'text/plain' }));
-    const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'plaingym-backup-key.txt'; anchor.click(); URL.revokeObjectURL(url);
-  };
   const pending = backups.pending;
   return <div className="grid min-w-0 gap-4">
     <h3 className="text-base font-semibold">{label('title')}</h3>
@@ -64,6 +67,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
       : <p className="text-sm">{label('notConfigured')}</p>}
     {backups.publicKey && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{text('backups.publicKey', { key: backups.publicKey })}</p>}
     {backups.configured && lastSnapshot !== undefined && <p className="text-sm text-muted-foreground">{lastSnapshot === 'unknown' ? label('snapshotUnknown')
+      : lastSnapshot.noneUnderCurrentKey ? label('noneUnderKey')
       : lastSnapshot.at ? text('backups.lastSnapshot', { time: new Date(lastSnapshot.at).toLocaleString() }) : label('noSnapshot')}</p>}
     <p className="text-sm text-muted-foreground">{text('backups.retention', { size: gigabytes(backups.retentionBudgetBytes) })}</p>
     {backups.configured && <p className="text-sm">{label('changeWarning')}</p>}
@@ -72,7 +76,7 @@ export function BackupsIntegrationSection({ backups, lastSnapshot, state }: { ba
     {created && <div className="grid min-w-0 gap-3">
       <p className="text-sm font-medium">{label('keyWarning')}</p>
       <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted p-3 text-sm">{created.privateKey}</pre>
-      <div><Button type="button" variant="outline" onClick={() => download(created.privateKey)}>{label('download')}</Button></div>
+      <div><Button type="button" variant="outline" onClick={() => downloadBackupKey(created.privateKey)}>{label('download')}</Button></div>
     </div>}
     {pending && !open && <form onSubmit={confirm} aria-label={label('confirm')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4">

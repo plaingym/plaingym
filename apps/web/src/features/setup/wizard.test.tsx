@@ -73,6 +73,20 @@ describe('setup wizard', () => {
     const call = fetcher.mock.calls.find(([path]) => path === '/api/setup/smtp');
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ choice: 'skip', revision: 1 });
   });
+  it('says when the storage destination refused the backup step', async () => {
+    const { fetcher } = start(7);
+    const refused = () => Response.json({ error: { code: 'invalid_request', message: 'server detail', details: { destination: ['unreachable'] } } }, { status: 400 });
+    const answer = fetcher.getMockImplementation()!;
+    fetcher.mockImplementation((path, options) => String(path).endsWith('/backups') ? Promise.resolve(refused()) : answer(path, options));
+    await screen.findByRole('button', { name: 'Generate backup key' });
+    await userEvent.type(screen.getByLabelText('S3-compatible endpoint URL'), 'https://s3.example.test');
+    await userEvent.type(screen.getByLabelText('Storage bucket'), 'backups');
+    await userEvent.type(screen.getByLabelText('Storage access key ID'), 'access');
+    await userEvent.type(screen.getByLabelText('Storage secret access key'), 'secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Generate backup key' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('list, write, read and delete');
+    expect(document.body.textContent).not.toContain('server detail');
+  });
   it('keeps backup setup-later, import finish and Back to backups in working action bars', async () => {
     const { fetcher } = start(7);
     await screen.findByRole('button', { name: 'Generate backup key' });

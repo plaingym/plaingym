@@ -41,23 +41,25 @@ export function createBackupHealthProvider(options: {
         .where(inArray(backupRuns.objectPrefix, [...prefixes])))).map((run) => [run.prefix, run.status])));
       // An abandoned run is cleaned up by the next prune; only what stops pruning is reported.
       if (prunePlan(state, context.clock.now()).stopped) throw new UnverifiedInventory('Pruning stopped');
-      const latest = runs.find((run) => state.snapshots.some((snapshot) => snapshot.id === run.id));
+      const latest = runs.find((run) => state.snapshots.some((snapshot) => snapshot.id === run.id && snapshot.recipient === settings.recipient));
       const blobs = await destination.store.listObjects('blobs/');
       const retainedBytes = [...state.objects, ...blobs].reduce((total, object) => total + object.size, 0);
       const ageSeconds = latest ? Math.max(0, Math.floor((context.clock.now().getTime() - latest.startedAt.getTime()) / 1000)) : null;
       const overdue = ageSeconds === null || ageSeconds > 7200;
-      const latestSnapshot = state.snapshots.find((snapshot) => snapshot.id === latest?.id);
-      const nextSnapshotBytes = latestSnapshot ? latestSnapshot.database.size + latestSnapshot.manifest.size : 0;
+      // Any key's newest snapshot sizes the next one: the database doesn't shrink when the key changes.
+      const newest = runs.find((run) => state.snapshots.some((snapshot) => snapshot.id === run.id));
+      const newestSnapshot = state.snapshots.find((snapshot) => snapshot.id === newest?.id);
+      const nextSnapshotBytes = newestSnapshot ? newestSnapshot.database.size + newestSnapshot.manifest.size : 0;
       const capacity = retainedBytes + nextSnapshotBytes + 128 * 1024 * 1024 > settings.budgetBytes;
       return { id: 'last_backup', status: overdue || capacity ? 'warning' : 'healthy', checkedAt,
-        message: statusMessage(capacity ? 'backupCapacity' : overdue ? 'backupOverdue' : 'backupHealthy'),
+        message: statusMessage(capacity ? 'backupCapacity' : !latest ? 'backupNoneUnderKey' : overdue ? 'backupOverdue' : 'backupHealthy'),
         details: { latestRestorableAt: latest?.startedAt.toISOString() ?? null, ageSeconds, overdue,
-          retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false, keyReminder: true } };
+          noneUnderCurrentKey: !latest, retainedBytes, retentionBudgetBytes: settings.budgetBytes, pruningStopped: false, keyReminder: true } };
     } catch {
       // The authenticated inventory is also pruning's safety check. Do not claim a snapshot is restorable when it fails.
       return { id: 'last_backup', status: 'error', checkedAt, message: statusMessage('backupPruningStopped'),
         details: { latestRestorableAt: null, ageSeconds: null, overdue: true, retainedBytes: 0,
-          retentionBudgetBytes: settings.budgetBytes, pruningStopped: true, keyReminder: true } };
+          noneUnderCurrentKey: false, retentionBudgetBytes: settings.budgetBytes, pruningStopped: true, keyReminder: true } };
     } finally { destination.close(); }
   });
 }

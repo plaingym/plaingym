@@ -7,7 +7,7 @@ import { canStaff, staffRoles } from '../permissions.js';
 
 const now = '2026-10-21T20:00:00Z';
 const details = {
-  last_backup: { latestRestorableAt: now, ageSeconds: 20, overdue: false, retainedBytes: 100,
+  last_backup: { latestRestorableAt: now, ageSeconds: 20, overdue: false, noneUnderCurrentKey: false, retainedBytes: 100,
     retentionBudgetBytes: 1000, pruningStopped: false, keyReminder: true },
   failed_jobs: { failed: 0, pending: 2, running: 1, oldestFailureAt: null },
   smtp: { configured: true, lastTestAt: now },

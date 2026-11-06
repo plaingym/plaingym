@@ -32,9 +32,10 @@ const key = parseEncryptionKey('ab'.repeat(32)), origin = 'http://gym.localhost'
 const setupToken = 'private-setup-token-at-least-32-characters';
 const env = { AUTH_SECRET: 'setup-test-secret-with-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'auto' };
 const config = authConfig(env), sendTest = vi.fn(async () => { assertNoTransaction('setup test email'); });
+const checkDestination = vi.fn(async () => { assertNoTransaction('setup backup destination check'); });
 const ownerService = createOwnerService({ accounts: createAccountService(config), clock, async sendMagicLink() { throw new Error('Password bootstrap must not send a link'); } });
 const registered = vi.fn(async () => ({ endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret', reused: false }));
-const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest,
+const service = createSetupService({ key, origin, clock, env, provisionOwner: ownerService, sendTest, checkDestination,
   stripeProvisioner: () => ({ async validate() { assertNoTransaction('setup Stripe validation'); }, register: registered,
     async retire() { return { deleted: [], failures: [] }; }, async remove() { return false; }, async check() { return { status: 'current' as const }; } }) });
 const smtp = createSmtpResolver({ key, env, scope: database.forGym });
@@ -168,6 +169,12 @@ describe('first-boot setup', () => {
       mode: 'test', endpointId: 'we_synthetic', webhookSecret: 'whsec_private_signing_secret' });
     revision = (await service.status()).revision;
     const destination = { endpoint: 'https://s3.example.org', region: 'auto', bucket: 'gym-backups', accessKeyId: 'access-key', secretAccessKey: 'private-storage-key' };
+    checkDestination.mockRejectedValueOnce(new Error('Forbidden'));
+    const refused = await call('/api/setup/backups', 'POST', { revision, destination }, cookie);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ error: { details: { destination: ['unreachable'] } } });
+    expect(await database.forSystem((tx) => tx.select({ recipient: gyms.backupPublicKey, destination: gyms.backupDestination, revision: gyms.revision }).from(gyms)))
+      .toEqual([{ recipient: null, destination: null, revision }]);
     const backup = await call('/api/setup/backups', 'POST', { revision, destination }, cookie); expect(backup.status).toBe(200);
     const keys = (await backup.json() as { data: { privateKey: string; publicKey: string; revision: number } }).data;
     revision = keys.revision;

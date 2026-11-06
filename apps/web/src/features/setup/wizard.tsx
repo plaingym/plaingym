@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { smtpPresets, downloadBackupKey } from '../../lib/integration-setup.js';
 import { createContext, useContext, useState, useEffect, useRef, type FormEvent, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { SetupS3Credentials } from '@plaingym/shared/contracts';
@@ -77,7 +78,8 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
     setBusy(true); setError(null);
     try { await action(); }
     catch (failure) {
-      setError(failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed' : 'failed');
+      setError(failure instanceof ApiError && failure.status === 403 ? 'setupLink' : failure instanceof ApiError && failure.status === 409 ? 'changed'
+        : failure instanceof ApiError && failure.reason.includes('unreachable') ? 'unreachable' : 'failed');
       if (failure instanceof ApiError && failure.status === 409) await refresh();
     } finally { setBusy(false); }
   };
@@ -162,7 +164,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             const form = event.currentTarget.form;
             const host = form?.elements.namedItem('host');
             if (host instanceof HTMLInputElement) host.value = event.target.value;
-          }}><option value="">{t('setup/setup:custom')}</option><option value="smtp.postmarkapp.com">Postmark</option><option value="smtp-relay.brevo.com">Brevo</option><option value="email-smtp.us-east-1.amazonaws.com">Amazon SES</option><option value="smtp.gmail.com">Gmail</option></Select>
+          }}><option value="">{t('setup/setup:custom')}</option>{smtpPresets.map(([value, name]) => <option key={value} value={value}>{name}</option>)}</Select>
             <Field name="host" /><Field name="port" type="number" value="587" /><CheckboxField name="secure" label={t('setup/setup:secure')} />
             <Field name="username" /><Field name="smtpPassword" type="password" /><Field name="from" type="email" /><Field name="testTo" type="email" /></Form>
           </>}
@@ -176,10 +178,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>
           {backupReady || status.data?.completedSteps.includes(7) ? <SetupActions><Button disabled={busy} onClick={() => { setBackupKey(null); setOverride(8); }}>{t('setup/setup:next')}</Button></SetupActions>
           : backupKey ? <><p>{t('setup/setup:keyWarning')}</p><pre className="overflow-x-auto rounded bg-muted p-3 text-sm">{backupKey.privateKey}</pre>
-            <p className="break-all text-sm">{backupKey.publicKey}</p><Button variant="outline" onClick={() => {
-              const url = URL.createObjectURL(new Blob([backupKey.privateKey + '\n'], { type: 'text/plain' }));
-              const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'plaingym-backup-key.txt'; anchor.click(); URL.revokeObjectURL(url);
-            }}>{t('setup/setup:downloadKey')}</Button><Form submit="confirmKey" secondary={deferBackups} action={async (data) => {
+            <p className="break-all text-sm">{backupKey.publicKey}</p><Button variant="outline" onClick={() => downloadBackupKey(backupKey.privateKey)}>{t('setup/setup:downloadKey')}</Button><Form submit="confirmKey" secondary={deferBackups} action={async (data) => {
               await client.call('confirmBackupKey', { revision, privateKey: text(data, 'privateKey').trim() }); setBackupKey(null); setBackupReady(true); await refresh();
             }}><Field name="privateKey" type="password" /><CheckboxField required label={t('setup/setup:savedKey')} /></Form></>
           : <Form submit="generateKey" secondary={deferBackups} action={async (data) => { setBackupKey(await client.call('backups', { revision, destination: destination(data) })); await refresh(); }}><Destination /></Form>}

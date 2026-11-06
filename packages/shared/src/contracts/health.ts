@@ -15,6 +15,8 @@ const count = z.int().nonnegative();
 const common = { status: healthStatusSchema, checkedAt: instantSchema.nullable(), message: z.string() };
 export const backupHealthDetailsSchema = z.strictObject({
   latestRestorableAt: instantSchema.nullable(), ageSeconds: count.nullable(), overdue: z.boolean(),
+  /** A verified destination has no complete snapshot known to use the current recipient. False when the check failed. */
+  noneUnderCurrentKey: z.boolean().default(false),
   retainedBytes: count, retentionBudgetBytes: count, pruningStopped: z.boolean(), keyReminder: z.boolean(),
 });
 export const failedJobsHealthDetailsSchema = z.strictObject({

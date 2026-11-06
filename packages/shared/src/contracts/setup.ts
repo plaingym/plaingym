@@ -58,9 +58,10 @@ export const setupGoogleRequestSchema = z.strictObject({
   revision: revisionSchema, clientId: googleClientValueSchema, clientSecret: googleClientValueSchema,
 });
 export const setupGoogleResponseSchema = z.strictObject({ data: z.strictObject({ configured: z.literal(true), revision: revisionSchema }) });
+export const restrictedKeyPattern = /^rk_(test|live)_[A-Za-z0-9]+$/;
 export const setupStripeRequestSchema = z.discriminatedUnion('choice', [
   z.strictObject({ choice: z.literal('skip'), revision: revisionSchema }),
-  z.strictObject({ choice: z.literal('configure'), revision: revisionSchema, restrictedKey: z.string().regex(/^rk_(test|live)_[A-Za-z0-9]+$/) }),
+  z.strictObject({ choice: z.literal('configure'), revision: revisionSchema, restrictedKey: z.string().regex(restrictedKeyPattern) }),
 ]);
 export const setupStripeResponseSchema = z.strictObject({ data: z.strictObject({
   configured: z.boolean(), mode: z.enum(['test', 'live']).nullable(), webhookRegistered: z.boolean(), revision: revisionSchema,

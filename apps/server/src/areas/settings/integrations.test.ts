@@ -13,7 +13,7 @@ import { errorHandler } from '../../core/errors.js';
 import { authorize } from '../staff/auth.permissions.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { TestClock } from '../../core/clock.js';
-import { decryptSecret } from '../../core/secrets.js';
+import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { setLogSink } from '../../core/log.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
@@ -401,7 +401,7 @@ describe('Settings → Backups', () => {
     const unreachable = await call(server(), 'POST', '/backups', { revision: before.revision, destination: destination('typo') });
     expect(unreachable.status).toBe(400);
     expect(unreachable.json?.error?.details).toEqual({ destination: ['unreachable'] });
-    expect(checkDestination).toHaveBeenLastCalledWith(expect.objectContaining({ bucket: 'typo', secretAccessKey: storageSecret }));
+    expect(checkDestination).toHaveBeenLastCalledWith(expect.objectContaining({ bucket: 'typo', secretAccessKey: storageSecret }), gymA);
     expect((await row()).revision).toBe(before.revision);
     const created = createBackupKeyResponseSchema.parse((await call(server(), 'POST', '/backups', { revision: before.revision, destination: destination('first') })).json).data;
     expect(created.integrations.backups).toMatchObject({ configured: false, publicKey: null,
@@ -458,6 +458,30 @@ describe('Settings → Backups', () => {
 });
 
 describe('integration settings in a sandbox and in logs', () => {
+  it('logs an unreadable SMTP value once across settings reads, and retries changed values and keys', async () => {
+    const original = (await row(gymB)).smtpConfig;
+    const lines: string[] = [], previous = setLogSink((line) => lines.push(line));
+    const otherKey = Buffer.alloc(32, 1);
+    const corrupt = () => encryptSecret(otherKey, { secretClass: 'smtp_config', owner: gymB }, JSON.stringify({
+      host: 'smtp.example.test', port: 587, security: 'starttls', from: 'desk@example.test', username: 'user', password: smtpPassword,
+    }));
+    try {
+      const value = corrupt();
+      await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: value }).where(eq(gyms.id, gymB)));
+      for (let i = 0; i < 3; i++) expect((await read(server({ gymId: gymB }))).email.host).toBeNull();
+      expect(lines.filter((line) => line.includes('settings.smtp_config_unreadable'))).toHaveLength(1);
+      const decrypting = createIntegrationsService({ ...base, key: otherKey });
+      expect((await read(server({ gymId: gymB, routesService: decrypting }))).email.host).toBe('smtp.example.test');
+      await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: corrupt() }).where(eq(gyms.id, gymB)));
+      await read(server({ gymId: gymB }));
+      expect(lines.filter((line) => line.includes('settings.smtp_config_unreadable'))).toHaveLength(2);
+      expect(lines.join('')).not.toContain(smtpPassword);
+      expect(lines.join('')).not.toContain(value);
+    } finally {
+      setLogSink(previous);
+      await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: original }).where(eq(gyms.id, gymB)));
+    }
+  });
   it('shows a sandbox’s integrations read-only', async () => {
     const sandbox = server({ gymId: gymB, routesService: createIntegrationsService({ ...base, sandbox: true }) });
     const status = await read(sandbox);

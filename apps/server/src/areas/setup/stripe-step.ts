@@ -2,7 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { forGym, gyms, revisionGuard, assertRevised, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import type { SetupStripeRequest } from '@plaingym/shared/contracts';
+import { restrictedKeyPattern, type SetupStripeRequest } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as systemClock } from '../../core/clock.js';
 import { encryptSecret, decryptSecret } from '../../core/secrets.js';
@@ -27,7 +27,7 @@ export function readStripeConfig(key: Buffer, encrypted: string | null, gymId: s
 }
 /** The mode a restricted key belongs to, or a 400 for anything but a restricted key (a sandbox accepts test mode only). */
 export function restrictedKeyMode(restrictedKey: string, demoMode = false): 'test' | 'live' {
-  if (!/^rk_(test|live)_[A-Za-z0-9]+$/.test(restrictedKey)) throw new AppError('invalid_request', 'A restricted Stripe key is required');
+  if (!restrictedKeyPattern.test(restrictedKey)) throw new AppError('invalid_request', 'A restricted Stripe key is required');
   const mode = restrictedKey.startsWith('rk_test_') ? 'test' : 'live';
   if (mode === 'live' && demoMode) throw new AppError('invalid_request', 'Demo mode requires a test-mode key');
   return mode;

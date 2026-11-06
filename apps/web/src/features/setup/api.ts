@@ -3,6 +3,11 @@ import { parseResponse } from '../../lib/response.js';
 import { setupContracts, ranksContracts } from '@plaingym/shared/contracts';
 import { ApiError } from '../../lib/api.js';
 
+/** The server's refusal codes (`details`), never its message. */
+async function refusalCodes(response: Response): Promise<string[]> {
+  const body = await response.json().catch(() => null) as { error?: { details?: Record<string, unknown> } } | null;
+  return Object.values(body?.error?.details ?? {}).flat().filter((code) => typeof code === 'string');
+}
 export function createSetupClient(fetcher: typeof fetch = fetch) {
   function setupToken(): string | null {
     const fragment = new URLSearchParams(window.location.hash.slice(1));
@@ -26,7 +31,7 @@ export function createSetupClient(fetcher: typeof fetch = fetch) {
           ...(contract.gate === 'uninitialized_install' && name !== 'status' && token ? { 'X-Setup-Token': token } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      if (!response.ok) throw new ApiError(response.status, 'request_failed');
+      if (!response.ok) throw new ApiError(response.status, 'request_failed', await refusalCodes(response));
       if (name === 'finish') sessionStorage.removeItem('setup.token');
       return parseResponse(contract.response, await response.json()).data as ReturnType<typeof setupContracts[K]['response']['parse']>['data'];
     },

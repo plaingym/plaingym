@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { restrictedKeyPattern } from '@plaingym/shared/contracts';
 import { useState, type FormEvent } from 'react';
 import type { PaymentsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
@@ -34,7 +35,7 @@ export function PaymentsIntegrationSection({ payments, lastEventAt, state }: {
     { signal, body: { revision, restrictedKey, ...(clearTestData ? { clearTestData } : {}) } }), integrationsOf);
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setMessage(null); setSwitchKey(null);
-    if (!/^rk_(test|live)_[A-Za-z0-9]+$/.test(key)) { setMessage({ kind: 'alert', text: label('invalid') }); return; }
+    if (!restrictedKeyPattern.test(key)) { setMessage({ kind: 'alert', text: label('invalid') }); return; }
     setBusy(true);
     try {
       const reply = await send(key, false);

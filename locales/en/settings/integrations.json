@@ -91,6 +91,7 @@
   "backups.notConfigured": "Backups aren’t set up. Updates refuse to run until they are.",
   "backups.publicKey": "Backup public key: {key}",
   "backups.lastSnapshot": "Last restorable snapshot: {time}.",
+  "backups.noneUnderKey": "No restorable snapshot under this key at the current destination yet.",
   "backups.noSnapshot": "No restorable snapshot yet.",
   "backups.snapshotUnknown": "The last snapshot couldn’t be checked.",
   "backups.retention": "Retention budget: {size}. Snapshots keep 24 hourly, 7 nightly, 4 weekly, and up to 2 pre-upgrade copies when space allows.",

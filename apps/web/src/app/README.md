@@ -5,7 +5,7 @@
 
 A successful password login clears cached data and reloads the server projection before selecting `/admin` or `/portal`. Signing out clears data and reloads `/login`. Magic links return to `/login` so the same server projection determines their destination; callback destinations never come from URL parameters.
 
-Google start failures keep the returned sign-in error visible. A successful start removes the `error` search parameter with replacement navigation, so a later identical error is shown again. The form stays disabled while the browser leaves for Google; there is no timed fallback that could start a second OAuth request. Returning through the back-forward cache resets the form; if navigation is stopped, reload to try again.
+Google start failures keep the returned sign-in error visible. A successful start removes the `error` search parameter with replacement navigation, so a later identical error is shown again. Only the Google button stays disabled while the browser leaves; email and password sign-in remain usable if navigation stops. There is no timed fallback that could start a second OAuth request. Returning through the back-forward cache resets the Google button; reload to try Google again after stopped navigation.
 
 Shell translations extend the catalog generated from `locales/loader.ts`. `createShellTranslator` accepts catalog overrides; missing keys retain the shared translator's visible-key fallback. Shell messages currently reside in `lib/shell.en.ts` within the shell's ownership boundary.
 

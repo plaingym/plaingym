@@ -27,6 +27,9 @@ export function publicReferences(uploads: readonly UploadReference[], blobKey: B
 }
 export const snapshotSchema = z.strictObject({
   version: z.literal(1), id, kind: backupKindSchema, startedAt: z.iso.datetime(),
+  // Older reference lists omitted this; they remain usable for retention and restore,
+  // but cannot prove a snapshot is restorable with the currently configured key.
+  recipient: z.string().regex(/^age1[0-9a-z]+$/).optional(),
   database: objectSchema, manifest: objectSchema, uploads: z.array(publicReferenceSchema),
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;

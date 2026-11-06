@@ -87,7 +87,7 @@ function LoginPage() {
   const googleOn = Boolean(methods.google && services.signInWithGoogle);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (login.isPending || googleBusy) return;
+    if (login.isPending || google.isPending) return;
     void clearReturnedError();
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     const mode = submitter instanceof HTMLButtonElement ? submitter.value : methods.password ? 'password' : 'magic';
@@ -106,15 +106,15 @@ function LoginPage() {
       </div>}
       {sent ? <div className="space-y-4"><p role="status">{t('shell/shell:sent')}</p><DemoSignInLink email={email} />
         <Button variant="outline" className="w-full" onClick={() => { setSent(false); setEmail(''); login.reset(); }}>{t('shell/shell:sendAgain')}</Button></div>
-      : methods.password || methods.magicLink ? <form onSubmit={submit} className="space-y-4" aria-busy={login.isPending || googleBusy}>
+      : methods.password || methods.magicLink ? <form onSubmit={submit} className="space-y-4" aria-busy={login.isPending || google.isPending}>
         <div className="space-y-2"><Label htmlFor="login-email">{t('shell/shell:email')}</Label>
-          <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending || googleBusy} /></div>
+          <Input id="login-email" type="email" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={email} onChange={(e) => setEmail(e.target.value)} disabled={login.isPending || google.isPending} /></div>
         {methods.password && <div className="space-y-2"><Label htmlFor="login-password">{t('shell/shell:password')}</Label>
-          <Input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || googleBusy} /></div>}
+          <Input id="login-password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={login.isPending || google.isPending} /></div>}
         {login.isError && <Alert>{t(login.error instanceof ApiError && login.error.status === 429 ? 'shell/shell:rateLimited' : 'shell/shell:failed')}</Alert>}
-        {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || googleBusy || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
+        {methods.password && <Button type="submit" value="password" className="w-full" disabled={login.isPending || google.isPending || !password}>{t(login.isPending ? 'shell/shell:pending' : 'shell/shell:passwordSubmit')}</Button>}
         {methods.magicLink && <><p className="text-sm text-muted-foreground">{t('shell/shell:magicHint')}</p>
-          <Button type="submit" value="magic" variant="outline" className="w-full" disabled={login.isPending || googleBusy}>{t('shell/shell:magicSubmit')}</Button></>}
+          <Button type="submit" value="magic" variant="outline" className="w-full" disabled={login.isPending || google.isPending}>{t('shell/shell:magicSubmit')}</Button></>}
       </form> : !googleOn && <Alert>{t('shell/shell:unavailable')}</Alert>}
     </Card>
   </main>;

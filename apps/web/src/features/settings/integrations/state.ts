@@ -39,8 +39,8 @@ export function useIntegrations() {
   const cache = useQueryClient(), gym = useGymSettings();
   const query = useQuery({ queryKey: integrationsKey, queryFn: fetchIntegrations, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
   const reload = useCallback(() => { gym.reload(); void query.refetch(); }, [gym.reload, query.refetch]);
-  async function change<T>(send: (revision: number, signal: AbortSignal) => Promise<Sent>, pick: (data: unknown) => { integrations: Integrations; result: T }): Promise<ChangeResult<T>> {
-    const saved = await gym.save(send, { adopt: (data, current) => ({ ...current, revision: pick(data).integrations.revision }) });
+  async function change<T>(send: (revision: number, signal: AbortSignal) => Promise<Sent>, pick: (data: unknown) => { integrations: Integrations; result: T }, options: { timeoutMs?: number } = {}): Promise<ChangeResult<T>> {
+    const saved = await gym.save(send, { ...options, adopt: (data, current) => ({ ...current, revision: pick(data).integrations.revision }) });
     if (saved.status < 300) {
       const picked = pick(saved.data);
       cache.setQueryData(integrationsKey, picked.integrations);

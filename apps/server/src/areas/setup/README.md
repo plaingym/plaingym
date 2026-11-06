@@ -21,7 +21,9 @@ with neither value. It needs step 5 complete and changes no step; skipping it se
 nothing (the wizard remembers the skip for the browser session). It is refused with
 `install_configured` when the install's `GOOGLE_*` variables are set, which win.
 
-Backup setup returns a new private identity once, stores only its public recipient,
+Backup setup first probes the destination through `settings/backup-destination.ts`
+(list, write, read and delete under the gym's prefix), refusing with `unreachable`
+without saving a key if any operation fails. It returns a new private identity once, stores only its public recipient,
 and activates the destination only after the owner pastes the matching identity.
 The saved fields are read directly by `loadBackupConfig`; the default budget is 8 GB.
 Credential values never enter progress or audits.

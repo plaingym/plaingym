@@ -45,8 +45,14 @@ blob-naming key, plaintext checksums, and complete upload paths and metadata.
 Blobs use HMAC-derived names including the upload content and recipient, so a
 public-recipient rotation never reuses ciphertext encrypted to the old recipient.
 
-The final reference list authenticates the snapshot ID, timestamp, kind, dump,
-manifest, and every blob. It contains only opaque upload identifiers and encrypted
+The final reference list authenticates the snapshot ID, timestamp, kind, public
+recipient, dump, manifest, and every blob. The recipient is optional when reading
+older snapshots; those remain valid for restore and retention but cannot establish
+the latest restorable snapshot under the current key. Health checks match the
+current recipient in the currently configured destination. Older releases whose
+reference parser does not accept this field cannot read these new snapshots;
+restore them with this release or a newer compatible one.
+The list contains only opaque upload identifiers and encrypted
 checksums: paths and plaintext content hashes stay inside the encrypted manifest.
 Publishing this list commits a snapshot. Multipart failures abort and retry from
 the encrypted staging file. Install-level jobs use durable occurrence keys.

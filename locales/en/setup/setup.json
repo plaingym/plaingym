@@ -22,6 +22,7 @@
   "loading": "Loading…",
   "retry": "Try again",
   "failed": "Could not save this step. Check the details and try again.",
+  "unreachable": "The storage destination refused the request. Check the endpoint, region, bucket and access keys, which must be able to list, write, read and delete; nothing was saved.",
   "changed": "Setup changed in another window. Your progress has been refreshed.",
   "unavailable": "Setup is unavailable for this install. Sign in to manage your gym.",
   "ownerName": "Your name",

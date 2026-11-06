@@ -63,20 +63,25 @@ describe('Google sign-in on the login page', () => {
     return { ...services(), loadBootstrap: vi.fn().mockResolvedValue(withGoogle), signInWithGoogle };
   }
   const open = (shell: ShellServices, path = '/login') => render(<App services={shell} router={createAppRouter(createMemoryHistory({ initialEntries: [path] }))} />);
-  it('keeps the button pending through the navigation and disables the email form meanwhile', async () => {
+  it('keeps only Google pending through navigation and leaves the email form usable', async () => {
     const signInWithGoogle = vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=one');
-    open(googleServices(signInWithGoogle));
+    const shell = googleServices(signInWithGoogle);
+    open(shell);
     await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith('https://accounts.google.test/auth?state=one'));
-    // The request has resolved, yet the browser hasn't left: nothing can start a second sign-in.
+    // The request has resolved, yet the browser hasn't left: only a second Google start is blocked.
     const button = screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(button.textContent).not.toBe('Sign in with Google');
-    expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Password') as HTMLInputElement).disabled).toBe(true);
-    for (const submit of screen.getAllByRole('button').filter((control) => (control as HTMLButtonElement).type === 'submit')) expect((submit as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByLabelText('Password') as HTMLInputElement).disabled).toBe(false);
+    await userEvent.type(screen.getByLabelText('Email address'), 'owner@gym.test');
+    await userEvent.type(screen.getByLabelText('Password'), 'password');
+    for (const submit of screen.getAllByRole('button').filter((control) => (control as HTMLButtonElement).type === 'submit')) expect((submit as HTMLButtonElement).disabled).toBe(false);
     await userEvent.click(button);
     expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Email me a sign-in link' }));
+    await waitFor(() => expect(shell.requestMagicLink).toHaveBeenCalledWith('owner@gym.test'));
   });
   it('starts afresh when the page comes back from the back-forward cache', async () => {
     const signInWithGoogle = vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=one');
@@ -101,7 +106,7 @@ describe('Google sign-in on the login page', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       const button = screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement;
       expect(button.disabled).toBe(true);
-      expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
       await userEvent.click(button);
       expect(signInWithGoogle).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }

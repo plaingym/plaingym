@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { revisionSchema } from './common.js';
 import type { RoutePermission } from '../permissions.js';
-import { googleClientValueSchema, setupS3CredentialsSchema } from './setup.js';
+import { googleClientValueSchema, setupS3CredentialsSchema, setupSmtpRequestSchema, restrictedKeyPattern } from './setup.js';
 
 /** Email, Stripe and backups after setup: owners only, like the setup steps that first configure them. */
 const own = { kind: 'staff', capability: 'integrations.manage' } as const satisfies RoutePermission;
@@ -72,11 +72,7 @@ export const integrationsResponseSchema = z.strictObject({ data: integrationsSch
 
 // Credential request objects are deliberately separate from every response.
 /** Saved only after the test message to `testTo` is accepted. */
-export const saveEmailIntegrationRequestSchema = z.strictObject({
-  revision: revisionSchema, host: z.string().trim().min(1), port: z.int32().min(1).max(65535).default(587),
-  secure: z.boolean().default(false), username: z.string().min(1), password: z.string().min(1),
-  from: z.email(), testTo: z.email(),
-});
+export const saveEmailIntegrationRequestSchema = setupSmtpRequestSchema.options[1].omit({ choice: true });
 /** `failed` saves nothing: the integrations are returned unchanged, with the same revision. */
 export const saveEmailIntegrationResponseSchema = z.strictObject({ data: z.strictObject({
   test: z.enum(['sent', 'failed']), integrations: integrationsSchema,
@@ -89,7 +85,7 @@ export const removeEmailIntegrationRequestSchema = z.strictObject({ revision: re
  * while live-mode references exist.
  */
 export const saveStripeIntegrationRequestSchema = z.strictObject({
-  revision: revisionSchema, restrictedKey: z.string().regex(/^rk_(test|live)_[A-Za-z0-9]+$/), clearTestData: z.boolean().default(false),
+  revision: revisionSchema, restrictedKey: z.string().regex(restrictedKeyPattern), clearTestData: z.boolean().default(false),
 });
 export const createBackupKeyRequestSchema = z.strictObject({
   revision: revisionSchema,
@@ -111,6 +107,8 @@ export const confirmBackupKeyRequestSchema = z.strictObject({ revision: revision
  */
 export const googleLoginSchema = z.strictObject({
   source: z.enum(['install', 'gym', 'none']), editable: z.boolean(), clientId: z.string().nullable(), clientSecretSet: z.boolean(),
+  /** A stored client cannot be read and may be removed or replaced; it never enables sign-in. */
+  unreadable: z.boolean().default(false),
   removeBlocked: z.boolean(), revision: revisionSchema,
 });
 export const googleLoginResponseSchema = z.strictObject({ data: googleLoginSchema });

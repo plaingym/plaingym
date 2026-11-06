@@ -19,7 +19,9 @@ describe('install snapshot and restore with real Postgres and S3', () => {
     await Promise.all([scheduler.scheduleDue(), scheduler.scheduleDue()]);
     expect(await queue.runNext()).toBe(true);
     expect(await queue.runNext()).toBe(false);
-    expect((await inventory(f.store, blobKey)).snapshots).toHaveLength(1);
+    const snapshots = (await inventory(f.store, blobKey)).snapshots;
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.recipient).toMatch(/^age1/);
     const paused = new PostgresJobs({ database: f.source, clock });
     const pausedScheduler = registerBackupJobs(paused, f.backup(), clock, async () => true);
     clock.advance(3_600_000);

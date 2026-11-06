@@ -13,7 +13,7 @@ import { holdTimeouts, stalledRequests } from './save-timeout.test-helper.js';
 const server = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../lib/api.js', async (original) => ({ ...await original<typeof import('../../lib/api.js')>(), api: server, createApiClient: () => server }));
 
-const off: GoogleLogin = { source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
+const off: GoogleLogin = { source: 'none', editable: true, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: 3 };
 let google: GoogleLogin;
 let cache: QueryClient;
 function section() {
@@ -88,6 +88,18 @@ describe('Settings → Google sign-in', () => {
     expect(await screen.findByRole('status')).toHaveProperty('textContent', 'Google sign-in is off.');
     expect(server.DELETE).toHaveBeenLastCalledWith('/api/settings/integrations/google', { signal: expect.any(AbortSignal), body: { revision: 3 } });
     expect(screen.getByLabelText('Client ID')).toBeDefined();
+  });
+  it('offers removal of an unreadable stored client while Google remains off', async () => {
+    google = { ...off, unreadable: true };
+    section();
+    expect((await screen.findByRole('alert')).textContent).toContain("The stored Google client can't be read");
+    const remove = screen.getByRole('button', { name: 'Turn off Google sign-in' });
+    expect((remove as HTMLButtonElement).disabled).toBe(false);
+    server.DELETE.mockImplementation(async () => { google = { ...off, revision: 4 }; return reply(200, { data: google }); });
+    await userEvent.click(remove);
+    await screen.findByRole('status');
+    expect(server.DELETE).toHaveBeenCalled();
+    expect(screen.queryByText(/stored Google client can't be read/)).toBeNull();
   });
   it('says when the settings could not be loaded', async () => {
     server.GET.mockImplementation(async (path: string) => path === '/api/settings' ? reply(200, { data: settings }) : reply(500));

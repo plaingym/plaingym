@@ -16,13 +16,14 @@ import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
 import { StripePermissionError } from '../../infra/payments/setup.js';
 import type { PaymentTransport } from '../../infra/payments/transport.js';
-import { createS3Client, S3BackupObjectStore } from '../../infra/storage/index.js';
 import { setupTestMessage } from '../../emails/setup/setup.js';
 import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
 import { encryptSmtpConfig, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, storedSmtpSchema, type SendSmtpTest } from './smtp.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig } from './google-login.js';
+import { readStoredSecret } from './unreadable-secret.js';
+import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
 
 type Gym = typeof gyms.$inferSelect;
 /** A new destination and key waiting for the owner to prove they saved the private key. Kept in the gym's opaque settings. */
@@ -36,13 +37,6 @@ const payableStatuses = ['open', 'past_due'];
 const retireBudgetMs = 10_000;
 /** The final status a switch from test to live gives the open disputes of the payments it marks as test. */
 const closedTestDispute = 'closed';
-/** Lists an empty prefix with the submitted credentials: a wrong endpoint, bucket or key fails here, without writing anything. */
-async function listDestination(destination: CreateBackupKeyRequest['destination']): Promise<void> {
-  const client = createS3Client({ region: destination.region, endpoint: destination.endpoint,
-    credentials: { accessKeyId: destination.accessKeyId, secretAccessKey: destination.secretAccessKey } });
-  try { await new S3BackupObjectStore({ client, bucket: destination.bucket }).listObjects('snapshots/00000000-0000-0000-0000-000000000000/'); }
-  finally { client.destroy(); }
-}
 
 export interface IntegrationsOptions {
   /** `APP_ENCRYPTION_KEY`: stored credentials are encrypted with it. */
@@ -64,7 +58,7 @@ export interface IntegrationsOptions {
    */
   requestSnapshot?: (key: string) => Promise<void>;
   /** Proves a new backup destination answers with its credentials before a key is made for it; tests replace it. */
-  checkDestination?: (destination: CreateBackupKeyRequest['destination']) => Promise<void>;
+  checkDestination?: CheckBackupDestination;
   clock?: Clock; scope?: typeof forGym;
   /** Tests replace SMTP delivery, Stripe provisioning and the Stripe transport used to identify an account. */
   sendTest?: SendSmtpTest; provisioner?: (key: string) => StripeProvisioner; transport?: (key: string) => PaymentTransport;
@@ -95,9 +89,8 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return parsed.success ? parsed.data : null;
   }
   function gymSmtp(gym: Gym) {
-    if (!gym.smtpConfig) return null;
-    try { return storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gym.id }, gym.smtpConfig))); }
-    catch (error) { logError('settings.smtp_config_unreadable', { gymId: gym.id }, error); return null; }
+    return readStoredSecret(options.key, 'smtp_config', gym.id, gym.smtpConfig, () =>
+      storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gym.id }, gym.smtpConfig!))));
   }
   /** The email settings an audit records: never the username or password. */
   function emailAudit(gym: Gym) {
@@ -363,7 +356,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     // Removing the stored client leaves email links (the gym's SMTP or the install's) and the owner's own password.
     const after = signIn(Boolean(gym.smtpConfig) || installSmtp);
     const removeBlocked = source === 'gym' && !after.magicLink && !(after.password && await options.hasPassword(userId));
-    return { source, editable, clientId: stored?.clientId ?? null,
+    return { source, editable, unreadable: editable && Boolean(gym.googleConfig) && !stored, clientId: stored?.clientId ?? null,
       clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision };
   }
   /** Fails fast on a stale revision before any network call; the save checks it again. */
@@ -543,11 +536,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
       const userId = userOf(context);
       await assertCurrent(context.gymId, input.revision);
       // A typo in the endpoint, bucket or credentials would otherwise replace working backups with failing ones on confirmation.
-      try { await (options.checkDestination ?? listDestination)(input.destination); }
-      catch (error) {
-        logError('settings.backup_destination_check_failed', { gymId: context.gymId }, error);
-        throw new AppError('invalid_request', 'The storage destination refused the request', { destination: ['unreachable'] });
-      }
+      await requireBackupDestination(input.destination, context.gymId, options.checkDestination);
       const { privateKey, publicKey } = await backupKeyPair();
       const { destination, s3Config } = backupColumns(options.key, context.gymId, input.destination);
       await save(context, input.revision, async (gym) => {

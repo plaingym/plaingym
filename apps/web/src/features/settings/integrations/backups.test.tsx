@@ -5,6 +5,9 @@ import { cleanup, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Integrations } from '@plaingym/shared/contracts';
 import { health, integrations, refusal, renderSection, reply, serve } from './fixtures.test-helper.js';
+import { destinationCheckTimeoutMs } from './backups.js';
+import { saveTimeoutMs } from '../gym-settings.js';
+import { holdTimeouts, stalledRequests } from '../save-timeout.test-helper.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), PUT: vi.fn(), POST: vi.fn(), DELETE: vi.fn() }));
 vi.mock('../../../lib/api.js', () => ({ api: client, createApiClient: () => client }));
 
@@ -17,6 +20,45 @@ beforeEach(() => { for (const fn of Object.values(client)) fn.mockReset(); curre
 afterEach(cleanup);
 
 describe('Settings → Backups', () => {
+  it('refreshes health after confirming a new key and drops the old-key snapshot', async () => {
+    current = pending;
+    let changed = false;
+    const after = health(null, null);
+    Object.assign(after.data.tiles[0]!.details!, { noneUnderCurrentKey: true });
+    const originalGet = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation((path: string) => path === '/api/health' && changed ? reply(200, after) : originalGet(path));
+    client.POST.mockImplementation(async () => {
+      changed = true;
+      current = { ...configured, revision: 6, backups: { ...configured.backups!, publicKey } };
+      return reply(200, { data: current });
+    });
+    const user = userEvent.setup(); renderSection();
+    expect(await screen.findByText(/Last restorable snapshot/)).toBeDefined();
+    const confirm = screen.getByRole('form', { name: 'Confirm and start using it' });
+    await user.type(within(confirm).getByLabelText('Paste the private key you saved'), privateKey);
+    await user.click(within(confirm).getByRole('checkbox', { name: /I saved my private key/ }));
+    await user.click(within(confirm).getByRole('button', { name: 'Confirm and start using it' }));
+    expect(await screen.findByText('No restorable snapshot under this key at the current destination yet.')).toBeDefined();
+    expect(screen.queryByText(/Last restorable snapshot/)).toBeNull();
+  });
+  it('waits longer than other saves while the destination is checked', async () => {
+    expect(destinationCheckTimeoutMs).toBeGreaterThan(saveTimeoutMs);
+    const user = userEvent.setup(); renderSection();
+    await user.click(await screen.findByRole('button', { name: 'Set up backups' }));
+    const setup = screen.getByRole('form', { name: 'Set up backups' });
+    await user.type(within(setup).getByLabelText('Storage endpoint URL'), 'https://s3.example.test');
+    await user.type(within(setup).getByLabelText('Bucket'), 'new-bucket');
+    await user.type(within(setup).getByLabelText('Storage access key ID'), 'access-id');
+    await user.type(within(setup).getByLabelText('Storage secret access key'), 'access-secret');
+    const stalled = stalledRequests(), timers = holdTimeouts(saveTimeoutMs, destinationCheckTimeoutMs);
+    try {
+      client.POST.mockImplementation(stalled.answer);
+      await user.click(within(setup).getByRole('button', { name: 'Generate backup key' }));
+      await vi.waitFor(() => expect(stalled.signals).toHaveLength(1));
+      expect(timers.held(saveTimeoutMs)).toBe(0);
+      expect(timers.held(destinationCheckTimeoutMs)).toBe(1);
+    } finally { timers.restore(); }
+  });
   it('sets up backups through the same two steps as setup: the private key is shown once, then confirmed', async () => {
     client.POST.mockResolvedValueOnce(reply(200, { data: { privateKey, publicKey, integrations: { ...pending, backups: { ...pending.backups!, configured: false, destination: null, publicKey: null } } } }))
       .mockResolvedValueOnce(reply(200, { data: { ...configured, revision: 6, backups: { ...configured.backups!, publicKey } } }));

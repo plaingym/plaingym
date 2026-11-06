@@ -55,7 +55,10 @@ Then:
    switching clears (test customers, saved test cards, open payment pages) and what
    stays; confirm it. Test payments stay on their invoices, marked "Stripe test mode", and
    any open disputes on them are closed (they stay in Stripe's test mode).
-2. **Check backups.** The **System health** page should show a recent successful backup.
+2. **Check backups.** The **System health** page should show a recent successful backup
+   under the current key at the current destination. After changing either, wait
+   for the first matching snapshot. Setup and Settings check that the destination
+   credentials can list, write, read and delete a probe before generating a key.
 3. **Check past billing dates.** Memberships whose next due date has already passed will
    be invoiced for each missed period once billing is on. Reconcile them against your
    old system now ([importing.md](importing.md#memberships-columns)).

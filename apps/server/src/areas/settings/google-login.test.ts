@@ -88,12 +88,12 @@ describe('Google sign-in settings permissions', () => {
 describe('Settings → Google sign-in', () => {
   it('stores the gym’s client encrypted, audited without either value, and returns only the client ID', async () => {
     const before = await read();
-    expect(before).toEqual({ source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false, revision: before.revision });
+    expect(before).toEqual({ source: 'none', editable: true, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: before.revision });
     for (const bad of [{ clientId: 'has space', clientSecret }, { clientId, clientSecret: '' }, { clientId, clientSecret: 'x'.repeat(513) }])
       expect((await call(server(), 'PUT', { revision: before.revision, ...bad })).status).toBe(400);
     const saved = googleLoginResponseSchema.parse((await save(server(), before.revision, ' ' + clientId + ' ')).json).data;
     // No email anywhere and no password of the owner's own: Google is now their only way in.
-    expect(saved).toEqual({ source: 'gym', editable: true, clientId, clientSecretSet: true, removeBlocked: true, revision: before.revision + 1 });
+    expect(saved).toEqual({ source: 'gym', editable: true, unreadable: false, clientId, clientSecretSet: true, removeBlocked: true, revision: before.revision + 1 });
     expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymA }, (await row()).googleConfig!))).toEqual({ clientId, clientSecret });
     expect(await read()).toEqual(saved);
     const [audit] = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.google_saved')));
@@ -121,7 +121,7 @@ describe('Settings → Google sign-in', () => {
     expect((await read(app)).removeBlocked).toBe(true);
     expect((await read()).removeBlocked).toBe(false);
     const removed = googleLoginResponseSchema.parse((await call(server(), 'DELETE', { revision: current.revision })).json).data;
-    expect(removed).toEqual({ source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false, revision: current.revision + 1 });
+    expect(removed).toEqual({ source: 'none', editable: true, unreadable: false, clientId: null, clientSecretSet: false, removeBlocked: false, revision: current.revision + 1 });
     expect((await row()).googleConfig).toBeNull();
     const again = await call(server(), 'DELETE', { revision: removed.revision });
     expect(again.json?.error?.details).toEqual({ google: ['not_configured'] });
@@ -179,7 +179,7 @@ describe('Settings → Google sign-in', () => {
     const start = logs.length;
     for (let i = 0; i < 3; i++) {
       expect(await resolver.credentials(gymB)).toBeNull();
-      expect(await read(app)).toMatchObject({ source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false });
+      expect(await read(app)).toMatchObject({ source: 'none', unreadable: true, editable: true, clientId: null, clientSecretSet: false, removeBlocked: false });
     }
     await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(key, gymB,
       { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'user', password: 'secret' }) }).where(eq(gyms.id, gymB)));
@@ -190,6 +190,10 @@ describe('Settings → Google sign-in', () => {
     await setStored(gymB, corrupt());
     expect(await resolver.credentials(gymB)).toBeNull();
     expect(logs.slice(start).filter((line) => line.includes('settings.google_config_unreadable'))).toHaveLength(2);
+    const unreadable = await read(app);
+    expect((await call(app, 'DELETE', { revision: unreadable.revision })).status).toBe(200);
+    expect(await read(app)).toMatchObject({ source: 'none', unreadable: false });
+    await setStored(gymB, corrupt());
     const current = await read(app);
     expect((await save(app, current.revision)).status).toBe(200);
     expect(await resolver.credentials(gymB)).toEqual({ clientId, clientSecret });
