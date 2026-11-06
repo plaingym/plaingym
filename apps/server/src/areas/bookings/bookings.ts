@@ -122,11 +122,14 @@ export function createBookingService(options: BookingOptions = {}) {
         // A member appears once, whether booked, waitlisted or a walk-in.
         const ids = [...new Set([...(await bookedIds), ...(await attendedIds)].map(row => row.id))].sort();
         const selected = ids.slice(page.offset, page.offset + page.limit);
+        const names = selected.length ? await tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName })
+          .from(members).where(inArray(members.id, selected)) : [];
+        const displayNames = new Map(names.map(member => [member.id, `${member.firstName} ${member.lastName}`]));
         const bookings = selected.length ? await tx.select().from(classBookings).where(and(eq(classBookings.sessionId, sessionId), ne(classBookings.status, 'cancelled'), inArray(classBookings.memberId, selected))) : [];
         const checked = selected.length ? await tx.select().from(attendances).where(and(eq(attendances.sessionId, sessionId), inArray(attendances.memberId, selected))) : [];
         const data = await Promise.all(selected.map(async memberId => {
           const booking = bookings.find(row => row.memberId === memberId), attendance = checked.find(row => row.memberId === memberId);
-          return { booking: booking ? await bookingView(tx, booking) : null, attendance: attendance ? attendanceSchema.parse({
+          return { displayName: displayNames.get(memberId)!, booking: booking ? await bookingView(tx, booking) : null, attendance: attendance ? attendanceSchema.parse({
             id: attendance.id, memberId, sessionId, programId: attendance.programId, source: attendance.source, kind: attendance.kind,
             occurredAt: attendance.occurredAt.toISOString(), createdAt: attendance.createdAt.toISOString() }) : null };
         }));

@@ -32,10 +32,10 @@ const member={id:memberId, firstName:'Alexandria',lastName:'Rivera-Martinez'};
 const session={id:sessionId,name:'Fundamentals and partner practice',startsAt:'2026-11-02T18:00:00Z',capacity:1};
 let booking={id:'booking',memberId,sessionId,status:'booked',queueRank:null,waitlistPosition:null};
 Object.assign(bookingClient, {
-  member:async()=>member,members:async()=>[member],session:async()=>session,sessions:async()=>[session],
+  members:async()=>[member],session:async()=>session,sessions:async()=>[session],
   list:async()=>({data:[booking],pagination:{total:1}}),
   roster:async()=>{if(window.failRoster)throw new Error('Unavailable');const gone=booking.status==='cancelled',waiting=booking.status==='waitlisted';
-    return {data:gone?[]:[{booking,attendance:null}],pagination:{total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:2}};},
+    return {data:gone?[]:[{displayName:member.firstName+' '+member.lastName,booking,attendance:null}],pagination:{total:gone?0:1},counts:{booked:gone||waiting?0:1,waitlisted:waiting?1:0,checkedIn:2}};},
   book:async()=>{booking={...booking,status:'waitlisted',queueRank:2,waitlistPosition:3};return booking;},
   cancel:async()=>{booking={...booking,status:'cancelled',queueRank:null,waitlistPosition:null};return booking;}
 });
@@ -109,9 +109,14 @@ try {
     await page.evaluate(() => { globalThis.failRoster = true; globalThis.dispatchEvent(new Event('focus')); });
     await expect(page.getByText(/These bookings and counts may be out of date/)).toBeVisible();
     await expect(page.getByTestId('session-counts')).toHaveText('Booked 1 of 5 · 0 waitlisted · 2 checked in');
+    await expect(page.getByText(/These counts may be out of date/)).toBeVisible();
+    expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
+    await page.locator('[data-dialog-body]').evaluate(element => { element.scrollTop = 0; });
+    await page.screenshot({ path: resolve(output, 'dialog-stale-summary-' + width + '.png'), fullPage: true });
     await page.getByText(/These bookings and counts may be out of date/).scrollIntoViewIfNeeded();
     await page.screenshot({ path: resolve(output, 'dialog-stale-' + width + '.png'), fullPage: true });
-    await page.evaluate(() => { globalThis.failRoster = false; globalThis.dispatchEvent(new Event('focus')); });
+    await page.evaluate(() => { globalThis.failRoster = false; });
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(page.getByText(/These bookings and counts may be out of date/)).toHaveCount(0);
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: /^Cancel booking for/ }).click();

@@ -22,7 +22,6 @@ export const bookingClient = {
   async members(search: string) {
     return parseResponse(membersContracts.listMembers.response, await request('/api/members', { ...(search ? { search } : {}), limit: 50, offset: 0 })).data;
   },
-  async member(id: string) { return parseResponse(membersContracts.getMember.response, await request(`/api/members/${id}`)).data; },
   async session(id: string) { return parseResponse(scheduleContracts.getSession.response, await request(`/api/schedule/sessions/${id}`)).data; },
   async sessions(date: string, timezone: string) {
     const from = zonedInstant(date, '00:00', timezone, { gap: 'shift' })!.toISOString();

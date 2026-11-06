@@ -56,7 +56,7 @@ export const bookingListResponseSchema = listResponseSchema(classBookingSchema);
 export const memberBookingResponseSchema = z.strictObject({ data: memberBookingSchema });
 export const memberBookingListResponseSchema = listResponseSchema(memberBookingSchema);
 /** A walk-in can be checked in without a booking, including sessions that need no reservation. */
-export const bookingRosterEntrySchema = z.strictObject({ booking: classBookingSchema.nullable(), attendance: attendanceSchema.nullable() })
+export const bookingRosterEntrySchema = z.strictObject({ displayName: z.string(), booking: classBookingSchema.nullable(), attendance: attendanceSchema.nullable() })
   .refine((value) => value.booking !== null || value.attendance !== null, 'A roster entry needs a booking or attendance')
   .refine((value) => value.attendance === null || (value.attendance.sessionId !== null && (
     value.booking === null || (value.attendance.memberId === value.booking.memberId && value.attendance.sessionId === value.booking.sessionId)

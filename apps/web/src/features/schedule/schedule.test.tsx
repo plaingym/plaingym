@@ -55,7 +55,7 @@ describe('schedule calendar and session detail', () => {
     expect(screen.getAllByText('Extension panel')).toHaveLength(3);
   });
   it('shows the booking counts a session panel publishes beside the capacity, and clears them when the panel goes', () => {
-    let counts: { booked: number; waitlisted: number; checkedIn: number } | null = { booked: 4, waitlisted: 2, checkedIn: 3 };
+    let counts: { booked: number; waitlisted: number; checkedIn: number; stale?: boolean } | null = { booked: 4, waitlisted: 2, checkedIn: 3 };
     const Panel = () => { usePublishSessionCounts(counts); return <p>Counting panel</p>; };
     const entry = { id: 'test.counts', labelKey: 'schedule/schedule:notes', permission: { kind: 'staff' as const, capability: 'attendance.manage' as const }, enabled: true, component: Panel };
     const registries = createRegistries([{ sessionPanels: [entry] }]);
@@ -64,8 +64,11 @@ describe('schedule calendar and session detail', () => {
     expect(screen.getByTestId('session-counts').textContent).toBe('Booked 4 of 5 · 2 waitlisted · 3 checked in');
     view.rerender(detail(null));
     expect(screen.getByTestId('session-counts').textContent).toBe('Booked 4 · 2 waitlisted · 3 checked in');
-    counts = { booked: 5, waitlisted: 0, checkedIn: 1 }; view.rerender(detail(5));
+    counts = { booked: 5, waitlisted: 0, checkedIn: 1, stale: true }; view.rerender(detail(5));
     expect(screen.getByTestId('session-counts').textContent).toBe('Booked 5 of 5 · 0 waitlisted · 1 checked in');
+    expect(screen.getByText('These counts may be out of date. Refresh the roster to try again.')).toBeDefined();
+    counts = { ...counts, stale: false }; view.rerender(detail(5));
+    expect(screen.queryByText(/These counts may be out of date/)).toBeNull();
     view.unmount();
   });
   it('tells the panels a capacity save changed the bookings, but not a notes save', async () => {

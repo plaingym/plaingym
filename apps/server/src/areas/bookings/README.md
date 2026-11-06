@@ -84,7 +84,9 @@ routes and jobs. Erasure's after-commit caller can pass each freed session to
 `features/bookings/registrations.ts` registers a session roster and a member
 profile tab. Both let staff book or cancel places; the roster includes walk-ins.
 The member tab chooses classes by a gym-local date. Views use paginated booking
-contracts and the existing member/schedule projections for display names.
+contracts: the roster includes `displayName` (first and last name) from a
+gym-scoped query; the member tab uses the schedule projection for class names.
+No additional member profile fields are exposed. A roster page needs one request.
 
 The roster response carries `counts` for the whole session, not the page:
 `booked`, `waitlisted` (one grouped query over active bookings) and `checkedIn`
@@ -96,11 +98,13 @@ a booking or cancellation, after a capacity change in the dialog (which can
 promote or move bookings), and after a check-in in the dialog's attendance panel (which tells the
 dialog through the same module). While the tab is visible, it also reloads every
 45 seconds, on window focus, and when the tab becomes visible again. A failed
-background reload keeps the last rows and counts with a stale notice; the next
+background reload or manual Refresh keeps the last rows and counts with stale
+notices beside both the roster and the dialog summary; the next
 successful load clears that notice and its load error, preserving any action
 error until a manual Refresh, a page change or the next booking or cancellation.
-A shrinking roster returns to its last available page. Manual Refresh
-also fetches member names again, so renamed members appear without reopening.
+A shrinking roster returns to its last available page without clearing retained
+rows during an automatic reload. Every reload gets current member names from
+the roster response. Focus and visibility events within a second are coalesced.
 
 The Postgres tests cover concurrency, queue gaps, cutoff/window boundaries,
 capacity revision rollback, erasure, route permissions and household/gym

@@ -116,6 +116,8 @@ describe('booking transactions', () => {
     await factory('attendances', f.gymId, { memberId: f.other.id, sessionId: f.session.id });
     const roster = await f.service.roster(f.gymId, f.session.id, page);
     expect(roster.data).toHaveLength(2);
+    expect(roster.data.find(row => row.booking?.id === booked.id)?.displayName).toBe(`${f.member.firstName} ${f.member.lastName}`);
+    expect(roster.data.find(row => row.booking === null)?.displayName).toBe(`${f.other.firstName} ${f.other.lastName}`);
     expect(roster.data.find(row => row.booking?.id === booked.id)?.attendance?.memberId).toBe(f.member.id);
     expect(roster.data.find(row => row.booking === null)?.attendance?.memberId).toBe(f.other.id);
     expect(await f.service.roster(f.gymId, f.session.id, { limit: 1, offset: 1 })).toMatchObject({ pagination: { total: 2 } });

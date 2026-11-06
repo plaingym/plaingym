@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { localDate } from '@plaingym/shared/time';
 import type { BookingRosterEntry, BookingSessionCounts, ClassBooking, ClassSession, Member } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
@@ -29,12 +29,13 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   const [rows, setRows] = useState<{ key: string; name: string; booking: ClassBooking | null; checked?: boolean }[]>([]);
   const [total, setTotal] = useState(0), [counts, setCounts] = useState<BookingSessionCounts | null>(null), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState(''), [loadError, setLoadError] = useState(''), [notice, setNotice] = useState('');
-  const changed = useSessionChanged(), seenChanged = useRef(changed);
-  const [tick, setTick] = useState(0), seenTick = useRef(tick), seenScope = useRef(''), names = useRef(new Map<string, string>());
+  const changed = useSessionChanged();
+  const [tick, setTick] = useState(0), [refreshing, setRefreshing] = useState(false), seenScope = useRef(''), quietStep = useRef(false), fullLoad = useRef(false);
   // An open dialog follows changes made elsewhere while the tab is visible.
   useEffect(() => {
     if (!sessionId) return;
-    const bump = () => { if (!document.hidden) setTick(value => value + 1); };
+    let lastBump = -Infinity;
+    const bump = () => { if (!document.hidden && performance.now() - lastBump >= 1000) { lastBump = performance.now(); setTick(value => value + 1); } };
     const timer = setInterval(bump, REFETCH_MS);
     window.addEventListener('focus', bump);
     document.addEventListener('visibilitychange', bump);
@@ -42,23 +43,20 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   }, [sessionId]);
   useEffect(() => {
     if (!timezone) return;
-    // A reload the dialog or a timer asks for refreshes in place without hiding the last successful result.
-    // A page, session or manual reload in the same render is never quiet.
-    const scope = [sessionId, memberId, offset, reload].join('|'), sameScope = seenScope.current === scope;
-    const quiet = sameScope && (seenChanged.current !== changed || seenTick.current !== tick);
-    seenChanged.current = changed; seenTick.current = tick; seenScope.current = scope;
+    // A same-page roster reload keeps the last result on screen. A page change, a booking change, a Refresh with
+    // nothing to keep and every member tab load start over, so a cancelled booking never stays actionable.
+    const scope = [sessionId, memberId, offset].join('|');
+    const quiet = !fullLoad.current && ((!!sessionId && seenScope.current === scope) || quietStep.current);
+    quietStep.current = false; fullLoad.current = false; seenScope.current = scope;
     let active = true;
-    const nameCache = names.current;
     if (!quiet) { setLoading(true); setActionError(''); setLoadError(''); setRows([]); }
     async function load() {
       if (sessionId) {
         const page = await bookingClient.roster(sessionId, offset);
-        const rows = await Promise.all(page.data.map(async (row: BookingRosterEntry) => {
+        const rows = page.data.map((row: BookingRosterEntry) => {
           const id = row.booking?.memberId ?? row.attendance!.memberId;
-          let name = nameCache.get(id);
-          if (name === undefined) { const member = await bookingClient.member(id); name = `${member.firstName} ${member.lastName}`; nameCache.set(id, name); }
-          return { key: id, name, booking: row.booking, checked: !!row.attendance };
-        }));
+          return { key: id, name: row.displayName, booking: row.booking, checked: !!row.attendance };
+        });
         return { rows, total: page.pagination.total, counts: page.counts };
       }
       const page = await bookingClient.list(memberId!, offset);
@@ -66,24 +64,29 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
       return { rows: page.data.map(booking => ({ key: booking.id, name: sessionLabel(sessions.find(row => row.id === booking.sessionId)!, timezone!), booking })), total: page.pagination.total, counts: null };
     }
     void load().then(value => { if (active) {
+      if (offset > 0 && value.rows.length === 0 && value.total <= offset) {
+        quietStep.current = quiet;
+        setOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50));
+        return;
+      }
       setLoadError(''); setRows(value.rows); setTotal(value.total); setCounts(value.counts);
-      if (offset > 0 && value.rows.length === 0 && value.total <= offset) setOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50));
     } })
-      .catch(error => { if (active) { setLoadError(errorText(error)); if (!quiet) setCounts(null); } }).finally(() => { if (active) setLoading(false); });
+      .catch(error => { if (active) { setLoadError(errorText(error)); if (!quiet) setCounts(null); } }).finally(() => { if (active) { setLoading(false); setRefreshing(false); } });
     return () => { active = false; };
   }, [sessionId, memberId, timezone, offset, reload, changed, tick]);
   async function cancel(id: string) {
     if (saving) return; setSaving(true); setActionError(''); setNotice('');
-    try { await bookingClient.cancel(id); setNotice(text('cancelledSaved')); setReload(value => value + 1); }
+    try { await bookingClient.cancel(id); setNotice(text('cancelledSaved')); fullLoad.current = true; setReload(value => value + 1); }
     catch (error) { setActionError(errorText(error)); } finally { setSaving(false); }
   }
-  usePublishSessionCounts(sessionId ? counts : null);
   const busy = loading || saving, stale = !!loadError && (rows.length > 0 || counts !== null);
+  const publishedCounts = useMemo(() => sessionId && counts ? { ...counts, stale } : null, [sessionId, counts, stale]);
+  usePublishSessionCounts(publishedCounts);
   return <section className="min-w-0 space-y-4" aria-label={text(sessionId ? 'roster' : 'title')}>
     <div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0">
       <h3 className="text-lg font-semibold">{text(sessionId ? 'roster' : 'title')}</h3>
       {sessionId && counts && <p className="text-sm text-muted-foreground" data-testid="roster-counts">{text('counts', counts)}</p>}</div>
-      <Button variant="outline" disabled={busy} onClick={() => { names.current = new Map(); setReload(value => value + 1); }}>{text('refresh')}</Button></div>
+      <Button variant="outline" disabled={busy || refreshing} onClick={() => { fullLoad.current = rows.length === 0 && counts === null; setActionError(''); setRefreshing(true); setReload(value => value + 1); }}>{text('refresh')}</Button></div>
     {actionError && <Alert>{actionError}</Alert>}
     {(loadError || bootstrap.isError) && <Alert>{loadError || text('error')}</Alert>}
     {stale && <p role="status" className="text-sm text-muted-foreground">{text('stale')}</p>}
@@ -99,7 +102,7 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
     {(offset > 0 || total > 50) && <div className="flex justify-between gap-2"><Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button>
       <Button variant="outline" disabled={busy || offset + 50 >= total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button></div>}
     {timezone && <BookingForm {...(memberId ? { memberId } : {})} {...(sessionId ? { sessionId } : {})} timezone={timezone} disabled={busy}
-      onSaved={booking => { setNotice(booking.status === 'waitlisted' ? text('waitlistSaved', { rank: booking.queueRank! }) : text('bookingSaved')); setOffset(0); setReload(value => value + 1); }}/ >}
+      onSaved={booking => { setNotice(booking.status === 'waitlisted' ? text('waitlistSaved', { rank: booking.queueRank! }) : text('bookingSaved')); fullLoad.current = true; setOffset(0); setReload(value => value + 1); }}/ >}
   </section>;
 }
 

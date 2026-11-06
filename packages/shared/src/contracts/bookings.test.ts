@@ -63,13 +63,13 @@ describe('booking and waitlist contracts', () => {
   });
   it('ties checked-in roster entries to the same member and session as the booking', () => {
     const attendance = { id: otherId, memberId: id, sessionId: id, programId: null, occurredAt: createdAt, createdAt, source: 'coach', kind: 'class' };
-    expect(bookingRosterEntrySchema.parse({ booking, attendance }).attendance?.id).toBe(otherId);
-    expect(bookingRosterEntrySchema.parse({ booking, attendance: null }).attendance).toBeNull();
-    expect(bookingRosterEntrySchema.parse({ booking: null, attendance }).booking).toBeNull();
-    expect(bookingRosterEntrySchema.safeParse({ booking: null, attendance: null }).success).toBe(false);
-    expect(bookingRosterEntrySchema.safeParse({ booking: null, attendance: { ...attendance, sessionId: null } }).success).toBe(false);
+    expect(bookingRosterEntrySchema.parse({ displayName: 'River Lee', booking, attendance }).attendance?.id).toBe(otherId);
+    expect(bookingRosterEntrySchema.parse({ displayName: 'River Lee', booking, attendance: null }).attendance).toBeNull();
+    expect(bookingRosterEntrySchema.parse({ displayName: 'River Lee', booking: null, attendance }).booking).toBeNull();
+    expect(bookingRosterEntrySchema.safeParse({ displayName: 'River Lee', booking: null, attendance: null }).success).toBe(false);
+    expect(bookingRosterEntrySchema.safeParse({ displayName: 'River Lee', booking: null, attendance: { ...attendance, sessionId: null } }).success).toBe(false);
     for (const change of [{ memberId: otherId }, { sessionId: otherId }, { sessionId: null }]) {
-      expect(bookingRosterEntrySchema.safeParse({ booking, attendance: { ...attendance, ...change } }).success).toBe(false);
+      expect(bookingRosterEntrySchema.safeParse({ displayName: 'River Lee', booking, attendance: { ...attendance, ...change } }).success).toBe(false);
     }
   });
   it('carries whole-session counts beside the roster page, and requires them', () => {

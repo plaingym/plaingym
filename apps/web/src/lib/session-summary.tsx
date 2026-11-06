@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'r
 import type { BookingSessionCounts } from '@plaingym/shared/contracts';
 
 /** Booking numbers for the whole session, published by a session panel for the session dialog's summary. */
-export type SessionCounts = BookingSessionCounts;
+export type SessionCounts = BookingSessionCounts & { stale?: boolean };
 interface SessionSummary {
   publish: (counts: SessionCounts | null) => void;
   /** Rises each time something in the dialog changed the session's bookings or check-ins. */

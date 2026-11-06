@@ -83,7 +83,8 @@ export function SessionDetail({ session, options, roles, enabledModules, onSaved
       <div><dt className="text-sm text-muted-foreground">{text('coach')}</dt><dd>{options.coaches.find((coach) => coach.id === session.coachId)?.name ?? text('unassigned')}</dd></div>
       <div><dt className="text-sm text-muted-foreground">{text('capacity')}</dt><dd>{session.capacity ?? text('unlimited')}</dd></div>
       {counts && <div className="sm:col-span-2"><dt className="text-sm text-muted-foreground">{text('bookings')}</dt>
-        <dd className="font-medium" data-testid="session-counts">{countsSummary(counts, session.capacity)}</dd></div>}
+        <dd className="font-medium" data-testid="session-counts">{countsSummary(counts, session.capacity)}</dd>
+        {counts.stale && <dd className="text-sm text-muted-foreground"><p role="status">{text('staleCounts')}</p></dd>}</div>}
       {session.notes && <div className="sm:col-span-2"><dt className="text-sm text-muted-foreground">{text('notes')}</dt><dd><p className="whitespace-pre-wrap break-words">{session.notes}</p></dd></div>}
     </dl>
     {notice && <p role="status" className="rounded-md border border-border bg-muted p-3 text-sm">{notice}</p>}
