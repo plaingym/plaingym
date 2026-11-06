@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { randomUUID } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { expect, test as base, type BrowserContext, type Page } from '@playwright/test';
 import { classStart, localDate, mondayOf, type ClassStartOptions } from './dates.js';
 
@@ -16,23 +17,37 @@ export interface Program extends RecordId { name: string; rankSystemId: string }
 export interface Rank extends RecordId { name: string; position: number }
 export interface Sandbox { gymId: string; origin: string; kioskToken: string }
 export interface Operation {
-  permission: { kind: string; capability?: string };
+  permission: { kind: string; capability?: string; purpose?: string };
   additionalPermissions?: { kind: string; capability?: string }[];
-  parameters?: { name: string; in: string; required?: boolean }[];
-  requestBody?: unknown;
+  parameters?: { name: string; in: string; required?: boolean; schema?: Schema }[];
+  requestBody?: { content: Record<string, { schema: Schema }> };
+}
+export interface Schema {
+  type?: string; format?: string; enum?: unknown[]; pattern?: string; minLength?: number; minimum?: number; exclusiveMinimum?: boolean | number;
+  properties?: Record<string, Schema>; required?: string[]; items?: Schema; minItems?: number; anyOf?: Schema[]; oneOf?: Schema[]; nullable?: boolean;
 }
 export interface Document { paths: Record<string, Record<string, Operation>> }
 
-let clients = 0;
+/** One reserved block for the main process, then one for each worker (including replacement workers). */
+export function addressAllocator(workerIndex?: string) {
+  const block = workerIndex === undefined ? 0 : Number(workerIndex) + 1;
+  let clients = 0;
+  // Checked on use, not at import: a run with many failures starts many workers, and specs without a client must still report their own result.
+  return () => {
+    if (!Number.isInteger(block) || block < 0 || block >= 32 || (workerIndex !== undefined && Number(workerIndex) < 0)) {
+      throw new Error('No client address block available for worker ' + workerIndex);
+    }
+    if (clients >= 4096) throw new Error('Client address block exhausted');
+    const index = block * 4096 + clients++;
+    return `198.${18 + (index >> 16)}.${(index >> 8) & 255}.${index & 255}`;
+  };
+}
 /**
  * The next client address, from 198.18.0.0/15 (set aside for network tests): 4,096 for each Playwright worker, so a
  * worker that replaces a failed one starts with fresh ones. The stack's Caddy passes it on as the request's client
  * address (Caddyfile), so each client meets the production per-address limits on its own, as a separate visitor would.
  */
-export function clientAddress() {
-  const index = (Number(process.env.TEST_WORKER_INDEX ?? 0) * 4096 + clients++ % 4096) % 131_072;
-  return `198.${18 + (index >> 16)}.${(index >> 8) & 255}.${index & 255}`;
-}
+export const clientAddress = addressAllocator(process.env.TEST_WORKER_INDEX);
 
 /** Route every local test hostname to loopback while preserving Host, Origin,
  * TLS SNI and cookies. Node does not resolve wildcard .localhost like Chromium. Each client has its own address. */
@@ -137,14 +152,20 @@ async function initialize(): Promise<Install> {
 // A failed test starts a fresh worker. Reuse this run's fixtures instead of
 // consuming the sandbox creation quota or trying to initialize the install twice.
 export async function cached<T>(name: string, create: () => Promise<T>): Promise<T> {
-  const file = new URL('./coverage/fixtures.json', import.meta.url);
-  let values: Record<string, unknown> = {};
-  try { values = JSON.parse(await readFile(file, 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const values = await readFixtures();
   if (name in values) return values[name] as T;
   const value = await create();
-  await writeFile(file, JSON.stringify({ ...values, [name]: value }), { mode: 0o600 });
+  // Read again: a composite fixture saves its own writes while create() runs. The rename means a worker that dies mid-save can't truncate the file.
+  const temporary = new URL(`./coverage/fixtures-${randomUUID()}.tmp`, import.meta.url);
+  await writeFile(temporary, JSON.stringify({ ...await readFixtures(), [name]: value }), { mode: 0o600 });
+  await rename(temporary, fixturesFile);
   return value;
+}
+const fixturesFile = new URL('./coverage/fixtures.json', import.meta.url);
+async function readFixtures(): Promise<Record<string, unknown>> {
+  try { return JSON.parse(await readFile(fixturesFile, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  return {};
 }
 
 /** Chromium's console line for a blocked (or, report-only, reported) resource or inline code names the policy. */
@@ -154,22 +175,27 @@ const cspViolation = /Content Security Policy/i;
 const redacted = (text: string) => text.replace(/\/l\/[A-Za-z0-9_-]{8,}/g, '/l/:token').replace(/[?#][^\s'"]*/g, '');
 interface CspGuard { readonly violations: string[]; watch(context: BrowserContext): void }
 
+/** Also used by specs that launch their own browser, such as the VM wizard. */
+export function createCspGuard(): CspGuard {
+  const violations: string[] = [], watched = new WeakSet<BrowserContext>();
+  return { violations, watch(target) {
+    if (watched.has(target)) return;
+    watched.add(target);
+    target.on('console', (message) => {
+      if (!cspViolation.test(message.text())) return;
+      const url = message.page()?.url() ?? message.location().url;
+      violations.push(redacted(`${url}: ${message.text()}`));
+    });
+  } };
+}
+
 export const test = base.extend<{ cspGuard: CspGuard; cspViolations: string[] }, { install: Install; sandboxes: Sandbox[] }>({
   /**
    * Fails any test whose pages log a Content-Security-Policy violation: the pages of the default context, when the test
    * uses it, and of every context the test opens itself (`browser.newContext`, `browser.newPage`), each frame included.
    */
   cspGuard: [async ({ browser }, use) => {
-    const violations: string[] = [], watched = new WeakSet<BrowserContext>();
-    const watch = (target: BrowserContext) => {
-      if (watched.has(target)) return;
-      watched.add(target);
-      target.on('console', (message) => {
-        if (!cspViolation.test(message.text())) return;
-        const url = message.page()?.url() ?? message.location().url;
-        violations.push(redacted(`${url}: ${message.text()}`));
-      });
-    };
+    const { violations, watch } = createCspGuard();
     const newContext = browser.newContext;
     browser.newContext = async (...options) => { const created = await newContext.apply(browser, options); watch(created); return created; };
     try { await use({ violations, watch }); } finally { browser.newContext = newContext; }
@@ -214,14 +240,14 @@ export async function showWeek(page: Page, timeZone: string, instant: Date | num
 }
 
 export interface ClassSession extends RecordId { name: string; startsAt: string; endsAt: string }
-/** A one-off class for the first program, five places, that starts on a 5-minute mark at least `leadMinutes` from now (default 26 hours,
+/** A one-off class for the selected program (or the first), five places, that starts on a 5-minute mark at least `leadMinutes` from now (default 26 hours,
  * inside every week of the portal's schedule and far from any booking cutoff), clear of the gym's local midnight. */
-export async function createClass(owner: Client, name: string, options: ClassStartOptions & { capacity?: number } = {}): Promise<ClassSession> {
-  const { capacity = 5, durationMinutes = 60, leadMinutes = 26 * 60, ...timing } = options;
-  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
+export async function createClass(owner: Client, name: string, options: ClassStartOptions & { capacity?: number; programId?: string } = {}): Promise<ClassSession> {
+  const { capacity = 5, durationMinutes = 60, leadMinutes = 26 * 60, programId, ...timing } = options;
+  const selectedProgram = programId ?? (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!.id;
   const startsAt = classStart(Date.now(), await gymTimezone(owner), { ...timing, leadMinutes, durationMinutes });
   return (await owner.json<{ data: ClassSession }>('/api/schedule/sessions', 'POST', { name, startsAt: new Date(startsAt).toISOString(),
-    endsAt: new Date(startsAt + durationMinutes * 60_000).toISOString(), coachId: null, capacity, notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
+    endsAt: new Date(startsAt + durationMinutes * 60_000).toISOString(), coachId: null, capacity, notes: null, kind: 'class', programIds: [selectedProgram], tagIds: [] })).data;
 }
 
 export async function demoClient(sandbox: Sandbox, role: 'owner' | 'coach' | 'student') {

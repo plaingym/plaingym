@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // What the cross-gym sweep aims at another gym: a gym's records, found by name, and requests built from the running
 // OpenAPI document, so a route added to the application is swept without anyone widening a list by hand.
-import { expect, missingId, type RecordId } from '../support.js';
+import { expect, missingId, type Document, type Operation, type RecordId, type Schema } from '../support.js';
 import { signaturePng } from '../portal.js';
 import type { Context } from './support.js';
 
-export interface Schema {
-  type?: string; format?: string; enum?: unknown[]; pattern?: string; minLength?: number; minimum?: number; exclusiveMinimum?: boolean | number;
-  properties?: Record<string, Schema>; required?: string[]; items?: Schema; minItems?: number; anyOf?: Schema[]; oneOf?: Schema[]; nullable?: boolean;
-}
-export interface ApiOperation {
-  permission: { kind: string; capability?: string; purpose?: string };
-  parameters?: { name: string; in: string; required?: boolean; schema?: Schema }[];
-  requestBody?: { content: Record<string, { schema: Schema }> };
-}
-export interface ApiDocument { paths: Record<string, Record<string, ApiOperation>> }
-export interface Route { method: string; path: string; operation: ApiOperation; kind: string; purpose?: string }
+export interface Route { method: string; path: string; operation: Operation; kind: string; purpose?: string }
 export const routeKey = (route: Pick<Route, 'method' | 'path'>) => `${route.method} ${route.path}`;
 
 /** Routes the multi-gym sweep leaves out, each for a stated reason. The sweep fails if one stops matching a route, so the list can't rot. */
@@ -26,7 +16,7 @@ export const outOfScope: { pattern: RegExp; reason: string }[] = [
 ];
 
 /** Every operation of the document, split into the ones the sweep covers (everything that isn't public) and the ones it leaves out. */
-export function routesOf(document: ApiDocument) {
+export function routesOf(document: Document) {
   const swept: Route[] = [], excluded: Route[] = [], open: Route[] = [];
   for (const [path, operations] of Object.entries(document.paths)) for (const [method, operation] of Object.entries(operations)) {
     if (!['get', 'post', 'put', 'patch', 'delete'].includes(method)) continue;

@@ -7,22 +7,36 @@ export const demoInstall = 'https://demo.localhost';
 export const stripeOrigin = 'https://stripe.localhost';
 interface OutboxMessage { id: string; recipient: string; subject: string; text: string; sentAt: string }
 
-function secret(name: 'E2E_STRIPE_KEY' | 'E2E_STRIPE_WEBHOOK_SECRET') {
+export function stripeSecret(name: 'E2E_STRIPE_KEY' | 'E2E_STRIPE_WEBHOOK_SECRET' | 'E2E_STRIPE_RESTRICTED_KEY') {
   const value = process.env[name];
   if (!value) throw new Error('Run through pnpm --dir e2e test to configure the fake Stripe');
   return value;
 }
 /** The fake Stripe API (stripe/server.mjs), read with the demo install's own test key. */
-export const fakeStripe = () => new Client(stripeOrigin, { authorization: 'Bearer ' + secret('E2E_STRIPE_KEY') });
+export const fakeStripe = () => new Client(stripeOrigin, { authorization: 'Bearer ' + stripeSecret('E2E_STRIPE_KEY') });
 
-/** Sends a signed event to the install's one webhook endpoint, which routes it to its sandbox as Stripe's delivery would. */
-export async function deliverStripeEvent(type: string, object: Record<string, unknown>) {
+/** One event envelope for demo and multi-gym deliveries. */
+export async function signStripeEvent(type: string, object: Record<string, unknown>, gym?: { origin: string; stripeKey: string }) {
   const created = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({ id: 'evt_' + randomBytes(12).toString('hex'), object: 'event', api_version: '2026-09-30.endive',
     created, livemode: false, pending_webhooks: 1, request: { id: null, idempotency_key: null }, type, data: { object } });
-  const signature = createHmac('sha256', secret('E2E_STRIPE_WEBHOOK_SECRET')).update(`${created}.${body}`).digest('hex');
-  const response = await new Client(demoInstall).request('/webhooks/stripe', 'POST', Buffer.from(body), { 'stripe-signature': `t=${created},v1=${signature}` });
+  if (gym) {
+    const signed = await fakeStripe().json<{ url: string; signature: string }>('/test/sign-webhook', 'POST', { key: gym.stripeKey, body });
+    expect(new URL(signed.url).origin, 'the gym registered its own webhook hostname').toBe(gym.origin);
+    return { type, body, signature: signed.signature };
+  }
+  const signature = createHmac('sha256', stripeSecret('E2E_STRIPE_WEBHOOK_SECRET')).update(`${created}.${body}`).digest('hex');
+  return { type, body, signature: `t=${created},v1=${signature}` };
+}
+/** Posts to the intended gym, or a different one when checking isolation. */
+export const postStripeEvent = (origin: string, event: { body: string; signature: string }) =>
+  new Client(origin).request('/webhooks/stripe', 'POST', Buffer.from(event.body), { 'stripe-signature': event.signature });
+
+/** Demo deliveries use the install secret; multi-gym deliveries use the registered endpoint's secret. */
+export async function deliverStripeEvent(type: string, object: Record<string, unknown>, gym?: { origin: string; stripeKey: string }) {
+  const response = await postStripeEvent(gym?.origin ?? demoInstall, await signStripeEvent(type, object, gym));
   expect(response.status, `${type}: ${response.text}`).toBe(200);
+  return response;
 }
 
 /** The newest link to `recipient` in the sandbox outbox whose path matches, once it arrives. Outbox links are bearer credentials. */
@@ -46,13 +60,16 @@ export async function outboxIds(owner: Client) {
 }
 
 /** Follows an emailed portal sign-in link and completes its claim, returning the household's session. */
-export async function claimPortal(origin: string, link: URL) {
-  const client = new Client(origin), verified = await client.request(link.pathname + link.search);
-  expect([302, 303], verified.text).toContain(verified.status);
+export async function claimPortal(origin: string, link: URL, checkpoint = <T>(_name: string, create: () => Promise<T>): Promise<T> => create()) {
+  const client = new Client(origin), verified = await checkpoint('portal:verified', async () => {
+    const response = await client.request(link.pathname + link.search);
+    expect([302, 303], response.text).toContain(response.status); // Before the checkpoint: a failed request isn't saved as done.
+    return response;
+  });
   const callback = new URL(verified.location!, origin);
   expect(callback.pathname).toBe('/portal/claim');
   client.cookie = verified.cookies.map(value => value.split(';')[0]).join('; ');
-  await client.json('/api/portal/claims/complete', 'POST', { claim: callback.searchParams.get('claim') });
+  await checkpoint('portal:claimed', () => client.json('/api/portal/claims/complete', 'POST', { claim: callback.searchParams.get('claim') }));
   return client;
 }
 

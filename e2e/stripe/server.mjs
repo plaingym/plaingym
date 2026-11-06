@@ -2,28 +2,21 @@
 // A small, stateful stand-in for the Stripe API calls the demo install makes, plus a minimal hosted
 // Checkout page. It exists only in the e2e stack, which reaches it as api.stripe.com over a test CA.
 import { createServer } from 'node:http';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 const secretKey = process.env.STRIPE_SECRET_KEY, restrictedKey = process.env.STRIPE_RESTRICTED_KEY, checkoutOrigin = process.env.CHECKOUT_ORIGIN;
 if (!secretKey || !restrictedKey || !checkoutOrigin) throw new Error('STRIPE_SECRET_KEY, STRIPE_RESTRICTED_KEY and CHECKOUT_ORIGIN are required');
-// Each API key is its own Stripe account: its own objects, idempotency replies and webhook endpoints, so a call made with one
-// key can never read or change what another key created. `objects` and `replies` always belong to the request being handled
-// (handlers run synchronously once the body is read).
-const accounts = new Map();
-let objects, replies;
-/** The account a bearer key opens: the demo install's secret key, the legacy restricted key, or any restricted test key a gym saves. */
-function accountOf(key) {
-  if (!(key === secretKey || key === restrictedKey || /^rk_test_[0-9a-f]{16,}$/.test(key))) return undefined;
-  if (!accounts.has(key)) accounts.set(key, { objects: new Map(), replies: new Map() });
-  return accounts.get(key);
-}
-const select = (account) => { ({ objects, replies } = account); };
+// Only the keys issued to this run have accounts. Gym keys use the same derivation as multi/support.ts.
+const keys = [secretKey, restrictedKey, ...['alpha', 'beta'].map(slug =>
+  'rk_test_' + createHash('sha256').update(`${restrictedKey}:${slug}`).digest('hex').slice(0, 32))];
+const accounts = new Map(keys.map(key => [key, { objects: new Map(), replies: new Map() }]));
+const accountOf = (key) => accounts.get(key);
 const newId = (prefix) => prefix + '_' + randomBytes(12).toString('hex');
 const now = () => Math.floor(Date.now() / 1000);
 // Underscored fields are this fake's own state and never leave it.
 const visible = (object) => Object.fromEntries(Object.entries(object).filter(([name]) => !name.startsWith('_')));
-const store = (object) => { objects.set(object.id, object); return object; };
-const find = (prefix, id) => { const object = objects.get(id); return object?.id.startsWith(prefix + '_') ? object : undefined; };
+const store = (account, object) => { account.objects.set(object.id, object); return object; };
+const find = (account, prefix, id) => { const object = account.objects.get(id); return object?.id.startsWith(prefix + '_') ? object : undefined; };
 
 class StripeError extends Error {
   constructor(status, body) { super(body.message); this.status = status; this.body = body; }
@@ -57,17 +50,17 @@ const integer = (value, name) => {
 };
 
 /** As Stripe does, `expand` replaces each named top-level ID with the object it names. */
-function expanded(body, ...params) {
+function expanded(account, body, ...params) {
   for (const param of params) for (const name of Object.values(param.expand ?? {})) {
-    const target = typeof body[name] === 'string' ? objects.get(body[name]) : undefined;
+    const target = typeof body[name] === 'string' ? account.objects.get(body[name]) : undefined;
     if (target) body[name] = visible(target);
   }
   return body;
 }
 
-function list(prefix, query, filter = () => true) {
+function list(account, prefix, query, filter = () => true) {
   const created = query.created ?? {}, limit = Math.min(Number(query.limit ?? 10), 100);
-  let rows = [...objects.values()].filter((object) => object.id.startsWith(prefix + '_') && filter(object)
+  let rows = [...account.objects.values()].filter((object) => object.id.startsWith(prefix + '_') && filter(object)
     && (created.gte === undefined || object.created >= Number(created.gte)) && (created.lte === undefined || object.created <= Number(created.lte)))
     .sort((a, b) => b.created - a.created || (a.id < b.id ? 1 : -1));
   if (query.starting_after) rows = rows.slice(rows.findIndex((object) => object.id === query.starting_after) + 1);
@@ -79,134 +72,134 @@ function card(token) {
   if (token === 'tok_chargeCustomerFail') return { brand: 'visa', last4: '0341', fails: true };
   throw invalid('Unsupported test token');
 }
-function paymentMethod(customer, details, metadata = {}) {
-  return store({ id: newId('pm'), object: 'payment_method', type: 'card', created: now(), livemode: false, customer, metadata,
+function paymentMethod(account, customer, details, metadata = {}) {
+  return store(account, { id: newId('pm'), object: 'payment_method', type: 'card', created: now(), livemode: false, customer, metadata,
     card: { brand: details.brand, last4: details.last4, exp_month: 12, exp_year: new Date().getUTCFullYear() + 5 }, _fails: details.fails });
 }
-function succeed(intent) {
-  const charge = store({ id: newId('ch'), object: 'charge', created: now(), livemode: false, amount: intent.amount,
+function succeed(account, intent) {
+  const charge = store(account, { id: newId('ch'), object: 'charge', created: now(), livemode: false, amount: intent.amount,
     currency: intent.currency, customer: intent.customer, payment_intent: intent.id, status: 'succeeded', paid: true });
   Object.assign(intent, { status: 'succeeded', latest_charge: charge.id, last_payment_error: null, amount_received: intent.amount });
   return intent;
 }
 
 const routes = [
-  ['POST', /^\/v1\/customers$/, (body) => store({ id: newId('cus'), object: 'customer', created: now(), livemode: false,
+  ['POST', /^\/v1\/customers$/, (account, body) => store(account, { id: newId('cus'), object: 'customer', created: now(), livemode: false,
     email: body.email ?? null, name: body.name ?? null, metadata: body.metadata ?? {} })],
-  ['GET', /^\/v1\/customers$/, (_body, query) => list('cus', query, (customer) => !query.email || customer.email === query.email)],
-  ['GET', /^\/v1\/customers\/(\w+)$/, (_body, _query, id) => find('cus', id) ?? missing(id)],
-  ['POST', /^\/v1\/customers\/(\w+)$/, (body, _query, id) => {
-    const customer = find('cus', id); if (!customer) return missing(id);
+  ['GET', /^\/v1\/customers$/, (account, _body, query) => list(account, 'cus', query, (customer) => !query.email || customer.email === query.email)],
+  ['GET', /^\/v1\/customers\/(\w+)$/, (account, _body, _query, id) => find(account, 'cus', id) ?? missing(id)],
+  ['POST', /^\/v1\/customers\/(\w+)$/, (account, body, _query, id) => {
+    const customer = find(account, 'cus', id); if (!customer) return missing(id);
     if (body.name !== undefined) customer.name = body.name;
     if (body.email !== undefined) customer.email = body.email || null;
     if (body.metadata) customer.metadata = { ...customer.metadata, ...body.metadata };
     return customer;
   }],
-  ['POST', /^\/v1\/payment_methods$/, (body) => paymentMethod(null, card(body.card?.token), body.metadata)],
-  ['GET', /^\/v1\/payment_methods\/(\w+)$/, (_body, _query, id) => find('pm', id) ?? missing(id)],
-  ['POST', /^\/v1\/payment_methods\/(\w+)\/attach$/, (body, _query, id) => {
-    const method = find('pm', id); if (!method) return missing(id);
-    if (!find('cus', body.customer)) return missing(body.customer);
+  ['POST', /^\/v1\/payment_methods$/, (account, body) => paymentMethod(account, null, card(body.card?.token), body.metadata)],
+  ['GET', /^\/v1\/payment_methods\/(\w+)$/, (account, _body, _query, id) => find(account, 'pm', id) ?? missing(id)],
+  ['POST', /^\/v1\/payment_methods\/(\w+)\/attach$/, (account, body, _query, id) => {
+    const method = find(account, 'pm', id); if (!method) return missing(id);
+    if (!find(account, 'cus', body.customer)) return missing(body.customer);
     method.customer = body.customer; return method;
   }],
-  ['POST', /^\/v1\/payment_methods\/(\w+)\/detach$/, (_body, _query, id) => {
-    const method = find('pm', id); if (!method) return missing(id);
+  ['POST', /^\/v1\/payment_methods\/(\w+)\/detach$/, (account, _body, _query, id) => {
+    const method = find(account, 'pm', id); if (!method) return missing(id);
     if (!method.customer) throw invalid('The payment method is not attached to a customer');
     method.customer = null; return method;
   }],
-  ['POST', /^\/v1\/payment_intents$/, (body) => {
-    if (!find('cus', body.customer)) return missing(body.customer);
-    if (body.payment_method && !find('pm', body.payment_method)) return missing(body.payment_method);
-    return store({ id: newId('pi'), object: 'payment_intent', created: now(), livemode: false, amount: integer(body.amount, 'amount'),
+  ['POST', /^\/v1\/payment_intents$/, (account, body) => {
+    if (!find(account, 'cus', body.customer)) return missing(body.customer);
+    if (body.payment_method && !find(account, 'pm', body.payment_method)) return missing(body.payment_method);
+    return store(account, { id: newId('pi'), object: 'payment_intent', created: now(), livemode: false, amount: integer(body.amount, 'amount'),
       currency: body.currency, customer: body.customer, payment_method: body.payment_method ?? null, metadata: body.metadata ?? {},
       status: body.payment_method ? 'requires_confirmation' : 'requires_payment_method', latest_charge: null, last_payment_error: null,
       setup_future_usage: body.setup_future_usage ?? null });
   }],
-  ['GET', /^\/v1\/payment_intents$/, (_body, query) => list('pi', query)],
-  ['GET', /^\/v1\/payment_intents\/(\w+)$/, (_body, _query, id) => find('pi', id) ?? missing(id)],
-  ['POST', /^\/v1\/payment_intents\/(\w+)\/confirm$/, (_body, _query, id) => {
-    const intent = find('pi', id); if (!intent) return missing(id);
+  ['GET', /^\/v1\/payment_intents$/, (account, _body, query) => list(account, 'pi', query)],
+  ['GET', /^\/v1\/payment_intents\/(\w+)$/, (account, _body, _query, id) => find(account, 'pi', id) ?? missing(id)],
+  ['POST', /^\/v1\/payment_intents\/(\w+)\/confirm$/, (account, _body, _query, id) => {
+    const intent = find(account, 'pi', id); if (!intent) return missing(id);
     if (!['requires_confirmation', 'requires_payment_method'].includes(intent.status)) throw invalid('This PaymentIntent cannot be confirmed');
-    const method = find('pm', intent.payment_method ?? '');
-    if (!method?._fails) return succeed(intent);
+    const method = find(account, 'pm', intent.payment_method ?? '');
+    if (!method?._fails) return succeed(account, intent);
     Object.assign(intent, { status: 'requires_payment_method',
       last_payment_error: { type: 'card_error', code: 'card_declined', decline_code: 'generic_decline', message: 'Your card was declined.' } });
     throw new StripeError(402, { type: 'card_error', code: 'card_declined', decline_code: 'generic_decline',
       message: 'Your card was declined.', payment_intent: visible(intent) });
   }],
-  ['POST', /^\/v1\/payment_intents\/(\w+)\/cancel$/, (_body, _query, id) => {
-    const intent = find('pi', id); if (!intent) return missing(id);
+  ['POST', /^\/v1\/payment_intents\/(\w+)\/cancel$/, (account, _body, _query, id) => {
+    const intent = find(account, 'pi', id); if (!intent) return missing(id);
     if (intent.status === 'succeeded') throw invalid('This PaymentIntent has already succeeded');
     intent.status = 'canceled'; return intent;
   }],
-  ['GET', /^\/v1\/charges\/(\w+)$/, (_body, _query, id) => find('ch', id) ?? missing(id)],
-  ['POST', /^\/v1\/checkout\/sessions$/, (body) => {
-    if (!find('cus', body.customer)) return missing(body.customer);
+  ['GET', /^\/v1\/charges\/(\w+)$/, (account, _body, _query, id) => find(account, 'ch', id) ?? missing(id)],
+  ['POST', /^\/v1\/checkout\/sessions$/, (account, body) => {
+    if (!find(account, 'cus', body.customer)) return missing(body.customer);
     if (!['payment', 'setup'].includes(body.mode)) throw invalid('Unsupported Checkout mode');
     const id = newId('cs_test'), item = body.line_items?.[0]?.price_data;
-    return store({ id, object: 'checkout.session', created: now(), livemode: false, mode: body.mode, status: 'open',
+    return store(account, { id, object: 'checkout.session', created: now(), livemode: false, mode: body.mode, status: 'open',
       payment_status: 'unpaid', url: `${checkoutOrigin}/pay/${id}`, customer: body.customer, metadata: body.metadata ?? {},
       success_url: body.success_url, cancel_url: body.cancel_url, payment_intent: null, setup_intent: null,
       expires_at: body.expires_at === undefined ? now() + 86_400 : integer(body.expires_at, 'expires_at'),
       currency: item?.currency ?? null, amount_total: item ? integer(item.unit_amount, 'unit_amount') * integer(body.line_items[0].quantity, 'quantity') : null,
       _intentData: body.payment_intent_data ?? {}, _setupData: body.setup_intent_data ?? {} });
   }],
-  ['GET', /^\/v1\/checkout\/sessions\/(\w+)$/, (_body, _query, id) => find('cs', id) ?? missing(id)],
-  ['POST', /^\/v1\/checkout\/sessions\/(\w+)\/expire$/, (_body, _query, id) => {
-    const session = find('cs', id); if (!session) return missing(id);
+  ['GET', /^\/v1\/checkout\/sessions\/(\w+)$/, (account, _body, _query, id) => find(account, 'cs', id) ?? missing(id)],
+  ['POST', /^\/v1\/checkout\/sessions\/(\w+)\/expire$/, (account, _body, _query, id) => {
+    const session = find(account, 'cs', id); if (!session) return missing(id);
     if (session.status !== 'open') throw invalid('Only open Checkout sessions can be expired');
     session.status = 'expired'; return session;
   }],
-  ['GET', /^\/v1\/setup_intents\/(\w+)$/, (_body, _query, id) => find('seti', id) ?? missing(id)],
-  ['POST', /^\/v1\/refunds$/, (body) => {
-    const intent = find('pi', body.payment_intent ?? ''); if (!intent) return missing(body.payment_intent);
-    return store({ id: newId('re'), object: 'refund', created: now(), livemode: false, amount: integer(body.amount ?? intent.amount, 'amount'),
+  ['GET', /^\/v1\/setup_intents\/(\w+)$/, (account, _body, _query, id) => find(account, 'seti', id) ?? missing(id)],
+  ['POST', /^\/v1\/refunds$/, (account, body) => {
+    const intent = find(account, 'pi', body.payment_intent ?? ''); if (!intent) return missing(body.payment_intent);
+    return store(account, { id: newId('re'), object: 'refund', created: now(), livemode: false, amount: integer(body.amount ?? intent.amount, 'amount'),
       currency: intent.currency, payment_intent: intent.id, charge: intent.latest_charge, status: 'succeeded', metadata: body.metadata ?? {} });
   }],
-  ['GET', /^\/v1\/refunds$/, (_body, query) => list('re', query, (refund) => !query.payment_intent || refund.payment_intent === query.payment_intent)],
-  ['GET', /^\/v1\/refunds\/(\w+)$/, (_body, _query, id) => find('re', id) ?? missing(id)],
+  ['GET', /^\/v1\/refunds$/, (account, _body, query) => list(account, 're', query, (refund) => !query.payment_intent || refund.payment_intent === query.payment_intent)],
+  ['GET', /^\/v1\/refunds\/(\w+)$/, (account, _body, _query, id) => find(account, 're', id) ?? missing(id)],
   // The listings a gym's permission check reads when it saves its key.
-  ['GET', /^\/v1\/checkout\/sessions$/, (_body, query) => list('cs', query)],
-  ['GET', /^\/v1\/setup_intents$/, (_body, query) => list('seti', query)],
-  ['GET', /^\/v1\/payment_methods$/, (_body, query) => list('pm', query, (method) => !query.customer || method.customer === query.customer)],
-  ['GET', /^\/v1\/charges$/, (_body, query) => list('ch', query)],
+  ['GET', /^\/v1\/checkout\/sessions$/, (account, _body, query) => list(account, 'cs', query)],
+  ['GET', /^\/v1\/setup_intents$/, (account, _body, query) => list(account, 'seti', query)],
+  ['GET', /^\/v1\/payment_methods$/, (account, _body, query) => list(account, 'pm', query, (method) => !query.customer || method.customer === query.customer)],
+  ['GET', /^\/v1\/charges$/, (account, _body, query) => list(account, 'ch', query)],
   // Webhook endpoints: a gym registers one when it saves its key. Only creation returns the signing secret, as Stripe does.
-  ['POST', /^\/v1\/webhook_endpoints$/, (body) => {
+  ['POST', /^\/v1\/webhook_endpoints$/, (account, body) => {
     const secret = 'whsec_' + randomBytes(16).toString('hex');
-    const endpoint = store({ id: newId('we'), object: 'webhook_endpoint', created: now(), livemode: false, url: body.url,
+    const endpoint = store(account, { id: newId('we'), object: 'webhook_endpoint', created: now(), livemode: false, url: body.url,
       api_version: body.api_version ?? null, enabled_events: body.enabled_events ?? [], metadata: body.metadata ?? {}, status: 'enabled', _secret: secret });
     return { ...visible(endpoint), secret };
   }],
-  ['GET', /^\/v1\/webhook_endpoints$/, (_body, query) => list('we', query)],
-  ['GET', /^\/v1\/webhook_endpoints\/(\w+)$/, (_body, _query, id) => find('we', id) ?? missing(id)],
-  ['POST', /^\/v1\/webhook_endpoints\/(\w+)$/, (body, _query, id) => {
-    const endpoint = find('we', id); if (!endpoint) return missing(id);
+  ['GET', /^\/v1\/webhook_endpoints$/, (account, _body, query) => list(account, 'we', query)],
+  ['GET', /^\/v1\/webhook_endpoints\/(\w+)$/, (account, _body, _query, id) => find(account, 'we', id) ?? missing(id)],
+  ['POST', /^\/v1\/webhook_endpoints\/(\w+)$/, (account, body, _query, id) => {
+    const endpoint = find(account, 'we', id); if (!endpoint) return missing(id);
     if (body.enabled_events) endpoint.enabled_events = body.enabled_events;
     return endpoint;
   }],
-  ['DELETE', /^\/v1\/webhook_endpoints\/(\w+)$/, (_body, _query, id) => {
-    const endpoint = find('we', id); if (!endpoint) return missing(id);
-    objects.delete(id); return { id, object: 'webhook_endpoint', deleted: true };
+  ['DELETE', /^\/v1\/webhook_endpoints\/(\w+)$/, (account, _body, _query, id) => {
+    const endpoint = find(account, 'we', id); if (!endpoint) return missing(id);
+    account.objects.delete(id); return { id, object: 'webhook_endpoint', deleted: true };
   }],
   // Disputes and events never occur in this stand-in; change feeds read them as empty pages.
-  ['GET', /^\/v1\/disputes$/, (_body, query) => list('dp', query)],
-  ['GET', /^\/v1\/disputes\/(\w+)$/, (_body, _query, id) => missing(id)],
-  ['GET', /^\/v1\/events$/, (_body, query) => list('evt', query)],
+  ['GET', /^\/v1\/disputes$/, (account, _body, query) => list(account, 'dp', query)],
+  ['GET', /^\/v1\/disputes\/(\w+)$/, (account, _body, _query, id) => missing(id)],
+  ['GET', /^\/v1\/events$/, (account, _body, query) => list(account, 'evt', query)],
 ];
 
 /** Completes an open session as Stripe's hosted page would after the visitor pays with the test card. */
-function complete(session, number) {
+function complete(account, session, number) {
   if (session.status !== 'open') throw invalid('This Checkout session is no longer open');
   if (number.replace(/\s+/g, '') !== '4242424242424242') throw new StripeError(402, { type: 'card_error', code: 'card_declined', message: 'Your card was declined.' });
-  const method = paymentMethod(session.customer, card('tok_visa'));
+  const method = paymentMethod(account, session.customer, card('tok_visa'));
   if (session.mode === 'payment') {
-    const intent = store({ id: newId('pi'), object: 'payment_intent', created: now(), livemode: false, amount: session.amount_total,
+    const intent = store(account, { id: newId('pi'), object: 'payment_intent', created: now(), livemode: false, amount: session.amount_total,
       currency: session.currency, customer: session.customer, payment_method: method.id, metadata: session._intentData.metadata ?? {},
       setup_future_usage: session._intentData.setup_future_usage ?? null, latest_charge: null, last_payment_error: null, status: 'processing' });
-    succeed(intent);
+    succeed(account, intent);
     Object.assign(session, { payment_intent: intent.id, payment_status: 'paid' });
   } else {
-    const setup = store({ id: newId('seti'), object: 'setup_intent', created: now(), livemode: false, status: 'succeeded',
+    const setup = store(account, { id: newId('seti'), object: 'setup_intent', created: now(), livemode: false, status: 'succeeded',
       customer: session.customer, payment_method: method.id, metadata: session._setupData.metadata ?? {}, last_setup_error: null });
     Object.assign(session, { setup_intent: setup.id, payment_status: 'no_payment_required' });
   }
@@ -242,12 +235,11 @@ createServer(async (request, response) => {
     if (hosted) {
       // The hosted page is reached by the Checkout session's own URL, whichever account made it.
       const owner = [...accounts.values()].find((account) => account.objects.has(hosted[1]));
-      if (owner) select(owner);
-      const session = owner && find('cs', hosted[1]);
+      const session = owner && find(owner, 'cs', hosted[1]);
       if (!session) return send(response, 404, 'Unknown session', 'text/plain');
       if (request.method === 'GET') return send(response, 200, page(session), 'text/html; charset=utf-8');
       try {
-        const location = complete(session, new URLSearchParams(text).get('card') ?? '');
+        const location = complete(owner, session, new URLSearchParams(text).get('card') ?? '');
         response.writeHead(303, { location }); return response.end();
       } catch (error) {
         if (error instanceof StripeError) return send(response, error.status, page(session, error.message), 'text/html; charset=utf-8');
@@ -268,12 +260,11 @@ createServer(async (request, response) => {
     }
     const account = accountOf(bearer);
     if (!account) return send(response, 401, { error: { type: 'invalid_request_error', message: 'Invalid API Key provided' } });
-    select(account);
     const idempotency = request.method === 'POST' && request.headers['idempotency-key'];
     const replayKey = idempotency && `${request.method} ${url.pathname} ${idempotency}`;
-    if (replayKey && replies.has(replayKey)) {
+    if (replayKey && account.replies.has(replayKey)) {
       // As Stripe does, a key replays its first response only for the same parameters.
-      const [first, status, body] = replies.get(replayKey);
+      const [first, status, body] = account.replies.get(replayKey);
       if (first !== text) return send(response, 400, { error: { type: 'idempotency_error',
         message: 'Keys for idempotent requests can only be used with the same parameters they were first used with.' } });
       return send(response, status, body);
@@ -285,15 +276,15 @@ createServer(async (request, response) => {
       status = 404; body = { error: { type: 'invalid_request_error', message: `Unrecognized request URL (${request.method}: ${url.pathname})` } };
     } else {
       try {
-        const [found, handle] = match, form = parseForm(text), query = parseForm(url.search), result = handle(form, query, found[1]);
+        const [found, handle] = match, form = parseForm(text), query = parseForm(url.search), result = handle(account, form, query, found[1]);
         if (result instanceof StripeError) throw result;
-        body = expanded(visible(result), form, query);
+        body = expanded(account, visible(result), form, query);
       } catch (error) {
         if (!(error instanceof StripeError)) throw error;
         status = error.status; body = { error: error.body };
       }
     }
-    if (replayKey) replies.set(replayKey, [text, status, body]);
+    if (replayKey) account.replies.set(replayKey, [text, status, body]);
     send(response, status, body);
   } catch (error) {
     console.error(error);

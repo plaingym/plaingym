@@ -8,15 +8,16 @@ const attempt = (client: Client, email: string, secret = 'wrong-password-for-lim
   client.request('/api/auth/sign-in/email', 'POST', { email, password: secret });
 const nobody = (label: string) => `limit-${label}-${randomBytes(6).toString('hex')}@example.invalid`;
 
-test('one address may try 20 accounts a minute, then is refused with Retry-After while other addresses sign in', async () => {
+test('one address may try 20 accounts a minute, then is refused with Retry-After while other addresses sign in', async ({ install }) => {
+  expect(install.clients.front_desk.cookie).toContain('session_token=');
   const shared = new Client(gymOrigin);
   for (let i = 0; i < 20; i++) expect((await attempt(shared, nobody('address'))).status).toBe(401);
   const refused = await attempt(shared, nobody('address'));
   expect(refused.status, refused.text).toBe(429);
   expect(refused.retryAfter).toBeGreaterThan(0);
   expect(refused.retryAfter).toBeLessThanOrEqual(60);
-  // The refusal is the address's: the owner still signs in from another one.
-  expect((await attempt(new Client(gymOrigin), 'owner@example.invalid', password)).status).toBe(200);
+  // The refusal is the address's: a staff account still signs in from another one.
+  expect((await attempt(new Client(gymOrigin), 'front_desk@example.invalid', password)).status).toBe(200);
 });
 
 test('one account may be tried 10 times in ten minutes from any addresses, then is refused with Retry-After', async () => {

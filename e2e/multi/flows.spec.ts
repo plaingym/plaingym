@@ -172,13 +172,13 @@ for (const index of [0, 1] as const) {
     expect((await stripeAs(other.stripeKey).request('/v1/checkout/sessions/' + sessionId)).status).toBe(404);
     // An event signed with the other gym's secret is refused by this gym's endpoint (the same event, from the other gym's account);
     // so is one signed for this gym but sent to the other gym's endpoint.
-    const forged = await signStripeEvent(other, 'checkout.session.completed', session);
+    const forged = await signStripeEvent('checkout.session.completed', session, other);
     expect((await postStripeEvent(own.origin, forged)).status).toBe(400);
-    const misdirected = await signStripeEvent(own, 'checkout.session.completed', session);
+    const misdirected = await signStripeEvent('checkout.session.completed', session, own);
     expect((await postStripeEvent(other.origin, misdirected)).status).toBe(400);
     expect((await prospects(own)).map((member) => member.status)).toEqual(['prospect']);
     const before = await mailIds();
-    await deliverStripeEvent(own, 'checkout.session.completed', session);
+    await deliverStripeEvent('checkout.session.completed', session, own);
     await expect(page.getByRole('heading', { name: 'Welcome', exact: true })).toBeVisible({ timeout: 30_000 });
     expect((await prospects(own)).map((member) => member.status)).toEqual(['active']);
     expect(await prospects(other)).toEqual([]);

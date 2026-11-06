@@ -135,7 +135,7 @@ The checks cover:
   the automatic `cspGuard` fixture fails a test whose pages, in the default context (when
   the test uses it) or any context the test opens itself, log a CSP violation to the
   browser console, enforced or report-only. `responsive.spec.ts` (pages it serves itself)
-  and the VM spec (`vm.spec.ts`, its own browser on real servers) don't use it. Its failure message drops signed-link tokens, queries and
+  doesn't use it. The VM spec (`vm.spec.ts`) watches both of its own browser contexts with the same guard. Its failure message drops signed-link tokens, queries and
   fragments. `csp.spec.ts` checks the guard itself (an injected inline script and style
   are blocked and caught, through `cspViolations`), the staff invitation page's nonce
   script, the public pages (trial, drop-in, join), that a pay link, a card link and the
@@ -152,15 +152,18 @@ QR check-in code, a class (made with `createClass`, so its time is clear of midn
 its booking, a member tag, a kiosk device, a plan, a waiver template, two invoices (one paid at the desk, with
 its payment and a refund), a charge type, a tax rate, a membership, a card saved through hosted Checkout and the
 gym's signed webhook, a signed link and a campaign, a schedule template, a class tag, a data export, an import run
-(a dry run of an uploaded CSV), pending invitations, and the household's portal login. Each build step is saved
-as it finishes, so a worker started after a failure resumes the half-built gym instead of failing on "Account is
-already staff".
+(a dry run of an uploaded CSV), pending invitations, and the household's portal login. Each successful write
+is saved before the next operation in its build step. Composite steps preserve these checkpoints, so a worker
+resuming after a failure reuses the accepted invitation, program, payment, or other record. The harness spec
+deliberately interrupts the coach and ranks steps and checks that resuming creates no duplicate coach or program.
 
 Each gym saves its own restricted Stripe key (derived from the run's, per gym). The fake Stripe keeps one
-account per key: its own objects, idempotency replies and webhook endpoints, so a call made with one gym's key
+account per issued key (the run's two keys and its derived alpha/beta keys); unissued keys receive 401 and
+cannot create an account through `/test/sign-webhook` (404). Each request passes its account explicitly:
+its own objects, idempotency replies and webhook endpoints, so a call made with one gym's key
 never reads or changes another's. Endpoints keep the signing secret returned when they were created, and the
 specs sign events through the fake's `/test/sign-webhook` (open to the install's secret key only) and post them
-to the gym's own hostname (`deliverStripeEvent` in `multi/support.ts`), as Stripe would. The checks cover:
+to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo specs), as Stripe would. The checks cover:
 
 * In each gym (`flows.spec.ts`): the admin, portal and kiosk (name and PIN) show that gym only, and each schedule
   shows that gym's own class (opened with `showWeek`, and **Next week** on the portal when the class falls
@@ -239,7 +242,12 @@ The specs meet the production limits as separate visitors would, with no test se
 sign-in. Each API client (`Client` in `support.ts`) sends its own address from
 198.18.0.0/15 in `X-Forwarded-For`; the stack's Caddy trusts the test runner as a proxy and
 passes that address on as the only entry, and the apps run with `TRUST_PROXY=true`, as behind
-the production Caddy. So no spec waits for a limiter's window. The browser's requests carry no
+the production Caddy. The main process has a reserved 4,096-address block; each worker gets
+its own block. Allocating past a block, or beyond the 31 worker blocks, throws rather than
+reusing an address and its rate-limit buckets. Password attempts also share an account's
+10-per-ten-minute budget across addresses: keep owner sign-ins below that limit when adding
+specs, and use another staff account for checks that only need a successful sign-in.
+So no spec waits for a limiter's window. The browser's requests carry no
 such header and share the runner's one address, so the stack sets `RATE_LIMIT_PER_MINUTE=20000`
 instead of the default 300 for page loads; the limiter itself is covered by unit tests. A full
 run takes a few minutes. Failed runs

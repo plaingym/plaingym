@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
-import { test, expect, Client, missingId } from '../support.js';
+import { test, expect, Client, missingId, type Document } from '../support.js';
 import { signaturePng } from '../portal.js';
 import { multiGyms, withCookie, type Context } from './support.js';
 import { bodiesOf, hasJsonBody, namesTarget, outOfScope, pathFor, pathParams, queryOf, routeKey, routesOf, snapshot, targetOf,
-  type ApiDocument, type Aim, type Route, type Target } from './probe.js';
+  type Aim, type Route, type Target } from './probe.js';
 
 interface Entry { method: string; path: string; permission: { kind: string } }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
@@ -27,7 +27,7 @@ class Sweep {
   images!: Images;
   private pngBase64 = '';
   private readonly revisions = new Map<string, number>();
-  constructor(readonly from: Context, readonly to: Context, readonly own: Target, readonly target: Target, readonly document: ApiDocument) {}
+  constructor(readonly from: Context, readonly to: Context, readonly own: Target, readonly target: Target, readonly document: Document) {}
 
   async prepare() {
     const { from } = this, expiresAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -166,7 +166,7 @@ test('no route answers a gym\'s credentials with another gym\'s data, in either 
   test.setTimeout(900_000);
   const [alpha, beta] = await multiGyms();
   const [alphaTarget, betaTarget] = [await targetOf(alpha), await targetOf(beta)];
-  const document = await alpha.owner.json<ApiDocument>('/api/openapi.json');
+  const document = await alpha.owner.json<Document>('/api/openapi.json');
   // Every non-public operation is swept, except the few left out for a stated reason: a route added later is covered without a list to widen.
   const { swept, excluded, open } = routesOf(document);
   for (const entry of outOfScope) expect(excluded.some((route) => entry.pattern.test(route.path)), `nothing matches the exclusion: ${entry.reason}`).toBe(true);

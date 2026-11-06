@@ -1,12 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect } from '@playwright/test';
+import { test as base, expect } from '@playwright/test';
+import { createCspGuard } from '../support.js';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { configuration, provision, checked, sql } from '../vm/host.js';
 import { api, browserFor, guards, wizard, restoreWizard, verifyRestored, login, owner, type Witness } from '../vm/browser.js';
 import { startMemory, endMemory, backupLoad, argonLoad, prepareArgon } from '../vm/memory.js';
 
-test('fresh VM → private link → browser wizard → scheduled backup → second VM browser restore → memory and Argon2id', async ({ playwright }) => {
+const test = base.extend<{ vmCsp: ReturnType<typeof createCspGuard> }>({
+  vmCsp: async ({ playwright: _playwright }, use) => {
+    const guard = createCspGuard();
+    try { await use(guard); }
+    finally { expect(guard.violations, 'Content-Security-Policy violations in the VM browser console').toEqual([]); }
+  },
+});
+
+test('VM CSP watcher detects a blocked script in its own local browser', async ({ playwright, vmCsp }) => {
+  const browser = await playwright.chromium.launch({ channel: process.env.E2E_BROWSER_CHANNEL });
+  try {
+    const context = await browser.newContext();
+    vmCsp.watch(context);
+    const page = await context.newPage();
+    await page.setContent(`<meta http-equiv="Content-Security-Policy" content="script-src 'none'"><script>window.blocked = true</script>`);
+    await expect.poll(() => vmCsp.violations.length).toBeGreaterThan(0);
+    expect(vmCsp.violations.join('\n')).toMatch(/Content Security Policy/i);
+    vmCsp.violations.length = 0;
+  } finally { await browser.close(); }
+});
+
+test('fresh VM → private link → browser wizard → scheduled backup → second VM browser restore → memory and Argon2id', async ({ playwright, vmCsp }) => {
   test.setTimeout(3_600_000);
   const config = await configuration();
   const phase = process.env.E2E_VM_PHASE ?? 'all';
@@ -24,6 +46,7 @@ test('fresh VM → private link → browser wizard → scheduled backup → seco
     findings.push(...source.findings);
     await record();
     const primary = await browserFor(playwright.chromium, config, config.source);
+    vmCsp.watch(primary.context);
     try {
       const completedWitness = config.resume && await readFile(witnessFile).then(() => true, () => false);
       if(!completedWitness) await test.step('unprivileged setup mutations and restore polling require the private link', () => guards(primary.context, config.source));
@@ -61,6 +84,7 @@ test('fresh VM → private link → browser wizard → scheduled backup → seco
   findings.push(...installed.findings.map((finding) => 'restore: ' + finding));
   await record();
   const secondary = await browserFor(playwright.chromium, config, config.restore);
+  vmCsp.watch(secondary.context);
   let sampling = false;
   let argonModule: Awaited<ReturnType<typeof prepareArgon>>;
   try {
