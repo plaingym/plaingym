@@ -248,6 +248,12 @@ async function checkInAtKiosk(browser: Browser, origin: string, token: string, i
   const context = await browser.newContext({ viewport: { width: 768, height: 1024 }, hasTouch: true });
   try {
     await context.addInitScript((source) => {
+      // Force a camera-less baseline even on workstations with real devices; only this fake supplies video.
+      MediaDevices.prototype.enumerateDevices = async () => [];
+      navigator.mediaDevices.enumerateDevices = async () => [{
+        kind: 'videoinput', deviceId: 'portal-qr-camera', groupId: 'portal-qr', label: 'Portal QR camera',
+        toJSON() { return { kind: this.kind, deviceId: this.deviceId, groupId: this.groupId, label: this.label }; },
+      }];
       navigator.mediaDevices.getUserMedia = async () => {
         const canvas = document.createElement('canvas'), picture = new Image();
         canvas.width = 640; canvas.height = 480;
@@ -263,6 +269,7 @@ async function checkInAtKiosk(browser: Browser, origin: string, token: string, i
     }, image);
     const kiosk = await context.newPage();
     await kiosk.goto(origin + '/kiosk#kioskToken=' + token);
+    expect(await kiosk.evaluate(() => MediaDevices.prototype.enumerateDevices.call(navigator.mediaDevices))).toEqual([]);
     await kiosk.getByRole('button', { name: 'Scan a QR code', exact: true }).click();
     await expect(kiosk.getByText(shown, { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(kiosk.getByText('Checked in', { exact: true })).toBeVisible();

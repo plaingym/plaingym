@@ -99,4 +99,10 @@ app* option.
 4. On **Check-in**, create a code, and scan it at the kiosk (`/kiosk`) or check in
    there by name and PIN. Register the kiosk device under **Settings → Kiosk devices**,
    then scan the setup code it shows, or open the setup link, on that device. They are
-   shown once, and replace any device already set up in that browser.
+   shown once, and replace the device token stored in that browser. To update an
+   already-open kiosk tab, paste the setup link into that tab's address bar.
+   If the device has no camera, use name and PIN. Scanning a code or receiving a
+   response restarts the idle period; unfinished QR selections reset after 60
+   seconds without pointer or keyboard activity anywhere on the kiosk page.
+   Completed results reset after eight seconds without activity. After a request
+   error, **Try again** starts a fresh scan.

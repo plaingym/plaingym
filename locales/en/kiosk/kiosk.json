@@ -8,6 +8,7 @@
   "saveToken": "Save and start check-in",
   "howCheckIn": "How would you like to check in?",
   "namePin": "Name and PIN",
+  "scanQr": "Scan a QR code",
   "name": "Your name",
   "pin": "Household PIN",
   "clear": "Clear",

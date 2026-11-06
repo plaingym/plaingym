@@ -13,11 +13,11 @@ vi.mock('./qr.scanner.js', () => ({ scanQrCamera: vi.fn() }));
 vi.mock('./feedback.js', () => ({ playTone: vi.fn() }));
 const code = 'pgci1_' + 'a'.repeat(43), member = { id: '00000000-0000-7000-8000-000000000001', firstName: 'Dana', lastInitial: 'P', photoUrl: null };
 let found: (code: string) => void, stop: ReturnType<typeof vi.fn<() => void>>;
-const flow = () => ({ token: 'device', onUnauthorized: vi.fn(), onClose: vi.fn(), onNamePin: vi.fn() });
+const flow = () => ({ token: 'device', onUnauthorized: vi.fn(), onClose: vi.fn(), onNamePin: vi.fn(), onProgress: vi.fn() });
 const setCamera = (value: unknown) => Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value });
 beforeEach(() => {
   stop = vi.fn();
-  setCamera({ getUserMedia: vi.fn() });
+  setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'videoinput' }]) });
   vi.mocked(scanQrCamera).mockImplementation(async (_video, onCode) => { found = onCode; return { stop }; });
   vi.mocked(qrCheckin).mockResolvedValue({ status: 'select_session', member, sessions: [] });
 });
@@ -53,17 +53,12 @@ it('shows only the neutral message for a revoked code or standing failure', asyn
   expect(screen.getByText('Please see the front desk')).toBeDefined();
   expect(document.body.textContent).not.toMatch(/balance|amount|waiver|billing|Dana/);
 });
-it('returns to the choice eight seconds after a result and sixty seconds when idle', async () => {
-  vi.useFakeTimers(); vi.mocked(qrCheckin).mockResolvedValue({ status: 'checked_in', member });
-  const done = flow();
-  render(<QrCheckin {...done}/>); await start(); await scan();
-  await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
-  expect(done.onClose).toHaveBeenCalledOnce(); expect(screen.queryByText('Dana P.')).toBeNull();
-  cleanup();
-  const idle = flow();
-  render(<QrCheckin {...idle}/>); await start();
-  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-  expect(idle.onClose).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalled();
+it('reports scan and response progress to the page that owns the idle timer', async () => {
+  const props = flow();
+  const result = { status: 'checked_in' as const, member };
+  vi.mocked(qrCheckin).mockResolvedValue(result);
+  render(<QrCheckin {...props}/>); await start(); await scan();
+  expect(props.onProgress.mock.calls).toEqual([[], [result]]);
 });
 it('offers name and PIN after camera denial and returns to setup for a revoked device', async () => {
   vi.mocked(scanQrCamera).mockRejectedValueOnce(new Error('permission denied'));
@@ -75,6 +70,42 @@ it('offers name and PIN after camera denial and returns to setup for a revoked d
   const revoked = flow(); render(<QrCheckin {...revoked}/>); await start();
   vi.mocked(qrCheckin).mockRejectedValueOnce(new KioskAuthError()); await scan();
   expect(revoked.onUnauthorized).toHaveBeenCalledTimes(1);
+});
+it.each([false, true])('offers a fresh scan after a request error (class selection: %s)', async (selecting) => {
+  render(<QrCheckin {...flow()}/>); await start();
+  if (selecting) await scan();
+  vi.mocked(qrCheckin).mockRejectedValueOnce(new Error('offline'));
+  if (selecting) await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Open mat' })); });
+  else await scan();
+  expect(stop).toHaveBeenCalled();
+  expect(screen.queryByText('Dana P.')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Open mat' })).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Try again' })); });
+  expect(scanQrCamera).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText('Dana P.')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Open mat' })).toBeNull();
+  vi.mocked(qrCheckin).mockResolvedValueOnce({ status: 'checked_in', member });
+  await scan();
+  expect(screen.getByText('Checked in')).toBeDefined();
+  expect(qrCheckin).toHaveBeenLastCalledWith('device', code, undefined);
+});
+it('does not start scanning when enumeration finds only audio devices', async () => {
+  setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'audioinput' }]) });
+  render(<QrCheckin {...flow()}/>); await start();
+  expect(scanQrCamera).not.toHaveBeenCalled();
+  expect(screen.getByText(/can't scan a QR code/)).toBeDefined();
+  expect(screen.getByRole('button', { name: 'Use name and PIN' })).toBeDefined();
+});
+it('handles failed enumeration and ignores enumeration after unmount', async () => {
+  setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockRejectedValue(new Error('denied')) });
+  const view = render(<QrCheckin {...flow()}/>); await start();
+  expect(screen.getByText(/Allow camera access/)).toBeDefined();
+  expect(scanQrCamera).not.toHaveBeenCalled(); view.unmount();
+  let finish!: (value: { kind: string }[]) => void;
+  setCamera({ getUserMedia: vi.fn(), enumerateDevices: () => new Promise((resolve) => { finish = resolve; }) });
+  const late = render(<QrCheckin {...flow()}/>); late.unmount();
+  await act(async () => { finish([{ kind: 'videoinput' }]); });
+  expect(scanQrCamera).not.toHaveBeenCalled();
 });
 it('says so and offers name and PIN where the device has no camera', async () => {
   setCamera(undefined);

@@ -13,7 +13,10 @@ const { KioskApp } = await import('../kiosk/kiosk.js');
 const { readToken } = await import('../kiosk/api.js');
 const hint = /Search the full name Marcus Rivera with household PIN 2468/;
 beforeEach(() => {
-  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => { throw new DOMException('Denied', 'NotAllowedError'); }) } });
+  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
+    enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'videoinput' }]),
+    getUserMedia: vi.fn(async () => { throw new DOMException('Denied', 'NotAllowedError'); }),
+  } });
 });
 afterEach(() => { cleanup(); fetcher.mockReset(); vi.mocked(readToken).mockReset(); });
 afterAll(() => vi.unstubAllGlobals());
@@ -30,8 +33,9 @@ it('shows the sample household only on the Name and PIN search, not on the choic
   expect(screen.queryByText(hint)).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' }));
   expect(screen.queryByText(hint)).toBeNull();
-  // Without a camera the QR flow offers the name search, and the hint appears with it.
+  // A denied camera offers the name search, and the hint appears with it.
   fireEvent.click(await screen.findByRole('button', { name: 'Use name and PIN' }));
+  expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce();
   expect(await screen.findByLabelText('Your name')).toBeDefined();
   expect(screen.getAllByText(hint)).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: 'Start over' }));

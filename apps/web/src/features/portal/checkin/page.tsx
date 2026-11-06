@@ -2,7 +2,7 @@
 import { PortalRecovery } from '../household/recovery.js';
 import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { renderSVG } from 'uqr';
+import { qrDataUrl } from '../../../lib/qr.js';
 import { ApiError } from '../../../lib/api.js';
 import { t } from '../../../lib/i18n.js';
 import { Alert } from '../../../components/ui/alert.js';
@@ -16,7 +16,7 @@ import { MemberPicker, usePortalMembers } from '../schedule/members.js';
 const text = (key: string, values?: Record<string, string>) => t('portal/checkin:' + key, values);
 /** The code is derived on the server and only ever shown, never stored by the browser or service worker. */
 function CodeImage({ code, name }: { code: string; name: string }) {
-  const url = useMemo(() => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(renderSVG(code, { ecc: 'M', border: 4 })), [code]);
+  const url = useMemo(() => qrDataUrl(code), [code]);
   return <img src={url} width="288" height="288" alt={text('codeImage', { name })} className="mx-auto h-auto w-full max-w-72 rounded-lg bg-white p-2" />;
 }
 export function PortalCheckinPage({ client = portalClient }: { client?: PortalClient }) {

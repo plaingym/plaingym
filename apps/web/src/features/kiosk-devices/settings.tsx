@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { parseResponse } from '../../lib/response.js';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { renderSVG } from 'uqr';
+import { qrDataUrl } from '../../lib/qr.js';
 import { kioskDeviceListResponseSchema, kioskDeviceResponseSchema, registerKioskDeviceResponseSchema,
   type KioskDeviceListResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
@@ -21,17 +21,24 @@ export function KioskDevicesSettings() {
   const [offset, setOffset] = useState(0);
   const [reload, setReload] = useState(0);
   const [showToken, setShowToken] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(0);
+  const [copyFailed, setCopyFailed] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(0), 3_000);
+    return () => clearTimeout(timer);
+  }, [copied]);
   // The link and its code exist only in memory while the token is shown; nothing is stored.
   const setupLink = token ? window.location.origin + '/kiosk#token=' + encodeURIComponent(token.value) : '';
   const qr = useMemo(() => {
     if (!setupLink) return '';
-    try { return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(renderSVG(setupLink, { ecc: 'M', border: 4 })); } catch { return ''; }
+    try { return qrDataUrl(setupLink); } catch { return ''; }
   }, [setupLink]);
   // Clearing the token also resets the reveal and copy state, so the next token never starts revealed.
-  function clearToken() { setToken(null); setShowToken(false); setCopied(false); }
+  function clearToken() { setToken(null); setShowToken(false); setCopied(0); setCopyFailed(false); }
   async function copyLink() {
-    try { await navigator.clipboard.writeText(setupLink); setCopied(true); } catch { setMessage(t('kiosk/devices:copyFailed')); }
+    try { await navigator.clipboard.writeText(setupLink); setCopied((value) => value + 1); setCopyFailed(false); }
+    catch { setCopied(0); setCopyFailed(true); }
   }
   useEffect(() => {
     let active = true;
@@ -74,13 +81,15 @@ export function KioskDevicesSettings() {
     <h2 className="text-lg font-semibold">{t('kiosk/devices:title')}</h2>
     <p>{t('kiosk/devices:help')}</p>
     {message && <Alert>{message}</Alert>}
+    {copyFailed && <Alert>{t('kiosk/devices:copyFailed')}</Alert>}
     {token && <Alert>
       <p>{t('kiosk/devices:setupOnce')}</p>
       {qr && <img src={qr} alt={t('kiosk/devices:qrAlt')} className="my-2 h-auto w-full max-w-64 bg-white"/>}
+      {!qr && <p role="status">{t('kiosk/devices:qrFailed')}</p>}
       <code className="my-2 block break-all select-all">{setupLink}</code>
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" onClick={() => void copyLink()}>{copied ? t('kiosk/devices:copied') : t('kiosk/devices:copy')}</Button>
-        <Button variant="outline" aria-expanded={showToken} onClick={() => setShowToken((value) => !value)}>{t('kiosk/devices:showToken')}</Button>
+        <Button variant="outline" aria-expanded={showToken} onClick={() => setShowToken((value) => !value)}>{t(showToken ? 'kiosk/devices:hideToken' : 'kiosk/devices:showToken')}</Button>
         <Button variant="outline" onClick={clearToken}>{t('kiosk/devices:dismiss')}</Button>
       </div>
       {showToken && <><p className="mt-2">{t('kiosk/devices:tokenHelp')}</p>

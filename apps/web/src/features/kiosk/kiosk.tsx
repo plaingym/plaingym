@@ -24,8 +24,18 @@ const big = 'min-h-12 h-auto whitespace-normal px-3 py-3 text-lg sm:min-h-16 sm:
 
 export function KioskApp() {
   const [token, setToken] = useState<string | null>(() => readToken());
+  useEffect(() => {
+    const updateToken = () => {
+      if (new URLSearchParams(window.location.hash.slice(1)).get('token')) {
+        const next = readToken();
+        if (next) setToken(next);
+      }
+    };
+    window.addEventListener('hashchange', updateToken);
+    return () => window.removeEventListener('hashchange', updateToken);
+  }, []);
   if (!token) return <DeviceSetup onSaved={(value) => { saveToken(value); setToken(value); }}/>;
-  return <CheckIn token={token} onUnauthorized={() => { forgetToken(); setToken(null); }}/>;
+  return <CheckIn key={token} token={token} onUnauthorized={() => { forgetToken(); setToken(null); }}/>;
 }
 
 function DeviceSetup({ onSaved }: { onSaved: (token: string) => void }) {
@@ -44,12 +54,19 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
   const [flow, setFlow] = useState<'choose' | 'qr' | 'pin'>('choose');
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState(0);
+  const [qrDone, setQrDone] = useState(false);
+  const qrProgress = useCallback((result?: KioskCheckinResult) => {
+    setQrDone(!!result && result.status !== 'select_session');
+    setActivity((value) => value + 1);
+  }, []);
+  const openNamePin = useCallback(() => setFlow('pin'), []);
   const generation = useRef(0), pending = useRef(false);
-  const reset = useCallback(() => { generation.current++; setFlow('choose'); setScreen({ kind: 'search' }); }, []);
+  const reset = useCallback(() => { generation.current++; setFlow('choose'); setQrDone(false); setScreen({ kind: 'search' }); }, []);
   useEffect(() => {
-    const timer = setTimeout(reset, screen.kind === 'results' && settled(screen.rows) ? doneResetMs : idleResetMs);
+    const done = flow === 'qr' ? qrDone : screen.kind === 'results' && settled(screen.rows);
+    const timer = setTimeout(reset, done ? doneResetMs : idleResetMs);
     return () => clearTimeout(timer);
-  }, [screen, activity, reset]);
+  }, [screen, flow, qrDone, activity, reset]);
   useEffect(() => () => { generation.current++; }, []);
   async function guard(work: (current: () => boolean) => Promise<void>) {
     // Lock synchronously: two quick taps must never submit two open-mat visits.
@@ -62,7 +79,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     catch (error) {
       if (!current()) return;
       if (error instanceof KioskAuthError) onUnauthorized();
-      else { playTone('attention'); setFlow('pin'); setScreen({ kind: 'search', message: 'error' }); }
+      else { playTone('attention'); setScreen({ kind: 'search', message: 'error' }); }
     } finally { pending.current = false; setBusy(false); }
   }
   function announce(results: readonly KioskCheckinResult[]) {
@@ -72,7 +89,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
   const search = (name: string, pin: string) => void guard(async (current) => {
     const found = await kioskApi.lookup(token, name, pin);
     if (!current()) return;
-    if (found.status === 'see_front_desk') { playTone('attention'); setFlow('pin'); setScreen({ kind: 'search', message: 'not_found' }); return; }
+    if (found.status === 'see_front_desk') { playTone('attention'); setScreen({ kind: 'search', message: 'not_found' }); return; }
     setScreen({ kind: 'select', name, pin, members: found.members, chosen: new Set(found.members.map((member) => member.id)) });
   });
   const submit = (selection: Extract<Screen, { kind: 'select' }>) => void guard(async (current) => {
@@ -95,8 +112,8 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
     onPointerDown={() => setActivity((value) => value + 1)} onKeyDown={() => setActivity((value) => value + 1)}>
     <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl font-semibold sm:text-3xl">{text('title')}</h1>
       <Button variant="outline" onClick={() => void document.documentElement.requestFullscreen?.().catch(() => undefined)}>{text('fullscreen')}</Button></div>
-    {screen.kind === 'search' && flow === 'choose' && <Choose onQr={() => setFlow('qr')} onPin={() => setFlow('pin')}/>}
-    {screen.kind === 'search' && flow === 'qr' && <QrCheckin token={token} onUnauthorized={onUnauthorized} onClose={reset} onNamePin={() => setFlow('pin')}/>}
+    {screen.kind === 'search' && flow === 'choose' && <Choose onQr={() => setFlow('qr')} onPin={openNamePin}/>}
+    {screen.kind === 'search' && flow === 'qr' && <QrCheckin token={token} onUnauthorized={onUnauthorized} onClose={reset} onNamePin={openNamePin} onProgress={qrProgress}/>}
     {screen.kind === 'search' && flow === 'pin' && <><DemoKioskHint /><Search key={generation.current} busy={busy} message={screen.message} onSearch={search}/>
       <Button variant="outline" className={big + ' w-full'} onClick={reset}>{text('cancel')}</Button></>}
     {screen.kind === 'select' && <Select screen={screen} busy={busy} onChange={setScreen} onSubmit={() => submit(screen)} onCancel={reset}/>}
@@ -109,7 +126,7 @@ function CheckIn({ token, onUnauthorized }: { token: string; onUnauthorized: () 
 
 function Choose({ onQr, onPin }: { onQr: () => void; onPin: () => void }) {
   return <section className="grid gap-4 sm:grid-cols-2 sm:gap-6" aria-labelledby="kiosk-choose"><h2 id="kiosk-choose" className="text-2xl sm:col-span-2">{text('howCheckIn')}</h2>
-    <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onQr}>{t('kiosk/qr:scan')}</Button>
+    <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onQr}>{text('scanQr')}</Button>
     <Button className={big + ' min-h-24 sm:min-h-32'} onClick={onPin}>{text('namePin')}</Button>
   </section>;
 }

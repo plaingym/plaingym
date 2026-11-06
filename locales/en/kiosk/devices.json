@@ -10,6 +10,8 @@
   "copied": "Link copied",
   "copyFailed": "The link could not be copied. Select it and copy it by hand.",
   "showToken": "Show token",
+  "hideToken": "Hide token",
+  "qrFailed": "The QR code could not be drawn. Open the setup link on the check-in device instead.",
   "tokenHelp": "To set up by hand, enter this token on the kiosk page of the check-in device.",
   "dismiss": "Dismiss",
   "refresh": "Refresh devices",

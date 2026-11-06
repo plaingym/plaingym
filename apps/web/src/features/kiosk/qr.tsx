@@ -12,45 +12,49 @@ import { scanQrCamera, type CameraScan } from './qr.scanner.js';
 const text = (key: string) => t('kiosk/qr:' + key);
 const big = 'h-auto min-h-12 whitespace-normal p-3 text-lg sm:min-h-16 sm:text-xl';
 const hasCamera = () => typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getUserMedia === 'function';
-/** The QR flow itself: the kiosk page owns whether it is open and mounts it only then; every way out calls `onClose`. Its device token grants only check-in endpoints. */
-export function QrCheckin({ token, onUnauthorized, onClose, onNamePin }: { token: string; onUnauthorized: () => void; onClose: () => void; onNamePin: () => void }) {
+/** The page owns idle and whether the flow is open; scan/response progress rearms its timer. Its device token grants only check-in endpoints. */
+export function QrCheckin({ token, onUnauthorized, onClose, onNamePin, onProgress }: { token: string; onUnauthorized: () => void; onClose: () => void; onNamePin: () => void; onProgress: (result?: KioskCheckinResult) => void }) {
   const [scanning, setScanning] = useState(hasCamera), [busy, setBusy] = useState(false), [result, setResult] = useState<KioskCheckinResult>(), [message, setMessage] = useState(() => hasCamera() ? '' : 'noCamera');
   const video = useRef<HTMLVideoElement>(null), camera = useRef<CameraScan | undefined>(undefined);
   const code = useRef<string | undefined>(undefined), generation = useRef(0), pending = useRef<number | undefined>(undefined);
   const reset = useCallback(() => {
     generation.current++; camera.current?.stop(); camera.current = undefined; code.current = undefined;
-    setScanning(false); setBusy(false); setResult(undefined); setMessage('');
-  }, []);
+    setScanning(false); setBusy(false); setResult(undefined); setMessage(''); onProgress();
+  }, [onProgress]);
   const close = useCallback(() => { reset(); onClose(); }, [reset, onClose]);
   const submit = useCallback(async (value: string, sessionId?: string | null) => {
     if (pending.current === generation.current) return;
-    const started = generation.current; pending.current = started; setBusy(true);
+    const started = generation.current; pending.current = started; setBusy(true); onProgress();
     try {
       const response = await qrCheckin(token, value, sessionId);
       if (started !== generation.current) return;
-      setResult(response); setMessage('');
+      setResult(response); setMessage(''); onProgress(response);
       playTone(response.status === 'see_front_desk' ? 'attention' : response.status === 'select_session' ? 'attention' : 'success');
       if (response.status !== 'select_session') code.current = undefined;
     } catch (error) {
       if (started !== generation.current) return;
       code.current = undefined;
       if (error instanceof KioskAuthError) { reset(); onUnauthorized(); }
-      else setMessage('requestError');
+      else { setResult(undefined); setMessage('requestError'); onProgress(); }
     } finally { if (pending.current === started) { pending.current = undefined; setBusy(false); } }
-  }, [token, onUnauthorized, reset]);
-  useEffect(() => {
-    const timer = setTimeout(close, result && result.status !== 'select_session' ? 8_000 : 60_000);
-    return () => clearTimeout(timer);
-  }, [result, close]);
+  }, [token, onUnauthorized, reset, onProgress]);
   useEffect(() => {
     if (!scanning || !video.current) return;
     let cancelled = false;
     const started = generation.current;
-    void scanQrCamera(video.current, (value) => {
+    const element = video.current;
+    void (async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices();
       if (cancelled || started !== generation.current) return;
-      code.current = value; setScanning(false); void submit(value);
-    }, () => { if (!cancelled) { setScanning(false); setMessage('cameraError'); } }).then((active) => {
-      if (cancelled) active.stop(); else camera.current = active;
+      if (!devices.some((device) => device.kind === 'videoinput')) {
+        setScanning(false); setMessage('noCamera'); return;
+      }
+      return scanQrCamera(element, (value) => {
+        if (cancelled || started !== generation.current) return;
+        code.current = value; setScanning(false); void submit(value);
+      }, () => { if (!cancelled) { setScanning(false); setMessage('cameraError'); } });
+    })().then((active) => {
+      if (cancelled) active?.stop(); else camera.current = active;
     }).catch(() => { if (!cancelled) { setScanning(false); setMessage('cameraError'); } });
     return () => { cancelled = true; camera.current?.stop(); camera.current = undefined; };
   }, [scanning, submit]);
@@ -60,6 +64,7 @@ export function QrCheckin({ token, onUnauthorized, onClose, onNamePin }: { token
     {scanning && <><p>{text('cameraHelp')}</p><video ref={video} aria-label={text('camera')} muted playsInline className="aspect-[4/3] w-full rounded-lg bg-muted object-cover"/></>}
     {!scanning && !result && !message && <p role="status">{text('checking')}</p>}
     {message && <><Alert role="status">{text(message)}</Alert>
+      {message === 'requestError' && <Button className={big + ' w-full'} onClick={() => { reset(); setScanning(true); }}>{text('retry')}</Button>}
       {(message === 'cameraError' || message === 'noCamera' || message === 'requestError') && <Button className={big + ' w-full'} onClick={() => { reset(); onNamePin(); }}>{text('usePin')}</Button>}</>}
     {result && <div aria-live="polite" className="space-y-4">
       {result.status !== 'see_front_desk' && <p className="break-words text-2xl">{result.member.firstName} {result.member.lastInitial}.</p>}

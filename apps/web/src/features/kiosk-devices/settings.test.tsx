@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { renderSVG } from 'uqr';
 import userEvent from '@testing-library/user-event';
 import { KioskDevicesSettings } from './settings.js';
 import { registration } from './registrations.js';
 const client = vi.hoisted(() => ({ GET: vi.fn(), POST: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ api: client }));
+vi.mock('uqr', async (original) => {
+  const actual = await original<typeof import('uqr')>();
+  return { ...actual, renderSVG: vi.fn(actual.renderSVG) };
+});
 const device = { id: '019aa4a0-0000-7000-8000-000000000001', name: 'Front desk', createdAt: '2026-10-22T12:00:00Z',
   lastSeenAt: null, revokedAt: null };
 const token = 'private-once-only-token-for-testing';
@@ -17,9 +22,38 @@ beforeEach(() => {
   client.GET.mockResolvedValue(page()); localStorage.clear(); sessionStorage.clear();
 });
 afterEach(() => {
-  cleanup(); vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear(); window.history.replaceState(null, '', '/');
+  cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); localStorage.clear(); sessionStorage.clear(); window.history.replaceState(null, '', '/');
 });
 describe('kiosk device settings', () => {
+  it('clears the copied note three seconds after the latest copy', async () => {
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    await screen.findByRole('button', { name: 'Copy link' });
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy link' })); });
+    expect(screen.getByRole('button', { name: 'Link copied' })).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Link copied' })); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(screen.getByRole('button', { name: 'Link copied' })).toBeDefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeDefined();
+  });
+  it('explains a QR rendering failure and keeps the setup link available', async () => {
+    vi.mocked(renderSVG).mockImplementationOnce(() => { throw new Error('private rendering details'); });
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'The QR code could not be drawn. Open the setup link on the check-in device instead.');
+    expect(screen.getByText(window.location.origin + '/kiosk#token=' + token)).toBeDefined();
+    expect(screen.queryByAltText('QR code of the kiosk setup link')).toBeNull();
+    expect(document.body.textContent).not.toContain('private rendering details');
+  });
   it('enables the registered section for device managers and renders safe device metadata', async () => {
     expect(registration.settingsSections?.[0]).toMatchObject({ enabled: true,
       permission: { kind: 'staff', capability: 'kiosk_devices.manage' }, component: KioskDevicesSettings });
@@ -41,6 +75,9 @@ describe('kiosk device settings', () => {
     expect(screen.queryByText(token)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Show token' }));
     expect(screen.getByText(token)).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Hide token' }));
+    expect(screen.queryByText(token)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Show token' }).getAttribute('aria-expanded')).toBe('false');
     expect(client.POST).toHaveBeenCalledWith('/api/kiosk/devices', { body: { name: 'Tablet' } });
     expect((screen.getByRole('button', { name: 'Register device' }) as HTMLButtonElement).disabled).toBe(true);
     expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0);
@@ -109,6 +146,44 @@ describe('kiosk device settings', () => {
     vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'));
     await user.click(button);
     expect(await screen.findByText(/could not be copied/)).toBeDefined();
+  });
+  it('keeps a load error when a copy succeeds', async () => {
+    client.GET.mockResolvedValueOnce(page()).mockRejectedValue(new Error('down'));
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    expect(await screen.findByText(/request failed/)).toBeDefined();
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    await user.click(await screen.findByRole('button', { name: 'Copy link' }));
+    expect(await screen.findByRole('button', { name: 'Link copied' })).toBeDefined();
+    expect(screen.getByText(/request failed/)).toBeDefined();
+  });
+  it('clears a copy failure with the link it describes', async () => {
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'));
+    await user.click(await screen.findByRole('button', { name: 'Copy link' }));
+    expect(await screen.findByText(/could not be copied/)).toBeDefined();
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(/could not be copied/)).toBeNull();
+  });
+  it('never shows the copied note and the copy failure together', async () => {
+    client.POST.mockResolvedValue(ok({ data: { device, token } }));
+    const user = userEvent.setup(); render(<KioskDevicesSettings/>); await screen.findByText('Front desk');
+    await user.type(screen.getByLabelText('Device name'), 'Tablet');
+    await user.click(screen.getByRole('button', { name: 'Register device' }));
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('denied')).mockResolvedValueOnce(undefined);
+    await user.click(await screen.findByRole('button', { name: 'Copy link' }));
+    await user.click(await screen.findByRole('button', { name: 'Link copied' }));
+    expect(await screen.findByText(/could not be copied/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Link copied' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Copy link' }));
+    expect(await screen.findByRole('button', { name: 'Link copied' })).toBeDefined();
+    expect(screen.queryByText(/could not be copied/)).toBeNull();
+    expect(write).toHaveBeenCalledTimes(3);
   });
   it('paginates using contract bounds and refreshes an empty list', async () => {
     client.GET.mockResolvedValueOnce(page([device], 0, 21))
