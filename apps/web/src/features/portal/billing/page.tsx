@@ -61,7 +61,9 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
         {open === row.id && <InvoiceLines invoiceId={row.id} scope={scope} />}
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" aria-expanded={open === row.id} onClick={() => setOpen(open === row.id ? null : row.id)}>{text(open === row.id ? 'hideDetails' : 'details')}</Button>
-          {payable.has(row.status) && (cardChargeIssue(row.amountCents, row.currency)
+          {payable.has(row.status) && (row.amountCents === 0
+            ? <p className="w-full text-sm" role="status">{text('zeroInvoice')}</p>
+            : cardChargeIssue(row.amountCents, row.currency)
             ? <p className="w-full text-sm" role="status">{text('manualPayment')}</p>
             : <Button disabled={checkout.isPending} onClick={() => checkout.mutate(row.id)}>{text('pay')}</Button>)}
           {receipted.has(row.status) && row.paidAt && <Button variant="outline" disabled={download.isPending} onClick={() => download.mutate(row.id)}>{text('receipt')}</Button>}

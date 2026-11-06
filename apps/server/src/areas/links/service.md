@@ -49,3 +49,10 @@ and return a generic unavailable error. Delivery reloads the persisted member-em
 switch immediately before sending, after asynchronous preparation and rendering;
 the prepared value cannot authorize a send after the switch is turned off.
 The email transport runs outside transactions.
+
+For a positive invoice below the card minimum or off the currency step, send checks
+the amount before minting and commits the new metadata record already revoked,
+with creation and revocation audits. It emails manual-payment instructions without
+a URL. Zero invoices refuse a send before creating a credential: they settle on
+their due date. Delivery still checks the invoice amount; if it omits a URL after
+a concurrent amount change, send revokes that credential too.

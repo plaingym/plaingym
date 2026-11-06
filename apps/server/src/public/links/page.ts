@@ -42,7 +42,9 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
       h('dt', { class: 'min-w-0 break-words' }, l.description), h('dd', null, money(l.amountCents, l.currency))))),
     h('p', { class: 'text-xl font-semibold' }, text('total') + ': ' + money(data.invoice.invoice.amountCents, data.invoice.invoice.currency)),
     ['open', 'past_due'].includes(data.invoice.invoice.status)
-      ? cardChargeIssue(data.invoice.invoice.amountCents, data.invoice.invoice.currency)
+      ? data.invoice.invoice.amountCents === 0
+        ? h('p', { role: 'status' }, text('zeroInvoice'))
+        : cardChargeIssue(data.invoice.invoice.amountCents, data.invoice.invoice.currency)
         ? h('p', { role: 'status' }, text('manualPayment'))
         : h('button', { type: 'button', class: button, 'data-checkout': true }, text('pay'))
       : h('p', null, text(['paid', 'partially_refunded', 'refunded'].includes(data.invoice.invoice.status) ? 'alreadyDoneBody' : 'paymentPending'))) : null;

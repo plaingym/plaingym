@@ -72,8 +72,8 @@ invoice lock. A skip is observable and is not a collection error.
 
 `cardChargeIssue` in `@plaingym/shared/money` centralizes these two amount checks
 for the runner, Checkout and payment emails. Zero invoices still settle locally.
-The dashboard's `billing.skipped-collections` provider lists due cycle invoices
-needing manual payment; this does not create a staff email.
+The dashboard's `billing.skipped-collections` provider lists due cycle and
+assignment invoices needing manual payment; this does not create a staff email.
 
 A switch from Stripe test mode to live (Settings → Payments) holds the gym row for
 its whole save. The reservation first takes `holdGymSettings` (before the invoice

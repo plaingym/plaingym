@@ -105,6 +105,19 @@ describe('portal billing routes', () => {
       expect(await portalLinks(f)).toHaveLength(0);
       expect(await f.invoice(f.open.id)).toMatchObject({ status: 'open', checkoutSessionId: null });
     });
+  it.each(['USD', 'KWD'])('refuses zero %s invoices without a manual-payment reason or a live link, and preserves household and gym isolation', async currency => {
+    const f = await fixture(currency), create = vi.spyOn(f.fake, 'createCheckout');
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents: 0 }).where(eq(invoices.id, f.open.id)));
+    const path = `/api/portal/invoices/${f.open.id}/checkout`;
+    const response = await send(f.app(payerPrincipal(f)), 'POST', path);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { message: 'This invoice settles on its due date' } });
+    expect(create).not.toHaveBeenCalled();
+    expect(await portalLinks(f)).toHaveLength(0);
+    expect((await send(f.app(otherPayerPrincipal(f)), 'POST', path)).status).toBe(404);
+    const other = await fixture(currency);
+    expect((await send(other.app(payerPrincipal(other)), 'POST', path)).status).toBe(404);
+  });
   it('shows the payer invoices, details and saved cards, never drafts or revoked cards', async () => {
     const f = await fixture(), server = f.app(payerPrincipal(f));
     const list = await json(await server.request('/api/portal/invoices'), contracts.invoices.response);

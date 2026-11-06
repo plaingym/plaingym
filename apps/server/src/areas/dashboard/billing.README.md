@@ -4,9 +4,9 @@
 `createSkippedCollectionsProvider({ settings, payments })` supplies the admin dashboard's
 `billing.skipped-collections` shortlist through the existing count/items extension.
 Register it with `configureDashboard` alongside the other alert providers. It requires
-`billing.read`, lists up to 20 due open/past-due cycle invoices below the card minimum
+`billing.read`, lists up to 20 due open/past-due cycle or membership-assignment invoices below the card minimum
 or off the currency step, and links each to its invoice for a manual payment. It counts
-all matches, excludes zero and review-required invoices, hides when empty or billing
+all matches in SQL with a capped row query, excludes zero and review-required invoices, hides when empty or billing
 is disabled, and sends no email.
 
 `configureBillingDashboard({ settings, memberships, payments })` supplies the

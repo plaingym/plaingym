@@ -1,4 +1,5 @@
 {
+  "zeroInvoice": "This invoice settles on its due date. No payment is needed.",
   "replaced": "This link was replaced",
   "replacedBody": "Use the link in the newest email from your gym. If you cannot find it, contact the gym for help.",
   "_license": "SPDX-License-Identifier: AGPL-3.0-only",

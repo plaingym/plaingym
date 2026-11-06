@@ -117,6 +117,7 @@ export function createPortalBillingService(options: PortalBillingOptions) {
     async pay(identity: PortalIdentity, invoiceId: string) {
       const { invoice: row } = await detail(identity, invoiceId);
       if (!['open', 'past_due'].includes(row.status)) throw new AppError('conflict', 'Invoice cannot be paid');
+      if (row.amountCents === 0) throw new AppError('conflict', 'This invoice settles on its due date');
       const issue = cardChargeIssue(row.amountCents, row.currency);
       if (issue) throw new AppError('conflict', 'Contact the gym to arrange a manual payment; this invoice cannot be paid by card', { reason: [issue] });
       return checkout(identity, { purpose: 'pay_invoice', invoiceId: row.id });

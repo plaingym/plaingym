@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, asc, eq } from 'drizzle-orm';
-import { auditEvents, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoices, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, createTranslator, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -334,11 +334,61 @@ describe('email failure and suppression', () => {
     const home = await factory('households', gymId, { email: 'payer@example.test' });
     await factory('members', gymId, { householdId: home.id, email: home.email });
     const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents, status: 'open', number: 50 });
-    await sending.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
+    const checkedSending = createSignedLinksService({ scope: database.forGym, clock, delivery: {
+      async prepare() { return { ...delivery, gymId, email: { async sendEmail(message) {
+        expect((await service.list(gymId)).data.every(row => row.revokedAt !== null)).toBe(true);
+        return email.sendEmail(message);
+      } } }; },
+    } });
+    const result = await checkedSending.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
     const message = email.messages.at(-1)!;
     expect(message.text).toContain('Contact the gym to arrange a manual payment');
     expect(message.text).not.toContain('/l/');
     expect(message.html).not.toContain('/l/');
+    expect(result.revokedAt).toBe(clock.now().toISOString());
+    const rows = (await service.list(gymId)).data;
+    expect(rows).toHaveLength(1);
+    expect(rows.every(row => row.revokedAt !== null)).toBe(true);
+    const audits = await database.forGym(gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, result.id)));
+    expect(audits.map(row => row.action).sort()).toEqual(['signed_link.created', 'signed_link.revoked']);
+  });
+  it.each(['USD', 'KWD'])('refuses a zero %s invoice send before minting a link or sending email', async currency => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency, memberEmailsEnabled: true });
+    const home = await factory('households', gymId, { email: 'payer@example.test' });
+    const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents: 0, status: 'open', number: 1 });
+    const before = email.messages.length;
+    await expect(sending.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id,
+      invoiceId: invoice.id, expiresAt: request().expiresAt })).rejects.toMatchObject({ code: 'conflict',
+      message: 'This invoice settles on its due date', details: { reason: ['zero_invoice'] } });
+    expect((await service.list(gymId)).pagination.total).toBe(0);
+    expect(email.messages).toHaveLength(before);
+  });
+  it('revokes the link when delivery finds the amount changed after the check and omits its URL', async () => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'USD', memberEmailsEnabled: true });
+    const home = await factory('households', gymId, { email: 'payer@example.test' });
+    await factory('members', gymId, { householdId: home.id, email: home.email });
+    const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents: 5000, status: 'open', number: 1 });
+    let transactions = 0;
+    const scope: typeof database.forGym = async (id, fn) => {
+      // The first transaction is send's check, so this edit lands just before delivery reads the invoice.
+      if (++transactions === 2) await database.forGym(id, tx => tx.update(invoices).set({ amountCents: 30 }).where(eq(invoices.id, invoice.id)));
+      return database.forGym(id, fn);
+    };
+    const racing = createSignedLinksService({ scope, clock, delivery: { async prepare() { return { ...delivery, gymId }; } } });
+    const result = await racing.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
+    expect(email.messages.at(-1)!.text).toContain('Contact the gym to arrange a manual payment');
+    expect(email.messages.at(-1)!.text).not.toContain('/l/');
+    expect(result.revokedAt).toBe(clock.now().toISOString());
+    expect((await service.list(gymId)).data.every(row => row.revokedAt !== null)).toBe(true);
+  });
+  it('does not mint or send for a manual invoice outside the requested gym or household', async () => {
+    const before = email.messages.length, total = (await service.list(gymA)).pagination.total;
+    for (const input of [
+      { ...request('pay_invoice'), householdId: householdA, invoiceId: invoiceOther },
+      { ...request('pay_invoice'), householdId: householdB, invoiceId: invoiceB },
+    ]) await expect(sending.send(mutation, input)).rejects.toMatchObject({ code: 'not_found' });
+    expect(email.messages).toHaveLength(before);
+    expect((await service.list(gymA)).pagination.total).toBe(total);
   });
   it('requires explicit delivery configuration and does not mint a token when absent', async () => {
     const before = (await service.list(gymA)).pagination.total;

@@ -4,6 +4,8 @@
 Invoices below the card minimum or off the currency step show manual-payment
 instructions instead of a Pay now action. The server repeats the shared money check
 before creating a pay link or Checkout; amounts are never silently rounded.
+An open zero invoice shows a settlement note without a payment action or manual
+instructions; it settles on its due date and Checkout is refused before minting a link.
 
 `/portal/billing` (payers) lists invoices with their lines, starts Stripe Checkout
 to pay an open or past-due invoice or to update the card, and prepares receipt

@@ -85,6 +85,13 @@ try {
       await expect(page.getByRole('button', { name: 'Pay now' })).toHaveCount(0);
       await check('billing-manual-' + amount.currency);
     }
+    for (const currency of ['USD', 'KWD']) {
+      manualInvoice = { amountCents: 0, currency };
+      await page.reload(); await expect(page.getByText('This invoice settles on its due date. No payment is needed.')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Pay now' })).toHaveCount(0);
+      await expect(page.getByText('Contact the gym to arrange a manual payment.', { exact: false })).toHaveCount(0);
+      await check('billing-zero-' + currency);
+    }
     manualInvoice = undefined;
     await page.goto(origin + '/portal/waivers'); await expect(page.getByText('Signed by Pat Rivera-Montgomery (guardian)')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Review and sign' })).toHaveCount(2);

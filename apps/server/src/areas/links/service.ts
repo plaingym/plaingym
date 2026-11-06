@@ -6,6 +6,7 @@ import {
   type Transaction,
 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
+import { cardChargeIssue } from '@plaingym/shared/money';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import {
   createSignedLinkRequestSchema, signedLinkListQuerySchema, signedLinkSchema,
@@ -231,14 +232,39 @@ export function createSignedLinksService(options: {
       // Resolve the trusted origin and delivery preferences before minting a credential.
       const prepared = await delivery.prepare(context.gymId);
       validateSignedLinkDelivery(prepared, context.gymId);
-      const created = await create(context, input);
+      const created = await scope(context.gymId, async tx => {
+        const request = lowercaseIds(createSignedLinkRequestSchema.parse(input));
+        // Check the invoice before minting. Manual notices keep a revoked metadata record
+        // for the send response, but never commit an active undisclosed credential.
+        let manualPayment = false;
+        if (request.purpose === 'pay_invoice') {
+          const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.gymId, context.gymId),
+            eq(invoices.id, request.invoiceId), eq(invoices.householdId, request.householdId))).for('update');
+          if (!invoice) missing();
+          if (invoice.amountCents === 0) throw new AppError('conflict', 'This invoice settles on its due date', { reason: ['zero_invoice'] });
+          manualPayment = !!cardChargeIssue(invoice.amountCents, invoice.currency);
+        }
+        const created = (await createSignedLinksIn(tx, context, [request], clock.now()))[0]!;
+        if (manualPayment) {
+          const now = clock.now();
+          const [before] = await tx.select().from(signedLinks).where(eq(signedLinks.id, created.link.id));
+          const [row] = await tx.update(signedLinks).set({ revokedAt: now }).where(eq(signedLinks.id, created.link.id)).returning();
+          await audit(tx, context, 'signed_link.revoked', row!, now, before);
+          created.link = metadata(row!);
+        }
+        return created;
+      });
+      let disclosed: boolean;
       try {
-        await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: prepared });
+        disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: prepared,
+          manualPayment: created.link.revokedAt !== null });
       } catch {
         // A failed or suppressed send cannot leave an undisclosed credential active.
         await revoke(context, created.link.id);
         throw new AppError('unavailable', 'Signed link email was not delivered');
       }
+      // The email was delivered, so a failure here must not report otherwise.
+      if (!disclosed) await revoke(context, created.link.id);
       return get(context.gymId, created.link.id);
     },
   };

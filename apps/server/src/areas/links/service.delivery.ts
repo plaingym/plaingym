@@ -38,7 +38,9 @@ export async function deliverSignedLink(input: {
   token: string;
   delivery: PreparedSignedLinkDelivery;
   noticeKey?: string;
-}): Promise<void> {
+  /** A send's preflight already refused the card amount and revoked its credential. */
+  manualPayment?: boolean;
+}): Promise<boolean> {
   assertNoTransaction('links.send');
   const { scope, context, link, token, delivery } = input;
   validateSignedLinkDelivery(delivery, context.gymId);
@@ -54,7 +56,7 @@ export async function deliverSignedLink(input: {
     const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)
       .where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
     if (!invoice) throw new AppError('not_found', 'Invoice not found');
-    return !!cardChargeIssue(invoice.amountCents, invoice.currency);
+    return input.manualPayment || !!cardChargeIssue(invoice.amountCents, invoice.currency);
   });
   const url = manualPayment ? '' : new URL(`/l/${token}`, delivery.origin).href;
   const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose, manualPayment,
@@ -63,4 +65,5 @@ export async function deliverSignedLink(input: {
     throw new AppError('unavailable', 'Member email is disabled');
   const result = await delivery.email.sendEmail({ to: recipient, ...content });
   if (result.status !== 'sent') throw new AppError('unavailable', 'Signed link email was suppressed');
+  return !manualPayment;
 }

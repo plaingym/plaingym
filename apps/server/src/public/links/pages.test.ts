@@ -9,6 +9,14 @@ import messages from '../../../../../locales/en/public/links.json' with { type: 
 const t = createTranslator({ 'public/links': messages });
 const now = new Date('2026-10-25T12:00:00Z');
 describe('signed-link presentation and return receipts', () => {
+  it.each(['USD', 'KWD'])('shows only the settlement note for a zero %s invoice', currency => {
+    const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
+      id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents: 0, currency, paidAt: null,
+    } } } });
+    expect(page).toContain('This invoice settles on its due date');
+    expect(page).not.toContain('manual payment');
+    expect(page).not.toContain('data-checkout');
+  });
   it.each([[32, 'USD'], [1255, 'KWD']] as const)('shows manual payment instead of Checkout for %s %s', (amountCents, currency) => {
     const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
       id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents, currency, paidAt: null,

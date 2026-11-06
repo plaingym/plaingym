@@ -20,6 +20,7 @@ const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-11-01T00:30:00Z'); // Still October 31 in Vancouver, across the DST change.
 const settings = createGymSettingsAccessor({ scope: database.forGym, clock });
 const services = { settings,
+  scope: database.forGym,
   memberships: createMembershipService({ scope: database.forGym, settings, clock }),
   payments: createPaymentService({ scope: database.forGym, settings, clock }),
 };
@@ -34,7 +35,7 @@ async function fixture(currency = 'CAD') {
   let number = 0;
   const invoice = (extra = {}) => factory('invoices', gymId, { householdId: household.id,
     status: 'open', number: ++number, dueOn: '2026-11-01', amountCents: 500, ...extra });
-  return { gymId, user, membership, invoice };
+  return { gymId, user, household, member, plan, membership, invoice };
 }
 function app(f: Awaited<ReturnType<typeof fixture>>, roles: readonly StaffRole[] = ['owner'], principal?: Principal) {
   return createApp({ clock, authorize, skipSetup: true,
@@ -49,6 +50,31 @@ async function read(f: Awaited<ReturnType<typeof fixture>>) {
   return billingDashboardResponseSchema.parse(await response.json()).data;
 }
 describe('billing dashboard through production route composition and real billing services', () => {
+  it('includes a staff-assigned thirty-cent first invoice, excludes charges, and caps the SQL shortlist while counting every match', async () => {
+    const f = await fixture('USD'), other = await fixture('USD');
+    const membership = await f.membership();
+    const assigned = async (home: typeof f, kinds = ['membership', 'signup_fee', 'discount', 'tax']) => {
+      const invoice = await home.invoice({ kind: 'one_off', amountCents: 30, currency: 'USD', dueOn: '2026-10-30' });
+      for (const kind of kinds) await factory('invoiceLineItems', home.gymId, { householdId: home.household.id,
+        invoiceId: invoice.id, membershipId: home === f ? membership.id : null, kind, amountCents: 30,
+        ...(kind === 'tax' ? { taxRateMillionths: 10000, taxInclusive: false } : {}) });
+      return invoice;
+    };
+    const first = await assigned(f);
+    for (let i = 0; i < 21; i++) await assigned(f, ['membership']);
+    await assigned(f, ['membership', 'charge']);
+    const foreign = await assigned(other, ['membership']);
+    await f.invoice({ amountCents: 30, dueOn: '2026-10-30' }); // No lines is not an assignment.
+    const reads = vi.spyOn(services.payments, 'listInvoices');
+    try {
+      const widget = await createSkippedCollectionsProvider(services).read({ gymId: f.gymId, roles: ['owner'], clock });
+      expect(widget.count).toBe(22);
+      expect(widget.items).toHaveLength(20);
+      expect(widget.items?.[0]?.href).toBe(`/admin/billing/invoices/${first.id}`);
+      expect(widget.items?.map(item => item.href)).not.toContain(`/admin/billing/invoices/${foreign.id}`);
+      expect(reads).not.toHaveBeenCalled();
+    } finally { reads.mockRestore(); }
+  });
   it.each([[32, 'CAD', 'below the card minimum'], [1255, 'KWD', 'amount is off the currency step']] as const)(
     'lists due cycle collections of %s %s, isolates gyms, and denies coaches', async (amountCents, currency, reason) => {
     const f = await fixture(currency), other = await fixture(currency);

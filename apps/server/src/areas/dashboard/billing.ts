@@ -4,12 +4,16 @@ import { AppError, canStaff, createTranslator } from '@plaingym/shared';
 import { addDays, localDate } from '@plaingym/shared/time';
 import { cardChargeIssue, formatMinorUnits } from '@plaingym/shared/money';
 import { locales } from '@plaingym/shared/locales';
+import { forGym, invoices } from '@plaingym/db';
+import { and, asc, count, eq, gt, inArray, lte, or } from 'drizzle-orm';
 import type { BillingDashboardWidget, ListResponse } from '@plaingym/shared/contracts';
 import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { MembershipService } from '../billing/memberships.js';
 import type { PaymentService } from '../billing/payments.js';
 import { isOverdueInvoice } from '../billing/kiosk-standing.rules.js';
+import { assignmentInvoiceCondition } from '../billing/assignment-invoices.js';
+import { skippedAmountCondition } from './billing.query.js';
 import { createWidgetRegistry } from './widgets.js';
 import type { DashboardContext } from './widgets.js';
 
@@ -22,20 +26,25 @@ export interface BillingDashboardServices {
 }
 
 /** Uses the dashboard's existing shortlist extension; collection and email behavior stay with billing. */
-export function createSkippedCollectionsProvider(services: Pick<BillingDashboardServices, 'settings' | 'payments'>):
+export function createSkippedCollectionsProvider(services: Pick<BillingDashboardServices, 'settings' | 'payments'> & { scope?: typeof forGym }):
 DashboardWidgetProvider<ReturnType<typeof extensionDashboardWidgetSchema.parse>> {
   const t = createTranslator(locales.en ?? {});
   return { id: 'billing.skipped-collections', permission: 'billing.read', order: 45, schema: extensionDashboardWidgetSchema,
     async read(context) {
       if (!canStaff(context.roles, 'billing.read')) throw new AppError('forbidden', 'Access denied');
       const gym = await services.settings.get(context.gymId), today = localDate(context.clock.now(), gym.timezone);
-      const rows = gym.billingEnabled ? (await Promise.all(['open', 'past_due'].map(status =>
-        allPages(page => services.payments.listInvoices(context.gymId, { ...page, status, dueThrough: today }))))).flat() : [];
-      const skipped = [...new Map(rows.map(row => [row.id, row])).values()]
-        .filter(row => row.kind === 'cycle' && row.amountCents > 0 && !row.needsReview && cardChargeIssue(row.amountCents, row.currency))
-        .sort((a, b) => a.dueOn.localeCompare(b.dueOn) || a.id.localeCompare(b.id));
-      return { id: 'billing.skipped-collections', titleKey: 'dashboard/billing:skippedCollections', status: 'ready', kind: 'count', count: skipped.length,
-        items: skipped.slice(0, 20).map(row => ({ href: `/admin/billing/invoices/${row.id}`,
+      const { rows, total } = gym.billingEnabled ? await (services.scope ?? forGym)(context.gymId, async tx => {
+        const filter = and(eq(invoices.gymId, context.gymId), eq(invoices.currency, gym.currency),
+          inArray(invoices.status, ['open', 'past_due']), gt(invoices.amountCents, 0), eq(invoices.needsReview, false),
+          lte(invoices.dueOn, today), or(eq(invoices.kind, 'cycle'), assignmentInvoiceCondition(tx)),
+          skippedAmountCondition(gym.currency));
+        const [result] = await tx.select({ total: count() }).from(invoices).where(filter);
+        const rows = await tx.select({ id: invoices.id, number: invoices.number, amountCents: invoices.amountCents, currency: invoices.currency })
+          .from(invoices).where(filter).orderBy(asc(invoices.dueOn), asc(invoices.id)).limit(20);
+        return { rows, total: result!.total };
+      }) : { rows: [], total: 0 };
+      return { id: 'billing.skipped-collections', titleKey: 'dashboard/billing:skippedCollections', status: 'ready', kind: 'count', count: total,
+        items: rows.map(row => ({ href: `/admin/billing/invoices/${row.id}`,
           label: t('dashboard/billing:skippedCollection', { number: row.number ?? '', amount: formatMinorUnits(row.amountCents, row.currency),
             reason: t('dashboard/billing:' + cardChargeIssue(row.amountCents, row.currency)) }) })) };
     },

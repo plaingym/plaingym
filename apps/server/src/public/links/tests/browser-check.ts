@@ -8,6 +8,8 @@ import { linkPage } from '../page.js';
 import { buildLinkAssets } from '../styles.build.mjs';
 import messages from '../../../../../../locales/en/public/links.json' with { type: 'json' };
 import { validateSignatureImage } from '../../../areas/waivers/snapshot.js';
+import { renderSignedLink } from '../../../emails/links/service.js';
+import linkMessages from '../../../../../../locales/en/links/service.json' with { type: 'json' };
 
 const output = resolve('coverage/signed-links/browser');
 // Optional browser tooling is installed separately in e2e; normal type checks need no browser install.
@@ -28,7 +30,7 @@ const fixtures: Record<string, PortalSignedLinkData> = {
   onboarding: { purpose: 'onboarding', members: [member], templates, signatures: [], paymentMethods: [] },
 };
 const errors: string[] = [];
-for (const [name, amountCents, currency] of [['manual_minimum', 32, 'USD'], ['manual_step', 1255, 'KWD']] as const) {
+for (const [name, amountCents, currency] of [['manual_minimum', 32, 'USD'], ['manual_step', 1255, 'KWD'], ['zero_minimum', 0, 'USD'], ['zero_no_minimum', 0, 'KWD']] as const) {
   const source = fixtures.pay_invoice!;
   if (source.purpose !== 'pay_invoice') throw new Error('Missing invoice fixture');
   fixtures[name] = { ...source, invoice: { lines: source.invoice.lines.map(line => ({ ...line, amountCents, currency })),
@@ -37,6 +39,11 @@ for (const [name, amountCents, currency] of [['manual_minimum', 32, 'USD'], ['ma
 let returnMode: 'none' | 'late' | 'never' = 'none', returnAttempts = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
+  if (url.pathname === '/manual-email') {
+    const content = await renderSignedLink({ gymName: 'Test Gym', url: '', purpose: 'pay_invoice', manualPayment: true },
+      createTranslator({ 'links/service': linkMessages }));
+    res.setHeader('content-type', 'text/html'); res.end(content.html); return;
+  }
   if (url.pathname === '/l/styles.css') { res.setHeader('content-type', 'text/css'); res.end(css); return; }
   if (url.pathname === '/l/client.js') { res.setHeader('content-type', 'text/javascript'); res.end(browserSource); return; }
   if (req.method === 'POST') {
@@ -92,6 +99,11 @@ try {
         throw new Error('Missing manual payment guidance');
       if (await page.locator('[data-checkout]').count()) throw new Error('Unexpected card payment action');
     }
+    if (name.startsWith('zero_')) {
+      await expect(page.getByText(messages.zeroInvoice, { exact: true })).toBeVisible();
+      await expect(page.locator('[data-checkout]')).toHaveCount(0);
+      await expect(page.getByText('Contact the gym to arrange a manual payment', { exact: false })).toHaveCount(0);
+    }
     if (errors.length) throw new Error(errors.join('\n'));
     const metrics = await page.evaluate(() => ({
       overflow: document.documentElement.scrollWidth > innerWidth,
@@ -100,6 +112,14 @@ try {
     }));
     if (metrics.overflow || metrics.shortControls.length) throw new Error(name + ' ' + width + ': ' + JSON.stringify(metrics));
     await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: true });
+  }
+  for (const width of [360, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(origin + '/manual-email');
+    await expect(page.getByText('Contact the gym to arrange a manual payment.', { exact: false })).toBeVisible();
+    expect(await page.locator('a[href*="/l/"]').count()).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: resolve(output, `manual-email-${width}.png`), fullPage: true });
   }
   await page.setViewportSize({ width: 360, height: 900 });
   await page.goto(origin + '/l/sign_waiver?tablet=1');
