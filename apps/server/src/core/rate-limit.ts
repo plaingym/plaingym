@@ -98,6 +98,9 @@ export class RateBuckets<Bucket extends RateBucket = RateBucket> {
 }
 
 export interface RateLimitOptions extends ClientIpOptions {
+  /** Stable budget identity; runtime registration enables database counting for these budgets. */
+  readonly sharedKey?: string;
+  readonly sharedStore?: SharedRateLimitStore;
   /** Share one route budget across every client address of the resolved gym. */
   readonly perGym?: boolean;
   readonly limit?: number;
@@ -105,7 +108,18 @@ export interface RateLimitOptions extends ClientIpOptions {
   readonly maxBuckets?: number;
 }
 
-/** Process-local flood protection. Authentication has its own shared database limiter. */
+export interface SharedRateLimitStore {
+  consume(input: { gymId: string | null; routeKey: string; clientKey: string; now: number; windowMs: number; limit: number }):
+    Promise<{ allowed: boolean; resetAt: number }>;
+}
+let sharedStore: SharedRateLimitStore | undefined;
+/** App factories without runtime infrastructure retain their local budgets. Returns a shutdown reset. */
+export function configureSharedRateLimits(store: SharedRateLimitStore): () => void {
+  sharedStore = store;
+  return () => { if (sharedStore === store) sharedStore = undefined; };
+}
+
+/** Flood protection; named intake budgets use the store installed at runtime startup. */
 export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<RequestEnvironment> {
   const limit = options.limit ?? 300, windowMs = options.windowMs ?? 60_000, maxBuckets = options.maxBuckets ?? 10_000;
   for (const value of [limit, windowMs, maxBuckets]) {
@@ -114,6 +128,18 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
   const buckets = new RateBuckets(maxBuckets, (bucket) => bucket.count >= limit);
   return async (context, next) => {
     const { clock, gym, clientIp: resolved } = context.get('context');
+    const store = options.sharedStore ?? sharedStore;
+    if (options.sharedKey && store) {
+      const result = await store.consume({ gymId: gym?.gymId || null, routeKey: options.sharedKey,
+        clientKey: options.perGym ? '*' : clientKey(resolved ?? clientIp(context, options)),
+        now: clock.now().getTime(), windowMs, limit });
+      if (!result.allowed) {
+        context.header('Retry-After', String(Math.max(1, Math.ceil((result.resetAt - clock.now().getTime()) / 1000))));
+        throw new AppError('rate_limited', 'Too many requests.');
+      }
+      await next();
+      return;
+    }
     // Route-level limiters share the app's proxy-aware address instead of the proxy's socket peer.
     const now = clock.now().getTime(), key = options.perGym ? gym?.gymId ?? 'install'
       : `${gym?.gymId ?? 'install'}:${clientKey(resolved ?? clientIp(context, options))}`;

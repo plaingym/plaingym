@@ -22,7 +22,13 @@ A self-hosted install runs three containers from `deploy/compose.yaml`:
 The app's state is the database plus one data volume holding uploads and backup
 staging (or an S3-compatible bucket for uploads). Several identical app processes
 can share one database: job workers coordinate through the `jobs` table, and
-process memory holds only short-lived state such as rate-limit counters.
+process memory holds only short-lived state such as the general flood-protection counters.
+Public intake budgets count atomically in PostgreSQL across processes, enabled by
+`registerIntakeRateLimits` at startup. Named budgets separate join submissions,
+admissions, payment/mail steps, trial/drop-in submissions and admissions, signed-link
+claims, demo creation and demo login. Counters contain only the gym ID (null for
+install-level requests), route budget, client address key, window and count. The
+system-only table uses forced RLS and a daily system job removes expired windows.
 
 On start, the container entrypoint (`deploy/container/`) checks the database roles,
 resumes an interrupted restore and applies migrations as the `maintenance` role,

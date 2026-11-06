@@ -7,6 +7,13 @@
  */
 export const systemTables = [
   {
+    "name": "intake_rate_limits",
+    "exportName": "intakeRateLimits",
+    "reason": "Shared public intake counters, including install-level demo creation",
+    "access": "system",
+    "modules": ["core/rate-limit[^/]*"]
+  },
+  {
     "name": "gyms",
     "exportName": "gyms",
     "reason": "Hostname resolution and install configuration",

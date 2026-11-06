@@ -24,8 +24,8 @@ export function configurePublicPages(options: PublicPagesOptions & { t?: Transla
 }
 export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly RouteRegistration[] {
   const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'Public pages are not configured'); })();
-  const budget = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
-  const admissionBudget = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
+  const budget = rateLimit({ sharedKey: 'public.submissions', limit: 10, windowMs: 15 * 60_000 });
+  const admissionBudget = rateLimit({ sharedKey: 'public.admissions', limit: 10, windowMs: 15 * 60_000 });
   const bounded = bodyLimit({ maxSize: 1024 * 1024, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
   const json = <T extends z.ZodType>(schema: T) => ({ 200: { description: 'Public page response', content: { 'application/json': { schema } } } });
   const pages = { 200: { description: 'Public gym page' }, 400: { description: 'Please check the request' } };

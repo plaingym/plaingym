@@ -219,6 +219,15 @@ Details: `apps/server/src/infra/auth/README.md`.
   kiosk PINs and CSP reports have their own limits. Behind Caddy, `TRUST_PROXY=true`
   makes the last `X-Forwarded-For` entry the client address; nothing else trusts
   forwarded headers.
+  Public intake routes name stable budgets for the PostgreSQL counter store;
+  runtime startup enables it with `registerIntakeRateLimits`. These limits run
+  before route body parsing and validation, group IPv6 clients by /64, and use
+  fixed windows shared across processes and restarts. A rejected counter write
+  returns the usual 429 with `Retry-After` when a separate connectivity probe
+  succeeds; a database outage follows normal request error handling. The daily
+  sweep removes expired windows. App factories without runtime registration and
+  unnamed budgets keep in-memory counting; authentication and kiosk budgets are
+  independent.
 * **Body limits** per route, applied before parsing.
 * **Headers.** Every response enforces a Content Security Policy. By default (the
   admin, portal, kiosk, setup wizard and API) scripts, styles, fonts, connections and

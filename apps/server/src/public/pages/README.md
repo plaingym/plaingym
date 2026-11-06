@@ -63,9 +63,9 @@ The price is the charge type's catalog price, followed by "+ tax" when a tax rat
 attached to it is active, exclusive and above zero (`plusTax`); no total or tax amount is shown.
 
 Submission and upload budgets are separate, each ten per gym/IP per fifteen
-minutes, shared across JSON/native forms, enforced before validation. They use the
-core process-local limiter and trusted client address; multi-process installations
-need a shared perimeter limit for an aggregate budget. Whole requests are limited
+minutes, shared across JSON/native forms, enforced before validation. They are
+counted in PostgreSQL by the trusted client address, so every app process shares
+one window and a restart keeps it (`core/rate-limit-store.ts`). Whole requests are limited
 to 1 MiB, each image to 256 KiB, and a visit to eight templates. Responses containing
 intake data use `no-store`.
 

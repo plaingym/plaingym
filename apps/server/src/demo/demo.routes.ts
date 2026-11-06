@@ -19,8 +19,8 @@ export const outboxPreviewDirectives = ["default-src 'none'", "style-src 'unsafe
   "form-action 'none'", 'sandbox', "frame-ancestors 'self'"];
 
 export function createDemoRoutes(service: DemoService, options: { installOrigin: string; enabled?: boolean; tenancy?: TenancyMode; clientIp?: ClientIpOptions; outbox?: ReturnType<typeof createOutboxQuery>; scope?: typeof forGym }) {
-  const limiter = rateLimit({ ...options.clientIp, limit: 3, windowMs: 60 * 60 * 1000 });
-  const loginLimiter = rateLimit({ ...options.clientIp, limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
+  const limiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.create', limit: 3, windowMs: 60 * 60 * 1000 });
+  const loginLimiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.login', limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
   const guard = csrf(options.installOrigin), outbox = options.outbox ?? createOutboxQuery();
   const modeGuard: MiddlewareHandler<RequestEnvironment> = async (_c, next) => { if (options.enabled === false) throw new AppError('not_found', 'Not found'); await next(); };
   const { create, status, login, menu, signInLink, outbox: list, message, entry } = demoContracts;

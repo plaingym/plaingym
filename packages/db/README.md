@@ -50,6 +50,9 @@ OAuth client (secret class `google_config`). Existing gyms keep null, which leav
 the install's `GOOGLE_*` variables as before.
 Migration `0018_signed_links_campaign_index.sql` adds `signed_links_campaign_idx` on
 `(gym_id, campaign_id, id)`, for campaign progress counts, recipient pages and sends. It changes no data.
+Migration `0020_intake_rate_limits.sql` adds `intake_rate_limits`, a system-only table of public intake
+counters, unique on `(gym_id, route_key, client_key, window_start)` with nulls not distinct, because a
+null gym means an install-level request. It starts empty and changes no existing data.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -222,6 +225,7 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | auth_account | Provider identities, password hashes and encrypted OAuth credentials |
 | auth_verification | Hashed login verification state and expiry |
 | auth_rate_limit | Persistent authentication request counters |
+| intake_rate_limits | Public intake request counters by gym, budget, client address key and window, removed daily once expired |
 | households | Household contacts, billing-day anchor, PIN hash and saved processor references |
 | household_users | User access to a household as payer or a specific member |
 | members | Member profiles, status, contact data and revocable check-in hash/version |

@@ -71,7 +71,8 @@ The cap uses unique `sandbox-1` through `sandbox-N` slugs, so it holds across ap
 processes and concurrent requests. Failed or unfinished allocations occupy a slot
 until deletion. Their temporary reservation marker lets expiry recover a crash
 between audited gym reservation and seeding. Creation is limited to three requests
-per client address per hour, per process; login to 20 per minute per gym/address.
+per client address per hour; login to 20 per minute per gym/address. Both are
+counted in PostgreSQL, so every app process shares them.
 The login's internal magic-link sign-in uses the same 20-per-minute rule instead of
 the ordinary sign-in limit of five.
 Untrusted forwarded headers do not change the bucket. Use the trusted-proxy options

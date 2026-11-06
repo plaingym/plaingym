@@ -33,10 +33,10 @@ export function configureJoin(options: JoinOptions & { key: Uint8Array; t?: Tran
 export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteRegistration[] {
   const options = () => supplied ?? configured ?? (() => { throw new AppError('unavailable', 'Online joining is not configured'); })();
   // Limits run before validation, so bots and repeats spend their budget before any household or Checkout session exists.
-  const submissions = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
-  const admissions = rateLimit({ limit: 10, windowMs: 15 * 60_000 });
+  const submissions = rateLimit({ sharedKey: 'join.submissions', limit: 10, windowMs: 15 * 60_000 });
+  const admissions = rateLimit({ sharedKey: 'join.admissions', limit: 10, windowMs: 15 * 60_000 });
   // Steps that reach the payment provider or send mail; the read-only pages, which the confirming poll and the no-script refresh hit repeatedly, have only the global limit.
-  const steps = rateLimit({ limit: 30, windowMs: 15 * 60_000 });
+  const steps = rateLimit({ sharedKey: 'join.steps', limit: 30, windowMs: 15 * 60_000 });
   // Room for several chosen PNG files. The install-wide limiter in front allows the native form more, so it gets its own page.
   const bounded = bodyLimit({ maxSize: joinBodyBytes, onError: () => { throw new AppError('invalid_request', 'Request too large'); } });
   // The native form renders its own page rather than a JSON error. A browser shows a connection error instead of a

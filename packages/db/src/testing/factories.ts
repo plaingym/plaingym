@@ -18,6 +18,7 @@ const defaults = {
   authAccount: () => ({ accountId: uuidv7(), providerId: 'credential' }),
   authVerification: () => ({ identifier: uuidv7(), value: 'hashed-test-value', expiresAt: new Date('2026-02-01Z') }),
   authRateLimit: () => ({ key: uuidv7(), count: 1, lastRequest: date.getTime() }),
+  intakeRateLimits: () => ({ routeKey: 'test', clientKey: uuidv7(), count: 1, windowStart: date, expiresAt: new Date(date.getTime() + 60_000) }),
   households: () => ({ name: 'Test Household' }),
   householdUsers: () => ({ scope: 'payer' }),
   members: () => ({ firstName: 'Test', lastName: 'Member' }),

@@ -165,7 +165,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     })));
   }
   const claim = portalAccessContracts.claimOnboarding;
-  result.push(protect(route({ ...claim, middleware: rateLimit({ limit: 10 }), request: { query: empty, body: { required: true, content: { 'application/json': { schema: claim.body } } } }, responses: json(claim.response) }, async c => {
+  result.push(protect(route({ ...claim, middleware: rateLimit({ sharedKey: 'links.claim', limit: 10 }), request: { query: empty, body: { required: true, content: { 'application/json': { schema: claim.body } } } }, responses: json(claim.response) }, async c => {
     const ctx = c.get('context'), principal = linkPrincipal(ctx), service = options().portalInvitations;
     if (!service) throw new AppError('unavailable', 'Portal invitations are not configured');
     return c.json(await service.claimOnboarding(principal.gymId, principal.linkId, c.req.valid('json'), ctx.clock), 200);
