@@ -11,6 +11,14 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+/** Read structured reason codes without consuming the response or exposing server messages. */
+export async function apiErrorReasons(response: Response): Promise<readonly string[]> {
+  const body: unknown = await response.clone().json().catch(() => undefined);
+  const error = body && typeof body === 'object' && 'error' in body ? body.error : undefined;
+  const details = error && typeof error === 'object' && 'details' in error ? error.details : undefined;
+  const reason = details && typeof details === 'object' && 'reason' in details ? details.reason : undefined;
+  return Array.isArray(reason) && reason.every((value: unknown) => typeof value === 'string') ? reason : [];
+}
 /** Restrict all API calls to this gym's origin, including injected auth transports. */
 export function createJsonTransport(fetcher: typeof fetch = fetch) {
   return async function request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {

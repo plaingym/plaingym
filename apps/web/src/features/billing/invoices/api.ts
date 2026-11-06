@@ -2,6 +2,7 @@
 import { linksContracts, membersContracts, releaseInvoiceHoldContract } from '@plaingym/shared/contracts';
 import type { CreateSignedLinkRequest, InvoiceStatus } from '@plaingym/shared/contracts';
 import { billingRequest, createBillingClient } from '../catalog/api.js';
+import { apiErrorReasons } from '../../../lib/api.js';
 import { text } from './format.js';
 
 export class InvoiceRequestError extends Error {
@@ -17,12 +18,8 @@ export function createInvoiceClient(fetcher: typeof fetch = fetch) {
   const checked: typeof fetch = async (...args) => {
     const response = await fetcher(...args);
     if (!response.ok) {
-      const body: unknown = await response.clone().json().catch(() => null);
-      const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
-      const details = error && typeof error === 'object' && 'details' in error ? error.details : null;
-      const reasons = details && typeof details === 'object' && 'reason' in details ? details.reason : null;
-      const reason = Array.isArray(reasons) && typeof reasons[0] === 'string' ? reasons[0]
-        : response.status === 503 ? 'payments_unavailable' : response.status === 403 ? 'forbidden' : 'save_failed';
+      const reasons = await apiErrorReasons(response);
+      const reason = reasons[0] ?? (response.status === 503 ? 'payments_unavailable' : response.status === 403 ? 'forbidden' : 'save_failed');
       throw new InvoiceRequestError(reason);
     }
     return response;

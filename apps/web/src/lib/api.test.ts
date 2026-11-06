@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError, createApiClient, createJsonTransport } from './api.js';
+import { ApiError, apiErrorReasons, createApiClient, createJsonTransport } from './api.js';
 import { createBootstrapLoader, createShellServices, sessionDestination } from '../app/services.js';
 import { createShellTranslator } from './i18n.js';
 
 describe('API transport', () => {
+  it('reads structured reason codes without consuming the response body', async () => {
+    const body = { error: { message: 'Private server detail', details: { reason: ['tax_rate_attached', 'conflict'] } } };
+    const response = Response.json(body, { status: 409 });
+    expect(await apiErrorReasons(response)).toEqual(['tax_rate_attached', 'conflict']);
+    expect(await response.json()).toEqual(body);
+  });
+  it.each([null, [], {}, { error: null }, { error: { details: null } }, { error: { details: { reason: 'conflict' } } },
+    { error: { details: { reason: ['conflict', 1] } } }])('ignores malformed reason bodies: %j', async body => {
+    expect(await apiErrorReasons(Response.json(body))).toEqual([]);
+  });
+  it('ignores non-JSON proxy errors', async () => {
+    expect(await apiErrorReasons(new Response('Proxy error', { status: 503 }))).toEqual([]);
+  });
   it('preserves the generated typed client export', () => {
     const client = createApiClient({ baseUrl: 'https://example.org' });
     expect(client.GET).toBeTypeOf('function'); expect(client.POST).toBeTypeOf('function');

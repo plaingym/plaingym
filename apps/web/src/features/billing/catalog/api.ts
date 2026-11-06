@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { billingContracts, settingsContracts, membersContracts, type EndpointContract, type ListResponse } from '@plaingym/shared/contracts';
-import { ApiError } from '../../../lib/api.js';
+import { ApiError, apiErrorReasons } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
 
 export async function billingRequest<C extends EndpointContract>(contract: C,
@@ -14,12 +14,8 @@ export async function billingRequest<C extends EndpointContract>(contract: C,
     headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) {
-    const body: unknown = await response.json().catch(() => undefined);
-    const reason = body && typeof body === 'object' && 'error' in body && body.error && typeof body.error === 'object'
-      && 'details' in body.error && body.error.details && typeof body.error.details === 'object'
-      && 'reason' in body.error.details ? body.error.details.reason : undefined;
     throw new ApiError(response.status, response.status === 409 ? 'conflict' : 'request_failed',
-      Array.isArray(reason) && reason.every((value: unknown) => typeof value === 'string') ? reason : []);
+      await apiErrorReasons(response));
   }
   return parseResponse(contract.response, await response.json()) as ReturnType<C['response']['parse']>;
 }

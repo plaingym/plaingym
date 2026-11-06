@@ -22,6 +22,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
   const [kind, setKind] = useState<CatalogKind>('plans'), [editor, setEditor] = useState<CatalogRecord | 'new' | null>(null);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [archive, setArchive] = useState<Archive | null>(null);
+  const [stale, setStale] = useState(false);
   const data = useQuery({ queryKey: key, queryFn: async () => {
     const [plans, taxes, charges, settings] = await Promise.all([client.plans(), client.taxes(), client.charges(), client.settings()]);
     return { plans, taxes, charges, settings };
@@ -37,6 +38,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     setArchive({ rate, input, usage }); return true;
   }
   const save = (input: Record<string, unknown>) => run(async () => {
+    if (stale) return;
     const record = editor === 'new' ? undefined : editor;
     // Only archiving an active rate needs the detach; a rate archived before that rule stays editable as it is.
     const archiving = kind === 'taxes' && record && 'rateMillionths' in record && record.active && input.active === false ? record : undefined;
@@ -46,6 +48,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     try { await client.call(operation, input, params); } catch (error) {
       // Something attached the rate since the check: show what carries it now.
       if (archiving && error instanceof ApiError && error.status === 409 && error.reason.includes('tax_rate_attached') && await needsDetach(archiving, input)) return;
+      if (error instanceof ApiError && error.status === 409) { setStale(Boolean(record)); await cache.invalidateQueries({ queryKey: key }); }
       throw error;
     }
     setEditor(null); await cache.invalidateQueries({ queryKey: key });
@@ -54,31 +57,42 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     if (!archive) return;
     try { await client.call('updateTaxRate', { ...archive.input, active: false, detach: true }, { taxRateId: archive.rate.id }); } catch (error) {
       // The rate changed since the panel opened: close it and reload, so a retry starts from what is there now.
-      if (error instanceof ApiError && error.status === 409) { setArchive(null); await cache.invalidateQueries({ queryKey: key }); }
+      if (error instanceof ApiError && error.status === 409) { setArchive(null); setStale(Boolean(editor) && editor !== 'new'); await cache.invalidateQueries({ queryKey: key }); }
       throw error;
     }
     setArchive(null); setEditor(null); await cache.invalidateQueries({ queryKey: key });
   });
+  const reloadEditor = () => run(async () => {
+    if (!editor || editor === 'new') return;
+    const result = await data.refetch({ throwOnError: true });
+    const fresh = result.data?.[kind].find(record => record.id === editor.id);
+    if (!fresh) { setMessage(text('missingRecord')); return; }
+    setEditor(fresh); setStale(false); setMessage(text('reloaded'));
+  });
   const removeEverywhere = (rate: TaxRate) => run(async () => {
-    setEditor(null);
+    setEditor(null); setStale(false);
     if (!await needsDetach(rate, { revision: rate.revision, active: false })) await cache.invalidateQueries({ queryKey: key });
   });
   const removeArchived = (record: Plan | ChargeType, archived: readonly TaxRate[]) => run(async () => {
     const input = { revision: record.revision, taxRateIds: record.taxRateIds.filter(id => !archived.some(rate => rate.id === id)) };
-    await client.call('interval' in record ? 'updatePlan' : 'updateChargeType', input, 'interval' in record ? { planId: record.id } : { chargeTypeId: record.id });
+    try { await client.call('interval' in record ? 'updatePlan' : 'updateChargeType', input, 'interval' in record ? { planId: record.id } : { chargeTypeId: record.id }); } catch (error) {
+      // A retry reads the revision from the list, so the list has to catch up.
+      if (error instanceof ApiError && error.status === 409) await cache.invalidateQueries({ queryKey: key });
+      throw error;
+    }
     await cache.invalidateQueries({ queryKey: key });
   });
-  const switchTo = (value: CatalogKind) => { setKind(value); setEditor(null); setArchive(null); setMessage(''); };
+  const switchTo = (value: CatalogKind) => { setKind(value); setEditor(null); setArchive(null); setMessage(''); setStale(false); };
   return <div className={cn('min-w-0 space-y-5', userNames)}>
     <div><h1 className="text-2xl font-semibold">{text('title')}</h1><p className="mt-1 text-muted-foreground">{text('help')}</p></div>
     {data.isPending && <p role="status">{text('loading')}</p>}
     {data.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
       <nav className="flex flex-wrap gap-2" aria-label={text('sections')}>{(['plans', 'taxes', 'charges'] as const).map(value => <Button key={value} aria-pressed={value === kind} variant={value === kind ? 'default' : 'outline'} disabled={busy} onClick={() => switchTo(value)}>{text(value)}</Button>)}</nav>
-      {message && <Alert role="alert">{message}</Alert>}
+      {(message || stale) && <Alert role="alert" className="space-y-3"><p>{message || text('conflict')}</p>{stale && <Button className="w-full sm:w-auto" variant="outline" disabled={busy} onClick={() => void reloadEditor()}>{text('reloadRecord')}</Button>}</Alert>}
       {archive && <ArchiveConfirmation rate={archive.rate} usage={archive.usage} busy={busy} confirm={confirmArchive} cancel={() => { setArchive(null); setMessage(''); }}/>}
-      {editor ? <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} save={save} cancel={() => { setEditor(null); setArchive(null); setMessage(''); }}/>
-        : !archive && <Button onClick={() => setEditor('new')}>{text('create')} {text(kind)}</Button>}
+      {editor ? <CatalogEditor key={kind + (editor === 'new' ? 'new' : editor.id)} kind={kind} {...(editor === 'new' ? {} : { record: editor })} currency={data.data.settings.currency} taxes={data.data.taxes} busy={busy} locked={archive !== null} stale={stale} save={save} cancel={() => { setEditor(null); setArchive(null); setMessage(''); setStale(false); }}/>
+        : !archive && <Button onClick={() => { setEditor('new'); setStale(false); }}>{text('create')} {text(kind)}</Button>}
       {!data.data[kind].length && <Card><h2 className="font-semibold">{text('empty')}</h2><p className="mt-1 text-muted-foreground">{text('emptyHelp')}</p></Card>}
       <ul className="grid min-w-0 gap-3 lg:grid-cols-2">{data.data[kind].map(record => {
         const priced = 'taxRateIds' in record ? record : undefined;
@@ -96,7 +110,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
             <p>{say('archivedRate', { count: carriers })}</p>
             <Button variant="outline" className="w-full wrap-anywhere sm:w-auto" disabled={busy} onClick={() => void removeEverywhere(record)}>{say('removeEverywhere', { name: record.name })}</Button>
           </Alert>}
-          <Button className="mt-3 w-full wrap-anywhere sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); }} disabled={busy}>{text('edit')} {record.name}</Button>
+          <Button className="mt-3 w-full wrap-anywhere sm:w-auto" variant="outline" onClick={() => { setEditor(record); setArchive(null); setMessage(''); setStale(false); }} disabled={busy || (editor !== 'new' && editor?.id === record.id)}>{text('edit')} {record.name}</Button>
         </li>;
       })}</ul>
     </>}
