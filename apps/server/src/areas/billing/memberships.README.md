@@ -27,3 +27,8 @@ assignment's audited billing instructions.
 ## Custom prices
 
 A membership copies its plan's price when assigned and keeps it when the plan's price changes. Staff can give one member a custom price from the member's Memberships tab: it sends the `price` override (amount and the membership's currency) on `PATCH /api/billing/memberships/{membershipId}`. A plan change takes the new plan's billing interval unless `interval` is sent too (the tab never sends it); sent without a `price` it also takes the new plan's price, and sent with a `price` it keeps the entered amount.
+
+When the membership amount differs from the plan's current amount, the card
+shows "Plan price now" with that amount and billing interval. This covers both
+a price entered by staff and a price retained after a plan change. The comparison
+appears only when the membership and plan share a currency and billing interval.

@@ -25,6 +25,7 @@
   "date": "Class date",
   "allowWaitlist": "Join the waitlist if the class is full",
   "refresh": "Refresh",
+  "stale": "These bookings and counts may be out of date. Refresh to try again.",
   "previous": "Previous page",
   "next": "Next page",
   "loading": "Loading bookings…",

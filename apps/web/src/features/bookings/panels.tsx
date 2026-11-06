@@ -28,33 +28,35 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   const [reload, setReload] = useState(0), [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<{ key: string; name: string; booking: ClassBooking | null; checked?: boolean }[]>([]);
   const [total, setTotal] = useState(0), [counts, setCounts] = useState<BookingSessionCounts | null>(null), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
-  const [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const [actionError, setActionError] = useState(''), [loadError, setLoadError] = useState(''), [notice, setNotice] = useState('');
   const changed = useSessionChanged(), seenChanged = useRef(changed);
   const [tick, setTick] = useState(0), seenTick = useRef(tick), seenScope = useRef(''), names = useRef(new Map<string, string>());
-  // An open dialog follows changes made elsewhere: refetch on focus and every minute.
+  // An open dialog follows changes made elsewhere while the tab is visible.
   useEffect(() => {
     if (!sessionId) return;
-    const bump = () => setTick(value => value + 1);
+    const bump = () => { if (!document.hidden) setTick(value => value + 1); };
     const timer = setInterval(bump, REFETCH_MS);
     window.addEventListener('focus', bump);
-    return () => { clearInterval(timer); window.removeEventListener('focus', bump); };
+    document.addEventListener('visibilitychange', bump);
+    return () => { clearInterval(timer); window.removeEventListener('focus', bump); document.removeEventListener('visibilitychange', bump); };
   }, [sessionId]);
   useEffect(() => {
     if (!timezone) return;
-    // A reload the dialog or a timer asks for refreshes in place: the list stays, the error stays, and there is no loading state.
+    // A reload the dialog or a timer asks for refreshes in place without hiding the last successful result.
     // A page, session or manual reload in the same render is never quiet.
     const scope = [sessionId, memberId, offset, reload].join('|'), sameScope = seenScope.current === scope;
     const quiet = sameScope && (seenChanged.current !== changed || seenTick.current !== tick);
     seenChanged.current = changed; seenTick.current = tick; seenScope.current = scope;
     let active = true;
-    if (!quiet) { setLoading(true); setError(''); setRows([]); }
+    const nameCache = names.current;
+    if (!quiet) { setLoading(true); setActionError(''); setLoadError(''); setRows([]); }
     async function load() {
       if (sessionId) {
         const page = await bookingClient.roster(sessionId, offset);
         const rows = await Promise.all(page.data.map(async (row: BookingRosterEntry) => {
           const id = row.booking?.memberId ?? row.attendance!.memberId;
-          let name = names.current.get(id);
-          if (name === undefined) { const member = await bookingClient.member(id); name = `${member.firstName} ${member.lastName}`; names.current.set(id, name); }
+          let name = nameCache.get(id);
+          if (name === undefined) { const member = await bookingClient.member(id); name = `${member.firstName} ${member.lastName}`; nameCache.set(id, name); }
           return { key: id, name, booking: row.booking, checked: !!row.attendance };
         }));
         return { rows, total: page.pagination.total, counts: page.counts };
@@ -63,26 +65,31 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
       const sessions = await Promise.all([...new Set(page.data.map(row => row.sessionId))].map(id => bookingClient.session(id)));
       return { rows: page.data.map(booking => ({ key: booking.id, name: sessionLabel(sessions.find(row => row.id === booking.sessionId)!, timezone!), booking })), total: page.pagination.total, counts: null };
     }
-    void load().then(value => { if (active) { setRows(value.rows); setTotal(value.total); setCounts(value.counts); } })
-      .catch(error => { if (active) { setError(errorText(error)); setCounts(null); } }).finally(() => { if (active) setLoading(false); });
+    void load().then(value => { if (active) {
+      setLoadError(''); setRows(value.rows); setTotal(value.total); setCounts(value.counts);
+      if (offset > 0 && value.rows.length === 0 && value.total <= offset) setOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50));
+    } })
+      .catch(error => { if (active) { setLoadError(errorText(error)); if (!quiet) setCounts(null); } }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [sessionId, memberId, timezone, offset, reload, changed, tick]);
   async function cancel(id: string) {
-    if (saving) return; setSaving(true); setError(''); setNotice('');
+    if (saving) return; setSaving(true); setActionError(''); setNotice('');
     try { await bookingClient.cancel(id); setNotice(text('cancelledSaved')); setReload(value => value + 1); }
-    catch (error) { setError(errorText(error)); } finally { setSaving(false); }
+    catch (error) { setActionError(errorText(error)); } finally { setSaving(false); }
   }
   usePublishSessionCounts(sessionId ? counts : null);
-  const busy = loading || saving;
+  const busy = loading || saving, stale = !!loadError && (rows.length > 0 || counts !== null);
   return <section className="min-w-0 space-y-4" aria-label={text(sessionId ? 'roster' : 'title')}>
     <div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0">
       <h3 className="text-lg font-semibold">{text(sessionId ? 'roster' : 'title')}</h3>
       {sessionId && counts && <p className="text-sm text-muted-foreground" data-testid="roster-counts">{text('counts', counts)}</p>}</div>
-      <Button variant="outline" disabled={busy} onClick={() => setReload(value => value + 1)}>{text('refresh')}</Button></div>
-    {(error || bootstrap.isError) && <Alert>{error || text('error')}</Alert>}
+      <Button variant="outline" disabled={busy} onClick={() => { names.current = new Map(); setReload(value => value + 1); }}>{text('refresh')}</Button></div>
+    {actionError && <Alert>{actionError}</Alert>}
+    {(loadError || bootstrap.isError) && <Alert>{loadError || text('error')}</Alert>}
+    {stale && <p role="status" className="text-sm text-muted-foreground">{text('stale')}</p>}
     {notice && <p role="status">{notice}</p>}
     {(loading || bootstrap.isPending) && <LoadingState label={text('loading')}/>}
-    {!loading && !error && rows.length === 0 && <EmptyState title={text(sessionId ? 'emptyRoster' : 'empty')}/>}
+    {!loading && !loadError && rows.length === 0 && <EmptyState title={text(sessionId ? 'emptyRoster' : 'empty')}/>}
     <ul className="divide-y divide-border rounded-xl border border-border">{rows.map(row => <li key={row.key} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0 space-y-1"><p className="font-medium">{row.name}</p>
         <p className="text-sm">{row.booking ? status(row.booking) : text('walkIn')}</p>

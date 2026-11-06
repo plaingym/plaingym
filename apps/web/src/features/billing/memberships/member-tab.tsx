@@ -15,7 +15,7 @@ import { billingClient, type BillingClient } from '../catalog/api.js';
 import { minorUnitsToInput, money, parseMinorUnits, saveError, selectClass } from '../catalog/format.js';
 import { householdBillingDate } from './calendar.js';
 
-const text = (key: string) => t('billing/memberships:' + key);
+const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
 type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership';
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; now?: Date;
@@ -100,7 +100,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
   // so a change made elsewhere meanwhile is a conflict rather than silently undone.
   const [base, setBase] = useState(row);
   const plan = plans.find(item => item.id === row.planId), basePlan = plans.find(item => item.id === base.planId);
-  const customPrice = !!plan && plan.currency === row.currency && plan.amountCents !== row.amountCents;
+  const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
   const choices = plans.filter(item => item.currency === base.currency && (item.active || item.id === base.planId));
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -126,7 +126,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
   }
   return <li className="min-w-0 space-y-3 rounded-lg border p-4">
     <div><h3 className="font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
-      {customPrice && <p className="text-sm text-muted-foreground">{text('customPrice')} ({text('planPrice')}: {money(plan.amountCents, plan.currency)})</p>}</div>
+      {differentPlanPrice && <p className="text-sm text-muted-foreground">{text('planPriceNow', { price: money(plan.amountCents, plan.currency), interval: text(plan.interval) })}</p>}</div>
     <dl className="grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-2">
       <div><dt className="text-muted-foreground">{text('nextDueOn')}</dt><dd>{row.nextDueOn}</dd></div>
       {row.commitmentEndsOn && <div><dt className="text-muted-foreground">{text('commitmentEndsOn')}</dt><dd>{row.commitmentEndsOn}</dd></div>}

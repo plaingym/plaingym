@@ -24,7 +24,7 @@ beforeEach(() => {
   client.session.mockResolvedValue(session); client.sessions.mockResolvedValue([session]);
   client.book.mockResolvedValue(booking); client.cancel.mockResolvedValue({ ...booking, status: 'cancelled' });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 describe('staff booking panels', () => {
   it('registers the enabled member tab and session panel with booking permissions', () => {
     expect(registration.memberTabs?.[0]).toMatchObject({ enabled: true, component: MemberBookingsPanel, permission: { kind: 'staff', capability: 'bookings.manage' } });
@@ -59,11 +59,12 @@ describe('staff booking panels', () => {
     await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 3 · 1 waitlisted · 3 checked in'));
     await waitFor(() => expect(screen.getByTestId('top').textContent).toBe('3/1/3'));
   });
-  it('reloads the counts when the dialog reports a change, and drops them when a reload fails', async () => {
+  it('keeps rows and published counts stale after a quiet failure and clears the load error on recovery', async () => {
     const row = { booking, attendance: null }, publish = vi.fn();
     client.roster.mockResolvedValueOnce({ data: [row], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } })
       .mockResolvedValueOnce({ data: [row], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 1 } })
-      .mockRejectedValue(new Error('down'));
+      .mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValue({ data: [], pagination: { total: 0 }, counts: { booked: 0, waitlisted: 0, checkedIn: 0 } });
     const view = render(<SessionCountsProvider publish={publish} changed={0}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
     expect((await screen.findByTestId('roster-counts')).textContent).toBe('Booked 1 · 0 waitlisted · 0 checked in');
     view.rerender(<SessionCountsProvider publish={publish} changed={1}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
@@ -72,24 +73,76 @@ describe('staff booking panels', () => {
     await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 1 · 0 waitlisted · 1 checked in'));
     expect(publish).toHaveBeenCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1 });
     view.rerender(<SessionCountsProvider publish={publish} changed={2}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
-    await waitFor(() => expect(screen.queryByTestId('roster-counts')).toBeNull());
-    await waitFor(() => expect(publish).toHaveBeenLastCalledWith(null));
+    await screen.findByRole('alert');
+    expect(screen.getByText('River Lee')).toBeDefined();
+    expect(screen.getByText('These bookings and counts may be out of date. Refresh to try again.')).toBeDefined();
+    expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 1 · 0 waitlisted · 1 checked in');
+    expect(publish).toHaveBeenLastCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1 });
+    view.rerender(<SessionCountsProvider publish={publish} changed={3}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    await screen.findByText('No bookings or check-ins yet');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/may be out of date/)).toBeNull();
+    await waitFor(() => expect(publish).toHaveBeenLastCalledWith({ booked: 0, waitlisted: 0, checkedIn: 0 }));
   });
   it('keeps an unread error, shows no loading state and looks up only new members on a reload the dialog asks for', async () => {
     const other = { ...booking, id: 'other', memberId: 'other-member' };
     const page = (rows: unknown[]) => ({ data: rows, pagination: { total: rows.length }, counts: { booked: rows.length, waitlisted: 0, checkedIn: 0 } });
-    client.roster.mockResolvedValueOnce(page([{ booking, attendance: null }])).mockResolvedValueOnce(page([{ booking, attendance: null }, { booking: other, attendance: null }]));
+    client.roster.mockResolvedValueOnce(page([{ booking, attendance: null }])).mockRejectedValueOnce(new Error('down'))
+      .mockResolvedValueOnce(page([{ booking, attendance: null }, { booking: other, attendance: null }]));
     client.member.mockImplementation(async (id: string) => id === memberId ? member : { id, firstName: 'Sam', lastName: 'Ng' });
-    client.cancel.mockRejectedValueOnce(new Error('down'));
+    client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
     const tree = (changed: number) => <SessionCountsProvider publish={() => undefined} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
     const user = userEvent.setup(); const view = render(tree(0));
     await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
     await screen.findByRole('alert');
     view.rerender(tree(1));
+    await waitFor(() => expect(screen.getAllByRole('alert')).toHaveLength(2));
+    view.rerender(tree(2));
     await screen.findByText('Sam Ng');
-    expect(screen.getByRole('alert')).toBeDefined();
+    expect(screen.getByRole('alert').textContent).toContain('cancellation cutoff');
     expect(screen.queryByText('Loading bookings…')).toBeNull();
     expect(client.member.mock.calls.map(call => call[0])).toEqual([memberId, 'other-member']);
+  });
+  it('clears an action error on a manual Refresh', async () => {
+    client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+    await screen.findByRole('alert');
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+    await screen.findByText('River Lee');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('shows the empty state beside an unread action error', async () => {
+    client.roster.mockResolvedValueOnce({ data: [{ booking, attendance: null }], pagination: { total: 1 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } })
+      .mockResolvedValue({ data: [], pagination: { total: 0 }, counts: { booked: 0, waitlisted: 0, checkedIn: 0 } });
+    client.cancel.mockRejectedValueOnce(new ApiError(409, 'conflict'));
+    const tree = (changed: number) => <SessionCountsProvider publish={() => undefined} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
+    const user = userEvent.setup(), view = render(tree(0));
+    await user.click(await screen.findByRole('button', { name: 'Cancel booking for River Lee' }));
+    await screen.findByRole('alert');
+    view.rerender(tree(1));
+    await screen.findByText('No bookings or check-ins yet');
+    expect(screen.getByRole('alert').textContent).toContain('cancellation cutoff');
+  });
+  it('marks a quiet failure stale only when it kept something to show', async () => {
+    const tree = (changed: number) => <SessionCountsProvider publish={() => undefined} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
+    client.roster.mockRejectedValue(new Error('down'));
+    const view = render(tree(0));
+    await screen.findByRole('alert');
+    view.rerender(tree(1));
+    await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('alert')).toBeDefined();
+    expect(screen.queryByText(/may be out of date/)).toBeNull();
+    view.unmount();
+    client.roster.mockReset();
+    client.roster.mockResolvedValueOnce({ data: [], pagination: { total: 0 }, counts: { booked: 0, waitlisted: 0, checkedIn: 0 } }).mockRejectedValue(new Error('down'));
+    const next = render(tree(0));
+    await screen.findByText('No bookings or check-ins yet');
+    next.rerender(tree(1));
+    await screen.findByText(/may be out of date/);
+    expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 0 · 0 waitlisted · 0 checked in');
   });
   it('keeps the provider value stable across renders', () => {
     // A memoized consumer re-renders only when the context value changes; the provider is rerendered with the same inputs.
@@ -103,6 +156,7 @@ describe('staff booking panels', () => {
     expect(renders).toBe(2);
   });
   it('refetches the counts when the window regains focus and on an interval', async () => {
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       render(<BookingRosterPanel sessionId={sessionId}/>);
@@ -113,6 +167,51 @@ describe('staff booking panels', () => {
       await waitFor(() => expect(client.roster.mock.calls.length).toBeGreaterThanOrEqual(3));
       expect(screen.queryByText('Loading bookings…')).toBeNull();
     } finally { vi.useRealTimers(); }
+  });
+  it('skips polling and focus while hidden, refreshes on becoming visible, and removes its listeners', async () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const view = render(<BookingRosterPanel sessionId={sessionId}/>);
+      await screen.findByText('River Lee');
+      hidden.mockReturnValue(true);
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+      expect(client.roster).toHaveBeenCalledTimes(1);
+      hidden.mockReturnValue(false);
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      await waitFor(() => expect(client.roster).toHaveBeenCalledTimes(2));
+      view.unmount();
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+      expect(client.roster).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([0, 50, 51])('returns to the last page when a quiet refresh shrinks the roster to %i entries', async total => {
+    const page = (count: number, empty = false) => ({ data: empty ? [] : [{ booking, attendance: null }], pagination: { total: count }, counts: { booked: count, waitlisted: 0, checkedIn: 0 } });
+    client.roster.mockResolvedValue(page(101));
+    const publish = vi.fn(), tree = (changed: number) => <SessionCountsProvider publish={publish} changed={changed}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>;
+    const user = userEvent.setup(), view = render(tree(0));
+    await screen.findByText('River Lee');
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByText('River Lee');
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByText('River Lee');
+    expect(client.roster).toHaveBeenLastCalledWith(sessionId, 100);
+    client.roster.mockResolvedValueOnce(page(total, true)).mockResolvedValue(page(total, total === 0));
+    view.rerender(tree(1));
+    await waitFor(() => expect(client.roster).toHaveBeenLastCalledWith(sessionId, total > 50 ? 50 : 0));
+    if (total === 0) await screen.findByText('No bookings or check-ins yet');
+    else await screen.findByText('River Lee');
+  });
+  it('looks up renamed members again on manual Refresh', async () => {
+    const user = userEvent.setup(); render(<BookingRosterPanel sessionId={sessionId}/>);
+    await screen.findByText('River Lee');
+    client.member.mockResolvedValue({ ...member, firstName: 'Renamed' });
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await screen.findByText('Renamed Lee');
+    expect(screen.queryByText('River Lee')).toBeNull();
+    expect(client.member).toHaveBeenCalledTimes(2);
   });
   it('clears the published counts when the panel closes, and member tabs publish none', async () => {
     client.roster.mockResolvedValue({ data: [], pagination: { total: 0 }, counts: { booked: 1, waitlisted: 0, checkedIn: 0 } });

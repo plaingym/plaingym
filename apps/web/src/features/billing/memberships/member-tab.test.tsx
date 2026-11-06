@@ -62,13 +62,27 @@ it('sends a custom price with the membership currency and revision', async () =>
   save();
   await waitFor(() => expect(client.call).toHaveBeenCalledWith('updateMembership', { revision: 4, price: { amountCents: 8550, currency: 'CAD' } }, { membershipId: membership.id }));
 });
-it('shows the custom price label only when the price differs from the plan', async () => {
+it('shows the current plan price without claiming how the membership price was set', async () => {
   start('admin', { row: { ...membership, amountCents: 8000 } });
-  expect(await screen.findByText(/^Custom price \(plan: .*100\.00\)$/)).toBeDefined();
+  expect(await screen.findByText(/^Plan price now .*100\.00 \/ Monthly$/)).toBeDefined();
   cleanup();
   start('admin');
   await screen.findByRole('heading', { name: plan.name });
-  expect(screen.queryByText(/Custom price/)).toBeNull();
+  expect(screen.queryByText(/Plan price now/)).toBeNull();
+});
+it('describes a retained membership price after the plan price changes', async () => {
+  start('front_desk', { plans: [{ ...plan, amountCents: 12000 }] });
+  expect(await screen.findByText(/^Plan price now .*120\.00 \/ Monthly$/)).toBeDefined();
+  expect(screen.getByText(/Active .*100\.00 \/ Monthly/)).toBeDefined();
+});
+it('does not compare prices across billing intervals or currencies', async () => {
+  start('front_desk', { row: { ...membership, interval: 'annual', amountCents: 80000 } });
+  await screen.findByRole('heading', { name: plan.name });
+  expect(screen.queryByText(/Plan price now/)).toBeNull();
+  cleanup();
+  start('front_desk', { row: { ...membership, currency: 'USD', amountCents: 8000 } });
+  await screen.findByRole('heading', { name: plan.name });
+  expect(screen.queryByText(/Plan price now/)).toBeNull();
 });
 it('sends no price when only the plan changes', async () => {
   const client = start('admin', { plans: [plan, premium] });
@@ -96,7 +110,7 @@ it('sends nothing when neither the plan nor the price changed', async () => {
 it('shows and takes a zero-decimal membership price in whole yen', async () => {
   const yenPlan = { ...plan, currency: 'JPY', amountCents: 12000 }, row = { ...membership, currency: 'JPY', amountCents: 9000 };
   const client = start('admin', { plans: [yenPlan], row });
-  expect(await screen.findByText(/¥9,000/)).toBeDefined(); expect(await screen.findByText(/^Custom price \(plan: ¥12,000\)$/)).toBeDefined();
+  expect(await screen.findByText(/¥9,000/)).toBeDefined(); expect(await screen.findByText(/^Plan price now ¥12,000 \/ Monthly$/)).toBeDefined();
   const form = await openEdit();
   expect(form.price.placeholder).toBe('9000');
   fireEvent.change(form.price, { target: { value: '9500.5' } });

@@ -93,8 +93,13 @@ roster panel shows them in its heading and publishes them to the session dialog
 feature does not import the bookings feature. The panel reloads its counts after
 a booking or cancellation, after a capacity change in the dialog (which can
 promote or move bookings), and after a check-in in the dialog's attendance panel (which tells the
-dialog through the same module); a promotion or check-in made elsewhere shows on
-Refresh.
+dialog through the same module). While the tab is visible, it also reloads every
+45 seconds, on window focus, and when the tab becomes visible again. A failed
+background reload keeps the last rows and counts with a stale notice; the next
+successful load clears that notice and its load error, preserving any action
+error until a manual Refresh, a page change or the next booking or cancellation.
+A shrinking roster returns to its last available page. Manual Refresh
+also fetches member names again, so renamed members appear without reopening.
 
 The Postgres tests cover concurrency, queue gaps, cutoff/window boundaries,
 capacity revision rollback, erasure, route permissions and household/gym
@@ -106,7 +111,9 @@ pnpm --dir e2e install --frozen-lockfile
 node apps/web/src/features/bookings/browser-check.mjs
 ```
 
-It exercises booking/cancellation at 360 and 1280 px, checks overflow and 44 px
-targets, runs axe WCAG A/AA, and writes screenshots/results under
+It exercises booking/cancellation, dialog stale-count recovery and membership
+price labels at 360 and 1280 px, checks overflow and 44 px panel targets, runs
+axe WCAG A/AA, and writes screenshots/results under
 `coverage/bookings/browser`. It defaults to installed Edge; set
-`E2E_BROWSER_CHANNEL` for another installed Playwright channel.
+`E2E_BROWSER_CHANNEL` for another installed Playwright channel, and
+`E2E_LOOPBACK` to bind another IPv4 loopback address.
