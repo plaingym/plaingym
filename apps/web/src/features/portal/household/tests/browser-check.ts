@@ -63,7 +63,7 @@ const profile = await mkdtemp(resolve(output, 'profile-'));
 if (!profile.startsWith(output + sep)) throw new Error('Unexpected profile directory');
 const origin = `http://127.0.0.1:${address.port}`, browser = await chromium.launchPersistentContext(profile, { channel: 'msedge', headless: true });
 const errors: string[] = [];
-type FixtureRoute = { request(): { method(): string }; continue(): Promise<void>; fulfill(options: { status?: number; json: unknown }): Promise<void> };
+type FixtureRoute = { request(): { method(): string }; continue(): Promise<void>; fulfill(options: { status?: number; headers?: Record<string, string>; json: unknown }): Promise<void> };
 try {
   const page = await browser.newPage(); page.on('pageerror', (error: Error) => errors.push(error.message));
   for (const width of [360, 1280]) {
@@ -77,7 +77,7 @@ try {
     };
     role = 'payer';
     await page.goto(origin + '/portal/billing'); await expect(page.getByText('Invoice #1042')).toBeVisible();
-    await page.getByRole('button', { name: 'Details' }).first().click(); await expect(page.getByText('Sales tax')).toBeVisible();
+    await page.getByRole('button', { name: 'Details' }).first().focus(); await page.keyboard.press('Enter'); await expect(page.getByText('Sales tax')).toBeVisible();
     await check('billing-payer');
     for (const amount of [{ amountCents: 32, currency: 'USD' }, { amountCents: 1255, currency: 'KWD' }]) {
       manualInvoice = amount;
@@ -96,7 +96,7 @@ try {
     await page.goto(origin + '/portal/waivers'); await expect(page.getByText('Signed by Pat Rivera-Montgomery (guardian)')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Review and sign' })).toHaveCount(2);
     await check('waivers-payer');
-    await page.getByRole('button', { name: 'Review and sign' }).first().click(); await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: 'Review and sign' }).first().focus(); await page.keyboard.press('Enter'); await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByLabel('Relationship to the member')).toBeVisible(); await check('sign-dialog');
     await page.getByRole('button', { name: 'Close' }).last().click();
     await page.goto(origin + '/portal/household'); await expect(page.getByRole('heading', { name: 'Household contact details' })).toBeVisible();
@@ -110,11 +110,12 @@ try {
     await page.goto(origin + '/portal/household');
     await page.getByRole('button', { name: 'Edit details' }).first().click();
     await page.getByLabel('First name', { exact: true }).fill('Unsaved draft');
-    let recovering = false, fail = true, release: (() => void) | undefined;
+    let recovering = false, fail = true, missing = true, release: (() => void) | undefined;
     await page.route('**/api/portal/members/*', async (route: FixtureRoute) => {
       if (route.request().method() !== 'PATCH') return route.continue();
       recovering = true;
-      await route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
+      await route.fulfill(missing ? { status: 404, json: { error: { code: 'not_found' } } }
+        : { status: 409, headers: { 'X-Portal-Household': id(90) }, json: { error: { code: 'conflict' } } });
     });
     await page.route('**/api/portal/households', async (route: FixtureRoute) => {
       if (!recovering) return route.continue();
@@ -124,11 +125,34 @@ try {
       ] } } });
     });
     await page.getByRole('button', { name: 'Save', exact: true }).last().click();
+    await expect.poll(() => !!release).toBe(true);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByLabel('First name', { exact: true })).toHaveValue('Unsaved draft');
+    release!();
+    await expect(page.getByRole('dialog').getByRole('alert')).toBeVisible();
+    missing = false; release = undefined;
+    const save = page.getByRole('button', { name: 'Save', exact: true }).last();
+    await save.focus();
+    const before = await page.locator('[data-dialog-body]').evaluate((element: HTMLElement) => element.scrollTop);
+    // A scrolled page keeps its offset while hidden, so the loading state must follow the viewport.
+    const scrolled = await page.evaluate(() => { scrollTo(0, document.documentElement.scrollHeight); return scrollY; });
+    expect(scrolled).toBeGreaterThan(0);
+    await page.keyboard.press('Enter');
     await expect(page.getByRole('dialog')).toBeHidden();
     await expect(page.getByRole('status')).toContainText('Loading');
+    await expect(page.getByRole('status')).toBeInViewport();
+    // A real pointer reaches the shell while the modal is temporarily closed.
+    if (width === 360) {
+      await page.getByRole('button', { name: 'Menu' }).click();
+      await expect(page.getByRole('link', { name: 'Billing' })).toBeVisible();
+    } else {
+      await page.getByRole('link', { name: 'Household & profile', exact: true }).click();
+    }
     await page.screenshot({ path: resolve(output, `recovery-loading-${width}.png`), fullPage: true });
     await expect.poll(() => !!release).toBe(true); release!();
     await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(save).toBeFocused();
+    await expect.poll(() => page.locator('[data-dialog-body]').evaluate((element: HTMLElement) => element.scrollTop)).toBe(before);
     await expect(page.getByLabel('First name', { exact: true })).toHaveValue('Unsaved draft');
     await page.locator('[data-dialog-body]').evaluate((element: HTMLElement) => { element.scrollTop = 0; });
     await check('recovery-retained-draft');

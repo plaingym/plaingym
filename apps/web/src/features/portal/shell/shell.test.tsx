@@ -101,21 +101,21 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
   render(<QueryClientProvider client={cache}><ShellServicesContext.Provider value={services}><RouterProvider router={router} /></ShellServicesContext.Provider></QueryClientProvider>);
   const selections = () => fetcher.mock.calls.filter(([path]) => path === '/api/portal/households/current').map(([, init]) => JSON.parse(String(init!.body)));
   // What the server does on its own, such as falling back to another household when a link is revoked.
-  const serverOpens = (householdId: string) => { current = householdId; };
+  const serverOpens = (householdId: string | null) => { current = householdId; };
   const lagLists = (householdId: string | null) => { lagging = householdId; };
   const release = () => { released = true; for (const held of [...bootstrapGates, ...householdGates, ...invoiceGates]) held.settle(); };
   return { fetcher, selections, router, release, serverOpens, lagLists, bootstrapGates, householdGates, invoiceGates, cache, server: () => current };
 }
 const identity = () => screen.getByTestId('signed-in-identity').textContent;
-it.each(['dismiss', 'navigate', 'switch'] as const)('explains a move discovered by a read and clears the notice on %s', async action => {
+it.each(['dismiss', 'navigate', 'switch', 'lists'] as const)('explains a move discovered by a read and clears the notice on %s', async action => {
   const f = portal(ids.first), user = userEvent.setup();
   await screen.findByRole('combobox');
   f.serverOpens(ids.second);
-  await act(async () => { await f.cache.invalidateQueries({ queryKey: [...household(ids.first), 'shell', 'context'], exact: true }); });
+  await act(async () => { await f.cache.invalidateQueries({ queryKey: action === 'lists' ? [...base, 'households'] : [...household(ids.first), 'shell', 'context'], exact: true }); });
   const notice = await screen.findByText(/Your household changed/);
   expect(notice.textContent).not.toContain('action was not completed');
   expect(notice.textContent).toContain('check any unfinished work');
-  if (action === 'dismiss') await user.click(screen.getByRole('button', { name: 'Dismiss notice' }));
+  if (action === 'dismiss' || action === 'lists') await user.click(screen.getByRole('button', { name: 'Dismiss notice' }));
   if (action === 'navigate') await act(async () => { await f.router.navigate({ to: '/portal/schedule' }); });
   if (action === 'switch') {
     await user.selectOptions(screen.getByRole('combobox'), ids.first);
@@ -135,6 +135,15 @@ it('keeps a household draft mounted when the shell context starts a recovery tha
   await screen.findByText(/couldn.t load your portal/);
   expect(screen.getByLabelText('Phone')).toBe(phone);
   expect((phone as HTMLInputElement).value).toBe('5550199');
+});
+it('keeps loading while a first context 404 reads the lists, and fails only if they stay on that household', async () => {
+  const f = portal(ids.first, { holdHouseholds: true });
+  f.lagLists(ids.first); f.serverOpens(null);
+  await waitFor(() => expect(f.householdGates).toHaveLength(1));
+  expect(screen.getByRole('status').textContent).toContain('Loading');
+  expect(screen.queryByText(/couldn.t load your portal/)).toBeNull();
+  await act(async () => { f.release(); });
+  await screen.findByText(/couldn.t load your portal/);
 });
 it('asks a login with several households to choose one before showing the portal', async () => {
   const f = portal(null), user = userEvent.setup();

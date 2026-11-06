@@ -9,7 +9,7 @@ import { sessionName } from '../../../app/identity.js';
 import { createRegistries } from '../../../lib/registries.js';
 import { createJsonTransport } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
-import { HouseholdMoved, notFound, ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey, refreshHouseholds, rememberDeliberateMove, clearPortalRecoveryNotice } from '../household/api.js';
+import { ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey, refreshHouseholds, runPortalOperation, portalRecoveryNoticeKey, clearPortalRecoveryNotice } from '../household/api.js';
 import { t } from '../../../lib/i18n.js';
 import { PortalRecoveryNotice } from '../household/recovery.js';
 import { Button } from '../../../components/ui/button.js';
@@ -152,11 +152,8 @@ function AuthenticatedPortal() {
     // old household's key, and the lists are read again; once they name the other household, this key is no longer the open one.
     queryFn: async () => {
       const listsVersion = householdListsVersion(cache, householdKey);
-      try { return ownAnswer(cache, householdKey, parseResponse(portalContracts.context.response, await createJsonTransport()(portalContracts.context.path)), listsVersion).data; }
-      catch (error) {
-        if (notFound(error)) await refreshHouseholds(cache, householdKey, listsVersion);
-        throw error;
-      }
+      return runPortalOperation(async () => ownAnswer(cache, householdKey, parseResponse(portalContracts.context.response, await createJsonTransport()(portalContracts.context.path)), listsVersion).data,
+        expected => { void refreshHouseholds(cache, householdKey, listsVersion, expected).catch(() => undefined); });
     },
     retry: false, staleTime: 0 });
   // While the name may still be the previous household's, the header says nothing about who is signed in. Only the shell's own
@@ -175,7 +172,7 @@ function AuthenticatedPortal() {
         // cancelled first. The lists are then read again, and waited for, so every switch finishes in order.
         await cache.cancelQueries({ queryKey: portalHouseholdsKey(login) });
         cache.setQueryData(portalHouseholdsKey(login), (old: typeof households.data) => old && { ...old, current: householdId });
-        rememberDeliberateMove(cache, login, current, householdId);
+        clearPortalRecoveryNotice(cache, login);
         discardOtherHouseholds(cache, login, householdId);
         await cache.refetchQueries({ queryKey: portalHouseholdsKey(login) });
         await navigate({ to: '/portal', replace: true });
@@ -199,6 +196,7 @@ function AuthenticatedPortal() {
     // Whatever the household did, only the open one keeps entries (a list read that lagged behind a switch can have left some).
     discardOtherHouseholds(cache, login, current);
     if (seen === undefined || seen === current) return;
+    cache.setQueryData(portalRecoveryNoticeKey(login), true);
     const change = markNameStale(cache, userId);
     void refreshName(cache, userId, change);
   }, [loaded, current, userId, gymId, cache]);
@@ -228,9 +226,9 @@ function AuthenticatedPortal() {
       <PortalRecoveryNotice /><HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
-  // A context answer for another household waits only for the lists being read again; if they still name this one, it is an error.
+  // A context read that failed waits only for the lists being read again; if they still name this household, it is an error.
   if (!context.data) {
-    if (context.isPending || (context.error instanceof HouseholdMoved && households.isFetching)) return <LoadingState />;
+    if (context.isPending || households.isFetching) return <LoadingState />;
     return failed(() => { void households.refetch(); void context.refetch(); });
   }
   const switcher = households.data.households.length > 1

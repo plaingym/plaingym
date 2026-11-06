@@ -93,7 +93,8 @@ try {
     await expect(page.getByRole('heading', { name: 'Class schedule' })).toBeVisible();
     await expect(page.getByText(/cancellation cutoff has passed/)).toBeVisible();
     await page.getByLabel('Booking for').selectOption(child);
-    await page.getByRole('button', { name: /^Book Fundamentals with a long class name/ }).click();
+    await page.getByRole('button', { name: /^Book Fundamentals with a long class name/ }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByText('Casey Parent-Longname is booked.')).toBeVisible();
     await page.getByRole('button', { name: /^Join the waitlist: Early class for Casey/ }).click();
     await expect(page.getByText(/on the waitlist at position 2/)).toBeVisible();
@@ -103,7 +104,8 @@ try {
     await page.goto(origin + '/portal/checkin');
     await expect(page.getByText(/no active check-in code/)).toBeVisible();
     await check('checkin-empty');
-    await page.getByRole('button', { name: 'Create a code' }).click();
+    await page.getByRole('button', { name: 'Create a code' }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByRole('img', { name: /QR check-in code/ })).toBeVisible();
     await page.getByRole('button', { name: 'Replace this code' }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
@@ -115,7 +117,8 @@ try {
     await page.getByLabel('Progress for').selectOption(child);
     await expect(page.getByText('Next: Second rank')).toBeVisible();
     await expect(page.getByText('Current: First rank, One stripe')).toBeVisible();
-    await page.getByRole('button', { name: 'Show more' }).click();
+    await page.getByRole('button', { name: 'Show more' }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByRole('button', { name: 'Show more' })).toBeHidden();
     await check('progress');
     role = 'member';

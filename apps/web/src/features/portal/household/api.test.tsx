@@ -7,7 +7,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { portalContracts, type EndpointContract } from '@plaingym/shared/contracts';
 import { ApiError } from '../../../lib/api.js';
 import { portalClient } from '../schedule/client.js';
-import { HouseholdMoved, ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalRecoveryNoticeKey, portalLoginKey, usePortalScope, refreshHouseholds, rememberDeliberateMove } from './api.js';
+import { HouseholdMoved, ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalRecoveryNoticeKey, portalLoginKey, usePortalScope, refreshHouseholds } from './api.js';
 import { portalTestCache } from './test-cache.test-helper.js';
 
 vi.mock('../../../app/context.js', () => ({ useBootstrap: () => ({ data: { gym: { id: 'gym' }, session: { userId: 'user' } } }) }));
@@ -17,23 +17,22 @@ const signed = { memberId: home, templateId: home, templateVersion: 1, signer: {
 const inputs: Record<string, unknown> = { updateMember: { revision: 1 }, updateHousehold: { revision: 1 }, regenerateCheckin: { revision: 1 },
   signWaiver: signed, signHouseholdWaiver: signed, uploadSignature: { memberId: home, pngBase64: 'YQ==' }, uploadHouseholdSignature: { memberId: home, pngBase64: 'YQ==' } };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-it('suppresses late recovery after a deliberate switch, but explains a later external move back', async () => {
+it('never raises a notice from late answers; the shell owns change notices', async () => {
   const cache = portalTestCache('gym', 'user', home), login = portalLoginKey('gym', 'user');
   const key = portalHouseholdKey(login, home), version = householdListsVersion(cache, key);
   let finish!: (response: Response) => void;
   vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { finish = resolve; })));
   const recovery = refreshHouseholds(cache, key, version, other);
-  rememberDeliberateMove(cache, login, home, other);
   finish(Response.json({ data: { current: other, households: [{ householdId: other, name: 'Other', role: 'payer' }] } }));
   await recovery;
-  expect(cache.getQueryData(portalRecoveryNoticeKey(login))).toBe(false);
+  expect(cache.getQueryData(portalRecoveryNoticeKey(login))).toBeUndefined();
   // A late answer can also arrive after the lists have already settled.
   await refreshHouseholds(cache, key, version, other);
-  expect(cache.getQueryData(portalRecoveryNoticeKey(login))).toBe(false);
+  expect(cache.getQueryData(portalRecoveryNoticeKey(login))).toBeUndefined();
   const back = refreshHouseholds(cache, portalHouseholdKey(login, other), householdListsVersion(cache, key), home);
   finish(Response.json({ data: { current: home, households: [{ householdId: home, name: 'Home', role: 'payer' }] } }));
   await back;
-  expect(cache.getQueryData(portalRecoveryNoticeKey(login))).toBe(true);
+  expect(cache.getQueryData(portalRecoveryNoticeKey(login))).toBeUndefined();
 });
 function fixture() {
   const cache = portalTestCache('gym', 'user', home);
@@ -55,6 +54,20 @@ function fixture() {
 }
 
 describe('portal write household preconditions', () => {
+  it('keeps ordinary 404 recovery in the background and reads again for a late 404 from the same version', async () => {
+    const f = fixture();
+    let rejectLate!: (error: unknown) => void;
+    const late = f.result.current.run(() => new Promise((_, reject) => { rejectLate = reject; })).catch(error => error);
+    const missing = () => Promise.reject(new ApiError(404, 'not_found'));
+    await act(async () => { await expect(f.result.current.run(missing)).rejects.toBeInstanceOf(ApiError); });
+    expect(f.result.current.moving).toBe(false);
+    await f.settle(home);
+    await act(async () => { rejectLate(new ApiError(404, 'not_found')); await late; });
+    expect(f.fetcher.mock.calls.filter(([path]) => path === '/api/portal/households')).toHaveLength(2);
+    expect(f.result.current.moving).toBe(false);
+    await f.settle(other);
+    await waitFor(() => expect(f.result.current.key[4]).toBe(other));
+  });
   it.each(Object.entries(portalContracts).filter(([, contract]) => contract.method !== 'get'))('%s sends the page household and recovers from a 409', async (name, contract: EndpointContract) => {
     const f = fixture();
     const params = Object.fromEntries([...contract.path.matchAll(/\{(\w+)\}/g)].map(match => [match[1]!, home]));
@@ -113,7 +126,7 @@ describe('portal write household preconditions', () => {
     expect(f.fetcher.mock.calls.filter(([path]) => path === '/api/portal/households')).toHaveLength(2);
     await f.settle();
     expect(f.result.current.key[4]).toBe(other);
-    expect(f.cache.getQueryData(portalRecoveryNoticeKey(login))).toBe(true);
+    expect(f.cache.getQueryData(portalRecoveryNoticeKey(login))).toBeUndefined();
   });
   it('does not accept a different household than the one the 409 names', async () => {
     const f = fixture();
@@ -143,10 +156,10 @@ describe('portal write household preconditions', () => {
     const f = fixture();
     f.fetcher.mockResolvedValueOnce(Response.json({ error: { code: 'not_found' } }, { status: 404 }));
     await act(async () => { await expect(f.result.current.call(portalContracts.updateHousehold, { revision: 1 })).rejects.toBeInstanceOf(ApiError); });
-    expect(f.result.current.moving).toBe(true);
+    expect(f.result.current.moving).toBe(false);
     await f.settle(null);
     expect(f.result.current.key[4]).toBeNull();
-    expect(f.cache.getQueryData(portalRecoveryNoticeKey(portalLoginKey('gym', 'user')))).toBe(true);
+    expect(f.cache.getQueryData(portalRecoveryNoticeKey(portalLoginKey('gym', 'user')))).toBeUndefined();
   });
   it('ends a failed recovery after two mismatched reads without looping or announcing a move', async () => {
     const f = fixture();
@@ -164,14 +177,14 @@ describe('portal write household preconditions', () => {
     await f.resolveLists(third);
     await f.settle(third);
     expect(f.result.current.key[4]).toBe(third);
-    expect(f.cache.getQueryData(portalRecoveryNoticeKey(portalLoginKey('gym', 'user')))).toBe(true);
+    expect(f.cache.getQueryData(portalRecoveryNoticeKey(portalLoginKey('gym', 'user')))).toBeUndefined();
   });
   it('treats an answer naming no household as a move to any other household', async () => {
     const f = fixture();
     act(() => { expect(() => f.result.current.own({ householdId: '' })).toThrow(HouseholdMoved); });
     await f.settle();
     expect(f.result.current.key[4]).toBe(other);
-    expect(f.cache.getQueryData(portalRecoveryNoticeKey(portalLoginKey('gym', 'user')))).toBe(true);
+    expect(f.cache.getQueryData(portalRecoveryNoticeKey(portalLoginKey('gym', 'user')))).toBeUndefined();
     expect(f.fetcher.mock.calls.filter(([path]) => path === '/api/portal/households')).toHaveLength(1);
   });
   it('does not mistake an unrelated list result for recovery of a late response', async () => {

@@ -29,13 +29,14 @@ another one (the session moved on, say because another tab switched) is never st
 shown: the page shows loading while the household lists are read again, after which
 every key is the other household's. Writes and member-ID reads send `X-Portal-Household` from that same
 page key. A household conflict (409 with that response header) starts the same
-recovery; a revision conflict stays with the form. Portal 404s also refresh the lists,
+recovery; a revision conflict stays with the form. Portal 404s refresh the lists in the background without hiding the page,
 including when a revoked link leaves several households to choose from. Recovery
-shares reads for the request's list version, sampled when the request starts. If
+shares in-flight reads for the request's list version, sampled when the request starts. A later 404 always reads again after recovery settles. If
 a joined read predates the move or does not name the household returned by the
 conflict, recovery reads again. A second mismatch fails rather than looping.
-During a recovery a page started, the six portal pages hide their content without unmounting forms
-or dialogs, preserving typed drafts and drawn signatures if recovery fails. After
+During a confirmed mismatch, the six portal pages hide their content without collapsing the page or unmounting forms
+or dialogs. Open dialogs temporarily close so the shell remains usable, then reopen with focus and scroll restored if recovery fails.
+Typed drafts and drawn signatures remain. Every read shows its own failure, except those a page keeps showing from its cache (the context, the act-for members and the household details): when a refetch of one fails, `PortalRecovery` shows an inline failure whose retry reads only those again. After
 a move the shell resets the page and asks the person to review the household and
 any unfinished work. The notice clears on dismissal, navigation, or a deliberate
 household switch; late answers from that switch do not show it again.

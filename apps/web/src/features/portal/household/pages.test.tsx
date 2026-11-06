@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import type { PortalContext } from '@plaingym/shared/contracts';
 import { ShellServicesContext } from '../../../app/context.js';
 import type { ShellServices } from '../../../app/services.js';
@@ -14,7 +14,7 @@ import { PortalHousehold } from './page.js';
 import { PortalSchedulePage } from '../schedule/page.js';
 import { PortalCheckinPage } from '../checkin/page.js';
 import { PortalProgressPage } from '../progress/page.js';
-import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalLoginKey, usePortalScope } from './api.js';
+import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalLoginKey, portalRecoveryNoticeKey, usePortalScope } from './api.js';
 import { PortalRecoveryNotice } from './recovery.js';
 import { portalTestCache } from './test-cache.test-helper.js';
 
@@ -29,7 +29,11 @@ const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim',
 const page = <T,>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
 type Handler = (path: string, init?: RequestInit) => unknown;
 function PageHost({ children }: { children: ReactNode }) {
-  const scope = usePortalScope();
+  const scope = usePortalScope(), cache = useQueryClient(), previous = useRef(scope.key[4]);
+  useEffect(() => {
+    if (previous.current !== undefined && previous.current !== scope.key[4]) cache.setQueryData(portalRecoveryNoticeKey(portalLoginKey(ids.gym, ids.user)), true);
+    previous.current = scope.key[4];
+  }, [cache, scope.key]);
   return <><PortalRecoveryNotice /><div key={scope.key[4]}>{children}</div></>;
 }
 /**
@@ -82,6 +86,25 @@ it.each(['schedule', 'checkin', 'progress'] as const)('shows loading, not a fail
   expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   await act(async () => { release(new Response(null, { status: 503 })); });
   expect(await screen.findByRole('heading', { level: 1 })).toBe(heading);
+  moved = false;
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Try again' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull());
+});
+
+it('shows one failure for a read that has its own failure state', async () => {
+  let down = false;
+  const view = mount(<PortalSchedulePage now={() => new Date('2026-10-29T16:00:00Z')} />, path => {
+    if (path === '/api/portal/schedule/members') return { data: [{ id: ids.payer, name: 'Pat' }] };
+    if (path.startsWith('/api/portal/schedule?')) return down ? new Response(null, { status: 503 }) : page([]);
+    return undefined;
+  }, { context: payer });
+  await screen.findByRole('heading', { level: 1 });
+  await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  down = true;
+  await act(async () => { await view.cache.invalidateQueries({ queryKey: [...portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household), 'schedule'] }); });
+  await screen.findByRole('button', { name: 'Try again' });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
 });
 
 it.each(['book', 'cancel', 'regenerate'] as const)('keeps the %s action state on failed recovery and replaces it after a move', async action => {
@@ -353,6 +376,33 @@ describe('portal household page', () => {
     await act(async () => { release(new Response(null, { status: 503 })); });
     expect(await screen.findByLabelText('Phone')).toBe(phone);
     expect(phone.value).toBe('Draft');
+    expect(document.activeElement).toBe(phone);
+    moved = false;
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull());
+    expect(phone.value).toBe('Draft');
+  });
+  it('retries only the read that failed, so a healthy read cannot replace the draft', async () => {
+    let down = false;
+    const user = userEvent.setup();
+    const view = mount(<PortalHousehold />, path => {
+      if (path === '/api/portal/household') return down ? new Response(null, { status: 503 }) : { data: household };
+      if (path.startsWith('/api/portal/members?')) return page(people);
+      return undefined;
+    }, { context: payer });
+    await screen.findByLabelText('Phone');
+    const root = portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household);
+    view.cache.setQueryData([...root, 'shell', 'context'], payer);
+    const shell = view.cache.getQueryState([...root, 'shell', 'context'])!.dataUpdatedAt;
+    down = true;
+    await act(async () => { await view.cache.invalidateQueries({ queryKey: [...root, 'household', 'details'], exact: true }); });
+    const members = view.calls('GET', '/api/portal/members').length;
+    down = false;
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull());
+    expect(view.calls('GET', '/api/portal/members')).toHaveLength(members);
+    expect(view.cache.getQueryState([...root, 'shell', 'context'])!.isInvalidated).toBe(false);
+    expect(view.cache.getQueryState([...root, 'shell', 'context'])!.dataUpdatedAt).toBe(shell);
   });
   it.each(['household', 'member'] as const)('preserves the %s draft on failed recovery and replaces its failure with a move notice', async kind => {
     let release!: (response: Response) => void;

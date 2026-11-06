@@ -49,21 +49,11 @@ export function householdListsVersion(cache: QueryClient, key: PortalKey): numbe
   const state = cache.getQueryState(portalHouseholdsKey([key[0], key[1], key[2]]));
   return (state?.dataUpdateCount ?? 0) + (state?.errorUpdateCount ?? 0);
 }
-// Key by the cached list query itself, so clearing the login's cache also discards its recovery history.
+// Reads in flight, keyed by the cached list query itself, so clearing the login's cache also discards them.
 const recoveries = new WeakMap<object, { householdId: PortalKey[4]; expected: string | undefined; version: number; promise: Promise<void> }>();
 export const portalRecoveryNoticeKey = (login: ReturnType<typeof portalLoginKey>) => [...login, 'recovery-notice'] as const;
-const deliberateMoves = new WeakMap<object, Set<string | null | undefined>>();
 export function clearPortalRecoveryNotice(cache: QueryClient, login: ReturnType<typeof portalLoginKey>) {
   cache.setQueryData(portalRecoveryNoticeKey(login), false);
-}
-/** Suppress late answers from the household the person deliberately left. */
-export function rememberDeliberateMove(cache: QueryClient, login: ReturnType<typeof portalLoginKey>, from: string | null, to: string) {
-  const list = cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
-  if (list) {
-    const ignored = deliberateMoves.get(list) ?? new Set<string | null | undefined>();
-    ignored.add(from); ignored.delete(to); deliberateMoves.set(list, ignored);
-  }
-  clearPortalRecoveryNotice(cache, login);
 }
 export function usePortalRecoveryNotice() {
   const login = usePortalLogin();
@@ -76,17 +66,8 @@ export function refreshHouseholds(cache: QueryClient, key: PortalKey, version: n
   const expected = named || undefined;
   const current = cache.getQueryData<{ current: string | null }>(portalHouseholdsKey(login));
   const list = cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
-  // A later visit to the same household starts a new recovery cycle, even if an ordinary list refetch brought it back.
-  if (list && current?.current === key[4]) deliberateMoves.get(list)?.delete(key[4]);
   const recovered = (current: string | null) => expected === undefined ? current !== key[4] : current === expected;
-  const notice = () => {
-    const list = cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
-    const ignored = list && deliberateMoves.get(list);
-    const now = cache.getQueryData<{ current: string | null }>(portalHouseholdsKey(login));
-    if (now) ignored?.delete(now.current);
-    if (!ignored?.has(key[4])) cache.setQueryData(portalRecoveryNoticeKey(login), true);
-  };
-  if (current && recovered(current.current)) { notice(); return Promise.resolve(); }
+  if (named !== undefined && current && recovered(current.current)) return Promise.resolve();
   const findList = () => cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
   const previous = list && recoveries.get(list);
   if (previous && previous.householdId === key[4] && previous.expected === expected && previous.version >= version) return previous.promise;
@@ -96,12 +77,21 @@ export function refreshHouseholds(cache: QueryClient, key: PortalKey, version: n
     let result = await cache.fetchQuery(options);
     // A joined read may predate the move. Never finish that recovery on its old snapshot.
     if (!recovered(result.current) && (alreadyFetching || expected !== undefined)) result = await cache.fetchQuery(options);
-    // The page goes when the lists leave its household, wherever they went, so that always explains itself.
-    if (result.current !== key[4]) notice();
     if (expected !== undefined && !recovered(result.current)) throw new Error('Household recovery did not reach the expected household');
-  })();
+  })().finally(() => {
+    const entry = findList();
+    if (entry && recoveries.get(entry)?.promise === promise) recoveries.delete(entry);
+  });
   recoveries.set(findList()!, { householdId: key[4], expected, version, promise });
   return promise;
+}
+/** A missing resource alone does not establish a move: refresh lists without hiding the page. */
+export async function runPortalOperation<T>(operation: () => Promise<T>, recover: (expected?: string) => void): Promise<T> {
+  try { return await operation(); } catch (error) {
+    if (error instanceof HouseholdMoved) recover(error.householdId);
+    else if (notFound(error)) recover();
+    throw error;
+  }
 }
 /**
  * Passes an answer on only if it names the household its key does. Every portal answer says which household the server read it
@@ -123,30 +113,33 @@ export interface PortalScope {
   run<T>(operation: () => Promise<T>): Promise<T>;
   call<C extends EndpointContract>(contract: C, input?: unknown, params?: Record<string, string>, query?: Record<string, string | number | undefined>): Promise<ReturnType<C['response']['parse']>>;
 }
+/** The open household's key. Reads the lists (and re-renders with them) without ever loading them; the shell owns the load. */
+export function usePortalHouseholdKey(): PortalKey {
+  const login = usePortalLogin();
+  const households = useQuery({ ...portalHouseholdsOptions(login, false) });
+  return portalHouseholdKey(login, households.data?.current);
+}
 /**
  * The one key every portal query is built from: the login plus the open household, read from the household lists. When the open
  * household changes, the key changes in the same render, so the previous household's entries are unreachable by construction.
  * Pages are only mounted once the lists name a household. A page reads it once and passes the scope to whatever needs it.
  */
 export function usePortalScope(): PortalScope {
-  const login = usePortalLogin(), cache = useQueryClient();
-  // Reads the lists (and re-renders with them) without ever loading them; the shell owns the load.
-  const households = useQuery({ ...portalHouseholdsOptions(login, false) });
-  const key = portalHouseholdKey(login, households.data?.current);
+  const cache = useQueryClient(), key = usePortalHouseholdKey();
   const [moving, setMoving] = useState(false);
   const pending = useRef(0);
   const recover = (version: number, expected?: string) => {
+    if (expected === undefined) {
+      void refreshHouseholds(cache, key, version).catch(() => undefined);
+      return;
+    }
     pending.current++;
     setMoving(true);
     void refreshHouseholds(cache, key, version, expected).catch(() => undefined).finally(() => { if (--pending.current === 0) setMoving(false); });
   };
   const run: PortalScope['run'] = async operation => {
     const version = householdListsVersion(cache, key);
-    try { return await operation(); } catch (error) {
-      if (error instanceof HouseholdMoved) recover(version, error.householdId);
-      else if (notFound(error)) recover(version);
-      throw error;
-    }
+    return runPortalOperation(operation, expected => recover(version, expected));
   };
   return { key, ready: portalReady(key), moving,
     own: answer => { if (answer.householdId === key[4]) return answer; recover(householdListsVersion(cache, key), answer.householdId); throw new HouseholdMoved(answer.householdId); }, run,
