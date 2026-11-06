@@ -6,7 +6,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { backupRuns, forSystem } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { encrypt, validateRecipient } from '../../infra/age/index.js';
+import { encrypt, identityToRecipient, validateRecipient } from '../../infra/age/index.js';
 import type { BackupObjectStore, ObjectInfo, Uploads } from '../../infra/storage/index.js';
 import { bytesStream, fileDigest, fileStream, privateDirectory, saveStream } from './backups.files.js';
 import { backupKindSchema, blobName, manifestSchema, publicReferences, referenceStream, snapshotPrefix } from './backups.format.js';
@@ -153,5 +153,7 @@ export async function verifyFile(path: string, expected: { sha256: string; size:
 export async function readIdentityFile(path: string): Promise<string> {
   const lines = (await readFile(path, 'utf8')).split(/\r?\n/).filter((s) => s && !s.startsWith('#'));
   if (lines.length !== 1) throw new Error('Expected one age identity');
+  // A mistyped key must not reach decryption, where it would look like a damaged snapshot.
+  await identityToRecipient(lines[0]!).catch(() => { throw new Error('Invalid age private key'); });
   return lines[0]!;
 }

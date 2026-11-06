@@ -46,3 +46,13 @@ it('recognizes unconfigured backups even when their diagnostic message changes',
   try { await expect(maintenanceCommand(['snapshot'])).rejects.toBeInstanceOf(BackupsNotSetUpError); }
   finally { spy.mockRestore(); }
 });
+it('keeps the generic snapshot line when more than one gym is configured', async () => {
+  await factory('gyms', uuidv7(), { name: 'Second gym' });
+  expect(await configuration.backupsConfigured(Buffer.alloc(32))).toBe(false);
+  const failure = await maintenanceCommand(['snapshot']).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(configuration.InstallBackupGymCountError);
+  const messages: string[] = [], previous = setLogSink(() => undefined);
+  try { reportMaintenanceFailure(['snapshot'], failure, line => messages.push(line)); }
+  finally { setLogSink(previous); }
+  expect(messages).toEqual(['Maintenance command failed; check configuration and restore state']);
+});

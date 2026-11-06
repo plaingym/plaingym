@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { RestoreFailure } from '../../cli/restore.reason.js';
+import { RestoreFailure } from './restore.failure.js';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { setLogSink } from '../core/log.js';
+import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
 
 const leaky = new Error('could not connect to postgres://maintenance:DBPASSWORD@db.invalid/gym; key file /srv/SECRETPATH/identity.txt holds AGE-SECRET-KEY-1PRIVATEKEY');
@@ -23,6 +24,12 @@ describe('maintenance command failure', () => {
     expect(JSON.parse(lines[0]!)).toMatchObject({ level: 'error', event: 'cli.maintenance_failed', command: 'snapshot', error: { name: 'Error' } });
     expect(lines[0]).not.toMatch(redacted);
     expect(messages.join()).not.toMatch(redacted);
+  });
+  it('prints the fixed text of a wrong maintenance role for the deployed migrate command', () => {
+    const failure = (() => { try { return new PostgresMaintenance('postgres://app:DBPASSWORD@db.invalid/gym'); } catch (error) { return error; } })();
+    const messages: string[] = [], previous = setLogSink(() => undefined);
+    try { reportMaintenanceFailure(['migrate'], failure, (line) => messages.push(line)); } finally { setLogSink(previous); }
+    expect(messages).toEqual(['Backups and restore require maintenance']);
   });
   it('logs a command name only when it looks like one', () => {
     for (const arg of ['/srv/SECRETPATH/restore', 'postgres://maintenance:DBPASSWORD@db.invalid/gym']) {

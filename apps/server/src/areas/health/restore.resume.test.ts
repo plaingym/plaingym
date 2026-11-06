@@ -15,7 +15,8 @@ describe('install restore after an interruption', () => {
     'resumes after interruption at %s', async (stop) => {
       let interrupted = false;
       const service = f.restore((phase) => { if (!interrupted && phase === stop) { interrupted = true; throw new Error('Power loss'); } });
-      await expect(service.restore(base, f.identity)).rejects.toThrow('Power loss');
+      await expect(service.restore(base, f.identity)).rejects.toThrow('The staged restore failed; preserve the restore state and check the server before retrying resume');
+      expect(interrupted).toBe(true);
       expect(await f.gate().isClosed()).toBe(true);
       await f.restore().resume();
       const { gym } = await f.secretRows();

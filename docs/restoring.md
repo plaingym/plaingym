@@ -145,6 +145,9 @@ fresh install, before anyone has completed setup.
    | `Backups and restore require maintenance` | MAINTENANCE_DATABASE_URL must connect as the maintenance database role. |
    | `Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE` | Supply the snapshot ID and --config followed by the private configuration filename. |
    | `The snapshot's contents are not in a format this version reads` | Use a compatible snapshot and app version. Snapshot field names and values are not printed. |
+   | `The snapshot is damaged; try an earlier one` | Snapshot metadata, authentication or checksums failed before activation. Nothing was restored; use an intact earlier snapshot. |
+   | `The staged restore failed; preserve the restore state and check the server before retrying resume` | A failure after activation, including damaged staged files or a database restore failure. Keep the journal and staged files, investigate the server and storage, then retry `resume` once the cause is resolved. An earlier snapshot cannot replace an active restore. |
+   | `The restore activity lease is invalid; stop the app and check restore state` | An activity lease on the data volume is unreadable. Stop the app, preserve the restore state and investigate before retrying. |
    | `Unexpected error (NAME)` | Any other failure, with only the error's name. |
 
    Fix what it names. If the resume hint appeared, a restore is staged and a new

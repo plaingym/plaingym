@@ -42,7 +42,8 @@ describe('into an install that keeps uploads in S3', () => {
   it.each(['old_uploads_renamed', 'new_uploads_renamed'] as const)('resumes after interruption at %s', async (stop) => {
     let interrupted = false;
     await expect(storeRestore('uploads-new', (phase) => { if (!interrupted && phase === stop) { interrupted = true; throw new Error('Power loss'); } })
-      .restore(snapshotId, f.identity)).rejects.toThrow('Power loss');
+      .restore(snapshotId, f.identity)).rejects.toThrow('The staged restore failed; preserve the restore state and check the server before retrying resume');
+    expect(interrupted).toBe(true);
     // A restore journaled for the bucket never finishes into the directory.
     await expect(f.restore().resume()).rejects.toThrow('Upload storage changed');
     await storeRestore('uploads-new').resume();

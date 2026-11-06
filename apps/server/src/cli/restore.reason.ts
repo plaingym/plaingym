@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { ZodError } from 'zod';
-
-/**
- * A restore failure whose message the person at the terminal may read: fixed text that names a
- * field, a code or an environment variable, never a value taken from a file or an error.
- */
-export class RestoreFailure extends Error {
-  constructor(message: string) { super(message); this.name = 'RestoreFailure'; }
-}
+import { RestoreFailure } from '../areas/health/restore.failure.js';
 
 /** Fixed texts the restore code throws, with what each means to the owner. */
 const knownMessages: readonly (readonly [RegExp, string])[] = [

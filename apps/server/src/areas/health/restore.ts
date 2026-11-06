@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { RestoreFailure } from '../../cli/restore.reason.js';
+import { RestoreFailure } from './restore.failure.js';
 import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 import { auditEvents, gyms, writeAudit } from '@plaingym/db';
 // Restore infrastructure uses its dedicated maintenance connection, including in the standalone CLI.
@@ -20,7 +20,7 @@ import { atomicJson, childPath, exists, fileStream, privateDirectory, readJson, 
 import { manifestSchema, publicReferences, readReferences, snapshotPrefix, validateReferences, verifyReferences } from './backups.format.js';
 import type { Manifest } from './backups.format.js';
 import { verifyFile } from './backups.js';
-import { RestoreGate, unfinishedRestorePhases } from './restore.gate.js';
+import { RestoreGate, readRestoreJournal, unfinishedRestorePhases } from './restore.gate.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 
 /** Durable, idempotent publication before the restore journal can become complete. */
@@ -141,6 +141,14 @@ export class RestoreService {
         await atomicJson(o.gate.statePath, state);
         activated = true;
         return { state, manifest };
+      } catch (error) {
+        // Preserve actionable configuration, format, bucket and OS failures. Content errors are
+        // classified here, before activation, rather than by shared helpers' wording.
+        if (error instanceof RestoreFailure || error instanceof ZodError || (typeof error === 'object' && error !== null &&
+            ('code' in error || '$metadata' in error)) ||
+            (error instanceof Error && ["no identity matched any of the file's recipients",
+              'Invalid age private key', 'Expected one age identity'].includes(error.message))) throw error;
+        throw new RestoreFailure('The snapshot is damaged; try an earlier one', { cause: error });
       } finally {
         if (!activated) await rm(staging, { recursive: true, force: true });
       }
@@ -149,14 +157,14 @@ export class RestoreService {
     // waiting for that lock. Admission is closed durably by the verified journal.
     await o.gate.close();
     o.checkpoint?.('verified');
-    await o.database.locked(() => this.#resume(verified.state, verified.manifest));
+    await this.#staged(() => o.database.locked(() => this.#resume(verified.state, verified.manifest)));
   }
   async resume(): Promise<void> {
     const o = this.options;
     if (!await exists(o.gate.statePath)) return;
     await o.gate.close();
-    await o.database.locked(async () => {
-      const journal = stateSchema.safeParse(await readJson(o.gate.statePath));
+    await this.#staged(() => o.database.locked(async () => {
+      const journal = stateSchema.safeParse(await readRestoreJournal(o.gate.statePath));
       if (!journal.success) throw new RestoreFailure('The restore journal is not in a format this version reads');
       const state = journal.data;
       if (state.phase === 'complete') {
@@ -170,7 +178,14 @@ export class RestoreService {
       verifyReferences(await readJson(join(staging, 'references.json')), parseEncryptionKey(manifest.recovery.blobKey), state.id);
       await verifyFile(join(staging, 'database.dump'), manifest.database.plaintext);
       await this.#resume(state, manifest);
-    });
+    }));
+  }
+  async #staged(action: () => Promise<void>): Promise<void> {
+    try { await action(); }
+    catch (error) {
+      if (error instanceof RestoreFailure) throw error;
+      throw new RestoreFailure('The staged restore failed; preserve the restore state and check the server before retrying resume', { cause: error });
+    }
   }
   async #resume(state: z.infer<typeof stateSchema>, manifest: Manifest): Promise<void> {
     const o = this.options, staging = childPath(o.stagingDirectory, state.staging);

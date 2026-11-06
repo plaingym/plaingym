@@ -9,6 +9,7 @@ import { AppError, createTranslator, errorResponse } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import type { RequestEnvironment } from '../../core/context.js';
 import { atomicJson, exists, missing, privateDirectory, readJson } from './backups.files.js';
+import { RestoreFailure } from './restore.failure.js';
 
 /** Every journal phase before `complete`: a restore is staged and `resume` can finish it. */
 export const unfinishedRestorePhases = ['verified', 'database_restored', 'migrated', 'rekeyed', 'moving_old', 'moving_new', 'uploads_switched'] as const;
@@ -35,7 +36,7 @@ export class RestoreGate {
   async isClosed(): Promise<boolean> {
     if (this.#closing) return true;
     if (!await exists(this.statePath)) return false;
-    const state = await readJson(this.statePath);
+    const state = await readRestoreJournal(this.statePath);
     if (!state || typeof state !== 'object' || !('phase' in state)) return true;
     return state.phase !== 'complete';
   }
@@ -69,7 +70,9 @@ export class RestoreGate {
         if (!/^[a-f0-9-]+[.]json$/.test(name)) continue;
         const path = join(this.activityDirectory, name);
         try {
-          const lease = leaseSchema.parse(await readActivity(path));
+          const parsed = leaseSchema.safeParse(await readActivity(path));
+          if (!parsed.success) throw new RestoreFailure('The restore activity lease is invalid; stop the app and check restore state');
+          const lease = parsed.data;
           try {
             process.kill(lease.pid, 0);
             if (lease.started !== await processStart(lease.pid)) await rm(path, { force: true });
@@ -78,7 +81,11 @@ export class RestoreGate {
             if (missing(error) || (error as NodeJS.ErrnoException).code === 'ESRCH') await rm(path, { force: true });
             else throw error;
           }
-        } catch (error) { if (!missing(error)) throw error; }
+        } catch (error) {
+          if (error instanceof SyntaxError || (error instanceof Error && error.message === 'Metadata exceeds size limit'))
+            throw new RestoreFailure('The restore activity lease is invalid; stop the app and check restore state');
+          if (!missing(error)) throw error;
+        }
       }
       if (!active) return;
       await delay(25);
@@ -95,6 +102,15 @@ export class RestoreGate {
         throw error;
       }
     };
+  }
+}
+
+/** A journal that doesn't parse is never reported as snapshot corruption; a coded OS read failure stays what it is. */
+export async function readRestoreJournal(path: string): Promise<unknown> {
+  try { return await readJson(path); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error) throw error;
+    throw new RestoreFailure('The restore journal is not in a format this version reads');
   }
 }
 

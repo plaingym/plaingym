@@ -8,8 +8,9 @@ import { z } from 'zod';
 import { decrypt, encrypt, generateIdentity, identityToRecipient } from '../infra/age/index.js';
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
 import { s3Server } from '../infra/storage/s3-server.test-helper.js';
-import { commands, reportRestoreResume } from './restore.js';
-import { RestoreFailure, restoreFailureReason } from './restore.reason.js';
+import { commands, maintenanceCommand, reportRestoreResume } from './restore.js';
+import { RestoreFailure } from '../areas/health/restore.failure.js';
+import { restoreFailureReason } from './restore.reason.js';
 
 const secrets = ['SECRETACCESSKEYVALUE', 'ACCESSKEYIDVALUE', 'SECRETFIELDVALUE', 'DBPASSWORD', 'AGE-SECRET-KEY-1', 'bucket-name-value'];
 const restore = commands.find((command) => command.id === 'restore')!;
@@ -74,6 +75,13 @@ describe('the command-line restore says why it failed', () => {
     expect((await run(validConfig(), 'SECRETFIELDVALUE')).text).toContain('Restore failed: SNAPSHOT is not a snapshot ID (a UUID)');
     expect((await run({ ...validConfig(), snapshotId: randomUUID() })).text)
       .toContain('Restore failed: The restore configuration names a different snapshot than SNAPSHOT');
+  });
+  it('reports a mistyped key as a key problem, not a damaged snapshot', async () => {
+    const identityFile = join(directory, 'mistyped-key.txt');
+    // Keeps the shape decryption checks, but its checksum no longer matches.
+    await writeFile(identityFile, identity.slice(0, -1) + (identity.endsWith('Q') ? 'P' : 'Q') + '\n');
+    const { text } = await run({ ...validConfig(), identityFile });
+    expect(text).toBe("Restore failed: The key file doesn't hold an age private key");
   });
   it('reports an unreadable key file without its path', async () => {
     const identityFile = join(directory, 'no-such-key.txt');
@@ -169,24 +177,18 @@ describe('durable resume hint', () => {
   });
 });
 
-describe('fixed restore failures', () => {
-  it.each([
-    'Restored gym receipt is missing',
-    'Invalid current app key',
-    'Restore staging must be outside uploads',
-    'A snapshot object is missing from the bucket',
-    'A verified restore is already staged; resume it first',
-    'Restore staging and uploads must share a filesystem',
-    'Manifest belongs to another snapshot',
-    'Manifest and authenticated references disagree',
-    'Restore journal does not match staged snapshot',
-    'Current install key changed during restore',
-    'Upload storage changed during restore',
-    'Unexpected uploads directory during restore',
-    'Restored uploads tree missing',
-    'Backups and restore require maintenance',
-    'Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE',
-  ])('reports %s', (message) => {
-    expect(restoreFailureReason(new RestoreFailure(message))).toBe(message);
-  });
+it('prints a fixed migration diagnostic for a non-maintenance role', async () => {
+  const previous = process.env.MAINTENANCE_DATABASE_URL;
+  vi.stubEnv('MAINTENANCE_DATABASE_URL', 'postgres://app:DBPASSWORD@127.0.0.1:1/unused');
+  const lines: string[] = [];
+  try {
+    expect(await commands.find(command => command.id === 'migrate')!.run([], {
+      stdout: line => lines.push(line), stderr: line => lines.push(line),
+    })).toBe(1);
+    expect(lines).toEqual(['Migration failed: Backups and restore require maintenance']);
+  } finally { vi.stubEnv('MAINTENANCE_DATABASE_URL', previous); }
+});
+it('throws the public failure type for invalid restore command usage', async () => {
+  await expect(maintenanceCommand(['restore'])).rejects.toBeInstanceOf(RestoreFailure);
+  await expect(maintenanceCommand(['restore'])).rejects.toThrow('Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE');
 });

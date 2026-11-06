@@ -13,7 +13,8 @@ import { BackupsNotConfiguredError, configuredBackup, loadBackupConfig } from '.
 import { RestoreService } from '../areas/health/restore.js';
 import { RestoreGate } from '../areas/health/restore.gate.js';
 import { rotateKey, upgradeStoredSecrets } from './restore.rotate-key.js';
-import { issuePaths, RestoreFailure, restoreFailureReason } from './restore.reason.js';
+import { issuePaths, restoreFailureReason } from './restore.reason.js';
+import { RestoreFailure } from '../areas/health/restore.failure.js';
 import { z } from 'zod';
 
 function required(name: string): string {
@@ -125,7 +126,7 @@ export const commands: readonly Command[] = [{
   async run(_args, io) {
     if (!process.env.MAINTENANCE_DATABASE_URL) { io.stderr('Set MAINTENANCE_DATABASE_URL (see .env.example)'); return 1; }
     try { await maintenanceCommand(['migrate']); io.stdout('Database migrated'); return 0; }
-    catch (error) { io.stderr('Migration failed: ' + (error instanceof Error ? error.name : 'unknown error')); return 1; }
+    catch (error) { io.stderr('Migration failed: ' + (error instanceof RestoreFailure ? error.message : error instanceof Error ? error.name : 'unknown error')); return 1; }
   },
 }, {
   id: 'restore', description: 'Restore an authenticated encrypted install snapshot',

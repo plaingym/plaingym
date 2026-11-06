@@ -9,6 +9,7 @@ import { FakeBackupObjectStore } from '../../infra/storage/index.js';
 import { bytesStream } from './backups.files.js';
 import { referenceStream, snapshotPrefix, type Snapshot } from './backups.format.js';
 import type { InstallBackupConfig } from './restore.config.js';
+import * as configuration from './restore.config.js';
 import { createBackupHealthProvider } from './status-backups.js';
 
 const database = useTestDatabase(), factory = createFactories(database), gymId = uuidv7(), gymB = uuidv7();
@@ -46,6 +47,14 @@ describe('last-backup health', () => {
     expect(await read({ ...changed, destination: { ...changed.destination, bucket: 'new-bucket' } })).toMatchObject({
       status: 'warning', details: { latestRestorableAt: null, noneUnderCurrentKey: true } });
   });
+  it.each([new configuration.BackupsNotConfiguredError('Reworded diagnostic'), new configuration.InstallBackupGymCountError()])(
+    'recognizes unconfigured backups by type', async (error) => {
+      const spy = vi.spyOn(configuration, 'loadBackupConfig').mockRejectedValue(error);
+      try {
+        const health = createBackupHealthProvider({ env: { APP_ENCRYPTION_KEY: 'ab'.repeat(32) } });
+        expect(await health.read(context)).toMatchObject({ status: 'not_configured' });
+      } finally { spy.mockRestore(); }
+    });
   it('reads successful restorable snapshots from system history and validates authenticated objects', async () => {
     const recent = await snapshot(new Date('2026-10-22T11:00:00Z'));
     await snapshot(new Date('2026-10-22T11:50:00Z'), 'failed');
