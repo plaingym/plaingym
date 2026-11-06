@@ -23,8 +23,6 @@ const returnedErrors: Record<string, string> = {
   new_user_signup_disabled: 'shell/shell:linkNoAccount',
   failed_to_create_user: 'shell/shell:linkFailed', failed_to_create_session: 'shell/shell:linkFailed', user_not_found: 'shell/shell:linkFailed',
 };
-/** How long the page waits for the browser to leave for Google before it offers the sign-in methods again. */
-const leavingTimeoutMs = 15_000;
 function LoginPage() {
   const bootstrap = useBootstrap();
   const services = useShellServices();
@@ -36,14 +34,18 @@ function LoginPage() {
   // The browser is on its way to Google: the request has resolved, but the page hasn't left yet.
   const [leaving, setLeaving] = useState(false);
   // A failed Google or email link sign-in returns here with an error code; only known codes pick their message.
-  // A new attempt takes the message down (the code stays in the address, so it is remembered here).
   const returned = (Route.useSearch() as { error?: unknown }).error;
-  const [dismissed, setDismissed] = useState<unknown>(null);
-  const returnedError = typeof returned === 'string' && returned && returned !== dismissed ? returnedErrors[returned] ?? 'auth/google:failed' : null;
+  const returnedError = typeof returned === 'string' && returned ? returnedErrors[returned] ?? 'auth/google:failed' : null;
+  const clearReturnedError = async () => {
+    if (returned === undefined) return;
+    await navigate({ to: '/login', replace: true,
+      search: (previous: Record<string, unknown>) => { const rest = { ...previous }; delete rest.error; return rest; } });
+  };
   const google = useMutation({
     mutationFn: async () => {
       if (!services.signInWithGoogle) throw new Error('Google sign-in is not available');
       const url = await services.signInWithGoogle();
+      await clearReturnedError();
       setLeaving(true);
       window.location.assign(url);
     },
@@ -55,12 +57,8 @@ function LoginPage() {
     window.addEventListener('pageshow', restored);
     return () => window.removeEventListener('pageshow', restored);
   }, [resetGoogle]);
-  // If the navigation never happens (the visitor stopped the load), the form comes back after a while.
-  useEffect(() => {
-    if (!leaving) return;
-    const timer = setTimeout(() => { setLeaving(false); resetGoogle(); }, leavingTimeoutMs);
-    return () => clearTimeout(timer);
-  }, [leaving, resetGoogle]);
+  // Do not time out a navigation: a slow load must not mint a second OAuth state.
+  // If the visitor stops the load, they can reload; returning from Google resets via pageshow.
   const googleBusy = google.isPending || leaving;
   const login = useMutation({
     mutationFn: async (mode: 'password' | 'magic') => {
@@ -90,7 +88,7 @@ function LoginPage() {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (login.isPending || googleBusy) return;
-    setDismissed(returned);
+    void clearReturnedError();
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     const mode = submitter instanceof HTMLButtonElement ? submitter.value : methods.password ? 'password' : 'magic';
     if (mode === 'password' && methods.password) login.mutate('password');
@@ -101,7 +99,7 @@ function LoginPage() {
       <PageHeader title={t('shell/shell:title')} description={bootstrap.data.gym.name} />
       {returnedError && !sent && <Alert>{t(returnedError)}</Alert>}
       {googleOn && !sent && <div className="space-y-4">
-        <Button type="button" variant="outline" className="w-full" disabled={googleBusy || login.isPending} onClick={() => { setDismissed(returned); google.mutate(); }}>
+        <Button type="button" variant="outline" className="w-full" disabled={googleBusy || login.isPending} onClick={() => { google.mutate(); }}>
           {t(googleBusy ? 'auth/google:pending' : 'auth/google:signIn')}</Button>
         {google.isError && <Alert>{t('auth/google:startFailed')}</Alert>}
         {(methods.password || methods.magicLink) && <p className="text-center text-sm text-muted-foreground">{t('auth/google:or')}</p>}

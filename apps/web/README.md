@@ -13,6 +13,11 @@ the larger layouts. No screen may scroll sideways, every control is at least
 44 px tall (and wide enough to tap), and text stays readable without zooming.
 Check each screen you build or change at 360 px and on desktop.
 
+Settings-section registrations may supply a `listed` React hook returning a boolean.
+The settings page calls it in a separate component for each permitted, enabled section,
+so hooks can fetch feature-specific availability without coupling the page to a section ID.
+Omitting it lists the section by default. The empty state appears only when no section renders.
+
 **Layout.** The admin shell supplies the header, the navigation (a menu on
 phones, a sidebar from `md`), and the page gutters. A page renders its content
 inside one `Page` and starts with one `PageHeader`:

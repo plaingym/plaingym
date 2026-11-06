@@ -1,4 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
+Unreadable Google clients are reported as `source: 'none'`, with no stored ID or secret flag and the replacement form available. They do not count as a way in when removing email settings. Settings and sign-in reads remember the last failed ciphertext per gym and encryption-key object, logging one redacted error until the stored value changes; no decrypted value is cached.
+
 General settings and booking rules use the gym revision for compare-and-set updates. Currency changes lock the gym row and are rejected when plans, charge types, memberships, or invoices exist; currency foreign keys also protect concurrent inserts. Responses and audits use the same explicit safe projection and exclude credentials and opaque settings.
 
 The module helpers take the existing server registry and inspect request context or job gym settings at execution time. The website definition remains a stub; core does not import it.

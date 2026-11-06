@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { ComponentType } from 'react';
-import { createWebRegistries, type WebContribution } from '@plaingym/shared';
+import { createWebRegistries, Registry, type ViewEntry, type WebContribution } from '@plaingym/shared';
 import { registration as part0 } from '../features/settings/general/registrations.js';
 import { registration as part1 } from '../features/kiosk-devices/registrations.js';
 import { registration as part2 } from '../features/settings/go-live.registrations.js';
@@ -45,7 +45,13 @@ export interface ExtensionViewProps {
   sessionId?: string;
 }
 export type ExtensionView = ComponentType<ExtensionViewProps>;
-export type WebRegistration = WebContribution<ExtensionView>;
+export interface SettingsSection extends ViewEntry<ExtensionView> {
+  /** Optional React hook, called in the section's own component after permission/module filtering. */
+  readonly listed?: () => boolean;
+}
+export type WebRegistration = Omit<WebContribution<ExtensionView>, 'settingsSections'> & {
+  readonly settingsSections?: readonly SettingsSection[];
+};
 export const webContributions: readonly WebRegistration[] = [
   part0,
   part1,
@@ -87,5 +93,8 @@ export const webContributions: readonly WebRegistration[] = [
   part37,
 ];
 export function createRegistries(additional: readonly WebRegistration[] = []) {
-  return createWebRegistries([...webContributions, ...additional]);
+  const contributions = [...webContributions, ...additional];
+  const settingsSections = new Registry<SettingsSection>();
+  for (const contribution of contributions) settingsSections.registerAll(contribution.settingsSections ?? []);
+  return { ...createWebRegistries(contributions), settingsSections };
 }

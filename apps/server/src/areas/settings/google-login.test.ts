@@ -170,10 +170,31 @@ describe('Settings → Google sign-in', () => {
     expect((await save(sandbox, status.revision)).status).toBe(404);
     await setStored(gymB, null);
   });
-  it('treats an unreadable stored client as no client, logging no value', async () => {
-    await setStored(gymB, encryptSecret(Buffer.alloc(32, 1), { secretClass: 'google_config', owner: gymB }, JSON.stringify({ clientId, clientSecret })));
-    expect(await createGoogleClientResolver({ key, env, tenancy: 'single', scope: database.forGym }).credentials(gymB)).toBeNull();
-    expect(logs.some((line) => line.includes('settings.google_config_unreadable'))).toBe(true);
+  it('reports an unreadable client as off, does not count it as a way in, and logs once per value', async () => {
+    const corrupt = () => encryptSecret(Buffer.alloc(32, 1), { secretClass: 'google_config', owner: gymB }, JSON.stringify({ clientId, clientSecret }));
+    const value = corrupt();
+    await setStored(gymB, value);
+    const resolver = createGoogleClientResolver({ key, env, tenancy: 'single', scope: database.forGym });
+    const app = server({ gymId: gymB, userId: ownerB });
+    const start = logs.length;
+    for (let i = 0; i < 3; i++) {
+      expect(await resolver.credentials(gymB)).toBeNull();
+      expect(await read(app)).toMatchObject({ source: 'none', editable: true, clientId: null, clientSecretSet: false, removeBlocked: false });
+    }
+    await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: encryptSmtpConfig(key, gymB,
+      { host: 'smtp.gym.invalid', port: 465, security: 'tls', from: 'desk@gym.invalid', username: 'user', password: 'secret' }) }).where(eq(gyms.id, gymB)));
+    const integrations = await (await app.request('/api/settings/integrations')).json() as { data: { email: { removeBlocked: boolean } } };
+    expect(integrations.data.email.removeBlocked).toBe(true);
+    expect(logs.slice(start).filter((line) => line.includes('settings.google_config_unreadable'))).toHaveLength(1);
+    expect(logs.slice(start).join('')).not.toContain(value);
+    await setStored(gymB, corrupt());
+    expect(await resolver.credentials(gymB)).toBeNull();
+    expect(logs.slice(start).filter((line) => line.includes('settings.google_config_unreadable'))).toHaveLength(2);
+    const current = await read(app);
+    expect((await save(app, current.revision)).status).toBe(200);
+    expect(await resolver.credentials(gymB)).toEqual({ clientId, clientSecret });
+    expect(await read(app)).toMatchObject({ source: 'gym', clientSecretSet: true });
+    await database.forGym(gymB, (tx) => tx.update(gyms).set({ smtpConfig: null }).where(eq(gyms.id, gymB)));
     await setStored(gymB, null);
   });
   it('counts a stored or install Google client as a way in when the owner removes the gym’s email settings', async () => {

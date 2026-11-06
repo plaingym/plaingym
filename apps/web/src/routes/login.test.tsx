@@ -90,16 +90,20 @@ describe('Google sign-in on the login page', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false));
     expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
   });
-  it('offers the sign-in methods again when the browser never leaves', async () => {
+  it('does not allow another start after the former fallback while Google is still loading', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      open(googleServices(vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=stopped')));
+      const signInWithGoogle = vi.fn().mockResolvedValue('https://accounts.google.test/auth?state=slow');
+      open(googleServices(signInWithGoogle));
       await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
       await waitFor(() => expect(assign).toHaveBeenCalled());
       expect((screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement).disabled).toBe(true);
-      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-      expect((screen.getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false);
-      expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      const button = screen.getByRole('button', { name: /Google/ }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+      expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(true);
+      await userEvent.click(button);
+      expect(signInWithGoogle).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
   });
   it('enables everything again when starting Google fails', async () => {
@@ -109,6 +113,26 @@ describe('Google sign-in on the login page', () => {
     expect(assign).not.toHaveBeenCalled();
     expect((screen.getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText('Email address') as HTMLInputElement).disabled).toBe(false);
+  });
+  it('keeps the returned banner and URL when starting Google fails', async () => {
+    const router = createAppRouter(createMemoryHistory({ initialEntries: ['/login?error=access_denied'] }));
+    render(<App services={googleServices(vi.fn().mockRejectedValue(new Error('down')))} router={router}/>);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    await screen.findByText(/Unable to open Google sign-in/);
+    expect(screen.getByText(/Google sign-in was cancelled/)).toBeDefined();
+    expect(router.state.location.searchStr).toContain('error=access_denied');
+  });
+  it('replaces the error search parameter on success and shows a later identical error', async () => {
+    const history = createMemoryHistory({ initialEntries: ['/login?error=access_denied&keep=yes'] });
+    const router = createAppRouter(history);
+    render(<App services={googleServices(vi.fn().mockResolvedValue('https://accounts.google.test/auth'))} router={router}/>);
+    await userEvent.click(await screen.findByRole('button', { name: 'Sign in with Google' }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    expect(router.state.location.searchStr).toBe('?keep=yes');
+    expect(history.length).toBe(1);
+    expect(screen.queryByText(/Google sign-in was cancelled/)).toBeNull();
+    await act(async () => { history.push('/login?error=access_denied'); });
+    expect(await screen.findByText(/Google sign-in was cancelled/)).toBeDefined();
   });
   it('takes a returned link error down when a new attempt starts, whichever way', async () => {
     const message = 'This sign-in link was already used or has expired. Request a new one below.';

@@ -358,11 +358,12 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   const googleAudit = (gym: Gym) => ({ source: google.install ? 'install' : gym.googleConfig ? 'gym' : 'none' });
   async function googleLogin(gym: Gym, userId: string): Promise<GoogleLogin> {
     const editable = google.editable && !sandbox;
-    const source = google.install ? 'install' : editable && gym.googleConfig ? 'gym' : 'none';
+    const stored = editable ? readGoogleConfig(options.key, gym.googleConfig, gym.id) : null;
+    const source = google.install ? 'install' : stored ? 'gym' : 'none';
     // Removing the stored client leaves email links (the gym's SMTP or the install's) and the owner's own password.
     const after = signIn(Boolean(gym.smtpConfig) || installSmtp);
     const removeBlocked = source === 'gym' && !after.magicLink && !(after.password && await options.hasPassword(userId));
-    return { source, editable, clientId: source === 'gym' ? readGoogleConfig(options.key, gym.googleConfig, gym.id)?.clientId ?? null : null,
+    return { source, editable, clientId: stored?.clientId ?? null,
       clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision };
   }
   /** Fails fast on a stale revision before any network call; the save checks it again. */
