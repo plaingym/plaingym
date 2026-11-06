@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: CI
 # Pushes to main and pull requests; a pull request's branch isn't also checked as a push.
-# A change to Markdown files only skips it: no test, build or bundle reads them.
+# Markdown-only changes run the docs tests in Repo compliance; they skip this full build and test suite.
 on:
   push:
     branches: [main, 'integration/**']

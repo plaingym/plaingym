@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { memberPermissions, staffPermissions, staffRoles } from './permissions.js';
+import { memberPermissions, memberRoles, staffPermissions, staffRoles } from './permissions.js';
 
 const page = readFileSync(fileURLToPath(new URL('../../../docs/security-model.md', import.meta.url)), 'utf8');
 
@@ -27,7 +27,7 @@ describe('docs/security-model.md', () => {
   });
   it('shows the member capabilities exactly as granted', () => {
     const expected = Object.fromEntries(Object.entries(memberPermissions)
-      .map(([capability, roles]) => [capability, ['payer', 'member'].map((role) => (roles as readonly string[]).includes(role))]));
+      .map(([capability, roles]) => [capability, memberRoles.map((role) => (roles as readonly string[]).includes(role))]));
     expect(table('Member capabilities')).toEqual(expected);
   });
 });

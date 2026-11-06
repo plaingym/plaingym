@@ -32,7 +32,8 @@ message when a value is missing or invalid.
 
 A test (`apps/server/src/core/configuration.docs.test.ts`) fails when the server
 or the image's start-up scripts read a variable, or `deploy/compose.yaml` uses
-one, that this page doesn't list.
+one, that this page doesn't list. `pnpm verify` always runs the documentation tests,
+and the Repo compliance workflow runs them even for Markdown-only changes.
 
 ## Required
 
@@ -78,7 +79,7 @@ change an existing database: the roles keep the password they were created with.
 | `UPLOADS_DIR` | none | Where uploads and exports are stored on disk. The server needs it unless `UPLOADS_S3_BUCKET` is set, but the image's single-gym start-up (the restore check before migrations) always requires it. Compose uses `/var/lib/plaingym/uploads` on the app's data volume. |
 | `UPLOADS_S3_BUCKET` | unset | Store uploads in this S3-compatible bucket instead of on disk. Required in multi-gym mode. |
 | `UPLOADS_S3_ENDPOINT` | AWS | The bucket's endpoint, for providers other than AWS (Cloudflare R2, MinIO, Backblaze B2 and others). |
-| `UPLOADS_S3_REGION` | `auto` | The bucket's region. `auto` suits Cloudflare R2 and most S3-compatible providers; AWS S3 needs the bucket's region set here. |
+| `UPLOADS_S3_REGION` | `us-east-1` without an endpoint; `auto` with one | The bucket's region, used for both the S3 client and the browser's image allowlist. Set this to the bucket's region for AWS S3 outside `us-east-1`; `auto` suits most S3-compatible providers with `UPLOADS_S3_ENDPOINT`. |
 | `UPLOADS_S3_ACCESS_KEY_ID` | unset | Access key for the bucket. Without the key pair, the SDK's default credential chain is used. |
 | `UPLOADS_S3_SECRET_ACCESS_KEY` | unset | Secret key for the bucket. |
 | `PACKS_DIR` | bundled | A directory of content packs (rank systems, programs, class tags) to use instead of the bundled `packs/`. |

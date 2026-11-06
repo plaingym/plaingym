@@ -3,7 +3,8 @@
 // changes since it left main affect. Vitest follows imports to find them; `forceRerunTriggers` in
 // vitest.config.ts lists the changes that run every test. Whole-app tests (those that compose every
 // area) are related to almost any change, so they run here only when their own folder changed; CI runs
-// the full suite on every push and gates landing. `--full` runs every test; `--list` prints the
+// the full suite on code pushes and gates landing. Docs tests always run, including for Markdown-only
+// changes, because they read files outside the import graph. `--full` runs every test; `--list` prints the
 // selected test files without running anything.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 const root = git('rev-parse', '--show-toplevel');
 const slash = (path) => path.split('\\').join('/');
+const isDocsTest = (file) => /\.docs\.test\.ts$/.test(file);
 const full = process.argv.includes('--full'), listOnly = process.argv.includes('--list');
 
 /** Where the branch left main, or null when neither main nor origin/main exists. */
@@ -54,8 +56,9 @@ async function selectTests(since) {
     const selected = new Set((await vitest.getRelevantTestSpecifications()).map((spec) => spec.moduleId));
     if (selected.size === all.size) return null; // A rerun trigger changed.
     const changedDirs = new Set(changed.map((file) => slash(dirname(file))));
+    for (const file of all) if (isDocsTest(file)) selected.add(file);
     return [...selected]
-      .filter((file) => changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
+      .filter((file) => isDocsTest(file) || changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
       .map((file) => slash(relative(root, file)))
       .sort();
   } finally { await vitest.close(); }
@@ -69,7 +72,11 @@ function pnpm(script, env = process.env) {
 }
 
 const since = full ? null : base();
-if (!listOnly) { pnpm('check-types'); pnpm('lint'); }
+if (!listOnly) {
+  // Fail fast on drift, before the slower code checks, even when no imports changed.
+  pnpm('exec vitest run --project unit .docs.test.ts');
+  pnpm('check-types'); pnpm('lint');
+}
 let tests = null;
 if (since) {
   if (!existsSync(join(root, 'packages/shared/dist/locales.gen.ts'))) pnpm('generate');
@@ -79,6 +86,8 @@ if (since) {
     : `\n${tests.length} test files affected by changes since ${since.slice(0, 12)} (whole-app tests run in CI).`);
 }
 if (listOnly) { for (const file of tests ?? ['(every test file)']) console.log(file); process.exit(0); }
+// The docs tests already passed above; keep them in --list but don't repeat them in a selected run.
+if (tests) tests = tests.filter((file) => !isDocsTest(file));
 if (tests === null) pnpm('test');
 else if (tests.length) {
   const directory = mkdtempSync(join(tmpdir(), 'plaingym-verify-'));

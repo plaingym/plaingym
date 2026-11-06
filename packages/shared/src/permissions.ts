@@ -38,7 +38,8 @@ export const staffPermissions = {
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type StaffPermission = keyof typeof staffPermissions;
-export type MemberRole = 'payer' | 'member';
+export const memberRoles = ['payer', 'member'] as const;
+export type MemberRole = (typeof memberRoles)[number];
 export const memberPermissions = {
   'profile.read': ['payer', 'member'],
   'progress.read': ['payer', 'member'],

@@ -14,8 +14,9 @@ export const uploadDownloadPath = '/api/uploads/download';
 
 export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin: (gymId: string) => Promise<string>) {
   const bucket = env.UPLOADS_S3_BUCKET;
+  const region = env.UPLOADS_S3_REGION || (env.UPLOADS_S3_ENDPOINT ? 'auto' : 'us-east-1');
   if (env.TENANCY === 'multi' && !bucket) throw new Error('TENANCY=multi requires UPLOADS_S3_BUCKET');
-  const client = bucket ? createS3Client({ region: env.UPLOADS_S3_REGION ?? 'auto',
+  const client = bucket ? createS3Client({ region,
     ...(env.UPLOADS_S3_ENDPOINT ? { endpoint: env.UPLOADS_S3_ENDPOINT } : {}),
     ...(env.UPLOADS_S3_ACCESS_KEY_ID && env.UPLOADS_S3_SECRET_ACCESS_KEY ? {
       credentials: { accessKeyId: env.UPLOADS_S3_ACCESS_KEY_ID, secretAccessKey: env.UPLOADS_S3_SECRET_ACCESS_KEY },
@@ -35,7 +36,7 @@ export function createRuntimeUploads(env: NodeJS.ProcessEnv, key: Buffer, origin
   return {
     /** Where the browser loads signed S3 URLs from (path-style, as `createS3Client` forces); local uploads use the app's origin. */
     imageOrigin: client ? (env.UPLOADS_S3_ENDPOINT ? new URL(env.UPLOADS_S3_ENDPOINT).origin
-      : `https://s3.${env.UPLOADS_S3_REGION ?? 'us-east-1'}.amazonaws.com`) : undefined,
+      : `https://s3.${region}.amazonaws.com`) : undefined,
     async forGym(gymId: string): Promise<Uploads> {
       const uploads = await unwrapped(gymId);
       return env.DEMO_MODE === 'true' ? demoUploads(uploads) : uploads;
