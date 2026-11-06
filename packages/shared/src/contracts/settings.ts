@@ -37,7 +37,7 @@ export const gymAddressSchema = z.strictObject({
   country: z.string().regex(/^[A-Z]{2}$/).optional(),
 });
 export const gymBrandingSchema = z.strictObject({
-  logoKey: z.string().min(1).nullable().optional(), primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  logoKey: z.string().min(1).nullable().optional(), primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
 });
 /** Open mat counts toward classes attended (rank criteria and class totals) only when enabled. */
 export const bookingRulesSchema = z.strictObject({

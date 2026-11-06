@@ -29,7 +29,26 @@ describe('combined contract inventory', () => {
     }
   });
   it('uses one flat input layout and valid permission and response declarations', () => {
-    for (const [, endpoints] of collections) {
+    for (const [area, endpoints] of collections) {
+      // Install declarations also describe the source redirect and OpenAPI document.
+      // They preserve their response status, media type and headers in `responses`.
+      if (area === 'installContracts') {
+        for (const endpoint of Object.values(exports.installContracts)) {
+          expect(endpoint).not.toHaveProperty('request');
+          expect(endpoint.permission).toEqual({ kind: 'public' });
+          for (const [status, response] of Object.entries(endpoint.responses)) {
+            expect(['200', '302']).toContain(status);
+            if ('content' in response) {
+              expect(status).toBe('200');
+              expect(response.content['application/json'].schema).toBeInstanceOf(z.ZodType);
+            } else {
+              expect(status).toBe('302');
+              expect(response.headers.Location.schema).toEqual({ type: 'string', format: 'uri' });
+            }
+          }
+        }
+        continue;
+      }
       for (const endpoint of Object.values(endpoints as Record<string, EndpointContract>)) {
         expect(endpoint).not.toHaveProperty('request');
         expect(isRoutePermission(endpoint.permission)).toBe(true);

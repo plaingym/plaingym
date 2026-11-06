@@ -233,6 +233,9 @@ describe('outbox isolation, permissions, and external boundaries', () => {
     const html = '<html><body style="margin:0"><p style="color:red">Styled</p></body></html>';
     const mail = await factory('emailOutbox', a.gymId, { html });
     const { app } = appFor(createDemoRoutes(f.service, { installOrigin: 'https://demo.example.test', outbox: createOutboxQuery(db.forGym) }), a.gymId);
+    const list = await (await app.request('/api/demo/outbox')).json();
+    expect(list.data.find((message: { id: string }) => message.id === mail.id)).not.toHaveProperty('html');
+    expect((await (await app.request('/api/demo/outbox/' + mail.id)).json()).data).not.toHaveProperty('html');
     const response = await app.request('/api/demo/outbox/' + mail.id + '/preview');
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/^text\/html/);

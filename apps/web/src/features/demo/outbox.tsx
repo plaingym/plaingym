@@ -7,7 +7,7 @@ import { Page, PageHeader } from '../../components/ui/page.js';
 import { Dialog } from '../../components/ui/dialog.js';
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states.js';
 import { t } from '../../lib/i18n.js';
-import { outboxResponse } from '@plaingym/shared/contracts';
+import { demoContracts, outboxResponse } from '@plaingym/shared/contracts';
 import { api } from '../../lib/api.js';
 import { DemoMenuLink } from './notice.js';
 type Message = ReturnType<typeof outboxResponse.parse>['data'][number];
@@ -45,7 +45,7 @@ export function OutboxPage() {
     {next && <Button type="button" disabled={loading} onClick={() => setCursor(next)}>{t('demo/demo:more')}</Button>}
     {selected && <Dialog title={selected.subject} closeLabel={t('demo/demo:closePreview')} onClose={() => setPreview(null)} size="wide">
       <iframe title={selected.subject} sandbox="" referrerPolicy="no-referrer" className="h-[60dvh] w-full border border-border"
-        src={`/api/demo/outbox/${selected.id}/preview`} />
+        src={demoContracts.preview.path.replace('{id}', encodeURIComponent(selected.id))} />
     </Dialog>}
   </Page>;
 }

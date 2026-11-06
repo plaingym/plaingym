@@ -4,7 +4,7 @@ import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
 import { button, publicLayout } from './page.js';
-import { maxJoinMembers } from './join.service.js';
+import { maxJoinMembers } from '@plaingym/shared/contracts';
 
 // The shared public stylesheet is built from the classes in every public page file, `page.ts` and `*.page.ts` (`links/styles.build.mjs`).
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';

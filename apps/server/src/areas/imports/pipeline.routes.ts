@@ -12,11 +12,6 @@ export function importActor(context: RequestContext): MutationContext {
     throw new AppError('not_found', t('imports/pipeline:notFound'));
   return { gymId: context.gym.gymId, actor: { kind: 'user', userId: context.principal.userId } };
 }
-// TODO: put this documentation on the shared upload schema. zod-to-openapi has no
-// representation for z.file(); the cloned field keeps its validation.
-const uploadBody = importsContracts.upload.body.extend({
-  file: importsContracts.upload.body.shape.file.openapi({ type: 'string', format: 'binary' }),
-});
 export function createPipelineRoutes(service: ImportPipeline): RouteRegistration[] {
   const { upload, preview, start, get, errors } = importsContracts;
   return [
@@ -24,7 +19,7 @@ export function createPipelineRoutes(service: ImportPipeline): RouteRegistration
       if (c.req.header('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'multipart/form-data')
         throw new AppError('invalid_request', 'The request must contain a multipart file upload.');
       await next();
-    }], request: { body: { required: true, content: { 'multipart/form-data': { schema: uploadBody } } } },
+    }], request: { body: { required: true, content: { 'multipart/form-data': { schema: upload.body } } } },
       responses: { 200: { description: 'CSV upload', content: { 'application/json': { schema: upload.response } } } } },
     async (c) => c.json({ data: await service.upload(importActor(c.get('context')), c.req.valid('form').file) }, 200)),
     route({ ...preview, request: { query: preview.query, body: { required: true, content: { 'application/json': { schema: preview.body } } } },

@@ -11,7 +11,6 @@ import { demoContracts, demoTestCard } from '@plaingym/shared/contracts';
 import { createOutboxQuery } from './outbox.js';
 import type { DemoService } from './service.js';
 import { demoLoginRateLimit, demoLoginRedirect, joinedMembers } from './identities.js';
-import { z } from '@hono/zod-openapi';
 import type { forGym } from '@plaingym/db';
 
 /** A captured email's own policy: inline styles and data: images only, no script (sandbox), framed only by the app. */
@@ -23,7 +22,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
   const loginLimiter = rateLimit({ ...options.clientIp, sharedKey: 'demo.login', limit: demoLoginRateLimit.max, windowMs: demoLoginRateLimit.window * 1000 });
   const guard = csrf(options.installOrigin), outbox = options.outbox ?? createOutboxQuery();
   const modeGuard: MiddlewareHandler<RequestEnvironment> = async (_c, next) => { if (options.enabled === false) throw new AppError('not_found', 'Not found'); await next(); };
-  const { create, status, login, menu, signInLink, outbox: list, message, entry } = demoContracts;
+  const { create, status, login, menu, signInLink, outbox: list, message, preview, entry } = demoContracts;
   // The configured install host is known before setup creates a gym and after a
   // restore changes its hostname. Multi-tenant gym hosts still require resolution.
   const mode = options.tenancy ?? (options.enabled === false ? 'single' : 'multi');
@@ -90,12 +89,12 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     }, async (c) => { const gymId = c.get('context').gym.gymId; await service.status(gymId); c.header('cache-control', 'no-store'); return c.json({ data: await outbox.get(gymId, c.req.valid('param').id) }, 200); }),
     // The outbox's preview frame loads the message from here rather than from srcdoc, which would take the admin page's
     // policy: email HTML keeps its inline styles under a policy of its own, which runs no script, loads nothing and
-    // may be framed only by the app's own pages. TODO: promote this contract into the shared demo contracts.
-    route({ method: 'get', path: '/api/demo/outbox/{id}/preview', permission: message.permission, request: { params: message.params },
-      responses: { 200: { description: 'Message HTML for the sandboxed preview frame', content: { 'text/html': { schema: z.string() } } } },
+    // may be framed only by the app's own pages.
+    route({ ...preview, request: { params: preview.params },
+      responses: { 200: { description: 'Message HTML for the sandboxed preview frame', content: { 'text/html': { schema: preview.response } } } },
     }, async (c) => {
       const gymId = c.get('context').gym.gymId; await service.status(gymId);
-      const html = (await outbox.get(gymId, c.req.valid('param').id)).html;
+      const html = await outbox.preview(gymId, c.req.valid('param').id);
       c.header('cache-control', 'no-store'); c.header('x-content-type-options', 'nosniff'); c.header('referrer-policy', 'no-referrer');
       setPolicy(c, outboxPreviewDirectives);
       return c.html(html, 200);

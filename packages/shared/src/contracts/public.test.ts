@@ -64,7 +64,7 @@ describe('core public page contracts', () => {
     for (const contract of Object.values(publicContracts)) {
       expect(isRoutePermission(contract.permission)).toBe(true);
       expect(contract.permission).toEqual({ kind: 'public' });
-      expect(contract.path).toMatch(/^\/api\/public\//);
+      expect(contract.path).toMatch(/^\/api\/public\/|^\/(?:drop-in|join)\/signatures$/);
     }
   });
 });

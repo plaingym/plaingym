@@ -28,20 +28,9 @@ import { createPortalInvitationStore } from '../../infra/auth/portal-invitations
 const t = createTranslator(locales.en ?? {});
 /** Fixed same-origin return pages, never request values. Checkout and its reservation last an hour. */
 export const joinCheckoutFlow: CheckoutReturn = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 60 * 60 * 1000 };
-export const maxJoinMembers = 6, maxJoinDocuments = 8;
 /** Join's form and admission bodies: a family's chosen PNG files (256 KB each) or dozens of drawn signatures. */
 export const joinBodyBytes = 4 * 1024 * 1024;
 const linkLifetimeMs = 24 * 60 * 60 * 1000, settled = ['paid', 'partially_refunded', 'refunded'];
-const upload = z.strictObject({ templateId: c.idSchema, templateVersion: c.waiverTemplateVersionSchema,
-  pngBase64: z.string().min(1).max(350_000).regex(/^[A-Za-z0-9+/]+={0,2}$/) });
-// The upload admission is separate from the frozen, existence-blind join submission.
-// TODO(CCR): move this schema and POST /join/signatures into the shared public contracts with the drop-in admission.
-export const joinAdmissionSchema = z.strictObject({
-  planId: c.idSchema, contact: c.publicContactSchema, honeypot: z.literal(''),
-  members: z.array(z.strictObject({ member: c.publicApplicantSchema, signatures: z.array(upload).min(1).max(maxJoinDocuments) })).min(1).max(maxJoinMembers),
-});
-export const joinAdmissionResponseSchema = z.strictObject({ data: z.array(z.array(z.strictObject({
-  templateId: c.idSchema, templateVersion: z.number(), signatureImageKey: z.string(), signatureImageHash: z.string() }))) });
 // Join records are audits on the new household: identifiers only, never contact details.
 const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, memberIds: z.array(c.idSchema), membershipIds: z.array(c.idSchema) });
 const received = admitted.extend({ linkId: c.idSchema, invoiceId: c.idSchema });
@@ -131,7 +120,7 @@ export function createJoinService(options: JoinOptions) {
   async function ready(gymId: string) {
     if (!(await settings(gymId)).billingEnabled || !await options.paymentsConfigured(gymId)) unavailable();
     const page = await options.waivers.listTemplates(gymId, { limit: 100, offset: 0 });
-    if (!page.data.length || page.pagination.total > maxJoinDocuments) unavailable();
+    if (!page.data.length || page.pagination.total > c.maxJoinDocuments) unavailable();
     return page.data;
   }
   function current(templates: readonly c.WaiverTemplate[], accepted: readonly { templateId: string; templateVersion: number }[]) {
@@ -270,7 +259,7 @@ export function createJoinService(options: JoinOptions) {
     },
     /** Creates the new household and its prospects, then stores each validated signature image. Never looks up an address. */
     async admit(gymId: string, body: unknown, timezone: string) {
-      const input = joinAdmissionSchema.parse(body);
+      const input = c.joinAdmissionSchema.parse(body);
       applicants(input.contact, input.members.map(m => m.member), timezone);
       await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
@@ -298,12 +287,12 @@ export function createJoinService(options: JoinOptions) {
             ...await options.waivers.uploadSignature(system(gymId), memberIds[i]!, images[i]![j]!) });
         data.push(stored);
       }
-      return joinAdmissionResponseSchema.parse({ data });
+      return c.joinAdmissionResponseSchema.parse({ data });
     },
     /** Signs, assigns pending memberships, issues the first invoice and an undisclosed pay link. Replays return the same join. */
     async join(gymId: string, body: unknown, timezone: string, ipAddress: string) {
       const input = c.publicJoinRequestSchema.parse(body);
-      if (input.members.length > maxJoinMembers) invalid('Too many members');
+      if (input.members.length > c.maxJoinMembers) invalid('Too many members');
       applicants(input.contact, input.members.map(m => m.member), timezone);
       await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);

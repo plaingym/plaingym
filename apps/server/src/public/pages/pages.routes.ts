@@ -7,7 +7,7 @@ import { route, type RouteRegistration } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { setPolicy } from '../../core/csp.js';
 import { cachedLinkAsset } from '../links/assets.js';
-import { admissionSchema, createPublicPagesService, type PublicPagesOptions, type PublicPagesService } from './service.js';
+import { createPublicPagesService, type PublicPagesOptions, type PublicPagesService } from './service.js';
 import { intakePage, publicPageDirectives, themeCss } from './page.js';
 import { publicBrowserScript } from './browser.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
@@ -46,9 +46,9 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     route({ ...contracts.dropIn, middleware: [budget, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.dropIn.body } } } }, responses: json(contracts.dropIn.response) }, async ctx => {
       const context = ctx.get('context'); return ctx.json(await options().service.dropIn(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone, context.clientIp ?? 'unknown', context.requestId), 200);
     }),
-    route({ method: 'post', path: '/drop-in/signatures', permission: { kind: 'public' }, middleware: [admissionBudget, bounded],
-      request: { body: { required: true, content: { 'application/json': { schema: admissionSchema } } } },
-      responses: json(z.strictObject({ data: z.array(z.strictObject({ templateId: z.uuid(), templateVersion: z.number(), signatureImageKey: z.string(), signatureImageHash: z.string() })) })) }, async ctx => {
+    route({ ...contracts.dropInAdmission, middleware: [admissionBudget, bounded],
+      request: { body: { required: true, content: { 'application/json': { schema: contracts.dropInAdmission.body } } } },
+      responses: json(contracts.dropInAdmission.response) }, async ctx => {
       const context = ctx.get('context'); return ctx.json(await options().service.admit(context.gym.gymId, ctx.req.valid('json'), context.gym.timezone), 200);
     }),
     route({ method: 'get', path: '/public/pages/client.js', permission: { kind: 'public' }, responses: { 200: { description: 'Progressive form enhancement' } } }, ctx => {

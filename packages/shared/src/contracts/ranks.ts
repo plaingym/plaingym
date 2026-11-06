@@ -20,7 +20,7 @@ export const rankSubRankSchema = z.strictObject({
 });
 /** Provider-owned configuration is stored in ranks.criteria, never in new columns. */
 export const promotionCriterionSchema = z.strictObject({
-  providerId: nameSchema, config: z.record(z.string(), z.json()),
+  providerId: nameSchema, config: z.record(z.string(), z.json()).meta({ type: 'object', additionalProperties: {} }),
 });
 export const rankSystemSchema = z.strictObject({
   ...recordFields, name: nameSchema, installedPackId: idSchema.nullable(), revision: revisionSchema,

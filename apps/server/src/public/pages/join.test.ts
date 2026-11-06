@@ -10,7 +10,7 @@ import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoic
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
-import { publicContracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
+import { joinAdmissionResponseSchema, publicContracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
 import { createApp } from '../../app.js';
 import { areaContributions } from '../../core/registry-areas.js';
 import { TestClock } from '../../core/clock.js';
@@ -39,7 +39,7 @@ import { FakeEmail } from '../../infra/email/index.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureJoin } from './join.routes.js';
-import { joinAdmissionResponseSchema, joinBodyBytes } from './join.service.js';
+import { joinBodyBytes } from './join.service.js';
 import { joinCookie } from './join.continuation.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng(), pngBase64 = png.toString('base64');

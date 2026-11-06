@@ -72,7 +72,9 @@ intake data use `no-store`.
 Composition requires the runtime to call `configurePublicPages` with its existing
 waivers, `uploads.forGym`, gym mail and staff recipients. The fee resolver should
 read an explicitly selected charge type; there is no implicit name-based mapping.
-The signature admission schema is local pending addition to shared contracts.
+The drop-in and join signature admission schemas and routes live in the shared
+public contracts. The services still validate the decoded PNG and enforce the demo
+signature allowance before storage.
 
 `pages.test.ts` exercises real PostgreSQL and the production route registrations.
 `mobile-check.mjs` renders the real pages and shared assets in Edge at 360 and

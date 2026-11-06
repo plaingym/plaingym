@@ -7,7 +7,7 @@ export type DemoRole = z.infer<typeof demoRoleSchema>;
 export const demoTestCard = '4242 4242 4242 4242';
 export const sandboxResponse = z.strictObject({ data: z.strictObject({ gymId: z.uuid(), origin: z.url(), expiresAt: z.iso.datetime(), kioskToken: z.string() }) });
 export const demoStatusResponse = z.strictObject({ data: z.strictObject({ expiresAt: z.iso.datetime() }) });
-export const outboxMessage = z.strictObject({ id: z.uuid(), recipient: z.string(), subject: z.string(), html: z.string(), text: z.string(), sentAt: z.iso.datetime() });
+export const outboxMessage = z.strictObject({ id: z.uuid(), recipient: z.string(), subject: z.string(), text: z.string(), sentAt: z.iso.datetime() });
 export const outboxResponse = z.strictObject({ data: z.array(outboxMessage), next: z.uuid().nullable() });
 export const outboxQuery = z.object({ before: z.uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(30) });
 export const outboxParams = z.object({ id: z.uuid() });
@@ -43,4 +43,5 @@ export const demoContracts = {
   signInLink: { method: 'post', path: '/api/demo/sign-in-link', permission: { kind: 'public' }, body: demoSignInLinkRequest, response: demoSignInLinkResponse },
   outbox: { method: 'get', path: '/api/demo/outbox', permission: { kind: 'staff', capability: 'settings.manage' }, query: outboxQuery, response: outboxResponse },
   message: { method: 'get', path: '/api/demo/outbox/{id}', permission: { kind: 'staff', capability: 'settings.manage' }, params: outboxParams, response: outboxMessageResponse },
+  preview: { method: 'get', path: '/api/demo/outbox/{id}/preview', permission: { kind: 'staff', capability: 'settings.manage' }, params: outboxParams, response: z.string() },
 } as const satisfies Record<string, EndpointContract>;

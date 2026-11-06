@@ -22,7 +22,7 @@ export const importMappingSchema = z.array(importColumnMappingSchema).min(1).ref
   (items) => new Set(items.map((item) => item.targetField)).size === items.length,
   'Map each target field once',
 );
-export const uploadCsvRequestSchema = z.strictObject({ file: z.file().min(1).max(20 * 1024 * 1024) });
+export const uploadCsvRequestSchema = z.strictObject({ file: z.file().min(1).max(20 * 1024 * 1024).meta({ type: 'string', format: 'binary' }) });
 const csvCell = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 export const importPreviewRowSchema = z.strictObject({
   rowNumber, values: z.record(z.string(), csvCell),

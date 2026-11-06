@@ -71,7 +71,7 @@ describe('staff booking panels', () => {
     // The list stays on screen while the counts reload.
     expect(screen.getByText('River Lee')).toBeDefined();
     await waitFor(() => expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 1 · 0 waitlisted · 1 checked in'));
-    expect(publish).toHaveBeenCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1 });
+    await waitFor(() => expect(publish).toHaveBeenCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1 }));
     view.rerender(<SessionCountsProvider publish={publish} changed={2}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
     await screen.findByRole('alert');
     expect(screen.getByText('River Lee')).toBeDefined();

@@ -60,9 +60,29 @@ export const publicJoinRequestSchema = z.strictObject({
 // payment only for an account that proves the submitted address.
 export const publicSubmissionResponseSchema = z.strictObject({ data: z.strictObject({ status: z.literal('received') }) });
 
+/** Upload admission precedes the existence-blind submission; services validate the decoded PNG. */
+export const publicSignatureUploadSchema = z.strictObject({
+  templateId: idSchema, templateVersion: waiverTemplateVersionSchema,
+  pngBase64: z.string().min(1).max(350_000).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+export const maxJoinMembers = 6, maxJoinDocuments = 8;
+export const publicAdmissionSchema = publicTrialRequestSchema.extend({
+  signatures: z.array(publicSignatureUploadSchema).min(1).max(8),
+});
+export const publicAdmittedSignatureSchema = z.strictObject({
+  templateId: idSchema, templateVersion: z.number(), signatureImageKey: z.string(), signatureImageHash: z.string(),
+});
+export const publicAdmissionResponseSchema = z.strictObject({ data: z.array(publicAdmittedSignatureSchema) });
+export const joinAdmissionSchema = z.strictObject({
+  planId: idSchema, contact: publicContactSchema, honeypot: z.literal(''),
+  members: z.array(z.strictObject({ member: publicApplicantSchema, signatures: z.array(publicSignatureUploadSchema).min(1).max(maxJoinDocuments) })).min(1).max(maxJoinMembers),
+});
+export const joinAdmissionResponseSchema = z.strictObject({ data: z.array(z.array(publicAdmittedSignatureSchema)) });
 
 // These core pages work even when the website module is disabled.
 export const publicContracts = {
+  dropInAdmission: { method: 'post', path: '/drop-in/signatures', permission: { kind: 'public' }, body: publicAdmissionSchema, response: publicAdmissionResponseSchema },
+  joinAdmission: { method: 'post', path: '/join/signatures', permission: { kind: 'public' }, body: joinAdmissionSchema, response: joinAdmissionResponseSchema },
   config: { method: 'get', path: '/api/public/config', permission: { kind: 'public' }, response: publicPageConfigResponseSchema },
   plans: { method: 'get', path: '/api/public/plans', permission: { kind: 'public' }, query: paginationSchema, response: publicPlanListResponseSchema },
   waivers: { method: 'get', path: '/api/public/waivers', permission: { kind: 'public' }, query: paginationSchema, response: publicWaiverTemplatesResponseSchema },

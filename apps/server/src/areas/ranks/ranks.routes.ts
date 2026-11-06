@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Context } from 'hono';
-import { z } from '@hono/zod-openapi';
 import { AppError, type Clock } from '@plaingym/shared';
-import { ranksContracts, promotionCriterionSchema, rankSchema } from '@plaingym/shared/contracts';
+import { ranksContracts } from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import type { AttendanceQueries } from '../../core/interfaces/attendance.js';
@@ -11,16 +10,6 @@ import { createPromotionCriteria } from './criteria.js';
 import { createRanksService } from './ranks.service.js';
 
 type RanksService = ReturnType<typeof createRanksService>;
-// TODO: put this documentation on the shared config schema. z.json's recursive
-// union otherwise overflows zod-to-openapi. The cloned schema keeps its validation.
-const documentedCriteria = z.array(promotionCriterionSchema.extend({
-  config: promotionCriterionSchema.shape.config.openapi({ type: 'object', additionalProperties: {} }),
-}));
-const documentedRank = rankSchema.extend({ criteria: documentedCriteria });
-const createRankBody = ranksContracts.createRank.body.extend({ criteria: documentedCriteria });
-const updateRankBody = ranksContracts.updateRank.body.safeExtend({ criteria: documentedCriteria.optional() });
-const rankResponse = ranksContracts.createRank.response.extend({ data: documentedRank });
-const ranksResponse = ranksContracts.listRanks.response.extend({ data: z.array(documentedRank) });
 let configured: RanksService | undefined;
 /** Runtime injects attendance and optional module providers before serving requests. */
 export function configureRanks(options: { attendance: AttendanceQueries; clock: Clock; providers?: readonly PromotionCriterionProvider[] }) {
@@ -79,19 +68,19 @@ export function createRanksRoutes(read: () => RanksService = runtimeService) {
       return c.json({ data: await read().updateRankSystem(context, c.req.valid('param').id, c.req.valid('json')) }, 200);
     }),
     route({ ...ranksContracts.listRanks, request: { query: ranksContracts.listRanks.query },
-      responses: { 200: { description: 'listRanks', content: { 'application/json': { schema: ranksResponse } } } },
+      responses: { 200: { description: 'listRanks', content: { 'application/json': { schema: ranksContracts.listRanks.response } } } },
     }, async (c) => {
       const context = staffContext(c);
       return c.json(await read().listRanks(context.gymId, c.req.valid('query')), 200);
     }),
-    route({ ...ranksContracts.createRank, request: { body: { required: true, content: { 'application/json': { schema: createRankBody } } } },
-      responses: { 200: { description: 'createRank', content: { 'application/json': { schema: rankResponse } } } },
+    route({ ...ranksContracts.createRank, request: { body: { required: true, content: { 'application/json': { schema: ranksContracts.createRank.body } } } },
+      responses: { 200: { description: 'createRank', content: { 'application/json': { schema: ranksContracts.createRank.response } } } },
     }, async (c) => {
       const context = staffContext(c);
       return c.json({ data: await read().createRank(context, c.req.valid('json')) }, 200);
     }),
-    route({ ...ranksContracts.updateRank, request: { params: ranksContracts.updateRank.params, body: { required: true, content: { 'application/json': { schema: updateRankBody } } } },
-      responses: { 200: { description: 'updateRank', content: { 'application/json': { schema: rankResponse } } } },
+    route({ ...ranksContracts.updateRank, request: { params: ranksContracts.updateRank.params, body: { required: true, content: { 'application/json': { schema: ranksContracts.updateRank.body } } } },
+      responses: { 200: { description: 'updateRank', content: { 'application/json': { schema: ranksContracts.updateRank.response } } } },
     }, async (c) => {
       const context = staffContext(c);
       return c.json({ data: await read().updateRank(context, c.req.valid('param').id, c.req.valid('json')) }, 200);

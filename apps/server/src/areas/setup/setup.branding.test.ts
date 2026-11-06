@@ -24,5 +24,5 @@ it.each([null, '#2563eb'])('keeps setup branding readable by settings with color
   });
   expect(result.branding).toEqual({ logoKey: null, primaryColor });
   const settings = await createSettingsService({ scope: database.forGym }).get(gymId);
-  expect(settings.branding).toEqual(primaryColor === null ? { logoKey: null } : { logoKey: null, primaryColor });
+  expect(settings.branding).toEqual({ logoKey: null, primaryColor });
 });

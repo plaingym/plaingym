@@ -4,13 +4,13 @@ import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { getCookie, setCookie } from 'hono/cookie';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
-import { idSchema, paginationSchema, publicContracts as contracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
+import { idSchema, maxJoinDocuments, maxJoinMembers, paginationSchema, publicContracts as contracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { setPolicy } from '../../core/csp.js';
 import { publicPageDirectives } from './page.js';
-import { createJoinService, joinAdmissionResponseSchema, joinAdmissionSchema, joinBodyBytes, maxJoinDocuments, maxJoinMembers, type JoinOptions,
+import { createJoinService, joinBodyBytes, type JoinOptions,
   type JoinService } from './join.service.js';
 import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuations } from './join.continuation.js';
 import { joinFormPage, joinPlansPage, joinStatusPage, type JoinPageState } from './join.page.js';
@@ -78,8 +78,8 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
   const result: RouteRegistration[] = [
     route({ ...contracts.plans, request: { query: paginationSchema }, responses: json(contracts.plans.response) }, async ctx =>
       ctx.json(await options().service.plans(gymOf(ctx), ctx.req.valid('query')), 200)),
-    route({ method: 'post', path: '/join/signatures', permission: { kind: 'public' }, middleware: [admissions, bounded],
-      request: { body: { required: true, content: { 'application/json': { schema: joinAdmissionSchema } } } }, responses: json(joinAdmissionResponseSchema) }, async ctx =>
+    route({ ...contracts.joinAdmission, middleware: [admissions, bounded],
+      request: { body: { required: true, content: { 'application/json': { schema: contracts.joinAdmission.body } } } }, responses: json(contracts.joinAdmission.response) }, async ctx =>
       ctx.json(await options().service.admit(gymOf(ctx), ctx.req.valid('json'), ctx.get('context').gym.timezone), 200)),
     // The same response for every address; only the cookie, naming this new household's pending join, continues it.
     route({ ...contracts.join, middleware: [submissions, bounded], request: { body: { required: true, content: { 'application/json': { schema: contracts.join.body } } } },

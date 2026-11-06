@@ -35,6 +35,12 @@ Success responses use `{ data }`. Errors use
 `{ error: { code, message, details? }, requestId }`.
 `AppError` represents a safe public error; `errorResponse` redacts other errors.
 
+The shared contracts include install liveness, source metadata and redirect, and
+the OpenAPI document (`installContracts`), public signature admission, and the demo
+HTML preview. Install contracts carry their response media types and redirect
+status in `responses`. Rank JSON configuration and CSV upload fields carry OpenAPI
+metadata on their shared Zod schemas, retaining their runtime validation.
+
 ## Registration
 
 The [server registry](../../apps/server/src/core/registry.ts) exports

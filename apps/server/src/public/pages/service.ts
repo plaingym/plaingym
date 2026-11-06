@@ -6,7 +6,6 @@ import { forGym, type Transaction, members, households, auditEvents, waiverTempl
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
-import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { readGymSettings } from '../../areas/settings/settings.js';
@@ -14,12 +13,6 @@ import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waiv
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import type { Uploads } from '../../infra/storage/index.js';
 
-// The upload admission is separate from the frozen, existence-blind submission.
-// TODO: Move this schema and its route into the shared public contracts.
-export const admissionSchema = c.publicTrialRequestSchema.extend({
-  signatures: z.array(z.strictObject({ templateId: c.idSchema, templateVersion: c.waiverTemplateVersionSchema,
-    pngBase64: z.string().min(1).max(350_000).regex(/^[A-Za-z0-9+/]+={0,2}$/) })).min(1).max(8),
-});
 export interface PublicPagesOptions {
   scope?: typeof forGym;
   clock?: Clock;
@@ -124,7 +117,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       return received();
     },
     async admit(gymId: string, body: unknown, timezone: string) {
-      const input = admissionSchema.parse(body); applicant(input, timezone);
+      const input = c.publicAdmissionSchema.parse(body); applicant(input, timezone);
       await current(gymId, input.signatures);
       const images = input.signatures.map(s => Buffer.from(s.pngBase64, 'base64'));
       images.forEach(validateSignatureImage);
