@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { setTimeout as delay } from 'node:timers/promises';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { advisoryLockNamespace, advisoryLocks, jobs, jobScheduleCursors, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line database/system-tables -- holds the backup advisory lock exactly as a running snapshot does
 import { openConnection } from '@plaingym/db/client';
@@ -46,6 +46,42 @@ async function until(predicate: () => Promise<boolean>) {
 jobsContract('Postgres Jobs contract', async () => queue());
 
 describe('Postgres enqueue and execution', () => {
+  it('retries the insert when retention deletes the conflicting row before its lookup', async () => {
+    const opts = { ...options, idempotencyKey: 'retention-race' };
+    const original = await queue().enqueue('work', {}, opts);
+    let conflicted = false;
+    const resume = latch();
+    const q = new PostgresJobs({ clock, database: { ...database, forGym: (gymId, fn) => database.forGym(gymId, async tx => {
+      // Intercept the real INSERT result, then delete its conflict before enqueue's SELECT.
+      const insert = tx.insert.bind(tx);
+      vi.spyOn(tx, 'insert').mockImplementation(((...args: Parameters<typeof insert>) => {
+        const builder = insert(...args), values = builder.values.bind(builder);
+        builder.values = ((...input: Parameters<typeof values>) => {
+          const query = values(...input), returning = query.returning.bind(query);
+          query.returning = (async (...fields: Parameters<typeof returning>) => {
+            const result = await returning(...fields);
+            if (!conflicted && result.length === 0) {
+              conflicted = true;
+              await resume.promise;
+            }
+            return result;
+          }) as typeof query.returning;
+          return query;
+        }) as typeof builder.values;
+        return builder;
+      }) as typeof tx.insert);
+      return fn(tx);
+    }) } });
+    const pending = q.enqueue('work', {}, opts);
+    try {
+      await until(async () => conflicted);
+      await database.forSystem(other => other.delete(jobs).where(eq(jobs.id, original.jobId)));
+    } finally { resume.resolve(); }
+    const replacement = await pending;
+    expect(conflicted).toBe(true);
+    expect(replacement.jobId).not.toBe(original.jobId);
+    expect((await rows()).map(r => r.id)).toEqual([replacement.jobId]);
+  });
   it('stores only error names and codes, without private messages or query parameters', async () => {
     const q = queue();
     q.handle('private-failure', async () => { throw Object.assign(new Error('Failed query: private\nparams: payer@example.test, secret'), { code: '23505' }); });
@@ -407,6 +443,54 @@ describe('schedule cursors', () => {
     ]);
     expect(await rows()).toMatchObject([{ gymId: gymB, name: 'tick' }]);
   });
+  it.each(['ECONNREFUSED', 'CONNECTION_CLOSED', 'CONNECT_TIMEOUT', '08006', '57P01'].flatMap(code => [
+    { code, stage: 'seed' }, { code, stage: 'enqueue' },
+  ]))('ends a tick on wrapped $code during $stage without visiting later gyms', async ({ code, stage }) => {
+    const visited: string[] = [];
+    const outage = new Error('query failed', { cause: Object.assign(new Error('connection lost'), { code }) });
+    const q = new PostgresJobs({ clock, listGyms: async () => [
+      { gymId: gymA, timezone: 'UTC' }, { gymId: gymB, timezone: 'UTC' },
+    ], database: { ...database, forGym: (gymId, fn) => {
+      visited.push(gymId);
+      if (stage === 'seed' || visited.length > 1) throw outage;
+      return database.forGym(gymId, fn);
+    } } });
+    q.schedule('tick', '* * * * *', async () => {});
+    await expect(q.scheduleDue()).rejects.toBe(outage);
+    expect(visited).toEqual(stage === 'seed' ? [gymA] : [gymA, gymA]);
+    expect(await rows()).toEqual([]);
+  });
+  it('does not persist a cursor for an invalid timezone and inherits history after it is corrected', async () => {
+    let timezone = 'UTC';
+    const q = queue({ listGyms: async () => [{ gymId: gymA, timezone }] });
+    q.schedule('tick', '* * * * *', async () => {});
+    await q.scheduleDue();
+    await database.forSystem(tx => tx.delete(jobScheduleCursors));
+    clock.advance(180_000); timezone = 'Invalid/Timezone';
+    const previous = setLogSink(() => {});
+    try { await q.scheduleDue(); } finally { setLogSink(previous); }
+    expect(await database.forSystem(tx => tx.select().from(jobScheduleCursors))).toEqual([]);
+    timezone = 'UTC'; await q.scheduleDue();
+    expect(await rows()).toHaveLength(4);
+  });
+  it.each(['seed', 'enqueue'])('logs a failing schedule during %s and continues its gym\'s other schedules', async failure => {
+    let calls = 0;
+    const q = new PostgresJobs({ clock, listGyms: async () => [{ gymId: gymA, timezone: 'UTC' }],
+      database: { ...database, forGym: (gymId, fn) => {
+        calls++;
+        // Bulk seed fails, then the bad schedule's individual seed fails; or seed succeeds and enqueue fails.
+        if (calls === 2 || (failure === 'seed' && calls === 1)) throw new Error('bad schedule');
+        return database.forGym(gymId, fn);
+      } } });
+    q.schedule('bad', '* * * * *', async () => {});
+    q.schedule('good', '* * * * *', async () => {});
+    const lines: string[] = [], previous = setLogSink(line => lines.push(line));
+    try { await q.scheduleDue(); } finally { setLogSink(previous); }
+    expect(lines.map(line => JSON.parse(line))).toMatchObject([
+      { event: 'jobs.schedule_error', gymId: gymA, schedule: 'bad' },
+    ]);
+    expect((await rows()).map(r => r.name)).toEqual(['good']);
+  });
   it('schedules from the worker once per clock minute, not on every poll', async () => {
     const q = make(); const tick = vi.spyOn(q, 'scheduleDue');
     const worker = q.start({ pollMs: 2 });
@@ -441,8 +525,8 @@ describe('claim fairness', () => {
     expect(seen).toEqual([gymB, gymA]);
   });
   it('counts live leases once per gym and lane, each lane against its own cap', async () => {
-    const q = queue({ batch: { jobs: ['batch'], perGymConcurrency: 2 } }); const seen: string[] = [];
-    q.handle('batch', async () => { seen.push('batch'); }); q.handle('work', async () => { seen.push('work'); });
+    const q = queue({ batch: { perGymConcurrency: 2 } }); const seen: string[] = [];
+    q.handle('batch', async () => { seen.push('batch'); }, { lane: 'batch' }); q.handle('work', async () => { seen.push('work'); });
     await q.enqueue('work', {}, { ...options, runAt: new Date(clock.now().getTime() - 60_000) });
     await q.enqueue('batch', {}, options); await q.enqueue('batch', {}, options);
     // Gym A holds one live default lease (its cap) and one live batch lease (below the batch cap of two).
@@ -452,15 +536,15 @@ describe('claim fairness', () => {
     // A second live batch lease fills the batch lane as well; the default lane stays full.
     await database.forSystem((tx) => tx.insert(jobs).values(lease(gymA, 'batch')));
     expect(await q.runNext()).toBe(false);
-    expect(() => queue({ batch: { jobs: ['batch'], perGymConcurrency: 0 } })).toThrow();
+    expect(() => queue({ batch: { perGymConcurrency: 0 } })).toThrow();
   });
 });
 
 describe('batch lane', () => {
   it("runs a gym's other jobs while its batch lane is busy, one batch job per gym, and other gyms' alongside", async () => {
-    const q = queue({ batch: { jobs: ['batch'] } }), held = latch(), seen: string[] = [];
+    const q = queue(), held = latch(), seen: string[] = [];
     const name = (gymId: string) => gymId === gymA ? 'A' : 'B';
-    q.handle('batch', async (_, c) => { seen.push('batch ' + name(c.gymId)); await held.promise; });
+    q.handle('batch', async (_, c) => { seen.push('batch ' + name(c.gymId)); await held.promise; }, { lane: 'batch' });
     q.handle('dispatch', async (_, c) => { seen.push('dispatch ' + name(c.gymId)); });
     await q.enqueue('batch', {}, options); await q.enqueue('batch', {}, options);
     await q.enqueue('dispatch', {}, options); await q.enqueue('batch', {}, { ...options, gymId: gymB });
@@ -501,8 +585,8 @@ describe('batch lane', () => {
     expect([...fake.batchJobs].sort()).toEqual(['batch', 'scan']);
   });
   it('keeps a worker slot for other jobs while batch jobs could fill them all', async () => {
-    const q = queue({ batch: { jobs: ['batch'] } }), held = latch(); const batches: string[] = [], dispatched: string[] = [];
-    q.handle('batch', async (_, c) => { batches.push(c.gymId); await held.promise; });
+    const q = queue(), held = latch(); const batches: string[] = [], dispatched: string[] = [];
+    q.handle('batch', async (_, c) => { batches.push(c.gymId); await held.promise; }, { lane: 'batch' });
     q.handle('dispatch', async (_, c) => { dispatched.push(c.gymId); });
     await q.enqueue('batch', {}, options); await q.enqueue('batch', {}, { ...options, gymId: gymB });
     for (const invalid of [{ batchConcurrency: 0 }, { concurrency: 2, batchConcurrency: 3 }]) expect(() => startJobsWorker(q, invalid)).toThrow();
@@ -540,6 +624,43 @@ describe('retention', () => {
     ]).returning({ id: jobs.id }));
     expect(await q.prune()).toBe(deleted.length);
     expect((await rows()).map((r) => r.id).sort()).toEqual(kept.map((r) => r.id).sort());
+  });
+  it('keeps a schedule\'s history until that schedule has a cursor, whatever else its gym has seeded', async () => {
+    const cursor = (name: string) => database.forSystem(tx => tx.insert(jobScheduleCursors).values({ gymId: gymA, name,
+      expression: '* * * * *', timezone: 'UTC', lastOccurrence: clock.now() }));
+    const q = queue({ retention: { keep: [] } });
+    await cursor('other');
+    await database.forSystem(tx => tx.insert(jobs).values(occurrence(gymA, 15)));
+    expect(await q.prune()).toBe(0);
+    await cursor('tick');
+    expect(await q.prune()).toBe(1);
+  });
+  it('does not row-lock protected names or unseeded history while deleting a batch', async () => {
+    const kept = await database.forSystem(tx => tx.insert(jobs).values([
+      finished('succeeded', 400, { name: 'keep' }), occurrence(gymB, 400),
+    ]).returning({ id: jobs.id }));
+    await database.forSystem(tx => tx.insert(jobs).values(finished('succeeded', 30)));
+    let checked = false;
+    const resume = latch();
+    const q = new PostgresJobs({ clock, retention: { keep: ['keep'] }, database: { ...database,
+      forSystem: fn => database.forSystem(async tx => {
+        const result = await fn(tx);
+        if (!checked) {
+          checked = true;
+          await resume.promise;
+        }
+        return result;
+      }),
+    } });
+    const pruning = q.prune();
+    try {
+      await until(async () => checked);
+      // The prune transaction is still open: NOWAIT would fail if either retained row was locked.
+      await database.forSystem(other => other.select().from(jobs).where(inArray(jobs.id, kept.map(r => r.id)))
+        .for('update', { noWait: true }));
+    } finally { resume.resolve(); }
+    expect(await pruning).toBe(1);
+    expect(checked).toBe(true);
   });
   it('ages a succeeded job from when it finished, not when it was first due', async () => {
     const q = queue({ retention: { keep: [] } }); q.handle('work', async () => {});

@@ -64,10 +64,12 @@ cursor and starts a new generation at the current minute, even when returning to
 an earlier expression or timezone. Only a schedule with no cursor is seeded from
 the newest occurrence row of that generation, as earlier releases kept it, so an
 upgrade neither skips nor repeats occurrences; all of a gym's missing cursors are
-seeded in one transaction before any of its occurrences is enqueued. Schedule
-handler effects need the same idempotency guarantees as other jobs. A gym's
-scheduling failure is logged as `jobs.schedule_error` with its gym ID; the tick
-continues with the next gym.
+seeded in one transaction before any of its occurrences is enqueued. If that seed
+fails, missing schedules are retried individually to isolate the failure. Invalid
+timezones are rejected before seeding. Schedule handler effects need the same
+idempotency guarantees as other jobs. A scheduling failure is logged as
+`jobs.schedule_error` with its gym ID and, for a schedule-specific failure, its
+schedule name; other schedules and gyms continue. Connection failures end the tick.
 
 ## Batch lane
 
@@ -85,8 +87,8 @@ worker runs at most `batchConcurrency` batch jobs at once (at most its concurren
 default one less, at least one), so with two or more slots other gyms' batch work
 can't take every one. A single-slot worker shares its slot.
 `runNext()` claims from either lane. A job registered without a lane runs in the
-default lane. `batch: { perGymConcurrency?, jobs? }` tunes the batch cap and can
-name further batch jobs; the runtime sets neither, because each batch job names
+default lane. `batch: { perGymConcurrency? }` tunes the batch cap;
+the runtime uses the default, and each batch job names
 its own lane in its registration (the daily charge run, imports, exports and
 campaign jobs). Queues that only enqueue (the CLI's, restore's) need no lane.
 
@@ -98,10 +100,15 @@ that starts later that day). It deletes, in batches of 1,000 short transactions,
 succeeded jobs that finished more than 14 days ago and failed jobs that failed
 more than 90 days ago, for every gym and the install. It never deletes pending or running
 jobs, jobs named in `keep` (their idempotency keys must stay unique for good), or
-a gym's cron occurrence rows before that gym has cursors, since those rows are
-then still its scheduler's watermark. Job statistics count only retained rows.
+a schedule's cron occurrence rows before that gym has a cursor for it, since those
+rows are then still its watermark. Job statistics count only retained rows.
 Producers must not rely on a pruned job's key: a later enqueue with that key
 creates a new job. Today's producers dedupe through durable state of their own
 (signed-link and campaign audits, `email_deliveries`, stored webhook events) or
 use keys that are never enqueued again; `billing.alerts.send` keys are kept for
 good. Retention never touches `email_deliveries`.
+
+Retention filters protected rows before acquiring row locks. If retention removes
+an idempotency conflict between enqueue's insert and lookup, enqueue retries the
+insert once. The booking recovery sweep skips promotions with a durable
+`booking.notice_sent` audit, so pruning their job keys does not recreate sent notices.

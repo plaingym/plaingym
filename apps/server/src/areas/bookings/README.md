@@ -58,8 +58,9 @@ handlers and a recovery scan every five minutes. Cancellation queues promotion
 after committing. The scan also finds vacancies after a restart or erasure.
 Capacity edits promote in their locked transaction. Promotion audits are durable
 delivery work: a restart between promotion and enqueue is recovered by scanning
-them. Notice jobs have a permanent idempotency key per booking, and a successful
-delivery audit prevents a completed notice from being replayed. The same key
+them, excluding bookings with a successful delivery audit. Notice jobs have a
+stable idempotency key per booking; the durable audit prevents replay and keeps
+the scan from recreating sent notices after job retention removes their keys. The same key
 records durable send state (`infra/email/README.md`): once SMTP accepted the
 notice, or may have, a retry never sends it again, even if the process failed
 before the audit committed. Only a definite non-send is retried.

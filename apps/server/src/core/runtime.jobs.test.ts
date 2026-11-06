@@ -127,8 +127,8 @@ it('runs a webhook dispatch while a daily charge run holds the gym\'s batch lane
     expect(Object.fromEntries(rows.map(row => [row.id, row.status]))).toEqual({ [waiting.id]: 'pending', [dispatch.id]: 'succeeded' });
   } finally { await database.forSystem(tx => tx.delete(jobs).where(inArray(jobs.id, [running.id, waiting.id, dispatch.id]))); }
 });
-// The jobs that run in the batch lane: each registers itself with `lane: 'batch'`, and the runtime lists none.
-const batchLaneJobs = ['billing.runner.daily', 'imports.pipeline', 'imports.export',
+// Known long-running jobs must keep declaring their lane, even if a registration accidentally loses it.
+const knownBatchJobs = ['billing.runner.daily', 'imports.pipeline', 'imports.export',
   'links.campaigns.scan', 'links.campaigns.publish', 'links.campaigns.send'];
 /** A pending or leased job of the sandbox gym; due at `runAt`, so the earliest ones are claimed first. */
 function leaseOf(name: string, runAt: Date, running: boolean) {
@@ -152,14 +152,17 @@ async function claimBeside(name: string) {
     return { waiting: status[waiting.id], dispatch: status[dispatch.id] };
   } finally { await database.forSystem(tx => tx.delete(jobs).where(inArray(jobs.id, [running.id, waiting.id, dispatch.id]))); }
 }
-it.each(batchLaneJobs)('runs %s in the gym\'s batch lane: a second one waits and a webhook dispatch does not', async (name) => {
-  expect(await claimBeside(name)).toEqual({ waiting: 'pending', dispatch: 'succeeded' });
+it.each(knownBatchJobs)('registers %s in the batch lane', (name) => {
+  expect(app.batchJobs.has(name), name).toBe(true);
+});
+it('isolates every registered batch job from webhook dispatch, including new registrations', async () => {
+  expect(app.batchJobs.size).toBeGreaterThan(0);
+  for (const name of app.batchJobs) {
+    expect(await claimBeside(name), name).toEqual({ waiting: 'pending', dispatch: 'succeeded' });
+  }
 });
 it('runs a job registered without a lane in the default lane, where it holds up the gym\'s webhook dispatch', async () => {
   // The hourly reconcile sits in the charge runner's registrations beside the daily run, but names no lane.
   expect(app.handlers.has('billing.runner.reconcile')).toBe(true);
   expect(await claimBeside('billing.runner.reconcile')).toMatchObject({ waiting: 'pending', dispatch: 'pending' });
-});
-it('registers every batch lane job, so each one the lane test names has a handler', () => {
-  for (const name of batchLaneJobs) expect(app.handlers.has(name), name).toBe(true);
 });

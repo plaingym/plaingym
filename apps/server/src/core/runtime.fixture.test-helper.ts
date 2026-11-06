@@ -35,6 +35,7 @@ export const demoEnv = (databaseUrl: string, storageEndpoint: string, stagingDir
 export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
   const database = useTestDatabase(), factory = createFactories(database);
   const handlers = new Map<string, JobHandler>(), systemHandlers = new Map<string, SystemJobHandler>(), workers: PostgresJobs[] = [];
+  const batchJobs = new Set<string>();
   let runtime: Runtime, directory: string, storage: Awaited<ReturnType<typeof s3Server>>, sandbox: Sandbox;
   const env = () => demoEnv(database.appUrl, storage.endpoint, join(directory, 'staging'));
   const post = (path: string, body: unknown, base = origin, extra: Record<string, string> = {}) => runtime.app.request(base + path, {
@@ -46,6 +47,7 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
     const handle = PostgresJobs.prototype.handle;
     vi.spyOn(PostgresJobs.prototype, 'handle').mockImplementation(function (this: PostgresJobs, name, handler, options) {
       handlers.set(name, handler); handle.call(this, name, handler, options);
+      if (options?.lane === 'batch') batchJobs.add(name);
     });
     const handleSystem = PostgresJobs.prototype.handleSystem;
     vi.spyOn(PostgresJobs.prototype, 'handleSystem').mockImplementation(function (this: PostgresJobs, name, handler) {
@@ -64,7 +66,7 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
     return (await response.json()).data;
   }
   return {
-    database, factory, handlers, systemHandlers, workers, env, post, cookieOf, createSandbox,
+    database, factory, handlers, systemHandlers, workers, batchJobs, env, post, cookieOf, createSandbox,
     get runtime() { return runtime; },
     get directory() { return directory; },
     get sandbox() { return sandbox; },

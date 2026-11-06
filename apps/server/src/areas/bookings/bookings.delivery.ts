@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, notExists } from 'drizzle-orm';
 import { auditEvents, classBookings, classSessions, forGym, members, writeAudit } from '@plaingym/db';
 import { z } from 'zod';
 import { idSchema } from '@plaingym/shared/contracts';
@@ -64,6 +64,8 @@ export function createBookingDelivery(options: BookingDeliveryOptions) {
         .innerJoin(classSessions, eq(classSessions.id, classBookings.sessionId)).where(and(
           eq(classBookings.status, 'booked'), eq(classSessions.status, 'scheduled'), gt(classSessions.startsAt, clock.now()),
           cursor ? gt(classBookings.id, cursor) : undefined,
+          notExists(tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
+            eq(auditEvents.targetId, classBookings.id), eq(auditEvents.action, 'booking.notice_sent')))),
           inArray(classBookings.id, tx.select({ id: auditEvents.targetId }).from(auditEvents).where(eq(auditEvents.action, 'booking.promoted')))))
         .orderBy(asc(classBookings.id)).limit(100));
       for (const booking of pending) await enqueueNotice(gymId, booking.id);

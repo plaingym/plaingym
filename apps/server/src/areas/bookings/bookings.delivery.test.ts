@@ -33,6 +33,18 @@ async function fixture() {
 async function drain(jobs: FakeJobs) { for (let n = 0; n < 20; n++) if (!await jobs.runNext()) return; throw new Error('Unexpected job loop'); }
 
 describe('promotion jobs and notices', () => {
+  it('does not enqueue a sent notice after its job key is pruned, but still recovers unsent notices', async () => {
+    const f = await fixture();
+    await f.delivery.promote(f.gymId, f.session.id); await drain(f.jobs);
+    const fresh = new FakeJobs(f.clock);
+    const restarted = createBookingDelivery({ ...f.options, jobs: fresh, mailer: async () => f.email });
+    await restarted.sweep(f.gymId);
+    expect(fresh.jobs).toHaveLength(0);
+    const unsent = await fixture();
+    await unsent.delivery.promote(unsent.gymId, unsent.session.id);
+    await restarted.sweep(unsent.gymId);
+    expect(fresh.jobs).toMatchObject([{ name: noticeJob, payload: { bookingId: unsent.queued.id } }]);
+  });
   it('registered jobs promote once and deliver one escaped, gym-local notice on replay', async () => {
     const f = await fixture();
     await f.delivery.request(f.gymId, f.session.id, f.booked.id);

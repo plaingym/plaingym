@@ -31,8 +31,6 @@ export interface JobRetentionOptions {
 }
 /** Long batch work runs in its own per-gym lane, so the gym's other jobs never wait behind it. */
 export interface BatchLaneOptions {
-  /** Further job names for the batch lane, besides those registered with `{ lane: 'batch' }`. */
-  readonly jobs?: readonly string[];
   /** Batch jobs one gym runs at once. Default one. */
   readonly perGymConcurrency?: number;
 }
@@ -85,6 +83,19 @@ const nameIn = (names: Iterable<string>) => {
 // Schema keys are (gym_id, idempotency_key); namespace caller keys by job name.
 const hashKey = (name: string, key: string) => createHash('sha256').update(JSON.stringify([name, key])).digest('hex');
 
+/** Drizzle wraps driver errors in `cause`; a lost database must end the whole tick. */
+function connectionError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  while (error && typeof error === 'object' && !seen.has(error)) {
+    seen.add(error);
+    const code = 'code' in error ? error.code : undefined;
+    if (typeof code === 'string' && (code.startsWith('08') || code.startsWith('CONNECTION_')
+      || ['57P01', '57P02', '57P03', 'CONNECT_TIMEOUT', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENETUNREACH', 'EHOSTUNREACH', 'ENOTFOUND', 'EAI_AGAIN'].includes(code))) return true;
+    error = 'cause' in error ? error.cause : undefined;
+  }
+  return false;
+}
+
 export class PostgresJobs implements Jobs, JobRecovery {
   readonly #database: Scope;
   readonly clock: Clock;
@@ -109,7 +120,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.#retryBaseMs = positive(options.retryBaseMs ?? 1000, 'retryBaseMs');
     this.#maxScheduled = positive(options.maxScheduledPerTick ?? 100, 'maxScheduledPerTick');
     this.#listGyms = options.listGyms;
-    this.#batch = new Set(options.batch?.jobs ?? []);
+    this.#batch = new Set();
     this.#batchCap = positive(options.batch?.perGymConcurrency ?? 1, 'batch.perGymConcurrency');
     if (options.retention) {
       const { keep, succeededDays = 14, failedDays = 90, batchSize = 1000 } = options.retention;
@@ -161,13 +172,16 @@ export class PostgresJobs implements Jobs, JobRecovery {
       if (schedule && gymId) await tx.update(jobScheduleCursors).set({ lastOccurrence: new Date(schedule.at) }).where(and(
         eq(jobScheduleCursors.gymId, gymId), eq(jobScheduleCursors.name, schedule.name), eq(jobScheduleCursors.expression, schedule.expression),
         eq(jobScheduleCursors.timezone, options.timezone), lt(jobScheduleCursors.lastOccurrence, new Date(schedule.at))));
-      const [row] = await tx.insert(jobs).values({ id, gymId, name, payload: JSON.parse(encoded) as unknown,
-        runAt, maxAttempts, idempotencyKey, createdAt: now }).onConflictDoNothing().returning({ id: jobs.id });
-      if (row) return { jobId: row.id };
-      const [existing] = await tx.select({ id: jobs.id }).from(jobs).where(and(
-        sql`${jobs.gymId} is not distinct from ${gymId}::uuid`, eq(jobs.idempotencyKey, idempotencyKey)));
-      if (!existing) throw new Error('Idempotent job disappeared');
-      return { jobId: existing.id };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const [row] = await tx.insert(jobs).values({ id, gymId, name, payload: JSON.parse(encoded) as unknown,
+          runAt, maxAttempts, idempotencyKey, createdAt: now }).onConflictDoNothing().returning({ id: jobs.id });
+        if (row) return { jobId: row.id };
+        const [existing] = await tx.select({ id: jobs.id }).from(jobs).where(and(
+          sql`${jobs.gymId} is not distinct from ${gymId}::uuid`, eq(jobs.idempotencyKey, idempotencyKey)));
+        if (existing) return { jobId: existing.id };
+        // Retention can delete the conflicting row between INSERT and SELECT at READ COMMITTED.
+      }
+      throw new Error('Idempotent job disappeared');
     };
     return gymId === null ? this.#database.forSystem(insert) : this.#database.forGym(gymId, insert);
   }
@@ -314,22 +328,42 @@ export class PostgresJobs implements Jobs, JobRecovery {
       .where(inArray(jobScheduleCursors.gymId, gyms.map((gym) => gym.gymId)))), (row) => row.gymId);
     for (const gym of gyms) {
       try {
+        new Intl.DateTimeFormat('en', { timeZone: gym.timezone });
         const current = new Map((cursors.get(gym.gymId) ?? []).filter((row) => row.timezone === gym.timezone
           && row.expression === this.#schedules.get(row.name)).map((row) => [row.name, row.lastOccurrence]));
         // All of a gym's missing cursors are seeded in one transaction, before any of its occurrences is enqueued.
         const missing = [...this.#schedules].filter(([name]) => !current.has(name));
         const existing = new Set((cursors.get(gym.gymId) ?? []).map((row) => row.name));
-        if (missing.length) for (const [name, at] of await this.#seed(gym, missing, existing, now)) current.set(name, at);
-        for (const [name, expression] of this.#schedules) {
-          let count = 0;
-          for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
-            if (count++ >= this.#maxScheduled) break;
-            await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
-              idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
-            gym.gymId, { name, expression, at: at.toISOString() });
+        if (missing.length) {
+          try {
+            for (const [name, at] of await this.#seed(gym, missing, existing, now)) current.set(name, at);
+          } catch (error) {
+            if (connectionError(error)) throw error;
+            // Keep the normal batched seed; isolate a bad schedule by retrying each missing seed below.
           }
         }
-      } catch (error) { logError('jobs.schedule_error', { gymId: gym.gymId }, error); }
+        for (const [name, expression] of this.#schedules) {
+          try {
+            if (!current.has(name)) {
+              const seeded = await this.#seed(gym, [[name, expression]], existing, now);
+              current.set(name, seeded.get(name)!);
+            }
+            let count = 0;
+            for (const at of cronOccurrences(expression, gym.timezone, current.get(name)!, now)) {
+              if (count++ >= this.#maxScheduled) break;
+              await this.#enqueue(name, {}, { timezone: gym.timezone, runAt: at,
+                idempotencyKey: JSON.stringify(['cron', expression, gym.timezone, occurrenceKey(at, gym.timezone)]) },
+              gym.gymId, { name, expression, at: at.toISOString() });
+            }
+          } catch (error) {
+            if (connectionError(error)) throw error;
+            logError('jobs.schedule_error', { gymId: gym.gymId, schedule: name }, error);
+          }
+        }
+      } catch (error) {
+        if (connectionError(error)) throw error;
+        logError('jobs.schedule_error', { gymId: gym.gymId }, error);
+      }
     }
   }
   async #scheduleRetention(now: Date): Promise<void> {
@@ -350,27 +384,27 @@ export class PostgresJobs implements Jobs, JobRecovery {
     const { keep, succeededDays, failedDays, batchSize } = this.#retention;
     const now = this.clock.now().getTime();
     const deletable = and(keep.length ? notInArray(jobs.name, [...keep]) : undefined,
-      // Until a gym's cursors are seeded, its newest occurrence rows are the scheduler's only watermark.
+      // Until a gym's schedule has a cursor, its newest occurrence rows are the scheduler's only watermark. A failed
+      // seed can leave some of a gym's schedules seeded, so one schedule's cursor says nothing about another's.
       sql`(${jobs.payload}->'schedule' is null or exists (select 1 from ${jobScheduleCursors}
-        where ${jobScheduleCursors.gymId} = ${jobs.gymId}))`)!;
+        where ${jobScheduleCursors.gymId} = ${jobs.gymId} and ${jobScheduleCursors.name} = ${jobs.name}))`)!;
     let deleted = 0;
     for (const [status, days] of [['succeeded', succeededDays], ['failed', failedDays]] as const) {
       const before = new Date(now - days * day);
-      // Each batch continues after the last row the previous one read, so kept rows are read once per run.
+      // Continue after the previous batch without locking rows protected from retention.
       let after: { runAt: Date; id: string } | undefined;
       for (;;) {
         const batch = await this.#database.forSystem(async (tx) => {
-          const rows = await tx.select({ id: jobs.id, runAt: jobs.runAt, deletable: sql<boolean>`${deletable}` }).from(jobs)
-            .where(and(eq(jobs.status, status), lt(jobs.runAt, before), after
+          const rows = await tx.select({ id: jobs.id, runAt: jobs.runAt }).from(jobs)
+            .where(and(deletable, eq(jobs.status, status), lt(jobs.runAt, before), after
               ? sql`(${jobs.runAt}, ${jobs.id}) > (${after.runAt.toISOString()}::timestamptz, ${after.id}::uuid)` : undefined))
             .orderBy(asc(jobs.runAt), asc(jobs.id)).limit(batchSize).for('update', { skipLocked: true });
-          const ids = rows.filter((row) => row.deletable).map((row) => row.id);
-          if (ids.length) await tx.delete(jobs).where(inArray(jobs.id, ids));
-          return { read: rows.length, deleted: ids.length, last: rows.at(-1) };
+          if (rows.length) await tx.delete(jobs).where(inArray(jobs.id, rows.map((row) => row.id)));
+          return rows;
         });
-        deleted += batch.deleted;
-        if (batch.read < batchSize) break;
-        after = batch.last;
+        deleted += batch.length;
+        if (batch.length < batchSize) break;
+        after = batch.at(-1);
       }
     }
     return deleted;
