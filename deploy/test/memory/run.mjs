@@ -13,12 +13,12 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { assessRun, budget, report, summarize } from './budget.mjs';
+import { assessRun, budget, report, resolveMarks, summarize } from './budget.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url)), deploy = resolve(here, '../..'), root = resolve(deploy, '..');
 const nodeImage = 'node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205';
 const options = { mode: 'both', image: process.env.MEMORY_IMAGE ?? '', leak: false, leakMiB: 160, out: join(here, 'out') };
-for (let index = 2; index < process.argv.length; index++) {
+for (let index = 2; import.meta.main && index < process.argv.length; index++) {
   const flag = process.argv[index];
   if (flag === '--mode') options.mode = process.argv[++index];
   else if (flag === '--image') options.image = process.argv[++index];
@@ -41,6 +41,7 @@ function run(binary, args, { input, allowFailure = false, quiet = true, cwd = ro
   return new Promise((done, fail) => {
     const timeout = cleanup ? cleanupTimeoutMs : commandTimeoutMs;
     const child = spawn(binary, args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true,
+      detached: cleanup && process.platform !== 'win32',
       signal: cleanup ? undefined : controller.signal, timeout, killSignal: 'SIGKILL' });
     let out = '', error = '', spawnError;
     child.stdout.on('data', (chunk) => { out += chunk; if (!quiet) process.stdout.write(chunk); });
@@ -56,6 +57,27 @@ function run(binary, args, { input, allowFailure = false, quiet = true, cwd = ro
   });
 }
 const docker = (...args) => run('docker', args);
+
+/** Cleanup must attempt every step and preserve either a completed result or the original run error. */
+export async function withCleanup(operation, cleanups, logFailure = console.error) {
+  let result;
+  try {
+    result = await operation();
+    return result;
+  } finally {
+    for (const [name, cleanup] of cleanups) {
+      try { await cleanup(); }
+      catch (error) {
+        const message = `${name}: ${error.message}`;
+        logFailure('Cleanup failed: ' + message);
+        if (result) {
+          (result.cleanupFailures ??= []).push(message);
+          result.exitCode = Math.max(1, result.exitCode);
+        }
+      }
+    }
+  }
+}
 
 /** Build the committed source into the production image, as the End-to-end workflow does. */
 async function buildImage(tag) {
@@ -99,6 +121,7 @@ async function oneRun(mode, image) {
   }).map(([key, value]) => `${key}=${value}`).join('\n') + '\n', { mode: 0o600 });
   const compose = ['compose', '--project-name', project, '--project-directory', deploy, '--env-file', envFile,
     '-f', join(deploy, 'compose.yaml'), '-f', join(here, 'compose.memory.yaml')];
+  const saveSummary = (result) => writeFile(join(out, 'summary.json'), JSON.stringify(result, null, 2));
   const phaseTimes = {};
   const mark = (name) => {
     // A restart may stop the sampler before it can record the final marks. Keep bounds for the samples it did record.
@@ -114,7 +137,7 @@ async function oneRun(mode, image) {
     nodeImage, 'nice', '-n', '10', 'timeout', '600', 'node', '/harness/load.mjs', command];
   };
   const psql = (sql) => run('docker', [...compose, 'exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'plaingym', '-v', 'ON_ERROR_STOP=1', '-At', '-c', sql]);
-  try {
+  const result = await withCleanup(async () => {
     log(`${mode}: starting ${project}`);
     await run('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '240'], { quiet: false });
     const ids = {}, short = {};
@@ -130,15 +153,15 @@ async function oneRun(mode, image) {
       if (attempt > 40) throw new Error('The sampler produced no samples: ' + (await docker('logs', sampler)).error.slice(-400));
       await sleep(500);
     }
-    await mark('ready');
-    const failures = [];
-    const attempt = async (name, operation) => {
+    const failures = [], bookkeepingFailures = [];
+    const attempt = async (name, operation, target = bookkeepingFailures) => {
       try { return await operation(); }
       catch (error) {
         controller.signal.throwIfAborted();
-        failures.push(`${name}: ${error.message}`);
+        target.push(`${name}: ${error.message}`);
       }
     };
+    await attempt('ready mark', () => mark('ready'));
     await attempt('workload', async () => {
       log('stack up; running the setup wizard through the API');
       await run('docker', loadContainer('setup'), { quiet: false });
@@ -150,12 +173,12 @@ async function oneRun(mode, image) {
       await psql("select pg_prewarm('memory_ballast')");
       log('seeded; settling before the load');
       await sleep(10_000);
-      await mark('loadStart');
+      await attempt('loadStart mark', () => mark('loadStart'));
       // Attach handlers immediately: a failed spawn or an interrupt must not leave an unhandled rejection.
       const observe = (name, operation) => attempt(name, async () => {
         const result = await operation();
         if (result.code !== 0) failures.push(`${name} exited ${result.code}: ${(result.error || result.out).slice(-500)}`);
-      });
+      }, failures);
       await Promise.allSettled([
         observe('load', () => run('docker', loadContainer('load', ['-e', 'LOAD_SECONDS=45', '-e', 'LOAD_WORKERS=20']), { allowFailure: true, quiet: false })),
         observe('backup', async () => {
@@ -167,10 +190,10 @@ async function oneRun(mode, image) {
           await sleep(8000);
           await run('docker', [...compose, 'exec', '-T', '-d', 'app', 'node', '-e',
             `const keep=[];let left=${options.leakMiB};const t=setInterval(()=>{const n=Math.min(8,left);keep.push(Buffer.alloc(n*1048576,1));if((left-=n)<=0)clearInterval(t)},100);setTimeout(()=>{},120000)`]);
-        }) : Promise.resolve(),
+        }, failures) : Promise.resolve(),
       ]);
       controller.signal.throwIfAborted();
-    });
+    }, failures);
     await attempt('loadEnd mark', () => mark('loadEnd'));
     await sleep(12_000);
     await attempt('settled mark', () => mark('settled'));
@@ -184,27 +207,41 @@ async function oneRun(mode, image) {
       });
     }
     await attempt('job counts', async () => { facts.jobs = (await psql('select status || \':\' || count(*) from jobs group by status order by status')).out.trim().split('\n'); });
-    let summary = null, marks = {};
+    let summary = null, { marks, clock } = resolveMarks(phaseTimes, {});
+    await attempt('phase marks', async () => {
+      let recorded = '';
+      try { recorded = await readFile(join(out, 'marks.jsonl'), 'utf8'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      ({ marks, clock } = resolveMarks(phaseTimes, Object.fromEntries(recorded.trim().split('\n').filter(Boolean)
+        .map((line) => JSON.parse(line)).map((entry) => [entry.mark, entry.at]))));
+    });
     await attempt('sampler results', async () => {
       const samples = (await readFile(join(out, 'samples.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-      marks = { ...phaseTimes, ...Object.fromEntries((await readFile(join(out, 'marks.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line)).map((entry) => [entry.mark, entry.at])) };
       summary = summarize(samples, marks);
     });
-    const result = assessRun(summary, { mode, facts, failures });
-    await writeFile(join(out, 'summary.json'), JSON.stringify({ mode, image, budget, summary, facts, marks, ...result, failures,
-      leakInjected: options.leak, leakMiB: options.leak ? options.leakMiB : 0 }, null, 2));
-    if (summary) console.log(report(summary, result.violations, mode));
-    else console.error('No memory summary: ' + result.violations.join('; '));
-    console.log('jobs: ' + (facts.jobs.join(', ') || 'none'));
-    return result;
-  } finally {
+    const finished = { mode, image, budget, summary, facts, marks, clock, ...assessRun(summary, { mode, facts, failures, bookkeepingFailures }),
+      failures, bookkeepingFailures, cleanupFailures: [], leakInjected: options.leak, leakMiB: options.leak ? options.leakMiB : 0 };
+    // Written before cleanup so a hung teardown can't lose the result, and again afterwards for its failures.
+    await saveSummary(finished);
+    return finished;
+  }, [
     // Abort stops Docker clients, not their containers. Remove the named loaders too, then the Compose volumes.
-    try { await run('docker', ['rm', '-f', '-v', sampler, ...loaders], { allowFailure: true, cleanup: true }); }
-    finally {
-      try { await run('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { cleanup: true }); }
-      finally { await rm(work, { recursive: true, force: true }); }
-    }
-  }
+    ['remove sampler and loaders', async () => {
+      const removed = await run('docker', ['rm', '-f', '-v', sampler, ...loaders], { allowFailure: true, cleanup: true });
+      // Loaders use --rm, and an interrupted setup may never have created the sampler.
+      const errors = removed.error.trim().split('\n').filter(Boolean);
+      if (removed.code !== 0 && (!errors.length || errors.some((line) => !line.startsWith('Error response from daemon: No such container:')))) {
+        throw new Error(removed.error || removed.out || 'docker rm failed');
+      }
+    }],
+    ['compose down', () => run('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { cleanup: true })],
+    ['remove temporary files', () => rm(work, { recursive: true, force: true })],
+  ]);
+  await saveSummary(result);
+  if (result.summary) console.log(report(result.summary, [...result.violations, ...result.cleanupFailures], mode));
+  else console.error('No memory summary: ' + result.violations.join('; '));
+  console.log('jobs: ' + (result.facts.jobs.join(', ') || 'none'));
+  return result;
 }
 
 async function main() {
@@ -219,15 +256,18 @@ async function main() {
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
   try {
-    const image = options.image || (built = 'plaingym:memory-' + randomBytes(4).toString('hex'));
-    if (built) await buildImage(built);
+    const image = options.image || 'plaingym:memory-' + randomBytes(4).toString('hex');
+    if (!options.image) {
+      await buildImage(image);
+      built = image;
+    }
     const modes = options.mode === 'both' ? ['capped', 'uncapped'] : [options.mode];
     const violations = [];
     for (const mode of modes) {
       controller.signal.throwIfAborted();
       const result = await oneRun(mode, image);
       controller.signal.throwIfAborted();
-      violations.push(...result.violations.map((line) => `${mode}: ${line}`));
+      violations.push(...[...result.violations, ...result.cleanupFailures].map((line) => `${mode}: ${line}`));
       process.exitCode = Math.max(process.exitCode ?? 0, result.exitCode);
     }
     if (violations.length) console.error('\nMemory check FAILED:\n  - ' + violations.join('\n  - '));
@@ -236,11 +276,16 @@ async function main() {
     console.error('Memory check could not run: ' + (error instanceof Error ? error.message : String(error)));
     process.exitCode = interrupted === 'SIGINT' ? 130 : interrupted === 'SIGTERM' ? 143 : 1;
   } finally {
-    try { if (built) await run('docker', ['rmi', built], { allowFailure: true, cleanup: true }); }
+    try {
+      if (built) await run('docker', ['rmi', built], { cleanup: true });
+    } catch (error) {
+      console.error('Cleanup failed: remove built image: ' + error.message);
+      process.exitCode = Math.max(1, process.exitCode ?? 0);
+    }
     finally {
       process.off('SIGINT', onSignal);
       process.off('SIGTERM', onSignal);
     }
   }
 }
-await main();
+if (import.meta.main) await main();

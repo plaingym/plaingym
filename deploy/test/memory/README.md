@@ -15,6 +15,14 @@ something was killed, 1 the harness could not run (never a pass).
 If the load or backup fails, the runner still stops sampling, reads Docker's kill/restart facts,
 evaluates the samples and writes `summary.json`, including the workload failures and exit code.
 OOM, kill or restart evidence makes that run exit 2; without it, a failed workload exits 1.
+Setup, seed, load and backup failures are workload failures. Phase marks, sampler shutdown,
+reading the sampler's files, container inspection and job counts are bookkeeping: with a completed workload and a summary,
+a budget violation still exits 2 when bookkeeping fails. Bookkeeping alone exits 1, and so does
+the thin evidence it can leave behind (too few samples, a sampling gap or an empty idle window).
+`summary.json` is written before cleanup and again after it. Cleanup failures are logged and
+saved in its `cleanupFailures`; the workload's result and violations are kept. They raise a passing run's exit code to 1 and keep
+an existing 1 or 2. Both modes still run. Failure to remove a built image is logged and follows
+the same exit-code rule after the summaries have been saved.
 
 ## What runs
 
@@ -36,6 +44,8 @@ and the run is removed afterwards: containers, volumes, network and the image it
 SIGINT (Ctrl+C) and SIGTERM stop active commands and run the same cleanup, including the named
 load containers. Interrupted runs exit 130 or 143 respectively. An image supplied with `--image`
 is kept; only an image built by the runner is removed.
+On POSIX, cleanup commands run in a detached process group, so a second Ctrl+C cannot interrupt
+their Docker clients. Cleanup commands have a 120-second timeout.
 
 ## What is measured
 
@@ -49,6 +59,10 @@ reads the same files on a CI runner and on Docker Desktop). Every 500 ms, for ea
 
 It also records the host's OOM kill counter. After the run Docker's own `OOMKilled` and restart count
 for each container are read, plus the job table's status counts.
+Phase marks normally come from the sampler container, on the same clock as its samples.
+If a mark or the marks file is missing, the runner uses its host-clock fallback for that mark.
+`summary.json` records `clock.samples`, the clock for each entry in `clock.marks`, and a note
+that host and container clocks can differ on Docker Desktop.
 
 Two runs: **capped** (the shipped limits: 512 MiB app, 384 MiB Postgres, 128 MiB Caddy, V8 old space
 256 MiB) and **uncapped** (no limits and no heap flag, as on a big host). The capped run is held to the

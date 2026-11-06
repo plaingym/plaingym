@@ -5,6 +5,8 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configuration } from './host.ts';
+import { summarizeMemory } from './memory-summary.ts';
+import { execFileSync } from 'node:child_process';
 
 const coverage = fileURLToPath(new URL('../coverage/', import.meta.url));
 await mkdir(coverage, { recursive: true });
@@ -63,4 +65,53 @@ test('rejects different restore hostnames rather than silently testing a broken 
   const config = base();
   config.restore.url = 'https://different.example.org';
   await assert.rejects(load(config), /retains the gym hostname/);
+});
+
+const MiB = 1024 ** 2;
+function memorySample(at, anon = 64, file = 62, current = anon + file) {
+  return { at, containers: Object.fromEntries(['app', 'postgres', 'caddy'].map((name) => [name,
+    { anon: anon * MiB, file: file * MiB, current: current * MiB, peak: current * MiB }])) };
+}
+
+test('VM idle budget uses anon while retaining totals and file cache beside it', () => {
+  const summary = summarizeMemory([memorySample(80, 200), memorySample(90), memorySample(99), memorySample(100, 150)], 100);
+  assert.equal(summary.idleStackBytes, 192 * MiB);
+  assert.equal(summary.idleStackCurrentBytes, 378 * MiB);
+  assert.equal(summary.idleStackFileBytes, 186 * MiB);
+  assert.equal(summary.idleMetric, 'memory.stat anon');
+  assert.ok(!summary.violations.some((line) => line.includes('idle')));
+  assert.equal(summary.sampledStackPeakBytes, 786 * MiB);
+  assert.equal(summary.containerPeakBytes.app, 262 * MiB);
+});
+
+test('VM idle anon above 250 MiB fails; a missing idle window has null figures and fails a measured run', () => {
+  const samples = [memorySample(99, 84, 0, 84)];
+  assert.ok(summarizeMemory(samples, 100).violations.some((line) => line.includes('idle anonymous memory')));
+  assert.deepEqual(summarizeMemory([memorySample(99, 250 / 3, 0)], 100).violations, []);
+  for (const busyStart of [undefined, 50]) {
+    const summary = summarizeMemory(samples, busyStart);
+    assert.equal(summary.idleStackBytes, null);
+    assert.equal(summary.idleStackCurrentBytes, null);
+    assert.equal(summary.idleStackFileBytes, null);
+  }
+  assert.deepEqual(summarizeMemory(samples).violations, []);
+  assert.ok(summarizeMemory(samples, 50).violations.some((line) => line.includes('idle target was not measured')));
+});
+
+test('the VM Python sampler reads anon and file from memory.stat alongside existing counters', () => {
+  const script = [
+    'import json, memory',
+    'from types import SimpleNamespace',
+    'values = {"memory.stat": "anon 123\\nfile 456\\nkernel 789", "memory.current": "1000", "memory.peak": "2000", "memory.max": "536870912", "memory.swap.current": "0", "memory.events": "oom 0\\noom_kill 0"}',
+    'group = SimpleNamespace(joinpath=lambda name: SimpleNamespace(read_text=lambda: values[name]))',
+    'print(json.dumps(memory.sample_container(group, 2)))',
+  ].join('\n');
+  const sample = JSON.parse(execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', script],
+    { cwd: fileURLToPath(new URL('./', import.meta.url)), encoding: 'utf8', timeout: 10_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } }));
+  assert.equal(sample.anon, 123);
+  assert.equal(sample.file, 456);
+  assert.equal(sample.current, 1000);
+  assert.equal(sample.peak, 2000);
+  assert.equal(sample.initialRestarts, 2);
+  assert.deepEqual(sample.events, { oom: 0, oom_kill: 0 });
 });

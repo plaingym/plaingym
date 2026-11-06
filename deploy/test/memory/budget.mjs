@@ -35,6 +35,16 @@ const mean = (values) => (values.length ? sum(values) / values.length : null);
 const mib = (bytes) => Math.round((bytes / MiB) * 10) / 10;
 export const processBytes = (service, name) => (name === 'postgres' ? service.pss : service.rss);
 
+/** Prefer the sampler's clock; host-clock bounds are only a fallback for missing marks. */
+export function resolveMarks(fallback, recorded) {
+  const marks = { ...fallback, ...recorded };
+  return { marks, clock: {
+    samples: 'sampler-container',
+    marks: Object.fromEntries(Object.keys(marks).map((name) => [name, Object.hasOwn(recorded, name) ? 'sampler-container' : 'runner-host'])),
+    note: 'Runner-host fallback marks may differ from the sampler-container clock on Docker Desktop.',
+  } };
+}
+
 function within(samples, from, to) {
   return samples.filter((sample) => sample.at >= from && sample.at <= to);
 }
@@ -86,22 +96,27 @@ export function summarize(samples, marks) {
   };
 }
 
+/** Reasons the samples are too thin to judge the run: they say nothing about memory itself. */
+function evidenceViolations({ coverage }) {
+  const bad = [];
+  if (coverage.samples < budget.minSamples) bad.push(`sampler recorded ${coverage.samples} samples, fewer than ${budget.minSamples}`);
+  if (coverage.ratio < budget.minCoverage) bad.push(`sampler coverage ${(coverage.ratio * 100).toFixed(0)}% is below ${budget.minCoverage * 100}%`);
+  if (coverage.maxGapMs > budget.maxGapMs) bad.push(`sampler gap of ${coverage.maxGapMs} ms exceeds ${budget.maxGapMs} ms`);
+  if (!coverage.freshSamples) bad.push('no samples in the fresh-idle window');
+  if (!coverage.warmSamples) bad.push('no samples in the warm-idle window');
+  return bad;
+}
+
 /**
  * The reasons a run fails the budget, empty when it passes.
  * `mode` is capped (the shipped compose limits) or uncapped (no memory limits and no V8 heap flag, to see what the
  * stack would use on a big host); `facts` is what Docker reported about the containers once the run was over.
  */
 export function evaluate(summary, { mode, facts = {} }) {
-  const bad = [];
-  const { services, stack, coverage } = summary;
-  const limit = (name, label, bytes, maxMiB) => { if (bytes > maxMiB * MiB) bad.push(`${label} ${mib(bytes)} MiB exceeds ${maxMiB} MiB`); };
-
   // Evidence first: without enough samples nothing below means anything.
-  if (coverage.samples < budget.minSamples) bad.push(`sampler recorded ${coverage.samples} samples, fewer than ${budget.minSamples}`);
-  if (coverage.ratio < budget.minCoverage) bad.push(`sampler coverage ${(coverage.ratio * 100).toFixed(0)}% is below ${budget.minCoverage * 100}%`);
-  if (coverage.maxGapMs > budget.maxGapMs) bad.push(`sampler gap of ${coverage.maxGapMs} ms exceeds ${budget.maxGapMs} ms`);
-  if (!coverage.freshSamples) bad.push('no samples in the fresh-idle window');
-  if (!coverage.warmSamples) bad.push('no samples in the warm-idle window');
+  const bad = evidenceViolations(summary);
+  const { services, stack } = summary;
+  const limit = (name, label, bytes, maxMiB) => { if (bytes > maxMiB * MiB) bad.push(`${label} ${mib(bytes)} MiB exceeds ${maxMiB} MiB`); };
 
   // Out-of-memory kills fail every run, capped or not.
   for (const [name, service] of Object.entries(services)) {
@@ -145,16 +160,19 @@ function containerViolations(facts) {
 /**
  * Judges a whole run, including one whose workload failed (`failures`) or whose samples are missing (`summary` null).
  * A broken workload proves a memory failure only when Docker or the samples show a kill, OOM or restart: then the run
- * exits 2, otherwise 1 (the harness could not run). A clean workload exits 2 on any violation and 0 without one.
+ * exits 2, otherwise 1. Bookkeeping failures cannot hide a budget violation from a completed workload's summary, but
+ * the thin evidence one can leave behind (a dead sampler) is not a budget violation: that run exits 1.
  */
-export function assessRun(summary, { mode, facts, failures }) {
+export function assessRun(summary, { mode, facts, failures = [], bookkeepingFailures = [] }) {
   const killed = Object.values(facts.containers).some((state) => state.oomKilled || state.restarts > 0 || state.exitCode === 137)
     || (summary && (summary.hostOomKills > 0 || Object.values(summary.services).some((service) => service.oomEvents > 0 || service.oomKills > 0)));
   // evaluate() reports the container facts itself; without samples, report them here so an exit 2 always says why.
   const violations = summary ? evaluate(summary, { mode, facts }) : containerViolations(facts);
   for (const [name, state] of Object.entries(facts.containers)) if (state.exitCode === 137) violations.push(`${name} container exited 137 (killed)`);
-  if (failures.length) violations.push(...failures);
-  return { violations, exitCode: killed ? 2 : failures.length ? 1 : violations.length ? 2 : 0 };
+  const unproven = summary && bookkeepingFailures.length ? evidenceViolations(summary).length : 0;
+  const exitCode = killed ? 2 : failures.length ? 1 : summary && violations.length > unproven ? 2 : !summary || bookkeepingFailures.length ? 1 : 0;
+  violations.push(...failures, ...bookkeepingFailures);
+  return { violations, exitCode };
 }
 
 export function report(summary, violations, mode) {

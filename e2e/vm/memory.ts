@@ -4,12 +4,8 @@ import { resolve } from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import { createHash } from 'node:crypto';
 import { checked, ssh, compose, quote, sql, type Config, type Target } from './host.js';
-
-export interface Sample {
-  at: number; hostOomKills: number;
-  host: { MemTotal: number; MemAvailable: number; SwapTotal: number; SwapFree: number };
-  containers: Record<string, { current: number; peak: number; max: string; swap: number; events: Record<string, number>; initialRestarts: number }>;
-}
+import { summarizeMemory, type Sample } from './memory-summary.js';
+export type { Sample } from './memory-summary.js';
 export async function startMemory(target: Target) {
   const source = await readFile(new URL('./memory.py', import.meta.url), 'utf8');
   await checked(target, "umask 077\ncat >/root/plaingym-qa/memory.py <<'QA_MEMORY'\n" + source +
@@ -32,11 +28,8 @@ export async function endMemory(target: Target, config: Config, busyStart?: numb
   // mkswap reserves a header page from the installer's 1 GiB file.
   if(first.host.SwapTotal < 1000 * 1024 ** 2) violations.push('less than a 1 GiB swapfile worth of usable swap');
   if(!config.localFixture && (first.host.MemTotal > 1100 * 1024 ** 2 || first.host.MemTotal < 800 * 1024 ** 2)) violations.push('memory acceptance requires a real 1 GB VM');
-  const peaks = Object.fromEntries(Object.keys(limits).map((name) => [name, Math.max(...samples.map((s) => s.containers[name].peak))]));
-  const totalPeak = Math.max(...samples.map((s) => Object.values(s.containers).reduce((sum, c) => sum + c.current, 0)));
-  const idleSamples = busyStart ? samples.filter((s) => s.at < busyStart && s.at >= busyStart - 10) : [];
-  const idleStackBytes = idleSamples.length ? Math.round(idleSamples.reduce((sum, s) => sum + Object.values(s.containers).reduce((n, c) => n + c.current, 0), 0) / idleSamples.length) : null;
-  if(totalPeak > 600 * 1024 ** 2) violations.push('sampled full-stack peak exceeds proposed 600 MiB target');
+  const figures = summarizeMemory(samples, busyStart);
+  violations.push(...figures.violations);
   const states = await checked(target, compose("ps -q") + " | xargs docker inspect --format '{{index .Config.Labels \"com.docker.compose.service\"}} {{.State.OOMKilled}} {{.RestartCount}}'");
   if(states.split('\n').some((line) => {
     const [service, killed, restarts] = line.split(' ');
@@ -46,7 +39,7 @@ export async function endMemory(target: Target, config: Config, busyStart?: numb
   if(!policy.includes('--max-old-space-size=256')) violations.push('V8 old-space policy changed');
   const report = {
     localOnly: Boolean(config.localFixture), seconds: last.at - first.at, samples: samples.length,
-    host: first.host, containerPeakBytes: peaks, sampledStackPeakBytes: totalPeak, idleStackBytes, hostOomDelta: last.hostOomKills - first.hostOomKills,
+    ...figures, host: first.host, hostOomDelta: last.hostOomKills - first.hostOomKills,
     states, policy, violations
   };
   await writeFile(resolve(config.artifacts, 'memory-summary.json'), JSON.stringify(report, null, 2));

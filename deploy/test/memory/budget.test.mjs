@@ -2,7 +2,11 @@
 // node --test deploy/test/memory/budget.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { assessRun, budget, evaluate, summarize } from './budget.mjs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { assessRun, budget, evaluate, resolveMarks, summarize } from './budget.mjs';
+import { withCleanup } from './run.mjs';
 
 const MiB = 1024 ** 2;
 const limits = { app: 512 * MiB, postgres: 384 * MiB, caddy: 128 * MiB };
@@ -82,6 +86,79 @@ test('without samples, an exit 2 still names the Docker kill evidence', () => {
 
 test('missing samples without kill evidence cannot pass', () => {
   assert.equal(judgeRun(null, ['sampler results: No samples']).exitCode, 1);
+  assert.equal(judgeRun(null).exitCode, 1);
+});
+
+test('bookkeeping failures retain budget exit 2, but cannot turn a healthy summary into a budget failure', () => {
+  for (const failure of ['ready mark', 'loadStart mark', 'loadEnd mark', 'settled mark', 'stop sampler', 'job counts', 'inspect app', 'inspect postgres', 'inspect caddy']) {
+    const options = { mode: 'uncapped', facts: { containers: {} }, bookkeepingFailures: [failure] };
+    const exceeded = structuredClone(healthySummary);
+    exceeded.services.app.peakProcessBytes = 900 * MiB;
+    const result = assessRun(exceeded, options);
+    assert.equal(result.exitCode, 2);
+    assert.ok(result.violations.includes(failure));
+    assert.equal(assessRun(healthySummary, options).exitCode, 1);
+    assert.equal(assessRun(exceeded, { ...options, failures: ['seed failed'] }).exitCode, 1);
+  }
+});
+
+test('thin evidence left by a bookkeeping failure exits 1, unless a measured budget violation remains', () => {
+  const thin = structuredClone(healthySummary);
+  thin.coverage.warmSamples = 0;
+  const options = { mode: 'uncapped', facts: { containers: {} }, bookkeepingFailures: ['loadEnd mark: sampler is gone'] };
+  const result = assessRun(thin, options);
+  assert.equal(result.exitCode, 1);
+  assert.ok(result.violations.includes('no samples in the warm-idle window'));
+  assert.equal(assessRun(thin, { ...options, bookkeepingFailures: [] }).exitCode, 2);
+  thin.services.app.peakProcessBytes = 900 * MiB;
+  assert.equal(assessRun(thin, options).exitCode, 2);
+});
+
+test('a cleanup failure keeps each run result, makes a pass exit 1, and allows the next mode', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'memory-cleanup-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const logs = [], cleaned = [];
+  for (const exitCode of [0, 1, 2]) {
+    const original = { exitCode, violations: exitCode ? ['original failure'] : [] };
+    const result = await withCleanup(async () => original, [
+      ['compose down', async () => { throw new Error('fixture cleanup failure'); }],
+      ['temporary files', async () => { cleaned.push(exitCode); }],
+    ], (line) => logs.push(line));
+    assert.equal(result, original);
+    assert.equal(result.exitCode, exitCode || 1);
+    assert.deepEqual(result.violations, exitCode ? ['original failure'] : []);
+    assert.deepEqual(result.cleanupFailures, ['compose down: fixture cleanup failure']);
+    const file = join(directory, 'summary.json');
+    await writeFile(file, JSON.stringify(result));
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), result);
+  }
+  assert.deepEqual(cleaned, [0, 1, 2]);
+  assert.equal(logs.length, 3);
+});
+
+test('cleanup attempts all steps and does not replace an original workload exception', async () => {
+  const original = new Error('setup failed'), cleaned = [], logs = [];
+  await assert.rejects(withCleanup(async () => { throw original; }, [
+    ['compose down', async () => { throw new Error('cleanup failed'); }],
+    ['temporary files', async () => { cleaned.push(true); }],
+  ], (line) => logs.push(line)), (error) => error === original);
+  assert.deepEqual(cleaned, [true]);
+  assert.equal(logs.length, 1);
+});
+
+test('sampler phase marks override host fallbacks and the saved summary identifies each clock', () => {
+  const fallback = { ...marks }, recorded = { ...marks, loadEnd: marks.loadEnd + 5000 };
+  delete recorded.settled;
+  const resolved = resolveMarks(fallback, recorded);
+  const saved = JSON.parse(JSON.stringify({ ...resolved, summary: summarize(run({ shape: healthy }), resolved.marks) }));
+  assert.equal(saved.marks.loadEnd, recorded.loadEnd);
+  assert.equal(saved.marks.settled, fallback.settled);
+  assert.equal(saved.clock.samples, 'sampler-container');
+  assert.equal(saved.clock.marks.loadEnd, 'sampler-container');
+  assert.equal(saved.clock.marks.settled, 'runner-host');
+  assert.match(saved.clock.note, /may differ/);
+  assert.deepEqual(resolveMarks(fallback, {}).marks, fallback);
+  assert.ok(Object.values(resolveMarks(fallback, {}).clock.marks).every((clock) => clock === 'runner-host'));
 });
 
 test('a healthy run passes in both modes', () => {
