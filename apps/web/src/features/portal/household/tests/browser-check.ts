@@ -63,6 +63,7 @@ const profile = await mkdtemp(resolve(output, 'profile-'));
 if (!profile.startsWith(output + sep)) throw new Error('Unexpected profile directory');
 const origin = `http://127.0.0.1:${address.port}`, browser = await chromium.launchPersistentContext(profile, { channel: 'msedge', headless: true });
 const errors: string[] = [];
+type FixtureRoute = { request(): { method(): string }; continue(): Promise<void>; fulfill(options: { status?: number; json: unknown }): Promise<void> };
 try {
   const page = await browser.newPage(); page.on('pageerror', (error: Error) => errors.push(error.message));
   for (const width of [360, 1280]) {
@@ -72,7 +73,7 @@ try {
       expect(await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('button,input,select,a')].filter(element => !element.classList.contains('sr-only') && element.getClientRects().length
         && element.getBoundingClientRect().height < 44 && !(element instanceof HTMLInputElement && element.type === 'checkbox')).map(element => element.outerHTML.slice(0, 120))), name).toEqual([]);
       expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()).violations, name).toEqual([]);
-      await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: true });
+      await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: await page.getByRole('dialog').count() === 0 });
     };
     role = 'payer';
     await page.goto(origin + '/portal/billing'); await expect(page.getByText('Invoice #1042')).toBeVisible();
@@ -98,6 +99,39 @@ try {
     await page.getByRole('button', { name: 'Edit details' }).nth(1).click(); await expect(page.getByRole('dialog')).toBeVisible(); await check('edit-dialog');
     await page.getByRole('button', { name: 'Close' }).last().click();
     if (width === 360) { await page.getByRole('button', { name: 'Menu' }).click(); await expect(page.getByRole('link', { name: 'Billing' })).toBeVisible(); await check('menu-payer'); }
+    // A revoked link may leave a picker. Hold recovery to inspect the loading and retained draft in a real browser.
+    await page.goto(origin + '/portal/household');
+    await page.getByRole('button', { name: 'Edit details' }).first().click();
+    await page.getByLabel('First name', { exact: true }).fill('Unsaved draft');
+    let recovering = false, fail = true, release: (() => void) | undefined;
+    await page.route('**/api/portal/members/*', async (route: FixtureRoute) => {
+      if (route.request().method() !== 'PATCH') return route.continue();
+      recovering = true;
+      await route.fulfill({ status: 404, json: { error: { code: 'not_found' } } });
+    });
+    await page.route('**/api/portal/households', async (route: FixtureRoute) => {
+      if (!recovering) return route.continue();
+      await new Promise<void>(resolve => { release = resolve; });
+      await route.fulfill(fail ? { status: 503, json: { error: { code: 'unavailable' } } } : { json: { data: { current: null, households: [
+        { householdId: id(90), name: 'First remaining household', role: 'payer' }, { householdId: id(91), name: 'Second remaining household', role: 'payer' },
+      ] } } });
+    });
+    await page.getByRole('button', { name: 'Save', exact: true }).last().click();
+    await expect(page.getByRole('dialog')).toBeHidden();
+    await expect(page.getByRole('status')).toContainText('Loading');
+    await page.screenshot({ path: resolve(output, `recovery-loading-${width}.png`), fullPage: true });
+    await expect.poll(() => !!release).toBe(true); release!();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByLabel('First name', { exact: true })).toHaveValue('Unsaved draft');
+    await page.locator('[data-dialog-body]').evaluate((element: HTMLElement) => { element.scrollTop = 0; });
+    await check('recovery-retained-draft');
+    fail = false; release = undefined;
+    await page.getByRole('button', { name: 'Save', exact: true }).last().click();
+    await expect.poll(() => !!release).toBe(true); release!();
+    await expect(page.getByText('Your household changed.', { exact: false })).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await check('recovery-picker-notice');
+    await page.unroute('**/api/portal/members/*'); await page.unroute('**/api/portal/households');
     role = 'member';
     await page.goto(origin + '/portal/household'); await expect(page.getByRole('heading', { name: 'My profile' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Edit details' })).toHaveCount(0); await check('household-member');

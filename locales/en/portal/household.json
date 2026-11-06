@@ -1,6 +1,8 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "nav": "Household & profile",
+  "householdChanged": "Your household changed. Please review this household and check any unfinished work before continuing.",
+  "dismissChange": "Dismiss notice",
   "title": "Household",
   "description": "Contact details for your household and the people in it.",
   "profileTitle": "My profile",

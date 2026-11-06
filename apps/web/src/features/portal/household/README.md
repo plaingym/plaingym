@@ -27,8 +27,19 @@ another one (the session moved on, say because another tab switched) is never st
 shown: the page shows loading while the household lists are read again, after which
 every key is the other household's. Writes and member-ID reads send `X-Portal-Household` from that same
 page key. A household conflict (409 with that response header) starts the same
-recovery; a revision conflict stays with the form. Recovery shares an in-flight
-or just-finished list read across the page's queries. Client answer parsing strips
+recovery; a revision conflict stays with the form. Portal 404s also refresh the lists,
+including when a revoked link leaves several households to choose from. Recovery
+shares reads for the request's list version, sampled when the request starts. If
+a joined read predates the move or does not name the household returned by the
+conflict, recovery reads again. A second mismatch fails rather than looping.
+During a recovery a page started, the six portal pages hide their content without unmounting forms
+or dialogs, preserving typed drafts and drawn signatures if recovery fails. After
+a move the shell resets the page and asks the person to review the household and
+any unfinished work. The notice clears on dismissal, navigation, or a deliberate
+household switch; late answers from that switch do not show it again.
+The notice is accurate for moves discovered by reads as well as writes;
+the old household's draft and action error do not appear in the new household.
+Client answer parsing strips
 new, unknown fields recursively while still requiring and validating known fields. `household/keys.test.ts` checks that every page key starts from
 the scope's key and stays out of the shell's reserved `shell` segment.
 The server is authoritative for every permission; the pages only hide actions a

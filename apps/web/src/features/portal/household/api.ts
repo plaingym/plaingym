@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { portalAccessContracts, portalContracts, portalHouseholdHeader, type EndpointContract } from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { useBootstrap } from '../../../app/context.js';
@@ -31,14 +31,16 @@ export type PortalKey = ReturnType<typeof portalHouseholdKey>;
 /** Portal queries wait for the signed-in gym, user and open household, so their keys never change underneath them. */
 export const portalReady = (key: PortalKey) => !!key[1] && !!key[2] && !!key[4];
 /** The answer was for another household than the key it was asked under; the household lists are being read again. */
-export class HouseholdMoved extends Error {}
+export class HouseholdMoved extends Error {
+  constructor(readonly householdId?: string) { super('Portal household changed'); }
+}
 /** The household is a precondition, never an authorization grant. A revision conflict has no such response header. */
 export function householdTransport(householdId: string, fetcher: typeof fetch = fetch): typeof fetch {
   return async (input, init) => {
     const headers = new Headers(init?.headers);
     headers.set(portalHouseholdHeader, householdId);
     const response = await fetcher(input, { ...init, headers });
-    if (response.status === 409 && response.headers.has(portalHouseholdHeader)) throw new HouseholdMoved();
+    if (response.status === 409 && response.headers.has(portalHouseholdHeader)) throw new HouseholdMoved(response.headers.get(portalHouseholdHeader)!);
     return response;
   };
 }
@@ -48,17 +50,57 @@ export function householdListsVersion(cache: QueryClient, key: PortalKey): numbe
   return (state?.dataUpdateCount ?? 0) + (state?.errorUpdateCount ?? 0);
 }
 // Key by the cached list query itself, so clearing the login's cache also discards its recovery history.
-const recoveries = new WeakMap<object, { householdId: PortalKey[4]; version: number; promise: Promise<void> }>();
+const recoveries = new WeakMap<object, { householdId: PortalKey[4]; expected: string | undefined; version: number; promise: Promise<void> }>();
+export const portalRecoveryNoticeKey = (login: ReturnType<typeof portalLoginKey>) => [...login, 'recovery-notice'] as const;
+const deliberateMoves = new WeakMap<object, Set<string | null | undefined>>();
+export function clearPortalRecoveryNotice(cache: QueryClient, login: ReturnType<typeof portalLoginKey>) {
+  cache.setQueryData(portalRecoveryNoticeKey(login), false);
+}
+/** Suppress late answers from the household the person deliberately left. */
+export function rememberDeliberateMove(cache: QueryClient, login: ReturnType<typeof portalLoginKey>, from: string | null, to: string) {
+  const list = cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
+  if (list) {
+    const ignored = deliberateMoves.get(list) ?? new Set<string | null | undefined>();
+    ignored.add(from); ignored.delete(to); deliberateMoves.set(list, ignored);
+  }
+  clearPortalRecoveryNotice(cache, login);
+}
+export function usePortalRecoveryNotice() {
+  const login = usePortalLogin();
+  return useQuery({ queryKey: portalRecoveryNoticeKey(login), queryFn: () => false, enabled: false }).data;
+}
 /** Only a recovery for this snapshot (or a later one) can satisfy its late answers. Ordinary list loads do not. */
-function refreshHouseholds(cache: QueryClient, key: PortalKey, version: number): Promise<unknown> {
+export function refreshHouseholds(cache: QueryClient, key: PortalKey, version: number, named?: string): Promise<unknown> {
   const login = [key[0], key[1], key[2]] as const;
+  // A schedule that moved mid-read names no household (''): any other household than the key's then counts as the move.
+  const expected = named || undefined;
   const current = cache.getQueryData<{ current: string | null }>(portalHouseholdsKey(login));
-  if (current && current.current !== key[4]) return Promise.resolve();
+  const list = cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
+  // A later visit to the same household starts a new recovery cycle, even if an ordinary list refetch brought it back.
+  if (list && current?.current === key[4]) deliberateMoves.get(list)?.delete(key[4]);
+  const recovered = (current: string | null) => expected === undefined ? current !== key[4] : current === expected;
+  const notice = () => {
+    const list = cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
+    const ignored = list && deliberateMoves.get(list);
+    const now = cache.getQueryData<{ current: string | null }>(portalHouseholdsKey(login));
+    if (now) ignored?.delete(now.current);
+    if (!ignored?.has(key[4])) cache.setQueryData(portalRecoveryNoticeKey(login), true);
+  };
+  if (current && recovered(current.current)) { notice(); return Promise.resolve(); }
   const findList = () => cache.getQueryCache().find({ queryKey: portalHouseholdsKey(login), exact: true });
-  const list = findList(), previous = list && recoveries.get(list);
-  if (previous && previous.householdId === key[4] && previous.version >= version) return previous.promise;
-  const promise = cache.fetchQuery(portalHouseholdsOptions(login, true)).then(() => undefined);
-  recoveries.set(findList()!, { householdId: key[4], version, promise });
+  const previous = list && recoveries.get(list);
+  if (previous && previous.householdId === key[4] && previous.expected === expected && previous.version >= version) return previous.promise;
+  const options = portalHouseholdsOptions(login, true);
+  const alreadyFetching = list?.state.fetchStatus === 'fetching';
+  const promise = (async () => {
+    let result = await cache.fetchQuery(options);
+    // A joined read may predate the move. Never finish that recovery on its old snapshot.
+    if (!recovered(result.current) && (alreadyFetching || expected !== undefined)) result = await cache.fetchQuery(options);
+    // The page goes when the lists leave its household, wherever they went, so that always explains itself.
+    if (result.current !== key[4]) notice();
+    if (expected !== undefined && !recovered(result.current)) throw new Error('Household recovery did not reach the expected household');
+  })();
+  recoveries.set(findList()!, { householdId: key[4], expected, version, promise });
   return promise;
 }
 /**
@@ -71,8 +113,8 @@ function refreshHouseholds(cache: QueryClient, key: PortalKey, version: number):
 export function ownAnswer<T extends { householdId: string }>(cache: QueryClient, key: PortalKey, answer: T, version: number): T {
   if (answer.householdId === key[4]) return answer;
   // Fetched here rather than refetched, so the lists are read again even where nothing else is watching them.
-  void refreshHouseholds(cache, key, version).catch(() => undefined);
-  throw new HouseholdMoved();
+  void refreshHouseholds(cache, key, version, answer.householdId).catch(() => undefined);
+  throw new HouseholdMoved(answer.householdId);
 }
 /** The open household as a page sees it: the key its queries are built from, and the check every answer passes. */
 export interface PortalScope {
@@ -91,17 +133,23 @@ export function usePortalScope(): PortalScope {
   // Reads the lists (and re-renders with them) without ever loading them; the shell owns the load.
   const households = useQuery({ ...portalHouseholdsOptions(login, false) });
   const key = portalHouseholdKey(login, households.data?.current);
-  const version = householdListsVersion(cache, key);
   const [moving, setMoving] = useState(false);
-  const recover = () => {
+  const pending = useRef(0);
+  const recover = (version: number, expected?: string) => {
+    pending.current++;
     setMoving(true);
-    void refreshHouseholds(cache, key, version).catch(() => undefined).finally(() => setMoving(false));
+    void refreshHouseholds(cache, key, version, expected).catch(() => undefined).finally(() => { if (--pending.current === 0) setMoving(false); });
   };
   const run: PortalScope['run'] = async operation => {
-    try { return await operation(); } catch (error) { if (error instanceof HouseholdMoved) recover(); throw error; }
+    const version = householdListsVersion(cache, key);
+    try { return await operation(); } catch (error) {
+      if (error instanceof HouseholdMoved) recover(version, error.householdId);
+      else if (notFound(error)) recover(version);
+      throw error;
+    }
   };
   return { key, ready: portalReady(key), moving,
-    own: answer => { if (answer.householdId === key[4]) return answer; recover(); throw new HouseholdMoved(); }, run,
+    own: answer => { if (answer.householdId === key[4]) return answer; recover(householdListsVersion(cache, key), answer.householdId); throw new HouseholdMoved(answer.householdId); }, run,
     call: (contract, input, params, query) => run(() => portalCall(contract, input, params, query, householdTransport(key[4] ?? ''))),
   };
 }
@@ -114,6 +162,7 @@ export type PortalContextAnswer = ReturnType<typeof portalContracts.context.resp
 export const unavailable = (error: unknown) => error instanceof ApiError && error.status === 503;
 export const forbidden = (error: unknown) => error instanceof ApiError && error.status === 403;
 export const conflict = (error: unknown) => error instanceof ApiError && error.status === 409;
+export const notFound = (error: unknown) => error instanceof ApiError && error.status === 404;
 /** Today's calendar date in the gym's timezone, for age checks that match the server's guardian rule. */
 export function gymToday(timezone: string, now = new Date()) { return localDate(now, timezone); }
 /** Mirrors the waiver guardian rule to choose the signer kind; the server decides. An unknown birthday cannot establish adulthood. */

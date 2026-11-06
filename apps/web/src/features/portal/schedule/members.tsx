@@ -12,8 +12,8 @@ import { portalClient, type PortalClient } from './client.js';
  */
 export function usePortalMembers(client: PortalClient = portalClient) {
   const scope = usePortalScope(), [chosen, setChosen] = useState('');
-  const context = usePortalContext(scope, () => client.context());
-  const members = useQuery({ queryKey: [...scope.key, 'act-for'], enabled: scope.ready, queryFn: async () => scope.own(await client.members()).data, staleTime: 0 });
+  const context = usePortalContext(scope, () => scope.run(() => client.context()));
+  const members = useQuery({ queryKey: [...scope.key, 'act-for'], enabled: scope.ready, queryFn: async () => scope.own(await scope.run(() => client.members())).data, staleTime: 0 });
   const memberId = members.data?.some(member => member.id === chosen) ? chosen : members.data?.[0]?.id ?? '';
   return { scope, context, members, memberId, member: members.data?.find(member => member.id === memberId), choose: setChosen };
 }

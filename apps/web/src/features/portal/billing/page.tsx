@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { PortalRecovery } from '../household/recovery.js';
 import { useState } from 'react';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -39,8 +40,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
   const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
   const instant = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }).format(new Date(value));
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
-  if (scope.moving) return <LoadingState />;
-  return <Page className="max-w-3xl">
+  return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
     <PageHeader title={text('title')} description={text('description')} />
     {failure && <Alert role="alert">{text(unavailable(failure) ? unavailableKey : 'failed')}</Alert>}
     {checkout.isPending && <Alert role="status">{text('redirecting')}</Alert>}
@@ -83,7 +83,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
         {card.isDefault && <Badge tone="success">{text('default')}</Badge>}
       </StackedItem>)}</StackedList>}
     </PageSection>
-  </Page>;
+  </Page></PortalRecovery>;
 }
 /** The routed page and portal registration. */
 export function PortalBilling() { return <PortalBillingPage />; }

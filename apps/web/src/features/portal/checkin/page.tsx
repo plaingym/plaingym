@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { PortalRecovery } from '../household/recovery.js';
 import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { renderSVG } from 'uqr';
@@ -36,10 +37,9 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       await code.refetch();
     } finally { locked.current = false; setBusy(false); }
   }
-  if (scope.moving || members.isPending) return <LoadingState />;
-  if (members.isError) return <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
+  if (!members.data) return members.isPending || scope.moving ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const active = code.data?.code;
-  return <Page className="max-w-xl">
+  return <PortalRecovery moving={scope.moving}><Page className="max-w-xl">
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setError(''); setConfirming(false); choose(id); }} />
     {code.isPending ? <LoadingState label={text('loading')} />
@@ -57,7 +57,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
           <Button variant="outline" disabled={busy} onClick={() => setConfirming(false)}>{text('keep')}</Button></div></div>
     </Dialog>}
-  </Page>;
+  </Page></PortalRecovery>;
 }
 /** The registered portal page, with the production client. */
 export function PortalCheckinView() { return <PortalCheckinPage />; }

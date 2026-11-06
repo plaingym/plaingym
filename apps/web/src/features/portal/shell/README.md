@@ -11,7 +11,13 @@ cancelling a list load that began before the switch) and removes every other hou
 which also cancels their loads in flight. It then reads the lists again, asks for the bootstrap again and
 returns to the portal home without waiting for that refetch. Every portal answer names the household the server read it for. An answer, the shell's context or a
 page's, for a household other than the one its key names is never stored (the household lists are read again instead).
-Pages show loading during that recovery. Portal writes name their page household in
+A page shows loading during a recovery it started, with its forms and signatures still mounted. One the shell started leaves the page on screen until the lists answer.
+A failed recovery keeps the draft. A confirmed move resets the page's local state
+and shows a notice to review the household and unfinished work, including on the household
+picker after a revoked link. Recovery rereads a stale in-flight list answer until
+it has made a fresh attempt to reach the conflict's household; a second mismatch
+fails without looping. Portal 404s also refresh the household lists.
+Portal writes name their page household in
 `X-Portal-Household`; the server rejects a stale or absent household before the handler,
 and a stale page refreshes the lists without showing a saved result or following Checkout.
 The context names its household once, in the answer's top-level `householdId`. Once the server has

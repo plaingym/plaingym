@@ -80,6 +80,9 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
       return Response.json(answer);
     }
     if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId: current });
+    if (path === '/api/portal/household') return Response.json({ data: { id: current, name: 'Household', email: null, phone: null, address: {}, billingDay: 1, revision: 1 }, householdId: current });
+    if (path.startsWith('/api/portal/members?')) return Response.json({ data: [], pagination: { limit: 100, offset: 0, total: 0 }, householdId: current });
+    if (path.startsWith('/api/portal/schedule') || path === '/api/portal/act-for') return Response.json({ data: [], pagination: { limit: 100, offset: 0, total: 0 }, householdId: current });
     if (path === '/api/portal/context') return current === ids.first ? Response.json({ data: { role: 'payer', memberId: null }, householdId: ids.first })
       : current === ids.second ? Response.json({ data: { role: 'member', memberId: ids.member }, householdId: ids.second }) : new Response(null, { status: 404 });
     return new Response(null, { status: 404 });
@@ -104,6 +107,35 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
   return { fetcher, selections, router, release, serverOpens, lagLists, bootstrapGates, householdGates, invoiceGates, cache, server: () => current };
 }
 const identity = () => screen.getByTestId('signed-in-identity').textContent;
+it.each(['dismiss', 'navigate', 'switch'] as const)('explains a move discovered by a read and clears the notice on %s', async action => {
+  const f = portal(ids.first), user = userEvent.setup();
+  await screen.findByRole('combobox');
+  f.serverOpens(ids.second);
+  await act(async () => { await f.cache.invalidateQueries({ queryKey: [...household(ids.first), 'shell', 'context'], exact: true }); });
+  const notice = await screen.findByText(/Your household changed/);
+  expect(notice.textContent).not.toContain('action was not completed');
+  expect(notice.textContent).toContain('check any unfinished work');
+  if (action === 'dismiss') await user.click(screen.getByRole('button', { name: 'Dismiss notice' }));
+  if (action === 'navigate') await act(async () => { await f.router.navigate({ to: '/portal/schedule' }); });
+  if (action === 'switch') {
+    await user.selectOptions(screen.getByRole('combobox'), ids.first);
+    await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe(ids.first));
+  }
+  await waitFor(() => expect(screen.queryByText(/Your household changed/)).toBeNull());
+});
+it('keeps a household draft mounted when the shell context starts a recovery that fails', async () => {
+  const f = portal(ids.first, { path: '/portal/household', holdHouseholds: true }), user = userEvent.setup();
+  const phone = await screen.findByLabelText('Phone');
+  await user.type(phone, '5550199');
+  f.serverOpens(ids.second);
+  act(() => { void f.cache.invalidateQueries({ queryKey: [...household(ids.first), 'shell', 'context'], exact: true }); });
+  await waitFor(() => expect(f.householdGates).toHaveLength(1));
+  expect(phone.isConnected).toBe(true);
+  f.householdGates[0]!.fail();
+  await screen.findByText(/couldn.t load your portal/);
+  expect(screen.getByLabelText('Phone')).toBe(phone);
+  expect((phone as HTMLInputElement).value).toBe('5550199');
+});
 it('asks a login with several households to choose one before showing the portal', async () => {
   const f = portal(null), user = userEvent.setup();
   expect(await screen.findByRole('heading', { name: 'Choose a household' })).toBeDefined();

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { PortalRecovery } from '../household/recovery.js';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -42,7 +43,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const { scope, context, members, memberId, member, choose } = usePortalMembers(client);
   const [week, setWeek] = useState(0), [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string }>();
   const range = weekRange(localDate(now(), timezone), week, timezone);
-  const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await client.schedule(range.from, range.to)).data, staleTime: 0 });
+  const schedule = useQuery({ queryKey: [...scope.key, 'schedule', range.from], enabled: scope.ready, queryFn: async () => scope.own(await scope.run(() => client.schedule(range.from, range.to))).data, staleTime: 0 });
   const change = useMutation({
     mutationFn: async (input: { action: 'book' | 'cancel'; session: PortalScheduleSession; booking?: MemberBooking; context: PortalContext; member: PortalScheduleMember }) =>
       scope.run(() => input.action === 'book' ? client.book(input.context, input.member.id, input.session.id, scope.key[4]!) : client.cancel(input.context, input.member.id, input.booking!.id, scope.key[4]!)),
@@ -56,15 +57,15 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const timeLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' });
   const whenLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
   const names = new Map(members.data?.map(row => [row.id, row.name]));
-  if (scope.moving || context.isPending || members.isPending) return <LoadingState />;
-  if (context.isError || members.isError) return <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
+  if (!context.data || !members.data) return context.isPending || members.isPending || scope.moving ? <LoadingState />
+    : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
   const days = new Map<string, PortalScheduleSession[]>();
   for (const session of schedule.data ?? []) {
     const day = localDate(new Date(session.startsAt), timezone);
     days.set(day, [...days.get(day) ?? [], session]);
   }
   const current = now();
-  return <Page>
+  return <PortalRecovery moving={scope.moving}><Page>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setMessage(undefined); choose(id); }} />
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -115,7 +116,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
               </li>;
             })}</ul>
           </PageSection>)}
-  </Page>;
+  </Page></PortalRecovery>;
 }
 /** The registered portal page, with the production client. */
 export function PortalScheduleView() { return <PortalSchedulePage />; }

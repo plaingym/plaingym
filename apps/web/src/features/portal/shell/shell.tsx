@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Link, Navigate, Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { canMember, type NavigationEntry } from '@plaingym/shared';
@@ -9,8 +9,9 @@ import { sessionName } from '../../../app/identity.js';
 import { createRegistries } from '../../../lib/registries.js';
 import { createJsonTransport } from '../../../lib/api.js';
 import { parseResponse } from '../../../lib/response.js';
-import { HouseholdMoved, ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey } from '../household/api.js';
+import { HouseholdMoved, notFound, ownAnswer, householdListsVersion, portalHouseholdKey, portalHouseholdsKey, portalHouseholdsOptions, portalLoginKey, refreshHouseholds, rememberDeliberateMove, clearPortalRecoveryNotice } from '../household/api.js';
 import { t } from '../../../lib/i18n.js';
+import { PortalRecoveryNotice } from '../household/recovery.js';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Select } from '../../../components/ui/select.js';
@@ -134,17 +135,29 @@ function AuthenticatedPortal() {
   const bootstrap = useBootstrap(), services = useShellServices(), cache = useQueryClient(), navigate = useNavigate();
   const session = bootstrap.data?.session, member = !!session?.member && session.roles.length === 0;
   const gymId = bootstrap.data?.gym.id, userId = session?.userId, login = portalLoginKey(gymId, userId);
+  const pathname = useRouterState({ select: state => state.location.pathname });
+  const previousPath = useRef(pathname);
+  useEffect(() => {
+    if (previousPath.current !== pathname) clearPortalRecoveryNotice(cache, portalLoginKey(gymId, userId));
+    previousPath.current = pathname;
+  }, [pathname, cache, gymId, userId]);
   const households = useQuery(portalHouseholdsOptions(login, member));
   const current = households.data?.current ?? null;
   // The shell's own context query lives in the open household's subtree like every portal query, so it is unreachable from any
   // other, under the reserved `shell` segment no page key uses, so no page's query or invalidation reaches it.
   const householdKey = portalHouseholdKey(login, current);
-  const listsVersion = householdListsVersion(cache, householdKey);
   const context = useQuery({ queryKey: [...householdKey, 'shell', 'context'], enabled: member && !!current,
     // The server answers for the household it has open. If the lists this key came from name another one, the server moved on
     // (a revoked link fell back to another household) and this answer is the new household's: it is never stored under the
     // old household's key, and the lists are read again; once they name the other household, this key is no longer the open one.
-    queryFn: async () => ownAnswer(cache, householdKey, parseResponse(portalContracts.context.response, await createJsonTransport()(portalContracts.context.path)), listsVersion).data,
+    queryFn: async () => {
+      const listsVersion = householdListsVersion(cache, householdKey);
+      try { return ownAnswer(cache, householdKey, parseResponse(portalContracts.context.response, await createJsonTransport()(portalContracts.context.path)), listsVersion).data; }
+      catch (error) {
+        if (notFound(error)) await refreshHouseholds(cache, householdKey, listsVersion);
+        throw error;
+      }
+    },
     retry: false, staleTime: 0 });
   // While the name may still be the previous household's, the header says nothing about who is signed in. Only the shell's own
   // entries (the mark and the bootstrap) can change that, so no other cache event wakes this.
@@ -162,6 +175,7 @@ function AuthenticatedPortal() {
         // cancelled first. The lists are then read again, and waited for, so every switch finishes in order.
         await cache.cancelQueries({ queryKey: portalHouseholdsKey(login) });
         cache.setQueryData(portalHouseholdsKey(login), (old: typeof households.data) => old && { ...old, current: householdId });
+        rememberDeliberateMove(cache, login, current, householdId);
         discardOtherHouseholds(cache, login, householdId);
         await cache.refetchQueries({ queryKey: portalHouseholdsKey(login) });
         await navigate({ to: '/portal', replace: true });
@@ -211,16 +225,19 @@ function AuthenticatedPortal() {
   if (!current) {
     if (!households.data.households.length) return failed(() => void households.refetch());
     return <PortalLayout name={bootstrap.data.gym.name} person={person} entries={[]} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending}>
-      <HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
+      <PortalRecoveryNotice /><HouseholdPicker households={households.data.households} onChoose={id => choose.mutate(id)} pending={choose.isPending} failed={choose.isError} />
     </PortalLayout>;
   }
   // A context answer for another household waits only for the lists being read again; if they still name this one, it is an error.
-  if (context.isPending || (context.error instanceof HouseholdMoved && households.isFetching)) return <LoadingState />;
-  if (context.isError) return failed(() => { void households.refetch(); void context.refetch(); });
+  if (!context.data) {
+    if (context.isPending || (context.error instanceof HouseholdMoved && households.isFetching)) return <LoadingState />;
+    return failed(() => { void households.refetch(); void context.refetch(); });
+  }
   const switcher = households.data.households.length > 1
     ? <HouseholdSwitcher households={households.data.households} current={current} onChoose={id => { if (id !== current) choose.mutate(id); }} disabled={choose.isPending} /> : undefined;
   return <PortalLayout name={bootstrap.data.gym.name} person={person} scope={context.data.role} entries={portalNavigation(createRegistries().portalNav.all(), context.data.role, bootstrap.data.gym.enabledModules)} onSignOut={() => signOut.mutate()} signingOut={signOut.isPending} switcher={switcher}>
-    {(signOut.isError || choose.isError) && <Alert>{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet />
+    {context.isError && !households.isFetching && <ErrorState message={text('failed')} onRetry={() => { void households.refetch(); void context.refetch(); }} />}
+    <PortalRecoveryNotice />{(signOut.isError || choose.isError) && <Alert>{text(choose.isError ? 'chooseFailed' : 'failed')}</Alert>}<Outlet key={current} />
   </PortalLayout>;
 }
 export function PortalShell() {

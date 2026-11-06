@@ -2,7 +2,7 @@
 // @vitest-environment jsdom
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClientProvider } from '@tanstack/react-query';
 import type { PortalContext } from '@plaingym/shared/contracts';
@@ -11,7 +11,11 @@ import type { ShellServices } from '../../../app/services.js';
 import { PortalBillingPage } from '../billing/page.js';
 import { PortalWaivers } from '../waivers/page.js';
 import { PortalHousehold } from './page.js';
-import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalLoginKey } from './api.js';
+import { PortalSchedulePage } from '../schedule/page.js';
+import { PortalCheckinPage } from '../checkin/page.js';
+import { PortalProgressPage } from '../progress/page.js';
+import { gymToday, knownMinor, needsGuardian, portalHouseholdKey, portalLoginKey, usePortalScope } from './api.js';
+import { PortalRecoveryNotice } from './recovery.js';
 import { portalTestCache } from './test-cache.test-helper.js';
 
 const id = (n: number) => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
@@ -24,32 +28,90 @@ const person = (memberId: string, firstName: string, dateOfBirth: string | null)
 const people = [person(ids.payer, 'Pat', '1980-04-02'), person(ids.child, 'Kim', '2016-06-01'), person(ids.adult, 'Alex', '1990-01-01'), person(id(12), 'Jordan', null)];
 const page = <T,>(data: T[]) => ({ data, pagination: { limit: 100, offset: 0, total: data.length } });
 type Handler = (path: string, init?: RequestInit) => unknown;
+function PageHost({ children }: { children: ReactNode }) {
+  const scope = usePortalScope();
+  return <><PortalRecoveryNotice /><div key={scope.key[4]}>{children}</div></>;
+}
 /**
  * Renders a page with the API answered by `handle`. Every portal answer names the household it was read for, `answeredFor`
  * (the open household unless a test says otherwise); the household lists, which the pages read again after an answer for
  * another household, keep naming the open one.
  */
-function mount(element: ReactNode, handle: Handler, { context, answeredFor = ids.household, householdLists }: { context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response> } = {}) {
+function mount(element: ReactNode, handle: Handler, { context, answeredFor, householdLists }: { context?: PortalContext; answeredFor?: string; householdLists?: () => Promise<Response> } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
+  let current = ids.household;
   const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const path = String(input);
-    if (path === '/api/portal/households') return householdLists ? householdLists() : Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Test household', role: 'payer' }] } });
+    if (path === '/api/portal/households') {
+      if (!householdLists) return Response.json({ data: { current, households: [{ householdId: current, name: 'Test household', role: 'payer' }] } });
+      const response = await householdLists();
+      if (response.ok) current = (await response.clone().json()).data.current;
+      return response;
+    }
     // The role comes from the open household; the page's own reads are what a test may answer for another one.
-    if (path === '/api/portal/context' && context) return Response.json({ data: context, householdId: ids.household });
+    if (path === '/api/portal/context' && context) return Response.json({ data: context, householdId: current });
     const result = handle(path, init);
-    return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json({ ...result as object, householdId: answeredFor });
+    return result instanceof Response ? result : result === undefined ? new Response(null, { status: 404 }) : Response.json({ ...result as object, householdId: answeredFor ?? current });
   });
   vi.stubGlobal('fetch', fetcher);
   const services: ShellServices = { loadBootstrap: async () => ({ gym: { id: ids.gym, name: 'Test Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] },
     session: { userId: ids.user, displayName: 'Test User', roles: [], member: true }, login: { password: true, magicLink: false } }), signOut: vi.fn(), signInWithPassword: vi.fn(), requestMagicLink: vi.fn() };
   const cache = portalTestCache(ids.gym, ids.user, ids.household, { defaultOptions: { queries: { retry: false } } });
-  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}>{element}</QueryClientProvider></ShellServicesContext.Provider>);
+  render(<ShellServicesContext.Provider value={services}><QueryClientProvider client={cache}><PageHost>{element}</PageHost></QueryClientProvider></ShellServicesContext.Provider>);
   const calls = (method: string, path: string) => fetcher.mock.calls.filter(([url, init]) => String(url).split('?')[0] === path && (init?.method ?? 'GET') === method);
   /** Nothing is cached under the open household's key: an answer for another household was never stored. */
   const stored = () => cache.getQueryCache().findAll({ queryKey: portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household) }).filter(query => query.state.data !== undefined);
-  return { fetcher, calls, stored };
+  return { fetcher, calls, stored, cache };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it.each(['schedule', 'checkin', 'progress'] as const)('shows loading, not a failure, while a %s read recovers, and keeps the page if recovery fails', async name => {
+  let release!: (response: Response) => void, moved = false;
+  const element = name === 'schedule' ? <PortalSchedulePage now={() => new Date('2026-10-29T16:00:00Z')} /> : name === 'checkin' ? <PortalCheckinPage /> : <PortalProgressPage />;
+  const view = mount(element, path => {
+    if (path === '/api/portal/schedule/members') return moved ? Response.json({ data: [], householdId: id(99) }) : { data: [{ id: ids.payer, name: 'Pat' }] };
+    if (path.startsWith('/api/portal/schedule?') || path.includes('/attendance?')) return page([]);
+    if (path.endsWith('/checkin-code')) return { data: { memberId: ids.payer, code: 'pgci1_' + 'a'.repeat(43), version: 1, revision: 1 } };
+    if (path.endsWith('/progress')) return { data: { history: [], programs: [], ranks: [], criteria: [] } };
+    return undefined;
+  }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+  const heading = await screen.findByRole('heading', { level: 1 });
+  moved = true;
+  act(() => { void view.cache.invalidateQueries({ queryKey: [...portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household), 'act-for'], exact: true }); });
+  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  await act(async () => { release(new Response(null, { status: 503 })); });
+  expect(await screen.findByRole('heading', { level: 1 })).toBe(heading);
+});
+
+it.each(['book', 'cancel', 'regenerate'] as const)('keeps the %s action state on failed recovery and replaces it after a move', async action => {
+  let release!: (response: Response) => void;
+  const user = userEvent.setup(), now = new Date('2026-10-29T16:00:00Z');
+  const session = { id: id(40), name: 'Fundamentals', startsAt: '2026-10-30T18:00:00Z', endsAt: '2026-10-30T19:00:00Z', coachId: null,
+    capacity: 10, status: 'scheduled', revision: 1, bookingOpensAt: '2026-10-23T00:00:00Z', cancelBefore: '2026-10-30T17:00:00Z', placesLeft: 4,
+    bookings: action === 'cancel' ? [{ id: id(41), memberId: ids.payer, sessionId: id(40), createdAt: now.toISOString(), status: 'booked', waitlistPosition: null, queueRank: null, cancelledAt: null }] : [] };
+  mount(action === 'regenerate' ? <PortalCheckinPage /> : <PortalSchedulePage now={() => now} />, (path, init) => {
+    if (init?.method === 'POST') return Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } });
+    if (path === '/api/portal/schedule/members') return { data: [{ id: ids.payer, name: 'Pat' }] };
+    if (path.startsWith('/api/portal/schedule?')) return page([session]);
+    if (path.endsWith('/checkin-code')) return { data: { memberId: ids.payer, code: 'pgci1_' + 'a'.repeat(43), version: 1, revision: 1 } };
+    return undefined;
+  }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+  if (action === 'regenerate') await user.click(await screen.findByRole('button', { name: 'Replace this code' }));
+  const name = action === 'regenerate' ? 'Replace code' : action === 'book' ? 'Book Fundamentals for Pat' : 'Cancel booking: Fundamentals for Pat';
+  const button = await screen.findByRole('button', { name });
+  await user.click(button);
+  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+  expect(button.isConnected).toBe(true);
+  await act(async () => { release(new Response(null, { status: 503 })); });
+  expect(await screen.findByRole('button', { name })).toBe(button);
+  await user.click(button);
+  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+  await act(async () => { release(Response.json({ data: { current: id(99), households: [{ householdId: id(99), name: 'New home', role: 'payer' }] } })); });
+  expect(await screen.findByText(/Your household changed/)).toBeDefined();
+  expect(button.isConnected).toBe(false);
+  expect(screen.queryByRole('alert')).toBeNull();
+});
 
 describe('portal billing page', () => {
   it('still loads an answer with additive envelope and record fields', async () => {
@@ -112,6 +174,12 @@ describe('portal billing page', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(navigate).not.toHaveBeenCalled();
     await act(async () => { release(new Response(null, { status: 503 })); });
+    await user.click(await screen.findByRole('button', { name: action }));
+    await waitFor(() => expect(view.calls('GET', '/api/portal/households')).toHaveLength(2));
+    await act(async () => { release(Response.json({ data: { current: id(99), households: [{ householdId: id(99), name: 'New home', role: 'payer' }] } })); });
+    expect(await screen.findByText(/Your household changed/)).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(navigate).not.toHaveBeenCalled();
   });
   it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
     const view = mount(<PortalBillingPage navigate={vi.fn()} />, handle, { answeredFor: id(99) });
@@ -130,6 +198,43 @@ describe('portal waivers page', () => {
     signedAt: '2026-10-02T00:00:00.000Z', commitmentEndsOn: null, signatureImage: { key: 'k', hash: 'a'.repeat(64) } });
   const signature = { id: ids.signature, memberId: ids.child, templateId: ids.template, snapshot, snapshotHash: 'b'.repeat(64), signatureImageKey: 'k', signatureImageHash: 'a'.repeat(64), signedAt: '2026-10-02T00:00:00.000Z' };
   const image = { data: { signatureImageKey: 'gym/waivers/x.png', signatureImageHash: 'c'.repeat(64) } };
+  it.each(['upload', 'sign'] as const)('retains the drawn signature and signer after failed %s recovery and explains a move', async stage => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,YQ==');
+    let release!: (response: Response) => void;
+    const user = userEvent.setup();
+    mount(<PortalWaivers />, (path, init) => {
+      if (init?.method === 'POST') {
+        if (stage === 'sign' && path.endsWith('/signature-images')) return image;
+        return Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } });
+      }
+      if (path === `/api/portal/members/${ids.adult}`) return { data: people[2] };
+      if (path.startsWith('/api/portal/waivers/pending')) return page([{ memberId: ids.adult, template }]);
+      if (path.startsWith('/api/portal/waivers?')) return page([]);
+      return undefined;
+    }, { context: adult, householdLists: () => new Promise(resolve => { release = resolve; }) });
+    await user.click(await screen.findByRole('button', { name: 'Review and sign' }));
+    const dialog = screen.getByRole('dialog'), form = within(dialog), canvas = dialog.querySelector('canvas')!;
+    const signer = form.getByLabelText('Your full name');
+    await user.type(signer, 'My draft signature');
+    fireEvent.pointerDown(canvas, { clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(canvas, { clientX: 20, clientY: 20 });
+    fireEvent.pointerUp(canvas);
+    await user.click(form.getByLabelText('I have read this text and agree to sign it electronically.'));
+    await user.click(form.getByRole('button', { name: 'Sign' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+    expect(canvas.isConnected).toBe(true);
+    await act(async () => { release(new Response(null, { status: 503 })); });
+    await waitFor(() => expect(screen.getByRole('dialog')).toBe(dialog));
+    expect(dialog.querySelector('canvas')).toBe(canvas);
+    expect((signer as HTMLInputElement).value).toBe('My draft signature');
+    await user.click(form.getByRole('button', { name: 'Sign' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+    await act(async () => { release(Response.json({ data: { current: id(99), households: [{ householdId: id(99), name: 'New home', role: 'member' }] } })); });
+    expect(await screen.findByText(/Your household changed/)).toBeDefined();
+    expect(dialog.isConnected).toBe(false);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
   it('lets an adult member sign their own waiver through the self routes', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ clearRect: vi.fn(), fillText: vi.fn() } as unknown as CanvasRenderingContext2D);
     vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,YQ==');
@@ -214,7 +319,7 @@ describe('portal waivers page', () => {
     await waitFor(() => expect(view.calls('GET', '/api/portal/households')).toHaveLength(1));
     expect(screen.getByRole('status').textContent).toContain('Loading');
     expect(screen.queryByRole('alert')).toBeNull();
-    await act(async () => { release(Response.json({ data: { current: ids.household, households: [{ householdId: ids.household, name: 'Household', role: 'payer' }] } })); });
+    await act(async () => { release(new Response(null, { status: 503 })); });
     expect((await screen.findAllByRole('button', { name: 'Try again' })).length).toBeGreaterThan(0);
     expect(view.calls('GET', '/api/portal/households')).toHaveLength(1);
     expect(view.calls('GET', '/api/portal/household')).toHaveLength(1);
@@ -223,6 +328,52 @@ describe('portal waivers page', () => {
 });
 
 describe('portal household page', () => {
+  it('keeps the household draft when a background read fails and its recovery fails too', async () => {
+    let release!: (response: Response) => void, moved = false;
+    const user = userEvent.setup();
+    const view = mount(<PortalHousehold />, path => {
+      if (path === '/api/portal/household') return moved ? Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } }) : { data: household };
+      if (path.startsWith('/api/portal/members?')) return page(people);
+      return undefined;
+    }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+    const phone = await screen.findByLabelText('Phone') as HTMLInputElement;
+    await user.clear(phone); await user.type(phone, 'Draft');
+    moved = true;
+    act(() => { void view.cache.invalidateQueries({ queryKey: [...portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household), 'household', 'details'], exact: true }); });
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+    expect(phone.isConnected).toBe(true);
+    await act(async () => { release(new Response(null, { status: 503 })); });
+    expect(await screen.findByLabelText('Phone')).toBe(phone);
+    expect(phone.value).toBe('Draft');
+  });
+  it.each(['household', 'member'] as const)('preserves the %s draft on failed recovery and replaces its failure with a move notice', async kind => {
+    let release!: (response: Response) => void;
+    const user = userEvent.setup();
+    mount(<PortalHousehold />, (path, init) => {
+      if (init?.method === 'PATCH') return Response.json({ error: { code: 'conflict' } }, { status: 409, headers: { 'X-Portal-Household': id(99) } });
+      if (path === '/api/portal/household') return { data: household };
+      if (path.startsWith('/api/portal/members?')) return page(people);
+      return undefined;
+    }, { context: payer, householdLists: () => new Promise(resolve => { release = resolve; }) });
+    await screen.findByLabelText('Phone');
+    if (kind === 'member') await user.click(screen.getAllByRole('button', { name: 'Edit details' })[0]!);
+    const form = kind === 'member' ? within(screen.getByRole('dialog')) : screen;
+    const input = form.getByLabelText(kind === 'member' ? 'First name' : 'Phone');
+    await user.clear(input); await user.type(input, 'Draft');
+    await user.click(form.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+    expect(input.isConnected).toBe(true);
+    await act(async () => { release(new Response(null, { status: 503 })); });
+    await waitFor(() => expect(form.getByRole('button', { name: 'Save' })).toBeDefined());
+    expect(form.getByLabelText(kind === 'member' ? 'First name' : 'Phone')).toBe(input);
+    expect((input as HTMLInputElement).value).toBe('Draft');
+    await user.click(form.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Loading'));
+    await act(async () => { release(Response.json({ data: { current: id(99), households: [{ householdId: id(99), name: 'New home', role: 'payer' }] } })); });
+    expect(await screen.findByText(/Your household changed/)).toBeDefined();
+    expect(input.isConnected).toBe(false);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
   it('lets the payer edit household contacts and children, not other adults, and shows memberships read-only', async () => {
     const view = mount(<PortalHousehold />, (path, init) => {
       if (path === '/api/portal/household' && init?.method === 'PATCH') return { data: { ...household, phone: '555-0199', revision: 4 } };

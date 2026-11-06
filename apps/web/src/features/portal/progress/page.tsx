@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { PortalRecovery } from '../household/recovery.js';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type { PortalMemberProgress } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
@@ -33,11 +34,10 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
   const date = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium' });
   const dateTime = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
-  if (scope.moving || members.isPending) return <LoadingState />;
-  if (members.isError) return <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
+  if (!members.data) return members.isPending || scope.moving ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const data = progress.data, programName = (id: string | null) => data?.programs.find(item => item.id === id)?.name;
   const visits = attendance.data?.pages.flatMap(page => page.data) ?? [];
-  return <Page className="max-w-3xl">
+  return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={choose} />
     {progress.isPending ? <LoadingState label={text('loading')} />
@@ -80,7 +80,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
                 <span className="text-muted-foreground">{dateTime.format(new Date(visit.occurredAt))}</span></li>)}</ul>
               {attendance.hasNextPage && <Button variant="outline" disabled={attendance.isFetchingNextPage} onClick={() => void attendance.fetchNextPage()}>{text('more')}</Button>}</>}
     </PageSection>
-  </Page>;
+  </Page></PortalRecovery>;
 }
 /** The registered portal page, with the production client. */
 export function PortalProgressView() { return <PortalProgressPage />; }
