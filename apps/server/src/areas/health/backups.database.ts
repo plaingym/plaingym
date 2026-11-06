@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { RestoreFailure } from '../../cli/restore.reason.js';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
@@ -75,7 +76,7 @@ export type ToolRunner = (tool: 'pg_dump' | 'pg_restore', env: NodeJS.ProcessEnv
 const nativeTools: ToolRunner = (tool, env) => ({ command: tool, args: [], env });
 export class PostgresMaintenance {
   constructor(readonly url: string, readonly tools: ToolRunner = nativeTools) {
-    if (new URL(url).username !== 'maintenance') throw new Error('Backups and restore require maintenance');
+    if (new URL(url).username !== 'maintenance') throw new RestoreFailure('Backups and restore require maintenance');
   }
   async locked<T>(action: () => Promise<T>): Promise<T> {
     assertNoTransaction('backup.lock');

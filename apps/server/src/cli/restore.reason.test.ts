@@ -8,8 +8,8 @@ import { z } from 'zod';
 import { decrypt, encrypt, generateIdentity, identityToRecipient } from '../infra/age/index.js';
 import { createS3Client, S3BackupObjectStore } from '../infra/storage/index.js';
 import { s3Server } from '../infra/storage/s3-server.test-helper.js';
-import { commands } from './restore.js';
-import { restoreFailureReason } from './restore.reason.js';
+import { commands, reportRestoreResume } from './restore.js';
+import { RestoreFailure, restoreFailureReason } from './restore.reason.js';
 
 const secrets = ['SECRETACCESSKEYVALUE', 'ACCESSKEYIDVALUE', 'SECRETFIELDVALUE', 'DBPASSWORD', 'AGE-SECRET-KEY-1', 'bucket-name-value'];
 const restore = commands.find((command) => command.id === 'restore')!;
@@ -36,17 +36,18 @@ async function run(config: unknown, snapshot: string = randomUUID(), path = join
   const lines: string[] = [];
   const code = await restore.run([snapshot, '--config', path], { stdout: (line) => lines.push(line), stderr: (line) => lines.push(line) });
   const text = lines.join('\n');
-  for (const secret of secrets) expect(text).not.toContain(secret);
+  for (const secret of secrets) expect(text.includes(secret)).toBe(false);
+  expect(text.includes(directory)).toBe(false);
   return { code, text };
 }
 const resumeLine = 'A verified restore can be resumed with the maintenance CLI';
 
 describe('the command-line restore says why it failed', () => {
-  it('names the configuration file it could not read', async () => {
+  it('reports an unreadable configuration without its path', async () => {
     const path = join(directory, 'missing.json');
     const { code, text } = await run(undefined, randomUUID(), path);
     expect(code).toBe(1);
-    expect(text).toBe('Restore failed: Cannot read the restore configuration file ' + path + ' (ENOENT)\n' + resumeLine);
+    expect(text).toBe('Restore failed: Cannot read the restore configuration file (ENOENT)');
   });
   it('says a configuration file that is not JSON is not JSON, without quoting it', async () => {
     const { text } = await run('{ "secretAccessKey": SECRETFIELDVALUE');
@@ -74,10 +75,10 @@ describe('the command-line restore says why it failed', () => {
     expect((await run({ ...validConfig(), snapshotId: randomUUID() })).text)
       .toContain('Restore failed: The restore configuration names a different snapshot than SNAPSHOT');
   });
-  it('names the key file it could not read', async () => {
+  it('reports an unreadable key file without its path', async () => {
     const identityFile = join(directory, 'no-such-key.txt');
     const { text } = await run({ ...validConfig(), identityFile });
-    expect(text).toContain('Restore failed: Cannot read the key file ' + identityFile + ' (ENOENT)');
+    expect(text).toContain('Restore failed: Cannot read the key file (ENOENT)');
   });
   it('says the snapshot is not in the bucket', async () => {
     const { code, text } = await run(validConfig());
@@ -87,18 +88,23 @@ describe('the command-line restore says why it failed', () => {
   it('gives the S3 error code when the bucket refuses or fails the request', async () => {
     bucket.state.fail = () => true;
     const { text } = await run(validConfig());
-    expect(text).toMatch(/^Restore failed: The backup bucket answered with error [A-Za-z][A-Za-z0-9_.: -]*\n/);
+    expect(text).toMatch(/^Restore failed: The backup bucket answered with error [A-Za-z][A-Za-z0-9_.: -]*$/);
   }, 30_000);
   it('says the bucket could not be reached, not that it answered, when the endpoint refuses the connection', async () => {
     const { code, text } = await run({ ...validConfig(), endpoint: 'http://127.0.0.1:1' });
     expect(code).toBe(1);
-    expect(text).toMatch(/^Restore failed: Cannot reach the backup bucket( \([A-Za-z0-9_.:-]+\))?\n/);
+    expect(text).toMatch(/^Restore failed: Cannot reach the backup bucket( \([A-Za-z0-9_.:-]+\))?$/);
     expect(text).not.toContain('answered');
   }, 30_000);
   it('names the missing environment variable', async () => {
     vi.stubEnv('BACKUP_STAGING_DIR', '');
     try { expect((await run(validConfig())).text).toContain('Restore failed: Missing BACKUP_STAGING_DIR'); }
     finally { vi.stubEnv('BACKUP_STAGING_DIR', join(directory, 'staging')); }
+  });
+  it('says the app key is invalid without printing it', async () => {
+    vi.stubEnv('APP_ENCRYPTION_KEY', 'SECRETFIELDVALUE');
+    try { expect((await run(validConfig())).text).toBe('Restore failed: Invalid current app key'); }
+    finally { vi.stubEnv('APP_ENCRYPTION_KEY', 'ab'.repeat(32)); }
   });
 });
 
@@ -131,15 +137,56 @@ describe('restoreFailureReason', () => {
       expect(restoreFailureReason(Object.assign(new Error('x'), { $metadata: { attempts: 3 } }))).toBe('Cannot reach the backup bucket');
     } finally { client.destroy(); }
   });
-  it('names the invalid fields of a Zod error, not its values', () => {
-    const failure = z.strictObject({ a: z.object({ b: z.number() }) }).safeParse({ a: { b: 'SECRETFIELDVALUE' }, c: 'SECRETFIELDVALUE' });
+  it('does not expose snapshot record keys from a Zod error', () => {
+    const failure = z.strictObject({ a: z.record(z.string(), z.number()) }).safeParse({ a: { SECRETFIELDVALUE: 'SECRETFIELDVALUE' }, c: 'SECRETFIELDVALUE' });
     expect(failure.success).toBe(false);
-    expect(restoreFailureReason(failure.error)).toBe('Invalid fields: a.b, (1 unrecognized field)');
+    expect(restoreFailureReason(failure.error)).toBe("The snapshot's contents are not in a format this version reads");
   });
   it('gives only the error name for any other failure', () => {
     class DiskFullError extends Error { constructor() { super('no space left writing /srv/SECRETFIELDVALUE with DBPASSWORD'); this.name = 'DiskFullError'; } }
     expect(restoreFailureReason(new DiskFullError())).toBe('Unexpected error (DiskFullError)');
     expect(restoreFailureReason(Object.assign(new Error('DBPASSWORD'), { name: 'name with DBPASSWORD' }))).toBe('Unexpected error (Error)');
     expect(restoreFailureReason('SECRETFIELDVALUE')).toBe('Unexpected error (unknown)');
+  });
+});
+describe('durable resume hint', () => {
+  it('prints only for an unfinished staged restore', async () => {
+    const lines: string[] = [], state = join(directory, 'restore-state.json');
+    await reportRestoreResume(line => lines.push(line));
+    expect(lines).toEqual([]);
+    await writeFile(state, JSON.stringify({ phase: 'verified' }));
+    await reportRestoreResume(line => lines.push(line));
+    expect(lines).toEqual([resumeLine]);
+    expect((await run(undefined, randomUUID(), join(directory, 'missing.json'))).text.endsWith(resumeLine)).toBe(true);
+    lines.length = 0;
+    await writeFile(state, JSON.stringify({ phase: 'complete' }));
+    await reportRestoreResume(line => lines.push(line));
+    expect(lines).toEqual([]);
+    await writeFile(state, 'invalid journal');
+    await reportRestoreResume(line => lines.push(line));
+    expect(lines).toEqual([]);
+    await rm(state);
+  });
+});
+
+describe('fixed restore failures', () => {
+  it.each([
+    'Restored gym receipt is missing',
+    'Invalid current app key',
+    'Restore staging must be outside uploads',
+    'A snapshot object is missing from the bucket',
+    'A verified restore is already staged; resume it first',
+    'Restore staging and uploads must share a filesystem',
+    'Manifest belongs to another snapshot',
+    'Manifest and authenticated references disagree',
+    'Restore journal does not match staged snapshot',
+    'Current install key changed during restore',
+    'Upload storage changed during restore',
+    'Unexpected uploads directory during restore',
+    'Restored uploads tree missing',
+    'Backups and restore require maintenance',
+    'Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE',
+  ])('reports %s', (message) => {
+    expect(restoreFailureReason(new RestoreFailure(message))).toBe(message);
   });
 });

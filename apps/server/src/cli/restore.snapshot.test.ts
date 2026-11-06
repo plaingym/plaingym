@@ -11,6 +11,7 @@ import { createFactories } from '@plaingym/db/testing/factories';
 import { setLogSink } from '../core/log.js';
 import { BackupsNotSetUpError, maintenanceCommand } from './restore.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
+import * as configuration from '../areas/health/restore.config.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 let directory: string;
@@ -39,4 +40,9 @@ it('keeps the generic line for every other failure', () => {
   try { reportMaintenanceFailure(['snapshot'], new Error('Backup destination and public key are not configured'), (line) => messages.push(line)); }
   finally { setLogSink(previous); }
   expect(messages).toEqual(['Maintenance command failed; check configuration and restore state']);
+});
+it('recognizes unconfigured backups even when their diagnostic message changes', async () => {
+  const spy = vi.spyOn(configuration, 'loadBackupConfig').mockRejectedValue(new configuration.BackupsNotConfiguredError('Reworded diagnostic'));
+  try { await expect(maintenanceCommand(['snapshot'])).rejects.toBeInstanceOf(BackupsNotSetUpError); }
+  finally { spy.mockRestore(); }
 });

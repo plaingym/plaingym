@@ -9,7 +9,7 @@ import { createRuntimeUploads } from '../infra/storage/runtime.js';
 import { readIdentityFile } from '../areas/health/backups.js';
 import { snapshotPrefix } from '../areas/health/backups.format.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
-import { configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
+import { BackupsNotConfiguredError, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
 import { RestoreService } from '../areas/health/restore.js';
 import { RestoreGate } from '../areas/health/restore.gate.js';
 import { rotateKey, upgradeStoredSecrets } from './restore.rotate-key.js';
@@ -21,9 +21,13 @@ function required(name: string): string {
   if (!value) throw new RestoreFailure('Missing ' + name);
   return value;
 }
+function currentAppKey(): Buffer {
+  const value = required('APP_ENCRYPTION_KEY');
+  try { return parseEncryptionKey(value); } catch { throw new RestoreFailure('Invalid current app key'); }
+}
 export function maintenanceEnvironment() {
   const stagingDirectory = required('BACKUP_STAGING_DIR'), uploadsDirectory = required('UPLOADS_DIR');
-  const appEncryptionKey = parseEncryptionKey(required('APP_ENCRYPTION_KEY'));
+  const appEncryptionKey = currentAppKey();
   // The same storage the app uses; maintenance never creates download links.
   const uploads = createRuntimeUploads(process.env, appEncryptionKey, async () => 'https://maintenance.invalid');
   return { database: new PostgresMaintenance(required('MAINTENANCE_DATABASE_URL')),
@@ -60,7 +64,7 @@ export class BackupsNotSetUpError extends Error {
 async function maintenance(args: readonly string[], environment: ReturnType<typeof maintenanceEnvironment>): Promise<void> {
   if (args[0] === 'snapshot') {
     const config = await loadBackupConfig(environment.appEncryptionKey).catch((error: unknown) => {
-      throw error instanceof Error && error.message === 'Backup destination and public key are not configured' ? new BackupsNotSetUpError() : error;
+      throw error instanceof BackupsNotConfiguredError ? new BackupsNotSetUpError() : error;
     });
     const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
     try { await backup.service.snapshot(args[1] === 'pre-upgrade' ? 'pre_upgrade' : 'manual'); }
@@ -74,7 +78,7 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
     finally { unusedStore.options.client.destroy(); }
     return;
   }
-  if (args[0] !== 'restore' || args.length !== 4 || args[2] !== '--config') throw new Error('Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE');
+  if (args[0] !== 'restore' || args.length !== 4 || args[2] !== '--config') throw new RestoreFailure('Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE');
   // A fresh install cannot read destination credentials from a database it has not restored yet.
   // This owner-supplied private file contains destination credentials and the age identity file path.
   const config = await readRestoreConfig(args[3]!);
@@ -82,7 +86,7 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
   if (!id.success) throw new RestoreFailure('SNAPSHOT is not a snapshot ID (a UUID)');
   if (config.snapshotId && config.snapshotId !== id.data) throw new RestoreFailure('The restore configuration names a different snapshot than SNAPSHOT');
   const identity = await readIdentityFile(config.identityFile).catch((error: unknown) => {
-    throw error instanceof Error && 'code' in error ? new RestoreFailure('Cannot read the key file ' + config.identityFile + ' (' + errorCode(error) + ')') : error;
+    throw error instanceof Error && 'code' in error ? new RestoreFailure('Cannot read the key file (' + errorCode(error) + ')') : error;
   });
   const client = createS3Client({ region: config.region, ...(config.endpoint ? { endpoint: config.endpoint } : {}),
     credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey } });
@@ -100,16 +104,21 @@ const errorCode = (error: Error): string => {
 const restoreConfigSchema = z.strictObject({ snapshotId: z.uuid().optional(), bucket: z.string().min(1),
   endpoint: z.url().optional(), region: z.string().default('auto'),
   accessKeyId: z.string().min(1), secretAccessKey: z.string().min(1), identityFile: z.string().min(1) });
-/** Reads the private restore file; a failure names the path, the error code or the invalid fields, never a value. */
+/** Reads the private restore file; a failure names the error code or the invalid fields, never a value. */
 async function readRestoreConfig(path: string): Promise<z.infer<typeof restoreConfigSchema>> {
   const text = await readFile(path, 'utf8').catch((error: unknown) => {
-    throw new RestoreFailure('Cannot read the restore configuration file ' + path + ' (' + (error instanceof Error ? errorCode(error) : 'unreadable') + ')');
+    throw new RestoreFailure('Cannot read the restore configuration file (' + (error instanceof Error ? errorCode(error) : 'unreadable') + ')');
   });
   let json: unknown;
-  try { json = JSON.parse(text); } catch { throw new RestoreFailure('The restore configuration file ' + path + ' is not valid JSON'); }
+  try { json = JSON.parse(text); } catch { throw new RestoreFailure('The restore configuration file is not valid JSON'); }
   const parsed = restoreConfigSchema.safeParse(json);
-  if (!parsed.success) throw new RestoreFailure('The restore configuration file ' + path + ' has invalid fields: ' + issuePaths(parsed.error));
+  if (!parsed.success) throw new RestoreFailure('The restore configuration file has invalid fields: ' + issuePaths(parsed.error));
   return parsed.data;
+}
+export async function reportRestoreResume(stderr: (line: string) => void = (line) => process.stderr.write(line + '\n')): Promise<void> {
+  const staging = process.env.BACKUP_STAGING_DIR;
+  if (staging && await new RestoreGate(dirname(staging)).hasStagedRestore())
+    stderr('A verified restore can be resumed with the maintenance CLI');
 }
 export const commands: readonly Command[] = [{
   id: 'migrate', description: 'Apply database migrations as the maintenance role',
@@ -124,7 +133,7 @@ export const commands: readonly Command[] = [{
     try { await maintenanceCommand(['restore', ...args]); io.stdout('Restore complete; billing remains paused'); return 0; }
     catch (error) {
       io.stderr('Restore failed: ' + restoreFailureReason(error));
-      io.stderr('A verified restore can be resumed with the maintenance CLI');
+      await reportRestoreResume(io.stderr);
       return 1;
     }
   },

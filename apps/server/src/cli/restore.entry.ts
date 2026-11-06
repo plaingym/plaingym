@@ -2,7 +2,7 @@
 // This maintenance entry is bundled separately and never starts an HTTP listener or job worker.
 // eslint-disable-next-line no-restricted-imports
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
-import { maintenanceCommand } from './restore.js';
+import { maintenanceCommand, reportRestoreResume } from './restore.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
 
 const args = process.argv.slice(2);
@@ -15,5 +15,6 @@ try {
   await maintenanceCommand(args);
 } catch (error) {
   reportMaintenanceFailure(args, error);
+  if (args[0] === 'restore' || args[0] === 'resume') await reportRestoreResume();
   process.exitCode = 1;
 } finally { await closeDatabase(); }

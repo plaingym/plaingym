@@ -16,13 +16,16 @@ export interface InstallBackupConfig {
   readonly budgetBytes: number; readonly destination: z.infer<typeof destinationSchema>;
   readonly gymId: string;
 }
+export class BackupsNotConfiguredError extends Error {
+  constructor(message = 'Backup destination and public key are not configured') { super(message); this.name = 'BackupsNotConfiguredError'; }
+}
 /** Owner configuration is read in system context; credentials remain encrypted on the gym row. */
 export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupConfig> {
   const rows = await forSystem((tx) => tx.select().from(gyms));
-  if (rows.length !== 1) throw new Error('Install snapshots require exactly one configured gym');
+  if (rows.length !== 1) throw new BackupsNotConfiguredError('Install snapshots require exactly one configured gym');
   const gym = rows[0]!;
   if (!gym.backupPublicKey || !gym.backupBlobKey || !gym.s3Config || !gym.backupDestination)
-    throw new Error('Backup destination and public key are not configured');
+    throw new BackupsNotConfiguredError();
   const credentials = z.object({ accessKeyId: z.string(), secretAccessKey: z.string() })
     .parse(JSON.parse(decryptSecret(appKey, { secretClass: 's3_config', owner: gym.id }, gym.s3Config)));
   const destination = destinationSchema.parse({ ...gym.backupDestination as object, ...credentials });
@@ -31,11 +34,10 @@ export async function loadBackupConfig(appKey: Buffer): Promise<InstallBackupCon
   return { recipient: gym.backupPublicKey, blobKey: parseEncryptionKey(decryptSecret(appKey, { secretClass: 'backup_blob_key', owner: gym.id }, gym.backupBlobKey)),
     appEncryptionKey: appKey, budgetBytes, destination, gymId: gym.id };
 }
-const notConfigured = ['Backup destination and public key are not configured', 'Install snapshots require exactly one configured gym'];
 /** Whether this install takes snapshots. Only an unconfigured install answers false; other failures throw. */
 export async function backupsConfigured(appKey: Buffer): Promise<boolean> {
   try { await loadBackupConfig(appKey); return true; }
-  catch (error) { if (error instanceof Error && notConfigured.includes(error.message)) return false; throw error; }
+  catch (error) { if (error instanceof BackupsNotConfiguredError) return false; throw error; }
 }
 /** `uploadsFor` is the runtime storage resolver, so snapshots capture uploads wherever the install keeps them. */
 export function configuredBackup(config: InstallBackupConfig, database: PostgresMaintenance,

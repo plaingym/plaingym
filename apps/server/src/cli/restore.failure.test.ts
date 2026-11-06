@@ -11,6 +11,11 @@ function report(args: string[]) {
   return { lines, messages };
 }
 describe('maintenance command failure', () => {
+  it.each(['restore', 'resume'])('reports a safe restore reason for %s', (command) => {
+    const { lines, messages } = report([command]);
+    expect(messages).toEqual(['Restore failed: Unexpected error (Error)']);
+    expect(redacted.test(lines.join() + messages.join())).toBe(false);
+  });
   it('tells the person at the terminal in plain text and logs the cause without its message', () => {
     const { lines, messages } = report(['snapshot']);
     expect(messages).toEqual(['Maintenance command failed; check configuration and restore state']);

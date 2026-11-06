@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { decryptSecret } from '../../core/secrets.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -27,4 +28,15 @@ describe('install restore after an interruption', () => {
       expect(await queue.runNext()).toBe(true); expect(await queue.runNext()).toBe(false);
       expect(queued).toHaveBeenCalledOnce();
     });
+  it('blames a journal it cannot read on the journal, not on the snapshot', async () => {
+    const { statePath } = f.gate(), previous = await readFile(statePath, 'utf8').catch(() => null);
+    await writeFile(statePath, JSON.stringify({ phase: 'verified' }));
+    try {
+      await expect(f.restore().resume()).rejects.toMatchObject({ name: 'RestoreFailure',
+        message: 'The restore journal is not in a format this version reads' });
+    } finally {
+      if (previous === null) await rm(statePath, { force: true });
+      else await writeFile(statePath, previous);
+    }
+  });
 });

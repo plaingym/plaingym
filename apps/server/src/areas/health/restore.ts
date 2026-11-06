@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
+import { RestoreFailure } from '../../cli/restore.reason.js';
 import { mkdtemp, rename, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -19,7 +20,7 @@ import { atomicJson, childPath, exists, fileStream, privateDirectory, readJson, 
 import { manifestSchema, publicReferences, readReferences, snapshotPrefix, validateReferences, verifyReferences } from './backups.format.js';
 import type { Manifest } from './backups.format.js';
 import { verifyFile } from './backups.js';
-import { RestoreGate } from './restore.gate.js';
+import { RestoreGate, unfinishedRestorePhases } from './restore.gate.js';
 import { PostgresJobs } from '../../infra/jobs/postgres.js';
 
 /** Durable, idempotent publication before the restore journal can become complete. */
@@ -35,7 +36,7 @@ export async function enqueueRestoreReconciliation(database: PostgresMaintenance
         const [restore] = await tx.select({ id: auditEvents.id }).from(auditEvents)
           .where(and(eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'restore.completed')))
           .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
-        if (!gym || !restore) throw new Error('Restored gym receipt is missing');
+        if (!gym || !restore) throw new RestoreFailure('Restored gym receipt is missing');
         const [published] = await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(
           eq(auditEvents.gymId, gymId), eq(auditEvents.action, 'billing.runner.restore_requested'), eq(auditEvents.targetId, restore.id))).limit(1);
         if (!published) await writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_requested',
@@ -49,7 +50,7 @@ export async function enqueueRestoreReconciliation(database: PostgresMaintenance
   } finally { await connection.close(); }
 }
 
-const phaseSchema = z.enum(['verified', 'database_restored', 'migrated', 'rekeyed', 'moving_old', 'moving_new', 'uploads_switched', 'complete']);
+const phaseSchema = z.enum([...unfinishedRestorePhases, 'complete']);
 const stateSchema = z.strictObject({
   version: z.literal(1), id: z.uuid(), phase: phaseSchema, staging: z.string().regex(/^restore-[A-Za-z0-9]+$/),
   currentKey: z.string().regex(/^[a-f0-9]{64}$/),
@@ -72,27 +73,27 @@ export interface RestoreOptions {
 }
 export class RestoreService {
   constructor(readonly options: RestoreOptions) {
-    if (options.appEncryptionKey.length !== 32) throw new Error('Invalid current app key');
+    if (options.appEncryptionKey.length !== 32) throw new RestoreFailure('Invalid current app key');
     if (resolve(options.uploadsDirectory) === resolve(options.stagingDirectory) ||
         resolve(options.stagingDirectory).startsWith(resolve(options.uploadsDirectory) + sep))
-      throw new Error('Restore staging must be outside uploads');
+      throw new RestoreFailure('Restore staging must be outside uploads');
   }
   async #download(key: string, path: string): Promise<void> {
     const body = await this.options.store.getObject(key);
-    if (!body) throw new Error('Missing snapshot object');
+    if (!body) throw new RestoreFailure('A snapshot object is missing from the bucket');
     await saveStream(path, body);
   }
   async restore(id: string, identity: string): Promise<void> {
     assertNoTransaction('restore.begin'); z.uuid().parse(id);
     const o = this.options;
     const verified = await o.database.locked(async () => {
-      if (await o.gate.isClosed()) throw new Error('Resume the existing restore first');
+      if (await o.gate.isClosed()) throw new RestoreFailure('A verified restore is already staged; resume it first');
       await privateDirectory(o.stagingDirectory);
       const staging = await mkdtemp(join(o.stagingDirectory, 'restore-'));
       await privateDirectory(dirname(resolve(o.uploadsDirectory)));
       if (!o.uploadsStore && (await stat(staging)).dev !== (await stat(dirname(resolve(o.uploadsDirectory)))).dev) {
         await rm(staging, { recursive: true, force: true });
-        throw new Error('Restore staging and uploads must share a filesystem');
+        throw new RestoreFailure('Restore staging and uploads must share a filesystem');
       }
       const prefix = snapshotPrefix(id);
       let activated = false;
@@ -101,7 +102,7 @@ export class RestoreService {
         await this.#download(prefix + 'manifest.age', manifestCipher);
         await saveStream(join(staging, 'manifest.json'), await decrypt(identity, fileStream(manifestCipher)));
         const manifest = manifestSchema.parse(await readJson(join(staging, 'manifest.json')));
-        if (manifest.id !== id) throw new Error('Manifest belongs to another snapshot');
+        if (manifest.id !== id) throw new RestoreFailure('Manifest belongs to another snapshot');
         const blobKey = parseEncryptionKey(manifest.recovery.blobKey);
         validateReferences(manifest.uploads, blobKey);
         const referenceValue = await readReferences(o.store, prefix + 'references.json');
@@ -110,7 +111,7 @@ export class RestoreService {
         if (JSON.stringify(references.uploads) !== JSON.stringify(publicReferences(manifest.uploads, blobKey)) ||
             JSON.stringify(references.database) !== JSON.stringify(manifest.database.encrypted) ||
             references.kind !== manifest.kind || references.startedAt !== manifest.startedAt)
-          throw new Error('Manifest and authenticated references disagree');
+          throw new RestoreFailure('Manifest and authenticated references disagree');
         await verifyFile(manifestCipher, references.manifest);
         await this.#download(prefix + 'database.age', join(staging, 'database.age'));
         await verifyFile(join(staging, 'database.age'), references.database);
@@ -155,7 +156,9 @@ export class RestoreService {
     if (!await exists(o.gate.statePath)) return;
     await o.gate.close();
     await o.database.locked(async () => {
-      const state = stateSchema.parse(await readJson(o.gate.statePath));
+      const journal = stateSchema.safeParse(await readJson(o.gate.statePath));
+      if (!journal.success) throw new RestoreFailure('The restore journal is not in a format this version reads');
+      const state = journal.data;
       if (state.phase === 'complete') {
         await rm(resolve(o.uploadsDirectory) + '.previous-' + state.id, { recursive: true, force: true });
         await rm(childPath(o.stagingDirectory, state.staging), { recursive: true, force: true });
@@ -163,7 +166,7 @@ export class RestoreService {
       }
       const staging = childPath(o.stagingDirectory, state.staging);
       const manifest = manifestSchema.parse(await readJson(join(staging, 'manifest.json')));
-      if (manifest.id !== state.id) throw new Error('Restore journal does not match staged snapshot');
+      if (manifest.id !== state.id) throw new RestoreFailure('Restore journal does not match staged snapshot');
       verifyReferences(await readJson(join(staging, 'references.json')), parseEncryptionKey(manifest.recovery.blobKey), state.id);
       await verifyFile(join(staging, 'database.dump'), manifest.database.plaintext);
       await this.#resume(state, manifest);
@@ -172,9 +175,9 @@ export class RestoreService {
   async #resume(state: z.infer<typeof stateSchema>, manifest: Manifest): Promise<void> {
     const o = this.options, staging = childPath(o.stagingDirectory, state.staging);
     if (state.currentKey !== createHash('sha256').update(o.appEncryptionKey).digest('hex'))
-      throw new Error('Current install key changed during restore');
+      throw new RestoreFailure('Current install key changed during restore');
     if ((state.uploads ?? 'directory') !== (o.uploadsStore ? 'store' : 'directory'))
-      throw new Error('Upload storage changed during restore');
+      throw new RestoreFailure('Upload storage changed during restore');
     const save = async (phase: RestorePhase) => {
       state.phase = phase; await atomicJson(o.gate.statePath, state); o.checkpoint?.(phase);
     };
@@ -222,9 +225,9 @@ export class RestoreService {
     }
     if (state.phase === 'moving_new') {
       if (await exists(join(staging, 'uploads'))) {
-        if (await exists(current)) throw new Error('Unexpected uploads directory during restore');
+        if (await exists(current)) throw new RestoreFailure('Unexpected uploads directory during restore');
         await rename(join(staging, 'uploads'), current); o.checkpoint?.('new_uploads_renamed');
-      } else if (!await exists(current)) throw new Error('Restored uploads tree missing');
+      } else if (!await exists(current)) throw new RestoreFailure('Restored uploads tree missing');
       await save('uploads_switched');
     }
     if (state.phase === 'uploads_switched') {

@@ -10,6 +10,8 @@ import { locales } from '@plaingym/shared/locales';
 import type { RequestEnvironment } from '../../core/context.js';
 import { atomicJson, exists, missing, privateDirectory, readJson } from './backups.files.js';
 
+/** Every journal phase before `complete`: a restore is staged and `resume` can finish it. */
+export const unfinishedRestorePhases = ['verified', 'database_restored', 'migrated', 'rekeyed', 'moving_old', 'moving_new', 'uploads_switched'] as const;
 const leaseSchema = z.strictObject({ pid: z.number().int().positive(), started: z.string().nullable() });
 const t = createTranslator(locales.en ?? {});
 async function processStart(pid: number): Promise<string | null> {
@@ -37,6 +39,14 @@ export class RestoreGate {
     if (!state || typeof state !== 'object' || !('phase' in state)) return true;
     return state.phase !== 'complete';
   }
+  /** Only durable, unfinished restore phases warrant a resume hint. */
+  async hasStagedRestore(): Promise<boolean> {
+    try {
+      const state = await readJson(this.statePath);
+      return typeof state === 'object' && state !== null && 'phase' in state &&
+        (unfinishedRestorePhases as readonly unknown[]).includes(state.phase);
+    } catch { return false; } // Reporting must not replace the original failure.
+  }
   /** Wrap both requests and job executions. A separate CLI can drain these same durable leases. */
   async activity<T>(action: () => Promise<T>): Promise<T> {
     if (await this.isClosed()) throw new AppError('unavailable', t('health/restore:inProgress'));
@@ -59,7 +69,7 @@ export class RestoreGate {
         if (!/^[a-f0-9-]+[.]json$/.test(name)) continue;
         const path = join(this.activityDirectory, name);
         try {
-          const lease = leaseSchema.parse(await readJson(path));
+          const lease = leaseSchema.parse(await readActivity(path));
           try {
             process.kill(lease.pid, 0);
             if (lease.started !== await processStart(lease.pid)) await rm(path, { force: true });
@@ -85,5 +95,16 @@ export class RestoreGate {
         throw error;
       }
     };
+  }
+}
+
+/** Windows can temporarily deny a read while a worker removes its lease. Never skip a live lease. */
+async function readActivity(path: string): Promise<unknown> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await readJson(path); }
+    catch (error) {
+      if (attempt >= 5 || !['EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      await delay(10 * (attempt + 1));
+    }
   }
 }

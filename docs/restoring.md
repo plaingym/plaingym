@@ -104,17 +104,17 @@ fresh install, before anyone has completed setup.
 
    It prints "Restore complete; billing remains paused" when it succeeds. When it fails
    it prints `Restore failed: ` and the reason, then "A verified restore can be resumed
-   with the maintenance CLI". The reason names a path, a field, a code or an error name,
-   never a key, a credential or a value from your file:
+   with the maintenance CLI" only if an unfinished restore is staged. The reason names
+   a configuration field, a code or an error name, never a path, key, credential or field value:
 
    | Reason | What to check |
    | :--- | :--- |
-   | `Cannot read the restore configuration file PATH (CODE)` | The path, and that the file is inside the container (`ENOENT` is a missing file, `EACCES` a file the app can't read). |
-   | `The restore configuration file PATH is not valid JSON` | The file's syntax. |
-   | `The restore configuration file PATH has invalid fields: NAMES` | The fields named: missing, empty or wrongly formed. A field the file has that the command doesn't know is counted (`(1 unrecognized field)`), not named; look for a misspelled name next to a missing one. |
+   | `Cannot read the restore configuration file (CODE)` | The path, and that the file is inside the container (`ENOENT` is a missing file, `EACCES` a file the app can't read). |
+   | `The restore configuration file is not valid JSON` | The file's syntax. |
+   | `The restore configuration file has invalid fields: NAMES` | The fields named: missing, empty or wrongly formed. A field the file has that the command doesn't know is counted (`(1 unrecognized field)`), not named; look for a misspelled name next to a missing one. |
    | `SNAPSHOT is not a snapshot ID (a UUID)` | The ID you passed. |
    | `The restore configuration names a different snapshot than SNAPSHOT` | The `snapshotId` field, if you set one. |
-   | `Cannot read the key file PATH (CODE)` | `identityFile` in the configuration, and that the file is inside the container. |
+   | `Cannot read the key file (CODE)` | `identityFile` in the configuration, and that the file is inside the container. |
    | `The backup bucket answered with error CODE` | The bucket's error code (such as `AccessDenied`, or `HTTP` and a status): the access keys, region and endpoint. |
    | `Cannot reach the backup bucket (CODE)` | The `endpoint` and the server's network connection; `ECONNREFUSED` and `ENOTFOUND` mean nothing answered at that address. |
    | `Snapshot not found in the bucket` | The snapshot ID, and the `bucket` name: a bucket that doesn't exist reads the same as a snapshot that doesn't. |
@@ -123,9 +123,26 @@ fresh install, before anyone has completed setup.
    | `A snapshot object is missing from the bucket` | The snapshot was damaged or deleted in the bucket; try an earlier one. |
    | `A verified restore is already staged; resume it first` | See **If a restore is interrupted**. |
    | `Missing NAME` | The environment variable the app container needs. |
+   | `Restored gym receipt is missing` | The restored database's restore audit record. Keep the staged restore and investigate before retrying. |
+   | `Invalid current app key` | APP_ENCRYPTION_KEY must be the destination install's key, 64 hex characters. |
+   | `Restore staging must be outside uploads` | Place BACKUP_STAGING_DIR outside UPLOADS_DIR so replacing uploads cannot remove staging. |
+   | `Restore staging and uploads must share a filesystem` | Place staging and directory uploads on the same mounted volume for atomic renames. |
+   | `Manifest belongs to another snapshot` | The snapshot's manifest does not match its ID. Use an intact snapshot. |
+   | `Manifest and authenticated references disagree` | The snapshot's manifest and reference list disagree. Use an intact snapshot. |
+   | `The restore journal is not in a format this version reads` | `restore-state.json` on the data volume is damaged or from another app version. Keep it, run the app version that started the restore, and investigate if that doesn't help. |
+   | `Restore journal does not match staged snapshot` | The staged manifest does not match the restore journal. Preserve both and investigate. |
+   | `Current install key changed during restore` | Restore the destination APP_ENCRYPTION_KEY used when this restore began before resuming. |
+   | `Upload storage changed during restore` | Restore the uploads storage configuration used when this restore began before resuming. |
+   | `Unexpected uploads directory during restore` | An uploads directory appeared during the switch. Preserve the current and staged trees and investigate. |
+   | `Restored uploads tree missing` | The staged and destination upload trees are missing. Preserve the journal and recover the staged files before resuming. |
+   | `Backups and restore require maintenance` | MAINTENANCE_DATABASE_URL must connect as the maintenance database role. |
+   | `Usage: restore SNAPSHOT --config PRIVATE_JSON_FILE` | Supply the snapshot ID and --config followed by the private configuration filename. |
+   | `The snapshot's contents are not in a format this version reads` | Use a compatible snapshot and app version. Snapshot field names and values are not printed. |
    | `Unexpected error (NAME)` | Any other failure, with only the error's name. |
 
-   Fix what it names and run it again.
+   Fix what it names. If the resume hint appeared, a restore is staged and a new
+   `restore` is refused, so finish it as in **If a restore is interrupted**; otherwise
+   run the command again.
 4. Delete both files, from the container and from wherever you wrote them:
 
    ```sh
