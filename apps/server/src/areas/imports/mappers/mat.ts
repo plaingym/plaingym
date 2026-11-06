@@ -6,7 +6,7 @@ import { attendances, auditEvents, memberRanks, members, programs, ranks, Revisi
 import { classKindSchema, idSchema, instantSchema, type ImportIssue, type ImportPlanRequest, type ImportTargetField } from '@plaingym/shared/contracts';
 import { isCalendarDate, zonedInstant } from '@plaingym/shared/time';
 import { t } from '../pipeline.messages.js';
-import { DuplicateIndex, duplicateKey, type CsvRow } from '../pipeline.csv.js';
+import { csvValue, DuplicateIndex, duplicateKey, type CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
 
 type Reader = Pick<Transaction, 'select'>;
@@ -62,7 +62,7 @@ function readDate(value: string): string | null {
 
 function parseRow(row: CsvRow, plan: ImportPlanRequest, timezone: string): Source {
   const columns = new Map(plan.mapping.map((item) => [item.targetField, item.sourceColumn]));
-  const read = (field: Field) => { const column = columns.get(field); return column === undefined ? '' : (row.values[column] ?? '').trim(); };
+  const read = (field: Field) => { const column = columns.get(field); return column === undefined ? '' : csvValue(row, column).trim(); };
   const issues: ImportIssue[] = [], values: Values = {};
   const issue = (field: Field | null, code: ImportIssue['code'], key: string, params: Record<string, string | number> = {}) =>
     issues.push({ rowNumber: row.rowNumber, column: field === null ? null : columns.get(field) ?? null, code, message: t('imports/mat:' + key, params) });
@@ -102,18 +102,25 @@ function attendanceKey(parsed: Parsed, memberId: string, programId: string | nul
   return 'mat:' + createHash('sha256').update(JSON.stringify(identity)).digest('hex');
 }
 // Scoped to one immutable run source (with its mapping and timezone), never shared across files or gyms.
-interface FileIndex { duplicates: DuplicateIndex; promotions: Source[] }
+interface FileIndex { duplicates: DuplicateIndex; promotions: Map<string, Source[]> }
 const fileIndexes = new WeakMap<readonly CsvRow[], Map<string, FileIndex>>();
+const emailKey = (email: string) => JSON.stringify(['email', email]);
+const nameKey = (firstName: string, lastName: string) => JSON.stringify(['name', firstName, lastName]);
 function fileIndex(rows: readonly CsvRow[], plan: ImportPlanRequest, timezone: string): FileIndex {
   const byMapping = fileIndexes.get(rows) ?? new Map<string, FileIndex>(), mapping = JSON.stringify([plan.mapping, timezone]);
   fileIndexes.set(rows, byMapping);
   let index = byMapping.get(mapping);
   if (!index) {
-    index = { duplicates: new DuplicateIndex(), promotions: [] };
+    index = { duplicates: new DuplicateIndex(), promotions: new Map() };
     for (const row of rows) {
       const source = parseRow(row, plan, timezone);
       if (source.parsed) index.duplicates.add(fileKey(source.parsed), String(row.rowNumber));
-      if (source.parsed?.kind === 'promotion') index.promotions.push(source);
+      if (source.parsed?.kind === 'promotion') {
+        // A row's email or, without one, its full name must match, so this key finds it from any member it can identify.
+        const { email, firstName, lastName } = source.parsed.identity, key = email ? emailKey(email) : nameKey(firstName, lastName);
+        const list = index.promotions.get(key);
+        if (list) list.push(source); else index.promotions.set(key, [source]);
+      }
     }
     byMapping.set(mapping, index);
   }
@@ -127,8 +134,8 @@ async function candidates(tx: Reader, gymId: string, identities: readonly Identi
   if (!emails.length && !names.length) return [];
   return tx.select({ id: members.id, email: members.email, firstName: members.firstName, lastName: members.lastName,
     dateOfBirth: members.dateOfBirth, revision: members.revision }).from(members).where(and(eq(members.gymId, gymId), isNull(members.anonymizedAt), or(
-    ...emails.map((email) => ilike(members.email, escapeLike(email))),
-    ...names.map((item) => and(ilike(members.firstName, escapeLike(item.firstName)), ilike(members.lastName, escapeLike(item.lastName)))),
+    ...(emails.length ? [inArray(members.emailFolded, emails)] : []),
+    ...names.map((item) => and(eq(members.lastNameFolded, item.lastName), ilike(members.firstName, escapeLike(item.firstName)))),
   ))).orderBy(asc(members.id));
 }
 const order = (a: Pick<Rung, 'position' | 'subRank'>, b: Pick<Rung, 'position' | 'subRank'>) => a.position - b.position || a.subRank - b.subRank;
@@ -155,8 +162,11 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
     // Validate each affected member's complete source history, even in a dry run
     // where earlier chunks have written nothing. Resolve aliases against the gym
     // again below so a shared email cannot silently identify the wrong member.
-    sources.push(...filePromotions.filter((source) => !rowNumbers.has(source.row.rowNumber)
-      && chunkPeople.some((person) => matchesIdentity(person, source.parsed!.identity)))
+    const related = new Set(chunkPeople.flatMap((person) => [
+      ...filePromotions.get(emailKey(normalize(person.email ?? ''))) ?? [],
+      ...filePromotions.get(nameKey(normalize(person.firstName), normalize(person.lastName))) ?? [],
+    ].filter((source) => matchesIdentity(person, source.parsed!.identity))));
+    sources.push(...[...related].filter((source) => !rowNumbers.has(source.row.rowNumber))
       .map((source) => ({ ...source, values: { ...source.values }, issues: [...source.issues] })));
     sources.sort((a, b) => a.row.rowNumber - b.row.rowNumber);
   }

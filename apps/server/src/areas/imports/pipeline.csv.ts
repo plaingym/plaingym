@@ -5,20 +5,43 @@ import { importTargetFieldSchema, type ImportColumnMapping } from '@plaingym/sha
 
 export interface CsvRow { rowNumber: number; values: Record<string, string> }
 export interface CsvDocument { columns: string[]; rows: CsvRow[] }
+interface CsvSource { text: string; spans: Uint32Array; columns: ReadonlyMap<string, number> }
+const ESCAPED = 0x80000000;
+function cell(source: Pick<CsvSource, 'text' | 'spans'>, offset: number): string {
+  const end = source.spans[offset + 1]!;
+  const value = source.text.slice(source.spans[offset]!, end & ~ESCAPED);
+  return end & ESCAPED ? value.replaceAll('""', '"') : value;
+}
+/** Rows share the text and packed cell offsets; strings are sliced only for the chunk being mapped. */
+class CompactRow implements CsvRow {
+  readonly #source: CsvSource;
+  readonly #offset: number;
+  constructor(readonly rowNumber: number, offset: number, source: CsvSource) { this.#offset = offset; this.#source = source; }
+  read(column: string): string {
+    const index = this.#source.columns.get(column);
+    return index === undefined ? '' : cell(this.#source, this.#offset + index * 2);
+  }
+  get values(): Record<string, string> { return Object.fromEntries([...this.#source.columns.keys()].map(name => [name, this.read(name)])); }
+}
+/** Mappers read cells directly, without allocating a values object per source row. */
+export function csvValue(row: CsvRow, column: string): string {
+  return row instanceof CompactRow ? row.read(column) : row.values[column] ?? '';
+}
 export const MAX_CSV_BYTES = 20 * 1024 * 1024;
+const MAX_CSV_ROWS = 100_000, MAX_CSV_COLUMNS = 200;
 const COMMA = 44, QUOTE = 34, LF = 10, CR = 13;
 /** Strict RFC 4180 records, accepting LF and CRLF, quoted newlines and a UTF-8 BOM. */
 export function parseCsv(text: string): CsvDocument {
   if (Buffer.byteLength(text) > MAX_CSV_BYTES || text.includes('\0')) invalid();
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-  // Cells are slices of the text. Appending them one character at a time builds a rope of cons strings per cell,
-  // which cost over 4 KB of heap per row for a 200-byte row.
-  const records: { line: number; cells: string[] }[] = [], end = text.length;
-  let cells: string[] = [], line = 1, start = 1, hasRecord = false, i = 0;
+  const records: { line: number; offset: number; count: number }[] = [], end = text.length;
+  // Keep temporary offsets off the JS heap too; a growable number[] can exceed the final document's size.
+  let boundaries = new Uint32Array(1024), used = 0;
+  let offset = 0, count = 0, line = 1, start = 1, hasRecord = false, i = 0;
   for (;;) {
-    let value: string;
+    let from = i, to: number, escaped = false;
     if (text.charCodeAt(i) === QUOTE) {
-      hasRecord = true; value = '';
+      hasRecord = true; from = i + 1;
       for (let pos = i + 1; ;) {
         const quote = text.indexOf('"', pos);
         if (quote < 0) invalid();
@@ -26,8 +49,8 @@ export function parseCsv(text: string): CsvDocument {
           const c = text.charCodeAt(j);
           if (c === LF || c === CR && text.charCodeAt(j + 1) !== LF) line++;
         }
-        value += text.slice(pos, quote);
-        if (text.charCodeAt(quote + 1) === QUOTE) { value += '"'; pos = quote + 2; } else { i = quote + 1; break; }
+        if (text.charCodeAt(quote + 1) === QUOTE) { escaped = true; pos = quote + 2; }
+        else { to = quote; i = quote + 1; break; }
       }
       const next = text.charCodeAt(i);
       if (i < end && next !== COMMA && next !== LF && next !== CR) invalid();
@@ -39,23 +62,34 @@ export function parseCsv(text: string): CsvDocument {
         if (c === QUOTE) invalid();
       }
       if (j > i) hasRecord = true;
-      value = text.slice(i, j); i = j;
+      to = j; i = j;
     }
-    cells.push(value);
+    if (used + 2 > boundaries.length) {
+      const grown = new Uint32Array(boundaries.length * 2); grown.set(boundaries); boundaries = grown;
+    }
+    // Limits apply here, not after the parse: a small file of very short rows would otherwise fill the heap first.
+    if (++count > MAX_CSV_COLUMNS) invalid();
+    boundaries[used++] = from; boundaries[used++] = escaped ? to | ESCAPED : to;
     const terminator = text.charCodeAt(i);
     if (i < end && terminator === COMMA) { i++; hasRecord = true; continue; }
-    if (hasRecord) records.push({ line: start, cells });
+    if (hasRecord) {
+      if (records.push({ line: start, offset, count }) > MAX_CSV_ROWS + 1) invalid();
+    } else {
+      // Blank lines are ignored; discard their offsets too so they cannot fill the buffer.
+      used = offset;
+    }
     if (i >= end) break;
     if (terminator === CR && text.charCodeAt(i + 1) === LF) i++;
-    i++; cells = []; hasRecord = false; line++; start = line;
+    i++; offset = used; count = 0; hasRecord = false; line++; start = line;
   }
-  const columns = records.shift()?.cells.map((name) => name.trim()) ?? [];
-  if (!columns.length || columns.length > 200 || columns.some((name) => !name || name.length > 256)
+  const spans = boundaries.slice(0, used), header = records.shift();
+  const columns = header ? Array.from({ length: header.count }, (_, i) => cell({ text, spans }, header.offset + i * 2).trim()) : [];
+  if (!columns.length || columns.some((name) => !name || name.length > 256)
     || new Set(columns).size !== columns.length) invalid();
-  if (records.length > 100_000) invalid();
-  return { columns, rows: records.map(({ line, cells }) => {
-    if (cells.length !== columns.length) invalid();
-    return { rowNumber: line, values: Object.fromEntries(columns.map((name, i) => [name, cells[i]!])) };
+  const source: CsvSource = { text, spans, columns: new Map(columns.map((name, index) => [name, index])) };
+  return { columns, rows: records.map(({ line, offset, count }) => {
+    if (count !== columns.length) invalid();
+    return new CompactRow(line, offset, source);
   }) };
 }
 function invalid(): never { throw new AppError('invalid_request', t('imports/pipeline:invalidCsv')); }

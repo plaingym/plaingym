@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import type { ObjectInfo, UploadBody, UploadInfo, Uploads } from './index.js';
+import type { ObjectInfo, ReadOptions, UploadBody, UploadInfo, Uploads } from './index.js';
 
 export function validKey(key: string): void {
   if (!key || key.startsWith('/') || key.includes('\\') ||
@@ -93,12 +93,12 @@ export interface UploadBackend {
   /** Identifies the store across adapter instances, so the index is reconciled once per store and process. */
   readonly identity: readonly [object, string];
   reserve(key: string): Promise<void>;
-  record(key: string): Promise<UploadRecord | null>;
+  record(key: string, options?: ReadOptions): Promise<UploadRecord | null>;
   /** Reads a record by its digest. */
-  recordAt(id: string): Promise<UploadRecord | null>;
+  recordAt(id: string, options?: ReadOptions): Promise<UploadRecord | null>;
   save(record: UploadRecord): Promise<void>;
   put(key: string, body: ReadableStream<Uint8Array>, contentType: string): Promise<ObjectInfo>;
-  get(key: string): Promise<ReadableStream<Uint8Array> | null>;
+  get(key: string, options?: ReadOptions): Promise<ReadableStream<Uint8Array> | null>;
   remove(key: string): Promise<void>;
   /** Removes a deletion marker. Only restore calls it, while every other writer is stopped. */
   undelete(key: string): Promise<void>;
@@ -142,14 +142,18 @@ export class DurableUploads implements Uploads {
     await this.backend.save({ key, info });
     return info;
   }
-  async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+  async get(key: string, options: ReadOptions = {}): Promise<ReadableStream<Uint8Array> | null> {
     assertNoTransaction('storage.get'); gymKey(this.gymId, key);
-    const record = await this.backend.record(key);
-    return record?.info && !record.swept ? this.backend.get(key) : null;
+    options.signal?.throwIfAborted();
+    const record = await this.backend.record(key, options);
+    options.signal?.throwIfAborted();
+    return record?.info && !record.swept ? this.backend.get(key, options) : null;
   }
-  async head(key: string): Promise<UploadInfo | null> {
+  async head(key: string, options: ReadOptions = {}): Promise<UploadInfo | null> {
     assertNoTransaction('storage.head'); gymKey(this.gymId, key);
-    const record = await this.backend.record(key);
+    options.signal?.throwIfAborted();
+    const record = await this.backend.record(key, options);
+    options.signal?.throwIfAborted();
     return record?.info && !record.swept ? record.info : null;
   }
   /** Reads only the records of keys under the prefix; swept keys have no index entry and cost nothing. */
@@ -169,9 +173,11 @@ export class DurableUploads implements Uploads {
     assertNoTransaction('storage.signedUrl'); gymKey(this.gymId, key); lifetime(seconds);
     return await this.head(key) ? this.backend.signedUrl(key, seconds) : null;
   }
-  async markDeleted(key: string): Promise<void> {
+  async markDeleted(key: string, options: ReadOptions = {}): Promise<void> {
     assertNoTransaction('storage.markDeleted'); gymKey(this.gymId, key);
-    const record = await this.backend.record(key);
+    options.signal?.throwIfAborted();
+    const record = await this.backend.record(key, options);
+    options.signal?.throwIfAborted();
     if (record?.info && !record.swept && !record.info.deletedAt)
       await this.backend.save({ ...record, info: { ...record.info, deletedAt: this.clock.now() } });
   }

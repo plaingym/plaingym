@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
+import { abortableBody } from './read.js';
 
 export interface ObjectInfo {
   readonly key: string;
@@ -15,14 +16,16 @@ export interface UploadInfo extends ObjectInfo {
   readonly deletedAt?: Date;
 }
 export type UploadBody = Uint8Array | ReadableStream<Uint8Array>;
+export interface ReadOptions { readonly signal?: AbortSignal }
 export interface Uploads {
   /** Keys include the gym prefix and are immutable, including after markDeleted. */
   put(key: string, body: UploadBody, contentType: string): Promise<UploadInfo>;
-  get(key: string): Promise<ReadableStream<Uint8Array> | null>;
-  head(key: string): Promise<UploadInfo | null>;
+  get(key: string, options?: ReadOptions): Promise<ReadableStream<Uint8Array> | null>;
+  head(key: string, options?: ReadOptions): Promise<UploadInfo | null>;
   list(prefix?: string): Promise<readonly UploadInfo[]>;
   signedUrl(key: string, expiresInSeconds: number): Promise<string | null>;
-  markDeleted(key: string): Promise<void>;
+  /** Optional cancellation applies to the metadata read before the deletion marker is written. */
+  markDeleted(key: string, options?: ReadOptions): Promise<void>;
   /** The caller holds the backup lock. Protected keys cannot be swept. */
   sweep(options: { before: Date; protectedKeys?: ReadonlySet<string> }): Promise<readonly string[]>;
 }
@@ -34,8 +37,8 @@ export interface PutObjectOptions {
 export interface BackupObjectStore {
   /** Multipart completion is atomic; any failure aborts the upload. */
   putObject(key: string, body: ReadableStream<Uint8Array>, options?: PutObjectOptions): Promise<ObjectInfo>;
-  getObject(key: string): Promise<ReadableStream<Uint8Array> | null>;
-  headObject(key: string): Promise<ObjectInfo | null>;
+  getObject(key: string, options?: ReadOptions): Promise<ReadableStream<Uint8Array> | null>;
+  headObject(key: string, options?: ReadOptions): Promise<ObjectInfo | null>;
   listObjects(prefix: string): Promise<readonly ObjectInfo[]>;
   deleteObject(key: string): Promise<void>;
 }
@@ -106,15 +109,17 @@ export class FakeUploads implements Uploads {
       throw error;
     }
   }
-  async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+  async get(key: string, options: ReadOptions = {}): Promise<ReadableStream<Uint8Array> | null> {
     assertNoTransaction('storage.get');
     this.#key(key);
+    options.signal?.throwIfAborted();
     const object = this.#objects.get(key);
-    return object ? bytesStream(object.bytes) : null;
+    return object ? abortableBody(bytesStream(object.bytes), options.signal) : null;
   }
-  async head(key: string): Promise<UploadInfo | null> {
+  async head(key: string, options: ReadOptions = {}): Promise<UploadInfo | null> {
     assertNoTransaction('storage.head');
     this.#key(key);
+    options.signal?.throwIfAborted();
     return structuredClone(this.#objects.get(key)?.info ?? null);
   }
   async list(prefix = this.gymId + '/'): Promise<readonly UploadInfo[]> {
@@ -136,9 +141,10 @@ export class FakeUploads implements Uploads {
     if (!this.#objects.has(key)) return null;
     return `https://uploads.invalid/${encodeURIComponent(key)}?expires=${this.clock.now().getTime() + expiresInSeconds * 1000}`;
   }
-  async markDeleted(key: string): Promise<void> {
+  async markDeleted(key: string, options: ReadOptions = {}): Promise<void> {
     assertNoTransaction('storage.markDeleted');
     this.#key(key);
+    options.signal?.throwIfAborted();
     const object = this.#objects.get(key);
     if (object && !object.info.deletedAt) object.info = { ...object.info, deletedAt: this.clock.now() };
   }
@@ -244,15 +250,17 @@ export class FakeBackupObjectStore implements BackupObjectStore {
       this.#active.delete(key);
     }
   }
-  async getObject(key: string): Promise<ReadableStream<Uint8Array> | null> {
+  async getObject(key: string, options: ReadOptions = {}): Promise<ReadableStream<Uint8Array> | null> {
     assertNoTransaction('storage.getObject');
     validKey(key);
+    options.signal?.throwIfAborted();
     const object = this.#objects.get(key);
-    return object ? bytesStream(object.bytes) : null;
+    return object ? abortableBody(bytesStream(object.bytes), options.signal) : null;
   }
-  async headObject(key: string): Promise<ObjectInfo | null> {
+  async headObject(key: string, options: ReadOptions = {}): Promise<ObjectInfo | null> {
     assertNoTransaction('storage.headObject');
     validKey(key);
+    options.signal?.throwIfAborted();
     return structuredClone(this.#objects.get(key)?.info ?? null);
   }
   async listObjects(prefix: string): Promise<readonly ObjectInfo[]> {

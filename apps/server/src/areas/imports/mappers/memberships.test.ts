@@ -96,6 +96,21 @@ async function spanningFamily(status = 'active', startsOn = '2026-01-15') {
 }
 
 describe('membership renewals through the durable pipeline', () => {
+  it('matches folded emails and names literally without widening identity matches', async () => {
+    const f = await fixture();
+    await database.forGym(gymId, tx => tx.update(members).set({ email: 'MiXeD_%@Example.test', firstName: 'Jo_%', lastName: 'MiXeD_%' }).where(eq(members.id, f.member.id)));
+    await factory('members', gymId, { email: 'mixedxx@example.test', firstName: 'JoXX', lastName: 'MixedXX' });
+    for (const gym of [gymId, otherGym]) await factory('members', gym, {
+      email: 'MiXeD_%@Example.test', firstName: 'Jo_%', lastName: 'MiXeD_%', ...(gym === gymId ? { anonymizedAt: clock.now() } : {}),
+    });
+    for (const identity of [{ email: 'mixed_%@example.test' }, { firstName: 'jo_%', lastName: 'mixed_%' }]) {
+      const { planned } = await analyzed([{ ...identity, plan: f.plan.id, nextDueOn: '2026-11-15' }]);
+      expect(planned[0]).toMatchObject({ action: 'create', values: { memberId: f.member.id }, issues: [] });
+    }
+    const { planned } = await analyzed([{ email: 'mixed_%@example.test', firstName: 'wrong', lastName: 'mixed_%', plan: f.plan.id, nextDueOn: '2026-11-15' }]);
+    expect(planned[0]!.issues[0]!.code).toBe('unknown_reference');
+  });
+
   it('bills the imported monthly date and price, with the next cycle on the household anchor', async () => {
     const f = await fixture(), source = await services().load([{ email: f.member.email!, plan: f.plan.name,
       amountCents: '8250', interval: 'monthly', currency: 'cad', nextDueOn: '2026-11-19', commitmentEndsOn: '2027-11-19' }]);

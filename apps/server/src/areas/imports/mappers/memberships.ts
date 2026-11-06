@@ -36,8 +36,8 @@ async function findPeople(tx: Reader, gymId: string, identities: Identity[]): Pr
     : ['name', identity.firstName, identity.lastName]), identity])).values()], people = new Map<string, Person>();
   for (let offset = 0; offset < unique.length; offset += 100) {
     const found = await tx.select().from(members).where(and(eq(members.gymId, gymId), isNull(members.anonymizedAt), or(
-      ...unique.slice(offset, offset + 100).map(identity => identity.email ? ilike(members.email, escapeLike(identity.email))
-        : and(ilike(members.firstName, escapeLike(identity.firstName)), ilike(members.lastName, escapeLike(identity.lastName)))),
+      ...unique.slice(offset, offset + 100).map(identity => identity.email ? eq(members.emailFolded, identity.email)
+        : and(eq(members.lastNameFolded, identity.lastName), ilike(members.firstName, escapeLike(identity.firstName)))),
     )));
     for (const person of found) people.set(person.id, person);
   }

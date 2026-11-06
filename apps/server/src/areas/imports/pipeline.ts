@@ -16,6 +16,7 @@ import { MapperRegistry, type MapperContext, type PlannedRow } from './mappers/r
 import { peopleMapper } from './mappers/people.js';
 import { matMapper } from './mappers/mat.js';
 import { membershipsMapper } from './mappers/memberships.js';
+import { previewBudget, previewDeadline, PREVIEW_CLEANUP_MS, PREVIEW_TIMEOUT_MS, type PreviewBudget } from './pipeline.budget.js';
 
 export const IMPORT_JOB = 'imports.pipeline';
 export const IMPORT_CHUNK_SIZE = 100;
@@ -34,6 +35,7 @@ interface StoredPreview extends PreviewSummary { generation: string; files: numb
 /** `timezone` is fixed when the run starts; runs saved before it was recorded read offset-free values as UTC, as their dry runs did. */
 interface StoredRun { job: ImportJob; input: StartImportRequest; actor: MutationContext['actor']; chunkIds: string[]; timezone?: string }
 interface ChunkResult { count: number; issues: ImportIssue[] }
+interface StoredUpload extends ImportUpload { byteSize?: number }
 type Run = typeof importRuns.$inferSelect;
 function runJob(run: Run): ImportJob {
   return { id: run.id, uploadId: run.input.uploadId, mapper: run.input.mapper, dryRun: run.dryRun, status: run.status,
@@ -54,9 +56,14 @@ async function decode(file: File): Promise<string> {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { throw new AppError('invalid_request', t('imports/pipeline:invalidCsv')); }
 }
-export interface PipelineOptions { uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock; mappers?: MapperRegistry }
+export interface PipelineOptions {
+  uploadsFor: UploadsFor; jobs: Jobs; scope?: typeof forGym; clock?: Clock; mappers?: MapperRegistry;
+  previewBudget?: PreviewBudget; previewTimeoutMs?: number;
+}
 export function createImportPipeline(options: PipelineOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const budget = options.previewBudget ?? previewBudget, timeout = options.previewTimeoutMs ?? PREVIEW_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeout) || timeout < 1) throw new Error('Invalid preview deadline');
   const store = new PipelineStore(options.uploadsFor);
   const mappers = options.mappers ?? new MapperRegistry([peopleMapper, matMapper, membershipsMapper]);
   const key = (gymId: string, id: string, file: string) => store.key(gymId, 'runs', id, file);
@@ -69,8 +76,8 @@ export function createImportPipeline(options: PipelineOptions) {
    * The upload's metadata, if it is still usable with this plan. Reads no CSV bytes. A deleted upload (expired, or removed by a
    * restore) is not found.
    */
-  async function loadMeta(gymId: string, plan: ImportPlanRequest): Promise<ImportUpload> {
-    const meta = await store.get<ImportUpload>(gymId, store.key(gymId, 'uploads', plan.uploadId, 'meta.json'));
+  async function loadMeta(gymId: string, plan: ImportPlanRequest): Promise<StoredUpload> {
+    const meta = await store.get<StoredUpload>(gymId, store.key(gymId, 'uploads', plan.uploadId, 'meta.json'));
     if (Date.parse(meta.expiresAt) <= clock.now().getTime()) throw new AppError('not_found', t('imports/pipeline:notFound'));
     if (new Set(plan.mapping.map((item) => item.sourceColumn)).size !== plan.mapping.length
       || plan.mapping.some((item) => !meta.columns.includes(item.sourceColumn)))
@@ -78,8 +85,8 @@ export function createImportPipeline(options: PipelineOptions) {
     return meta;
   }
   /** The upload's CSV, once its metadata has been checked. */
-  async function loadSource(gymId: string, uploadId: string): Promise<CsvDocument> {
-    const body = await (await options.uploadsFor(gymId)).get(sourceKey(gymId, uploadId));
+  async function loadSource(gymId: string, uploadId: string, signal?: AbortSignal): Promise<CsvDocument> {
+    const body = await (await options.uploadsFor(gymId)).get(sourceKey(gymId, uploadId), signal ? { signal } : undefined);
     if (!body) throw new AppError('not_found', t('imports/pipeline:notFound'));
     return parseCsv(await new Response(body).text());
   }
@@ -96,11 +103,13 @@ export function createImportPipeline(options: PipelineOptions) {
     });
   }
   /** Analyzes the document one chunk at a time, so a caller never holds every planned row at once. */
-  async function* analyze(document: CsvDocument, plan: ImportPlanRequest, context: MapperContext): AsyncGenerator<PlannedRow[]> {
+  async function* analyze(document: CsvDocument, plan: ImportPlanRequest, context: MapperContext, check = () => {}): AsyncGenerator<PlannedRow[]> {
     const mapper = mappers.get(plan.mapper);
     for (let i = 0; i < document.rows.length; i += IMPORT_CHUNK_SIZE) {
+      check();
       const rows = document.rows.slice(i, i + IMPORT_CHUNK_SIZE);
       const planned = await scope(context.gymId, (tx) => mapper.analyze(tx, rows, plan, context));
+      check();
       if (planned.length !== rows.length || planned.some((row, index) => row.rowNumber !== rows[index]!.rowNumber))
         throw new Error('Mapper must return one result per source row in order');
       yield policy(planned, plan);
@@ -133,8 +142,8 @@ export function createImportPipeline(options: PipelineOptions) {
    * until the upload sweep removes it (a day later at the earliest), so a reader holding a summary can finish reading its rows
    * after a newer preview marks them deleted; a row file that is gone makes the read miss and the preview is computed again.
    */
-  async function readJson<T>(uploads: Uploads, key: string): Promise<T | undefined> {
-    const body = await uploads.get(key);
+  async function readJson<T>(uploads: Uploads, key: string, signal?: AbortSignal): Promise<T | undefined> {
+    const body = await uploads.get(key, signal ? { signal } : undefined);
     return body ? await new Response(body).json() as T : undefined;
   }
   async function readRows(uploads: Uploads, prefix: string, stored: StoredPreview, page: Pagination) {
@@ -170,17 +179,14 @@ export function createImportPipeline(options: PipelineOptions) {
     return undefined;
   }
   /** Marks deleted the files of the preview in the bucket before `bucket`, which readers no longer reach once `bucket` has one. */
-  async function removePrevious(uploads: Uploads, prefix: string, bucket: number): Promise<void> {
-    const key = summaryKey(prefix, bucket - 1), previous = await readJson<StoredPreview>(uploads, key);
+  async function removePrevious(uploads: Uploads, prefix: string, bucket: number, signal?: AbortSignal): Promise<void> {
+    const key = summaryKey(prefix, bucket - 1), previous = await readJson<StoredPreview>(uploads, key, signal);
     if (!previous) return;
-    await Promise.all(Array.from({ length: previous.files }, (_, index) => uploads.markDeleted(fileKey(prefix, previous.generation, index))));
-    await uploads.markDeleted(key);
+    await Promise.all(Array.from({ length: previous.files }, (_, index) => uploads.markDeleted(fileKey(prefix, previous.generation, index), signal ? { signal } : undefined)));
+    await uploads.markDeleted(key, signal ? { signal } : undefined);
   }
   const immutable = (error: unknown) => error instanceof Error && error.message === 'Upload keys are immutable';
   const computing = new Map<string, Promise<StoredPreview>>();
-  // One preview computation at a time in this process: each holds its parsed file and the mapper's whole-file index, and two of a
-  // large file together nearly fill a 256 MB heap. A request for a preview already computing shares that pass instead of queueing.
-  let previewTurn: Promise<unknown> = Promise.resolve();
   /**
    * Computes and stores a preview, answering the stored preview to page from; the caller has checked the upload's metadata.
    * Two requests for one preview in this process share one pass; when another process stored the same bucket's summary first,
@@ -188,19 +194,25 @@ export function createImportPipeline(options: PipelineOptions) {
    * mid-write can't be read or written: this pass's own summary is then remembered in this process, and its rows are kept and go
    * with the upload, so the bucket costs one pass per process.
    */
-  function computePreview(context: MutationContext, plan: ImportPlanRequest, timezone: string, prefix: string): Promise<StoredPreview> {
+  function computePreview(context: MutationContext, plan: ImportPlanRequest, timezone: string, prefix: string, meta: StoredUpload): Promise<StoredPreview> {
     const running = computing.get(prefix);
     if (running) return running;
-    const task = previewTurn.then(async (): Promise<StoredPreview> => {
+    // Uploads from earlier releases have no byte size: reserve conservatively until they expire.
+    const task = budget.run(meta.byteSize ?? MAX_CSV_BYTES, meta.rowCount, () => previewDeadline(timeout, async (signal, check): Promise<StoredPreview> => {
       const { gymId } = context, uploads = await options.uploadsFor(gymId), generation = uuidv7(), startedAt = clock.now();
-      const document = await loadSource(gymId, plan.uploadId), written: string[] = [];
+      const document = await loadSource(gymId, plan.uploadId, signal), written: string[] = [];
+      check();
       const mapperContext: MapperContext = { ...context, clock, runId: uuidv7(), timezone, sourceRows: document.rows };
       const summary: PreviewSummary = { totalRows: document.rows.length, create: 0, update: 0, skip: 0, errors: 0 };
-      const put = async (key: string, value: unknown) => { await store.put(gymId, key, value); written.push(key); };
-      const removeWritten = async () => { for (const key of written) await uploads.markDeleted(key).catch(() => undefined); };
+      const put = async (key: string, value: unknown) => { check(); await store.put(gymId, key, value); written.push(key); check(); };
+      // The computation's own signal may have aborted already, which would refuse every removal.
+      const removeWritten = async () => {
+        const limit = AbortSignal.timeout(PREVIEW_CLEANUP_MS);
+        for (const key of written) await uploads.markDeleted(key, { signal: limit }).catch(() => undefined);
+      };
       let file: ImportPreviewRow[] = [], files = 0, stored: StoredPreview;
       try {
-        for await (const planned of analyze(document, plan, mapperContext)) {
+        for await (const planned of analyze(document, plan, mapperContext, check)) {
           for (const row of planned.map(({ issues: _issues, ...row }) => row)) {
             if (row.action === 'error') summary.errors++; else summary[row.action]++;
             file.push(row);
@@ -211,10 +223,12 @@ export function createImportPipeline(options: PipelineOptions) {
         // Its age counts from here, so a slow computation still leaves a preview that is served for the full lifetime.
         const finished = clock.now();
         stored = { ...summary, generation, files, startedAt: startedAt.toISOString(), createdAt: finished.toISOString() };
-        try { await store.put(gymId, summaryKey(prefix, bucketOf(finished)), stored); }
+        // No check after this write: once the summary is stored the preview exists, and readers may already be using it.
+        try { check(); await store.put(gymId, summaryKey(prefix, bucketOf(finished)), stored); }
         catch (error) {
           if (!immutable(error)) throw error;
-          const other = await readJson<StoredPreview>(uploads, summaryKey(prefix, bucketOf(finished)));
+          // Another process finished this preview, so it is an answer even if this pass's deadline ended during the write.
+          const other = await readJson<StoredPreview>(uploads, summaryKey(prefix, bucketOf(finished)), AbortSignal.timeout(PREVIEW_CLEANUP_MS));
           if (!other) { remember(prefix, stored); return stored; }
           await removeWritten();
           remember(prefix, other);
@@ -227,10 +241,9 @@ export function createImportPipeline(options: PipelineOptions) {
       }
       remember(prefix, stored);
       // Best effort once the preview is stored: retention removes whatever this leaves with the upload.
-      await removePrevious(uploads, prefix, bucketOf(new Date(stored.createdAt))).catch(() => undefined);
+      await removePrevious(uploads, prefix, bucketOf(new Date(stored.createdAt)), signal).catch(() => undefined);
       return stored;
-    }).finally(() => computing.delete(prefix));
-    previewTurn = task.catch(() => undefined);
+    })).finally(() => computing.delete(prefix));
     computing.set(prefix, task);
     return task;
   }
@@ -316,7 +329,7 @@ export function createImportPipeline(options: PipelineOptions) {
         expiresAt: new Date(clock.now().getTime() + LIFETIME).toISOString() };
       // The stored bytes stream from the file itself, after its text and parsed rows are released.
       await (await options.uploadsFor(context.gymId)).put(store.key(context.gymId, 'uploads', id, 'source.csv'), file.stream(), 'text/csv');
-      await store.put(context.gymId, store.key(context.gymId, 'uploads', id, 'meta.json'), data);
+      await store.put(context.gymId, store.key(context.gymId, 'uploads', id, 'meta.json'), { ...data, byteSize: file.size });
       await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
         ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}), action: 'imports.uploaded', targetType: 'import', targetId: id,
         after: { rowCount: data.rowCount }, occurredAt: clock.now() }));
@@ -324,13 +337,13 @@ export function createImportPipeline(options: PipelineOptions) {
     },
     async preview(context: MutationContext, input: ImportPlanRequest, page: Pagination, timezone: string) {
       const plan = importPlanRequestSchema.parse(input);
-      await loadMeta(context.gymId, plan);
+      const meta = await loadMeta(context.gymId, plan);
       const prefix = planPrefix(context.gymId, plan, timezone, await importRevision(context.gymId));
       const respond = (stored: { summary: PreviewSummary; data: ImportPreviewRow[] }) =>
         ({ data: stored.data, pagination: { ...page, total: stored.summary.totalRows }, summary: stored.summary });
       const found = await readPreview(context.gymId, prefix, page);
       if (found) return respond(found);
-      const computed = await computePreview(context, plan, timezone, prefix);
+      const computed = await computePreview(context, plan, timezone, prefix, meta);
       const rows = await readRows(await options.uploadsFor(context.gymId), prefix, computed, page);
       if (!rows) throw new AppError('not_found', t('imports/pipeline:notFound'));
       return respond(rows);

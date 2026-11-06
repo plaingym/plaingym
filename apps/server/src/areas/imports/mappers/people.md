@@ -36,6 +36,11 @@ update policy. Existing duplicates use the pipeline's error/skip/update policy;
 multiple existing matches cannot be updated. Identical reimports create no new
 members. Indexes cover the immutable full file, including families and repeated
 identities spanning chunks; database matches always use the supplied gym scope.
+Existing-member candidates use the gym-first partial index
+on the generated `lower(last_name)` column (migration `0019`), excluding anonymized
+members. Query names are folded by PostgreSQL too, preserving its collation's
+case matching without treating wildcard characters as patterns. Identity and household matching rules
+are unchanged; edits automatically update the generated value.
 The whole-file index keeps no mapped row: for each row only its family and the
 issues the file decides (a repeated identity, a family mismatch, a customer or
 payment method another family uses), and for each family of several rows, or

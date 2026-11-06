@@ -60,7 +60,14 @@ sweep reads only records with a deletion marker, a record and its markers are re
 together, and up to 16 keys are read at a time.
 
 `createS3Client(config)` defaults to region `auto` and path-style addressing, and
-sets request and response checksum policies to `WHEN_REQUIRED`. Pass an endpoint
+sets request and response checksum policies to `WHEN_REQUIRED`. Its default HTTP
+handler enforces a 30-second request timeout (including failure rather than just
+logging a timeout); a caller supplying its own handler owns that handler's limits.
+The timer covers sending the request body, so a multipart part gets at least the
+time it needs at about 128 kbit/s, and completing an upload gets ten minutes.
+The client sends no `Expect: 100-continue` header: the handler would hold a part's
+body until that same timer ended on a provider or proxy that never answers it.
+Pass an endpoint
 and explicit credentials for an S3-compatible provider. `S3Uploads` takes
 `{ client, bucket, gymId, clock? }`; `S3BackupObjectStore` takes
 `{ client, bucket, clock? }`. Close the client with `client.destroy()` on shutdown.
@@ -78,6 +85,17 @@ streamed with backpressure, and the 10,000-part S3 limit is checked. Input failu
 part failure, completion failure, and cancellation trigger multipart abort without
 inheriting the canceled signal. Abort failures surface together with the original
 failure as an `AggregateError`, so cleanup failures are visible to the caller.
+
+`Uploads.get/head` and `BackupObjectStore.getObject/headObject` accept optional
+`{ signal }` read options. Durable uploads forward the signal through metadata,
+deletion/sweep markers, and object reads. Local reads cancel their file streams;
+S3 sends receive `abortSignal`, and cancellation also propagates through body
+consumption after headers arrive. Existing callers may omit the options. Fakes
+honor the same read cancellation contract.
+`markDeleted` accepts the same option for its preliminary metadata read; a marker
+write already in progress finishes normally. Import preview cleanup passes a
+short limit of its own, so a stuck cleanup read cannot retain its memory slot.
+When that limit prevents cleanup, upload retention removes the partial files.
 As with any remote object API, a lost response after server-side completion has an
 uncertain outcome; callers should inspect the key before retrying a publication.
 

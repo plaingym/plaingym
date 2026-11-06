@@ -66,6 +66,20 @@ function services(gymId = gymA) {
 }
 
 describe('mat CSV mapper with PostgreSQL', () => {
+  it('matches folded emails and names literally without widening identity matches', async () => {
+    const member = await person(gymA, { email: 'MiXeD_%@Example.test', firstName: 'Jo_%', lastName: 'MiXeD_%' });
+    await person(gymA, { email: 'mixedxx@example.test', firstName: 'JoXX', lastName: 'MixedXX' });
+    await person(gymB, { email: member.email, firstName: member.firstName, lastName: member.lastName });
+    await person(gymA, { email: member.email, firstName: member.firstName, lastName: member.lastName, anonymizedAt: clock.now() });
+    const { planned } = await analyze([
+      { email: 'mixed_%@example.test', occurredAt: '2024-01-01' },
+      { firstName: 'jo_%', lastName: 'mixed_%', occurredAt: '2024-01-02' },
+      { email: 'mixed_%@example.test', firstName: 'wrong', lastName: 'mixed_%', occurredAt: '2024-01-03' },
+    ]);
+    expect(planned.slice(0, 2).map(row => [row.action, row.values.memberId])).toEqual([['create', member.id], ['create', member.id]]);
+    expect(planned[2]!.issues[0]!.code).toBe('unknown_reference');
+  });
+
   it('preview and dry run leave every gym-owned table unchanged', async () => {
     const member = await person(), s = services();
     const input = await s.upload([

@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { memberStatusSchema, type ImportColumnMapping, type ImportIssue, type ImportTargetField } from '@plaingym/shared/contracts';
 import { t } from '../pipeline.messages.js';
-import { duplicateKey, type CsvRow } from '../pipeline.csv.js';
+import { csvValue, duplicateKey, type CsvRow } from '../pipeline.csv.js';
 
 export type MemberStatus = z.infer<typeof memberStatusSchema>;
 /** One source row mapped to people fields; null means the cell was empty, unmapped or invalid. */
@@ -77,7 +77,7 @@ export function mapPerson(row: CsvRow, mapping: readonly ImportColumnMapping[], 
   for (const { sourceColumn, targetField } of mapping) if (!peopleFields.has(targetField)) issues.push({ rowNumber: row.rowNumber,
     column: sourceColumn, code: 'invalid_value', message: t(targetField === 'medicalNotes' ? 'imports/people:medicalNotes' : 'imports/people:unsupportedField') });
   const text = (field: ImportTargetField): string | null => {
-    const source = columns.get(field), value = source === undefined ? '' : (row.values[source] ?? '').normalize('NFC').trim();
+    const source = columns.get(field), value = source === undefined ? '' : csvValue(row, source).normalize('NFC').trim();
     if (value.length > (maxLength[field] ?? MAX_TEXT)) { issue(field, 'invalid_value', 'tooLong'); return null; }
     return value || null;
   };

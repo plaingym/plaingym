@@ -2,7 +2,7 @@
 import { isCalendarDate } from '@plaingym/shared/time';
 import type { ImportIssue, ImportPlanRequest, ImportTargetField } from '@plaingym/shared/contracts';
 import { t } from '../pipeline.messages.js';
-import type { CsvRow } from '../pipeline.csv.js';
+import { csvValue, type CsvRow } from '../pipeline.csv.js';
 
 export const normalize = (value: string) => value.normalize('NFKC').trim().toLowerCase();
 export interface Identity { email: string; firstName: string; lastName: string; dateOfBirth: string }
@@ -27,7 +27,7 @@ export function annualAnniversary(nextDueOn: string, day: number | null): string
 }
 export function parseMembership(row: CsvRow, plan: ImportPlanRequest): Source {
   const columns = new Map(plan.mapping.map(item => [item.targetField, item.sourceColumn]));
-  const read = (field: ImportTargetField) => (row.values[columns.get(field) ?? ''] ?? '').trim();
+  const read = (field: ImportTargetField) => csvValue(row, columns.get(field) ?? '').trim();
   const issues: ImportIssue[] = [];
   const fail = (field: ImportTargetField, code: ImportIssue['code'], key: string) => issues.push({
     rowNumber: row.rowNumber, column: columns.get(field) ?? null, code, message: message(key),

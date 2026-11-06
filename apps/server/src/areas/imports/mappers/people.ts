@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { households, members, memberTags, memberTagLinks, paymentMethods, revisionGuard, assertRevised, uuidv7, writeAudit,
   type Transaction } from '@plaingym/db';
 import type { ImportIssue, ImportPlanRequest, ImportPreviewRow } from '@plaingym/shared/contracts';
 import { t } from '../pipeline.messages.js';
-import type { CsvRow } from '../pipeline.csv.js';
+import { csvValue, type CsvRow } from '../pipeline.csv.js';
 import type { CsvMapper, MapperContext, PlannedRow } from './registry.js';
 import { detectDateOrder, householdKey, knownKeys, lookupKeys, mapPerson, tagKey, type DateOrder, type MemberStatus, type Person } from './people.parse.js';
 
@@ -38,7 +38,6 @@ interface FileIndex {
 }
 type Reader = Pick<Transaction, 'select'>;
 const message = (key: string, values?: Record<string, string | number>) => t('imports/people:' + key, values);
-const search = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 const unique = <T>(values: Iterable<T>) => [...new Set(values)];
 
 /** A family's shared values from its rows, in row order. */
@@ -61,7 +60,7 @@ function fileIndex(source: readonly CsvRow[], plan: ImportPlanRequest, today: st
   const cached = fileIndexes.get(source)?.get(cacheKey);
   if (cached) return cached;
   const birthColumn = plan.mapping.find((item) => item.targetField === 'dateOfBirth')?.sourceColumn;
-  const dateOrder = detectDateOrder(birthColumn === undefined ? [] : source.map((row) => row.values[birthColumn] ?? ''));
+  const dateOrder = detectDateOrder(birthColumn === undefined ? [] : source.map((row) => csvValue(row, birthColumn)));
   // The mapped rows live only while the index is built.
   const people = source.map((row) => mapPerson(row, plan.mapping, { dateOrder, today }));
   const earlier = new Map<number, number>(), firstSeen = new Map<string, number>();
@@ -137,7 +136,7 @@ async function existingMembers(tx: Reader, lastNames: readonly string[]): Promis
   // Anonymized members are never matched or updated. Every identity includes the last name.
   const rows = await tx.select({ id: members.id, householdId: members.householdId, firstName: members.firstName, lastName: members.lastName,
     email: members.email, dateOfBirth: members.dateOfBirth }).from(members)
-    .where(and(isNull(members.anonymizedAt), or(...lastNames.map((name) => ilike(members.lastName, search(name)))))).orderBy(asc(members.id));
+    .where(and(isNull(members.anonymizedAt), inArray(members.lastNameFolded, lastNames))).orderBy(asc(members.id));
   for (const row of rows) for (const key of knownKeys(row)) found.set(key, [...(found.get(key) ?? []),{ id: row.id, householdId: row.householdId }]);
   return found;
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,7 @@ import { createImportPipeline, IMPORT_CHUNK_SIZE, PREVIEW_FILE_ROWS, PREVIEW_LIF
 import { createImportRetention, UPLOAD_RETENTION_MS } from './retention.js';
 import { MapperRegistry, type CsvMapper, type PlannedRow } from './mappers/registry.js';
 import { peopleMapper } from './mappers/people.js';
+import { PreviewBudget } from './pipeline.budget.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2099-10-22T12:00:00Z'), gymA = uuidv7(), gymB = uuidv7();
@@ -48,6 +50,7 @@ interface Setup {
   /** Keys reserved by a writer that crashed: `put` answers that keys are immutable, and nothing can be read from them. */
   readonly reserved?: (key: string) => boolean;
   readonly jobs?: FakeJobs;
+  readonly budget?: PreviewBudget;
 }
 function setup(mappers = new MapperRegistry([fixtureMapper({ analyze: 0 })]), clk = clock, options: Setup = {}) {
   const stores = new Map<string, Uploads>(), fail = new Set<string>(), calls: string[] = [];
@@ -61,13 +64,14 @@ function setup(mappers = new MapperRegistry([fixtureMapper({ analyze: 0 })]), cl
       async head(key) { count('head'); return reserved(key) ? null : store.head(key); },
       async list(prefix) { count('list'); return store.list(prefix); },
       async signedUrl(key, seconds) { count('signedUrl'); return store.signedUrl(key, seconds); },
-      async markDeleted(key) { count('markDeleted'); return store.markDeleted(key); },
+      async markDeleted(key, options) { count('markDeleted'); return store.markDeleted(key, options); },
       async sweep(sweep) { count('sweep'); return store.sweep(sweep); },
-      async get(key) { count('get'); if (fail.has(key)) throw new Error('unexpected read of ' + key); return reserved(key) ? null : store.get(key); },
+      async get(key, options) { count('get'); if (fail.has(key)) throw new Error('unexpected read of ' + key); return reserved(key) ? null : store.get(key, options); },
     };
   };
   const jobs = options.jobs ?? new FakeJobs(clk);
-  const pipeline = createImportPipeline({ uploadsFor, jobs, scope: database.forGym, clock: clk, mappers });
+  const pipeline = createImportPipeline({ uploadsFor, jobs, scope: database.forGym, clock: clk, mappers,
+    ...(options.budget ? { previewBudget: options.budget } : {}) });
   return { pipeline, uploadsFor, fail, calls, jobs };
 }
 const csv = (count: number) => 'Name,Email\r\n' + Array.from({ length: count }, (_, i) => `P${i},p${i}@example.test\r\n`).join('');
@@ -78,6 +82,54 @@ const previewPrefix = (gymId: string, uploadId: string) => `${gymId}/imports/upl
 const bucket = (clk = clock) => Math.floor(clk.now().getTime() / PREVIEW_LIFETIME);
 
 describe('stored import previews', () => {
+  it('aborts a stuck source read and lets a queued preview proceed', async () => {
+    const entered = Promise.withResolvers<void>(), cancelled = vi.fn(), stores = new Map<string, FakeUploads>();
+    let blockedKey = '';
+    class InterruptibleUploads extends FakeUploads {
+      override async get(key: string, options?: { signal?: AbortSignal }) {
+        if (key !== blockedKey) return super.get(key, options);
+        expect(options?.signal).toBeDefined(); entered.resolve();
+        return new Promise<never>((_resolve, reject) => {
+          options!.signal!.addEventListener('abort', () => { cancelled(); reject(options!.signal!.reason); }, { once: true });
+        });
+      }
+    }
+    const uploadsFor = async (gymId: string) => {
+      if (!stores.has(gymId)) stores.set(gymId, new InterruptibleUploads(gymId, clock));
+      return stores.get(gymId)!;
+    };
+    // Only the stuck preview has the short deadline; the ones that must finish share its budget without it.
+    const shared = { uploadsFor, jobs: new FakeJobs(clock), scope: database.forGym, clock, previewBudget: new PreviewBudget(1),
+      mappers: new MapperRegistry([fixtureMapper({ analyze: 0 })]) };
+    const pipeline = createImportPipeline({ ...shared, previewTimeoutMs: 50 }), patient = createImportPipeline(shared);
+    const a = await pipeline.upload(actorA, new File([csv(1)], 'a.csv'));
+    const b = await pipeline.upload(actorB, new File([csv(1)], 'b.csv'));
+    blockedKey = `${gymA}/imports/uploads/${a.id}/source.csv`;
+    const failed = pipeline.preview(actorA, planFor(a.id), { limit: 10, offset: 0 }, 'UTC');
+    const rejection = expect(failed).rejects.toThrow('took too long');
+    await entered.promise;
+    const next = patient.preview(actorB, planFor(b.id), { limit: 10, offset: 0 }, 'UTC');
+    await rejection; expect(cancelled).toHaveBeenCalledOnce(); expect((await next).summary.totalRows).toBe(1);
+    blockedKey = '';
+    expect((await patient.preview(actorA, planFor(a.id), { limit: 10, offset: 0 }, 'UTC')).summary.totalRows).toBe(1);
+  });
+
+  it('computes small previews for different gyms concurrently', async () => {
+    const both = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const base = fixtureMapper({ analyze: 0 }); let entered = 0;
+    const mapper: CsvMapper = { ...base, async analyze(...args) {
+      if (++entered === 2) both.resolve();
+      await release.promise; return base.analyze(...args);
+    } };
+    const { pipeline } = setup(new MapperRegistry([mapper]));
+    const a = await pipeline.upload(actorA, new File([csv(1)], 'a.csv'));
+    const b = await pipeline.upload(actorB, new File([csv(1)], 'b.csv'));
+    const requests = Promise.all([pipeline.preview(actorA, planFor(a.id), { limit: 10, offset: 0 }, 'UTC'),
+      pipeline.preview(actorB, planFor(b.id), { limit: 10, offset: 0 }, 'UTC')]);
+    try { await both.promise; expect(entered).toBe(2); }
+    finally { release.resolve(); }
+    expect(await requests).toHaveLength(2);
+  });
   it('pages identically to analyzing the whole file, across stored file boundaries', async () => {
     const calls = { analyze: 0 }, { pipeline, uploadsFor } = setup(new MapperRegistry([fixtureMapper(calls)]));
     const rows = 2 * PREVIEW_FILE_ROWS + 100, upload = await pipeline.upload(actorA, new File([csv(rows)], 'people.csv')), plan = planFor(upload.id);
@@ -208,20 +260,20 @@ describe('stored import previews', () => {
     for (const key of planKeys) expect((await uploads.head(key))?.deletedAt).toBeInstanceOf(Date);
     expect(after).toHaveLength(6);
   });
-  it('computes previews of different plans requested at once one after the other, without destroying each other', async () => {
+  it('queues previews that fill the budget without destroying either plan', async () => {
     const calls = { analyze: 0 }, base = fixtureMapper(calls), plans: string[] = [];
     let active = 0, most = 0;
     const tracked: CsvMapper = { ...base, async analyze(tx, rows, plan, context) {
       active++; most = Math.max(most, active); plans.push(plan.mapping[0]!.targetField);
       try { await new Promise<void>((resolve) => setImmediate(resolve)); return await base.analyze(tx, rows, plan, context); } finally { active--; }
     } };
-    const { pipeline } = setup(new MapperRegistry([tracked]));
+    const { pipeline } = setup(new MapperRegistry([tracked]), clock, { budget: new PreviewBudget(1) });
     const upload = await pipeline.upload(actorA, new File([csv(120)], 'people.csv'));
     const [name, email] = await Promise.all([pipeline.preview(actorA, planFor(upload.id), { limit: 5, offset: 0 }, 'UTC'),
       pipeline.preview(actorA, planFor(upload.id, 'Email', 'email'), { limit: 5, offset: 0 }, 'UTC')]);
     expect(name.data[0]!.values.field).toBe('firstName'); expect(email.data[0]!.values.field).toBe('email');
     expect(calls.analyze).toBe(4);
-    // One computation per process at a time: each holds its parsed file and the mapper's index.
+    // Each file fills this budget, so only one computation is admitted.
     // Either plan may reach its computation first; its two chunks run before the other plan's.
     expect(most).toBe(1); expect(plans[0]).toBe(plans[1]); expect(plans[2]).toBe(plans[3]); expect(plans[0]).not.toBe(plans[2]);
     expect((await pipeline.preview(actorA, planFor(upload.id), { limit: 100, offset: 50 }, 'UTC')).data).toHaveLength(70);
@@ -239,6 +291,35 @@ describe('stored import previews', () => {
     clock.advance(PREVIEW_LIFETIME - 1);
     await pipeline.preview(actorA, planFor(upload.id), { limit: 10, offset: 200 }, 'UTC');
     expect(calls.analyze).toBe(3);
+  });
+  it('removes the rows of a computation past its deadline', async () => {
+    const calls = { analyze: 0 }, base = fixtureMapper(calls), now = vi.spyOn(performance, 'now');
+    const slow: CsvMapper = { ...base, async analyze(tx, rows, plan, context) {
+      if (calls.analyze === 50) now.mockReturnValue(Number.MAX_SAFE_INTEGER);
+      return base.analyze(tx, rows, plan, context);
+    } };
+    const { pipeline, uploadsFor } = setup(new MapperRegistry([slow]));
+    const upload = await pipeline.upload(actorA, new File([csv(PREVIEW_FILE_ROWS + 100)], 'people.csv')), uploads = await uploadsFor(gymA);
+    try {
+      await expect(pipeline.preview(actorA, planFor(upload.id), { limit: 10, offset: 0 }, 'UTC')).rejects.toMatchObject({ code: 'unavailable' });
+    } finally { now.mockRestore(); }
+    expect((await uploads.list(previewPrefix(gymA, upload.id))).map((info) => !!info.deletedAt)).toEqual([true]);
+  });
+  it('answers a preview another process stored, even when this pass\'s deadline ends during the write', async () => {
+    let deadline: AbortSignal | undefined, lost = false;
+    class Racing extends FakeUploads {
+      override async get(...[key, options]: Parameters<FakeUploads['get']>) { deadline ??= options?.signal; return super.get(key, options); }
+      override async put(...[key, body, type]: Parameters<FakeUploads['put']>) {
+        if (lost || !key.endsWith('/summary.json')) return super.put(key, body, type);
+        lost = true; await super.put(key, body, type); await once(deadline!, 'abort');
+        throw new Error('Upload keys are immutable');
+      }
+    }
+    const pipeline = createImportPipeline({ uploadsFor: async () => racing, jobs: new FakeJobs(clock), scope: database.forGym, clock,
+      mappers: new MapperRegistry([fixtureMapper({ analyze: 0 })]), previewBudget: new PreviewBudget(), previewTimeoutMs: 1_000 });
+    const racing = new Racing(gymA, clock), upload = await pipeline.upload(actorA, new File([csv(3)], 'people.csv'));
+    const preview = await pipeline.preview(actorA, planFor(upload.id), { limit: 10, offset: 0 }, 'UTC');
+    expect(lost).toBe(true); expect(preview.summary.totalRows).toBe(3);
   });
   it('removes the rows of a failed computation', async () => {
     const calls = { analyze: 0 }, base = fixtureMapper(calls);

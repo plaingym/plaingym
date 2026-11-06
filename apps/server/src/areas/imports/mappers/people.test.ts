@@ -40,6 +40,15 @@ function services() {
   }
   return { pipeline, load };
 }
+
+it.each(['McCASE', 'A_%\\B', 'Émile', 'İpek', 'Σίγμα'])('keeps duplicate matching and isolation for %s', async (lastName) => {
+  const own = await factory('members', gymA, { firstName: 'Jo', lastName, email: 'jo@example.test' });
+  await factory('members', gymB, { firstName: 'Jo', lastName, email: 'jo@example.test' });
+  await factory('members', gymA, { firstName: 'Jo', lastName, email: 'jo@example.test', anonymizedAt: clock.now() });
+  const { load } = services();
+  const input = await load(csvLine(['First Name', 'Last Name', 'Email']) + csvLine(['Jo', lastName, 'jo@example.test']));
+  expect((await input.preview()).data[0]!.duplicateIds).toEqual([own.id]);
+});
 const snapshot = (gymId = gymA) => database.forGym(gymId, async (tx) => ({
   // Postgres returns unordered rows in any order, so compare in ID order.
   members: await tx.select().from(members).orderBy(asc(members.id)), households: await tx.select().from(households).orderBy(asc(households.id)),

@@ -36,9 +36,28 @@ plan, so a warm page in that process reads only `meta.json` and the row files.
 A preview is served for `PREVIEW_LIFETIME` from when its computation finished, so
 one slower than that is still served for the full lifetime. Two requests for one
 preview in a process share one pass; each plan keeps its own preview while it is
-fresh. A process computes one preview at a time, since each computation holds its
-parsed file and the mapper's whole-file index: a request for another plan or upload
-waits for the running computation to finish.
+fresh. A process shares one FIFO memory budget across all pipeline instances:
+one third of V8's heap limit, capped at 128 MiB. A computation reserves 4 MiB plus
+eight times its upload size and 256 bytes per row, up to the whole budget. Small
+previews can run together; a large preview waits for the allowance to be free.
+Upload metadata records the byte size internally; older uploads without it reserve
+for the maximum upload size. This does not change the upload response.
+
+Each admitted computation has a two-minute deadline. It passes an abort signal
+through storage metadata and object reads, including body consumption, and checks
+the deadline between mapper chunks and writes. The budget is released only when
+the computation settles; a timeout does not race a still-running read. Work already
+in a database transaction or write finishes before the next check. Queue waiting
+does not consume the computation's deadline. A computation past its deadline
+answers `unavailable`; one whose summary is already stored keeps its result, even
+if removing the previous preview's files runs past the deadline. Previews still
+finish in the request.
+
+All three mappers use gym-scoped indexes on generated, PostgreSQL-folded member
+last names; mat and memberships also use the folded email index. First names
+remain a filter on the indexed candidates. The complete supplied identity still
+decides matches and ambiguity, and anonymized members are excluded. These lookup
+columns update automatically with the source fields and are omitted from exports.
 
 The import revision changes whenever a real (not dry-run) import run of the gym
 is created or completes, or retention removes runs: one aggregate over the gym's
@@ -49,7 +68,9 @@ before memberships) and runs that start or finish while a preview is computing;
 made by hand are not tracked, so a preview can be up to five minutes behind them.
 
 Upload keys are immutable, so every computation writes new keys. A computation
-that fails marks its own row files deleted; one that crashes leaves row files
+that fails, or passes its deadline, marks its own row files deleted, within a
+ten-second limit of its own; upload retention removes any that limit leaves. One
+that crashes leaves row files
 under its own generation, which block nothing. When another process stored the
 same bucket's summary first, that preview is served and this computation's rows
 are marked deleted. A summary key that a crashed writer reserved and never wrote
@@ -64,8 +85,10 @@ about 32 MB (21 files).
 
 `start` takes the row count from the upload's `meta.json` and never reads the CSV;
 the job parses it when it runs, and fails the run if the file's row count differs from
-the run's. Parsing slices each cell out of the text rather than
-appending character by character, and a preview or run holds the parsed document and
+the run's. Parsed rows share the source text, a header index, and packed cell
+offsets. Mappers use `csvValue` to slice only the cells they need; quoted escapes
+are decoded on access. The compatibility `row.values` getter materializes one row
+for inspection. A preview or run holds the parsed document and
 the mapper's whole-file index, never every planned row.
 
 An upload reads the file's bytes into a buffer only to decode them, so they are

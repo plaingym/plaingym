@@ -15,7 +15,7 @@ billing on ([going-live.md](going-live.md)).
 
 Export one file per kind of data. Each must be:
 
-* UTF-8, up to 20 MB, with one header row;
+* UTF-8, up to 20 MB, 100,000 data rows and 200 columns, with one header row;
 * made of uniquely named columns, with the same number of cells in every row (the
   upload is refused otherwise).
 
@@ -89,6 +89,15 @@ For each file, in order:
    duplicates setting or column matches needs a new dry run.
 5. **Commit.** The import runs in the background in batches; a progress count shows
    how far it is. When it reports *Complete*, check **Members**.
+
+Preview computation has a two-minute limit, starting after it gets a turn to run.
+Large files wait for other previews to finish; small files can run together.
+If a preview times out, split the file into smaller files and preview each one.
+For people, keep every member of a family in the same file: family links work only
+within one file, so relatives in another file would get a separate household. For
+promotion history, keep each member's history for a program together so it can be
+checked in order. Dry runs and commits run in the background and do not have the
+preview's two-minute limit.
 
 If a run fails part-way, rows committed before the failure stay saved. Read the
 error report, correct the CSV, choose *Skip* (keep existing records) or *Update one

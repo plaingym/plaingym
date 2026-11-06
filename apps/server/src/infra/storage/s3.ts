@@ -11,10 +11,16 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
 import { decodeRecord, digest, DurableUploads, encodeRecord, recordId, validGym, validKey } from './common.js';
 import type { UploadBackend, UploadRecord } from './common.js';
-import type { BackupObjectStore, ObjectInfo, PutObjectOptions } from './index.js';
+import type { BackupObjectStore, ObjectInfo, PutObjectOptions, ReadOptions } from './index.js';
+import { abortableBody } from './read.js';
 
+const REQUEST_TIMEOUT_MS = 30_000, COMPLETE_TIMEOUT_MS = 600_000;
+/** About 128 kbit/s. The request timeout includes sending the body, so a part's limit grows with its size. */
+const SLOWEST_UPLOAD_BYTES_PER_MS = 16;
 export function createS3Client(config: S3ClientConfig): S3Client {
-  return new S3Client({ region: 'auto', forcePathStyle: true, ...config,
+  // The handler holds a body for an unanswered 100 Continue until the request timeout, so that wait would fail the request.
+  return new S3Client({ region: 'auto', forcePathStyle: true, expectContinueHeader: false,
+    requestHandler: { requestTimeout: REQUEST_TIMEOUT_MS, throwOnRequestTimeout: true }, ...config,
     requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED' });
 }
 export interface S3StoreOptions {
@@ -57,7 +63,7 @@ export class S3BackupObjectStore implements BackupObjectStore {
       const PartNumber = parts.length + 1;
       const result = await client.send(new UploadPartCommand({
         Bucket, Key: key, UploadId: uploadId, PartNumber, Body: buffer.subarray(0, pending), ContentLength: pending,
-      }), requestOptions);
+      }), { ...requestOptions, requestTimeout: Math.max(REQUEST_TIMEOUT_MS, Math.ceil(pending / SLOWEST_UPLOAD_BYTES_PER_MS)) });
       if (!result.ETag) throw new Error('S3 part response has no ETag');
       parts.push({ ETag: result.ETag, PartNumber }); pending = 0;
       // Each send finishes before the buffer is reused: only one part is in flight.
@@ -87,7 +93,7 @@ export class S3BackupObjectStore implements BackupObjectStore {
       signal?.throwIfAborted();
       await client.send(new CompleteMultipartUploadCommand({
         Bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts },
-      }), requestOptions);
+      }), { ...requestOptions, requestTimeout: COMPLETE_TIMEOUT_MS });
       uploadId = undefined;
       const metadata = await this.headObject(key);
       if (!metadata) throw new Error('Completed S3 object is missing');
@@ -107,17 +113,21 @@ export class S3BackupObjectStore implements BackupObjectStore {
       signal?.removeEventListener('abort', abortRead); reader.releaseLock();
     }
   }
-  async getObject(key: string): Promise<ReadableStream<Uint8Array> | null> {
+  async getObject(key: string, options: ReadOptions = {}): Promise<ReadableStream<Uint8Array> | null> {
     assertNoTransaction('storage.getObject'); validKey(key);
+    options.signal?.throwIfAborted();
     try {
-      const response = await this.options.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }));
-      return response.Body?.transformToWebStream() ?? null;
+      const response = await this.options.client.send(new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
+        options.signal ? { abortSignal: options.signal } : {});
+      return response.Body ? abortableBody(response.Body.transformToWebStream(), options.signal) : null;
     } catch (error) { if (notFound(error)) return null; throw error; }
   }
-  async headObject(key: string): Promise<ObjectInfo | null> {
+  async headObject(key: string, options: ReadOptions = {}): Promise<ObjectInfo | null> {
     assertNoTransaction('storage.headObject'); validKey(key);
+    options.signal?.throwIfAborted();
     try {
-      const response = await this.options.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }));
+      const response = await this.options.client.send(new HeadObjectCommand({ Bucket: this.options.bucket, Key: key }),
+        options.signal ? { abortSignal: options.signal } : {});
       if (response.ContentLength === undefined || !response.ETag || !response.LastModified)
         throw new Error('Incomplete S3 object metadata');
       return { key, size: response.ContentLength, contentType: response.ContentType ?? 'application/octet-stream',
@@ -179,12 +189,12 @@ class S3UploadBackend implements UploadBackend {
       }));
     } catch (error) { if (precondition(error)) throw new Error('Upload keys are immutable', { cause: error }); throw error; }
   }
-  async record(key: string): Promise<UploadRecord | null> { return this.recordAt(digest(key)); }
-  async recordAt(id: string): Promise<UploadRecord | null> {
+  async record(key: string, options?: ReadOptions): Promise<UploadRecord | null> { return this.recordAt(digest(key), options); }
+  async recordAt(id: string, options: ReadOptions = {}): Promise<UploadRecord | null> {
     // The record and its markers are separate objects, so read them together.
-    const text = async (key: string) => { const body = await this.store.getObject(key); return body && new Response(body).text(); };
+    const text = async (key: string) => { const body = await this.store.getObject(key, options); return body && new Response(body).text(); };
     const [json, deleted, swept] = await Promise.all([text(this.prefix + 'records/' + id), text(this.prefix + 'deleted/' + id),
-      this.store.headObject(this.prefix + 'swept/' + id)]);
+      this.store.headObject(this.prefix + 'swept/' + id, options)]);
     if (json === null) return null;
     const record = decodeRecord(json);
     if (record.info && deleted !== null) record.info = { ...record.info, deletedAt: new Date(deleted) };
@@ -221,7 +231,7 @@ class S3UploadBackend implements UploadBackend {
   async put(key: string, body: ReadableStream<Uint8Array>, contentType: string): Promise<ObjectInfo> {
     return this.store.putObject(this.blobKey(key), body, { contentType });
   }
-  async get(key: string): Promise<ReadableStream<Uint8Array> | null> { return this.store.getObject(this.blobKey(key)); }
+  async get(key: string, options?: ReadOptions): Promise<ReadableStream<Uint8Array> | null> { return this.store.getObject(this.blobKey(key), options); }
   async remove(key: string): Promise<void> { await this.store.deleteObject(this.blobKey(key)); }
   async undelete(key: string): Promise<void> { await this.store.deleteObject(this.prefix + 'deleted/' + digest(key)); }
   async signedUrl(key: string, seconds: number): Promise<string> {

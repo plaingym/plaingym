@@ -28,7 +28,8 @@ describe('export schema coverage and secret exclusions', () => {
   it('accounts for every schema column with an explicit safe projection or exclusion', () => {
     const excluded: Partial<Record<keyof typeof exportCatalog, readonly string[]>> = {
       households: ['pin_hash'],
-      members: ['checkin_code_version', 'checkin_code_hash'],
+      // The folded lookup values are generated from last_name and email, which are already exported.
+      members: ['checkin_code_version', 'checkin_code_hash', 'last_name_folded', 'email_folded'],
       kiosk_devices: ['token_hash'],
       signed_links: ['token_hash'],
       payment_attempts: ['error'],

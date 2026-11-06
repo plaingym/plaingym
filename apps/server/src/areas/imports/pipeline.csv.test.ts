@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { autoMatch, csvLine, duplicateKey, DuplicateIndex, parseCsv } from './pipeline.csv.js';
+import { autoMatch, csvLine, csvValue, duplicateKey, DuplicateIndex, parseCsv } from './pipeline.csv.js';
+const materialized = (text: string) => {
+  const { columns, rows } = parseCsv(text);
+  return { columns, rows: rows.map(row => ({ rowNumber: row.rowNumber, values: row.values })) };
+};
 describe('CSV import and duplicate utilities', () => {
   it('reads BOMs, CRLF, escaped quotes, commas, multiline fields and source line numbers', () => {
-    expect(parseCsv('\uFEFFName,Note\r\n"Jo, Doe","Says ""hello""\nagain"\r\nSam,ok\r\n')).toEqual({
+    expect(materialized('\uFEFFName,Note\r\n"Jo, Doe","Says ""hello""\nagain"\r\nSam,ok\r\n')).toEqual({
       columns: ['Name', 'Note'], rows: [
         { rowNumber: 2, values: { Name: 'Jo, Doe', Note: 'Says "hello"\nagain' } },
         { rowNumber: 4, values: { Name: 'Sam', Note: 'ok' } },
@@ -18,8 +22,15 @@ describe('CSV import and duplicate utilities', () => {
     expect(parseCsv('a\n"p""q\n""r"""\n').rows[0]!.values.a).toBe('p"q\n"r"');
   });
   it('keeps empty trailing cells, with or without a final line ending', () => {
-    expect(parseCsv('a,b,c\n1,,').rows).toEqual([{ rowNumber: 2, values: { a: '1', b: '', c: '' } }]);
+    expect(materialized('a,b,c\n1,,').rows).toEqual([{ rowNumber: 2, values: { a: '1', b: '', c: '' } }]);
     expect(parseCsv('a,b\n"",\n').rows[0]!.values).toEqual({ a: '', b: '' });
+  });
+  it('ignores long blank-line runs while keeping quoted empty records and source line numbers', () => {
+    expect(materialized('\n\r\na\r\nfirst\n' + '\n'.repeat(5000) + '""\r\nlast\n\n').rows).toEqual([
+      { rowNumber: 4, values: { a: 'first' } },
+      { rowNumber: 5005, values: { a: '' } },
+      { rowNumber: 5006, values: { a: 'last' } },
+    ]);
   });
   it('reads long plain and quoted cells intact', () => {
     const cell = 'x'.repeat(5000), document = parseCsv(`a,b\n${cell},"${cell}"\n`);
@@ -28,10 +39,21 @@ describe('CSV import and duplicate utilities', () => {
   it.each(['', 'name,name\nx,y', 'name,\nx,y', 'name\n"unclosed', 'name\n"closed"tail', 'name\nqu"ote', 'a,b\nx', 'a\nx,y', 'a\nx\0'])('rejects malformed CSV %j', (csv) => {
     expect(() => parseCsv(csv)).toThrow();
   });
+  it('applies the row and column limits', () => {
+    const line = (count: number) => Array.from({ length: count }, (_, i) => 'c' + i).join(',') + '\n';
+    expect(parseCsv('a\n' + 'x\n'.repeat(100_000)).rows).toHaveLength(100_000);
+    expect(() => parseCsv('a\n' + 'x\n'.repeat(100_001))).toThrow();
+    expect(parseCsv(line(200) + line(200)).columns).toHaveLength(200);
+    expect(() => parseCsv(line(201) + line(201))).toThrow();
+    expect(() => parseCsv('a\n' + ','.repeat(1_000))).toThrow();
+  });
   it('preserves zero-like cells, empty cells and prototype property names', () => {
     const document = parseCsv('__proto__,constructor,n\nplain,,0\n');
     expect(Object.hasOwn(document.rows[0]!.values, '__proto__')).toBe(true);
     expect(document.rows[0]!.values.n).toBe('0');
+    expect(csvValue(document.rows[0]!, '__proto__')).toBe('plain');
+    expect(csvValue(document.rows[0]!, 'constructor')).toBe('');
+    expect(csvValue(document.rows[0]!, 'missing')).toBe('');
     expect(parseCsv('a,b\n,\n').rows).toHaveLength(1);
     expect(parseCsv('a\n""\n').rows).toHaveLength(1);
   });

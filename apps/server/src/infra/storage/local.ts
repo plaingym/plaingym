@@ -3,12 +3,14 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
+import { createReadStream } from 'node:fs';
+import { once } from 'node:events';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
 import { decodeRecord, digest, DurableUploads, encodeRecord, gymKey, recordId, validGym } from './common.js';
 import type { UploadBackend, UploadRecord } from './common.js';
-import type { ObjectInfo } from './index.js';
+import type { ObjectInfo, ReadOptions } from './index.js';
 
 export interface LocalUploadsOptions {
   readonly root: string;
@@ -58,17 +60,18 @@ class LocalBackend implements UploadBackend {
     }
     await this.save({ key });
   }
-  async record(key: string): Promise<UploadRecord | null> { return this.recordAt(digest(key)); }
-  async recordAt(id: string): Promise<UploadRecord | null> {
+  async record(key: string, options?: ReadOptions): Promise<UploadRecord | null> { return this.recordAt(digest(key), options); }
+  async recordAt(id: string, options: ReadOptions = {}): Promise<UploadRecord | null> {
+    options.signal?.throwIfAborted();
     const directory = join(this.root, id);
     let record: UploadRecord;
-    try { record = decodeRecord(await readFile(join(directory, 'record.json'), 'utf8')); }
+    try { record = decodeRecord(await readFile(join(directory, 'record.json'), { encoding: 'utf8', ...options })); }
     catch (error) { if (missing(error)) return null; throw error; }
     if (record.info) {
-      try { record.info = { ...record.info, deletedAt: new Date(await readFile(join(directory, 'deleted'), 'utf8')) }; }
+      try { record.info = { ...record.info, deletedAt: new Date(await readFile(join(directory, 'deleted'), { encoding: 'utf8', ...options })) }; }
       catch (error) { if (!missing(error)) throw error; }
     }
-    try { await readFile(join(directory, 'swept')); record.swept = true; }
+    try { await readFile(join(directory, 'swept'), options); record.swept = true; }
     catch (error) { if (!missing(error)) throw error; }
     return record;
   }
@@ -117,10 +120,14 @@ class LocalBackend implements UploadBackend {
       await file.close(); await rm(temporary, { force: true }); throw error;
     }
   }
-  async get(key: string): Promise<ReadableStream<Uint8Array> | null> {
+  async get(key: string, options: ReadOptions = {}): Promise<ReadableStream<Uint8Array> | null> {
+    options.signal?.throwIfAborted();
     try {
-      const file = await open(this.path(key, 'body'), 'r');
-      return Readable.toWeb(file.createReadStream()) as ReadableStream<Uint8Array>;
+      const stream = createReadStream(this.path(key, 'body'), options);
+      const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+      try { await once(stream, 'open'); }
+      catch (error) { await body.cancel(error).catch(() => undefined); throw error; }
+      return body;
     } catch (error) { if (missing(error)) return null; throw error; }
   }
   async remove(key: string): Promise<void> { await rm(this.path(key, 'body'), { force: true }); }

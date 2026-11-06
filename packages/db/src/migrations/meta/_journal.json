@@ -127,6 +127,13 @@
       "when": 1793855987973,
       "tag": "0018_signed_links_campaign_index",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793921407827,
+      "tag": "0019_members_import_lookup",
+      "breakpoints": true
     }
   ]
 }
