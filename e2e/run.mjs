@@ -17,6 +17,8 @@ const env = { ...process.env, E2E_POSTGRES_PASSWORD: token(), E2E_APP_PASSWORD: 
   E2E_SETUP_TOKEN: token(), E2E_S3_SECRET: token(), E2E_STRIPE_KEY: 'sk_test_' + token(), E2E_STRIPE_RESTRICTED_KEY: 'rk_test_' + token(),
   E2E_STRIPE_WEBHOOK_SECRET: 'whsec_' + token(), E2E_IMAGE: process.env.E2E_IMAGE ?? 'plaingym:e2e',
   E2E_COMPOSE_PROJECT: 'plaingym-e2e-' + randomBytes(6).toString('hex') };
+// Issue once, then share the exact keys with both the fixtures and fake Stripe.
+env.E2E_STRIPE_GYM_KEYS = JSON.stringify(Object.fromEntries(['alpha', 'beta'].map(slug => [slug, 'rk_test_' + token()])));
 
 function command(binary, args, options = {}) {
   return new Promise((resolve, reject) => {

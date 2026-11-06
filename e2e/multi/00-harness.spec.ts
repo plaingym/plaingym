@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect, addressAllocator, type Program } from '../support.js';
+import { test, expect, addressAllocator, clearCheckpoints, type Program } from '../support.js';
 import { fakeStripe, stripeSecret } from '../portal.js';
 import { contextOf, createGym, gyms, stripeAs, stripeKeyOf } from './support.js';
 
@@ -19,7 +19,9 @@ test('client address blocks are disjoint and never wrap', () => {
 
 test('the fake Stripe rejects unissued keys without creating an account', async () => {
   const madeUp = 'rk_test_0123456789abcdef0123456789abcdef';
-  expect((await stripeAs(madeUp).request('/v1/customers')).status).toBe(401);
+  const rejected = await stripeAs(madeUp).request('/v1/customers');
+  expect(rejected.status).toBe(401);
+  expect(rejected.text).toContain('Fake Stripe key mismatch');
   expect((await fakeStripe().request('/test/sign-webhook', 'POST', { key: madeUp, body: '{}' })).status).toBe(404);
   expect((await stripeAs(madeUp).request('/v1/customers')).status).toBe(401);
   for (const key of [stripeSecret('E2E_STRIPE_KEY'), stripeSecret('E2E_STRIPE_RESTRICTED_KEY'), ...gyms.map(gym => stripeKeyOf(gym.slug))]) {
@@ -29,6 +31,7 @@ test('the fake Stripe rejects unissued keys without creating an account', async 
 
 test('fixture resumes after coach acceptance and program creation without duplicate writes', async () => {
   test.setTimeout(180_000);
+  await clearCheckpoints(['multi:alpha:coach', 'multi:alpha:ranks']);
   for (const failAt of ['coach', 'ranks'] as const) {
     await expect(createGym(gyms[0], step => {
       if (step === failAt) throw new Error('Injected failure after ' + step);

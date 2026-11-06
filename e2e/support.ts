@@ -162,6 +162,14 @@ export async function cached<T>(name: string, create: () => Promise<T>): Promise
   return value;
 }
 const fixturesFile = new URL('./coverage/fixtures.json', import.meta.url);
+/** Clear composite checkpoints while retaining the successfully checked writes inside them. */
+export async function clearCheckpoints(names: string[]) {
+  const values = await readFixtures();
+  for (const name of names) delete values[name];
+  const temporary = new URL(`./coverage/fixtures-${randomUUID()}.tmp`, import.meta.url);
+  await writeFile(temporary, JSON.stringify(values), { mode: 0o600 });
+  await rename(temporary, fixturesFile);
+}
 async function readFixtures(): Promise<Record<string, unknown>> {
   try { return JSON.parse(await readFile(fixturesFile, 'utf8')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }

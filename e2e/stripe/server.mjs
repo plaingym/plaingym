@@ -2,13 +2,16 @@
 // A small, stateful stand-in for the Stripe API calls the demo install makes, plus a minimal hosted
 // Checkout page. It exists only in the e2e stack, which reaches it as api.stripe.com over a test CA.
 import { createServer } from 'node:http';
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 const secretKey = process.env.STRIPE_SECRET_KEY, restrictedKey = process.env.STRIPE_RESTRICTED_KEY, checkoutOrigin = process.env.CHECKOUT_ORIGIN;
 if (!secretKey || !restrictedKey || !checkoutOrigin) throw new Error('STRIPE_SECRET_KEY, STRIPE_RESTRICTED_KEY and CHECKOUT_ORIGIN are required');
-// Only the keys issued to this run have accounts. Gym keys use the same derivation as multi/support.ts.
-const keys = [secretKey, restrictedKey, ...['alpha', 'beta'].map(slug =>
-  'rk_test_' + createHash('sha256').update(`${restrictedKey}:${slug}`).digest('hex').slice(0, 32))];
+// Only the keys issued by the runner have accounts; this fake never derives fixture keys.
+const gymKeys = JSON.parse(process.env.STRIPE_GYM_KEYS ?? '{}');
+if (!Object.keys(gymKeys).length || Object.values(gymKeys).some(key => typeof key !== 'string' || !key.startsWith('rk_test_'))) {
+  throw new Error('STRIPE_GYM_KEYS must contain the gym keys issued by e2e/run.mjs');
+}
+const keys = [secretKey, restrictedKey, ...Object.values(gymKeys)];
 const accounts = new Map(keys.map(key => [key, { objects: new Map(), replies: new Map() }]));
 const accountOf = (key) => accounts.get(key);
 const newId = (prefix) => prefix + '_' + randomBytes(12).toString('hex');
@@ -259,7 +262,7 @@ createServer(async (request, response) => {
       return send(response, 200, { endpointId: endpoint.id, url: endpoint.url, signature: `t=${created},v1=${createHmac('sha256', endpoint._secret).update(`${created}.${body}`).digest('hex')}` });
     }
     const account = accountOf(bearer);
-    if (!account) return send(response, 401, { error: { type: 'invalid_request_error', message: 'Invalid API Key provided' } });
+    if (!account) return send(response, 401, { error: { type: 'invalid_request_error', message: 'Fake Stripe key mismatch: key was not issued by e2e/run.mjs; check E2E_STRIPE_GYM_KEYS and STRIPE_GYM_KEYS' } });
     const idempotency = request.method === 'POST' && request.headers['idempotency-key'];
     const replayKey = idempotency && `${request.method} ${url.pathname} ${idempotency}`;
     if (replayKey && account.replies.has(replayKey)) {

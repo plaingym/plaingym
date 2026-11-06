@@ -5,8 +5,82 @@ import { test } from 'node:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { assessRun, budget, evaluate, resolveMarks, summarize } from './budget.mjs';
-import { withCleanup } from './run.mjs';
+import { parseSamples, removeContainers, run as command, withCleanup } from './run.mjs';
+
+test('sample parsing keeps complete records and drops only an unterminated tail', () => {
+  assert.deepEqual(parseSamples('{"at":1}\n{"at":2}\n'), [{ at: 1 }, { at: 2 }]);
+  assert.deepEqual(parseSamples('{"at":1}\n{"at":'), [{ at: 1 }]);
+  assert.deepEqual(parseSamples('{"at":1}'), []);
+  assert.deepEqual(parseSamples(''), []);
+  assert.throws(() => parseSamples('{broken}\n{"at":1}\n'), SyntaxError);
+});
+
+test('commands report success, failure, spawn errors and timeouts', async () => {
+  assert.equal((await command(process.execPath, ['-e', 'console.log(42)'])).out.trim(), '42');
+  await assert.rejects(command(process.execPath, ['-e', 'process.exit(3)']), /exited 3/);
+  assert.equal((await command(process.execPath, ['-e', 'process.exit(3)'], { allowFailure: true })).code, 3);
+  await assert.rejects(command('nonexistent-memory-command', []), /ENOENT/);
+  await assert.rejects(command(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cleanup: true, timeout: 200 }), /timed out/);
+  assert.equal((await command(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cleanup: true, timeout: 200, allowFailure: true })).timedOut, true);
+});
+
+test('cleanup kills descendants holding pipes, on timeout and after client exit', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  for (const exits of [false, true]) {
+    const script = `const {spawn}=require('node:child_process'); const child=spawn(process.execPath, ['-e','setInterval(()=>{},1000)'], {stdio:'inherit'}); console.log(child.pid); ${exits ? 'process.exit(0)' : 'setInterval(()=>{},1000)'}`;
+    const result = await command(process.execPath, ['-e', script], { cleanup: true, timeout: 1500, exitGraceMs: 50, allowFailure: true });
+    assert.equal(result.timedOut, !exits);
+    const pid = Number(result.out.trim());
+    assert.ok(pid > 0);
+    // Resolving promptly alone could hide an orphan whose pipes were merely destroyed.
+    let alive = true;
+    for (let attempt = 0; attempt < 50 && alive; attempt++) {
+      try {
+        process.kill(pid, 0);
+        // Linux may retain a killed orphan as a zombie until the init process reaps it.
+        if (process.platform === 'linux') alive = !/\) Z /.test(await readFile(`/proc/${pid}/stat`, 'utf8'));
+      } catch (error) {
+        if (!['ESRCH', 'ENOENT'].includes(error.code)) throw error;
+        alive = false;
+      }
+      if (alive) await delay(20);
+    }
+    if (alive) process.kill(pid, 'SIGKILL'); // Clean up even if this regression fails.
+    assert.equal(alive, false, 'the cleanup process group must leave no running descendant');
+  }
+});
+
+test('a command that is not cleanup keeps reading output until its descendants close the pipes', { skip: process.platform === 'win32' }, async () => {
+  const script = `const {spawn}=require('node:child_process'); spawn(process.execPath, ['-e','setTimeout(()=>console.log("late"),400)'], {stdio:'inherit'}); process.exit(0)`;
+  assert.equal((await command(process.execPath, ['-e', script], { exitGraceMs: 50 })).out.trim(), 'late');
+});
+
+test('container cleanup uses remaining names, not docker rm stderr', async () => {
+  for (const error of ['No such container', 'removal is already in progress', '']) {
+    const calls = [];
+    await removeContainers('fixture', ['fixture-sampler'], async (_binary, args) => {
+      calls.push(args);
+      return args[0] === 'rm' ? { code: 1, error } : { out: 'fixture-app-1\n' };
+    });
+    assert.deepEqual(calls[1], ['ps', '-a', '--filter', 'name=fixture', '--format', '{{.Names}}']);
+  }
+  await assert.rejects(removeContainers('fixture', ['fixture-sampler'], async (_binary, args) =>
+    args[0] === 'rm' ? { code: 1, error: 'device or resource busy\n' } : { out: 'fixture-sampler\n' }, 0), /remaining: fixture-sampler: device or resource busy/);
+  await assert.rejects(removeContainers('fixture', ['fixture-sampler'], async (_binary, args) =>
+    args[0] === 'rm' ? { timedOut: true, error: 'No such container' } : { out: '' }), /timed out/);
+  // A removal already in progress is still listed for a moment.
+  let listings = 0;
+  await removeContainers('fixture', ['fixture-sampler'], async (_binary, args) => {
+    if (args[0] === 'rm') return { code: 1, error: 'removal is already in progress' };
+    return { out: listings++ ? '' : 'fixture-sampler\n' };
+  }, 5_000);
+  assert.equal(listings, 2);
+  await assert.rejects(removeContainers('fixture', ['fixture-sampler'], async (_binary, args) => {
+    if (args[0] === 'ps') throw new Error('listing failed');
+    return { code: 0 };
+  }), /listing failed/);
+});
 
 const MiB = 1024 ** 2;
 const limits = { app: 512 * MiB, postgres: 384 * MiB, caddy: 128 * MiB };

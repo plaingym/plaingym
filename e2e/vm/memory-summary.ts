@@ -2,7 +2,7 @@
 export interface Sample {
   at: number; hostOomKills: number;
   host: { MemTotal: number; MemAvailable: number; SwapTotal: number; SwapFree: number };
-  containers: Record<string, { current: number; anon: number; file: number; peak: number; max: string; swap: number; events: Record<string, number>; initialRestarts: number }>;
+  containers: Record<string, { current: number; anon: number; file: number; shmem: number; peak: number; max: string; swap: number; events: Record<string, number>; initialRestarts: number }>;
 }
 
 /**
@@ -12,15 +12,17 @@ export interface Sample {
 export function summarizeMemory(samples: Sample[], busyStart?: number) {
   const names = ['app', 'postgres', 'caddy'];
   const containerPeakBytes = Object.fromEntries(names.map((name) => [name, Math.max(...samples.map((s) => s.containers[name].peak))]));
-  const stack = (sample: Sample, field: 'current' | 'anon' | 'file') => names.reduce((sum, name) => sum + sample.containers[name][field], 0);
+  const stack = (sample: Sample, field: 'current' | 'anon' | 'file' | 'shmem') => names.reduce((sum, name) => sum + sample.containers[name][field], 0);
   const sampledStackPeakBytes = Math.max(...samples.map((sample) => stack(sample, 'current')));
+  const sampledStackAnonPeakBytes = Math.max(...samples.map((sample) => stack(sample, 'anon')));
   const idle = busyStart === undefined ? [] : samples.filter((s) => s.at < busyStart && s.at >= busyStart - 10);
-  const average = (field: 'current' | 'anon' | 'file') => idle.length ? Math.round(idle.reduce((sum, s) => sum + stack(s, field), 0) / idle.length) : null;
+  const average = (field: 'current' | 'anon' | 'file' | 'shmem') => idle.length ? Math.round(idle.reduce((sum, s) => sum + stack(s, field), 0) / idle.length) : null;
   const idleStackBytes = average('anon');
   const violations: string[] = [];
   if (busyStart !== undefined && idleStackBytes === null) violations.push('no samples in the 10 seconds before load, so the idle target was not measured');
   if (idleStackBytes !== null && idleStackBytes > 250 * 1024 ** 2) violations.push('sampled full-stack idle anonymous memory exceeds proposed 250 MiB target');
   if (sampledStackPeakBytes > 600 * 1024 ** 2) violations.push('sampled full-stack peak exceeds proposed 600 MiB target');
   return { containerPeakBytes, sampledStackPeakBytes, idleStackBytes, idleStackCurrentBytes: average('current'),
+    sampledStackAnonPeakBytes, idleStackShmemBytes: average('shmem'),
     idleStackFileBytes: average('file'), idleMetric: 'memory.stat anon', violations };
 }

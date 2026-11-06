@@ -37,26 +37,63 @@ const log = (line) => console.log(`[memory ${new Date().toISOString().slice(11, 
 // and `compose up --wait-timeout 240` after its image pulls.
 const commandTimeoutMs = 900_000, cleanupTimeoutMs = 120_000;
 
-function run(binary, args, { input, allowFailure = false, quiet = true, cwd = root, cleanup = false } = {}) {
+export function run(binary, args, { input, allowFailure = false, quiet = true, cwd = root, cleanup = false,
+  timeout = cleanup ? cleanupTimeoutMs : commandTimeoutMs, exitGraceMs = 2_000 } = {}) {
   return new Promise((done, fail) => {
-    const timeout = cleanup ? cleanupTimeoutMs : commandTimeoutMs;
+    const grouped = cleanup && process.platform !== 'win32';
     const child = spawn(binary, args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true,
-      detached: cleanup && process.platform !== 'win32',
-      signal: cleanup ? undefined : controller.signal, timeout, killSignal: 'SIGKILL' });
-    let out = '', error = '', spawnError;
+      detached: grouped, signal: cleanup ? undefined : controller.signal, killSignal: 'SIGKILL' });
+    let out = '', error = '', spawnError, grace, settled = false, timedOut = false;
+    const kill = () => {
+      try { if (grouped && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') spawnError ??= error; }
+    };
+    const timer = setTimeout(() => { timedOut = true; kill(); }, timeout);
     child.stdout.on('data', (chunk) => { out += chunk; if (!quiet) process.stdout.write(chunk); });
     child.stderr.on('data', (chunk) => { error += chunk; if (!quiet) process.stderr.write(chunk); });
     child.on('error', (error) => { spawnError = error; });
     if (input !== undefined) child.stdin.end(input);
-    child.on('close', (code, signal) => {
-      const ended = code === null ? `was killed (${signal}${signal === 'SIGKILL' ? `, possibly after its ${timeout / 1000} s limit` : ''})` : `exited ${code}`;
+    const finish = (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      const ended = code === null ? `was killed (${signal})` : `exited ${code}`;
       if (spawnError) fail(spawnError);
-      else if (code === 0 || allowFailure) done({ code, out, error });
+      else if (timedOut && !allowFailure) fail(new Error(`${binary} timed out after ${timeout} ms`));
+      else if (code === 0 || allowFailure) done({ code, out, error, timedOut });
       else fail(new Error(`${binary} ${args.slice(0, 3).join(' ')} ${ended}: ${(error || out).slice(-600)}`));
+    };
+    child.on('close', finish);
+    // Descendants can keep a cleanup command's pipes open after the client exits, so bound that drain too.
+    // Other commands wait for 'close': their output is read, and a Compose plugin may still be working.
+    if (cleanup) child.on('exit', (code, signal) => {
+      grace = setTimeout(() => { kill(); finish(code, signal); }, exitGraceMs);
     });
   });
 }
 const docker = (...args) => run('docker', args);
+
+/** A sampler publishes a record only once its newline has been written. */
+export function parseSamples(text) {
+  return text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
+export async function removeContainers(project, names, command = run, settleMs = 10_000) {
+  const removed = await command('docker', ['rm', '-f', '-v', ...names], { allowFailure: true, cleanup: true });
+  // A --rm loader's own removal can still be finishing, and `docker ps -a` lists it until it does.
+  const deadline = Date.now() + settleMs;
+  let leftovers;
+  for (;;) {
+    const remaining = await command('docker', ['ps', '-a', '--filter', `name=${project}`, '--format', '{{.Names}}'], { cleanup: true });
+    leftovers = remaining.out.trim().split('\n').filter(name => names.includes(name.trim()));
+    if (!leftovers.length || Date.now() >= deadline) break;
+    await delay(250);
+  }
+  if (removed.timedOut || leftovers.length) throw new Error(`Container cleanup ${removed.timedOut ? 'timed out' : 'incomplete'}; remaining: ${leftovers.join(', ') || 'none'}${removed.error ? `: ${removed.error.trim()}` : ''}`);
+}
 
 /** Cleanup must attempt every step and preserve either a completed result or the original run error. */
 export async function withCleanup(operation, cleanups, logFailure = console.error) {
@@ -216,7 +253,7 @@ async function oneRun(mode, image) {
         .map((line) => JSON.parse(line)).map((entry) => [entry.mark, entry.at]))));
     });
     await attempt('sampler results', async () => {
-      const samples = (await readFile(join(out, 'samples.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+      const samples = parseSamples(await readFile(join(out, 'samples.jsonl'), 'utf8'));
       summary = summarize(samples, marks);
     });
     const finished = { mode, image, budget, summary, facts, marks, clock, ...assessRun(summary, { mode, facts, failures, bookkeepingFailures }),
@@ -226,14 +263,7 @@ async function oneRun(mode, image) {
     return finished;
   }, [
     // Abort stops Docker clients, not their containers. Remove the named loaders too, then the Compose volumes.
-    ['remove sampler and loaders', async () => {
-      const removed = await run('docker', ['rm', '-f', '-v', sampler, ...loaders], { allowFailure: true, cleanup: true });
-      // Loaders use --rm, and an interrupted setup may never have created the sampler.
-      const errors = removed.error.trim().split('\n').filter(Boolean);
-      if (removed.code !== 0 && (!errors.length || errors.some((line) => !line.startsWith('Error response from daemon: No such container:')))) {
-        throw new Error(removed.error || removed.out || 'docker rm failed');
-      }
-    }],
+    ['remove sampler and loaders', () => removeContainers(project, [sampler, ...loaders])],
     ['compose down', () => run('docker', [...compose, 'down', '--volumes', '--remove-orphans'], { cleanup: true })],
     ['remove temporary files', () => rm(work, { recursive: true, force: true })],
   ]);

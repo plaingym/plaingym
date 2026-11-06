@@ -45,7 +45,11 @@ SIGINT (Ctrl+C) and SIGTERM stop active commands and run the same cleanup, inclu
 load containers. Interrupted runs exit 130 or 143 respectively. An image supplied with `--image`
 is kept; only an image built by the runner is removed.
 On POSIX, cleanup commands run in a detached process group, so a second Ctrl+C cannot interrupt
-their Docker clients. Cleanup commands have a 120-second timeout.
+their Docker clients. Cleanup commands have a 120-second timeout that kills the whole
+process group; their pipe draining after client exit is bounded too. After removal, `docker ps`
+checks for remaining sampler and loader containers, for up to 10 seconds while a removal already
+in progress finishes. An unterminated final sample line is dropped; malformed complete lines
+still fail parsing.
 
 ## What is measured
 

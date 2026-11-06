@@ -70,7 +70,7 @@ test('rejects different restore hostnames rather than silently testing a broken 
 const MiB = 1024 ** 2;
 function memorySample(at, anon = 64, file = 62, current = anon + file) {
   return { at, containers: Object.fromEntries(['app', 'postgres', 'caddy'].map((name) => [name,
-    { anon: anon * MiB, file: file * MiB, current: current * MiB, peak: current * MiB }])) };
+    { anon: anon * MiB, file: file * MiB, shmem: 10 * MiB, current: current * MiB, peak: current * MiB }])) };
 }
 
 test('VM idle budget uses anon while retaining totals and file cache beside it', () => {
@@ -78,6 +78,8 @@ test('VM idle budget uses anon while retaining totals and file cache beside it',
   assert.equal(summary.idleStackBytes, 192 * MiB);
   assert.equal(summary.idleStackCurrentBytes, 378 * MiB);
   assert.equal(summary.idleStackFileBytes, 186 * MiB);
+  assert.equal(summary.idleStackShmemBytes, 30 * MiB);
+  assert.equal(summary.sampledStackAnonPeakBytes, 600 * MiB);
   assert.equal(summary.idleMetric, 'memory.stat anon');
   assert.ok(!summary.violations.some((line) => line.includes('idle')));
   assert.equal(summary.sampledStackPeakBytes, 786 * MiB);
@@ -93,6 +95,7 @@ test('VM idle anon above 250 MiB fails; a missing idle window has null figures a
     assert.equal(summary.idleStackBytes, null);
     assert.equal(summary.idleStackCurrentBytes, null);
     assert.equal(summary.idleStackFileBytes, null);
+    assert.equal(summary.idleStackShmemBytes, null);
   }
   assert.deepEqual(summarizeMemory(samples).violations, []);
   assert.ok(summarizeMemory(samples, 50).violations.some((line) => line.includes('idle target was not measured')));
@@ -102,7 +105,7 @@ test('the VM Python sampler reads anon and file from memory.stat alongside exist
   const script = [
     'import json, memory',
     'from types import SimpleNamespace',
-    'values = {"memory.stat": "anon 123\\nfile 456\\nkernel 789", "memory.current": "1000", "memory.peak": "2000", "memory.max": "536870912", "memory.swap.current": "0", "memory.events": "oom 0\\noom_kill 0"}',
+    'values = {"memory.stat": "anon 123\\nfile 456\\nshmem 78\\nkernel 789", "memory.current": "1000", "memory.peak": "2000", "memory.max": "536870912", "memory.swap.current": "0", "memory.events": "oom 0\\noom_kill 0"}',
     'group = SimpleNamespace(joinpath=lambda name: SimpleNamespace(read_text=lambda: values[name]))',
     'print(json.dumps(memory.sample_container(group, 2)))',
   ].join('\n');
@@ -110,6 +113,7 @@ test('the VM Python sampler reads anon and file from memory.stat alongside exist
     { cwd: fileURLToPath(new URL('./', import.meta.url)), encoding: 'utf8', timeout: 10_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } }));
   assert.equal(sample.anon, 123);
   assert.equal(sample.file, 456);
+  assert.equal(sample.shmem, 78);
   assert.equal(sample.current, 1000);
   assert.equal(sample.peak, 2000);
   assert.equal(sample.initialRestarts, 2);

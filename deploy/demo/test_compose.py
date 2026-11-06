@@ -35,7 +35,8 @@ DEMO_ENV = dict(APP_IMAGE="plaingym:v0.0.0-test", CADDY_IMAGE="plaingym-caddy:v0
                 UPLOADS_S3_SECRET_ACCESS_KEY="x")
 E2E_ENV = dict(E2E_IMAGE="plaingym:v0.0.0-test", E2E_POSTGRES_PASSWORD="x", E2E_APP_PASSWORD="x", E2E_MAINTENANCE_PASSWORD="x",
                E2E_AUTH_SECRET="x", E2E_ENCRYPTION_KEY="x", E2E_SETUP_TOKEN="x", E2E_S3_SECRET="x", E2E_STRIPE_KEY="x",
-               E2E_STRIPE_RESTRICTED_KEY="x", E2E_STRIPE_WEBHOOK_SECRET="x")
+               E2E_STRIPE_RESTRICTED_KEY="x", E2E_STRIPE_WEBHOOK_SECRET="x",
+               E2E_STRIPE_GYM_KEYS='{"alpha":"rk_test_alpha","beta":"rk_test_beta"}')
 
 
 def unexpected_differences(app, step, also=()):

@@ -69,17 +69,20 @@ quota when it ends. It never edits the installed Compose or environment files.
 
 Remote memory acceptance requires a real 1 GB guest with at least 1 GiB swap,
 no container restart/OOM, and no host OOM delta. The proposed 600 MiB full-stack
-peak remains an acceptance check. Each container sample records `anon` and `file` from
+peak remains an acceptance check. Each container sample records `anon`, `file` and `shmem` from
 cgroup `memory.stat` alongside `current` and `peak`. The proposed 250 MiB idle target
 uses average stack **anonymous memory** in the 10 seconds before load (`idleStackBytes`,
 `idleMetric: memory.stat anon`). `anon` excludes page cache, and also shared memory such as
 Postgres's `shared_buffers`, which the kernel counts under `file`. The summary also keeps
-`idleStackCurrentBytes` (total) and `idleStackFileBytes` (`file`); all three are null when
+`sampledStackAnonPeakBytes` beside the total peak, plus `idleStackCurrentBytes` (total),
+`idleStackFileBytes` (`file`) and `idleStackShmemBytes` (`shmem`, a subset of `file`);
+all idle figures are null when
 there are no idle samples, and a measured run without them fails the target. A local run is
 labelled local-only and cannot decide the 1 GB memory policy.
 
 `node --test e2e/vm/harness.test.mjs` checks the configuration, memory summary and Python
 sampler without starting a VM. It needs Python 3 (`python3`, or `python` on Windows).
+The Memory workflow runs these tests alongside the memory budget tests.
 
 For two simultaneously reachable hosts (including the local fixture), omit
 --phase to run both phases in sequence. Setting resume: true in a private config

@@ -166,6 +166,7 @@ services:
       STRIPE_SECRET_KEY: ${E2E_STRIPE_KEY:?required}
       # The key a gym of the multi-gym install saves in its settings.
       STRIPE_RESTRICTED_KEY: ${E2E_STRIPE_RESTRICTED_KEY:?required}
+      STRIPE_GYM_KEYS: ${E2E_STRIPE_GYM_KEYS:?required}
       CHECKOUT_ORIGIN: https://stripe.localhost
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:12111/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]

@@ -156,9 +156,13 @@ gym's signed webhook, a signed link and a campaign, a schedule template, a class
 is saved before the next operation in its build step. Composite steps preserve these checkpoints, so a worker
 resuming after a failure reuses the accepted invitation, program, payment, or other record. The harness spec
 deliberately interrupts the coach and ranks steps and checks that resuming creates no duplicate coach or program.
+Before each attempt it clears those two composite checkpoints, retaining their individual writes, so retries
+and `--repeat-each=2` exercise the same interruptions. JSON writes use a checkpointing `write` helper that
+checks the response through `Client.json()` before saving it.
 
-Each gym saves its own restricted Stripe key (derived from the run's, per gym). The fake Stripe keeps one
-account per issued key (the run's two keys and its derived alpha/beta keys); unissued keys receive 401 and
+Each gym saves its own restricted Stripe key, issued once in `run.mjs` and shared with the fixtures through
+`E2E_STRIPE_GYM_KEYS` and the fake through Compose's `STRIPE_GYM_KEYS`. The fake Stripe keeps one
+account per issued key; unissued keys receive 401 with a key-mismatch diagnostic and
 cannot create an account through `/test/sign-webhook` (404). Each request passes its account explicitly:
 its own objects, idempotency replies and webhook endpoints, so a call made with one gym's key
 never reads or changes another's. Endpoints keep the signing secret returned when they were created, and the

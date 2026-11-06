@@ -47,6 +47,7 @@ jobs:
           node-version: 24.22.1
       # The budget arithmetic, against synthetic runs including a leak and a kill.
       - run: node --test deploy/test/memory/budget.test.mjs
+      - run: node --test e2e/vm/harness.test.mjs
       # Builds committed HEAD into the production image, then runs the shipped Compose stack twice (limits, then
       # none), sampling the real cgroups every 500 ms. Removes its containers, volumes and image afterwards.
       - run: node deploy/test/memory/run.mjs --mode both --out "$RUNNER_TEMP/memory"

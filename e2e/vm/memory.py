@@ -16,7 +16,7 @@ def sample_container(group, initial_restarts):
                 (line.split() for line in read("memory.stat").splitlines()))
     return {
         "current": int(read("memory.current")), "peak": int(read("memory.peak")),
-        "anon": stat["anon"], "file": stat["file"],
+        "anon": stat["anon"], "file": stat["file"], "shmem": stat["shmem"],
         "max": read("memory.max"), "swap": int(read("memory.swap.current")),
         "events": dict((key, int(value)) for key, value in
                        (line.split() for line in read("memory.events").splitlines())),
