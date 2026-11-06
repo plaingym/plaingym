@@ -11,6 +11,7 @@ import type { RequestEnvironment } from './context.js';
 import { assertMaintenanceCredentials, restoreStagingDirectory } from './maintenance-credentials.js';
 import { registerModuleJobs } from './modules.js';
 import { clientIp } from './rate-limit.js';
+import { registerIntakeRateLimits } from './rate-limit-store.js';
 import { areaContributions } from './registry-areas.js';
 import { createServerRegistry, type ModuleDefinition } from './registry.js';
 import { parseEncryptionKey } from './secrets.js';
@@ -235,6 +236,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] } });
   // Expired magic links and staff invitations are swept by one install job an hour, in either tenancy mode.
   const verificationSweep = registerVerificationSweep(queue, clock);
+  // The public forms' named limits are counted in the database, so every process shares one window; one job a day removes expired counters.
+  const intakeLimits = registerIntakeRateLimits(queue, clock);
   const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock,
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });
   configureBookingJobs(bookingDelivery);
@@ -424,8 +427,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     schedule().catch(report);
   }
   const sweep = async () => {
-    if (gate) { if (!await gate.isClosed()) await gate.activity(() => verificationSweep.scheduleDue()); }
-    else await verificationSweep.scheduleDue();
+    if (gate) { if (!await gate.isClosed()) await gate.activity(async () => { await verificationSweep.scheduleDue(); await intakeLimits.scheduleDue(); }); }
+    else { await verificationSweep.scheduleDue(); await intakeLimits.scheduleDue(); }
   };
   const sweepTimer = setInterval(() => { sweep().catch(report); }, 60_000);
   sweepTimer.unref();
@@ -450,7 +453,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     if (backupTimer) clearInterval(backupTimer);
     if (demoTimer) clearInterval(demoTimer);
     clearInterval(sweepTimer);
-    try { await worker.stop(); await endpointCheck; } finally { uploads.close(); await closeDatabase(); }
+    try { await worker.stop(); await endpointCheck; } finally { intakeLimits.reset(); uploads.close(); await closeDatabase(); }
   } };
 }
 
