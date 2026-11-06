@@ -30,13 +30,37 @@ export function csvValue(row: CsvRow, column: string): string {
 export const MAX_CSV_BYTES = 20 * 1024 * 1024;
 const MAX_CSV_ROWS = 100_000, MAX_CSV_COLUMNS = 200;
 const COMMA = 44, QUOTE = 34, LF = 10, CR = 13;
+/**
+ * Count separators outside quotes before allocating offsets, and refuse a file past the
+ * limits before it costs an allocation. Blank lines need no storage.
+ */
+function cellCapacity(text: string): number {
+  let cells = 1, columns = 1, rows = 0, quoted = false, record = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === QUOTE) { quoted = !quoted; record = true; }
+    else if (!quoted && c === COMMA) {
+      cells++; record = true;
+      if (++columns > MAX_CSV_COLUMNS) invalid();
+    } else if (!quoted && (c === LF || c === CR)) {
+      if (record) {
+        cells++;
+        if (++rows > MAX_CSV_ROWS + 1) invalid();
+      }
+      columns = 1; record = false;
+      if (c === CR && text.charCodeAt(i + 1) === LF) i++;
+    } else record = true;
+  }
+  return cells;
+}
 /** Strict RFC 4180 records, accepting LF and CRLF, quoted newlines and a UTF-8 BOM. */
 export function parseCsv(text: string): CsvDocument {
   if (Buffer.byteLength(text) > MAX_CSV_BYTES || text.includes('\0')) invalid();
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const records: { line: number; offset: number; count: number }[] = [], end = text.length;
-  // Keep temporary offsets off the JS heap too; a growable number[] can exceed the final document's size.
-  let boundaries = new Uint32Array(1024), used = 0;
+  // One allocation: growing and copying typed arrays also consumes the container's memory.
+  const boundaries = new Uint32Array(cellCapacity(text) * 2);
+  let used = 0;
   let offset = 0, count = 0, line = 1, start = 1, hasRecord = false, i = 0;
   for (;;) {
     let from = i, to: number, escaped = false;
@@ -64,11 +88,10 @@ export function parseCsv(text: string): CsvDocument {
       if (j > i) hasRecord = true;
       to = j; i = j;
     }
-    if (used + 2 > boundaries.length) {
-      const grown = new Uint32Array(boundaries.length * 2); grown.set(boundaries); boundaries = grown;
-    }
     // Limits apply here, not after the parse: a small file of very short rows would otherwise fill the heap first.
     if (++count > MAX_CSV_COLUMNS) invalid();
+    // A typed array drops a write past its end, which would import wrong cells without an error.
+    if (used + 2 > boundaries.length) throw new Error('CSV offsets exceeded their counted capacity');
     boundaries[used++] = from; boundaries[used++] = escaped ? to | ESCAPED : to;
     const terminator = text.charCodeAt(i);
     if (i < end && terminator === COMMA) { i++; hasRecord = true; continue; }
@@ -82,7 +105,7 @@ export function parseCsv(text: string): CsvDocument {
     if (terminator === CR && text.charCodeAt(i + 1) === LF) i++;
     i++; offset = used; count = 0; hasRecord = false; line++; start = line;
   }
-  const spans = boundaries.slice(0, used), header = records.shift();
+  const spans = boundaries.subarray(0, used), header = records.shift();
   const columns = header ? Array.from({ length: header.count }, (_, i) => cell({ text, spans }, header.offset + i * 2).trim()) : [];
   if (!columns.length || columns.some((name) => !name || name.length > 256)
     || new Set(columns).size !== columns.length) invalid();

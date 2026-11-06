@@ -10,7 +10,7 @@
   "status.pending": "Queued", "status.running": "Running", "status.succeeded": "Complete", "status.failed": "Failed; review the error report",
   "loading": "Loading…", "noAccess": "You do not have permission to import or export data.", "requestFailed": "The request failed. Please try again.",
   "invalidCsv": "The CSV is invalid. Use UTF-8 with unique column names and the same number of cells in every row.",
-  "previewTimedOut": "This preview took too long to finish.",
+  "previewTimedOut": "This preview took too long to finish. Split the file into smaller files and preview each one.",
   "invalidMapping": "Choose a different source column for each field.", "notFound": "Import resource not found or expired.",
   "duplicate": "This row has duplicate matches. Choose skip, or update a single match.", "mapperUnavailable": "This import mapping is not available yet.",
   "chunkFailed": "This batch could not be saved. No rows in the batch were committed.",

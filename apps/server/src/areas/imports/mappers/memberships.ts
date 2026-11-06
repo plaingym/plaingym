@@ -50,6 +50,17 @@ const identityKeys = (identity: Identity) => [
   ...(identity.email ? [JSON.stringify(['email', normalize(identity.email)])] : []),
   ...(identity.firstName && identity.lastName ? [JSON.stringify(['name', normalize(identity.firstName), normalize(identity.lastName)])] : []),
 ];
+/** Index this transaction's candidates, never cached database state between chunks. */
+function peopleLookup(people: Person[]): (identity: Identity) => Person[] {
+  const index = new Map<string, Person[]>();
+  for (const person of people) for (const identity of identityKeys({ ...person, email: person.email ?? '', dateOfBirth: person.dateOfBirth ?? '' })) {
+    const entries = index.get(identity) ?? []; entries.push(person); index.set(identity, entries);
+  }
+  return identity => {
+    const firstKey = identityKeys(identity)[0];
+    return (firstKey === undefined ? [] : index.get(firstKey) ?? []).filter(person => matches(person, identity));
+  };
+}
 function sourceFile(context: MapperContext, plan: ImportPlanRequest): SourceIndex {
   const mapping = JSON.stringify(plan.mapping), cache = files.get(context.sourceRows) ?? new Map<string, SourceIndex>();
   files.set(context.sourceRows, cache);
@@ -78,6 +89,7 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
   const file = sourceFile(context, plan), chunk = rows.map(row => file.rows.get(row.rowNumber) ?? parseMembership(row, plan));
   const identities = chunk.filter(source => !source.issues.length).map(source => source.identity);
   const candidates = await findPeople(tx, context.gymId, identities);
+  const candidatePeople = peopleLookup(candidates);
   const homeIds = [...new Set(candidates.map(person => person.householdId))];
   const homes = homeIds.length ? await tx.select().from(households).where(and(eq(households.gymId, context.gymId), inArray(households.id, homeIds))) : [];
   // Other family rows can supply an anchor or duplicate in another chunk. Resolve them only in
@@ -91,8 +103,9 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
   // A later row's shared email can also match someone outside these households. Such an
   // ambiguous row must never choose this household's anchor or duplicate its valid row.
   const relatedPeople = await findPeople(tx, context.gymId, related.filter(source => !source.issues.length).map(source => source.identity));
+  const relatedLookup = peopleLookup(relatedPeople);
   const resolved = related.filter(source => !source.issues.length).flatMap(source => {
-    const people = relatedPeople.filter(person => matches(person, source.identity));
+    const people = relatedLookup(source.identity);
     const selected = catalog.filter(item => planMatches(item, source));
     if (people.length !== 1 || selected.length !== 1 || !selected[0]!.active) return [];
     const member = people[0]!, selectedPlan = selected[0]!;
@@ -103,13 +116,22 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
   const firstRows = new Map<string, (typeof resolved)[number]>();
   for (const item of resolved) if (!firstRows.has(key(item.member.id, item.plan.id))) firstRows.set(key(item.member.id, item.plan.id), item);
   const canonical = [...firstRows.values()];
+  // Many rows share due dates and billing days. Reuse pure calendar results within
+  // this chunk; keep the bounded cache separate from mutable household state.
+  const dates = new Map<string, string>();
+  const anchoredDate = (date: string, day: number) => {
+    const key = JSON.stringify([date, day]);
+    let value = dates.get(key);
+    if (value === undefined) { value = householdDateOnOrAfter(date, day); dates.set(key, value); }
+    return value;
+  };
   return chunk.map(source => {
     const issues = [...source.issues], values: PlannedRow['values'] = { plan: source.plan, nextDueOn: source.nextDueOn };
     const fail = (field: ImportTargetField, code: ImportIssue['code'], name: string, params?: Record<string, string | number>) => issues.push({
       rowNumber: source.rowNumber, column: plan.mapping.find(item => item.targetField === field)?.sourceColumn ?? null, code, message: message(name, params),
     });
     if (!issues.length) {
-      const people = candidates.filter(person => matches(person, source.identity)), selected = catalog.filter(item => planMatches(item, source));
+      const people = candidatePeople(source.identity), selected = catalog.filter(item => planMatches(item, source));
       if (people.length !== 1) fail('email', 'unknown_reference', people.length ? 'ambiguousMember' : 'unknownMember');
       if (selected.length !== 1 || !selected[0]!.active) fail('plan', 'unknown_reference', selected.length > 1 ? 'ambiguousPlan' : 'unknownPlan');
       if (!issues.length) {
@@ -138,9 +160,9 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
           });
           const explicit = [...new Set(monthly.flatMap(item => item.source.billingDay === null ? [] : [item.source.billingDay]))];
           billingDay = explicit[0] ?? Math.max(...monthly.map(item => Number(item.source.nextDueOn.slice(8))));
-          if (!explicit.length && monthly.every(item => householdDateOnOrAfter(item.source.nextDueOn, home.billingDay) === item.source.nextDueOn))
+          if (!explicit.length && monthly.every(item => anchoredDate(item.source.nextDueOn, home.billingDay) === item.source.nextDueOn))
             billingDay = home.billingDay;
-          if (explicit.length > 1 || monthly.some(item => householdDateOnOrAfter(item.source.nextDueOn, billingDay!) !== item.source.nextDueOn))
+          if (explicit.length > 1 || monthly.some(item => anchoredDate(item.source.nextDueOn, billingDay!) !== item.source.nextDueOn))
             fail('nextDueOn', 'conflict', 'billingDayConflict');
           if (plan.duplicatePolicy === 'update') scheduleUpdates = monthly.flatMap(item => {
             const current = livePair(existing, item.member.id, item.plan.id);
@@ -149,7 +171,7 @@ async function analyze(tx: Reader, rows: readonly CsvRow[], plan: ImportPlanRequ
           });
           const exempt = new Set(scheduleUpdates.map(update => update.id));
           if (existing.some(item => item.householdId === home.id && alignedMonthly(item)
-            && !exempt.has(item.id) && householdDateOnOrAfter(item.nextDueOn, billingDay!) !== item.nextDueOn))
+            && !exempt.has(item.id) && anchoredDate(item.nextDueOn, billingDay!) !== item.nextDueOn))
             fail('nextDueOn', 'conflict', 'existingScheduleConflict');
         }
         Object.assign(values, { memberId: member.id, householdId: home.id, planId: selectedPlan.id,

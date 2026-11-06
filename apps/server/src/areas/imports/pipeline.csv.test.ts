@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { autoMatch, csvLine, csvValue, duplicateKey, DuplicateIndex, parseCsv } from './pipeline.csv.js';
 const materialized = (text: string) => {
   const { columns, rows } = parseCsv(text);
@@ -46,6 +46,19 @@ describe('CSV import and duplicate utilities', () => {
     expect(parseCsv(line(200) + line(200)).columns).toHaveLength(200);
     expect(() => parseCsv(line(201) + line(201))).toThrow();
     expect(() => parseCsv('a\n' + ','.repeat(1_000))).toThrow();
+  });
+  it.each([
+    ['a line past the column limit', ','.repeat(1_000)],
+    ['a file past the row limit', 'a\n' + 'x\n'.repeat(100_002)],
+  ])('refuses %s before allocating its offsets', (_name, csv) => {
+    const allocate = vi.fn(), Offsets = Uint32Array;
+    vi.stubGlobal('Uint32Array', class extends Offsets {
+      constructor(size: number) { allocate(size); super(size); }
+    });
+    try {
+      expect(() => parseCsv(csv)).toThrow();
+      expect(allocate).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
   });
   it('preserves zero-like cells, empty cells and prototype property names', () => {
     const document = parseCsv('__proto__,constructor,n\nplain,,0\n');

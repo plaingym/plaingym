@@ -92,7 +92,8 @@ For each file, in order:
 
 Preview computation has a two-minute limit, starting after it gets a turn to run.
 Large files wait for other previews to finish; small files can run together.
-If a preview times out, split the file into smaller files and preview each one.
+The page shows the API's explanation when a preview fails. If it says the preview
+took too long, split the file into smaller files and preview each one.
 For people, keep every member of a family in the same file: family links work only
 within one file, so relatives in another file would get a separate household. For
 promotion history, keep each member's history for a program together so it can be

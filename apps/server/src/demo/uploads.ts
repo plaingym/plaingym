@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { AppError } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import type { Uploads } from '../infra/storage/index.js';
+import type { ReadOptions, Uploads } from '../infra/storage/index.js';
 import { validateSignatureImage } from '../areas/waivers/snapshot.js';
 
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
@@ -26,16 +26,16 @@ export class DemoUploads implements Uploads {
     validateSignatureImage(bytes);
     return this.source.put(key, bytes, 'image/png');
   }
-  get: Uploads['get'] = key => this.source.get(key);
-  head: Uploads['head'] = key => this.source.head(key);
+  get: Uploads['get'] = (key, options) => this.source.get(key, options);
+  head: Uploads['head'] = (key, options) => this.source.head(key, options);
   list: Uploads['list'] = prefix => this.source.list(prefix);
   signedUrl: Uploads['signedUrl'] = (key, ttl) => this.source.signedUrl(key, ttl);
   sweep: Uploads['sweep'] = options => this.source.sweep(options);
-  async markDeleted(key: string): Promise<void> {
-    await this.source.markDeleted(key);
+  async markDeleted(key: string, options?: ReadOptions): Promise<void> {
+    await this.source.markDeleted(key, options);
     // Member erasure already deletes signature images through this wrapper.
     const cached = pdfKey(key);
-    if (cached) await this.source.markDeleted(cached);
+    if (cached) await this.source.markDeleted(cached, options);
   }
   async waiverPdf(signatureImageKey: string, render: () => Promise<Uint8Array>, freshKey: () => string): Promise<string> {
     assertNoTransaction('storage.put');

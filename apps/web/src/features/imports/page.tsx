@@ -19,6 +19,7 @@ import { ErrorState, LoadingState } from '../../components/ui/states.js';
 import { Badge, TableContainer } from '../../components/ui/table.js';
 const request = createJsonTransport();
 const label = (key: string) => t('imports/pipeline:' + key);
+class PreviewError extends Error {}
 const card = 'min-w-0 space-y-5 rounded-xl border border-border bg-card p-4 sm:p-6';
 const summaryTone = { create: 'success', update: 'default', skip: 'muted' } as const;
 function ImportPanel({ gymId }: { gymId: string }) {
@@ -42,24 +43,33 @@ function ImportPanel({ gymId }: { gymId: string }) {
     const response = await fetch('/api/imports/uploads', { method: 'POST', body: form, credentials: 'same-origin', redirect: 'error' });
     if (!response.ok) throw new Error('Upload failed');
     return parseResponse(importUploadSchema, (await response.json() as { data: unknown }).data);
-  }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setRunId(undefined); setOffset(0); } });
+  }, onSuccess(data) { setUpload(data); setMapping(data.suggestedMapping ?? []); setPreview(undefined); setRunId(undefined); setOffset(0); previewRows.reset(); } });
   const previewRows = useMutation({ mutationFn: async (page: number) => {
     const response = await fetch(`/api/imports/preview?offset=${page}&limit=50`, { method: 'POST', credentials: 'same-origin', redirect: 'error',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan) });
-    if (!response.ok) throw new Error('Preview failed');
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      if (body && typeof body === 'object' && 'error' in body && body.error && typeof body.error === 'object'
+        && 'message' in body.error && typeof body.error.message === 'string' && body.error.message.trim())
+        throw new PreviewError(body.error.message);
+      throw new Error('Preview failed');
+    }
     return parseResponse(importPreviewResponseSchema, await response.json());
   }, onSuccess(data) { setPreview(data); setOffset(data.pagination.offset); } });
   const start = useMutation({ mutationFn: async (dryRun: boolean) => parseResponse(importJobSchema, (await request<{ data: unknown }>('/api/imports', { ...plan, dryRun })).data),
     onSuccess(data) { setRunId(data.id); setRunPlan(fingerprint); setErrorOffset(0); } });
   const busy = uploadFile.isPending || start.isPending || progress.data?.status === 'pending' || progress.data?.status === 'running';
   const dryRunPassed = progress.data?.dryRun && progress.data.status === 'succeeded' && progress.data.errorCount === 0 && runPlan === fingerprint;
+  // A preview's explanation must not stand in for a later failure of another request.
+  const otherFailure = uploadFile.isError || start.isError || progress.isError || errors.isError;
   // Exactly one status region: the run's progress.
   return <PageSection title={label('import')} description={label('mapperNotice')}><div className={card}>
     <ol className="grid gap-1 text-sm text-muted-foreground sm:grid-cols-4" aria-label={label('steps')}>
       {(['stepUpload', 'stepMatch', 'stepCheck', 'stepCommit'] as const).map((step, index) => <li key={step}>{index + 1}. {label(step)}</li>)}</ol>
     <div className="grid gap-2"><Label htmlFor="csv-file">{label('file')}</Label>
       <Input id="csv-file" type="file" accept=".csv,text/csv" className="py-2" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile.mutate(file); }}/></div>
-    {(uploadFile.isError || previewRows.isError || start.isError || progress.isError || errors.isError) && <Alert>{label('requestFailed')}</Alert>}
+    {(otherFailure || previewRows.isError) && <Alert>{!otherFailure && previewRows.error instanceof PreviewError
+      ? previewRows.error.message : label('requestFailed')}</Alert>}
     {upload && <>
       <p className="break-all text-sm"><span className="font-medium">{upload.filename}</span> · {label('rows')}: {upload.rowCount}</p>
       <div className="grid gap-4 sm:grid-cols-2">

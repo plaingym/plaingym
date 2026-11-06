@@ -7,12 +7,15 @@ import type { StaffRole } from '@plaingym/shared';
 import { exportDatasets } from '@plaingym/shared/contracts';
 import type { ShellBootstrap } from '../../app/services.js';
 import { useBootstrap } from '../../app/context.js';
+import { t } from '../../lib/i18n.js';
 import { ImportsPage } from './page.js';
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('../../app/context.js', () => ({ useBootstrap: vi.fn() }));
 vi.mock('../../lib/api.js', () => ({ createJsonTransport: () => request }));
 const id = '00000000-0000-7000-8000-000000000001', runId = '00000000-0000-7000-8000-000000000002';
 const createdAt = '2026-10-22T12:00:00Z';
+const uploaded = { id, filename: 'people.csv', rowCount: 1, columns: ['Name'],
+  suggestedMapping: [{ sourceColumn: 'Name', targetField: 'firstName' }], expiresAt: createdAt };
 function bootstrap(roles: StaffRole[] = ['owner']) {
   const data: ShellBootstrap = { gym: { id, name: 'Academy', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, displayName: 'Test User', roles, member: false }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
@@ -25,6 +28,34 @@ function start() {
 beforeEach(() => { bootstrap(); request.mockReset(); });
 afterEach(() => { cleanup(); for (const client of clients.splice(0)) client.clear(); vi.unstubAllGlobals(); });
 describe('CSV admin workflow', () => {
+  it.each([true, false])('shows a preview 503 message with a safe fallback (JSON: %s)', async (json) => {
+    const message = t('imports/pipeline:previewTimedOut');
+    expect(message).toContain('Split the file');
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads'
+      ? Response.json({ data: uploaded })
+      : json ? Response.json({ error: { code: 'unavailable', message } }, { status: 503 })
+        : new Response('upstream failed', { status: 503 })));
+    start();
+    fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [new File(['Name\nTest'], 'people.csv')] } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(json ? message : 'The request failed. Please try again.');
+    expect(document.body.textContent).not.toContain('upstream failed');
+  });
+  it('keeps a preview message from standing in for a later failure or a new upload', async () => {
+    const message = t('imports/pipeline:previewTimedOut'), file = new File(['Name\nTest'], 'people.csv');
+    const answers = [Response.json({ data: uploaded }), new Response(null, { status: 500 }), Response.json({ data: uploaded })];
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => path === '/api/imports/uploads' ? answers.shift()!
+      : Response.json({ error: { code: 'unavailable', message } }, { status: 503 })));
+    start();
+    const upload = () => fireEvent.change(screen.getByLabelText(/CSV file/), { target: { files: [file] } });
+    upload();
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(message));
+    upload();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('The request failed. Please try again.'));
+    upload();
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
   it.each(['coach', 'front_desk', 'member'] as const)('does not expose imports or exports to %s', (role) => {
     bootstrap(role === 'member' ? [] : [role]); start();
     expect(screen.getByRole('alert').textContent).toContain('do not have permission'); expect(request).not.toHaveBeenCalled();

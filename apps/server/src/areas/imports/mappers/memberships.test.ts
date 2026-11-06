@@ -290,6 +290,18 @@ describe('membership renewals through the durable pipeline', () => {
     const wrong = await analyzed([{ email: f.member.email!, firstName: 'Somebody else', plan: f.plan.id, nextDueOn: '2026-11-17' }]);
     expect(wrong.planned[0]!.action).toBe('error');
   });
+  it('narrows shared email candidates by name and birth date without hiding ambiguity', async () => {
+    const f = await fixture();
+    await database.forGym(gymId, tx => tx.update(members).set({ dateOfBirth: '1990-01-01' }).where(eq(members.id, f.member.id)));
+    await factory('members', gymId, { email: f.member.email, firstName: f.member.firstName, lastName: f.member.lastName, dateOfBirth: '1991-01-01' });
+    const batch = await analyzed([
+      { email: f.member.email!.toUpperCase(), firstName: f.member.firstName, dateOfBirth: '1990-01-01', plan: f.plan.id, nextDueOn: '2026-11-17' },
+      { email: f.member.email!, plan: f.plan.id, nextDueOn: '2026-11-17' },
+      { email: f.member.email!, dateOfBirth: '1992-01-01', plan: f.plan.id, nextDueOn: '2026-11-17' },
+    ]);
+    expect(batch.planned[0]!.values.memberId).toBe(f.member.id);
+    expect(batch.planned.map(row => row.action)).toEqual(['create', 'error', 'error']);
+  });
   it('validates household anchors across chunks, accepts short-month clamps and rejects conflicting monthly dates', async () => {
     const first = await fixture(), second = await fixture('monthly', first.home.id);
     const source = await services().load([

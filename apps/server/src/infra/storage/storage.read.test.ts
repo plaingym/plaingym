@@ -7,12 +7,33 @@ import { join } from 'node:path';
 import { UploadPartCommand, type S3Client } from '@aws-sdk/client-s3';
 import { describe, expect, it, vi } from 'vitest';
 import { TestClock } from '../../core/clock.js';
+import { DemoUploads } from '../../demo/uploads.js';
 import { DurableUploads, type UploadBackend } from './common.js';
 import { FakeUploads, FakeBackupObjectStore, LocalUploads, S3BackupObjectStore, S3Uploads, createS3Client } from './index.js';
 
 const clock = new TestClock('2026-10-22T12:00:00Z');
 describe('cancellable storage reads', () => {
-  it.each(['metadata', 'object', 'cleanup'] as const)('DurableUploads cancels a pending %s read at the backend', async (stage) => {
+  it('forwards cancellation to the cached demo PDF deletion too', async () => {
+    const id = '00000000-0000-7000-8000-000000000001', source = new FakeUploads(id), uploads = new DemoUploads(source);
+    const image = `${id}/waivers/${id}/signatures/${id}.png`, pdf = `${id}/waivers/${id}/pdf/${id}.pdf`;
+    await source.put(image, new Uint8Array([1]), 'image/png');
+    await source.put(pdf, new Uint8Array([1]), 'application/pdf');
+    const controller = new AbortController(), original = source.markDeleted.bind(source), failure = new Error('stop PDF read');
+    vi.spyOn(source, 'markDeleted').mockImplementation(async (key, options) => {
+      await original(key, options);
+      if (key === image) controller.abort(failure);
+    });
+    await expect(uploads.markDeleted(image, { signal: controller.signal })).rejects.toBe(failure);
+    expect((await source.head(pdf))?.deletedAt).toBeUndefined();
+  });
+  it.each(['get', 'head', 'markDeleted'] as const)('DemoUploads forwards cancellation for %s', async (method) => {
+    const source = new FakeUploads('gym'), uploads = new DemoUploads(source);
+    await source.put('gym/file', new Uint8Array([1]), 'text/plain');
+    const failure = new Error('stop');
+    await expect(uploads[method]('gym/file', { signal: AbortSignal.abort(failure) })).rejects.toBe(failure);
+    expect(await uploads.head('gym/file')).not.toBeNull();
+  });
+  it.each(['metadata', 'object', 'cleanup', 'demo-metadata', 'demo-object', 'demo-cleanup', 'demo-head'] as const)('uploads cancel a pending %s read at the backend', async (stage) => {
     const controller = new AbortController(), entered = Promise.withResolvers<void>();
     const stopped = vi.fn();
     const pending = (_: string, options?: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
@@ -20,10 +41,10 @@ describe('cancellable storage reads', () => {
       options!.signal!.addEventListener('abort', () => { stopped(); reject(options!.signal!.reason); }, { once: true });
     });
     const record = { key: 'gym/file', info: { key: 'gym/file', size: 1, contentType: 'text/plain', etag: 'test', createdAt: clock.now() } };
-    const backend = { record: stage === 'object' ? async () => record : pending, get: pending } as unknown as UploadBackend;
-    const uploads = new DurableUploads('gym', backend, clock);
-    const result = stage === 'cleanup' ? uploads.markDeleted('gym/file', { signal: controller.signal })
-      : uploads.get('gym/file', { signal: controller.signal });
+    const backend = { record: stage.endsWith('object') ? async () => record : pending, get: pending } as unknown as UploadBackend;
+    const source = new DurableUploads('gym', backend, clock), uploads = stage.startsWith('demo-') ? new DemoUploads(source) : source;
+    const result = stage.endsWith('cleanup') ? uploads.markDeleted('gym/file', { signal: controller.signal })
+      : stage === 'demo-head' ? uploads.head('gym/file', { signal: controller.signal }) : uploads.get('gym/file', { signal: controller.signal });
     const rejection = expect(result).rejects.toThrow('stop');
     await entered.promise; controller.abort(new Error('stop')); await rejection;
     expect(stopped).toHaveBeenCalledOnce();

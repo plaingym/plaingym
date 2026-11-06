@@ -48,8 +48,9 @@ through storage metadata and object reads, including body consumption, and check
 the deadline between mapper chunks and writes. The budget is released only when
 the computation settles; a timeout does not race a still-running read. Work already
 in a database transaction or write finishes before the next check. Queue waiting
-does not consume the computation's deadline. A computation past its deadline
-answers `unavailable`; one whose summary is already stored keeps its result, even
+does not consume the computation's deadline. A cancellation caused by the deadline
+answers `unavailable`; unrelated storage or mapper failures retain their cause,
+even after the deadline. A computation whose summary is already stored keeps its result, even
 if removing the previous preview's files runs past the deadline. Previews still
 finish in the request.
 
@@ -86,7 +87,10 @@ about 32 MB (21 files).
 `start` takes the row count from the upload's `meta.json` and never reads the CSV;
 the job parses it when it runs, and fails the run if the file's row count differs from
 the run's. Parsed rows share the source text, a header index, and packed cell
-offsets. Mappers use `csvValue` to slice only the cells they need; quoted escapes
+offsets, allocated once after counting separators outside quoted cells; that count
+refuses a file past the row or column limit before anything is allocated. Blank
+lines need no offsets, and the final document uses a view without copying the buffer.
+Mappers use `csvValue` to slice only the cells they need; quoted escapes
 are decoded on access. The compatibility `row.values` getter materializes one row
 for inspection. A preview or run holds the parsed document and
 the mapper's whole-file index, never every planned row.

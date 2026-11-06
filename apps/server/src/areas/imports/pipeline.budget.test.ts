@@ -32,12 +32,26 @@ it('aborts the computation itself and waits for cancellation before releasing it
   expect(started).toBe(false); stopping.resolve(); await rejection; await next;
 });
 
-it('answers a provider abort as a timed-out preview and keeps other failures', async () => {
+it.each(['AbortError', 'TimeoutError'])('answers a provider %s as a timed-out preview and keeps other failures', async name => {
   const stopped = previewDeadline(1, (signal) => new Promise<never>((_resolve, reject) => {
-    signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    signal.addEventListener('abort', () => reject(new DOMException('aborted', name)), { once: true });
   }));
   await expect(stopped).rejects.toMatchObject({ code: 'unavailable', status: 503 });
   await expect(previewDeadline(60_000, async () => { throw new Error('failed'); })).rejects.toThrow('failed');
+});
+
+it('preserves a storage failure that arrives after cancellation', async () => {
+  const failure = new Error('storage permission denied');
+  await expect(previewDeadline(10, signal => new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(failure), { once: true });
+  }))).rejects.toBe(failure);
+});
+
+it('preserves a connection reset the S3 client renamed to TimeoutError', async () => {
+  const reset = Object.assign(new Error('read ECONNRESET'), { name: 'TimeoutError', code: 'ECONNRESET' });
+  await expect(previewDeadline(10, signal => new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(reset), { once: true });
+  }))).rejects.toBe(reset);
 });
 
 it('keeps the result of work that finished past its deadline', async () => {

@@ -43,8 +43,13 @@ export async function previewDeadline<T>(milliseconds: number, work: (signal: Ab
   // Finished work keeps its result, even if best-effort cleanup ran past the deadline.
   try { check(); return await work(controller.signal, check); }
   catch (error) {
-    // Each provider rejects a cancelled read with its own error, so the signal says what happened.
-    if (controller.signal.aborted) throw new AppError('unavailable', t('imports/pipeline:previewTimedOut'));
+    // Local reads use the signal's reason or AbortError; S3 can reject with AbortError.
+    // A concurrent storage or mapper failure must keep its cause even after the timer fires.
+    // The S3 client also names connection resets TimeoutError, so that name needs a DOMException.
+    if (controller.signal.aborted && (error === controller.signal.reason
+      || error instanceof Error && error.name === 'AbortError'
+      || error instanceof DOMException && error.name === 'TimeoutError'))
+      throw new AppError('unavailable', t('imports/pipeline:previewTimedOut'));
     throw error;
   }
   finally {
