@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterAll, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { intakeRateLimits, jobs, uuidv7 } from '@plaingym/db';
+import { intakeRateLimits, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
@@ -22,6 +22,7 @@ afterAll(async () => {
 
 it('counts the public forms\' budgets in the database and schedules the daily counter sweep', async () => {
   vi.spyOn(PostgresJobs.prototype, 'start').mockReturnValue({ async stop() {} });
+  const enqueued = vi.spyOn(PostgresJobs.prototype, 'enqueueSystem');
   directory = await mkdtemp(join(tmpdir(), 'plaingym-intake-runtime-'));
   const gymId = uuidv7(); await factory('gyms', gymId);
   runtime = await startRuntime({ DATABASE_URL: db.appUrl, APP_ENCRYPTION_KEY: 'ef'.repeat(32),
@@ -33,7 +34,6 @@ it('counts the public forms\' budgets in the database and schedules the daily co
   expect(response.status).toBeLessThan(500);
   const counters = await db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.gymId, gymId)));
   expect(counters).toMatchObject([{ routeKey: 'public.submissions', count: 1 }]);
-  // The runtime's own sweep queued the daily job once.
-  const sweeps = await db.forSystem(tx => tx.select().from(jobs).where(eq(jobs.name, intakeRateLimitSweepJob)));
-  expect(sweeps).toHaveLength(1);
+  // The runtime's own sweep queues the daily job.
+  expect(enqueued).toHaveBeenCalledWith(intakeRateLimitSweepJob, {}, expect.objectContaining({ timezone: 'UTC' }));
 });
