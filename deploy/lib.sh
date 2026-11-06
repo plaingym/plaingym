@@ -50,27 +50,67 @@ newest_patch() { # VERSION TAGS
 # Every address the hostname resolves to must belong to this server, so the
 # certificate and the private setup link work. Runs before any host change.
 check_dns() {
+  dns_retry="If you recently added or changed the record, cached answers can remain until their TTL expires, which can take an hour or more; retry the installer after that. Nothing was changed."
+  dns_status=0
   case "$1" in
     # RFC 6761 names resolve locally (test guests map them in /etc/hosts).
-    *.localhost) resolved=$(getent ahosts "$1" | awk '{print $1}' | sort -u) ;;
+    *.localhost) resolved=$(getent ahosts "$1") || dns_status=$? ;;
     # Ask DNS directly: /etc/hosts may map the server's own name to 127.0.1.1.
-    *) resolved=$(getent -s dns ahosts "$1" | awk '{print $1}' | sort -u) ;;
+    *) resolved=$(getent -s dns ahosts "$1") || dns_status=$? ;;
   esac
-  [ -n "$resolved" ] || fail "$1 does not resolve yet. Point its A record (and AAAA, if used) at this server. If you recently changed the record, it can take a few minutes to reach this server; re-run the same command to try again. Nothing was changed."
+  resolved=$(printf '%s\n' "$resolved" | awk '{print $1}' | sort -u)
+  if [ "$dns_status" -ne 0 ] || [ -z "$resolved" ]; then
+    # getent returns 2 both for a missing record and for a resolver failure.
+    # Probe the existing public-address service's name before suggesting a wait.
+    if getent -s dns ahosts api.ipify.org >/dev/null 2>&1; then
+      fail "$1 does not resolve yet. Check that its A record (and AAAA, if used) points at this server. $dns_retry"
+    fi
+    fail "This server could not query DNS for $1 or api.ipify.org. Check the server's DNS resolver and network connectivity, then retry the installer. Nothing was changed."
+  fi
   own=$(ip -o address show | awk '{sub(/\/.*/, "", $4); print $4}')
+  # Global unicast IPv6 uses 2000::/3; link-local and private addresses do not
+  # establish that this server can have a public IPv6 address behind NAT.
+  global6=$(printf '%s\n' "$own" | grep -E '^[23][[:xdigit:]]{3}:' || true)
+  public4_failed=true
+  public6_failed=true
   if command -v curl >/dev/null 2>&1; then
-    # Covers providers that NAT the public address; failures are tolerated.
+    # Covers providers that NAT the public address. Each family can fail separately.
     for url in https://api.ipify.org https://api6.ipify.org; do
-      own="$own
-$(curl --fail --silent --max-time 5 --proto '=https' "$url" || true)"
+      if public=$(curl --fail --silent --max-time 5 --proto '=https' "$url") && [ -n "$public" ]; then
+        own="$own
+$public"
+        case "$url" in
+          https://api.ipify.org) public4_failed=false ;;
+          https://api6.ipify.org) public6_failed=false ;;
+        esac
+      fi
     done
   fi
+  dns_mismatch=''
+  dns_unconfirmed=''
   for address in $resolved; do
     case "$address" in
       127.*|::1) case "$1" in *.localhost) continue ;; esac
-        fail "$1 resolves to a loopback address. Point it at this server's public IP. If you recently changed the record, it can take a few minutes to reach this server; re-run the same command to try again. Nothing was changed." ;;
+        fail "$1 resolves to a loopback address. Point it at this server's public IP. $dns_retry" ;;
     esac
-    printf '%s\n' "$own" | grep -qxF "$address" \
-      || fail "$1 resolves to $address, which is not this server. Use a DNS-only record (no proxy) that points here. If you recently changed the record, it can take a few minutes to reach this server; re-run the same command to try again. Nothing was changed."
+    if ! printf '%s\n' "$own" | grep -qxF "$address"; then
+      case "$address" in
+        *:*)
+          lookup_failed=$public6_failed
+          if [ "$lookup_failed" = true ] && [ -z "$global6" ]; then
+            dns_mismatch="$1 resolves to $address, but this server has no global IPv6 address. Remove the AAAA record or configure working public IPv6. $dns_retry"
+            continue
+          fi ;;
+        *) lookup_failed=$public4_failed ;;
+      esac
+      if [ "$lookup_failed" = true ]; then
+        dns_unconfirmed="$1 resolves to $address, which is not assigned to this server's network interfaces. The public-address lookup failed, so the installer could not confirm this server's public address. Check that curl is installed and outbound HTTPS works, then retry the installer. Nothing was changed."
+      else
+        dns_mismatch="$1 resolves to $address, which is not this server. Use a DNS-only record (no proxy) that points here. $dns_retry"
+      fi
+    fi
   done
+  # Inspect every answer: an unconfirmed address must not hide a known mismatch.
+  [ -z "$dns_mismatch" ] || fail "$dns_mismatch"
+  [ -z "$dns_unconfirmed" ] || fail "$dns_unconfirmed"
 }

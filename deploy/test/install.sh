@@ -23,20 +23,23 @@ export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" HOSTS="$temporary/ho
 export SYSTEMD_UNIT_DIR="$temporary/units"
 mkdir "$STATE" "$SYSTEMD_UNIT_DIR"
 # 203.0.113.5 is this fixture server; 192.0.2.10 is someone else's.
-printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n' > "$HOSTS"
+printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n203.0.113.6 nat.invalid\n2001:db8::6 nat6.invalid\n2001:db8::10 elsewhere6.invalid\n' > "$HOSTS"
+printf '203.0.113.20 api.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.invalid\n2001:db8::10 mixed-reverse.invalid\n192.0.2.10 mixed-reverse.invalid\n' >> "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
 for command in apt-get systemctl ufw fallocate mkswap; do stub "$command" "printf '$command %s\n' \"\$*\" >> \"\$CALLS\""; done
 stub swapon 'echo /swapfile partition 1G 0B -2'
 stub openssl 'echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 203.0.113.5/24 brd 203.0.113.255 scope global eth0"'
+# shellcheck disable=SC2016
+stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 203.0.113.5/24 brd 203.0.113.255 scope global eth0"; echo "2: eth0    inet6 fe80::5/64 scope link"; echo "2: eth0    inet6 fd00::5/64 scope global eth0"; echo "2: eth0    inet6 20::5/64 scope global eth0"; if [ "${GLOBAL6:-false}" = true ]; then echo "2: eth0    inet6 2001:db8::5/64 scope global eth0"; fi'
 # The stub's own variables expand when it runs, not here.
 # shellcheck disable=SC2016
-stub getent '[ "$1" != -s ] || shift 2; awk -v name="$2" '"'"'{ for (i = 2; i <= NF; i++) if ($i == name) print $1 "  STREAM " name }'"'"' "$HOSTS"'
+stub getent '[ "$1" != -s ] || shift 2; status=0; awk -v name="$2" '"'"'{ for (i = 2; i <= NF; i++) if ($i == name) { print $1 "  STREAM " name; found=1 } } END { if (!found) exit 2 }'"'"' "$HOSTS" || status=$?; exit "${DNS_STATUS:-$status}"'
 cat > "$temporary/bin/curl" <<'MOCK'
 #!/bin/sh
 for argument in "$@"; do last=$argument; done
 case "$last" in
-  https://api.ipify.org|https://api6.ipify.org) exit 22 ;;
+  https://api.ipify.org) printf '%s' "${PUBLIC4-203.0.113.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
+  https://api6.ipify.org) printf '%s' "${PUBLIC6-2001:db8::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
   */api/setup) printf '%s' "${SETUP_STATUS:-200}" ;;
   */healthz) exit 0 ;;
   *) exit 22 ;;
@@ -66,13 +69,54 @@ expect_refusal() {
 expect_dns_refusal() {
   expect_refusal --hostname "$1" --email owner@example.org
   grep -qF "$2" "$temporary/output"
-  grep -qF 'a few minutes' "$temporary/output"
-  grep -qF 're-run the same command' "$temporary/output"
+  grep -qF 'cached answers can remain until their TTL expires, which can take an hour or more' "$temporary/output"
+  grep -qF 'retry the installer after that' "$temporary/output"
   [ ! -e "$root" ]
 }
 expect_dns_refusal does-not-exist.invalid 'does not resolve yet'
+expect_dns_refusal missing.localhost 'does not resolve yet'
 expect_dns_refusal elsewhere.localhost 'which is not this server'
 expect_dns_refusal loopback.invalid 'resolves to a loopback address'
+expect_lookup_refusal() {
+  expect_refusal --hostname "$1" --email owner@example.org
+  grep -qF "$2" "$temporary/output"
+  case "$2" in
+    *'could not query DNS') grep -qF "Check the server's DNS resolver and network connectivity" "$temporary/output" ;;
+    *) grep -qF 'Check that curl is installed and outbound HTTPS works' "$temporary/output" ;;
+  esac
+  if grep -Eq 'TTL|does not resolve yet|which is not this server' "$temporary/output"; then
+    echo 'A failed lookup was reported as a DNS mismatch or told the owner to wait.' >&2
+    exit 1
+  fi
+  [ ! -e "$root" ]
+}
+# Nonzero getent status must survive, even if it printed an address first.
+DNS_STATUS=2 expect_lookup_refusal does-not-exist.invalid 'This server could not query DNS'
+DNS_STATUS=2 expect_lookup_refusal gym.localhost 'This server could not query DNS'
+PUBLIC4_STATUS=22 expect_lookup_refusal nat.invalid 'The public-address lookup failed'
+GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
+PUBLIC6_STATUS=22 expect_dns_refusal elsewhere6.invalid 'Remove the AAAA record or configure working public IPv6'
+PUBLIC4='' expect_lookup_refusal nat.invalid 'The public-address lookup failed'
+# Missing curl has the same diagnostic, without relying on the container's packages.
+mkdir "$temporary/no-curl"
+for command in getent ip awk sort grep; do ln -s "$(command -v "$command")" "$temporary/no-curl/$command"; done
+if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns nat.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
+grep -qF 'The public-address lookup failed' "$temporary/output"
+grep -qF 'Check that curl is installed and outbound HTTPS works' "$temporary/output"
+grep -qF 'Nothing was changed' "$temporary/output"
+# A failed lookup in the other address family must not hide a confirmed mismatch.
+PUBLIC6_STATUS=22 expect_dns_refusal elsewhere.localhost 'which is not this server'
+PUBLIC4_STATUS=22 expect_dns_refusal elsewhere6.invalid 'which is not this server'
+# Both answers belong to the same name; the unconfirmed IPv6 answer sorts first.
+GLOBAL6=true PUBLIC6_STATUS=22 expect_dns_refusal mixed.invalid '49.12.0.9, which is not this server'
+GLOBAL6=true PUBLIC4_STATUS=22 expect_dns_refusal mixed-reverse.invalid '2001:db8::10, which is not this server'
+# With no confirmed mismatch, an unconfirmed address still explains the lookup failure.
+GLOBAL6=true PUBLIC4_STATUS=22 PUBLIC6_STATUS=22 expect_lookup_refusal mixed.invalid 'The public-address lookup failed'
+# Public addresses behind NAT and local addresses with failed public lookups still pass.
+check_dns_only() { sh -c 'set -eu; . "$1"; check_dns "$2"' sh "$source_dir/lib.sh" "$1"; }
+check_dns_only nat.invalid
+GLOBAL6=true check_dns_only nat6.invalid
+PUBLIC4_STATUS=22 PUBLIC6_STATUS=22 check_dns_only gym.localhost
 # The timer's unit names the directory, so odd characters are refused before anything changes.
 : > "$CALLS"
 if sh "$source_dir/install.sh" --directory "$temporary/with space" --image plaingym:v0.0.0-local --hostname gym.localhost --email owner@example.org > "$temporary/output" 2>&1; then exit 1; fi

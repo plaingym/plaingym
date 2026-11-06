@@ -21,10 +21,20 @@ guide writes `vX.Y.Z`, put the version you are installing.
 3. Decide which email address the certificate authority may contact. It is not your
    sign-in address.
 
-The installer checks the hostname before it changes anything. If it says the name
-doesn't resolve only to this server, fix DNS. If you recently changed the record,
-it can take a few minutes to reach this server; re-run the same command to try
-again. The refusal confirms: "Nothing was changed."
+The installer checks the hostname before it changes anything. If the name does
+not resolve yet, check that its record points here. If you recently added or
+changed the record, cached answers, including a cached answer that the record is
+missing, can remain until their TTL expires, which can take an hour or more. Retry
+the installer after that, using the command for your route below. A confirmed
+address mismatch needs a DNS-only record pointing here. If the server has no
+global IPv6 address, remove its AAAA record or configure working public IPv6.
+
+When a hostname lookup fails, the installer also tries `api.ipify.org`. If neither
+query succeeds, it says the server could not query DNS: check the server's DNS
+resolver and network connectivity before retrying. If the public-address lookup
+failed, check that `curl` is installed and outbound HTTPS works; the installer
+could not confirm an address behind NAT. A confirmed mismatch takes priority
+over an unconfirmed address. Each refusal confirms: "Nothing was changed."
 
 ## Route 1: one command
 
@@ -79,8 +89,12 @@ reviewed commit of the public repository.
    hostname's DNS at the server's address.
 3. The script runs once at first boot. Create the DNS record **before** boot, or
    the installer stops at its DNS check; if that happened, fix the record, then SSH
-   in and run `sudo sh /root/install-plaingym.sh` again. A record you just changed
-   can take a few minutes to reach the server.
+   in and run `sudo sh /root/install-plaingym.sh` again. Cached answers for a record
+   you just changed can remain until the old record's TTL expires, which can take
+   an hour or more.
+   If you used [`deploy/cloud-init-local.yaml`](../deploy/cloud-init-local.yaml)
+   to test an unpublished bundle, its retry command is
+   `sudo sh /root/install-plaingym-local.sh`.
 4. Read the setup link from the installer's output, or print it on the server:
 
    ```sh
