@@ -105,6 +105,20 @@ export function invoiceTransitionsContract(name: string, create: () => Promise<I
       expect(after.invoice).toBe('refunded');
       expect(count(after.effects, 'staff_notice')).toBe(0);
     });
+    it.each(['pending', 'succeeded', 'failed', 'canceled'] as const)('adds the processor ID to a reserved refund reported %s', async status => {
+      const h = await create();
+      await h.transitions.cardSucceeded(h.context, h.success);
+      const { invoiceId, paymentId, amountCents, currency } = h.success;
+      const reserved: RefundTransition = { invoiceId, paymentId, amountCents, currency, refundId: randomUUID(), status: 'pending' };
+      expect((await h.transitions.refund(h.context, reserved)).outcome).toBe('applied');
+      const report = { ...reserved, processorId: 're_contract_reserved', status };
+      expect(await h.transitions.refund(h.context, report)).toMatchObject({ outcome: 'applied',
+        invoice: { status: status === 'succeeded' ? 'refunded' : 'paid' } });
+      expect((await h.transitions.refund(h.context, report)).outcome).toBe('ignored');
+      await expect(h.transitions.refund(h.context, { ...report, processorId: 're_different' })).rejects.toMatchObject({ code: 'conflict' });
+      await expect(h.transitions.refund(h.context, { ...report, amountCents: amountCents - 1 })).rejects.toMatchObject({ code: 'conflict' });
+      expect(count((await h.read()).effects, 'staff_notice')).toBe(status === 'failed' ? 1 : 0);
+    });
     it('never reverses a refund without a processor ID', async () => {
       const h = await create();
       await h.transitions.manualPayment(h.context, h.manual);

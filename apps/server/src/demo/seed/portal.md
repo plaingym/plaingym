@@ -41,11 +41,18 @@ visits up to eight, booked classes up to two, and the waitlist until the student
 holds a place. A rerun on a later day adds nothing once they are in place. While
 the student has no waitlist place, a missing upcoming Competition Training, coach
 or competition team member fails the step; it never shrinks another class instead.
+If signing failed after uploading the sample PNG, the retry reuses that unsigned
+image after checking its contents. Deleted images and images already used to sign
+another template are excluded.
 
-Billing shares the billing seed's helpers (`seedCalendar`, `seedTestCard`,
-`settleSeedPeriods`) and markers: its first run anchors the calendar, a card
+Billing shares the billing seed's helpers (`billingSeedState`, `seedCalendar`,
+`seedTestCard`, `settleSeedPeriods`) and its gym-wide calendar anchor, including
+when the portal step runs across local midnight. A card
 reservation blocks a blind retry after 23 hours, and the student's history must
-end paid. If the step fails, it restores the billing switch it found (a restore that
+end paid. A rerun after a failed current charge simulates the next configured
+retry deadline through the real runner; paid periods are left alone. Pending or
+unknown outcomes and exhausted retry schedules still need reconciliation.
+If the step fails, it restores the billing switch it found (a restore that
 fails too is logged as `demo.portal.billing_restore_failed`, and the step's own error is
 the one reported); a completed
 run leaves the switch to the gym, even if the owner has turned billing off since.
@@ -73,7 +80,10 @@ own student and QR key. `portal.reruns.test.ts` covers the seed without a test
 account, a failed run's resume and a missing waitlist class;
 `portal.reruns.billing.test.ts` and `portal.reruns.failure.test.ts` cover the
 billing switch restore and the reported failure. Each of these four files seeds
-one sandbox before its tests and gives each test a copy of it. `portal.runtime.test.ts` starts the
+one sandbox before its tests and gives each test a copy of it.
+`portal.leftovers.test.ts` uses the same fixture pattern for the current-charge
+retry, unsigned-image reuse and shared anchor across midnight.
+`portal.runtime.test.ts` starts the
 production runtime in demo mode and walks the full demo through its HTTP routes:
 the student's portal and QR check-in, a join activated by the install webhook, the
 outbox sign-in link and a new QR code at the kiosk; `portal.runtime.limit.test.ts`

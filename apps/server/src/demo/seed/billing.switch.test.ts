@@ -1,14 +1,50 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { gyms, members } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { fixture, snapshot } from './billing.fixture.test-helper.js';
+import * as goLive from '../../areas/settings/go-live.js';
+import { setLogSink } from '../../core/log.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 
 describe('demo billing seed and the billing switch', { timeout: 90_000 }, () => {
+  it('logs a failing switch restore and preserves the original seed error', async () => {
+    const f = await fixture(db), original = Object.assign(new Error('Card unavailable'), { code: 'CARD_DOWN' });
+    f.gateway.seedCard.mockRejectedValue(original);
+    const create = goLive.createGoLiveService;
+    const spy = vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
+      const service = create(options);
+      return { ...service, async update(context, input) {
+        if (input.billingEnabled === false) throw Object.assign(new Error('Switch unavailable'), { code: 'RESTORE_DOWN' });
+        return service.update(context, input);
+      } };
+    });
+    const logs: string[] = [], previous = setLogSink(line => logs.push(line));
+    try { await expect(f.seed.run(f.context)).rejects.toBe(original); }
+    finally { setLogSink(previous); spy.mockRestore(); }
+    expect(logs.map(line => JSON.parse(line))).toContainEqual(expect.objectContaining({
+      event: 'demo.billing.billing_restore_failed', gymId: f.gymId, error: expect.objectContaining({ code: 'RESTORE_DOWN' }),
+    }));
+    expect((await snapshot(db, f.gymId)).audit.some(row => row.action === 'billing.seed.completed')).toBe(false);
+  });
+
+  it('reports a restore failure when the seed itself succeeded', async () => {
+    const f = await fixture(db), create = goLive.createGoLiveService;
+    const spy = vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
+      const service = create(options);
+      return { ...service, async update(context, input) {
+        if (input.billingEnabled === false) throw new Error('Switch unavailable');
+        return service.update(context, input);
+      } };
+    });
+    try { await expect(f.seed.run(f.context)).rejects.toThrow('Switch unavailable'); }
+    finally { spy.mockRestore(); }
+    expect((await snapshot(db, f.gymId)).audit.some(row => row.action === 'billing.seed.completed')).toBe(false);
+  });
+
   it('confirms memberships already past due when it switches billing on, then restores the switch', async () => {
     const f = await fixture(db);
     // An interrupted run can leave an assigned membership whose first period was never generated.

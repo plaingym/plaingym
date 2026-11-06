@@ -239,12 +239,13 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
     if (request.status === 'canceled' && request.processorId === undefined) conflict('Only a processor refund can be canceled');
     const key = scopedKey(context.gymId, request.refundId);
     const existing = this.#refunds.get(key)?.request;
-    if (existing && JSON.stringify([existing.paymentId, existing.amountCents, existing.currency, existing.processorId])
-      !== JSON.stringify([request.paymentId, request.amountCents, request.currency, request.processorId]))
+    if (existing && (existing.paymentId !== request.paymentId || existing.amountCents !== request.amountCents
+      || existing.currency !== request.currency || (existing.processorId !== undefined && existing.processorId !== request.processorId)))
       conflict('Refund ID reused with different parameters');
     const reversed = existing?.status === 'succeeded' && request.status === 'failed'
       && existing.processorId !== undefined && existing.processorId === request.processorId;
-    if (existing && !reversed && (existing.status === request.status || existing.status !== 'pending')) return this.#result('ignored', invoice);
+    if (existing && !reversed && (existing.status === request.status && (existing.processorId !== undefined || request.processorId === undefined)
+      || existing.status !== 'pending')) return this.#result('ignored', invoice);
     const processorKey = request.processorId === undefined ? undefined : JSON.stringify([context.gymId, request.processorId]);
     if (processorKey !== undefined) {
       const other = this.#processorRefunds.get(processorKey);

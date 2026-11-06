@@ -2,7 +2,7 @@
 import { and, eq } from 'drizzle-orm';
 import { auditEvents, forGym, householdUsers, households, invoices, uuidv7, type Transaction } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import type { ClassSession } from '@plaingym/shared/contracts';
+import type { ClassSession, WaiverSignature } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
@@ -25,9 +25,10 @@ import { createScheduleService } from '../../areas/schedule/schedule.js';
 import { createGoLiveService } from '../../areas/settings/go-live.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import { createStaffProfileService } from '../../areas/staff/profiles.js';
+import { digest } from '../../areas/waivers/snapshot.js';
 import { createWaiversService, type WaiverOptions } from '../../areas/waivers/waivers.js';
 import { demoEmail, demoStudent } from '../identities.js';
-import { demoPlans, seedCalendar, seedTestCard, settleSeedPeriods } from './billing.js';
+import { billingSeedState, demoPlans, seedCalendar, seedTestCard, settleSeedPeriods } from './billing.js';
 import type { BillingSeedProvider } from './billing-payments.js';
 import { sessionsBetween } from './mat.js';
 import { day, demoPin, environmentPinSecret, findDemoMembers, settableClock } from './members.js';
@@ -44,7 +45,7 @@ export const waitlistClass = 'Competition Training';
 export const waitlistFillers = ['Marcus Rivera', 'Aisha Khan', 'Tobi Adeyemi'] as const;
 /** Upcoming bookings start after this margin, so the cancellation cutoff is still ahead when the sandbox opens. */
 const bookingMargin = 3 * hour, bookingHorizon = 7 * day;
-const started = 'demo.portal.billing_started', completed = 'demo.portal.billing_completed';
+const completed = 'demo.portal.billing_completed';
 const recorded = (tx: Transaction, action: string, targetId: string) => tx.select().from(auditEvents)
   .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, targetId))).limit(1);
 
@@ -75,8 +76,26 @@ export function portalSeed(options: PortalSeedOptions): SeedStep {
       { dateOfBirth: addDays(localDate(now, context.timezone), -(29 * 365 + 40)), revision: member.revision });
     const waivers = createWaiversService(options);
     const template = (await waivers.listTemplates(gymId, { limit: 100 })).data.find(row => row.name === 'Demo participation waiver');
-    if (template && !(await waivers.listSignatures(gymId, { memberId: member.id, templateId: template.id })).pagination.total) {
-      const uploaded = await waivers.uploadSignature(actor, member.id, demoSignaturePng());
+    const signatures: WaiverSignature[] = [];
+    if (template) for (let offset = 0; ; offset += 100) {
+      const result = await waivers.listSignatures(gymId, { memberId: member.id, limit: 100, offset });
+      signatures.push(...result.data);
+      if (signatures.some(row => row.templateId === template.id) || signatures.length >= result.pagination.total) break;
+    }
+    if (template && !signatures.some(row => row.templateId === template.id)) {
+      // A failed render/sign leaves its immutable image available for retry. Reuse only an unsigned copy of the
+      // sample PNG: another template's signed image is already an idempotency key for different terms.
+      const uploads = await options.uploadsFor(gymId), png = demoSignaturePng();
+      const signatureImageHash = digest(png);
+      let uploaded: { signatureImageKey: string; signatureImageHash: string } | undefined;
+      for (const image of await uploads.list(`${gymId}/waivers/${member.id}/signatures/`)) {
+        if (image.deletedAt || image.size !== png.length || signatures.some(row => row.signatureImageKey === image.key)) continue;
+        const stream = await uploads.get(image.key);
+        if (stream && digest(new Uint8Array(await new Response(stream).arrayBuffer())) === signatureImageHash) {
+          uploaded = { signatureImageKey: image.key, signatureImageHash }; break;
+        }
+      }
+      uploaded ??= await waivers.uploadSignature(actor, member.id, png);
       await waivers.sign(actor, { memberId: member.id, templateId: template.id, templateVersion: template.version,
         signer: { kind: 'self', name: `${member.firstName} ${member.lastName}` }, ...uploaded, consent: true },
       { timezone: context.timezone, ipAddress: 'demo-seed' });
@@ -192,13 +211,8 @@ async function billing(scope: typeof forGym, clock: Clock, gymId: string, househ
     confirmedPastDueDates: initial.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) });
   try {
     const gym = await settings.get(gymId);
-    // The first run anchors the calendar, so a retry on a later day repeats the same periods.
-    const anchor = await scope(gymId, async tx => {
-      const [existing] = await recorded(tx, started, householdId);
-      if (existing) return existing.occurredAt;
-      await audit(tx, actor, clock, started, 'household', householdId, {});
-      return clock.now();
-    });
+    // A marker this step writes must record the switch it found, not the one it just turned on.
+    const { anchor } = await billingSeedState(scope, clock, { ...gym, billingEnabled: initial.billingEnabled });
     const calendar = seedCalendar(anchor, gym.timezone), at = settableClock(anchor);
     const plan = (await createCatalogService({ scope, clock: at, settings }).listPlans(gymId, page)).data.find(row => row.name === demoPlans[0].name);
     if (!plan) throw new Error('Run the billing seed before the portal seed');
@@ -217,13 +231,11 @@ async function billing(scope: typeof forGym, clock: Clock, gymId: string, househ
     const runner = createChargeRunner({ scope, clock: at, settings, transitions, payments: async () => provider.payments,
       // Transitions persist their normal effects for the runtime publisher; the seed enqueues nothing itself.
       jobs: { async enqueue() { throw new Error('Portal seed must not enqueue jobs directly'); } } });
-    await settleSeedPeriods({ scope, at, transitions, runner }, gym, householdId, calendar);
+    await settleSeedPeriods({ scope, at, transitions, runner, retryFailed: true }, gym, householdId, calendar);
     // The kiosk refuses a household with an overdue invoice, so the student's history must end paid.
-    const cycles = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices)
+    const cycles = await scope(gymId, tx => tx.select({ status: invoices.status }).from(invoices)
       .where(and(eq(invoices.householdId, householdId), eq(invoices.kind, 'cycle'))));
-    const paid = await scope(gymId, tx => tx.select({ id: invoices.id }).from(invoices)
-      .where(and(eq(invoices.householdId, householdId), eq(invoices.kind, 'cycle'), eq(invoices.status, 'paid'))));
-    if (paid.length !== cycles.length) throw new Error('Demo student charge needs reconciliation before the seed can finish');
+    if (cycles.some(row => row.status !== 'paid')) throw new Error('Demo student charge needs reconciliation before the seed can finish');
     await scope(gymId, tx => audit(tx, actor, clock, completed, 'household', householdId, {}));
   } catch (error) {
     // A failed run restores the gym's original switch, as the billing seed does. The seed's own failure is the one

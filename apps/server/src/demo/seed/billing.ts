@@ -8,7 +8,8 @@ import { createCustomersService } from '../../areas/billing/customers.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
 import { previousBillingDate } from '../../areas/billing/invoicing/index.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
-import { audit, generateCycle, system } from '../../areas/billing/runner/store.js';
+import { retryDeadlines } from '../../areas/billing/runner/eligibility.js';
+import { audit, generateCycle, latestAttempt, system } from '../../areas/billing/runner/store.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { createCardHandlers } from '../../areas/billing/webhooks/handlers/methods.js';
 import { createMembersService } from '../../areas/members/members.js';
@@ -19,6 +20,7 @@ import { demoHouseholds, householdEmail, inBatches, memberKey, settableClock } f
 import type { Household } from '@plaingym/shared/contracts';
 import type { BillingSeedProvider } from './billing-payments.js';
 import type { GymSettings } from '../../core/interfaces/gym-settings.js';
+import { logError } from '../../core/log.js';
 
 const page = { limit: 100, offset: 0 } as const;
 export const demoPlans = [
@@ -43,12 +45,7 @@ export function billingSeed(options: {
     if ((await scope(gymId, tx => recorded(tx, 'billing.seed.completed', gymId))).length) return;
     const settings = createGymSettingsAccessor({ scope, clock });
     const gym = await settings.get(gymId);
-    const seedState = await scope(gymId, async tx => {
-      const [existing] = await recorded(tx, started, gymId);
-      if (existing) return { anchor: existing.occurredAt, billingEnabled: (existing.after as { billingEnabled: boolean }).billingEnabled };
-      await audit(tx, actor, clock, started, 'gym', gymId, { billingEnabled: gym.billingEnabled });
-      return { anchor: clock.now(), billingEnabled: gym.billingEnabled };
-    });
+    const seedState = await billingSeedState(scope, clock, gym);
     const { anchor } = seedState;
     const calendar = seedCalendar(anchor, gym.timezone), { today, billingDay, startsOn } = calendar;
     const at = settableClock(anchor), catalog = createCatalogService({ scope, clock: at, settings });
@@ -69,6 +66,7 @@ export function billingSeed(options: {
     // A rerun after a partial failure can find seeded memberships still due in the past; confirm exactly those.
     if (!initial.billingEnabled) await switches.update(actor, { revision: initial.revision, billingEnabled: true,
       confirmedPastDueDates: initial.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) });
+    let restoreFailure: { error: unknown } | undefined;
     try {
       const prepared = new Map<string, Household>();
       // Overlap independent customer/card requests, bounded to three households.
@@ -113,12 +111,30 @@ export function billingSeed(options: {
       }
     } finally {
       if (!seedState.billingEnabled) {
-        const current = await switches.checklist(gymId);
-        await switches.update(actor, { revision: current.revision, billingEnabled: false });
+        try {
+          const current = await switches.checklist(gymId);
+          await switches.update(actor, { revision: current.revision, billingEnabled: false });
+        } catch (restoreError) {
+          logError('demo.billing.billing_restore_failed', { gymId }, restoreError);
+          restoreFailure = { error: restoreError };
+        }
       }
     }
+    // An error thrown by the seed has already propagated through finally; only a restore-only failure reaches here.
+    if (restoreFailure) throw restoreFailure.error;
     await scope(gymId, tx => audit(tx, actor, clock, 'billing.seed.completed', 'gym', gymId, {}));
   } };
+}
+
+/** Both billing seeds use the first billing run's local calendar, including retries across midnight. */
+export function billingSeedState(scope: typeof forGym, clock: Clock, gym: GymSettings) {
+  const gymId = gym.gymId;
+  return scope(gymId, async tx => {
+    const [existing] = await recorded(tx, started, gymId);
+    if (existing) return { anchor: existing.occurredAt, billingEnabled: (existing.after as { billingEnabled: boolean }).billingEnabled };
+    await audit(tx, system(gymId), clock, started, 'gym', gymId, { billingEnabled: gym.billingEnabled });
+    return { anchor: clock.now(), billingEnabled: gym.billingEnabled };
+  });
 }
 
 /** The seed's three monthly periods: two before the current one, which fell due two days before the anchor. */
@@ -147,7 +163,7 @@ export async function seedTestCard(options: { scope: typeof forGym; clock: Clock
  * cash and charges the current one. A charge must end succeeded or failed; anything else waits for reconciliation.
  */
 export async function settleSeedPeriods(options: { scope: typeof forGym; at: ReturnType<typeof settableClock>;
-  transitions: ReturnType<typeof createInvoiceTransitions>; runner: ReturnType<typeof createChargeRunner> },
+  transitions: ReturnType<typeof createInvoiceTransitions>; runner: ReturnType<typeof createChargeRunner>; retryFailed?: boolean },
 gym: GymSettings, householdId: string, calendar: ReturnType<typeof seedCalendar>) {
   const { scope, at } = options, gymId = gym.gymId, noon = (date: string) => zonedInstant(date, '12:00', gym.timezone, { gap: 'shift' })!;
   for (const date of [calendar.startsOn, calendar.previous, calendar.dueOn]) {
@@ -157,6 +173,20 @@ gym: GymSettings, householdId: string, calendar: ReturnType<typeof seedCalendar>
   const history = await scope(gymId, tx => tx.select().from(invoices).where(and(eq(invoices.householdId, householdId),
     eq(invoices.kind, 'cycle'))).orderBy(asc(invoices.dueOn)));
   for (const invoice of history) {
+    if (invoice.status === 'past_due' && options.retryFailed && invoice.dueOn === calendar.dueOn) {
+      // The seed simulates billing history. Continue at the next real retry deadline, never bypassing the runner's
+      // attempt reservation or replay protections. Unknown/pending outcomes still require reconciliation.
+      const next = await scope(gymId, async tx => {
+        const latest = await latestAttempt(tx, invoice.id);
+        if (!latest || latest.status !== 'failed') return undefined;
+        return (await retryDeadlines(tx, gym, invoice.id)).find(date => date > latest.createdAt);
+      });
+      if (!next) throw new Error('Demo charge needs reconciliation before the seed can finish');
+      at.set(next);
+      const result = await options.runner.charge(gymId, invoice.id, { mode: 'retry' });
+      if (result.status !== 'succeeded') throw new Error('Demo charge needs reconciliation before the seed can finish');
+      continue;
+    }
     if (invoice.status !== 'open') continue;
     at.set(noon(invoice.dueOn));
     if (invoice.dueOn < calendar.dueOn) await options.transitions.manualPayment(system(gymId), { invoiceId: invoice.id, paymentId: uuidv7(),

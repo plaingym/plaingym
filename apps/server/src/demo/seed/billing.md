@@ -31,7 +31,10 @@ next monthly dates remain in the future. Trial/prospect households have no invoi
 
 The existing go-live service enables billing for collection, confirming any
 memberships an interrupted run left past due, and restores its
-original value in `finally`. It leaves the member-email switch alone. The seed
+original value in `finally`. A restore failure is logged as
+`demo.billing.billing_restore_failed`; if seeding failed too, its original error
+is rethrown. If only the restore fails, the run fails without a final completion
+marker. The seed leaves the member-email switch alone. It
 sends no email or job itself: transitions record their usual auditable effects,
 which the runtime publisher can deliver through the demo outbox and job queue.
 
