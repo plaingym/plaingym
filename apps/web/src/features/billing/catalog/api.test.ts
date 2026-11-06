@@ -33,6 +33,21 @@ describe('billing contract transport', () => {
     const invalid = createBillingClient(async () => Response.json({ data: { amountCents: -1 } }));
     await expect(invalid.call('getPlan', undefined, { planId: id })).rejects.toThrow();
   });
+  it('retains attachment reasons without exposing arbitrary server messages', async () => {
+    const client = createBillingClient(async () => Response.json({ error: { code: 'conflict', message: 'Private SQL detail',
+      details: { reason: ['tax_rate_attached'], plans: ['Plan'] } } }, { status: 409 }));
+    await expect(client.call('updateTaxRate', { revision: 1, active: false }, { taxRateId: id }))
+      .rejects.toMatchObject({ status: 409, code: 'conflict', reason: ['tax_rate_attached'], message: 'Request failed' });
+  });
+  it.each([null, {}, { error: null }, { error: { details: { reason: 'tax_rate_attached' } } },
+    { error: { details: { reason: ['tax_rate_attached', 1] } } }])('ignores malformed reasons in %j', async body => {
+    const client = createBillingClient(async () => Response.json(body, { status: 409 }));
+    await expect(client.call('getTaxRate', undefined, { taxRateId: id })).rejects.toMatchObject({ status: 409, reason: [] });
+  });
+  it('retains status when an error body is not JSON', async () => {
+    const client = createBillingClient(async () => new Response('Proxy failure', { status: 503 }));
+    await expect(client.call('getTaxRate', undefined, { taxRateId: id })).rejects.toMatchObject({ status: 503, reason: [], message: 'Request failed' });
+  });
 });
 describe('catalog decimal input', () => {
   it.each([['0', 2, 0], ['0.29', 2, 29], ['99.99', 2, 9999], ['8.875', 4, 88750], ['9.975', 4, 99750]])('parses %s exactly', (value, places, expected) => {

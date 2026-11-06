@@ -6,7 +6,7 @@ export type { paths } from '@plaingym/shared/api';
 /** Typed contract client; auth transport is separate because it is not in OpenAPI. */
 export const api = createApiClient({ credentials: 'same-origin' });
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string) {
+  constructor(readonly status: number, readonly code: string, readonly reason: readonly string[] = []) {
     super('Request failed');
     this.name = 'ApiError';
   }

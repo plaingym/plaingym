@@ -5,6 +5,8 @@ import { ApiError } from '../../../lib/api.js';
 
 export { amountInputPattern, amountInputStep, minorUnitsToInput, parseMinorUnits } from '@plaingym/shared/money';
 export const text = (key: string) => t('billing/catalog:' + key);
+/** A catalog message with values. */
+export const say = (key: string, values: Record<string, string | number>) => t('billing/catalog:' + key, values);
 export const selectClass = 'min-h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-base';
 /** A non-negative decimal with up to `places` fraction digits as an integer of 10^-places units (tax rates; prices use parseMinorUnits). */
 export function decimalUnits(value: string, places: number) {

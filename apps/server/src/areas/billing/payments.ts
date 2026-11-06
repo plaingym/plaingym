@@ -149,7 +149,14 @@ export function createPaymentService(options: PaymentOptions = {}) {
           taxIds = (await tx.select().from(chargeTypeTaxRates).where(eq(chargeTypeTaxRates.chargeTypeId, row.id))).map(t => t.taxRateId);
         } else { ({ description, amountCents, currency } = request); taxIds = request.taxRateIds; }
         if (currency !== gym.currency) paymentConflict('currency_mismatch', 'Currency does not match the gym');
-        const taxes = taxIds.length ? await tx.select().from(taxRates).where(inArray(taxRates.id, taxIds)).orderBy(asc(taxRates.id)).for('share') : [];
+        let taxes = taxIds.length ? await tx.select().from(taxRates).where(inArray(taxRates.id, taxIds)).orderBy(asc(taxRates.id)).for('share') : [];
+        // A detach can commit while the rate locks wait. The charge type's share lock
+        // prevents new links, so the remaining links are a subset of the locked rates.
+        if (chargeTypeId && taxes.length) {
+          const remaining = (await tx.select().from(chargeTypeTaxRates)
+            .where(eq(chargeTypeTaxRates.chargeTypeId, chargeTypeId))).map(link => link.taxRateId);
+          taxIds = remaining; taxes = taxes.filter(rate => remaining.includes(rate.id));
+        }
         if (taxes.length !== taxIds.length) notFound();
         if (taxes.some(t => !t.active)) paymentConflict('tax_rate_inactive', 'Tax rate is inactive');
         const calculated = calculateOneOffInvoice({ householdId: request.householdId, currency, dueOn: request.dueOn,

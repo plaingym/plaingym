@@ -11,8 +11,8 @@ import { userNames } from '../../../components/ui/page.js';
 import { ApiError } from '../../../lib/api.js';
 import { cn } from '../../../lib/utils.js';
 import { billingClient, type BillingClient } from './api.js';
-import { ArchiveConfirmation, CatalogEditor, say, type CatalogKind, type CatalogRecord } from './editor.js';
-import { money, saveError, text } from './format.js';
+import { ArchiveConfirmation, CatalogEditor, type CatalogKind, type CatalogRecord } from './editor.js';
+import { money, saveError, say, text } from './format.js';
 
 type Archive = { rate: TaxRate; input: Record<string, unknown>; usage: TaxRateUsage };
 const carries = (record: Plan | ChargeType, rate: string) => record.taxRateIds.includes(rate);
@@ -45,7 +45,7 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     const params = record ? { [kind === 'plans' ? 'planId' : kind === 'taxes' ? 'taxRateId' : 'chargeTypeId']: record.id } : {};
     try { await client.call(operation, input, params); } catch (error) {
       // Something attached the rate since the check: show what carries it now.
-      if (archiving && error instanceof ApiError && error.status === 409 && await needsDetach(archiving, input)) return;
+      if (archiving && error instanceof ApiError && error.status === 409 && error.reason.includes('tax_rate_attached') && await needsDetach(archiving, input)) return;
       throw error;
     }
     setEditor(null); await cache.invalidateQueries({ queryKey: key });

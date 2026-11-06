@@ -22,7 +22,12 @@ so an edit that waited on a detach can't attach the archived rate again.
 Rates archived and attached before this rule keep their links and stay editable
 as they are: plans still apply the rate, one-off invoices for such a charge type
 are refused (`tax_rate_inactive`), and the catalog warns on each with a way to
-remove it (`detach: true` clears an archived rate's links too).
+remove it (`detach: true` clears an archived rate's links too, with a
+`billing.tax_rate.detached` audit). The UI labels these rates **Inactive** and
+offers a removal-only confirmation. Only a `tax_rate_attached` conflict opens
+the archive confirmation after a save; a stale revision keeps the draft and
+asks staff to reload. One-off invoices lock the charge type and its rates, then
+reread its links so a confirmed detach that committed while they waited is honored.
 
 All mutations write audits in their transaction. Membership edits apply a new
 plan's defaults before explicit overrides. Commitments are recorded, not enforced:

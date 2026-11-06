@@ -1,31 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState, type FormEvent } from 'react';
 import type { ChargeType, Plan, TaxRate, TaxRateUsage } from '@plaingym/shared/contracts';
-import { t } from '../../../lib/i18n.js';
 import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Alert } from '../../../components/ui/alert.js';
-import { amountInputStep, decimalUnits, minorUnitsToInput, parseMinorUnits, selectClass, text } from './format.js';
+import { amountInputStep, decimalUnits, minorUnitsToInput, parseMinorUnits, say, selectClass, text } from './format.js';
 
-/** A catalog message with values. */
-export const say = (key: string, values: Record<string, string | number>) => t('billing/catalog:' + key, values);
-/** Confirms removing a tax rate from everything that carries it and archiving it, in one step. */
+/** Confirms removing a tax rate from everything that carries it, archiving it if active. */
 export function ArchiveConfirmation({ rate, usage, busy, confirm, cancel }: {
   rate: TaxRate; usage: TaxRateUsage; busy: boolean; confirm: () => Promise<void>; cancel: () => void;
 }) {
   const items = usage.chargeTypes.length + usage.plans.length;
   const status = (active: boolean) => active ? '' : ' (' + text('inactive') + ')';
   return <section aria-labelledby="archive-tax-title" className="min-w-0 space-y-3 rounded-lg border border-destructive p-4">
-    <h2 id="archive-tax-title" className="text-lg font-semibold">{say('archiveTitle', { name: rate.name })}</h2>
-    <p>{text('archiveHelp')}</p>
+    <h2 id="archive-tax-title" className="text-lg font-semibold">{say(rate.active ? 'archiveTitle' : 'detachTitle', { name: rate.name })}</h2>
+    <p>{text(rate.active ? 'archiveHelp' : 'detachHelp')}</p>
     {usage.chargeTypes.length > 0 && <div><h3 className="font-medium">{text('charges')}</h3>
       <ul className="list-disc pl-5">{usage.chargeTypes.map(item => <li key={item.id}>{item.name}{status(item.active)}</li>)}</ul></div>}
     {usage.plans.length > 0 && <div><h3 className="font-medium">{text('plans')}</h3>
       <ul className="list-disc pl-5">{usage.plans.map(item => <li key={item.id}>{say('archivePlan', { name: item.name, count: item.memberships })}{status(item.active)}</li>)}</ul></div>}
     {usage.plans.length > 0 && <p role="note" className="font-medium">{say('archiveMemberships', { count: usage.memberships })}</p>}
     <div className="flex flex-col gap-2 sm:flex-row">
-      <Button disabled={busy} onClick={() => void confirm()}>{say('archiveConfirm', { count: items })}</Button>
+      <Button disabled={busy} onClick={() => void confirm()}>{say(rate.active ? 'archiveConfirm' : 'detachConfirm', { count: items })}</Button>
       <Button variant="outline" disabled={busy} onClick={cancel}>{text('cancel')}</Button>
     </div>
   </section>;
@@ -75,7 +72,7 @@ export function CatalogEditor({ kind, record, currency, taxes, busy, locked = fa
           {!taxes.length && <p className="text-sm text-muted-foreground">{text('noTaxes')}</p>}
           {taxes.filter(item => item.active || price?.taxRateIds.includes(item.id)).map(item => <Label key={item.id} className="flex min-h-11 items-center gap-3">
             <input className="size-5 shrink-0" type="checkbox" name="taxRateIds" value={item.id} defaultChecked={price?.taxRateIds.includes(item.id)}/>
-            {item.name} ({item.rateMillionths / 10_000}%, {text(item.inclusive ? 'inclusive' : 'exclusive')}{item.active ? '' : ', ' + text('archived')})
+            {item.name} ({item.rateMillionths / 10_000}%, {text(item.inclusive ? 'inclusive' : 'exclusive')}{item.active ? '' : ', ' + text('inactive')})
           </Label>)}
         </fieldset>
       </>}

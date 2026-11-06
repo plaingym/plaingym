@@ -1,14 +1,43 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Lock probes make the concurrent detach tests deterministic.
+import { eq, sql } from 'drizzle-orm';
 import { auditEvents, planTaxRates, chargeTypeTaxRates, taxRates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createCatalogService } from './catalog.js';
+import { createPaymentService } from './payments.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+async function waitForRateLock(holder: number) {
+  await expect.poll(async () => {
+    // Both gym connections are occupied by the holder and the waiter. Inspect only their locks from the system pool.
+    // eslint-disable-next-line database/system-tables -- Test-only inspection of the specific holder's transaction lock.
+    const rows = await db.system.db.execute<{ waiting: boolean }>(sql`select exists (
+      select 1 from pg_locks waiting join pg_locks held
+        on held.locktype = waiting.locktype and held.transactionid = waiting.transactionid
+      where held.pid = ${holder} and held.granted and not waiting.granted
+    ) as waiting`);
+    return rows[0]!.waiting;
+  }, { timeout: 10_000, interval: 10 }).toBe(true);
+}
+/** What a confirmed detach does, paused while it holds the rate's lock until `releaseOnceBlocked` sees another transaction wait on it. */
+async function pausedDetach(f: { gymId: string; tax: { id: string } }) {
+  const locked = Promise.withResolvers<number>(), gate = Promise.withResolvers<void>();
+  const done = db.forGym(f.gymId, async tx => {
+    await tx.select().from(taxRates).where(eq(taxRates.id, f.tax.id)).for('update');
+    // eslint-disable-next-line database/system-tables -- Identify this holder for the pg_locks probe.
+    locked.resolve((await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid);
+    await gate.promise;
+    await tx.delete(planTaxRates).where(eq(planTaxRates.taxRateId, f.tax.id));
+    await tx.delete(chargeTypeTaxRates).where(eq(chargeTypeTaxRates.taxRateId, f.tax.id));
+    await tx.update(taxRates).set({ active: false, revision: 2 }).where(eq(taxRates.id, f.tax.id));
+  });
+  const holder = await locked.promise;
+  return { releaseOnceBlocked: async () => { try { await waitForRateLock(holder); } finally { gate.resolve(); await done; } } };
+}
 async function fixture() {
   const gymId = uuidv7(); await factory('gyms', gymId, { currency: 'CAD' });
   const clock = new TestClock('2026-10-23T12:00:00Z'), context = { gymId, actor: { kind: 'system' as const } };
@@ -70,6 +99,10 @@ describe('billing catalog against PostgreSQL', () => {
     // A rate archived and attached before the archive rule existed.
     await db.forGym(f.gymId, tx => tx.update(taxRates).set({ active: false, revision: 2 }).where(eq(taxRates.id, f.tax.id)));
     await f.service.updatePlan(f.context, plan.id, { revision: 1, name: 'Renamed', taxRateIds: [f.tax.id] });
+    const charge = await f.service.createChargeType(f.context, { name: 'Charge', currency: 'CAD', amountCents: 100 });
+    await db.forGym(f.gymId, tx => tx.insert(chargeTypeTaxRates).values({ id: uuidv7(), gymId: f.gymId, chargeTypeId: charge.id, taxRateId: f.tax.id }));
+    expect(await f.service.updateChargeType(f.context, charge.id, { revision: 1, name: 'Kept', taxRateIds: [f.tax.id] }))
+      .toMatchObject({ name: 'Kept', taxRateIds: [f.tax.id], revision: 2 });
     expect((await f.service.getPlan(f.gymId, plan.id)).taxRateIds).toEqual([f.tax.id]);
     await expect(f.service.createChargeType(f.context, { name: 'Wrong', currency: 'CAD', amountCents: 100, taxRateIds: [f.tax.id] })).rejects.toMatchObject({ code: 'conflict' });
     // It stays editable as it is (the editor always sends `active`), and `detach` clears it.
@@ -78,26 +111,55 @@ describe('billing catalog against PostgreSQL', () => {
     expect((await f.service.getPlan(f.gymId, plan.id)).taxRateIds).toEqual([f.tax.id]);
     expect(await f.service.updateTaxRate(f.context, f.tax.id, { revision: 4, active: false, detach: true })).toMatchObject({ revision: 5 });
     expect((await f.service.getPlan(f.gymId, plan.id)).taxRateIds).toEqual([]);
+    expect((await f.service.getChargeType(f.gymId, charge.id)).taxRateIds).toEqual([]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'billing.tax_rate.detached')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.before).toMatchObject({ active: false, revision: 4 });
+    expect(audits[0]!.after).toMatchObject({ active: false, revision: 5 });
   });
-  it('keeps a plan edit that waited on a detach from attaching the archived rate again', async () => {
-    const f = await attachedFixture();
-    let release!: () => void, holding!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; }), locked = new Promise<void>(resolve => { holding = resolve; });
-    // What a confirmed detach does, paused while it holds the rate's lock.
-    const detach = db.forGym(f.gymId, async tx => {
-      await tx.select().from(taxRates).where(eq(taxRates.id, f.tax.id)).for('update');
-      holding(); await gate;
-      await tx.delete(planTaxRates).where(eq(planTaxRates.taxRateId, f.tax.id));
-      await tx.update(taxRates).set({ active: false, revision: 2 }).where(eq(taxRates.id, f.tax.id));
-    });
-    await locked;
+  it.each(['plan', 'charge type'] as const)('keeps a %s edit that waited on a detach from attaching the inactive rate again', async kind => {
+    const f = await attachedFixture(), detach = await pausedDetach(f);
     // The plan edit, which still carries the rate, reaches the rate's lock and waits; then the detach commits.
-    const edit = f.service.updatePlan(f.context, f.monthly.id, { revision: 1, name: 'Monthly+', taxRateIds: [f.tax.id] }).catch((error: unknown) => error);
-    await new Promise(resolve => setTimeout(resolve, 300));
-    release(); await detach;
+    const edit = (kind === 'plan' ? f.service.updatePlan(f.context, f.monthly.id, { revision: 1, name: 'Monthly+', taxRateIds: [f.tax.id] })
+      : f.service.updateChargeType(f.context, f.drop.id, { revision: 1, name: 'Drop-in+', taxRateIds: [f.tax.id] })).catch((error: unknown) => error);
+    await detach.releaseOnceBlocked();
     expect(await edit).toMatchObject({ code: 'conflict' });
     expect((await f.service.getPlan(f.gymId, f.monthly.id)).taxRateIds).toEqual([]);
+    expect((await f.service.getChargeType(f.gymId, f.drop.id)).taxRateIds).toEqual([f.gst.id]);
   });
+  it.each([false, true])('issues a one-off after waiting on a detach, keeping only remaining rates (other rate: %s)', async keepOther => {
+    const f = await attachedFixture();
+    if (!keepOther) await f.service.updateChargeType(f.context, f.drop.id, { revision: 1, taxRateIds: [f.tax.id] });
+    const service = payments(f), detach = await pausedDetach(f);
+    const issuing = service.createOneOff(f.context, { source: 'charge_type', chargeTypeId: f.drop.id,
+      householdId: f.home.id, dueOn: '2026-11-01' });
+    // Observe a rejection right away, in case the probe fails before it is awaited below.
+    issuing.catch(() => undefined);
+    await detach.releaseOnceBlocked();
+    const invoice = await issuing;
+    expect(invoice.amountCents).toBe(keepOther ? 2100 : 2000);
+    const detail = await service.getInvoice(f.gymId, invoice.id);
+    expect(detail.lineItems.filter(line => line.kind === 'tax').map(line => line.taxRateId)).toEqual(keepOther ? [f.gst.id] : []);
+    expect((await f.service.getChargeType(f.gymId, f.drop.id)).taxRateIds).toEqual(keepOther ? [f.gst.id] : []);
+  });
+  it('refuses a one-off whose charge type still carries an inactive rate', async () => {
+    const f = await attachedFixture(), service = payments(f);
+    // A rate archived and attached before the archive rule existed.
+    await db.forGym(f.gymId, tx => tx.update(taxRates).set({ active: false, revision: 2 }).where(eq(taxRates.id, f.tax.id)));
+    await expect(service.createOneOff(f.context, { source: 'charge_type', chargeTypeId: f.drop.id, householdId: f.home.id, dueOn: '2026-11-01' }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['tax_rate_inactive'] } });
+  });
+  it('accepts tax rate IDs in any case and answers with the stored form', async () => {
+    const f = await attachedFixture(), service = payments(f), upper = [f.tax.id, f.gst.id].map(id => id.toUpperCase());
+    const invoice = await service.createOneOff(f.context, { source: 'custom', description: 'Gloves', amountCents: 1000, currency: 'CAD',
+      taxRateIds: upper, householdId: f.home.id, dueOn: '2026-11-01' });
+    const detail = await service.getInvoice(f.gymId, invoice.id);
+    expect(detail.lineItems.filter(line => line.kind === 'tax').map(line => line.taxRateId).sort()).toEqual([f.tax.id, f.gst.id].sort());
+    const stored = [f.tax.id, f.gst.id].sort();
+    expect((await f.service.updatePlan(f.context, f.monthly.id, { revision: 1, taxRateIds: upper })).taxRateIds).toEqual(stored);
+    expect((await f.service.updateChargeType(f.context, f.drop.id, { revision: 1, taxRateIds: upper })).taxRateIds).toEqual(stored);
+  });
+  const payments = (f: { clock: TestClock }) => createPaymentService({ scope: db.forGym, clock: f.clock, settings: createGymSettingsAccessor({ scope: db.forGym }) });
   async function attachedFixture() {
     const f = await fixture();
     const gst = await f.service.createTaxRate(f.context, { name: 'GST', rateMillionths: 50_000, inclusive: false });
@@ -109,7 +171,7 @@ describe('billing catalog against PostgreSQL', () => {
     const base = { householdId: home.id, memberId: member.id, startsOn: '2026-11-01', nextDueOn: '2026-11-01' };
     for (const status of ['active', 'frozen', 'pending', 'trial', 'cancelled'] as const) await factory('memberships', f.gymId, { ...base, planId: monthly.id, status });
     await factory('memberships', f.gymId, { ...base, planId: annual.id, status: 'active' });
-    return { ...f, gst, drop, mats, monthly, annual };
+    return { ...f, gst, drop, mats, monthly, annual, home };
   }
   const links = (f: { gymId: string }) => db.forGym(f.gymId, async tx => ({
     charges: (await tx.select().from(chargeTypeTaxRates)).map(link => [link.chargeTypeId, link.taxRateId]),

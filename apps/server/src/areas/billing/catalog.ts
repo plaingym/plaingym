@@ -54,14 +54,13 @@ export function createCatalogService(options: CatalogOptions = {}) {
    * Reading the links after the lock sees a detach that committed while this edit waited for it.
    */
   async function validateTaxes(tx: Transaction, ids: readonly string[], existing: () => Promise<readonly string[]> = async () => []) {
-    if (!ids.length) return;
-    const rows = await tx.select({ id: taxRates.id, active: taxRates.active }).from(taxRates)
-      .where(inArray(taxRates.id, [...ids])).orderBy(asc(taxRates.id)).for('share');
+    const rows = ids.length ? await tx.select({ id: taxRates.id, active: taxRates.active }).from(taxRates)
+      .where(inArray(taxRates.id, [...ids])).orderBy(asc(taxRates.id)).for('share') : [];
     if (rows.length !== ids.length) throw new AppError('not_found', 'Tax rate not found');
-    const inactive = rows.filter(row => !row.active);
-    if (!inactive.length) return;
     const linked = await existing();
+    const inactive = rows.filter(row => !row.active);
     if (inactive.some(row => !linked.includes(row.id))) throw new AppError('conflict', 'Tax rate is inactive');
+    return linked;
   }
   const planTaxIds = async (tx: Transaction, id: string) => (await tx.select({ id: planTaxRates.taxRateId }).from(planTaxRates)
     .where(eq(planTaxRates.planId, id)).orderBy(asc(planTaxRates.taxRateId))).map(link => link.id);
@@ -138,7 +137,7 @@ export function createCatalogService(options: CatalogOptions = {}) {
         }
         await tx.delete(chargeTypeTaxRates).where(eq(chargeTypeTaxRates.taxRateId, id));
         await tx.delete(planTaxRates).where(eq(planTaxRates.taxRateId, id));
-        await catalogAudit(tx, context, clock, 'billing.tax_rate.archived', 'tax_rate', id,
+        await catalogAudit(tx, context, clock, before.active ? 'billing.tax_rate.archived' : 'billing.tax_rate.detached', 'tax_rate', id,
           { ...presentTax(before), attachedTo: attached }, { ...result, detachedFrom: attached });
         return result;
       });
@@ -175,15 +174,14 @@ export function createCatalogService(options: CatalogOptions = {}) {
       return scope(context.gymId, async tx => {
         const before = catalogMissing((await tx.select().from(plans).where(eq(plans.id, id)).for('update'))[0]);
         checkPriceStep(before, changes);
-        if (taxRateIds !== undefined) await validateTaxes(tx, taxRateIds, () => planTaxIds(tx, id));
-        const beforeTaxes = await planTaxIds(tx, id);
+        const beforeTaxes = taxRateIds !== undefined ? await validateTaxes(tx, taxRateIds, () => planTaxIds(tx, id)) : await planTaxIds(tx, id);
         const guard = revisionGuard(plans.revision, revision);
         const row = assertRevised(await tx.update(plans).set({ ...changes, revision: guard.next }).where(and(eq(plans.id, id), guard.matches)).returning());
         if (taxRateIds !== undefined) {
           await tx.delete(planTaxRates).where(eq(planTaxRates.planId, id));
           if (taxRateIds.length) await tx.insert(planTaxRates).values(taxRateIds.map(taxRateId => ({ gymId: context.gymId, id: uuidv7(), planId: id, taxRateId, createdAt: clock.now() })));
         }
-        const result = presentPlan(row, await planTaxIds(tx, id));
+        const result = presentPlan(row, taxRateIds === undefined ? beforeTaxes : await planTaxIds(tx, id));
         await catalogAudit(tx, context, clock, 'billing.plan.updated', 'plan', id, presentPlan(before, beforeTaxes), result);
         return result;
       });
@@ -220,15 +218,14 @@ export function createCatalogService(options: CatalogOptions = {}) {
       return scope(context.gymId, async tx => {
         const before = catalogMissing((await tx.select().from(chargeTypes).where(eq(chargeTypes.id, id)).for('update'))[0]);
         checkPriceStep(before, changes);
-        if (taxRateIds !== undefined) await validateTaxes(tx, taxRateIds, () => chargeTaxIds(tx, id));
-        const beforeTaxes = await chargeTaxIds(tx, id);
+        const beforeTaxes = taxRateIds !== undefined ? await validateTaxes(tx, taxRateIds, () => chargeTaxIds(tx, id)) : await chargeTaxIds(tx, id);
         const guard = revisionGuard(chargeTypes.revision, revision);
         const row = assertRevised(await tx.update(chargeTypes).set({ ...changes, revision: guard.next }).where(and(eq(chargeTypes.id, id), guard.matches)).returning());
         if (taxRateIds !== undefined) {
           await tx.delete(chargeTypeTaxRates).where(eq(chargeTypeTaxRates.chargeTypeId, id));
           if (taxRateIds.length) await tx.insert(chargeTypeTaxRates).values(taxRateIds.map(taxRateId => ({ gymId: context.gymId, id: uuidv7(), chargeTypeId: id, taxRateId, createdAt: clock.now() })));
         }
-        const result = presentCharge(row, await chargeTaxIds(tx, id));
+        const result = presentCharge(row, taxRateIds === undefined ? beforeTaxes : await chargeTaxIds(tx, id));
         await catalogAudit(tx, context, clock, 'billing.charge_type.updated', 'charge_type', id, presentCharge(before, beforeTaxes), result);
         return result;
       });
