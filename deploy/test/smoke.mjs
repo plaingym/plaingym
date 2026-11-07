@@ -79,7 +79,11 @@ try {
   ].join('\n')]);
   assert.throws(() => compose(['exec', '-T', 'app', 'touch', '/app/should-fail']));
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
-  assert.equal(Number(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'").trim()), 57);
+  const tableCount = Number(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'").trim());
+  const expectedTables = 57;
+  // Newer migrations may add tables while the previous image still runs on that schema.
+  if (process.env.SMOKE_MIGRATE_IMAGE) assert.ok(tableCount >= expectedTables, `Expected at least ${expectedTables} public tables, got ${tableCount}`);
+  else assert.equal(tableCount, expectedTables);
   assert.equal(sql("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity)").trim(), '0');
   compose(['exec', '-T', 'app', 'node', '/app/maintenance.mjs', 'resume']);
   // Actual role drift must fail startup, even while Postgres is healthy.

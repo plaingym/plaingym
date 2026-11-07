@@ -311,8 +311,7 @@ async function main() {
     try {
       if (built) await run('docker', ['rmi', built], { cleanup: true });
     } catch (error) {
-      console.error('Cleanup failed: remove built image: ' + error.message);
-      process.exitCode = Math.max(1, process.exitCode ?? 0);
+      console.warn('WARNING: could not remove built image ' + built + ': ' + error.message);
     }
     finally {
       process.off('SIGINT', onSignal);

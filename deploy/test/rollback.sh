@@ -17,7 +17,7 @@ cleanup() {
   if [ -f "$ROOT/.env" ]; then
     timeout 120 docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
-  timeout 120 docker image rm "$run_id:oldest" "$run_id:old" "$run_id:new" >/dev/null 2>&1 || true
+  timeout -k 5 120 docker image rm "$run_id:oldest" "$run_id:old" "$run_id:new" >/dev/null 2>&1 || echo "WARNING: could not remove images for $run_id" >&2
   rm -rf -- "$temporary"
 }
 trap cleanup EXIT

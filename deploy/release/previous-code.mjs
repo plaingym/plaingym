@@ -6,11 +6,12 @@
 //   node deploy/release/previous-code.mjs IMAGE BASE
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { compare } from '../../scripts/release/release.mjs';
 import { git, releasePattern } from '../../scripts/release/version.mjs';
-import { smokePreviousImage } from './previous-smoke.mjs';
+import { smokePreviousImage, removeImage, withPreviousTree } from './previous-smoke.mjs';
 
 const migrations = 'packages/db/src/migrations';
 const floorFile = 'deploy/release/rollback-floor.txt';
@@ -35,15 +36,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const { commit, skip } = previousCode(base);
   if (!commit) console.log(`::notice::Previous code check skipped. ${skip}`);
   else {
-    const worktree = resolve(git(['rev-parse', '--path-format=absolute', '--git-common-dir']), '..', '.worktrees', `previous-code-${process.pid}`);
-    const previousImage = `plaingym:previous-code-${process.pid}`;
-    git(['worktree', 'add', '--detach', worktree, commit]);
-    try {
-      execFileSync(process.execPath, ['scripts/release/build-image.mjs', previousImage], { cwd: worktree, stdio: 'inherit', timeout: 1_800_000 });
-      smokePreviousImage(previousImage, image);
-    } finally {
-      execFileSync('docker', ['image', 'rm', '--force', previousImage], { stdio: 'ignore' });
-      git(['worktree', 'remove', '--force', worktree]);
-    }
+    const previousImage = `plaingym:previous-code-${randomUUID()}`;
+    withPreviousTree(commit, (worktree) => {
+      try {
+        execFileSync(process.execPath, ['scripts/release/build-image.mjs', previousImage], { cwd: worktree, stdio: 'inherit', timeout: 1_800_000 });
+        smokePreviousImage(previousImage, image, worktree, commit);
+      } finally {
+        removeImage(previousImage);
+      }
+    });
   }
 }

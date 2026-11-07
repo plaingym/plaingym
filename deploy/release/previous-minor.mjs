@@ -2,7 +2,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { compare } from '../../scripts/release/release.mjs';
-import { smokePreviousImage } from './previous-smoke.mjs';
+import { smokePreviousImage, removeImage, withPreviousTree } from './previous-smoke.mjs';
+import { git } from '../../scripts/release/version.mjs';
 
 const [image, tag] = process.argv.slice(2);
 if (!image || !/^v\d+\.\d+\.0$/.test(tag ?? '')) {
@@ -26,7 +27,9 @@ let existed = true;
 try { execFileSync('docker', ['image', 'inspect', previousImage], { stdio: 'ignore' }); } catch { existed = false; }
 try {
   execFileSync('docker', ['pull', previousImage], { stdio: 'inherit', timeout: 300_000 });
-  smokePreviousImage(previousImage, image);
+  // Release build checkouts may be shallow and need this release's source tag.
+  git(['fetch', '--no-tags', 'origin', `refs/tags/${previous}:refs/tags/${previous}`]);
+  withPreviousTree(previous, (worktree) => smokePreviousImage(previousImage, image, worktree, previous));
 } finally {
-  if (!existed) execFileSync('docker', ['image', 'rm', previousImage], { stdio: 'inherit' });
+  if (!existed) removeImage(previousImage);
 }

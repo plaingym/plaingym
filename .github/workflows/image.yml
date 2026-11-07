@@ -74,6 +74,8 @@ jobs:
           sudo env CI=true PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy/demo -p 'test_*.py'
       - name: Test the Compose environment
         run: sh deploy/test/compose-env.sh
+      - name: Test compatibility smoke selection and cleanup
+        run: node --test deploy/release/previous-smoke.test.mjs
       - name: Test update orchestration
         run: sudo sh deploy/test/update.sh
       - name: Test automatic patch updates

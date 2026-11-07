@@ -46,14 +46,19 @@ previous release's minor. A minor can't exclude the previous release. Its defaul
 is that same `.0`, so 1.5.0 after 1.2.3 has the floor 1.2.0, and a floor never names a
 release that doesn't exist. A patch keeps its minor's floor. The release workflow starts
 the previous published minor's image on the database migrated by the new image and
-runs the production smoke checks before publication. With no earlier release, it
+runs that previous release's own production smoke checks and deployment fixtures before publication. With no earlier release, it
 prints a notice and skips that check. A declared major boundary also prints a notice.
 
 The same test doesn't wait for a release. When a commit changes the migrations, Image
 checks builds the newest release's code (before the first release, the code the
-branch started from) and runs the production smoke checks on the schema the commit
+branch started from) and runs that code's own production smoke checks on the schema the commit
 migrated. It prints a notice and skips when no migration changed, when the rollback
 floor declares a boundary above that release, or when that code predates this promise.
+In compatibility runs, the smoke test accepts additional public tables from newer
+migrations; ordinary image smoke runs still require the exact expected count.
+Both checks identify the smoke script's source revision and the image being tested,
+including in failures. Image removal has a 120-second limit; failure or timeout warns
+without replacing the check's result, and temporary worktree cleanup still runs.
 
 Older code starts on a newer schema because its startup catalog check accepts a table
 it doesn't declare when the table has the security shape every table has: owner

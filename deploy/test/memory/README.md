@@ -21,8 +21,8 @@ a budget violation still exits 2 when bookkeeping fails. Bookkeeping alone exits
 the thin evidence it can leave behind (too few samples, a sampling gap or an empty idle window).
 `summary.json` is written before cleanup and again after it. Cleanup failures are logged and
 saved in its `cleanupFailures`; the workload's result and violations are kept. They raise a passing run's exit code to 1 and keep
-an existing 1 or 2. Both modes still run. Failure to remove a built image is logged and follows
-the same exit-code rule after the summaries have been saved.
+an existing 1 or 2. Both modes still run. Failure to remove a built image warns after
+the summaries have been saved and preserves the check's exit code.
 
 ## What runs
 

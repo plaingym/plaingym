@@ -63,6 +63,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Test the release scripts
         run: sh deploy/test/release.sh
+      - name: Test compatibility smoke selection and cleanup
+        run: node --test deploy/release/previous-smoke.test.mjs
   build:
     needs: prepare
     strategy:
