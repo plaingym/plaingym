@@ -90,7 +90,7 @@ it('public route factories use the registered shared store before their validato
   for (const route of limited) {
     const response = await app.request(route.definition.path.replace(/\{[^}]+\}/g, 'invalid'), {
       method: route.definition.method.toUpperCase(),
-      ...(route.definition.method === 'get' ? {} : { headers: { 'content-type': 'application/json' }, body: '{invalid json' }),
+      ...(route.definition.method === 'get' ? {} : { headers: { 'content-type': 'application/json', 'content-length': '13' }, body: '{invalid json' }),
     });
     expect(response.status, route.id).toBe(429);
   }

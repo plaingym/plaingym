@@ -14,7 +14,7 @@ export interface BodyLimits {
 }
 /** Photos are the largest JSON bodies (720 kB); a CSV upload carries its multipart framing. Join's form and admission
  * carry a family's signature images (4 MiB, checked again by join itself). The native join form gets twice that here,
- * so join's own check answers a declared oversized length with its page; a chunked body is buffered up to this limit. */
+ * so join's own check answers a declared oversized length with its page. Large routes require a declared length. */
 const join = 4 * 1024 * 1024;
 /** Violation reports are a few hundred bytes each; the public report route takes a handful per request. */
 export const cspReportBytes = 16 * 1024;
@@ -26,7 +26,7 @@ export const defaultBodyLimits: BodyLimits = {
 
 /**
  * Caps every request body before anything reads it, including the auth handler and multipart parsing.
- * A declared length over the cap is refused unread; a chunked body stops being read at the cap.
+ * Large routes refuse bodies without a valid declared length before buffering; other streams stop at the cap.
  */
 export function requestBodyLimit(limits: BodyLimits = defaultBodyLimits): MiddlewareHandler<RequestEnvironment> {
   const sizes = [limits.default, ...Object.values(limits.routes)];
@@ -38,6 +38,12 @@ export function requestBodyLimit(limits: BodyLimits = defaultBodyLimits): Middle
     const path = context.req.path;
     const match = routes.find(([route]) => route.endsWith('/*')
       ? path === route.slice(0, -2) || path.startsWith(route.slice(0, -1)) : path === route);
-    return limiter.get(match?.[1] ?? limits.default)!(context, next);
+    const size = match?.[1] ?? limits.default;
+    if (size > defaultBodyLimits.default && context.req.raw.body !== null) {
+      const length = context.req.header('content-length');
+      if (context.req.header('transfer-encoding') !== undefined || length === undefined || !/^\d+$/.test(length)
+        || !Number.isSafeInteger(Number(length))) throw new AppError('invalid_request', 'Content-Length required');
+    }
+    return limiter.get(size)!(context, next);
   };
 }

@@ -52,6 +52,6 @@ it('builds no restore gate in multi mode and answers setup restore as unavailabl
   });
   expect(restore.status).toBe(503);
   expect(JSON.stringify(await restore.json())).toContain('Restore is not configured');
-  // The CSP report route budgets by hostname only in multi mode, so the runtime hands the app the env's mode, not process.env's.
+  // The CSP report route tells gyms apart by hostname only in multi mode, so the runtime hands the app the env's mode, not process.env's.
   expect(vi.mocked(createApp)).toHaveBeenCalledWith(expect.objectContaining({ tenancy: 'multi' }));
 });

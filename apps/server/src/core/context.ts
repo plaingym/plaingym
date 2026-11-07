@@ -3,6 +3,8 @@ import type { Clock, MemberScope, SignedLink, StaffRole } from '@plaingym/shared
 
 export interface GymContext {
   readonly gymId: string;
+  /** Default domain selected by the tenant resolver, never the request's alias. */
+  readonly defaultHostname?: string | null;
   readonly timezone: string;
   readonly enabledModules: ReadonlySet<string>;
 }

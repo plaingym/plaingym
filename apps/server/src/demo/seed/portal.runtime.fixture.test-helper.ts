@@ -74,7 +74,8 @@ export function useSandboxRuntime(db: TestDatabase, count: number) {
   }
   function send(base: string, path: string, init: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) {
     return runtime.app.request(base + path, { method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
-      headers: { host: new URL(base).host, origin: base, ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
+      headers: { host: new URL(base).host, origin: base, ...(init.body === undefined ? {} : { 'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(JSON.stringify(init.body))) }),
         ...(init.cookie ? { cookie: init.cookie } : {}), ...init.headers },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
   }

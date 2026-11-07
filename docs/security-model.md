@@ -232,7 +232,9 @@ Details: `apps/server/src/infra/auth/README.md`.
   sweep removes expired windows. App factories without runtime registration and
   unnamed budgets keep in-memory counting; authentication and kiosk budgets are
   independent.
-* **Body limits** per route, applied before parsing.
+* **Body limits** per route, applied before parsing. Routes allowing more than
+  1 MiB require a valid `Content-Length` for a body and refuse transfer encoding
+  before buffering (including join forms, signatures and CSV uploads).
 * **Headers.** Every response enforces a Content Security Policy. By default (the
   admin, portal, kiosk, setup wizard and API) scripts, styles, fonts, connections and
   form submissions stay on the app's origin, server-rendered inline scripts need the
@@ -244,10 +246,13 @@ Details: `apps/server/src/infra/auth/README.md`.
   Payment pages are left by navigation, never by a form submission, so Stripe
   Checkout needs no exception in `form-action`. Every policy, the default one and
   each route's own, reports its violations to `/csp-report`, where they are logged
-  without IDs, tokens or query strings, within per-client, per-gym (per-hostname in
-  `multi` mode) and install-wide budgets held in memory, so a report costs no
-  database read. In production the gym's canonical HTTPS hostname gets
-  `Strict-Transport-Security` (one year, no `includeSubDomains`).
+  without IDs, tokens or query strings, within per-client, per-gym and install-wide
+  budgets held in memory, so a report costs no database read. The app accepts a
+  hostname-to-gym snapshot: aliases share a gym budget and unknown hostnames share
+  the install budget. Without a snapshot all hosts share the install budget.
+  In production only the gym's default hostname from the resolver gets
+  `Strict-Transport-Security` in multi mode; aliases do not. Single mode uses the
+  configured HTTPS install origin (one year, no `includeSubDomains`).
 * **Validation.** Every route's input is parsed with its shared Zod contract
   before the handler runs.
 

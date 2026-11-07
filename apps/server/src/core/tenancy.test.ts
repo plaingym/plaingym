@@ -5,15 +5,15 @@ import { eq } from 'drizzle-orm';
 import { gyms, gymDomains, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, singleGymId, tenancyMode } from './tenancy.js';
+import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, reportHostnameSnapshot, singleGymId, tenancyMode } from './tenancy.js';
 import type { RequestEnvironment } from './context.js';
 const database = useTestDatabase(), factory = createFactories(database);
 const gymA = uuidv7(), gymB = uuidv7();
 beforeAll(async () => {
   await factory('gyms', gymA, { timezone: 'America/Vancouver', websiteEnabled: true });
   await factory('gyms', gymB, { timezone: 'Asia/Tokyo' });
-  await factory('gymDomains', gymA, { hostname: 'a.example.test' });
-  await factory('gymDomains', gymB, { hostname: 'b.example.test' });
+  await factory('gymDomains', gymA, { hostname: 'a.example.test', kind: 'default' });
+  await factory('gymDomains', gymB, { hostname: 'b.example.test', kind: 'default' });
 });
 function app(mode: 'single' | 'multi') {
   const app = new Hono<RequestEnvironment>();
@@ -22,14 +22,23 @@ function app(mode: 'single' | 'multi') {
   return app;
 }
 describe('tenant resolution', () => {
+  it('supplies the default hostname when resolving an alias and snapshots both under the same gym', async () => {
+    await factory('gymDomains', gymA, { hostname: 'alias.example.test', kind: 'custom' });
+    const response = await app('multi').request('https://alias.example.test/');
+    expect(await response.json()).toMatchObject({ gymId: gymA, defaultHostname: 'a.example.test' });
+    const hosts = await reportHostnameSnapshot(database.forSystem);
+    expect(hosts.get('alias.example.test')).toBe(gymA);
+    expect(hosts.get('a.example.test')).toBe(gymA);
+    expect(hosts.get('unknown.example.test')).toBeUndefined();
+  });
   it('resolves normalized hosts concurrently and ignores forwarded host headers', async () => {
     const server = app('multi');
     const [a, b] = await Promise.all([
       server.request('https://unused/', { headers: { host: 'A.Example.Test.:443', 'x-forwarded-host': 'b.example.test' } }),
       server.request('https://b.example.test/'),
     ]);
-    expect(await a.json()).toEqual({ gymId: gymA, timezone: 'America/Vancouver', enabledModules: ['website'] });
-    expect(await b.json()).toEqual({ gymId: gymB, timezone: 'Asia/Tokyo', enabledModules: [] });
+    expect(await a.json()).toEqual({ gymId: gymA, timezone: 'America/Vancouver', enabledModules: ['website'], defaultHostname: 'a.example.test' });
+    expect(await b.json()).toEqual({ gymId: gymB, timezone: 'Asia/Tokyo', enabledModules: [], defaultHostname: 'b.example.test' });
     expect((await server.request('https://unknown.example.test/')).status).toBe(404);
     expect((await server.request('https://a.example.test/', { headers: { host: 'a.example.test@b.example.test' } })).status).toBe(404);
   });
@@ -37,6 +46,7 @@ describe('tenant resolution', () => {
     await database.forGym(gymA, (tx) => tx.update(gyms).set({ websiteEnabled: false }).where(eq(gyms.id, gymA)));
     expect((await (await app('multi').request('https://a.example.test/')).json()).enabledModules).toEqual([]);
     await database.forSystem((tx) => tx.update(gyms).set({ status: 'suspended' }).where(eq(gyms.id, gymB)));
+    expect((await reportHostnameSnapshot(database.forSystem)).has('b.example.test')).toBe(false);
     expect((await app('multi').request('https://b.example.test/')).status).toBe(404);
   });
   it('fails closed on multiple gyms in single mode and resolves the sole gym independently of its domain', async () => {

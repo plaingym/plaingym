@@ -30,17 +30,29 @@ export function createTenantResolver(options: { mode?: TenancyMode; system?: typ
         const rows = await tx.select({ id: gyms.id, timezone: gyms.timezone, websiteEnabled: gyms.websiteEnabled, status: gyms.status }).from(gyms).limit(2);
         return rows.length === 1 ? rows[0] : undefined;
       }
-      const [row] = await tx.select({ id: gyms.id, timezone: gyms.timezone, websiteEnabled: gyms.websiteEnabled, status: gyms.status })
+      const [row] = await tx.select({ id: gyms.id, timezone: gyms.timezone, websiteEnabled: gyms.websiteEnabled, status: gyms.status, kind: gymDomains.kind })
         .from(gymDomains).innerJoin(gyms, eq(gymDomains.gymId, gyms.id)).where(eq(gymDomains.hostname, hostname)).limit(1);
-      return row;
+      if (!row) return undefined;
+      if (row.kind === 'default') return { ...row, defaultHostname: hostname };
+      const [domain] = await tx.select({ hostname: gymDomains.hostname }).from(gymDomains)
+        .where(and(eq(gymDomains.gymId, row.id), eq(gymDomains.kind, 'default'))).limit(1);
+      return { ...row, defaultHostname: domain?.hostname ?? null };
     });
     if (!gym || gym.status !== 'active') return context.notFound();
-    const resolved: GymContext = { gymId: gym.id, timezone: gym.timezone, enabledModules: enabledModules(gym) };
+    const resolved: GymContext = { gymId: gym.id, timezone: gym.timezone, enabledModules: enabledModules(gym),
+      ...('defaultHostname' in gym ? { defaultHostname: gym.defaultHostname } : {}) };
     context.set('context', { ...context.get('context'), gym: resolved });
     await next();
   };
 }
 export const resolveGym = createTenantResolver();
+
+/** Snapshot for report budgets. Call it under a restore-gate lease, never from a report request. */
+export async function reportHostnameSnapshot(system: typeof forSystem = forSystem): Promise<ReadonlyMap<string, string>> {
+  const rows = await system((tx) => tx.select({ hostname: gymDomains.hostname, gymId: gyms.id }).from(gymDomains)
+    .innerJoin(gyms, eq(gymDomains.gymId, gyms.id)).where(eq(gyms.status, 'active')));
+  return new Map(rows.map((row) => [row.hostname, row.gymId]));
+}
 
 /** Active gyms for per-gym scheduled jobs. */
 export async function listGyms(system: typeof forSystem = forSystem): Promise<readonly { gymId: string; timezone: string }[]> {

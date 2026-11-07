@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { requestWithLength } from '../../../test/request.js';
 import { describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
@@ -106,7 +107,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const server = app();
   const get = (path: string, cookie = '', target = server) => target.request(origin + path, { headers: cookie ? { cookie } : {} });
   const post = (path: string, body: unknown, cookie = '', target = server) => target.request(origin + path, { method: 'POST',
-    headers: { origin, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(cookie ? { cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    headers: { origin, ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(JSON.stringify(body))) }), ...(cookie ? { cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const signer = (person: Person) => person.dateOfBirth > '2008-10-29' ? { kind: 'guardian' as const, name: 'Pat Payer', relationship: 'Parent' }
     : { kind: 'self' as const, name: person.firstName + ' ' + person.lastName };
   async function admit(people: Person[], email: string, planId: string) {
@@ -443,7 +444,7 @@ describe('public join pages through the production registrations', () => {
     expect((await f.post('/join/signatures', admission())).status).toBe(503);
     await db.forGym(f.gymId, tx => tx.update(gyms).set({ billingEnabled: false }).where(eq(gyms.id, f.gymId)));
     expect((await f.post('/join/signatures', admission())).status).toBe(503);
-    expect((await f.server.request(origin + '/join', { method: 'POST', headers: { origin }, body: nativeForm(f, f.plan.id, 'bot@example.invalid') })).status).toBe(503);
+    expect((await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: nativeForm(f, f.plan.id, 'bot@example.invalid') }))).status).toBe(503);
     expect((await f.rows()).homes).toHaveLength(before); expect(create).not.toHaveBeenCalled();
   });
 
@@ -495,16 +496,16 @@ describe('public join pages through the production registrations', () => {
     expect(before.signatures.filter(s => before.members.some(m => m.id === s.memberId && m.householdId === family.id))).toEqual([]);
     expect(before.memberships.filter(m => m.householdId === family.id)).toEqual([]);
     const form = nativeForm(f, f.annual.id, 'native@example.invalid');
-    const response = await f.server.request(origin + '/join', { method: 'POST', headers: { origin }, body: form });
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
     expect(response.status).toBe(200); expect(await response.text()).toContain('href="/join/checkout"');
     const cookie = response.headers.get('set-cookie')!.split(';')[0]!;
     await f.pay(cookie);
     const home = (await f.joined()).find(h => h.email === 'native@example.invalid')!, state = await f.rows();
     expect(state.memberships.filter(m => m.householdId === home.id).map(m => [m.status, m.nextDueOn, m.anniversaryOn])).toEqual([['active', '2027-10-29', '2026-10-29']]);
     form.set('honeypot', 'spam');
-    expect((await f.server.request(origin + '/join', { method: 'POST', headers: { origin }, body: form })).status).toBe(400);
+    expect((await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }))).status).toBe(400);
     const huge = new FormData(); huge.set('members', '1'); huge.set('padding', 'x'.repeat(1024 * 1024 + 1));
-    expect((await f.server.request(origin + '/join', { method: 'POST', headers: { origin }, body: huge })).status).toBe(400);
+    expect((await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: huge }))).status).toBe(400);
   });
 
   it('keeps the admission date across midnight and refuses an admission older than a day', async () => {
@@ -633,14 +634,14 @@ describe('public join pages through the production registrations', () => {
     const admitted = await f.post('/join/signatures', admission);
     expect(admitted.status, await admitted.clone().text()).toBe(200);
     for (const size of [joinBodyBytes + 1, 2 * joinBodyBytes + 1]) {
-      const refused = await f.server.request(origin + '/join/signatures', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: 'x'.repeat(size) });
+      const refused = await f.server.request(origin + '/join/signatures', { method: 'POST', headers: { origin, 'content-type': 'application/json', 'content-length': String(size) }, body: 'x'.repeat(size) });
       expect(refused.status).toBe(400); expect(await refused.text()).toContain('Request too large');
     }
-    const native = (padding: number) => {
+    const native = async (padding: number) => {
       const form = nativeForm(f, f.plan.id, `native-${padding}@example.invalid`);
       f.templates.forEach((_, j) => form.set(`waiver-0-${j}-image`, new File([big], 'signature.png', { type: 'image/png' })));
       form.set('padding', 'x'.repeat(padding));
-      return f.server.request(origin + '/join', { method: 'POST', headers: { origin }, body: form });
+      return f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
     };
     const under = await native(joinBodyBytes - 600 * 1024);
     expect(under.status, await under.clone().text()).toBe(200); expect(await under.text()).toContain('href="/join/checkout"');

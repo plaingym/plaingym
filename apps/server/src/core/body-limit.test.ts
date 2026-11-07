@@ -24,7 +24,8 @@ function fixture() {
   return { app, reached: () => reached };
 }
 const post = (app: ReturnType<typeof fixture>['app'], path: string, body: BodyInit, headers: Record<string, string> = {}) =>
-  app.request(path, { method: 'POST', body, headers: { 'content-type': 'application/json', ...headers } });
+  app.request(path, { method: 'POST', body, headers: { 'content-type': 'application/json',
+    'content-length': String(typeof body === 'string' ? Buffer.byteLength(body) : (body as Uint8Array).byteLength), ...headers } });
 /** A chunked body that counts how much of it the server pulled. */
 function chunked(chunks: number, size: number) {
   let pulled = 0;
@@ -51,6 +52,24 @@ it('stops reading a chunked body at the limit', async () => {
   expect(response.status).toBe(400);
   expect(stream.pulled()).toBeLessThan(10);
   expect(reached()).toBe(0);
+});
+it.each(['/join', '/join/signatures', '/api/imports/uploads'])('refuses an unframed %s body without pulling it', async (path) => {
+  const { app } = fixture();
+  let pulled = 0;
+  const body = new ReadableStream<Uint8Array>({ pull() { pulled++; } }, { highWaterMark: 0 });
+  const response = await app.request(path, { method: 'POST', body, duplex: 'half' } as RequestInit);
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain('Content-Length required');
+  expect(pulled).toBe(0);
+});
+it('refuses transfer encoding even alongside a declared length before pulling the join body', async () => {
+  const { app } = fixture();
+  let pulled = 0;
+  const body = new ReadableStream<Uint8Array>({ pull() { pulled++; } }, { highWaterMark: 0 });
+  const response = await app.request('/join', { method: 'POST', body, duplex: 'half',
+    headers: { 'transfer-encoding': 'chunked', 'content-length': '1' } } as RequestInit);
+  expect(response.status).toBe(400);
+  expect(pulled).toBe(0);
 });
 it('applies the default cap elsewhere and the CSV cap to uploads only', async () => {
   const { app } = fixture();

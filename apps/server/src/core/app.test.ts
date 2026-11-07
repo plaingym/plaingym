@@ -105,15 +105,22 @@ describe('server application composition', () => {
       { strictTransportSecurity: true, origin: 'http://gym.example' }, { strictTransportSecurity: true }])
       expect(await hsts(options)).toEqual(none);
     expect(await hsts({ strictTransportSecurity: true, origin: 'https://gym.example' }, 'other.example')).toEqual(none);
+    // The Host header is normalized as the tenant resolver normalizes it, so its spelling doesn't decide the header.
+    const spelled = await createApp({ resolveGym, session, authorize: allow, strictTransportSecurity: true, origin: 'https://gym.example' })
+      .request('https://gym.example/healthz', { headers: { host: 'GYM.example.:443' } });
+    expect(spelled.headers.get('strict-transport-security')).toBe('max-age=31536000');
     // A per-gym origin pins only a hostname that resolved to a gym; install endpoints use the install origin.
-    const perGym = { strictTransportSecurity: true, installOrigin: 'https://install.example',
+    const perGym = { strictTransportSecurity: true, tenancy: 'multi' as const, installOrigin: 'https://install.example',
       origin: (context: Parameters<MiddlewareHandler<RequestEnvironment>>[0]) => 'https://' + new URL(context.req.url).host,
       resolveGym: (async (context, next) => {
-        if (new URL(context.req.url).hostname !== 'gym.example') throw new AppError('not_found', 'Gym not found');
-        await resolveGym(context, next);
+        if (!['gym.example', 'alias.example'].includes(new URL(context.req.url).hostname)) throw new AppError('not_found', 'Gym not found');
+        context.set('context', { ...context.get('context'), gym: { gymId: 'gym-a', timezone: 'UTC',
+          enabledModules: new Set(), defaultHostname: 'gym.example' } });
+        await next();
       }) satisfies MiddlewareHandler<RequestEnvironment> };
     expect(await hsts(perGym)).toEqual([...sent.slice(0, 4), null]);
     expect(await hsts(perGym, 'unknown.example')).toEqual(none);
+    expect(await hsts(perGym, 'alias.example')).toEqual(none);
     expect(await hsts(perGym, 'install.example')).toEqual(sent);
   });
   it('allows only the response nonce for inline scripts and only the listed origins for images', async () => {

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { requestWithLength } from '../../../../test/request.js';
 import '@hono/zod-openapi';
 import { beforeEach, expect, it } from 'vitest';
 import { memberships, uuidv7 } from '@plaingym/db';
@@ -50,7 +51,7 @@ const planFor = (uploadId: string) => ({ uploadId, mapper: 'memberships' as cons
 it.each(['owner', 'admin', 'coach', 'front_desk'] as const)('checks %s permissions through upload, preview, start, progress and errors', async role => {
   const app = server(role), allowed = role === 'owner' || role === 'admin', form = new FormData();
   form.set('file', new File([text], 'memberships.csv'));
-  const upload = await app.request(origin + '/api/imports/uploads', { method: 'POST', headers: { origin }, body: form });
+  const upload = await app.request(await requestWithLength(origin + '/api/imports/uploads', { method: 'POST', headers: { origin }, body: form }));
   expect(upload.status).toBe(allowed ? 200 : 403);
   if (!allowed) {
     for (const path of ['/api/imports/preview', '/api/imports']) expect((await post(app, path, {})).status).toBe(403);

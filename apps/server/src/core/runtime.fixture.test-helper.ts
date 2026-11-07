@@ -39,7 +39,8 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
   let runtime: Runtime, directory: string, storage: Awaited<ReturnType<typeof s3Server>>, sandbox: Sandbox;
   const env = () => demoEnv(database.appUrl, storage.endpoint, join(directory, 'staging'));
   const post = (path: string, body: unknown, base = origin, extra: Record<string, string> = {}) => runtime.app.request(base + path, {
-    method: 'POST', headers: { host: new URL(base).host, origin: base, 'content-type': 'application/json', ...extra }, body: JSON.stringify(body),
+    method: 'POST', headers: { host: new URL(base).host, origin: base, 'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(JSON.stringify(body))), ...extra }, body: JSON.stringify(body),
   });
   const cookieOf = (response: Response) => response.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
   beforeAll(async () => {

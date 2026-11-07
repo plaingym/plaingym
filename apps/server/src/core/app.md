@@ -34,11 +34,16 @@ With `strictTransportSecurity` set (production only), responses for the
 canonical host carry `Strict-Transport-Security: max-age=31536000` when its
 origin is `https:`, without `includeSubDomains` or `preload`: a gym's hostname is
 often a subdomain of a domain its owner uses for other services. The canonical
-origin is a resolved gym's `origin`; requests that resolve no gym (install
+host is the resolved gym's `defaultHostname` in multi mode (never its alias).
+Single mode and requests that resolve no gym (install
 endpoints, unknown hostnames) use a static `origin`, else `installOrigin`. Any
-other hostname, an `http:` origin, or a missing origin gets no header, and
+other hostname, an `http:` install origin, or a missing origin gets no header, and
 development leaves the option off so a browser never pins a local hostname. The header comes from the app rather than the Caddyfile, so
 installs receive it with an image update.
+
+Body limits run before tenant resolution and route parsing. Routes allowing more
+than 1 MiB require a valid `Content-Length` and refuse transfer encoding before
+reading the body. This covers join forms, signature admission and CSV uploads.
 
 ## Content-Security-Policy reports
 
@@ -73,8 +78,12 @@ so a report, admitted or dropped, costs no database read and no restore-gate lea
 the route never runs the tenant resolver. Each client may send 30 requests a minute.
 Each gym admits 300 a minute, so one gym's reports never use another's budget: in
 `single` mode every hostname is the one gym's, and in `multi` mode the budget is the
-request's hostname, normalized as the tenant resolver normalizes it (a Host header no
-gym could have shares one install budget of 300). The app passes its `tenancy`
+gym ID from the injected `cspReportHostnames` map, with normalized hostname keys.
+Aliases share one gym budget; unknown hosts share one install budget of 300.
+Without a map every host shares the install budget. The route reads the map live, so
+its owner refreshes that same object in place, outside report requests, from
+`reportHostnameSnapshot` under a restore-gate lease.
+The app passes its `tenancy`
 option, which defaults to `TENANCY`. A ceiling of 3,000 a minute, checked before a
 gym's budget is spent and spent only with it, bounds the log however many gyms or
 hostnames there are; it shares one table with the gym budgets and is never evicted

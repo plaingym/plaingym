@@ -33,6 +33,8 @@ function hostApp(tenancy: 'single' | 'multi', maxBuckets?: number) {
   const resolver: MiddlewareHandler<RequestEnvironment> = async (_context, next) => { calls.push('resolve'); await next(); };
   const restoreGate: MiddlewareHandler<RequestEnvironment> = async (_context, next) => { calls.push('lease'); await next(); };
   app = createApp({ clock, resolveGym: resolver, restoreGate, session: resolveGym, authorize: allow, tenancy,
+    cspReportHostnames: new Map([['a.gym.example', 'a'], ['alias.gym.example', 'a'], ['b.gym.example', 'b'],
+      ...Array.from({ length: 11 }, (_, i): [string, string] => [`g${i}.gym.example`, `g${i}`])]),
     rateLimit: { peerAddress: (context) => context.req.header('x-peer') ?? '203.0.113.1', ...(maxBuckets ? { maxBuckets } : {}) } });
   const body = reportingBody({ documentURL: 'https://a.gym.example/admin', blockedURL: 'inline', effectiveDirective: 'script-src' });
   const send = (host: string, peer = '203.0.113.1') => app.request(`https://${host}${cspReportPath}`,
@@ -156,7 +158,7 @@ describe('CSP violation reports', () => {
     expect(events()).toHaveLength(300);
     expect(calls).toEqual([]);
   });
-  it('budgets each hostname apart in multi-gym mode, by its normalized name, without a lookup or a lease', async () => {
+  it('shares gym aliases and unknown hostname budgets without a lookup or a lease', async () => {
     const { send, calls } = hostApp('multi');
     for (let i = 0; i < 31; i++) expect((await send('a.gym.example')).status).toBe(204);
     expect(events()).toHaveLength(30);
@@ -165,6 +167,8 @@ describe('CSP violation reports', () => {
     expect(events()).toHaveLength(30);
     // Ten more clients spend gym A's 300; another hostname's budget is untouched.
     await flood(send, 'a.gym.example', 0, 10);
+    expect(events()).toHaveLength(300);
+    await send('alias.gym.example', '203.0.113.97');
     expect(events()).toHaveLength(300);
     expect((await send('a.gym.example', '203.0.113.99')).status).toBe(204);
     expect(events()).toHaveLength(300);
@@ -179,9 +183,11 @@ describe('CSP violation reports', () => {
     const invalid = (peer: number) => app.request(cspReportPath, { method: 'POST', headers: { 'content-type': 'application/reports+json',
       'x-peer': `192.0.2.${peer}`, host: 'bad_host' }, body: reportingBody({ effectiveDirective: 'script-src' }) });
     for (let peer = 1; peer <= 11; peer++) for (let i = 0; i < 30; i++) await invalid(peer);
-    expect(events()).toHaveLength(602);
+    expect(events()).toHaveLength(601);
+    for (let i = 0; i < 100; i++) await send(`invented-${i}.example`, `192.0.3.${i + 1}`);
+    expect(events()).toHaveLength(601);
     await send('b.gym.example', '203.0.113.200');
-    expect(events()).toHaveLength(603);
+    expect(events()).toHaveLength(602);
     expect(calls).toEqual([]);
   });
   it('caps the install at 3,000 admitted requests a minute, checked before a gym budget is spent, with no lookup or lease', async () => {

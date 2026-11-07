@@ -58,7 +58,8 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   runtime = await startRuntime(env);
   const app = runtime.app;
   const post = (path: string, body: unknown, cookie = '') => app.request(origin + path, { method: 'POST', body: JSON.stringify(body),
-    headers: { host: 'gym.example.test', origin, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) } });
+    headers: { host: 'gym.example.test', origin, 'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(JSON.stringify(body))), ...(cookie ? { cookie } : {}) } });
 
   const person = { firstName: 'Avery', lastName: 'Joiner', dateOfBirth: '1990-01-02' }, contact = { name: 'Avery Joiner', email: 'avery@example.invalid' };
   const admission = await post('/join/signatures', { planId: plan.id, contact, honeypot: '', members: [{ member: person,

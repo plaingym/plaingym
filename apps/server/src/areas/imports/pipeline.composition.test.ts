@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { requestWithLength } from '../../../test/request.js';
 // Install the OpenAPI schema extension before constructing shared contracts, as app startup does.
 import '@hono/zod-openapi';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -47,13 +48,13 @@ function server(principal: Principal = { kind: 'staff', gymId, userId, roles: ['
   return { app, jobs };
 }
 const post = (app: ReturnType<typeof server>['app'], path: string, body: unknown) => app.request(origin + path, {
-  method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body),
+  method: 'POST', headers: { origin, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(JSON.stringify(body))) }, body: JSON.stringify(body),
 });
 
 it('imports, restarts its API, exports, and follows the archive link through the app composition', async () => {
   const { app, jobs } = server(), form = new FormData();
   form.set('file', new File(['First Name,Last Name\nTest,Imported\n'], 'people.csv'));
-  const response = await app.request(origin + '/api/imports/uploads', { method: 'POST', headers: { origin }, body: form });
+  const response = await app.request(await requestWithLength(origin + '/api/imports/uploads', { method: 'POST', headers: { origin }, body: form }));
   expect(response.status).toBe(200);
   const uploaded = importUploadSchema.parse((await response.json()).data);
   const started = await post(app, '/api/imports', { uploadId: uploaded.id, mapper: 'people', dryRun: false, duplicatePolicy: 'error',

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
 import { demoContracts, ranksContracts, setupContracts } from '@plaingym/shared/contracts';
-import type { Context, MiddlewareHandler } from 'hono';
+import type { MiddlewareHandler } from 'hono';
 import { clock as systemClock, type Clock } from './clock.js';
 import type { RequestContext, RequestEnvironment } from './context.js';
 import { createServerRegistry, type PermissionMiddleware, type ServerContributions } from './registry.js';
@@ -17,7 +17,7 @@ import { mountOpenApi } from './openapi.js';
 import { staticAssets } from './static.js';
 import { contentSecurityPolicy, imageOrigins, issuedNonce, reportingEndpoints, type ContentSecurityOptions } from './csp.js';
 import { mountCspReports } from './csp-report.js';
-import type { TenancyMode } from './tenancy.js';
+import { normalizeHostname, tenancyMode, type TenancyMode } from './tenancy.js';
 import { requireSetupToken } from '../areas/setup/setup.token.js';
 
 export interface AppOptions {
@@ -40,9 +40,11 @@ export interface AppOptions {
   readonly contentSecurity?: ContentSecurityOptions;
   /** The install's tenancy mode, for routes that need it before tenant resolution. Defaults to `TENANCY`. */
   readonly tenancy?: TenancyMode;
+  /** A live hostname-to-gym map its owner refreshes in place, outside report requests: CSP reports only read it. */
+  readonly cspReportHostnames?: ReadonlyMap<string, string>;
   /**
    * For production only: send HSTS on responses for the canonical host when its origin is `https:` (a resolved
-   * gym's `origin`, else the static `origin` or `installOrigin`). Development leaves it off, so a browser never pins
+   * gym's default hostname in multi mode, else the static `origin` or `installOrigin`). Development leaves it off, so a browser never pins
    * a local hostname to HTTPS.
    */
   readonly strictTransportSecurity?: boolean;
@@ -57,19 +59,13 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     },
   });
   const images = imageOrigins(options.contentSecurity?.imageOrigins);
+  const mode = options.tenancy ?? tenancyMode();
   const httpsHost = (origin: string | undefined) => {
     const url = origin === undefined ? undefined : new URL(origin);
-    return url?.protocol === 'https:' ? url.host : undefined;
+    return url?.protocol === 'https:' ? normalizeHostname(url.host) ?? undefined : undefined;
   };
   const installHost = options.strictTransportSecurity
     ? httpsHost(typeof options.origin === 'string' ? options.origin : options.installOrigin) : undefined;
-  /** The host HSTS may pin: never a hostname that resolved to no gym, nor any other than the canonical one. */
-  const transportSecurityHost = (context: Context<RequestEnvironment>) => {
-    if (!options.strictTransportSecurity) return undefined;
-    if (typeof options.origin !== 'function' || !context.get('context').gym) return installHost;
-    try { return httpsHost(options.origin(context)); }
-    catch { return undefined; }
-  };
   app.use('*', async (context, next) => {
     // A caller cannot choose a log-correlation ID or inject response headers with it.
     const requestId = randomUUID();
@@ -83,8 +79,12 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
     // says so (the demo outbox preview); a route's own CSP is kept as it is.
     const own = context.res.headers.get('Content-Security-Policy');
     context.res.headers.set('X-Frame-Options', own && /(?:^|;)\s*frame-ancestors 'self'\s*(?:;|$)/.test(own) ? 'SAMEORIGIN' : 'DENY');
-    const pinned = transportSecurityHost(context);
-    if (pinned && pinned === new URL(context.req.url).host) context.res.headers.set('Strict-Transport-Security', strictTransportSecurity);
+    if (options.strictTransportSecurity) {
+      const gym = context.get('context').gym;
+      const pinned = mode === 'multi' && gym ? gym.defaultHostname : installHost;
+      if (pinned && pinned === normalizeHostname(context.req.header('host') ?? new URL(context.req.url).host))
+        context.res.headers.set('Strict-Transport-Security', strictTransportSecurity);
+    }
     // Enforced, and reported to /csp-report. Routes that set their own (public pages, signed links, downloads) keep theirs.
     if (!context.res.headers.has('Content-Security-Policy')) {
       context.res.headers.set('Content-Security-Policy', contentSecurityPolicy({ nonce: issuedNonce(context), imageOrigins: images }));
@@ -101,7 +101,7 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   };
   mountHealthz(app, installAuthorize);
   mountSourceLink(app, sourceUrl(options.sourceUrl), installAuthorize);
-  mountCspReports(app, installAuthorize, { limits: options.rateLimit, tenancy: options.tenancy });
+  mountCspReports(app, installAuthorize, { limits: options.rateLimit, tenancy: mode, hostnames: options.cspReportHostnames });
   const contributions = { ...options.contributions, routes: (options.contributions?.routes ?? []).filter((entry) =>
     !options.skipSetup || !Object.values(setupContracts).some((contract) => entry.id === `${contract.method.toUpperCase()} ${contract.path}`)) };
   const firstBootIds = new Set(Object.values(setupContracts)
