@@ -27,6 +27,12 @@ export function checkMigrations(base, head = 'HEAD', cwd = process.cwd()) {
       oldEntries.some((entry, index) => JSON.stringify(entry) !== JSON.stringify(newEntries[index])))
       throw new Error('The migration journal may only append entries');
   }
+  const { entries } = JSON.parse(git(['show', `${head}:${journal}`], cwd));
+  for (let index = 1; index < entries.length; index++) {
+    const previous = entries[index - 1], current = entries[index];
+    if (!(current.when > previous.when))
+      throw new Error(`Migration journal timestamps must be strictly increasing: ${previous.tag} (${previous.when}) then ${current.tag} (${current.when}). Regenerate the migration.`);
+  }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   checkMigrations(process.argv[2] ?? '', process.argv[3] ?? 'HEAD');

@@ -27,10 +27,10 @@ test('only the requested commits are checked; migrations and old journal entries
     run('config', 'commit.gpgsign', 'false');
     mkdirSync(join(cwd, directory, 'meta'), { recursive: true });
     write(`${directory}/0000_first.sql`, 'create table example ();\n');
-    write(`${directory}/meta/_journal.json`, '{"version":"7","entries":[{"idx":0,"tag":"0000_first"}]}\n');
+    write(`${directory}/meta/_journal.json`, '{"version":"7","entries":[{"idx":0,"tag":"0000_first","when":1000}]}\n');
     const base = commit('old nonconventional history');
     write(`${directory}/0001_next.sql`, 'alter table example add column name text;\n');
-    write(`${directory}/meta/_journal.json`, '{"version":"7","entries":[{"idx":0,"tag":"0000_first"},{"idx":1,"tag":"0001_next"}]}\n');
+    write(`${directory}/meta/_journal.json`, '{"version":"7","entries":[{"idx":0,"tag":"0000_first","when":1000},{"idx":1,"tag":"0001_next","when":2000}]}\n');
     const good = commit('feat: add a name');
     assert.equal(checkCommits(base, good, cwd), 1);
     checkMigrations(base, good, cwd);
@@ -47,6 +47,40 @@ test('only the requested commits are checked; migrations and old journal entries
     assert.throws(() => checkCommits(good, 'HEAD', cwd), /conventional/);
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
+
+for (const [order, when, valid] of [['older', 1500, false], ['equal', 2000, false], ['increasing', 3000, true]]) {
+  test(`migration journal timestamp order: ${order}`, () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'migration-order-checks-'));
+    const run = (...args) => git(args, cwd);
+    const directory = 'packages/db/src/migrations';
+    const write = (path, text) => writeFileSync(join(cwd, path), text);
+    const commit = () => { run('add', '-A'); run('commit', '-m', 'feat: add a migration'); return run('rev-parse', 'HEAD'); };
+    const entries = [
+      { idx: 0, tag: '0000_first', when: 1000 },
+      { idx: 1, tag: '0001_next', when: 2000 },
+    ];
+    try {
+      run('init', '-b', 'main'); run('config', 'user.name', 'Release'); run('config', 'user.email', 'release@example.test');
+      run('config', 'commit.gpgsign', 'false');
+      write('README.md', 'Migration checks\n');
+      const beforeJournal = commit();
+      mkdirSync(join(cwd, directory, 'meta'), { recursive: true });
+      write(`${directory}/0000_first.sql`, 'create table example ();\n');
+      write(`${directory}/0001_next.sql`, 'alter table example add column name text;\n');
+      write(`${directory}/meta/_journal.json`, JSON.stringify({ version: '7', entries }) + '\n');
+      const base = commit();
+      entries.push({ idx: 2, tag: '0002_appended', when });
+      write(`${directory}/0002_appended.sql`, 'alter table example add column enabled boolean;\n');
+      write(`${directory}/meta/_journal.json`, JSON.stringify({ version: '7', entries }) + '\n');
+      const head = commit();
+      // Check the full head journal even if the range predates it or contains no changes.
+      for (const from of [beforeJournal, base, head]) {
+        if (valid) assert.doesNotThrow(() => checkMigrations(from, head, cwd));
+        else assert.throws(() => checkMigrations(from, head, cwd), /strictly increasing: 0001_next \(2000\) then 0002_appended \(\d+\)\. Regenerate the migration/);
+      }
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+}
 
 test('the previous code check picks the newest release, or the branch start before the first one', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'r118-previous-'));

@@ -20,6 +20,12 @@ Before 1.0 there is no compatibility promise. From 1.0, each release's schema an
 stored data must run the previous minor's code. Migrations expand first and remove
 old shapes only after that compatibility window.
 
+The migration check (`scripts/release/check-migrations.mjs`) keeps existing migration
+files byte-for-byte unchanged and the journal append-only. It also checks the full
+head journal's `when` timestamps are strictly increasing in entry order, whatever
+commit range is checked. Equal or older timestamps fail with both migration tags
+and an instruction to regenerate the migration, so existing installs won't skip it.
+
 Stored job payloads, inbox events and settings JSON tolerate unknown keys, so the
 previous minor reads what a newer one wrote: the gym's address, branding, website
 content, pending backup change and backup destination, and its encrypted SMTP and
