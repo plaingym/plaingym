@@ -25,6 +25,7 @@ mkdir "$STATE" "$SYSTEMD_UNIT_DIR"
 # 203.0.113.5 is this fixture server; 192.0.2.10 is someone else's.
 printf '203.0.113.5 gym.localhost other.localhost\n192.0.2.10 elsewhere.localhost\n127.0.0.1 loopback.invalid\n203.0.113.6 nat.invalid\n2001:db8::6 nat6.invalid\n2001:db8::10 elsewhere6.invalid\n' > "$HOSTS"
 printf '203.0.113.20 api.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.invalid\n2001:db8::10 mixed-reverse.invalid\n192.0.2.10 mixed-reverse.invalid\n' >> "$HOSTS"
+printf '203.0.113.6 multi4.invalid\n192.0.2.10 multi4.invalid\n2001:db8::6 multi6.invalid\n2001:db8::10 multi6.invalid\n192.0.2.10 foreign4.invalid\n192.0.2.11 foreign4.invalid\n2001:db8::10 foreign6.invalid\n2001:db8::11 foreign6.invalid\n2001:db8:0:1:2:3:4:6 full6.invalid\n' >> "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
 for command in apt-get systemctl ufw fallocate mkswap; do stub "$command" "printf '$command %s\n' \"\$*\" >> \"\$CALLS\""; done
 stub swapon 'echo /swapfile partition 1G 0B -2'
@@ -38,8 +39,8 @@ cat > "$temporary/bin/curl" <<'MOCK'
 #!/bin/sh
 for argument in "$@"; do last=$argument; done
 case "$last" in
-  https://api.ipify.org) printf '%s' "${PUBLIC4-203.0.113.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
-  https://api6.ipify.org) printf '%s' "${PUBLIC6-2001:db8::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
+  https://api.ipify.org) echo 'public lookup 4' >> "$CALLS"; printf '%s' "${PUBLIC4-203.0.113.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
+  https://api6.ipify.org) echo 'public lookup 6' >> "$CALLS"; printf '%s' "${PUBLIC6-2001:db8::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
   */api/setup) printf '%s' "${SETUP_STATUS:-200}" ;;
   */healthz) exit 0 ;;
   *) exit 22 ;;
@@ -82,7 +83,7 @@ expect_lookup_refusal() {
   grep -qF "$2" "$temporary/output"
   case "$2" in
     *'could not query DNS') grep -qF "Check the server's DNS resolver and network connectivity" "$temporary/output" ;;
-    *) grep -qF 'Check that curl is installed and outbound HTTPS works' "$temporary/output" ;;
+    *) grep -qF 'Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way' "$temporary/output" ;;
   esac
   if grep -Eq 'TTL|does not resolve yet|which is not this server' "$temporary/output"; then
     echo 'A failed lookup was reported as a DNS mismatch or told the owner to wait.' >&2
@@ -97,12 +98,37 @@ PUBLIC4_STATUS=22 expect_lookup_refusal nat.invalid 'The public-address lookup f
 GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
 PUBLIC6_STATUS=22 expect_dns_refusal elsewhere6.invalid 'Remove the AAAA record or configure working public IPv6'
 PUBLIC4='' expect_lookup_refusal nat.invalid 'The public-address lookup failed'
+# HTTP 200 pages from a proxy, malformed or repeated addresses, and the wrong family do not
+# confirm a public address or turn a lookup failure into a DNS mismatch.
+twice() { printf '%s\n%s' "$1" "$1"; }
+for body in '<html>proxy login</html>' '999.0.113.6' '2001:db8::6' "$(twice 203.0.113.6)"; do
+  PUBLIC4="$body" expect_lookup_refusal nat.invalid 'The public-address lookup failed'
+done
+for body in '<html>proxy login</html>' '2001::db8::6' '203.0.113.6' "$(twice 2001:db8::6)"; do
+  GLOBAL6=true PUBLIC6="$body" expect_lookup_refusal nat6.invalid 'The public-address lookup failed'
+done
+# Multiple nonlocal answers reuse the same family lookup, including a mismatch
+# followed by this server's public address.
+expect_dns_refusal multi4.invalid 'which is not this server'
+[ "$(cat "$CALLS")" = 'public lookup 4' ]
+expect_dns_refusal multi6.invalid 'which is not this server'
+[ "$(cat "$CALLS")" = 'public lookup 6' ]
+# Two answers that both miss the lookup's result still make one request, and so
+# does a failed lookup: neither is retried for the family's next answer.
+expect_dns_refusal foreign4.invalid 'which is not this server'
+[ "$(cat "$CALLS")" = 'public lookup 4' ]
+PUBLIC4_STATUS=22 expect_lookup_refusal foreign4.invalid 'The public-address lookup failed'
+[ "$(cat "$CALLS")" = 'public lookup 4' ]
+expect_dns_refusal foreign6.invalid 'which is not this server'
+[ "$(cat "$CALLS")" = 'public lookup 6' ]
+GLOBAL6=true PUBLIC6_STATUS=22 expect_lookup_refusal foreign6.invalid 'The public-address lookup failed'
+[ "$(cat "$CALLS")" = 'public lookup 6' ]
 # Missing curl has the same diagnostic, without relying on the container's packages.
 mkdir "$temporary/no-curl"
 for command in getent ip awk sort grep; do ln -s "$(command -v "$command")" "$temporary/no-curl/$command"; done
 if PATH="$temporary/no-curl" /bin/sh -c 'set -eu; . "$1"; check_dns nat.invalid' sh "$source_dir/lib.sh" > "$temporary/output" 2>&1; then exit 1; fi
 grep -qF 'The public-address lookup failed' "$temporary/output"
-grep -qF 'Check that curl is installed and outbound HTTPS works' "$temporary/output"
+grep -qF 'Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way' "$temporary/output"
 grep -qF 'Nothing was changed' "$temporary/output"
 # A failed lookup in the other address family must not hide a confirmed mismatch.
 PUBLIC6_STATUS=22 expect_dns_refusal elsewhere.localhost 'which is not this server'
@@ -114,9 +140,17 @@ GLOBAL6=true PUBLIC4_STATUS=22 expect_dns_refusal mixed-reverse.invalid '2001:db
 GLOBAL6=true PUBLIC4_STATUS=22 PUBLIC6_STATUS=22 expect_lookup_refusal mixed.invalid 'The public-address lookup failed'
 # Public addresses behind NAT and local addresses with failed public lookups still pass.
 check_dns_only() { sh -c 'set -eu; . "$1"; check_dns "$2"' sh "$source_dir/lib.sh" "$1"; }
+: > "$CALLS"
 check_dns_only nat.invalid
+[ "$(cat "$CALLS")" = 'public lookup 4' ]
+: > "$CALLS"
 GLOBAL6=true check_dns_only nat6.invalid
+[ "$(cat "$CALLS")" = 'public lookup 6' ]
+# An uncompressed eight-group address is the usual form on a real server.
+PUBLIC6=2001:db8:0:1:2:3:4:6 check_dns_only full6.invalid
+: > "$CALLS"
 PUBLIC4_STATUS=22 PUBLIC6_STATUS=22 check_dns_only gym.localhost
+[ ! -s "$CALLS" ]
 # The timer's unit names the directory, so odd characters are refused before anything changes.
 : > "$CALLS"
 if sh "$source_dir/install.sh" --directory "$temporary/with space" --image plaingym:v0.0.0-local --hostname gym.localhost --email owner@example.org > "$temporary/output" 2>&1; then exit 1; fi
@@ -149,6 +183,7 @@ before=$(hashes)
 : > "$CALLS"
 install_gym --hostname gym.localhost --email owner@example.org
 [ "$before" = "$(hashes)" ]
+if grep -q '^public lookup' "$CALLS"; then echo 'A local-address re-run queried a public-address service.' >&2; exit 1; fi
 if grep -q '^docker load' "$CALLS"; then echo 'A re-run replaced the loaded image.' >&2; exit 1; fi
 grep -q 'setup#token=fixture' "$temporary/output"
 SETUP_STATUS=404 install_gym --hostname gym.localhost --email owner@example.org

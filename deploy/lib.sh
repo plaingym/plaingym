@@ -192,19 +192,8 @@ check_dns() {
   global6=$(printf '%s\n' "$own" | grep -E '^[23][[:xdigit:]]{3}:' || true)
   public4_failed=true
   public6_failed=true
-  if command -v curl >/dev/null 2>&1; then
-    # Covers providers that NAT the public address. Each family can fail separately.
-    for url in https://api.ipify.org https://api6.ipify.org; do
-      if public=$(curl --fail --silent --max-time 5 --proto '=https' "$url") && [ -n "$public" ]; then
-        own="$own
-$public"
-        case "$url" in
-          https://api.ipify.org) public4_failed=false ;;
-          https://api6.ipify.org) public6_failed=false ;;
-        esac
-      fi
-    done
-  fi
+  public4_checked=false
+  public6_checked=false
   dns_mismatch=''
   dns_unconfirmed=''
   for address in $resolved; do
@@ -213,6 +202,39 @@ $public"
         fail "$1 resolves to a loopback address. Point it at this server's public IP. $dns_retry" ;;
     esac
     if ! printf '%s\n' "$own" | grep -qxF "$address"; then
+      # Only consult the matching public-address service after a local miss,
+      # once per family. This also covers providers that NAT the public address.
+      case "$address" in
+        *:*) checked=$public6_checked; public6_checked=true; family=6; url=https://api6.ipify.org ;;
+        *) checked=$public4_checked; public4_checked=true; family=4; url=https://api.ipify.org ;;
+      esac
+      if [ "$checked" = false ] && command -v curl >/dev/null 2>&1; then
+        if public=$(curl --fail --silent --max-time 5 --proto '=https' "$url") &&
+          printf '%s\n' "$public" | awk -v family="$family" '
+            NR != 1 { exit 1 }
+            family == 4 {
+              if ($0 !~ /^[0-9.]+$/ || split($0, parts, "[.]") != 4) exit 1
+              for (i = 1; i <= 4; i++) if (parts[i] == "" || length(parts[i]) > 3 || parts[i] + 0 > 255) exit 1
+              next
+            }
+            {
+              if ($0 !~ /^[[:xdigit:]:]+$/ || $0 ~ /:::/ || $0 ~ /^:[^:]/ || $0 ~ /[^:]:$/) exit 1
+              count = split($0, parts, ":"); groups = 0
+              for (i = 1; i <= count; i++) {
+                if (length(parts[i]) > 4) exit 1
+                if (parts[i] != "") groups++
+              }
+              compressed = gsub(/::/, "::")
+              if (compressed == 1 && groups < 8) next
+              if (compressed == 0 && groups == 8 && count == 8) next
+              exit 1
+            }'; then
+          own="$own
+$public"
+          case "$family" in 4) public4_failed=false ;; 6) public6_failed=false ;; esac
+        fi
+      fi
+      if printf '%s\n' "$own" | grep -qxF "$address"; then continue; fi
       case "$address" in
         *:*)
           lookup_failed=$public6_failed
@@ -223,7 +245,7 @@ $public"
         *) lookup_failed=$public4_failed ;;
       esac
       if [ "$lookup_failed" = true ]; then
-        dns_unconfirmed="$1 resolves to $address, which is not assigned to this server's network interfaces. The public-address lookup failed, so the installer could not confirm this server's public address. Check that curl is installed and outbound HTTPS works, then retry the installer. Nothing was changed."
+        dns_unconfirmed="$1 resolves to $address, which is not assigned to this server's network interfaces. The public-address lookup failed, so the installer could not confirm this server's public address. Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way, then retry the installer. Nothing was changed."
       else
         dns_mismatch="$1 resolves to $address, which is not this server. Use a DNS-only record (no proxy) that points here. $dns_retry"
       fi

@@ -31,10 +31,13 @@ global IPv6 address, remove its AAAA record or configure working public IPv6.
 
 When a hostname lookup fails, the installer also tries `api.ipify.org`. If neither
 query succeeds, it says the server could not query DNS: check the server's DNS
-resolver and network connectivity before retrying. If the public-address lookup
-failed, check that `curl` is installed and outbound HTTPS works; the installer
-could not confirm an address behind NAT. A confirmed mismatch takes priority
-over an unconfirmed address. Each refusal confirms: "Nothing was changed."
+resolver and network connectivity before retrying. An address that isn't on this
+server's network interfaces makes the installer look up its public address. If
+that lookup failed, or a filtering proxy or captive portal answered with something
+other than an address, the installer could not confirm an address behind NAT:
+check that `curl` is installed and outbound HTTPS works with no filtering proxy or
+captive portal in the way. A confirmed mismatch takes priority over an unconfirmed
+address. Each refusal confirms: "Nothing was changed."
 
 ## Route 1: one command
 
