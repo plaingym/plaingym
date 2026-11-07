@@ -5,6 +5,7 @@
   "member": "Code for",
   "codeFor": "Check-in code for {name}",
   "codeImage": "QR check-in code for {name}",
+  "drawError": "We couldn't display the QR code. Please try replacing it or ask the front desk for help.",
   "loading": "Loading the check-in code…",
   "help": "Turn up your screen brightness if the kiosk doesn't read the code.",
   "inactive": "There is no active check-in code. Create one to check in with the kiosk camera.",

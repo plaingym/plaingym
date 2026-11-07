@@ -6,6 +6,7 @@
   "setupHelp": "An owner or admin registers this device in Settings under Kiosk devices, then enters its device token here.",
   "token": "Device token",
   "saveToken": "Save and start check-in",
+  "setupSaveError": "We couldn't save this device's setup. Allow browser storage, then enter the device token or open the setup link again.",
   "howCheckIn": "How would you like to check in?",
   "namePin": "Name and PIN",
   "scanQr": "Scan a QR code",

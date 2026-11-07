@@ -6,7 +6,7 @@ import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
-import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
+import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken, tokenKey } from './api.js';
 import { QrCheckin } from './qr.js';
 import { playTone } from './feedback.js';
 import { DemoKioskHint } from '../demo/notice.js';
@@ -22,26 +22,48 @@ type Screen =
 const settled = (rows: readonly Row[]) => rows.every((row) => row.result && row.result.status !== 'select_session');
 const big = 'min-h-12 h-auto whitespace-normal px-3 py-3 text-lg sm:min-h-16 sm:text-xl';
 
+function readDevice() {
+  let saveFailed = false;
+  const token = readToken(() => { saveFailed = true; });
+  return { token, saveFailed };
+}
+
 export function KioskApp() {
-  const [token, setToken] = useState<string | null>(() => readToken());
+  const [device, setDevice] = useState(readDevice);
+  const { token, saveFailed } = device;
   useEffect(() => {
     const updateToken = () => {
       if (new URLSearchParams(window.location.hash.slice(1)).get('token')) {
-        const next = readToken();
-        if (next) setToken(next);
+        setDevice(readDevice());
+      }
+    };
+    const syncToken = (event: StorageEvent) => {
+      if (event.storageArea === window.localStorage && (event.key === tokenKey || event.key === null)) {
+        setDevice((previous) => {
+          const next = readDevice();
+          return next.token === previous.token ? previous : next;
+        });
       }
     };
     window.addEventListener('hashchange', updateToken);
-    return () => window.removeEventListener('hashchange', updateToken);
+    window.addEventListener('storage', syncToken);
+    return () => {
+      window.removeEventListener('hashchange', updateToken);
+      window.removeEventListener('storage', syncToken);
+    };
   }, []);
-  if (!token) return <DeviceSetup onSaved={(value) => { saveToken(value); setToken(value); }}/>;
-  return <CheckIn key={token} token={token} onUnauthorized={() => { forgetToken(); setToken(null); }}/>;
+  if (!token) return <DeviceSetup saveFailed={saveFailed} onSaved={(value) => {
+    const saved = saveToken(value);
+    setDevice({ token: saved ? value : null, saveFailed: !saved });
+  }}/>;
+  return <CheckIn key={token} token={token} onUnauthorized={() => { forgetToken(token); setDevice(readDevice()); }}/>;
 }
 
-function DeviceSetup({ onSaved }: { onSaved: (token: string) => void }) {
+function DeviceSetup({ saveFailed, onSaved }: { saveFailed: boolean; onSaved: (token: string) => void }) {
   const [value, setValue] = useState('');
   return <main id="main-content" className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-4 p-4 sm:gap-6 sm:p-6">
     <h1 className="text-2xl font-semibold sm:text-3xl">{text('setupTitle')}</h1><p className="text-base sm:text-lg">{text('setupHelp')}</p>
+    {saveFailed && <Alert role="alert">{text('setupSaveError')}</Alert>}
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); if (value.trim()) onSaved(value.trim()); }}>
       <Label className="grid gap-2 text-lg">{text('token')}<Input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" required/></Label>
       <Button type="submit" className={big + ' w-full'}>{text('saveToken')}</Button>

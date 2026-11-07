@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { KioskCheckinResult } from '@plaingym/shared/contracts';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
 import { playTone } from './feedback.js';
@@ -23,13 +23,14 @@ const setCamera = (value: unknown) => Object.defineProperty(navigator, 'mediaDev
 beforeEach(() => {
   setCamera({ getUserMedia: vi.fn(), enumerateDevices: vi.fn().mockResolvedValue([{ kind: 'videoinput' }]) });
   vi.mocked(readToken).mockReturnValue('device-token');
+  vi.mocked(saveToken).mockReturnValue(true);
   vi.mocked(kioskApi.lookup).mockResolvedValue({ status: 'select_member', members: [parent, child] });
   vi.mocked(kioskApi.checkin).mockResolvedValue([
     { status: 'select_session', member: parent, sessions: [session] },
     { status: 'select_session', member: child, sessions: [session] },
   ]);
 });
-afterEach(() => { cleanup(); setCamera(undefined); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); localStorage.clear(); window.history.replaceState(null, '', '/'); });
+afterEach(() => { cleanup(); setCamera(undefined); vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); localStorage.clear(); window.history.replaceState(null, '', '/'); });
 function choosePin() { const choice = screen.queryByRole('button', { name: 'Name and PIN' }); if (choice) fireEvent.click(choice); }
 function fill() {
   choosePin();
@@ -45,6 +46,77 @@ async function submit() {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Check in' })); });
 }
 describe('kiosk check-in screen', () => {
+  it('preserves the new tab token when a revoked old tab fails before its storage event arrives', async () => {
+    const actual = await vi.importActual<typeof import('./api.js')>('./api.js');
+    vi.mocked(readToken).mockImplementation(actual.readToken);
+    vi.mocked(forgetToken).mockImplementation(actual.forgetToken);
+    actual.saveToken('old-device');
+    const oldTab = render(<KioskApp/>);
+    let revoked!: (reason: Error) => void;
+    vi.mocked(kioskApi.lookup).mockReturnValueOnce(new Promise((_resolve, reject) => { revoked = reject; }));
+    fill(); fireEvent.click(screen.getByRole('button', { name: 'Find me' }));
+    // The setup link opens in another tab; storage is shared but its event may arrive later.
+    window.history.replaceState(null, '', '/kiosk#token=new-device');
+    const newTab = render(<KioskApp/>);
+    await act(async () => { revoked(new KioskAuthError('revoked')); });
+    expect(localStorage.getItem('plaingym.kioskToken')).toBe('new-device');
+    expect(within(newTab.container).getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+    // The old tab follows storage rather than asking for setup while a working token is saved.
+    expect(within(oldTab.container).queryByLabelText('Device token')).toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'plaingym.kioskToken', storageArea: localStorage, newValue: 'new-device' }));
+    });
+    expect(within(oldTab.container).queryByLabelText('Device token')).toBeNull();
+    oldTab.unmount(); newTab.unmount();
+    render(<KioskApp/>); await search();
+    expect(kioskApi.lookup).toHaveBeenLastCalledWith('new-device', credentials.name, credentials.pin);
+  });
+  it('resets the open flow on shared token changes and storage clear, ignoring other storage', async () => {
+    const actual = await vi.importActual<typeof import('./api.js')>('./api.js');
+    vi.mocked(readToken).mockImplementation(actual.readToken);
+    actual.saveToken('old-device'); render(<KioskApp/>); fill();
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'other', storageArea: localStorage }));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'plaingym.kioskToken', storageArea: sessionStorage }));
+    });
+    expect(screen.getByLabelText('Your name')).toBeDefined();
+    actual.saveToken('new-device');
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'plaingym.kioskToken', storageArea: localStorage, newValue: 'outdated-event-value' }));
+    });
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    await search();
+    expect(kioskApi.lookup).toHaveBeenLastCalledWith('new-device', credentials.name, credentials.pin);
+    localStorage.clear();
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key: null, storageArea: localStorage })); });
+    expect(screen.getByLabelText('Device token')).toBeDefined();
+  });
+  it.each([false, true])('reports a failed fragment save on an already mounted kiosk: %s', async (mounted) => {
+    const actual = await vi.importActual<typeof import('./api.js')>('./api.js');
+    vi.mocked(readToken).mockImplementation(actual.readToken);
+    actual.saveToken('old-device');
+    if (mounted) render(<KioskApp/>, { reactStrictMode: true });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage blocked'); });
+    await act(async () => {
+      window.history.replaceState(null, '', '/kiosk#token=new-device');
+      if (mounted) window.dispatchEvent(new HashChangeEvent('hashchange'));
+      else render(<KioskApp/>, { reactStrictMode: true });
+    });
+    expect(window.location.hash).toBe('');
+    expect(screen.getByRole('alert').textContent).toContain("We couldn't save this device's setup");
+    expect(screen.getByLabelText('Device token')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Scan a QR code' })).toBeNull();
+  });
+  it('keeps setup open and explains a failed manual save, then allows retry', () => {
+    vi.mocked(readToken).mockReturnValue(null);
+    vi.mocked(saveToken).mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<KioskApp/>);
+    fireEvent.change(screen.getByLabelText('Device token'), { target: { value: 'new-device' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and start check-in' }));
+    expect(screen.getByRole('alert').textContent).toContain("We couldn't save this device's setup");
+    fireEvent.click(screen.getByRole('button', { name: 'Save and start check-in' }));
+    expect(screen.getByRole('button', { name: 'Scan a QR code' })).toBeDefined();
+  });
   it.each([null, 'old-device'])('takes a setup fragment on a mounted kiosk with token %s and clears the old flow', async (previous) => {
     const actual = await vi.importActual<typeof import('./api.js')>('./api.js');
     if (previous) localStorage.setItem('plaingym.kioskToken', previous);
@@ -89,6 +161,7 @@ describe('kiosk check-in screen', () => {
     expect(await screen.findByText('Checked in')).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
     vi.mocked(qrCheckin).mockRejectedValueOnce(new KioskAuthError('revoked'));
+    vi.mocked(forgetToken).mockImplementation(() => { vi.mocked(readToken).mockReturnValue(null); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Scan a QR code' })); });
     expect(forgetToken).toHaveBeenCalledOnce();
     expect(await screen.findByLabelText('Device token')).toBeDefined();
@@ -289,6 +362,7 @@ describe('kiosk check-in screen', () => {
   });
   it('clears a rejected device token and opens device setup', async () => {
     vi.mocked(kioskApi.lookup).mockRejectedValueOnce(new KioskAuthError('revoked'));
+    vi.mocked(forgetToken).mockImplementation(() => { vi.mocked(readToken).mockReturnValue(null); });
     render(<KioskApp/>);
     await search();
     expect(forgetToken).toHaveBeenCalledOnce();

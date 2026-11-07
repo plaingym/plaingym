@@ -16,7 +16,8 @@ import { MemberPicker, usePortalMembers } from '../schedule/members.js';
 const text = (key: string, values?: Record<string, string>) => t('portal/checkin:' + key, values);
 /** The code is derived on the server and only ever shown, never stored by the browser or service worker. */
 function CodeImage({ code, name }: { code: string; name: string }) {
-  const url = useMemo(() => qrDataUrl(code), [code]);
+  const url = useMemo(() => { try { return qrDataUrl(code); } catch { return null; } }, [code]);
+  if (!url) return <Alert role="alert">{text('drawError')}</Alert>;
   return <img src={url} width="288" height="288" alt={text('codeImage', { name })} className="mx-auto h-auto w-full max-w-72 rounded-lg bg-white p-2" />;
 }
 export function PortalCheckinPage({ client = portalClient }: { client?: PortalClient }) {

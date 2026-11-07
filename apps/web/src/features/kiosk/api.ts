@@ -4,20 +4,27 @@ import {
   type KioskCheckinResult, type KioskLookupResponse, type KioskNamePinCheckinRequest,
 } from '@plaingym/shared/contracts';
 
-const tokenKey = 'plaingym.kioskToken';
+export const tokenKey = 'plaingym.kioskToken';
 /** The device token lives only in this browser's storage; the URL fragment form (`#token=…`) is never sent to the server. */
-export function readToken(): string | null {
+export function readToken(onSaveError?: () => void): string | null {
   try {
     const fragment = new URLSearchParams(window.location.hash.slice(1)).get('token');
     if (fragment) {
-      window.localStorage.setItem(tokenKey, fragment);
+      const saved = saveToken(fragment);
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      if (!saved) { onSaveError?.(); return null; }
     }
     return window.localStorage.getItem(tokenKey);
   } catch { return null; }
 }
-export function saveToken(token: string) { try { window.localStorage.setItem(tokenKey, token.trim()); } catch { /* storage unavailable */ } }
-export function forgetToken() { try { window.localStorage.removeItem(tokenKey); } catch { /* storage unavailable */ } }
+export function saveToken(token: string): boolean {
+  try { window.localStorage.setItem(tokenKey, token.trim()); return true; } catch { return false; }
+}
+export function forgetToken(token: string) {
+  try {
+    if (window.localStorage.getItem(tokenKey) === token) window.localStorage.removeItem(tokenKey);
+  } catch { /* storage unavailable */ }
+}
 
 /** A revoked or unknown token: the device must be set up again. */
 export class KioskAuthError extends Error {}

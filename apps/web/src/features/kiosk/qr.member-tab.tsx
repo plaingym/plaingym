@@ -15,7 +15,7 @@ export function CheckinCodePanel({ gymId, memberId }: { gymId: string; memberId:
   const cache = useQueryClient(), key = ['checkin-code', gymId, memberId];
   const data = useQuery({ queryKey: key, queryFn: () => staffCheckinCode(memberId), staleTime: 0, gcTime: 0 });
   const [action, setAction] = useState<'regenerate' | 'revoke'>(), [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const [image, setImage] = useState<{ code: string; url: string }>();
+  const [image, setImage] = useState<{ code: string; url: string | null }>();
   const locked = useRef(false), code = data.data?.code;
   useEffect(() => {
     let active = true; setImage(undefined);
@@ -23,7 +23,7 @@ export function CheckinCodePanel({ gymId, memberId }: { gymId: string; memberId:
       try {
         const url = qrDataUrl(code);
         if (active) setImage({ code, url });
-      } catch { if (active) setError('requestError'); }
+      } catch { if (active) setImage({ code, url: null }); }
     }
     return () => { active = false; };
   }, [code]);
@@ -45,7 +45,9 @@ export function CheckinCodePanel({ gymId, memberId }: { gymId: string; memberId:
     {data.isPending && <p role="status">{text('loading')}</p>}
     {data.isError && <Alert role="alert">{text('requestError')} <Button variant="outline" onClick={() => void data.refetch()}>{text('retry')}</Button></Alert>}
     {data.data && <>
-      {code ? image?.code === code && <img src={image.url} width="256" height="256" alt={text('codeImage')} className="mx-auto h-auto w-full max-w-64"/> : <p>{text('inactiveCode')}</p>}
+      {code ? image?.code === code && (image.url
+        ? <img src={image.url} width="256" height="256" alt={text('codeImage')} className="mx-auto h-auto w-full max-w-64"/>
+        : <Alert role="alert">{text('drawError')}</Alert>) : <p>{text('inactiveCode')}</p>}
       <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => { setError(''); setAction('regenerate'); }}>{text(code ? 'regenerate' : 'create')}</Button>
         {code && <Button variant="outline" disabled={busy} onClick={() => { setError(''); setAction('revoke'); }}>{text('revoke')}</Button>}</div>
     </>}

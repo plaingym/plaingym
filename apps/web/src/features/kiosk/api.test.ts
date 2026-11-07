@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { forgetToken, kioskApi, KioskAuthError, readToken, saveToken } from './api.js';
 
-afterEach(() => { vi.unstubAllGlobals(); window.localStorage.clear(); window.history.replaceState(null, '', '/kiosk'); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); window.localStorage.clear(); window.history.replaceState(null, '', '/kiosk'); });
 describe('kiosk device transport', () => {
   it('takes a device token out of the fragment and never puts credentials or rosters in the URL', () => {
     window.history.replaceState(null, '', '/kiosk#token=new-device');
@@ -12,7 +12,25 @@ describe('kiosk device transport', () => {
     expect(window.localStorage.length).toBe(1);
     saveToken(' replacement ');
     expect(readToken()).toBe('replacement');
-    forgetToken(); expect(readToken()).toBeNull();
+    forgetToken('replacement'); expect(readToken()).toBeNull();
+  });
+  it('keeps a replacement saved by another tab when the old device is revoked', () => {
+    saveToken('old-device');
+    saveToken('new-device');
+    forgetToken('old-device');
+    expect(readToken()).toBe('new-device');
+    forgetToken('new-device');
+    expect(readToken()).toBeNull();
+  });
+  it('clears a setup fragment and reports a failed save without using an older stored token', () => {
+    saveToken('old-device');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Storage blocked'); });
+    window.history.replaceState(null, '', '/kiosk?lang=en#token=new-device');
+    const failed = vi.fn();
+    expect(readToken(failed)).toBeNull();
+    expect(failed).toHaveBeenCalledOnce();
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/kiosk?lang=en');
+    expect(saveToken('new-device')).toBe(false);
   });
   it('uses only the device bearer, disables caching and sends each request once', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: { status: 'see_front_desk' } })));

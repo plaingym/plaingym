@@ -19,6 +19,7 @@
   "loading": "Loading check-in code…",
   "retry": "Try again",
   "codeImage": "Member check-in QR code",
+  "drawError": "We couldn't display the QR code. Please try replacing it or ask the front desk for help.",
   "inactiveCode": "No active check-in code. Create one to enable QR check-in.",
   "create": "Create check-in code",
   "regenerate": "Replace check-in code",
