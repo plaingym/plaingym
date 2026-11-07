@@ -10,6 +10,7 @@ import { logError } from '../core/log.js';
 import type { GymDeleteService } from '../areas/settings/gym-delete.js';
 import { requireDemo, sandboxSettings, type DemoConfig } from './config.js';
 import type { DemoLoginTarget } from '@plaingym/shared/contracts';
+import type { JoinService } from '../public/pages/join.service.js';
 
 export function createDemoService(options: {
   config: DemoConfig; key: Buffer; clock: Clock; deletion: GymDeleteService;
@@ -17,17 +18,30 @@ export function createDemoService(options: {
   seed(context: GymContext): Promise<void>; scope?: typeof forGym; system?: typeof forSystem;
 }) {
   const scope = options.scope ?? forGym, system = options.system ?? forSystem;
-  async function status(gymId: string) {
+  let joinReadiness: Pick<JoinService, 'ready'> | undefined;
+  /** The cheap guard every sandbox route needs: the sandbox exists, is ready and hasn't expired. */
+  async function live(gymId: string) {
     requireDemo(options.config);
     const [gym] = await scope(gymId, (tx) => tx.select().from(gyms).where(eq(gyms.id, gymId)));
     const settings = sandboxSettings(gym?.settings);
     if (!gym || gym.status !== 'active' || !settings?.ready || Date.parse(settings.expiresAt) <= options.clock.now().getTime())
       throw new AppError('not_found', 'Not found');
-    // Joining takes test-card payments only where sandbox billing is configured (see payments.ts).
-    return { expiresAt: settings.expiresAt, join: options.config.stripe !== undefined };
+    return { expiresAt: settings.expiresAt };
+  }
+  /** Discovery: `live` plus whether the join page would take a member now. Only this runs the readiness queries. */
+  async function status(gymId: string) {
+    const { expiresAt } = await live(gymId);
+    let join = false;
+    if (joinReadiness) {
+      try { await joinReadiness.ready(gymId); join = true; }
+      catch (error) { if (!(error instanceof AppError) || error.code !== 'unavailable') throw error; }
+    }
+    return { expiresAt, join };
   }
   return {
-    status,
+    status, live,
+    /** Integration supplies the same service that serves /join, after composing its dependencies. */
+    setJoinReadiness(service: Pick<JoinService, 'ready'>) { joinReadiness = service; },
     async create() {
       assertNoTransaction('demo.create'); requireDemo(options.config);
       const reservationId = uuidv7(options.clock.now().getTime()), now = options.clock.now();
@@ -76,7 +90,7 @@ export function createDemoService(options: {
       }
     },
     async login(gymId: string, target: DemoLoginTarget, clientIp: string) {
-      await status(gymId);
+      await live(gymId);
       const [domain] = await system((tx) => tx.select({ hostname: gymDomains.hostname }).from(gymDomains)
         .where(and(eq(gymDomains.gymId, gymId), eq(gymDomains.kind, 'default'))));
       if (!domain || !domain.hostname.endsWith('.' + options.config.domain)) throw new AppError('not_found', 'Not found');

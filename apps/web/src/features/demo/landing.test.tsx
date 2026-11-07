@@ -35,6 +35,8 @@ it('starts a sandbox with one-click roles, the test-card join walkthrough and th
   for (const role of ['owner', 'coach', 'student']) fireEvent.click(screen.getByRole('button', { name: `Sign in as ${role}` }));
   expect(context.login.mock.calls).toEqual([['owner'], ['coach'], ['student']]);
   expect(screen.getByText(/Alex Student: two booked classes, a waitlist place/)).toBeDefined();
+  expect(screen.getByText(/check-in QR code and paid invoices/)).toBeDefined();
+  expect(screen.queryByText(/when this demo has/)).toBeNull();
   expect(screen.queryByText(/no test payments/)).toBeNull();
   expect(screen.getByRole('link', { name: 'Open the join page' }).getAttribute('href')).toBe('/join');
   expect(screen.getByText('4242 4242 4242 4242')).toBeDefined();
@@ -64,10 +66,12 @@ it('uses one control style: navigation is a full-width menu link, signing in is 
   }
   for (const name of ['Sign in as owner', 'Open the demo outbox']) expect(screen.getByRole('button', { name }).className).toContain('w-full');
 });
-it('replaces the join steps with a one-line note when the demo has no test payments, keeping roles and kiosk', () => {
+it('replaces the join steps and student billing copy when joining is unavailable, keeping roles and kiosk', () => {
   context.mode = 'sandbox'; context.join = false;
   render(<DemoPage />);
-  expect(screen.getByText("This demo has no test payments, so joining online isn't available.")).toBeDefined();
+  expect(screen.getByText("Joining online isn't available in this demo gym right now.")).toBeDefined();
+  expect(screen.queryByText(/paid invoices/)).toBeNull();
+  expect(screen.queryByText(/join as a new member with a test card/)).toBeNull();
   expect(screen.queryByRole('link', { name: 'Open the join page' })).toBeNull();
   expect(screen.queryByText('4242 4242 4242 4242')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Open the demo outbox' })).toBeNull();

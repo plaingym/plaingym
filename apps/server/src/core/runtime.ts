@@ -314,6 +314,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const join = configureJoin({ clock, waivers, checkout, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)),
     invitations: portalInvitations, accounts, ...(demo ? { testCardHint: demo.joinTestCardHint } : {}),
     key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
+  demo?.service.setJoinReadiness(join);
   const billing = composeBillingWebhooks({ inbox, jobs: queue, settings, paymentsFor, clock, prepare: gymMail, disputeAlerts: alerts,
     async afterCheckoutRecorded(gymId, linkId, sessionId) {
       try { await checkout.complete(gymId, linkId, sessionId); }

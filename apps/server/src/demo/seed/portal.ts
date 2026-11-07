@@ -5,7 +5,6 @@ import type { Clock } from '@plaingym/shared';
 import type { ClassSession, WaiverSignature } from '@plaingym/shared/contracts';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
-import { logError } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { createAttendanceQueries, createAttendanceService } from '../../areas/attendance/attendance.js';
 import { createCatalogService } from '../../areas/billing/catalog.js';
@@ -29,6 +28,7 @@ import { digest } from '../../areas/waivers/snapshot.js';
 import { createWaiversService, type WaiverOptions } from '../../areas/waivers/waivers.js';
 import { demoEmail, demoStudent } from '../identities.js';
 import { billingSeedState, demoPlans, seedCalendar, seedTestCard, settleSeedPeriods } from './billing.js';
+import { restoreSeedBilling } from './billing-switch.js';
 import type { BillingSeedProvider } from './billing-payments.js';
 import { sessionsBetween } from './mat.js';
 import { day, demoPin, environmentPinSecret, findDemoMembers, settableClock } from './members.js';
@@ -231,7 +231,7 @@ async function billing(scope: typeof forGym, clock: Clock, gymId: string, househ
     const runner = createChargeRunner({ scope, clock: at, settings, transitions, payments: async () => provider.payments,
       // Transitions persist their normal effects for the runtime publisher; the seed enqueues nothing itself.
       jobs: { async enqueue() { throw new Error('Portal seed must not enqueue jobs directly'); } } });
-    await settleSeedPeriods({ scope, at, transitions, runner, retryFailed: true }, gym, householdId, calendar);
+    await settleSeedPeriods({ scope, at, clock, transitions, runner, retryFailed: true }, gym, householdId, calendar);
     // The kiosk refuses a household with an overdue invoice, so the student's history must end paid.
     const cycles = await scope(gymId, tx => tx.select({ status: invoices.status }).from(invoices)
       .where(and(eq(invoices.householdId, householdId), eq(invoices.kind, 'cycle'))));
@@ -240,12 +240,7 @@ async function billing(scope: typeof forGym, clock: Clock, gymId: string, househ
   } catch (error) {
     // A failed run restores the gym's original switch, as the billing seed does. The seed's own failure is the one
     // reported: a restore that fails too is logged on its own and never replaces it.
-    if (!initial.billingEnabled) {
-      try {
-        const current = await switches.checklist(gymId);
-        await switches.update(actor, { revision: current.revision, billingEnabled: false });
-      } catch (restoreError) { logError('demo.portal.billing_restore_failed', { gymId }, restoreError); }
-    }
+    if (!initial.billingEnabled) await restoreSeedBilling(switches, actor, 'demo.portal.billing_restore_failed');
     throw error;
   }
 }

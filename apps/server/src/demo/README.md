@@ -25,10 +25,15 @@ Without the key, creation succeeds and logs `Demo billing seed skipped` with the
 missing variable name. Payments and the Stripe health tile report unconfigured.
 With the key, the portal seed leaves billing on, so each sandbox's `/join` takes
 test-card payments through the shared account. `GET /api/demo` on a sandbox host
-reports this as a boolean `join` beside `expiresAt` (true when the key is
-configured; never the key or secret), and the sandbox start page shows the join
-walkthrough only when it is true, otherwise a one-line note that the demo has no
-test payments.
+reports a boolean `join` beside `expiresAt`, without any key or secret. The
+composition supplies `service.setJoinReadiness(joinService)` after configuring
+the join service. Discovery uses that service's `ready(gymId)` check: billing
+on, payments configured for this sandbox, and one to eight current waiver
+documents. Without that connection it reports false. A sandbox created before
+the key was added, or whose owner turned billing off, therefore keeps joining
+unavailable until its own readiness check passes. The start page selects its
+walkthrough and student billing copy from this flag; otherwise it shows a
+one-line note that joining is currently unavailable.
 Webhook requests pass through to the tenant route, which returns 503
 (`Payments are not set up for this gym`) for a sandbox without the shared key.
 

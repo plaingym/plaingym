@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, gyms, invoices, paymentAttempts, uuidv7, waiverSignatures, waiverTemplates } from '@plaingym/db';
+import { auditEvents, gyms, invoices, paymentAttempts, payments as paymentRows, uuidv7, waiverSignatures, waiverTemplates } from '@plaingym/db';
 import { TestClock } from '../../core/clock.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { FakePayments } from '../../infra/payments/index.js';
@@ -44,6 +44,11 @@ it('finishes a CLI rerun after a failed current student charge without charging 
   expect(await createBillingStanding(db.forGym).check({ gymId, memberId: again.member.id, clock: f.clock })).toEqual({ status: 'ok' });
   expect(await db.forGym(gymId, tx => tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId,
     failed.invoices.find(row => row.status === 'past_due')!.id)))).toHaveLength(2);
+  const dated = await db.forGym(gymId, async tx => ({ attempts: await tx.select().from(paymentAttempts),
+    payments: await tx.select().from(paymentRows), audit: await tx.select().from(auditEvents) }));
+  expect(dated.attempts.every(row => row.createdAt <= f.clock.now() && (!row.resolvedAt || row.resolvedAt <= f.clock.now()))).toBe(true);
+  expect(dated.payments.every(row => row.createdAt <= f.clock.now() && row.paidAt <= f.clock.now())).toBe(true);
+  expect(dated.audit.every(row => row.occurredAt <= f.clock.now())).toBe(true);
 }, 90_000);
 
 it('reuses one uploaded sample signature after rendering fails before signing', async () => {

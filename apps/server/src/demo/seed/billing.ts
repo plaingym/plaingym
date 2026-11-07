@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq } from 'drizzle-orm';
-import { auditEvents, forGym, households, invoices, paymentMethods, uuidv7, type Transaction } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, paymentMethods, staffRoles, uuidv7, type Transaction } from '@plaingym/db';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock, type Clock } from '../../core/clock.js';
 import { createCatalogService } from '../../areas/billing/catalog.js';
@@ -8,7 +8,7 @@ import { createCustomersService } from '../../areas/billing/customers.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
 import { previousBillingDate } from '../../areas/billing/invoicing/index.js';
 import { createChargeRunner } from '../../areas/billing/runner/index.js';
-import { retryDeadlines } from '../../areas/billing/runner/eligibility.js';
+import { nextRetryDeadline } from '../../areas/billing/runner/eligibility.js';
 import { audit, generateCycle, latestAttempt, system } from '../../areas/billing/runner/store.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { createCardHandlers } from '../../areas/billing/webhooks/handlers/methods.js';
@@ -20,7 +20,7 @@ import { demoHouseholds, householdEmail, inBatches, memberKey, settableClock } f
 import type { Household } from '@plaingym/shared/contracts';
 import type { BillingSeedProvider } from './billing-payments.js';
 import type { GymSettings } from '../../core/interfaces/gym-settings.js';
-import { logError } from '../../core/log.js';
+import { restoreSeedBilling } from './billing-switch.js';
 
 const page = { limit: 100, offset: 0 } as const;
 export const demoPlans = [
@@ -66,7 +66,7 @@ export function billingSeed(options: {
     // A rerun after a partial failure can find seeded memberships still due in the past; confirm exactly those.
     if (!initial.billingEnabled) await switches.update(actor, { revision: initial.revision, billingEnabled: true,
       confirmedPastDueDates: initial.pastDueMemberships.map(({ id, revision, nextDueOn }) => ({ id, revision, nextDueOn })) });
-    let restoreFailure: { error: unknown } | undefined;
+    let restoreFailure: Awaited<ReturnType<typeof restoreSeedBilling>>;
     try {
       const prepared = new Map<string, Household>();
       // Overlap independent customer/card requests, bounded to three households.
@@ -105,20 +105,12 @@ export function billingSeed(options: {
           if (person.status === 'frozen' && membership.status === 'active') await lifecycle.freeze(actor, { membershipId: membership.id, revision: membership.revision });
           if (person.status === 'cancelled' && membership.status !== 'cancelled') await lifecycle.cancel(actor, { membershipId: membership.id, revision: membership.revision });
         }
-        await settleSeedPeriods({ scope, at, transitions, runner }, gym, household.id, calendar);
+        await settleSeedPeriods({ scope, at, clock, transitions, runner }, gym, household.id, calendar);
         at.set(anchor);
         await scope(gymId, tx => audit(tx, actor, clock, completed, 'household', household.id, {}));
       }
     } finally {
-      if (!seedState.billingEnabled) {
-        try {
-          const current = await switches.checklist(gymId);
-          await switches.update(actor, { revision: current.revision, billingEnabled: false });
-        } catch (restoreError) {
-          logError('demo.billing.billing_restore_failed', { gymId }, restoreError);
-          restoreFailure = { error: restoreError };
-        }
-      }
+      if (!seedState.billingEnabled) restoreFailure = await restoreSeedBilling(switches, actor, 'demo.billing.billing_restore_failed');
     }
     // An error thrown by the seed has already propagated through finally; only a restore-only failure reaches here.
     if (restoreFailure) throw restoreFailure.error;
@@ -162,7 +154,7 @@ export async function seedTestCard(options: { scope: typeof forGym; clock: Clock
  * Generates one household's periods through the real runner's calendar and invoice engine, pays the older ones in
  * cash and charges the current one. A charge must end succeeded or failed; anything else waits for reconciliation.
  */
-export async function settleSeedPeriods(options: { scope: typeof forGym; at: ReturnType<typeof settableClock>;
+export async function settleSeedPeriods(options: { scope: typeof forGym; at: ReturnType<typeof settableClock>; clock: Clock;
   transitions: ReturnType<typeof createInvoiceTransitions>; runner: ReturnType<typeof createChargeRunner>; retryFailed?: boolean },
 gym: GymSettings, householdId: string, calendar: ReturnType<typeof seedCalendar>) {
   const { scope, at } = options, gymId = gym.gymId, noon = (date: string) => zonedInstant(date, '12:00', gym.timezone, { gap: 'shift' })!;
@@ -174,16 +166,20 @@ gym: GymSettings, householdId: string, calendar: ReturnType<typeof seedCalendar>
     eq(invoices.kind, 'cycle'))).orderBy(asc(invoices.dueOn)));
   for (const invoice of history) {
     if (invoice.status === 'past_due' && options.retryFailed && invoice.dueOn === calendar.dueOn) {
-      // The seed simulates billing history. Continue at the next real retry deadline, never bypassing the runner's
-      // attempt reservation or replay protections. Unknown/pending outcomes still require reconciliation.
       const next = await scope(gymId, async tx => {
-        const latest = await latestAttempt(tx, invoice.id);
-        if (!latest || latest.status !== 'failed') return undefined;
-        return (await retryDeadlines(tx, gym, invoice.id)).find(date => date > latest.createdAt);
+        if ((await latestAttempt(tx, invoice.id))?.status !== 'failed') return undefined;
+        return nextRetryDeadline(tx, gym, invoice.id);
       });
       if (!next) throw new Error('Demo charge needs reconciliation before the seed can finish');
-      at.set(next);
-      const result = await options.runner.charge(gymId, invoice.id, { mode: 'retry' });
+      // A sandbox need not wait days to finish seeding. An explicit charge keeps the runner's reservation and
+      // replay safeguards, using the real clock so reconciliation can inspect an unknown outcome after its normal stale interval.
+      const now = options.clock.now();
+      at.set(now);
+      const [owner] = next > now ? await scope(gymId, tx => tx.select({ userId: staffRoles.userId }).from(staffRoles)
+        .where(eq(staffRoles.role, 'owner')).orderBy(asc(staffRoles.id)).limit(1)) : [];
+      if (next > now && !owner) throw new Error('Demo charge requires the sandbox owner');
+      const result = await options.runner.charge(gymId, invoice.id, next <= now ? { mode: 'retry' }
+        : { mode: 'staff', context: { gymId, actor: { kind: 'user', userId: owner!.userId } } });
       if (result.status !== 'succeeded') throw new Error('Demo charge needs reconciliation before the seed can finish');
       continue;
     }

@@ -183,6 +183,7 @@ describe('the test card on the join page', () => {
   const hint = 'Demo payment: use the test card 4242 4242 4242 4242, any future expiry date and any CVC. No real money moves.';
   it('names the test card in a sandbox that takes joins, and nowhere else', async () => {
     const paid = fixture({ stripe: { testKey: 'sk_test_demo', webhookSecret: 'whsec_demo' } });
+    paid.service.setJoinReadiness({ ready: async () => [] });
     expect(await joinTestCardHint(paid.service, t)(a.gymId)).toBe(hint);
     expect(await joinTestCardHint(f.service, t)(a.gymId)).toBeUndefined();
     expect(await joinTestCardHint(paid.service, t)(uuidv7())).toBeUndefined();

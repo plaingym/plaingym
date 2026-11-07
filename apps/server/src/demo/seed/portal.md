@@ -49,8 +49,11 @@ Billing shares the billing seed's helpers (`billingSeedState`, `seedCalendar`,
 `seedTestCard`, `settleSeedPeriods`) and its gym-wide calendar anchor, including
 when the portal step runs across local midnight. A card
 reservation blocks a blind retry after 23 hours, and the student's history must
-end paid. A rerun after a failed current charge simulates the next configured
-retry deadline through the real runner; paid periods are left alone. Pending or
+end paid. A rerun after a failed current charge uses the current injected time.
+When the next unused retry window has arrived it retries through the runner;
+before that deadline it makes an explicit staff charge attributed to the
+sandbox's owner. Neither path advances the clock into the future. Abandoned
+creates leave retry windows unused, and paid periods are left alone. Pending or
 unknown outcomes and exhausted retry schedules still need reconciliation.
 If the step fails, it restores the billing switch it found (a restore that
 fails too is logged as `demo.portal.billing_restore_failed`, and the step's own error is
@@ -82,7 +85,8 @@ account, a failed run's resume and a missing waitlist class;
 billing switch restore and the reported failure. Each of these four files seeds
 one sandbox before its tests and gives each test a copy of it.
 `portal.leftovers.test.ts` uses the same fixture pattern for the current-charge
-retry, unsigned-image reuse and shared anchor across midnight.
+retry, unsigned-image reuse and shared anchor across midnight. `portal.retry.test.ts`
+covers reconciliation after a lost retry response and abandoned creates in retry windows.
 `portal.runtime.test.ts` starts the
 production runtime in demo mode and walks the full demo through its HTTP routes:
 the student's portal and QR check-in, a join activated by the install webhook, the

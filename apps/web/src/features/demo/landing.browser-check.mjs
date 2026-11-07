@@ -33,7 +33,7 @@ const server = await createServer({ configFile: false, appType: 'custom', root: 
 // Installed before the modules load, since the app's JSON transport binds fetch at import.
 const discovery = "const expiresAt = new Date(Date.now() + 86400000).toISOString(); const members = [{ id: '019a0000-0000-7000-8000-0000000000aa', name: 'Riley Visitor-Longername' }, { id: '019a0000-0000-7000-8000-0000000000ab', name: 'Sam Joiner' }]; "
   + "window.fetch = async (input) => { const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname; "
-  + "return path === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt, join: true } }) : path === '/api/demo/menu' ? Response.json({ data: { members, website: true } }) : Response.json({}, { status: 404 }); };";
+  + "return path === '/api/demo' ? Response.json({ data: { mode: 'sandbox', expiresAt, join: new URL(location.href).searchParams.get('join') !== 'false' } }) : path === '/api/demo/menu' ? Response.json({ data: { members, website: true } }) : Response.json({}, { status: 404 }); };";
 server.middlewares.use('/fixture', async (req, res) => {
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Demo start page</title><script>' + discovery + '</script></head><body><div id="root"></div><script type="module" src="' + modulePath('apps/web/coverage/demo/fixture.tsx') + '"></script></body></html>';
   res.setHeader('Content-Type', 'text/html'); res.end(await server.transformIndexHtml(req.url ?? '/', html));
@@ -45,13 +45,16 @@ try {
   const address = server.httpServer.address();
   browser = await chromium.launch({ channel: process.env.E2E_BROWSER_CHANNEL ?? 'msedge', headless: true });
   const errors = [], results = [];
-  for (const width of [360, 1280]) for (const path of ['/demo', '/admin']) {
+  for (const join of [true, false]) for (const width of [360, 1280]) for (const path of ['/demo', '/admin']) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     const page = await context.newPage(); page.setDefaultTimeout(12_000);
     page.on('pageerror', error => errors.push(error.message)); page.on('console', message => { if (process.env.DEBUG_CHECK) console.log('console:', message.text()); });
-    await page.goto('http://127.0.0.1:' + address.port + '/fixture' + path);
+    await page.goto('http://127.0.0.1:' + address.port + '/fixture' + path + '?join=' + join);
     await expect(page.getByRole('heading', { level: 1, name: 'Your demo gym' })).toBeVisible();
-    await expect(page.getByText('4242 4242 4242 4242')).toBeVisible();
+    await expect(page.getByText('4242 4242 4242 4242')).toHaveCount(join ? 1 : 0);
+    await expect(page.getByRole('link', { name: 'Open the join page' })).toHaveCount(join ? 1 : 0);
+    await expect(page.getByText(/check-in QR code and paid invoices/)).toHaveCount(join ? 1 : 0);
+    if (!join) await expect(page.getByText("Joining online isn't available in this demo gym right now.")).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in as Riley Visitor-Longername' })).toBeVisible();
     // The bar is one slim row: about 44 px, with no hints.
     const bar = page.getByRole('complementary', { name: 'Demo controls' });
@@ -64,7 +67,7 @@ try {
     expect(small).toEqual([]);
     const accessibility = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: resolve(output, 'start' + path.replace('/', '-') + '-' + width + '.png'), fullPage: true });
+    await page.screenshot({ path: resolve(output, 'start' + path.replace('/', '-') + '-' + width + '-join-' + join + '.png'), fullPage: true });
     // The menu: a bottom sheet on a phone, a side panel on wider screens.
     await bar.getByRole('button', { name: 'Demo menu' }).click();
     const menu = page.getByRole('dialog', { name: 'Demo menu' });
@@ -77,10 +80,10 @@ try {
     }).map(element => element.outerHTML));
     expect(menuSmall).toEqual([]);
     expect((await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze()).violations).toEqual([]);
-    await page.screenshot({ path: resolve(output, 'menu' + path.replace('/', '-') + '-' + width + '.png') });
+    await page.screenshot({ path: resolve(output, 'menu' + path.replace('/', '-') + '-' + width + '-join-' + join + '.png') });
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
-    results.push({ width, path, overflow: false, minimumTarget: 44, axeViolations: 0, bar: 'slim', menu: width < 640 ? 'bottom sheet' : 'side panel' });
+    results.push({ join, width, path, overflow: false, minimumTarget: 44, axeViolations: 0, bar: 'slim', menu: width < 640 ? 'bottom sheet' : 'side panel' });
     await context.close();
   }
   expect(errors).toEqual([]); await writeFile(resolve(output, 'results.json'), JSON.stringify(results, null, 2));

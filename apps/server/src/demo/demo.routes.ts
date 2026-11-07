@@ -52,7 +52,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     }, async (c) => { c.header('cache-control', 'no-store'); return c.json({ data: await service.create() }, 201); }),
     route({ ...status,
       responses: { 200: { description: 'Demo status', content: { 'application/json': { schema: status.response } } } },
-    }, async (c) => { c.header('cache-control', 'no-store'); const { expiresAt } = await service.status(c.get('context').gym.gymId); return c.json({ data: { expiresAt } }, 200); }),
+    }, async (c) => { c.header('cache-control', 'no-store'); const { expiresAt } = await service.live(c.get('context').gym.gymId); return c.json({ data: { expiresAt } }, 200); }),
     route({ ...login, middleware: [modeGuard, loginLimiter],
       request: { body: { required: true, content: { 'application/json': { schema: login.body } } } },
       responses: { 200: { description: 'Demo session created', content: { 'application/json': { schema: login.response } } } },
@@ -67,7 +67,7 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
     route({ ...menu, middleware: [modeGuard],
       responses: { 200: { description: 'Demo menu', content: { 'application/json': { schema: menu.response } } } },
     }, async (c) => {
-      const { gymId, enabledModules } = c.get('context').gym; await service.status(gymId);
+      const { gymId, enabledModules } = c.get('context').gym; await service.live(gymId);
       c.header('cache-control', 'no-store');
       return c.json({ data: { members: await joinedMembers(gymId, options.scope), website: enabledModules.has('website') } }, 200);
     }),
@@ -77,23 +77,23 @@ export function createDemoRoutes(service: DemoService, options: { installOrigin:
       request: { body: { required: true, content: { 'application/json': { schema: signInLink.body } } } },
       responses: { 200: { description: 'Sign-in link', content: { 'application/json': { schema: signInLink.response } } } },
     }, async (c) => {
-      const gymId = c.get('context').gym.gymId; await service.status(gymId);
+      const gymId = c.get('context').gym.gymId; await service.live(gymId);
       c.header('cache-control', 'no-store'); c.header('referrer-policy', 'no-referrer');
       return c.json({ data: await outbox.signInLink(gymId, c.req.valid('json').email) }, 200);
     }),
     route({ ...list, request: { query: list.query },
       responses: { 200: { description: 'Outbox', content: { 'application/json': { schema: list.response } } } },
-    }, async (c) => { const gymId = c.get('context').gym.gymId; await service.status(gymId); c.header('cache-control', 'no-store'); return c.json(await outbox.list(gymId, c.req.valid('query')), 200); }),
+    }, async (c) => { const gymId = c.get('context').gym.gymId; await service.live(gymId); c.header('cache-control', 'no-store'); return c.json(await outbox.list(gymId, c.req.valid('query')), 200); }),
     route({ ...message, request: { params: message.params },
       responses: { 200: { description: 'Message', content: { 'application/json': { schema: message.response } } } },
-    }, async (c) => { const gymId = c.get('context').gym.gymId; await service.status(gymId); c.header('cache-control', 'no-store'); return c.json({ data: await outbox.get(gymId, c.req.valid('param').id) }, 200); }),
+    }, async (c) => { const gymId = c.get('context').gym.gymId; await service.live(gymId); c.header('cache-control', 'no-store'); return c.json({ data: await outbox.get(gymId, c.req.valid('param').id) }, 200); }),
     // The outbox's preview frame loads the message from here rather than from srcdoc, which would take the admin page's
     // policy: email HTML keeps its inline styles under a policy of its own, which runs no script, loads nothing and
     // may be framed only by the app's own pages.
     route({ ...preview, request: { params: preview.params },
       responses: { 200: { description: 'Message HTML for the sandboxed preview frame', content: { 'text/html': { schema: preview.response } } } },
     }, async (c) => {
-      const gymId = c.get('context').gym.gymId; await service.status(gymId);
+      const gymId = c.get('context').gym.gymId; await service.live(gymId);
       const html = await outbox.preview(gymId, c.req.valid('param').id);
       c.header('cache-control', 'no-store'); c.header('x-content-type-options', 'nosniff'); c.header('referrer-policy', 'no-referrer');
       setPolicy(c, outboxPreviewDirectives);
@@ -123,7 +123,7 @@ export function configureDemoRoutes(service: DemoService, options: Parameters<ty
 export function disableDemoRoutes(installOrigin: string, tenancy: TenancyMode = 'single'): void { configured = createDemoRoutes(placeholder, { installOrigin, tenancy, enabled: false }); }
 // Stable registrations delegate to the configured runtime; outside demo mode only discovery succeeds.
 const disabled = async () => { throw new AppError('not_found', 'Not found'); };
-const placeholder: DemoService = { create: disabled, status: disabled, login: disabled, expire: async () => {} };
+const placeholder: DemoService = { create: disabled, status: disabled, live: disabled, login: disabled, expire: async () => {}, setJoinReadiness() {} };
 export const routes: readonly RouteRegistration[] = createDemoRoutes(placeholder, { installOrigin: '', enabled: false }).map((entry, index) => ({
   ...entry, mount(app, authorize) {
     if (configured) configured[index]!.mount(app, authorize);

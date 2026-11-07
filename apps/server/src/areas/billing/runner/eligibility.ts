@@ -63,6 +63,13 @@ export async function retryDeadlines(tx: Transaction, gym: GymSettings, invoiceI
   const retryDays = billingRulesSchema.shape.retryDays.parse(saved === undefined ? [3, 7] : saved);
   return retryDays.map(day => retryAt(firstDate, day, gym.timezone));
 }
+/** The first unused retry window; an abandoned create never consumes a window. Pending outcomes need reconciliation. */
+export async function nextRetryDeadline(tx: Transaction, gym: GymSettings, invoiceId: string) {
+  const attempts = await tx.select().from(paymentAttempts).where(eq(paymentAttempts.invoiceId, invoiceId));
+  if (attempts.some(row => row.status === 'pending')) return undefined;
+  return (await retryDeadlines(tx, gym, invoiceId)).find(date =>
+    !attempts.some(row => row.createdAt >= date && !abandonedAttempt(row)));
+}
 /** Retries run at 09:00 gym time, `days` after the local `date`; a 09:00 lost to a DST gap moves to the next valid time. */
 export function retryAt(date: string, days: number, timezone: string) {
   return zonedInstant(addDays(date, days), '09:00', timezone, { gap: 'shift' })!;

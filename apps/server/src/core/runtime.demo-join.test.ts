@@ -43,3 +43,18 @@ it('names the test card on the join page steps that lead to payment, through the
   expect(confirming.status).toBe(200);
   expect(confirming.body).not.toContain('4242');
 });
+
+it('advertises joining from the join page\'s own readiness, through the runtime', async () => {
+  await app.restart(demoStripeEnv);
+  const sandbox = app.sandbox;
+  const setBilling = (billingEnabled: boolean) => database.forGym(sandbox.gymId, tx => tx.update(gyms).set({ billingEnabled }).where(eq(gyms.id, sandbox.gymId)));
+  const join = async () => {
+    const response = await app.runtime.app.request(`${sandbox.origin}/api/demo`, { headers: app.headers(sandbox) });
+    expect(response.status).toBe(200);
+    return ((await response.json()) as { data: { join?: boolean } }).data.join;
+  };
+  await setBilling(true);
+  expect(await join()).toBe(true);
+  await setBilling(false);
+  expect(await join()).toBe(false);
+});

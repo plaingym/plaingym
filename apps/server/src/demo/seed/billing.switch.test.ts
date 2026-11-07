@@ -9,19 +9,22 @@ import * as goLive from '../../areas/settings/go-live.js';
 import { setLogSink } from '../../core/log.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+function failRestore() {
+  const create = goLive.createGoLiveService;
+  return vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
+    const service = create(options);
+    return { ...service, async update(context, input) {
+      if (input.billingEnabled === false) throw Object.assign(new Error('Switch unavailable'), { code: 'RESTORE_DOWN' });
+      return service.update(context, input);
+    } };
+  });
+}
 
 describe('demo billing seed and the billing switch', { timeout: 90_000 }, () => {
   it('logs a failing switch restore and preserves the original seed error', async () => {
     const f = await fixture(db), original = Object.assign(new Error('Card unavailable'), { code: 'CARD_DOWN' });
     f.gateway.seedCard.mockRejectedValue(original);
-    const create = goLive.createGoLiveService;
-    const spy = vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
-      const service = create(options);
-      return { ...service, async update(context, input) {
-        if (input.billingEnabled === false) throw Object.assign(new Error('Switch unavailable'), { code: 'RESTORE_DOWN' });
-        return service.update(context, input);
-      } };
-    });
+    const spy = failRestore();
     const logs: string[] = [], previous = setLogSink(line => logs.push(line));
     try { await expect(f.seed.run(f.context)).rejects.toBe(original); }
     finally { setLogSink(previous); spy.mockRestore(); }
@@ -32,14 +35,7 @@ describe('demo billing seed and the billing switch', { timeout: 90_000 }, () => 
   });
 
   it('reports a restore failure when the seed itself succeeded', async () => {
-    const f = await fixture(db), create = goLive.createGoLiveService;
-    const spy = vi.spyOn(goLive, 'createGoLiveService').mockImplementation(options => {
-      const service = create(options);
-      return { ...service, async update(context, input) {
-        if (input.billingEnabled === false) throw new Error('Switch unavailable');
-        return service.update(context, input);
-      } };
-    });
+    const f = await fixture(db), spy = failRestore();
     try { await expect(f.seed.run(f.context)).rejects.toThrow('Switch unavailable'); }
     finally { spy.mockRestore(); }
     expect((await snapshot(db, f.gymId)).audit.some(row => row.action === 'billing.seed.completed')).toBe(false);

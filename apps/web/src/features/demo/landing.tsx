@@ -29,11 +29,11 @@ function SandboxLanding() {
   const { login, pending } = useDemoLogin(), join = useDemoJoin(), members = useDemoMenu().data?.members ?? [];
   return <main id="main-content" className="flex-1 p-4 sm:p-6">
     <Page className="max-w-4xl">
-      <PageHeader title={t('demo/landing:title')} description={t('demo/landing:intro')} />
+      <PageHeader title={t('demo/landing:title')} description={t(join ? 'demo/landing:intro' : 'demo/landing:introWithoutJoin')} />
       <PageSection title={t('demo/landing:rolesTitle')}>
         <div className="grid gap-4 md:grid-cols-3">{roles.map((role) => <Card key={role} className="flex flex-col gap-3 p-4 sm:p-6">
           <h3 className="text-lg font-semibold">{t(`demo/demo:${role}Label`)}</h3>
-          <p className="flex-1">{t(role === 'student' ? 'demo/landing:studentHelp' : `demo/demo:${role}Help`)}</p>
+          <p className="flex-1">{t(role === 'student' ? (join ? 'demo/landing:studentHelp' : 'demo/landing:studentHelpWithoutJoin') : `demo/demo:${role}Help`)}</p>
           <Button type="button" variant="outline" className="w-full" disabled={pending} onClick={() => { void login(role); }}>{t(`demo/demo:${role}`)}</Button>
         </Card>)}</div>
         {members.length > 0 && <Card className="space-y-3 p-4 sm:p-6">

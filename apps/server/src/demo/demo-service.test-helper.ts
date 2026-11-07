@@ -9,6 +9,8 @@ import { authConfig } from '../infra/auth/config.js';
 import { createAccountService } from '../infra/auth/accounts.js';
 import { createAuthService } from '../infra/auth/service.js';
 import { createGymDeleteService } from '../areas/settings/gym-delete.js';
+import { createWaiversService } from '../areas/waivers/waivers.js';
+import { createJoinService } from '../public/pages/join.service.js';
 import { demoBootCheck } from './config.js';
 import { createDemoPayments } from './payments.js';
 import { createDemoService } from './service.js';
@@ -67,5 +69,11 @@ export function demoServiceFixture(db: TestDatabase, options: {
   const removeUploads = vi.fn(async (_gymId: string) => {});
   const deletion = createGymDeleteService({ clock, scope, system: db.forSystem, removeUploads });
   const service = createDemoService({ config, key: parseEncryptionKey(env.APP_ENCRYPTION_KEY), clock, scope, system: db.forSystem, identities, seed, deletion });
-  return { service, seed, clock, config, payments, provider, gateways, log, deletion, removeUploads, authentication };
+  const unused = async () => { throw new Error('Readiness must not mutate join data'); };
+  const join = createJoinService({ scope, clock,
+    waivers: createWaiversService({ scope, clock, uploadsFor: unused }),
+    paymentsConfigured: async gymId => Boolean(await payments.paymentsFor(gymId)),
+    checkout: { start: unused }, invitations: { accept: unused, passwordRequired: unused }, accounts: { provisionUser: unused } });
+  service.setJoinReadiness(join);
+  return { service, seed, clock, config, payments, provider, gateways, log, deletion, removeUploads, authentication, join };
 }
