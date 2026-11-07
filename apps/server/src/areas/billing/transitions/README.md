@@ -121,16 +121,21 @@ matches webhook rules (reject a different dispute, preserve won/lost, audit
 An additional card payment reserves its full duplicate refund, tagged in the same
 transaction, and queues a staff notice. The worker reconciles existing refunds before
 calling Payments.refund, using one stable idempotency key and the PaymentIntent ID
-expected by that interface. A lost response is recovered from provider changes: a
-tagged reservation takes only the refund that names its row, and a reservation from
-before `refunds.tagged_at` keeps taking the payment's single refund and is sent with
-no reservation ID, as it was. It never retries
-a create outside a conservative 23-hour idempotency window; ambiguous, missing
-or mismatched provider outcomes remain errors for staff resolution. A failed
+expected by that interface. A lost response for a tagged reservation is recovered
+from `Payments.listRefunds(paymentIntentId)`, taking only the refund that names its
+row. A reservation from before `refunds.tagged_at` keeps taking the payment's single refund and is sent with
+no reservation ID, as it was, and still scans provider changes. It never retries
+a create outside a conservative 23-hour idempotency window. Past it, a tagged
+reservation uses the staff refund settlement rule: record the refund naming the
+row, or release the row when none matches. The effect then completes without
+sending a new refund. A refund that names the row but has other money counts as
+external past the window, as it does for the webhook, so the row is released; inside
+the window it stops the effect. Ambiguous outcomes remain errors for staff resolution;
+untagged rows retain their existing reconciliation behavior. A failed
 automatic refund is recorded as failed, which queues the failed-refund staff
 notice below, and the effect completes. A reservation released with no processor
-refund (a dashboard refund left it no room, or a staff request settled it past the
-window) also ends the effect, and queues a `notice: 'duplicate_released'` staff
+refund (a dashboard refund left it no room, or the worker, hourly job or a staff
+request settled it past the window) also ends the effect, and queues a `notice: 'duplicate_released'` staff
 notice. Its job runs 15 minutes later, so the amount counts the refund that caused
 the release, and it names what the payment's succeeded refunds leave unrefunded.
 A pending refund doesn't count, because it can still be canceled; if nothing is

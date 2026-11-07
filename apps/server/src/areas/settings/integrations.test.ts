@@ -20,6 +20,7 @@ import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
 import { createInvoiceTransitions } from '../billing/transitions/index.js';
+import { createLapsedRefundJobs } from '../billing/payments.jobs.js';
 import type { StripeConfig } from '../setup/stripe-step.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
@@ -279,7 +280,11 @@ describe('Settings → Payments: test to live', () => {
     // A paid invoice keeps its completed session's ID as history. Its open dispute is in the test account.
     const paid = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 2, checkoutSessionId: 'cs_completed',
       disputeId: 'dp_test', disputeStatus: 'needs_response' });
-    const cardPayment = await factory('payments', gymC, { invoiceId: paid.id, method: 'card', paymentIntentId: 'pi_testpaid', chargeId: 'ch_testpaid' });
+    const paidIntent = await test.request({ method: 'POST', path: '/v1/payment_intents', params: { amount: paid.amountCents,
+      currency: paid.currency.toLowerCase(), customer: customer.id, payment_method: 'pm_4242', metadata: { gym_id: gymC, invoice_id: paid.id } } });
+    const paidOutcome = await provider.confirmCharge(String(paidIntent.id), { idempotencyKey: 'paid-test:confirm' });
+    if (paidOutcome.status !== 'succeeded') throw new Error('Test payment did not succeed');
+    const cardPayment = await factory('payments', gymC, { invoiceId: paid.id, method: 'card', paymentIntentId: String(paidIntent.id), chargeId: paidOutcome.latestChargeId });
     const cash = await factory('payments', gymC, { invoiceId: paid.id, method: 'cash', reference: 'Receipt 12', amountCents: 100 });
     // A dispute on an invoice no test card payment paid stays open.
     const cashOnly = await factory('invoices', gymC, { householdId: payer.id, status: 'paid', number: 9, disputeId: 'dp_cash', disputeStatus: 'needs_response' });
@@ -316,7 +321,11 @@ describe('Settings → Payments: test to live', () => {
     const stuck = { invoiceId: paid.id, paymentId: cardPayment.id, refundId: uuidv7(), amountCents: 100, currency: cardPayment.currency };
     await transitions.refund(system, { ...stuck, status: 'pending', tagged: true });
     expect((await saveTo(appC(), 'rk_live_gymc', { clearTestData: true })).json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
-    await transitions.refund(system, { ...stuck, status: 'failed' });
+    const settlementClock = new TestClock(new Date(clock.now().getTime() + 23 * 3600_000));
+    const [settlement] = createLapsedRefundJobs({ scope: database.forGym, clock: settlementClock, transitions, payments: async () => provider });
+    const refund = vi.spyOn(provider, 'refund');
+    await settlement!.handler({}, { jobId: uuidv7(), gymId: gymC, timezone: 'UTC', attempt: 1, clock: settlementClock });
+    expect(refund).not.toHaveBeenCalled();
 
     const switched = await saveTo(appC(), 'rk_live_gymc', { clearTestData: true });
     expect(switched.status, JSON.stringify(switched.json)).toBe(200);

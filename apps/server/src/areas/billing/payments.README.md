@@ -45,12 +45,21 @@ reservation can't take it (see the webhook handlers' README). A retry reads
 the tag from the stored row, so its request never changes; a reservation from
 before the column stays untagged and is sent without the metadata, as it was. A lost response leaves the
 reservation pending, and an explicit retry reuses that reservation's key inside
-the 23-hour window. Past it, any staff refund request on the payment settles a tagged
+the 23-hour window. Past it, the duplicate-refund worker, an hourly per-gym job,
+or a staff refund request on the payment settles a tagged
 reservation that has no processor refund, from `Payments.listRefunds`: the refund naming
 the row is recorded, and with none the row is released (`failed`), since no retry can
-reach Stripe any more. That request moves no money and answers `refund_reconciled`, so
+reach Stripe any more. A staff request that settles one moves no money and answers `refund_reconciled`, so
 staff decide again from the settled payment, and the stuck row no longer blocks the
-switch to live, go-live or a restore check. Older pending refunds, untagged or already
+switch to live, go-live or a restore check. Ambiguous matches require staff resolution:
+a staff request answers `refund_reconciliation`, and the hourly job leaves that row pending,
+settles the rest of the batch and ends failed.
+The hourly job selects up to 100 lapsed tagged reservations, oldest first, in short
+gym-scoped transactions, and calls Stripe only after those transactions commit.
+It runs in the ordinary per-gym job lane alongside the duplicate-refund worker;
+neither path sends a new refund after the window. It leaves reservations inside the
+window, untagged rows, and rows with a processor ID alone. Repeated runs are safe.
+Older pending refunds, untagged or already
 at Stripe, require reconciliation. If a webhook releases the reservation between the
 two steps of a request, nothing is sent to Stripe (`refund_released`). A pending refund
 with a null reason can resume after a crash and save the requested reason. A card
@@ -123,7 +132,12 @@ clock, jobs, paymentsFor, transitions, detachCard, runner }))`, constructed afte
 runner and sharing the payments resolver
 and invoice transitions with the webhook composition. It also supplies
 `configurePaymentDelivery({ notifications, detachCard })` before starting jobs.
-Both routes and jobs already contribute through their existing area parts.
+Register `createLapsedRefundJobs({ clock, transitions, payments })` alongside the
+runtime's other job contributions. It schedules `billing.payments.settle_lapsed`
+at minute 43 of every hour for each gym through `Jobs.schedule`. Its payments
+resolver and transitions must be the same ones used by the duplicate worker and
+staff refunds. No provider is required when the gym has no eligible reservations.
+Routes and the receipt/detach jobs already contribute through their existing area parts.
 The runtime delegates card detachment to the gym's payment adapter. Tests exercise the real area registrations
 through `createApp`, the real PostgreSQL transitions, and the receipt/detach jobs;
 the Stripe decline path also exercises synthetic Stripe API fixtures.

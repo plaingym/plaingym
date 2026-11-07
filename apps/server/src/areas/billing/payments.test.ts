@@ -19,7 +19,7 @@ import { areaContributions } from '../../core/registry-areas.js';
 import { FakePayments, type DetachOptions } from '../../infra/payments/index.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
-import { FakeJobs } from '../../infra/jobs/index.js';
+import { FakeJobs, PostgresJobs } from '../../infra/jobs/index.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { createGoLiveService } from '../settings/go-live.js';
@@ -32,7 +32,7 @@ import { createPaymentService } from './payments.js';
 import { createDisputeRefundWriter, processorRefundId } from './disputes-refunds.js';
 import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
-import { createPaymentJobs } from './payments.jobs.js';
+import { createLapsedRefundJobs, createPaymentJobs, lapsedRefundJob } from './payments.jobs.js';
 import { detachJob } from './payments.mutations.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
@@ -367,6 +367,124 @@ describe('one-off collection and payment durability', () => {
     return { payment, paid: await paymentRow(payment.id, f), refundId };
   }
   const staffRefund = { currency: 'USD', reason: 'Returned item' };
+  function scheduleLapsed(f: Fixture) {
+    createServerRegistry({ jobs: createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions,
+      payments: async gymId => { expect(gymId).toBe(f.gymId); return f.provider; } }) }).registerJobs(f.jobs, new Set());
+    expect(f.jobs.schedules.get(lapsedRefundJob)).toBe('43 * * * *');
+    return async () => {
+      await f.jobs.enqueue(lapsedRefundJob, {}, { gymId: f.gymId, timezone: 'UTC' });
+      while (await f.jobs.runNext()) { /* settle and deliver currently due jobs */ }
+    };
+  }
+  it('the scheduled job settles only lapsed tagged reservations, repeats safely and respects gym isolation', async () => {
+    const f = await fixture(), other = await fixture();
+    const { payment, refundId } = await lapsedReservation(f, 500);
+    const createReservation = async (amountCents: number, tagged: boolean, processorId?: string) => {
+      const id = uuidv7();
+      await f.options.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId: id,
+        amountCents, currency: 'USD', status: 'pending', ...(tagged ? { tagged } : {}), ...(processorId ? { processorId } : {}) });
+      return id;
+    };
+    const recent = await createReservation(500, true), unmarked = await createReservation(500, false), atStripe = await createReservation(500, true, 're_at_stripe');
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
+      .where(eq(refunds.id, atStripe)));
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
+      .where(eq(refunds.id, unmarked)));
+    const otherRow = await lapsedReservation(other);
+    const sent = vi.spyOn(f.provider, 'refund'), listed = vi.spyOn(f.provider, 'listRefunds'), otherListed = vi.spyOn(other.provider, 'listRefunds');
+    const run = scheduleLapsed(f); await run(); await run();
+    expect(sent).not.toHaveBeenCalled(); expect(listed).toHaveBeenCalledTimes(1); expect(otherListed).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: refundId, status: 'failed', processorId: null }),
+      ...[recent, unmarked, atStripe].map(id => expect.objectContaining({ id, status: 'pending' })),
+    ]));
+    expect(await refundRows(otherRow.payment.id, other)).toMatchObject([{ id: otherRow.refundId, status: 'pending' }]);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).filter(row => row.action === 'billing.refund.recorded'
+      && row.targetId === refundId && (row.after as { status?: string }).status === 'failed')).toHaveLength(1);
+  });
+  it.each([false, true])('the scheduled job clears the go-live and restore blockers with a naming refund: %s', async sent => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
+    await db.forGym(f.gymId, tx => tx.update(gyms).set({ billingEnabled: false }).where(eq(gyms.id, f.gymId)));
+    await factory('auditEvents', f.gymId, { action: 'restore.completed', targetType: 'restore', targetId: uuidv7(), occurredAt: f.clock.now() });
+    expect(await readiness(f)).toBe('needs_attention');
+    expect((await f.runner.postRestore(f.gymId, f.clock.now())).readyForOwnerReview).toBe(false);
+    const goLive = createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true });
+    await expect(goLive.update(f.context, { revision: (await goLive.checklist(f.gymId)).revision, billingEnabled: true }))
+      .rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('after 23 hours') });
+    const own = sent ? await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'lost', reservationId: refundId }) : undefined;
+    const refund = vi.spyOn(f.provider, 'refund');
+    const run = scheduleLapsed(f); await run(); await run();
+    expect(refund).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: sent ? 'succeeded' : 'failed', processorId: own?.id ?? null }]);
+    expect((await f.runner.postRestore(f.gymId, f.clock.now())).readyForOwnerReview).toBe(true);
+    expect(await readiness(f)).not.toBe('needs_attention');
+    expect(await goLive.update(f.context, { revision: (await goLive.checklist(f.gymId)).revision, billingEnabled: true }))
+      .toMatchObject({ billingEnabled: true });
+  });
+  it('the scheduled job stops for an ambiguous matching refund and sends nothing', async () => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
+    const own = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'lost', reservationId: refundId });
+    vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
+    const refund = vi.spyOn(f.provider, 'refund');
+    const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions, payments: async () => f.provider });
+    await expect(job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock })).rejects.toThrow('Ambiguous');
+    expect(refund).not.toHaveBeenCalled(); expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'pending' }]);
+  });
+  it('settles the rest of the batch when the oldest reservation is ambiguous, and still ends failed', async () => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f, 500), later = uuidv7();
+    await f.options.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId: later,
+      amountCents: 500, currency: 'USD', status: 'pending', tagged: true });
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 23 * 3600_000) })
+      .where(eq(refunds.id, later)));
+    const own = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 500, idempotencyKey: 'lost', reservationId: refundId });
+    vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
+    const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions, payments: async () => f.provider });
+    await expect(job!.handler({}, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock })).rejects.toThrow('Ambiguous');
+    expect(await refundRows(payment.id, f)).toEqual(expect.arrayContaining([expect.objectContaining({ id: refundId, status: 'pending' }),
+      expect.objectContaining({ id: later, status: 'failed', processorId: null })]));
+  });
+  it('answers a staff refund on an ambiguous reservation with a conflict and sends nothing', async () => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
+    const own = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'lost', reservationId: refundId });
+    vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
+    const refund = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['refund_reconciliation'] } });
+    expect(refund).not.toHaveBeenCalled(); expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'pending' }]);
+  });
+  it('does not need a provider for an empty scheduled run and leaves reservations pending when Stripe cannot be read', async () => {
+    const f = await fixture(), provider = vi.fn(async () => { throw new Error('Stripe unavailable'); });
+    const [job] = createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions, payments: provider });
+    const context = { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock };
+    await job!.handler({}, context); expect(provider).not.toHaveBeenCalled();
+    const { payment } = await lapsedReservation(f);
+    await expect(job!.handler({}, context)).rejects.toThrow('Stripe unavailable');
+    expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'pending' }]);
+  });
+  it('waits for an ordinary refund worker of the gym before settling, across PostgreSQL workers', async () => {
+    const f = await fixture(), { payment } = await lapsedReservation(f);
+    let started!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+    const listed = vi.spyOn(f.provider, 'listRefunds');
+    const worker = () => {
+      const queue = new PostgresJobs({ database: db, clock: f.clock });
+      createServerRegistry({ jobs: createLapsedRefundJobs({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions,
+        payments: async () => f.provider }) }).registerJobs(queue, new Set());
+      queue.handle('billing.transitions.effect', async () => { started(); await held; });
+      return queue;
+    };
+    const first = worker(), second = worker(), options = { gymId: f.gymId, timezone: 'UTC' };
+    await first.enqueue('billing.transitions.effect', {}, options);
+    const running = first.runNext();
+    try {
+      await Promise.race([entered, running.then(() => { throw new Error('Refund worker never started'); })]);
+      await second.enqueue(lapsedRefundJob, {}, options);
+      expect(await second.runNext()).toBe(false); expect(listed).not.toHaveBeenCalled();
+      expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'pending' }]);
+    } finally { release(); await running; }
+    expect(await second.runNext()).toBe(true); expect(listed).toHaveBeenCalledTimes(1);
+    expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'failed' }]);
+  });
   const readiness = async (f: Fixture) => (await createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true })
     .checklist(f.gymId)).items.find(item => item.id === 'reconciliation_complete')?.status;
   it.each([1000, 500])('releases a tagged reservation that never reached Stripe once its window has passed, for a request of %i, moving no money', async amountCents => {
@@ -443,6 +561,18 @@ describe('one-off collection and payment durability', () => {
       .rejects.toMatchObject({ code: 'conflict', details: { reason: ['refund_released'] } });
     expect(refund).not.toHaveBeenCalled();
     expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'failed', processorId: null, reason: null }]);
+  });
+  it('sends nothing when a staff retry crosses the 23-hour window after reading its reservation', async () => {
+    const f = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: f.clock.now() }).where(eq(refunds.id, refundId)));
+    const transition = f.options.transitions.refund.bind(f.options.transitions);
+    vi.spyOn(f.options.transitions, 'refund').mockImplementationOnce(async (context, request) => {
+      const result = await transition(context, request); f.clock.advance(23 * 3600_000); return result;
+    });
+    const sent = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ details: { reason: ['refund_reconciliation'] } });
+    expect(sent).not.toHaveBeenCalled(); expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'pending' }]);
   });
   it('refuses to refund a card payment a switch to live marked as test, without calling Stripe', async () => {
     const f = await fixture(); await f.service.charge(f.context, f.invoice.id);

@@ -68,7 +68,7 @@
   "link": "Pay link",
   "receipt": "Resend receipt",
   "revoke": "Remove saved card",
-  "refundHelp": "The refund goes back to the original card. Pending refunds reserve the amount until Stripe resolves them.",
+  "refundHelp": "The refund goes back to the original card. Pending refunds reserve the amount. A reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still pending after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.",
   "manualRefundHelp": "Return the cash or check to the payer before confirming this manual refund.",
   "chargeHelp": "Confirm this charge to the household’s default saved card.",
   "removeHelp": "Remove this card from the household and detach it at Stripe. Future payments will need another card.",

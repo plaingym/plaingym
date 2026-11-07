@@ -48,7 +48,7 @@
   "check.webhook_ready.needs_attention": "Wait for a processed payment notification and resolve any waiting or failed events on the health page.",
   "check.reconciliation_complete.not_applicable": "Checked once payments are configured.",
   "check.reconciliation_complete.ready": "No unresolved payment attempts or refunds remain, and any restored payments have been checked.",
-  "check.reconciliation_complete.needs_attention": "Resolve pending payment attempts or refunds. After a restore, complete payment reconciliation before resuming billing.",
+  "check.reconciliation_complete.needs_attention": "Resolve pending payment attempts or refunds. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation. After a restore, complete payment reconciliation before resuming billing.",
   "item.past_due_dates": "Past billing dates",
   "check.past_due_dates.ready": "No active membership has a next billing date before today in the gym's timezone.",
   "check.past_due_dates.needs_attention": "Review the memberships below before turning billing on.",

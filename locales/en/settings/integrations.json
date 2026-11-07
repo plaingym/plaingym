@@ -67,7 +67,7 @@
   "payments.accountLocked": "This key is for another Stripe account, so it wasn’t saved. The gym’s Stripe customers, saved cards and card payments were made in the current account, and another account can’t charge or refund them. Use a key from the current account.",
   "payments.modeLocked": "Customers, cards and payments exist in the current mode, so the key can’t switch between test and live.",
   "payments.modeLockedLive": "Live Stripe customers, cards or payments exist, so a test key can’t replace the live one.",
-  "payments.inProgress": "A card payment or refund is still being processed. Try again in a few minutes.",
+  "payments.inProgress": "A card payment or refund is still being processed. A refund reservation that never reached Stripe clears automatically after 23 hours, within the next hourly check. If still blocked after 24 hours, ask an owner or admin to check Stripe and payment reconciliation.",
   "payments.lockedTest": "Members have test-mode Stripe customers, cards or payments. A new test key must be for the same Stripe account. A live key can replace it once you confirm clearing the test data.",
   "payments.importedOnly": "Households have Stripe customer IDs from an import, and nothing else ties the gym to a Stripe account yet, so a key from any account is accepted. With a live key, customers the account can’t read get new ones the first time they pay or save a card. A test key can’t read live customers, so with one, those households’ payment and card links aren’t available.",
   "payments.switchTitle": "Switch to live mode",

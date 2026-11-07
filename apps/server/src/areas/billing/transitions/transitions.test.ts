@@ -323,6 +323,64 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(sent).toHaveBeenCalledTimes(1);
     expect((await f.read()).refunds).toMatchObject([{ status: 'succeeded', processorId: lost!.id, taggedAt: null }]);
   });
+  it.each([false, true])('settles a lapsed tagged duplicate with a naming refund: %s, without sending money', async sent => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    const [reservation] = (await f.read()).refunds;
+    const own = sent ? await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 10000,
+      idempotencyKey: `invoice:${f.invoice.id}:duplicate:${f.success.paymentId}`, reservationId: reservation!.id }) : undefined;
+    const refund = vi.spyOn(f.provider, 'refund'), listed = vi.spyOn(f.provider, 'listRefunds');
+    const feed = vi.spyOn(f.provider, 'listChangesSince');
+    f.clock.advance(23 * 3600_000);
+    await f.drain(); await f.drain();
+    expect(refund).not.toHaveBeenCalled(); expect(feed).not.toHaveBeenCalled();
+    expect(listed).toHaveBeenCalledExactlyOnceWith(f.success.paymentIntentId);
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation!.id, status: sent ? 'succeeded' : 'failed', processorId: own?.id ?? null }]);
+    const jobs = f.jobs.jobs.filter(job => job.name === 'billing.transitions.effect');
+    expect(jobs.every(job => job.status === 'completed' || job.runAt > f.clock.now())).toBe(true);
+  });
+  it('uses the payment refund list for a tagged duplicate even when the change feed is unavailable', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    const feed = vi.spyOn(f.provider, 'listChangesSince').mockRejectedValue(new Error('feed unavailable'));
+    const listed = vi.spyOn(f.provider, 'listRefunds');
+    await f.drain();
+    expect(feed).not.toHaveBeenCalled(); expect(listed).toHaveBeenCalledExactlyOnceWith(f.success.paymentIntentId);
+    expect((await f.read()).refunds[0]!.status).toBe('succeeded');
+  });
+  it('rechecks the retry window after listing refunds before sending a duplicate refund', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    const list = f.provider.listRefunds.bind(f.provider);
+    vi.spyOn(f.provider, 'listRefunds').mockImplementation(async id => { f.clock.advance(23 * 3600_000); return list(id); });
+    const sent = vi.spyOn(f.provider, 'refund');
+    await f.drain();
+    expect(sent).not.toHaveBeenCalled(); expect((await f.read()).refunds[0]!.status).toBe('failed');
+  });
+  it('leaves an ambiguous lapsed duplicate for staff and sends no refund', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    const [reservation] = (await f.read()).refunds;
+    const own = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 10000, idempotencyKey: 'lost', reservationId: reservation!.id });
+    vi.spyOn(f.provider, 'listRefunds').mockResolvedValue([own, { ...own, id: 're_ambiguous' }]);
+    const sent = vi.spyOn(f.provider, 'refund'); f.clock.advance(23 * 3600_000);
+    const work = (await f.read()).audits.find(row => row.action === effectCreated && (row.after as { kind?: string }).kind === 'refund_duplicate')!;
+    await expect(f.effects.run(work.targetId, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock }))
+      .rejects.toThrow('Ambiguous');
+    expect(sent).not.toHaveBeenCalled(); expect((await f.read()).refunds[0]!.status).toBe('pending');
+  });
+  it('keeps an untagged lapsed duplicate pending for reconciliation, without sending a refund', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ taggedAt: null }));
+    const sent = vi.spyOn(f.provider, 'refund'), listed = vi.spyOn(f.provider, 'listRefunds'), feed = vi.spyOn(f.provider, 'listChangesSince');
+    f.clock.advance(23 * 3600_000);
+    const work = (await f.read()).audits.find(row => row.action === effectCreated && (row.after as { kind?: string }).kind === 'refund_duplicate')!;
+    await expect(f.effects.run(work.targetId, { jobId: uuidv7(), gymId: f.gymId, timezone: 'UTC', attempt: 1, clock: f.clock }))
+      .rejects.toThrow('Refund idempotency window elapsed');
+    expect(sent).not.toHaveBeenCalled(); expect(listed).not.toHaveBeenCalled(); expect(feed).toHaveBeenCalled();
+    expect((await f.read()).refunds[0]!.status).toBe('pending');
+  });
   it('recovers a lost duplicate-refund response after restart without issuing a second refund', async () => {
     const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
     await f.transitions.cardSucceeded(f.context, f.success);

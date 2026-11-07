@@ -12,6 +12,7 @@ import type { Jobs, JobContext } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
+import { pastRefundWindow, settleLapsed } from '../payments.mutations.js';
 import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal,
   type TransitionEffect } from './store.js';
 
@@ -133,29 +134,40 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           // untagged one, from before the marker, can only match by its payment.
           const tag = reservation.taggedAt ? { reservationId: reservation.id } : {};
           const matches = new Map<string, Refund>();
-          let cursor: string | undefined;
-          do {
-            const page = await provider.listChangesSince(reservation.createdAt, cursor ? { cursor } : {});
-            for (const change of page.changes) if (change.kind === 'refund'
-              && [payment.chargeId, payment.paymentIntentId].includes(change.object.chargeId)
-              && (!tag.reservationId || change.object.reservationId === tag.reservationId)) matches.set(change.object.id, change.object);
-            cursor = page.nextCursor ?? undefined;
-          } while (cursor !== undefined);
+          let listed: readonly Refund[] | undefined;
+          if (reservation.taggedAt) {
+            listed = await provider.listRefunds(payment.paymentIntentId);
+            for (const refund of listed) if (refund.reservationId === reservation.id) matches.set(refund.id, refund);
+          } else {
+            let cursor: string | undefined;
+            do {
+              const page = await provider.listChangesSince(reservation.createdAt, cursor ? { cursor } : {});
+              for (const change of page.changes) if (change.kind === 'refund'
+                && [payment.chargeId, payment.paymentIntentId].includes(change.object.chargeId)) matches.set(change.object.id, change.object);
+              cursor = page.nextCursor ?? undefined;
+            } while (cursor !== undefined);
+          }
           if (matches.size > 1) throw new Error('Ambiguous duplicate refund; staff resolution required');
-          refund = [...matches.values()][0];
-          if (!refund) {
-            if (clock.now().getTime() - reservation.createdAt.getTime() >= 23 * 60 * 60 * 1000)
-              throw new Error('Refund idempotency window elapsed; reconciliation required');
-            refund = await provider.refund({ chargeId: payment.paymentIntentId, amount: payment.amountCents,
-              idempotencyKey: `invoice:${invoice.id}:duplicate:${payment.id}`, ...tag });
+          if (reservation.taggedAt && pastRefundWindow(reservation, clock)) {
+            await settleLapsed({ clock, transitions: options.transitions }, system(gymId), provider, payment, [reservation], listed);
+          } else {
+            refund = [...matches.values()][0];
+            if (!refund) {
+              if (pastRefundWindow(reservation, clock))
+                throw new Error('Refund idempotency window elapsed; reconciliation required');
+              refund = await provider.refund({ chargeId: payment.paymentIntentId, amount: payment.amountCents,
+                idempotencyKey: `invoice:${invoice.id}:duplicate:${payment.id}`, ...tag });
+            }
           }
         }
-        if (refund.amount !== payment.amountCents || refund.currency.toUpperCase() !== payment.currency
-          || ![payment.paymentIntentId, payment.chargeId].includes(refund.chargeId) || refund.metadata.gymId !== gymId)
-          throw new Error('Refund identity or money mismatch');
-        await options.transitions.refund(system(gymId), { invoiceId: invoice.id, paymentId: payment.id,
-          refundId: reservation.id, processorId: refund.id, amountCents: refund.amount,
-          currency: payment.currency, status: refund.status });
+        if (refund) {
+          if (refund.amount !== payment.amountCents || refund.currency.toUpperCase() !== payment.currency
+            || ![payment.paymentIntentId, payment.chargeId].includes(refund.chargeId) || refund.metadata.gymId !== gymId)
+            throw new Error('Refund identity or money mismatch');
+          await options.transitions.refund(system(gymId), { invoiceId: invoice.id, paymentId: payment.id,
+            refundId: reservation.id, processorId: refund.id, amountCents: refund.amount,
+            currency: payment.currency, status: refund.status });
+        }
       }
     }
     await scope(gymId, async tx => {

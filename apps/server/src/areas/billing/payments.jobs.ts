@@ -1,13 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq } from 'drizzle-orm';
-import { forGym, invoices, paymentMethods, payments } from '@plaingym/db';
+import { and, asc, eq, isNotNull, isNull, lte } from 'drizzle-orm';
+import { forGym, invoices, paymentMethods, payments, refunds } from '@plaingym/db';
+import type { Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
 import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { TransitionNotifications } from './transitions/notifications.js';
 import { snapshot } from './transitions/store.js';
-import type { DetachOptions } from '../../infra/payments/index.js';
-import { detachJob, receiptJob } from './payments.mutations.js';
+import type { DetachOptions, Payments } from '../../infra/payments/index.js';
+import type { InvoiceTransitions } from '../../core/interfaces/invoice-transitions.js';
+import { detachJob, receiptJob, refundRetryWindowMs, settleLapsed } from './payments.mutations.js';
+
+export const lapsedRefundJob = 'billing.payments.settle_lapsed';
+/** The ordinary per-gym job lane serializes this sweep with duplicate-refund workers. No transaction holds a provider call. */
+export function createLapsedRefundJobs(options: { scope?: typeof forGym; clock: Clock; transitions: InvoiceTransitions;
+  payments(gymId: string): Promise<Payments> }): readonly JobRegistration[] {
+  const scope = options.scope ?? forGym;
+  return [{ id: lapsedRefundJob, cron: '43 * * * *', async handler(_payload, context) {
+    const rows = await scope(context.gymId, tx => tx.select({ reservation: refunds, payment: payments }).from(refunds)
+      .innerJoin(payments, eq(payments.id, refunds.paymentId)).where(and(eq(refunds.status, 'pending'), isNotNull(refunds.taggedAt),
+        isNull(refunds.processorId), lte(refunds.createdAt, new Date(options.clock.now().getTime() - refundRetryWindowMs)),
+        eq(payments.method, 'card'))).orderBy(asc(refunds.createdAt), asc(refunds.id)).limit(100));
+    // Resolve the provider only when there is work; a gym without Stripe has nothing to settle.
+    if (!rows.length) return;
+    const provider = await options.payments(context.gymId);
+    // A row that can't settle stays pending for staff. The oldest come first, so it must not hold back the rows behind it,
+    // and the run still ends failed.
+    const failures: unknown[] = [];
+    for (const { reservation, payment } of rows) {
+      await settleLapsed(options, { gymId: context.gymId, actor: { kind: 'system' } }, provider, payment, [reservation])
+        .catch((error: unknown) => { failures.push(error); });
+    }
+    if (failures.length) throw failures[0];
+  } }];
+}
 
 interface DeliveryOptions {
   scope?: typeof forGym;

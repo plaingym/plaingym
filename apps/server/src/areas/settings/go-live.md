@@ -24,6 +24,11 @@ Webhook readiness uses `WebhookHealthQuery`, implemented by the real inbox by
 default: a processed event and no pending/failed events are ready. It never reads
 webhook payloads. Reconciliation flags pending payment attempts/refunds and any
 restore without a successful latest check reporting zero unresolved objects.
+Tagged refund reservations without a processor ID settle automatically once they
+are 23 hours old, by the duplicate worker or the next hourly settlement job. Their
+settlement removes that pending-refund blocker; untagged rows and refunds already
+at Stripe still require reconciliation. If a reservation still blocks after 24
+hours, the checklist directs an owner or admin to check Stripe and reconciliation.
 Each check belongs to a specific restore receipt; each result belongs to that check.
 An earlier restore's successful check cannot clear a newer restore, even when the
 injected clock has the same instant for both. A delayed earlier check cannot replace
