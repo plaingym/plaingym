@@ -364,16 +364,19 @@ cd /opt/plaingym
 sudo ./rotate-key.sh
 ```
 
-The app stops for a few seconds while every stored secret is re-encrypted with a
-new key, then starts again with it, and `.env` then holds the new key. Keep a copy
+The app stops while every stored secret is re-encrypted with a new key (up to 30
+seconds are spent waiting for open database sessions to close first), then starts again with it, and `.env` then holds the new key. Keep a copy
 of the new `.env` somewhere safe and delete old copies. Backups taken from now on
 carry the new key; older backups still restore, with the key they carry. A file
 download link or a join a visitor is in the middle of stops working; starting it
 again works.
 
 If it stops partway (a lost connection, a reboot), run it again: it finishes the
-same rotation. If it says a stored secret opens with neither key, nothing was
-changed; remove that setting in the admin and enter it again, then rerun.
+same rotation, with the same keys. If it says a stored secret opens with neither
+key before it changed anything, the app is started again with the current key:
+remove that setting in the admin and enter it again, then rerun. If it stopped
+after changing stored secrets, the app stays stopped, so the admin is not available
+until a rerun succeeds.
 
 A new key protects what is stored from now on. If a copy of the database may have
 left together with the old key, also replace the credentials themselves: a new

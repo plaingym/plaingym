@@ -69,13 +69,20 @@ therefore add a table or a column, but tightening a table the previous minor dec
 `scripts/release/version.mjs` reads Git before building. A clean release tag yields
 `1.2.0`; fourteen commits later it yields `1.2.0+14.gabc1234`. Local changes append
 `.dirty`. With no reachable release tag, including a clone without tags, it yields
-`<package version>+0.g<sha>`. CI checkouts calculating this identity fetch full history
-and tags. Server and browser bundles embed the same version and full commit.
+`<package version>+0.g<sha>`. Outside a Git repository, such as a source archive, it
+yields `<package version>+unknown` with the commit `unknown`; setting only one of
+`APP_BUILD_VERSION` and `APP_BUILD_REVISION` is an error. CI checkouts calculating
+this identity fetch full history and tags. Server and browser bundles embed the same
+version and full commit. An empty `APP_VERSION` or `APP_REVISION` at runtime falls
+back to the embedded value.
 
 `/healthz` returns `status`, `version`, and `commit` without caching. The health page
 and Settings → Updates show the version and short commit; OpenAPI's `info.version`
 contains the same version. The shared browser navigation guard covers admin, portal,
-and kiosk: a changed version or commit reloads the page at the next navigation.
+and kiosk: it checks at most once a minute, waits at most a second, and on a changed
+version or commit loads the destination of the navigation instead of the page being
+left. Preloads and the development server don't check, and a failed check leaves
+navigation alone.
 The portal service worker does not cache application pages or API responses.
 
 Versions with `+` build metadata are development builds. The release checker and
