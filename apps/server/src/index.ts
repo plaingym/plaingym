@@ -4,6 +4,7 @@ import { serve } from '@hono/node-server';
 import { regularFontUrl } from './assets.js';
 import { runCommandLine, startRuntime } from './core/runtime.js';
 import { logInfo } from './core/log.js';
+import { runningVersion } from './areas/health/version.js';
 import { shutdown } from './shutdown.js';
 import { configureWebsite, websiteModule } from './modules/website/index.js';
 
@@ -21,7 +22,7 @@ if (args.length) {
     hostname: process.env.HOST ?? '127.0.0.1',
     port: Number(process.env.PORT ?? 3000),
   }, (info) => {
-    logInfo('server.listening', { host: info.address, port: info.port });
+    logInfo('server.listening', { host: info.address, port: info.port, ...runningVersion() });
   });
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, shutdown({ server, runtime }));
 }

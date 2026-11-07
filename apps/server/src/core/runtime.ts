@@ -15,7 +15,7 @@ import { registerIntakeRateLimits } from './rate-limit-store.js';
 import { areaContributions } from './registry-areas.js';
 import { createServerRegistry, type ModuleDefinition } from './registry.js';
 import { parseEncryptionKey } from './secrets.js';
-import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, singleGymId, tenancyMode } from './tenancy.js';
+import { createTenantResolver, defaultHostname, listGyms, normalizeHostname, reportHostnameSnapshot, singleGymId, tenancyMode } from './tenancy.js';
 import { authConfig, passwordLogin } from '../infra/auth/config.js';
 import { createAuthService } from '../infra/auth/service.js';
 import { createGoogleAuthExtension, googleFromEnvironment } from '../infra/auth/google.js';
@@ -382,8 +382,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     catch (error) { logError('runtime.csp.image_origin_skipped', {}, error); return []; }
   })();
   const kioskSession = createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session });
+  // One map, passed to the app and refilled in place: the CSP report route reads it live and never queries the database.
+  const reportHostnames = new Map<string, string>();
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), tenancy: mode, authorize: createPortalAuthorization(),
+    ...(mode === 'multi' ? { cspReportHostnames: reportHostnames } : {}),
     // Signed-link routes resolve their own bearer after normal session loading.
     session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
     origin: originFor, ...(install ? { installOrigin: install } : {}), strictTransportSecurity: env.NODE_ENV === 'production',
@@ -433,6 +436,26 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const sweepTimer = setInterval(() => { sweep().catch(report); }, 60_000);
   sweepTimer.unref();
   await sweep().catch(report);
+  // The report route's hostname map (multi mode): read under a restore-gate lease, never from a report request, one
+  // refresh at a time, then swapped in place with no await between clearing and refilling.
+  let hostnameTimer: NodeJS.Timeout | undefined, hostnameRefresh: Promise<void> | undefined, hostnamesStopped = false;
+  if (mode === 'multi') {
+    const refresh = async () => {
+      if (hostnamesStopped) return;
+      if (gate && await gate.isClosed()) return;
+      const snapshot = await (gate ? gate.activity(() => reportHostnameSnapshot()) : reportHostnameSnapshot());
+      if (hostnamesStopped) return;
+      reportHostnames.clear();
+      for (const [hostname, gymId] of snapshot) reportHostnames.set(hostname, gymId);
+    };
+    const run = () => {
+      hostnameRefresh ??= refresh().catch(report).finally(() => { hostnameRefresh = undefined; });
+      return hostnameRefresh;
+    };
+    hostnameTimer = setInterval(() => { void run(); }, 60_000);
+    hostnameTimer.unref();
+    await run();
+  }
   const worker = startJobsWorker(queue, { onError: report,
     ...(gate ? { paused: () => gate.isClosed(), around: (execute: () => Promise<void>) => gate.activity(execute) } : {}) });
 
@@ -453,7 +476,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     if (backupTimer) clearInterval(backupTimer);
     if (demoTimer) clearInterval(demoTimer);
     clearInterval(sweepTimer);
-    try { await worker.stop(); await endpointCheck; } finally { intakeLimits.reset(); uploads.close(); await closeDatabase(); }
+    hostnamesStopped = true;
+    if (hostnameTimer) clearInterval(hostnameTimer);
+    try { await worker.stop(); await endpointCheck; await hostnameRefresh; } finally { intakeLimits.reset(); uploads.close(); await closeDatabase(); }
   } };
 }
 

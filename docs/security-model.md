@@ -247,9 +247,10 @@ Details: `apps/server/src/infra/auth/README.md`.
   Checkout needs no exception in `form-action`. Every policy, the default one and
   each route's own, reports its violations to `/csp-report`, where they are logged
   without IDs, tokens or query strings, within per-client, per-gym and install-wide
-  budgets held in memory, so a report costs no database read. The app accepts a
-  hostname-to-gym snapshot: aliases share a gym budget and unknown hostnames share
-  the install budget. Without a snapshot all hosts share the install budget.
+  budgets held in memory, so a report costs no database read. In multi mode the
+  runtime loads a hostname-to-gym map at start and refreshes it every minute,
+  outside report requests: aliases share a gym budget and unknown hostnames share
+  the install budget. A domain added or removed takes effect within a minute.
   In production only the gym's default hostname from the resolver gets
   `Strict-Transport-Security` in multi mode; aliases do not. Single mode uses the
   configured HTTPS install origin (one year, no `includeSubDomains`).

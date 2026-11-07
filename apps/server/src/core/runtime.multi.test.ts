@@ -41,7 +41,24 @@ it('builds no restore gate in multi mode and answers setup restore as unavailabl
     SETUP_TOKEN: setupToken, SMTP_HOST: 'smtp.example.test', SMTP_FROM: 'gym@example.test', BACKUP_STAGING_DIR: staging,
     UPLOADS_S3_BUCKET: 'multi-uploads', UPLOADS_S3_ENDPOINT: 'https://storage.example.test',
     UPLOADS_S3_ACCESS_KEY_ID: 'test', UPLOADS_S3_SECRET_ACCESS_KEY: 'test' };
+  // The runtime's minute timers: the hostname refresh is the last one it starts.
+  const minuteTimers: Array<() => void> = [], realSetInterval = globalThis.setInterval;
+  vi.spyOn(globalThis, 'setInterval').mockImplementation(((handler: () => void, delay?: number, ...rest: unknown[]) => {
+    if (delay === 60_000) minuteTimers.push(handler);
+    return (realSetInterval as (...args: unknown[]) => NodeJS.Timeout)(handler, delay, ...rest);
+  }) as unknown as typeof setInterval);
   runtime = await startRuntime(env);
+  vi.mocked(globalThis.setInterval).mockRestore();
+
+  // The CSP report route's hostname map is filled before serving and refreshed in place on a timer, under the same object.
+  const hostnames = vi.mocked(createApp).mock.calls.at(-1)![0].cspReportHostnames as Map<string, string>;
+  expect(hostnames.get('gym.multi.example.test')).toBe(gymId);
+  const laterGym = uuidv7();
+  await factory('gyms', laterGym); await factory('gymDomains', laterGym, { hostname: 'later.multi.example.test' });
+  expect(hostnames.has('later.multi.example.test')).toBe(false);
+  minuteTimers.at(-1)!();
+  await vi.waitFor(() => expect(hostnames.get('later.multi.example.test')).toBe(laterGym));
+  expect(hostnames.get('gym.multi.example.test')).toBe(gymId);
 
   const gym = await runtime.app.request('https://gym.multi.example.test/api/public/config', { headers: { host: 'gym.multi.example.test' } });
   expect(gym.status).toBe(200);

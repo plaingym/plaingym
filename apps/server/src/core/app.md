@@ -80,9 +80,10 @@ Each gym admits 300 a minute, so one gym's reports never use another's budget: i
 `single` mode every hostname is the one gym's, and in `multi` mode the budget is the
 gym ID from the injected `cspReportHostnames` map, with normalized hostname keys.
 Aliases share one gym budget; unknown hosts share one install budget of 300.
-Without a map every host shares the install budget. The route reads the map live, so
-its owner refreshes that same object in place, outside report requests, from
-`reportHostnameSnapshot` under a restore-gate lease.
+Without a map every host shares the install budget. The route reads the map live; in
+`multi` mode the runtime loads it before serving and refreshes that same object in
+place every minute from `reportHostnameSnapshot`, under a restore-gate lease and
+never from a report request.
 The app passes its `tenancy`
 option, which defaults to `TENANCY`. A ceiling of 3,000 a minute, checked before a
 gym's budget is spent and spent only with it, bounds the log however many gyms or
