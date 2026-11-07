@@ -7,6 +7,7 @@ import { createAccountService } from '../../infra/auth/accounts.js';
 import { createAuthService } from '../../infra/auth/service.js';
 import { createAttendanceQueries } from '../../areas/attendance/attendance.js';
 import { createDashboardService } from '../../areas/dashboard/dashboard.js';
+import { createNotSeenRead } from '../../areas/dashboard/not-seen.js';
 import { createMembersService } from '../../areas/members/members.js';
 import { createPromotionCriteria } from '../../areas/ranks/criteria.js';
 import { createRanksService } from '../../areas/ranks/ranks.service.js';
@@ -55,7 +56,7 @@ export function matHarness(db: TestDatabase) {
   }
   function dashboard(time: TestClock) {
     const scope = db.forGym, attendance = createAttendanceQueries({ scope });
-    return createDashboardService({ members: createMembersService({ scope }), attendance,
+    return createDashboardService({ members: createMembersService({ scope }), attendance, notSeen: createNotSeenRead(scope),
       ranks: createRanksService({ scope, clock: time, criteria: createPromotionCriteria(attendance) }) });
   }
   return { fixture, counts, dashboard };

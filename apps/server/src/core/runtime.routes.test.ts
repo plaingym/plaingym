@@ -42,9 +42,9 @@ it('serves staff, dashboard, go-live, and waiver routes through the runtime comp
   // Each fails until the runtime configures it.
   for (const path of ['/api/staff/profiles', '/api/dashboard', '/api/settings/go-live', '/api/waivers/templates', '/api/waivers/signatures'])
     expect((await app.runtime.app.request(sandbox.origin + path, { headers })).status, path).toBe(200);
-  // The kiosk PIN-limit widget is one of the runtime's dashboard providers.
+  // The runtime omits the kiosk PIN-limit widget when there are no active limits.
   expect((await (await app.runtime.app.request(sandbox.origin + '/api/dashboard', { headers })).json()).data.widgets)
-    .toEqual(expect.arrayContaining([expect.objectContaining({ id: 'kiosk.pin-limits', kind: 'count', count: 0 })]));
+    .not.toEqual(expect.arrayContaining([expect.objectContaining({ id: 'kiosk.pin-limits' })]));
   // Demo invitations go to the in-app outbox; printed ones return a link on the gym's own origin.
   const invite = await app.runtime.app.request(sandbox.origin + '/api/staff/invitations', { method: 'POST',
     headers: { ...headers, origin: sandbox.origin, 'content-type': 'application/json' },

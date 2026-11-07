@@ -27,6 +27,7 @@ import { createRanksService } from '../../ranks/ranks.service.js';
 import { createPromotionCriteria } from '../../ranks/criteria.js';
 import { createAttendanceQueries } from '../../attendance/attendance.js';
 import { configureDashboard } from '../../dashboard/dashboard.routes.js';
+import { createNotSeenRead } from '../../dashboard/not-seen.js';
 import { authorize } from '../../staff/auth.permissions.js';
 import { createInvoiceTransitions } from '../transitions/index.js';
 import { registerBillingWebhookHandlers } from '../webhooks/handlers/index.js';
@@ -346,7 +347,7 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
       expect(audits).toHaveLength(0);
     }
     const provider = createDisputeAlertProvider({ scope: db.forGym });
-    expect(await provider.read({ gymId: a.gymId, roles: ['owner'], clock: a.clock })).toHaveProperty('count', 0);
+    expect(await provider.read({ gymId: a.gymId, roles: ['owner'], clock: a.clock })).toBeNull();
   });
   it.each(['won', 'lost', 'closed'] as const)('sends one owner notice under webhook replay and excludes a %s dispute from the unresolved count', async terminal => {
     const f = await fixture();
@@ -384,8 +385,8 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     expect(await read()).toHaveProperty('count', 1);
     provider.recordDispute({ id: disputeId, chargeId: intent.id, status: terminal, amount: invoice.amountCents });
     await inbox.replay(f.gymId, eventId); await drain(f.queue);
-    // TODO: allow the provider and registry to omit a zero-count widget.
-    expect(await read()).toHaveProperty('count', 0);
+    // Resolved disputes leave no dashboard alert.
+    expect(await read()).toBeNull();
     await restarted.alerts.disputes(f.gymId); await drain(restarted.queue);
     expect(f.email.messages).toHaveLength(1);
   });
@@ -395,7 +396,7 @@ describe('billing alerts with the real PostgreSQL queue and RLS', () => {
     const foreign = await fixture(); await factory('invoices', foreign.gymId, { disputeId: 'dp_foreign', disputeStatus: 'needs_response' });
     const provider = createDisputeAlertProvider({ scope: db.forGym }), read = vi.spyOn(provider, 'read');
     const attendance = createAttendanceQueries({ scope: db.forGym, clock: f.clock });
-    configureDashboard({ members: createMembersService({ scope: db.forGym, clock: f.clock }),
+    configureDashboard({ notSeen: createNotSeenRead(db.forGym), members: createMembersService({ scope: db.forGym, clock: f.clock }),
       ranks: createRanksService({ scope: db.forGym, clock: f.clock, criteria: createPromotionCriteria(attendance) }), attendance }, [provider]);
     let principal: Principal = { kind: 'anonymous' };
     const app = createApp({ contributions: areaContributions, clock: f.clock, authorize, setupToken: 'test-setup-token',

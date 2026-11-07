@@ -243,6 +243,7 @@ export function createDisputeAlertProvider(options: { scope?: typeof forGym } = 
       if (!canStaff(context.roles, 'billing.read')) throw new AppError('forbidden', 'Access denied');
       const [total] = await scope(context.gymId, tx => tx.select({ count: count() }).from(invoices).where(and(
         isNotNull(invoices.disputeId), or(isNull(invoices.disputeStatus), notInArray(invoices.disputeStatus, [...terminalDisputeStatuses])))));
+      if (!total!.count) return null;
       return { id: 'billing.disputes', titleKey: 'billing/alerts:disputesTitle', status: 'ready', kind: 'count', count: total!.count };
     },
   };

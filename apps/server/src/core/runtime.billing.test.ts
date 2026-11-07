@@ -72,7 +72,7 @@ it('collects assigned invoices, retries a declined cycle, serves staff billing, 
     const billingDashboard = await app.runtime.app.request(sandbox.origin + '/api/dashboard/billing', { headers });
     expect(billingDashboard.status).toBe(200);
     expect((await billingDashboard.json()).data.widgets.map((widget: { id: string }) => widget.id).sort())
-      .toEqual(['disputes', 'mrr', 'past_due', 'upcoming_charges']);
+      .toEqual(['mrr', 'past_due', 'upcoming_charges']);
     const health = await app.runtime.app.request(sandbox.origin + '/api/health', { headers });
     expect(health.status).toBe(200);
     expect((await health.json()).data.tiles).toEqual(expect.arrayContaining([

@@ -11,6 +11,14 @@ const gymId = '01900000-0000-7000-8000-000000000001';
 const otherGym = '01900000-0000-7000-8000-000000000002';
 const context = { gymId, roles: ['owner'] as const, clock };
 describe('dashboard provider registry', () => {
+  it('skips null without validating it and preserves zero-valued summary widgets', async () => {
+    const registry = createWidgetRegistry(extensionDashboardWidgetSchema);
+    registry.register({ id: 'test.empty', permission: 'members.read', schema: extensionDashboardWidgetSchema,
+      read: async () => null });
+    registry.register({ id: 'test.summary', permission: 'members.read', schema: extensionDashboardWidgetSchema,
+      read: async () => ({ id: 'test.summary', titleKey: 'summary', status: 'ready', kind: 'count', count: 0 }) });
+    expect(await registry.read(context)).toEqual([{ id: 'test.summary', titleKey: 'summary', status: 'ready', kind: 'count', count: 0 }]);
+  });
   it('reads class-based frozen fakes with private state and keeps gyms isolated', async () => {
     const provider = new FakeDashboardWidgetProvider('active_members', 'members.read', matDashboardWidgetSchema);
     provider.set(gymId, { id: 'active_members', titleKey: 'active', status: 'ready', count: 3 });

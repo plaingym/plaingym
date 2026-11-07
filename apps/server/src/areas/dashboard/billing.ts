@@ -43,6 +43,7 @@ DashboardWidgetProvider<ReturnType<typeof extensionDashboardWidgetSchema.parse>>
           .from(invoices).where(filter).orderBy(asc(invoices.dueOn), asc(invoices.id)).limit(20);
         return { rows, total: result!.total };
       }) : { rows: [], total: 0 };
+      if (!total) return null;
       return { id: 'billing.skipped-collections', titleKey: 'dashboard/billing:skippedCollections', status: 'ready', kind: 'count', count: total,
         items: rows.map(row => ({ href: `/admin/billing/invoices/${row.id}`,
           label: t('dashboard/billing:skippedCollection', { number: row.number ?? '', amount: formatMinorUnits(row.amountCents, row.currency),
@@ -65,11 +66,16 @@ export function createBillingDashboardService(services: BillingDashboardServices
     if (!canStaff(context.roles, 'billing.read')) throw new AppError('forbidden', 'Access denied');
     const now = context.clock.now(), gym = await services.settings.get(context.gymId);
     const from = localDate(now, gym.timezone), through = addDays(from, 6);
-    const [activeMemberships, upcomingMemberships, pastDueInvoices, overdueOpenInvoices, upcomingInvoices, disputeInvoices] = await Promise.all([
+    // At most two reads compete for the app pool; each paginated read is sequential.
+    const [activeMemberships, upcomingMemberships] = await Promise.all([
       allPages(page => services.memberships.list(context.gymId, { ...page, status: 'active' })),
       allPages(page => services.memberships.list(context.gymId, { ...page, dueOnOrBefore: through })),
+    ]);
+    const [pastDueInvoices, overdueOpenInvoices] = await Promise.all([
       allPages(page => services.payments.listInvoices(context.gymId, { ...page, status: 'past_due' })),
       allPages(page => services.payments.listInvoices(context.gymId, { ...page, status: 'open', dueThrough: addDays(from, -1) })),
+    ]);
+    const [upcomingInvoices, disputeInvoices] = await Promise.all([
       allPages(page => services.payments.listInvoices(context.gymId, { ...page, dueFrom: from, dueThrough: through })),
       allPages(page => services.payments.listInvoices(context.gymId, { ...page, dispute: 'open' })),
     ]);
@@ -105,7 +111,8 @@ export function createBillingDashboardService(services: BillingDashboardServices
     ];
     const registry = createBillingWidgetRegistry();
     registry.registerAll(widgets.map((widget): DashboardWidgetProvider<BillingDashboardWidget> => ({
-      id: widget.id, permission: 'billing.read', schema: billingDashboardWidgetSchema, async read() { return widget; },
+      id: widget.id, permission: 'billing.read', schema: billingDashboardWidgetSchema,
+      async read() { return widget.id === 'disputes' && widget.count === 0 ? null : widget; },
     })));
     return billingDashboardResponseSchema.parse({ data: { generatedAt: now.toISOString(), currency: gym.currency,
       widgets: await registry.read(context) } });

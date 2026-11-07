@@ -44,7 +44,9 @@ are implemented here.
 - Extension providers fit the existing `Registry` and its module filtering.
   Promotion providers own a config schema. Dashboard and health providers take
   the shared area's response schema and preserve its exact typed payload; no
-  second wire shape or UI renderer is introduced. Standing reasons are internal
+  second wire shape or UI renderer is introduced. Dashboard providers may return
+  `null` to omit an empty widget; non-null payloads still require schema validation.
+  Standing reasons are internal
   staff diagnostics; kiosk responses must map every failure to the neutral front-desk message.
 - `GymSettingsAccessor`, `JobStatsQuery`, and `WebhookHealthQuery` replace direct
   system-table reads. Empty job/webhook histories return zero counts and null

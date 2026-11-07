@@ -13,6 +13,7 @@ import { areaContributions } from '../../core/registry-areas.js';
 import { createApp } from '../../app.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
 import { configureDashboard } from '../dashboard/dashboard.routes.js';
+import { createNotSeenRead } from '../dashboard/not-seen.js';
 import { createMembersService } from '../members/members.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
@@ -44,8 +45,8 @@ describe('kiosk PIN limit widget', () => {
     const f = await fixture(), other = await fixture();
     const widget = createPinLimitWidgetProvider({ scope: database.forGym });
     const read = (gymId = f.gymId) => widget.read({ gymId, roles: ['owner'], clock: f.clock });
-    // Shown with a zero count until empty widgets can hide.
-    expect(await read()).toEqual({ id: 'kiosk.pin-limits', titleKey: 'kiosk/devices:pinLimitTitle', status: 'ready', kind: 'count', count: 0 });
+    // Empty alerts are omitted, including when the last limit event expires.
+    expect(await read()).toBeNull();
     const now = f.clock.now().getTime();
     await reached(f.gymId, f.devices[0]!, new Date(now - hour));
     await reached(f.gymId, f.devices[0]!, new Date(now - 2 * hour));
@@ -61,7 +62,7 @@ describe('kiosk PIN limit widget', () => {
     expect(await read()).toHaveProperty('count', 2);
     expect(await read(other.gymId)).toHaveProperty('count', 1);
     f.clock.advance(23 * hour);
-    expect(await read()).toHaveProperty('count', 0);
+    expect(await read()).toBeNull();
     for (const role of ['coach', 'front_desk'] as StaffRole[])
       await expect(widget.read({ gymId: f.gymId, roles: [role], clock: f.clock })).rejects.toMatchObject({ code: 'forbidden' });
   });
@@ -72,7 +73,7 @@ describe('kiosk PIN limit widget', () => {
     await reached(foreign.gymId, foreign.devices[1]!, f.clock.now());
     const provider = createPinLimitWidgetProvider({ scope: database.forGym }), read = vi.spyOn(provider, 'read');
     const attendance = createAttendanceQueries({ scope: database.forGym, clock: f.clock });
-    configureDashboard({ members: createMembersService({ scope: database.forGym, clock: f.clock }),
+    configureDashboard({ notSeen: createNotSeenRead(database.forGym), members: createMembersService({ scope: database.forGym, clock: f.clock }),
       ranks: createRanksService({ scope: database.forGym, clock: f.clock, criteria: createPromotionCriteria(attendance) }), attendance }, [provider]);
     const owner = await factory('authUser', f.gymId), foreignOwner = await factory('authUser', foreign.gymId);
     let principal: Principal = { kind: 'anonymous' };

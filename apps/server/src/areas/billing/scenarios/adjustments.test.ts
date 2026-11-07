@@ -76,7 +76,7 @@ describe('refunds, disputes and access through composed billing services', () =>
     dispute.status = 'won'; await f.deliver('charge.dispute.closed', dispute.id); await f.drain();
     // A delayed creation event refetches the current provider object.
     await f.inbox.replay(f.gymId, event); await f.drain(); await f.runJob('billing.alerts.disputes');
-    expect(await readWidget()).toHaveProperty('count', 0);
+    expect(await readWidget()).toBeNull();
     expect((await f.read()).invoices[0]).toMatchObject({ status: 'paid', disputeId: dispute.id, disputeStatus: 'won' });
     expect(f.email.messages.filter(m => m.to === f.user.email)).toHaveLength(1);
   });

@@ -68,10 +68,10 @@ describe('billing dashboard through production route composition and real billin
     const reads = vi.spyOn(services.payments, 'listInvoices');
     try {
       const widget = await createSkippedCollectionsProvider(services).read({ gymId: f.gymId, roles: ['owner'], clock });
-      expect(widget.count).toBe(22);
-      expect(widget.items).toHaveLength(20);
-      expect(widget.items?.[0]?.href).toBe(`/admin/billing/invoices/${first.id}`);
-      expect(widget.items?.map(item => item.href)).not.toContain(`/admin/billing/invoices/${foreign.id}`);
+      expect(widget?.count).toBe(22);
+      expect(widget?.items).toHaveLength(20);
+      expect(widget?.items?.[0]?.href).toBe(`/admin/billing/invoices/${first.id}`);
+      expect(widget?.items?.map(item => item.href)).not.toContain(`/admin/billing/invoices/${foreign.id}`);
       expect(reads).not.toHaveBeenCalled();
     } finally { reads.mockRestore(); }
   });
@@ -91,7 +91,7 @@ describe('billing dashboard through production route composition and real billin
     expect(widget).toMatchObject({ count: 1, items: [{ href: `/admin/billing/invoices/${small.id}`, label: expect.stringContaining(reason) }] });
     await expect(provider.read({ ...context, roles: ['coach'] })).rejects.toMatchObject({ code: 'forbidden' });
     const disabled = createSkippedCollectionsProvider({ ...services, settings: { async get(gymId) { return { ...await settings.get(gymId), billingEnabled: false }; } } });
-    expect(await disabled.read(context)).toMatchObject({ count: 0, items: [] });
+    expect(await disabled.read(context)).toBeNull();
   });
   it('normalizes annual MRR once, excludes frozen/trial/cancelled dues and estimates household cycles', async () => {
     const f = await fixture();

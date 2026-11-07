@@ -25,7 +25,9 @@ export function createWidgetRegistry<Widget extends DashboardWidget>(schema: z.Z
       for (const provider of registry.forModules(context.enabledModules ?? new Set())) {
         // Check before calling the provider: forbidden widgets must perform no reads.
         if (!canStaff(context.roles, provider.permission)) continue;
-        const widget = schema.parse(provider.schema.parse(await provider.read(context)));
+        const value = await provider.read(context);
+        if (value === null) continue;
+        const widget = schema.parse(provider.schema.parse(value));
         if (widget.id !== provider.id) throw new AppError('unavailable', 'Invalid dashboard widget');
         widgets.push(widget);
       }

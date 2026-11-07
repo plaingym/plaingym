@@ -36,12 +36,15 @@ Definitions, also explained on each widget:
   never generates invoices, advances billing dates or calls a payment processor.
 * Open disputes count flagged invoices until `won`, `lost`, `closed` or
   `warning_closed`. Amounts are invoice totals; the locked schema has no separate
-  disputed amount. The existing `billing.disputes` alert flag is independent.
+  disputed amount. This widget and the independent `billing.disputes` alert are
+  omitted when there are no open disputes.
 
 The service paginates filtered billing queries in short transactions: active
 memberships for MRR, memberships due on or before the upcoming window's end,
 past-due invoices, open invoices due before today, invoices in the upcoming window,
-and `dispute=open` invoices. It does not page through unrelated paid history.
+and `dispute=open` invoices. At most two of these reads run concurrently per
+request, leaving room in the eight-connection app pool for other work. It does
+not page through unrelated paid history.
 The shared `terminalDisputeStatuses` constant defines terminal disputes for the
 SQL filter, dashboard and existing alert provider. No new index is needed.
 

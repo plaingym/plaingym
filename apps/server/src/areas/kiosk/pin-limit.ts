@@ -42,6 +42,7 @@ export function createPinLimitWidgetProvider(options: { scope?: typeof forGym } 
       const since = new Date(context.clock.now().getTime() - day);
       const [total] = await scope(context.gymId, (tx) => tx.select({ count: countDistinct(auditEvents.targetId) }).from(auditEvents)
         .where(and(eq(auditEvents.gymId, context.gymId), eq(auditEvents.action, pinLimitReachedAction), gt(auditEvents.occurredAt, since))));
+      if (!total!.count) return null;
       return { id: 'kiosk.pin-limits', titleKey: 'kiosk/devices:pinLimitTitle', status: 'ready', kind: 'count', count: total!.count };
     },
   };

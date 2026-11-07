@@ -18,6 +18,7 @@ import { areaContributions } from '../../core/registry-areas.js';
 import { createApp } from '../../app.js';
 import { createAttendanceQueries } from '../attendance/attendance.js';
 import { configureDashboard } from '../dashboard/dashboard.routes.js';
+import { createNotSeenRead } from '../dashboard/not-seen.js';
 import { createPromotionCriteria } from '../ranks/criteria.js';
 import { createRanksService } from '../ranks/ranks.service.js';
 import { authorize } from '../staff/auth.permissions.js';
@@ -51,7 +52,7 @@ const read = (gymId: string, roles: readonly (typeof staffRoles)[number][] = ['o
 describe('portal confirmation widget', () => {
   it('lists households awaiting confirmation with a link to each one\'s Portal access tab, and nothing when none wait', async () => {
     const gymId = await gym();
-    expect(await read(gymId)).toEqual({ id: portalConfirmationWidgetId, titleKey: 'portal/access:waitingTitle', status: 'ready', kind: 'count', count: 0, items: [] });
+    expect(await read(gymId)).toBeNull();
     const b = await waiting(gymId, 'Brown household'), a = await waiting(gymId, 'Adams household');
     // A second, later member never changes the link: it opens the household's first member.
     await factory('members', gymId, { householdId: a.home.id });
@@ -65,7 +66,7 @@ describe('portal confirmation widget', () => {
     await database.forGym(gymId, (tx) => writeAudit(tx, { gymId, actorKind: 'system', action: 'household_user.invited', targetType: 'household', targetId: joined.home.id, occurredAt: clock.now() }));
     expect(await read(gymId)).toHaveProperty('count', 1);
     const payer = await factory('householdUsers', gymId, { householdId: joined.home.id, scope: 'payer', memberId: null });
-    expect(await read(gymId)).toMatchObject({ count: 0, items: [] });
+    expect(await read(gymId)).toBeNull();
     // Revoking the payer login offers confirmation again, as the household's Portal access tab does.
     await database.forGym(gymId, (tx) => tx.delete(householdUsers).where(eq(householdUsers.id, payer.id)));
     expect(await read(gymId)).toHaveProperty('count', 1);
@@ -80,7 +81,7 @@ describe('portal confirmation widget', () => {
     // Another gym's household with the same kind of invitation never changes this gym's widget.
     const theirs = await waiting(other, 'Their household');
     await invitations.invite({ gymId: other, userId: theirOwner.userId, clock }, theirs.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
-    expect(await read(other)).toMatchObject({ count: 0 });
+    expect(await read(other)).toBeNull();
     expect(await read(gymId)).toMatchObject({ count: 2 });
     await invitations.invite(actor, invited.home.id, { ...printed, email: `${uuidv7()}@example.test` }, origin);
     // A member-scope invitation leaves the household waiting: it never makes a payer login.
@@ -149,8 +150,8 @@ describe('portal confirmation widget', () => {
     for (let index = 0; index < 22; index++) await waiting(gymId, `Household ${String(index).padStart(2, '0')}`);
     const widget = await read(gymId);
     expect(widget).toHaveProperty('count', 22);
-    expect(widget.items).toHaveLength(20);
-    expect(widget.items?.[0]?.label).toBe('Household 00');
+    expect(widget?.items).toHaveLength(20);
+    expect(widget?.items?.[0]?.label).toBe('Household 00');
     expect(provider().schema.parse(widget)).toEqual(widget);
   });
 
@@ -172,7 +173,7 @@ describe('portal confirmation widget', () => {
     await waiting(foreign, 'Foreign household');
     const widget = provider(), spy = vi.spyOn(widget, 'read');
     const attendance = createAttendanceQueries({ scope: database.forGym, clock });
-    configureDashboard({ members: createMembersService({ scope: database.forGym, clock }),
+    configureDashboard({ notSeen: createNotSeenRead(database.forGym), members: createMembersService({ scope: database.forGym, clock }),
       ranks: createRanksService({ scope: database.forGym, clock, criteria: createPromotionCriteria(attendance) }), attendance }, [widget]);
     const user = await factory('authUser', gymId);
     let principal: Principal = { kind: 'anonymous' };

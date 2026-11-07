@@ -71,8 +71,8 @@ Its `billing.disputes` extension uses the existing count renderer and requires
 `billing.read`. It derives its count directly from invoices, including unresolved
 statuses and excluding `won`, `lost`, and `closed`. The unresolved count clears
 immediately, without a cleanup job or additional persistence. The provider
-requires a widget and the registry always renders it. TODO: allow an optional
-provider result to hide the zero-count card. No new HTTP routes are added. The
+returns `null` when the count is zero, so the registry omits the empty alert.
+No new HTTP routes are added. The
 dispute email links to `/admin/billing/invoices/<invoiceId>` on the gym's configured origin.
 
 Card reminders take the household address and its opt-out/deliverability check from

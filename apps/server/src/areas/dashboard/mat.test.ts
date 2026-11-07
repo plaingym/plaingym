@@ -18,6 +18,19 @@ function page<T>(rows: T[], input: { limit?: number | string; offset?: number | 
 }
 function fixtures(roster = [member(10)], entries: AttendanceFixture[] = []) {
   const services: MatWidgetServices = {
+    // Unit fake for the grouped database read; its parity is covered against PostgreSQL.
+    notSeen: async (context) => {
+      const unseen = [];
+      for (const member of roster) {
+        const result = await services.attendance.history({ kind: 'gym', gymId: context.gymId },
+          { memberId: member.id, until: new Date(context.clock.now().getTime() + 1).toISOString() }, { limit: 1, offset: 0 });
+        const lastSeenAt = result.data[0]?.occurredAt ?? null;
+        if (Date.parse(lastSeenAt ?? member.createdAt) <= context.clock.now().getTime() - 14 * 86400000)
+          unseen.push({ memberId: member.id, firstName: member.firstName, lastName: member.lastName, lastSeenAt });
+      }
+      return { id: 'not_seen', titleKey: 'dashboard/dashboard:widget.not_seen', status: 'ready', days: 14,
+        count: unseen.length, members: unseen.slice(0, 100) };
+    },
     members: { listMembers: vi.fn(async (_gymId, input) => page(roster, input)) },
     attendance: new FakeAttendanceQueries(entries),
     ranks: { listPrograms: vi.fn(async () => page([], {})), listRanks: vi.fn(async () => page([], {})),
@@ -41,7 +54,7 @@ describe('mat widget service logic', () => {
     expect(widget).toMatchObject({ count: 3, members: [{ memberId: id(10) }, { memberId: id(14), lastSeenAt: null }, { memberId: id(15), lastSeenAt: null }] });
     expect(response.data.generatedAt).toBe(clock.now().toISOString());
   });
-  it('paginates the complete active roster but caps member payloads at 100', async () => {
+  it('uses the grouped read result and caps member payloads at 100', async () => {
     const services = fixtures(Array.from({ length: 105 }, (_, index) => member(index + 10)));
     const { data } = await createDashboardService(services).get({ ...context, roles: ['front_desk'] });
     expect(data.widgets.find((widget) => widget.id === 'active_members')).toHaveProperty('count', 105);
@@ -50,7 +63,7 @@ describe('mat widget service logic', () => {
     expect(unseen && 'members' in unseen ? unseen.members : []).toHaveLength(100);
     expect(data.widgets.map((widget) => widget.id)).not.toContain('promotion_ready');
     expect(services.ranks.listPrograms).not.toHaveBeenCalled();
-    expect(services.members.listMembers).toHaveBeenCalledWith(gymId, { status: 'active', limit: 100, offset: 100 });
+    expect(services.members.listMembers).toHaveBeenCalledTimes(1);
   });
   it('uses eligibility for the next step, forwards modules, and deduplicates ready members across programs', async () => {
     const services = fixtures([member(10), member(11)]);

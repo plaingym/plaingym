@@ -13,8 +13,8 @@ const shown = 20;
 
 /** Staff with portal access see the households whose join awaits portal confirmation (`awaitingConfirmation` in
  * `household-users.ts`), each linking to that household's Portal access tab. Password-mode installs have no mail to
- * tell them, so the dashboard does. With nothing waiting the widget has a zero count and no items, and the
- * dashboard then hides it. A household with no member left to open (all anonymized) has no tab and isn't listed, and nor
+ * tell them, so the dashboard does. With nothing waiting the provider returns null.
+ * A household with no member left to open (all anonymized) has no tab and isn't listed, and nor
  * is one whose payer invitation is outstanding: staff have acted, and it returns if that invitation is revoked or expires
  * (its tab still shows the invitation). One query on the authentication pool finds and counts the shortlist (the invitations
  * live there), and a second, on the app pool, picks each one's member. */
@@ -32,9 +32,10 @@ DashboardWidgetProvider<z.infer<typeof extensionDashboardWidgetSchema>> {
           .from(households).where(waiting).orderBy(asc(households.name), asc(households.id)).limit(shown);
       });
       const count = rows[0]?.count ?? 0;
+      if (!count) return null;
       // A household whose last member was anonymized since is skipped, as its tab is gone.
-      const people = rows.length ? await scope(context.gymId, tx => tx.select({ id: members.id, householdId: members.householdId }).from(members)
-        .where(and(inArray(members.householdId, rows.map(row => row.id)), isNull(members.anonymizedAt))).orderBy(asc(members.createdAt), asc(members.id))) : [];
+      const people = await scope(context.gymId, tx => tx.select({ id: members.id, householdId: members.householdId }).from(members)
+        .where(and(inArray(members.householdId, rows.map(row => row.id)), isNull(members.anonymizedAt))).orderBy(asc(members.createdAt), asc(members.id)));
       const first = new Map<string, string>();
       for (const member of people) if (!first.has(member.householdId)) first.set(member.householdId, member.id);
       const items = rows.flatMap((row) => {

@@ -73,7 +73,8 @@ export interface DashboardWidgetProvider<Widget extends DashboardWidgetData = Da
   readonly id: Widget['id'];
   readonly permission: StaffPermission;
   readonly schema: z.ZodType<Widget>;
-  read(context: StaffProviderContext): Promise<Widget>;
+  /** Null omits a widget that has nothing to show. */
+  read(context: StaffProviderContext): Promise<Widget | null>;
 }
 /** Pass the shared widget schema so the fake preserves that widget's precise payload. */
 export class FakeDashboardWidgetProvider<Widget extends DashboardWidgetData> implements DashboardWidgetProvider<Widget> {

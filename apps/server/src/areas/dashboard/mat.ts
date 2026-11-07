@@ -6,8 +6,10 @@ import type { DashboardWidgetProvider } from '../../core/interfaces/extensions.j
 import type { createMembersService } from '../members/members.js';
 import type { createRanksService } from '../ranks/ranks.service.js';
 import type { DashboardContext } from './widgets.js';
+import { createNotSeenRead } from './not-seen.js';
 
 export interface MatWidgetServices {
+  readonly notSeen?: ReturnType<typeof createNotSeenRead>;
   readonly members: Pick<ReturnType<typeof createMembersService>, 'listMembers'>;
   readonly ranks: Pick<ReturnType<typeof createRanksService>, 'listPrograms' | 'listRanks' | 'eligibility'>;
   readonly attendance: AttendanceQueries;
@@ -30,7 +32,7 @@ function provider(id: MatDashboardWidget['id'], order: number,
   } };
 }
 
-/** No table imports: each area owns its queries and short transactions. */
+/** Area services own promotion queries; the dashboard owns its grouped last-seen read. */
 export function createMatWidgetProviders(services: MatWidgetServices): readonly DashboardWidgetProvider<MatDashboardWidget>[] {
   const activeMembers = (gymId: string) => allPages((page) => services.members.listMembers(gymId, { ...page, status: 'active' }));
   const lastSeen = async (context: DashboardContext, memberId: string) => {
@@ -43,18 +45,7 @@ export function createMatWidgetProviders(services: MatWidgetServices): readonly 
       const page = await services.members.listMembers(context.gymId, { status: 'active', limit: 1, offset: 0 });
       return { id: 'active_members', titleKey: titleKey('active_members'), status: 'ready', count: page.pagination.total };
     }),
-    provider('not_seen', 20, 'members.read', async (context) => {
-      const cutoff = context.clock.now().getTime() - 14 * 24 * 60 * 60 * 1000;
-      const unseen = [];
-      for (const member of await activeMembers(context.gymId)) {
-        const lastSeenAt = await lastSeen(context, member.id);
-        // A new member who has never visited gets the same fourteen-day grace period.
-        if (Date.parse(lastSeenAt ?? member.createdAt) <= cutoff) unseen.push({ memberId: member.id,
-          firstName: member.firstName, lastName: member.lastName, lastSeenAt });
-      }
-      return { id: 'not_seen', titleKey: titleKey('not_seen'), status: 'ready', days: 14,
-        count: unseen.length, members: unseen.slice(0, 100) };
-    }),
+    provider('not_seen', 20, 'members.read', services.notSeen ?? createNotSeenRead()),
     provider('promotion_ready', 30, 'promotions.manage', async (context) => {
       const members = new Map((await activeMembers(context.gymId)).map((member) => [member.id, member]));
       const ready = new Map<string, Extract<MatDashboardWidget, { id: 'promotion_ready' }>['members'][number]>();
