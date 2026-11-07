@@ -2,7 +2,7 @@
 import { and, asc, count, desc, eq, gte, inArray, lt, or } from 'drizzle-orm';
 import {
   attendances, classSessions, classSessionPrograms, classSessionTags, classTags,
-  forGym, forHousehold, members, programs, uuidv7, writeAudit, type Transaction,
+  forGym, forHousehold, HouseholdAccessError, members, programs, uuidv7, writeAudit, type HouseholdAttendanceFilter, type Transaction,
 } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import {
@@ -109,33 +109,23 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       return { data: rows.map(present), pagination: { limit, offset, total: total!.value } };
     });
   }
-  async function householdRows(identity: Extract<AttendanceScope, { kind: 'household' }>['identity'], filter: Filter) {
+  /** Reloads the grant on every call. Only this scoped API may read household activity, never a gym grant. */
+  async function householdRead<T>(identity: Extract<AttendanceScope, { kind: 'household' }>['identity'], filter: Filter,
+    fn: (queries: Parameters<Parameters<typeof forHousehold>[1]>[0], activity: HouseholdAttendanceFilter) => Promise<T>) {
     validateFilter(filter);
-    // Reload the grant on every call. Only this scoped API may read household activity.
-    const rows = await householdScope({ kind: 'user', ...identity }, async (queries) => {
+    return householdScope({ kind: 'user', ...identity }, async (queries) => {
       if (filter.memberId && !(await queries.member(filter.memberId))[0]) missing();
-      return queries.attendance();
+      return fn(queries, { memberId: filter.memberId, programId: filter.programId, tagId: filter.tagId, kind: filter.kind, classesOnly: filter.excludeOpenMat,
+        since: filter.since ? new Date(filter.since) : undefined, until: filter.until ? new Date(filter.until) : undefined });
     }).catch((error: unknown) => {
-      if (error instanceof Error && error.message === 'Household access denied') missing();
+      if (error instanceof HouseholdAccessError && error.code === 'household_access_denied') missing();
       throw error;
     });
-    // Enrich only the sessions referenced by the already-authorized rows. Do not read
-    // activity with a gym grant, even when no member filter was supplied.
-    const links = filter.programId || filter.tagId
-      ? await scope(identity.gymId, (tx) => sessionLinks(tx, identity.gymId, rows)) : new Map();
-    return rows.filter((row) => (!filter.memberId || row.memberId === filter.memberId)
-      && (!filter.since || row.occurredAt.getTime() >= Date.parse(filter.since))
-      && (!filter.until || row.occurredAt.getTime() < Date.parse(filter.until))
-      && (!filter.kind || row.kind === filter.kind) && (!filter.excludeOpenMat || row.kind === 'class')
-      && (!filter.programId || row.programId === filter.programId
-        || (row.sessionId !== null && links.get(row.sessionId)?.programs.has(filter.programId)))
-      && (!filter.tagId || (row.sessionId !== null && links.get(row.sessionId)?.tags.has(filter.tagId))))
-      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime() || a.id.localeCompare(b.id));
   }
   const queries: AttendanceQueries = {
     async countSince(context, input) {
       const filter = await resolve(context.kind === 'gym' ? context.gymId : context.identity.gymId, input);
-      if (context.kind === 'household') return (await householdRows(context.identity, filter)).length;
+      if (context.kind === 'household') return householdRead(context.identity, filter, (queries, activity) => queries.attendanceCount(activity));
       validateFilter(filter);
       return scope(context.gymId, async (tx) => {
         const [total] = await tx.select({ value: count() }).from(attendances).where(predicate(tx, context.gymId, filter));
@@ -151,11 +141,11 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
         })) };
       }
       const { limit, offset } = paginationSchema.parse({ limit: page.limit, offset: page.offset });
-      const rows = await householdRows(context.identity, filter);
-      return { data: rows.slice(offset, offset + limit).map(({ id, memberId, sessionId, programId, occurredAt, source, kind }) => ({
+      const { rows, total } = await householdRead(context.identity, filter, (queries, activity) => queries.attendancePage(activity, { limit, offset }));
+      return { data: rows.map(({ id, memberId, sessionId, programId, occurredAt, source, kind }) => ({
         id, memberId, sessionId, programId, occurredAt: occurredAt.toISOString(), source: attendanceSourceSchema.parse(source),
         kind: classKindSchema.parse(kind),
-      })), pagination: { limit, offset, total: rows.length } };
+      })), pagination: { limit, offset, total } };
     },
   };
   return {

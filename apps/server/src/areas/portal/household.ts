@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { forHousehold } from '@plaingym/db';
+import { forHousehold, HouseholdAccessError } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import {
   paginationSchema, portalHouseholdSchema, portalHouseholdUpdateRequestSchema, portalMemberSchema, portalMemberUpdateRequestSchema,
@@ -31,7 +31,7 @@ export function householdReader(scope: typeof forHousehold) {
   return async function read<T>(identity: PortalIdentity, fn: (queries: HouseholdQueries) => Promise<T>) {
     try { return await scope({ kind: 'user', ...identity }, fn); }
     catch (error) {
-      if (error instanceof Error && ['Household access denied', 'Payer access required'].includes(error.message)) notFound();
+      if (error instanceof HouseholdAccessError) notFound();
       throw error;
     }
   };
@@ -101,12 +101,8 @@ export function createPortalHouseholdService(options: {
     async memberships(identity: PortalIdentity, memberId: string, input: Pagination) {
       const query = paginationSchema.parse(input);
       await households.requireMember(identity, memberId, 'profile.read');
-      const rows = (await read(identity, queries => queries.memberships())).filter(row => row.memberId === memberId)
-        .sort((a, b) => b.startsOn.localeCompare(a.startsOn) || b.id.localeCompare(a.id));
-      return { data: rows.slice(query.offset, query.offset + query.limit).map(row => portalMembershipSchema.parse({
-        id: row.id, memberId: row.memberId, planId: row.planId, status: row.status, interval: row.interval, startsOn: row.startsOn,
-        nextDueOn: row.nextDueOn, trialEndsOn: row.trialEndsOn, commitmentEndsOn: row.commitmentEndsOn, revision: row.revision })),
-      pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
+      const { rows, total } = await read(identity, queries => queries.membershipPage(memberId, query));
+      return { data: rows.map(row => portalMembershipSchema.parse(row)), pagination: { limit: query.limit, offset: query.offset, total } };
     },
   };
 }

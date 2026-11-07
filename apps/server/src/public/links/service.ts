@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { forHousehold } from '@plaingym/db';
+import { forHousehold, HouseholdAccessError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import { portalSignedLinkDataSchema, type PortalSignedLinkData, type WaiverSignRequest } from '@plaingym/shared/contracts';
 import type { RequestContext } from '../../core/context.js';
@@ -43,7 +43,7 @@ export function createLinkPageService(options: LinkPageOptions) {
           : { purpose: p.link.purpose, members, templates, signatures, paymentMethods: await q.paymentMethods() });
       });
     } catch (error) {
-      if (error instanceof Error && ['Household access denied', 'Payer access required'].includes(error.message)) throw new AppError('not_found', 'Link not found');
+      if (error instanceof HouseholdAccessError) throw new AppError('not_found', 'Link not found');
       throw error;
     }
   }

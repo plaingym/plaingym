@@ -33,11 +33,10 @@ on the session. Template edits cannot reclassify attendance. Intervals include `
 and exclude `until`; history sorts newest first, then ID ascending.
 
 Household activity is read only with `forHousehold`, reloading grants on every call.
-The frozen household query facade returns authorized activity without filters or
-pagination, so those are applied after retrieval. When needed, a separate short gym
-scope loads only session program/tag metadata referenced by those authorized rows.
-It never loads household activity. Adult members see only themselves; payers see their
-household. A missing or revoked grant returns not found.
+Its `attendancePage` and `attendanceCount` queries filter, order, page and count in
+SQL, with the gym path's program, tag and open-mat matching, and read session
+program and tag links only to apply those filters. Adult members see only themselves;
+payers see their household. A missing or revoked grant returns not found.
 
 The prewired attendance route barrel imports `attendance.routes.ts`. The web contribution
 registers the coach roster under `sessionPanels` and the totals/open-mat panel under

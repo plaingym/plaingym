@@ -5,6 +5,7 @@ import type { MemberHouseholdContext, PortalIdentity } from '../../core/interfac
 import { notFound } from '../../core/interfaces/common.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import type { CheckinCodeService } from '../members/checkin-code.js';
+import { householdReader } from './household.js';
 
 export interface PortalCheckinOptions {
   households?: MemberHouseholdContext; householdScope?: typeof forHousehold;
@@ -13,12 +14,11 @@ export interface PortalCheckinOptions {
 }
 /** A login reads and regenerates the codes of the members it may see: the payer's household, or an adult member alone. */
 export function createPortalCheckinService(options: PortalCheckinOptions) {
-  const households = options.households ?? createMemberHouseholdContext(), scope = options.householdScope ?? forHousehold;
+  const households = options.households ?? createMemberHouseholdContext(), read = householdReader(options.householdScope ?? forHousehold);
   function codes() { return options.codes() ?? (() => { throw new AppError('unavailable', 'Check-in codes are not configured'); })(); }
   async function target(identity: PortalIdentity, memberId: string) {
     await households.requireMember(identity, memberId, 'checkin.manage');
-    try { if (!(await scope({ kind: 'user', ...identity }, queries => queries.member(memberId)))[0]) notFound(); }
-    catch (error) { if (error instanceof Error && error.message === 'Household access denied') notFound(); throw error; }
+    if (!(await read(identity, queries => queries.member(memberId)))[0]) notFound();
   }
   return {
     async read(identity: PortalIdentity, memberId: string) {

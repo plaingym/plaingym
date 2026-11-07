@@ -186,6 +186,16 @@ excludes medical notes, check-in hashes and household PIN hashes and includes th
 revision. Emergency contacts are included for logged-in household users only.
 The caller supplies `userId` and `gymId` from authenticated request context.
 
+The portal reads a household's history as pages and single lookups: `bookingPage`,
+`booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `rankHistory`,
+`membershipPage`, `signaturePage`, `signature`, `signedTemplates` and `invoicePage` filter,
+order and project in SQL, inside the same grant, and a page answers `{ rows, total }`. An ID
+outside the grant finds nothing. `members()` and `waiverTemplates()` stay whole: they are as
+long as the household and the gym's current documents, not its history. The whole-history
+reads (`bookings()`, `attendance()`, `ranks()`, `memberships()`, `invoices()`) have no
+production caller and stay for the comparison tests; `waivers()` also serves signed-link
+pages.
+
 Signed-link pages call `forHousehold({ kind: 'signed_link', gymId, linkId, now }, fn)`.
 The link ID must come from a verified token's request context; a submitted link ID
 alone is not authorization. `now` comes from the injected request clock. Inside the
@@ -200,8 +210,9 @@ and resource claims cannot widen access.
 | `sign_waiver` | The linked member, that member's signed waivers, and current gym templates |
 | `onboarding` | Household members, their signed waivers, current gym templates, and masked payment methods |
 
-Every query checks the resolved grant. A disallowed query throws; an ID outside an
-allowed resource scope returns no rows. Signed links cannot read household profile,
+Every query checks the resolved grant. A disallowed query throws `HouseholdAccessError`, whose
+`code` is `household_access_denied` or `payer_access_required`; map the code, never the message.
+An ID outside an allowed resource scope returns no rows. Signed links cannot read household profile,
 booking, attendance, rank or membership data, or emergency contacts.
 `waiverTemplates()` is read-only: it takes the highest version of each template
 name, then drops families whose latest version is retired, so retiring a template
@@ -213,7 +224,7 @@ Example:
 ```ts
 await forHousehold({ kind: 'user', gymId, householdId, userId }, async (queries) => {
   const members = await queries.members();
-  const bookings = await queries.bookings();
+  const bookings = await queries.bookingPage({ memberId: members[0].id }, { limit: 50, offset: 0 });
   return { members, bookings };
 });
 ```

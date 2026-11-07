@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { forGym, forHousehold, householdUsers, households, members, signedLinks, staffRoles, writeAudit, type Transaction } from '@plaingym/db';
+import { forGym, forHousehold, HouseholdAccessError, householdUsers, households, members, signedLinks, staffRoles, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, createTranslator, type Clock, type StaffRole } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { portalClaimCompletionRequestSchema, portalClaimRequestSchema, portalInvitationRequestSchema, portalOnboardingClaimRequestSchema, type PortalInvitationRequest } from '@plaingym/shared/contracts';
@@ -149,7 +149,7 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
     async claimOnboarding(gymId: string, linkId: string, raw: unknown, clock: Clock) {
       const input = portalOnboardingClaimRequestSchema.parse(raw);
       try { await householdScope({ kind: 'signed_link', gymId, linkId, now: clock.now() }, queries => queries.members()); }
-      catch (error) { if (error instanceof Error && error.message === 'Household access denied') notFound(); throw error; }
+      catch (error) { if (error instanceof HouseholdAccessError && error.code === 'household_access_denied') notFound(); throw error; }
       const passwordMode = await passwordRequired(gymId);
       if (passwordMode && !input.password) throw new AppError('invalid_request', 'Password required');
       if (!passwordMode && input.password !== undefined) throw new AppError('forbidden', 'Password login is disabled');

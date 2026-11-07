@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import type { AnyPgColumn } from 'drizzle-orm/pg-core';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import {
-  attendances, classBookings, householdUsers, households, invoiceLineItems, invoices,
+  attendances, classBookings, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
   memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
@@ -28,8 +28,32 @@ interface HouseholdGrant {
 const all = { kind: 'all' } as const;
 const none = { kind: 'none' } as const;
 
-function requireAccess(allowed: boolean, message = 'Household access denied'): asserts allowed {
-  if (!allowed) throw new Error(message);
+const denialMessages = { household_access_denied: 'Household access denied', payer_access_required: 'Payer access required' } as const;
+export type HouseholdDenialCode = keyof typeof denialMessages;
+/** A refused household read. Callers map `code` to a status; the message is for logs and may change. */
+export class HouseholdAccessError extends Error {
+  constructor(readonly code: HouseholdDenialCode, message: string = denialMessages[code]) {
+    super(message);
+    this.name = 'HouseholdAccessError';
+  }
+}
+/** One page of a household list: the rows it shows and the total of the whole list. */
+export interface HouseholdPage { readonly limit: number; readonly offset: number }
+export interface HouseholdAttendanceFilter {
+  memberId?: string | undefined; programId?: string | undefined; tagId?: string | undefined;
+  /** Inclusive lower bound, exclusive upper bound. */
+  since?: Date | undefined; until?: Date | undefined;
+  kind?: string | undefined;
+  /** Leaves out open-mat visits. */
+  classesOnly?: boolean | undefined;
+}
+
+function requireAccess(allowed: boolean, code: HouseholdDenialCode = 'household_access_denied'): asserts allowed {
+  if (!allowed) throw new HouseholdAccessError(code);
+}
+async function countRows(tx: Transaction, table: PgTable, where: SQL | undefined) {
+  const [total] = await tx.select({ value: count() }).from(table).where(where);
+  return total!.value;
 }
 function resourcePredicate(column: AnyPgColumn, resources: Resources) {
   switch (resources.kind) {
@@ -76,7 +100,7 @@ async function resolveGrant(tx: Transaction, scope: HouseholdScope): Promise<Hou
     case 'onboarding':
       return { ...grant, members: all, cards: true, waiverTemplates: true };
     default:
-      throw new Error('Household access denied');
+      throw new HouseholdAccessError('household_access_denied');
   }
 }
 
@@ -96,10 +120,40 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     id: members.id, firstName: members.firstName, lastName: members.lastName,
     dateOfBirth: members.dateOfBirth, status: members.status, photoKey: members.photoKey,
     email: members.email, phone: members.phone, checkinCodeVersion: members.checkinCodeVersion,
-    revision: members.revision,
+    revision: members.revision, createdAt: members.createdAt,
     ...(grant.contacts ? { emergencyContacts: members.emergencyContacts } : {}),
   };
+  const waiverFields = {
+    id: waiverSignatures.id, memberId: waiverSignatures.memberId, templateId: waiverSignatures.templateId,
+    snapshot: waiverSignatures.snapshot, snapshotHash: waiverSignatures.snapshotHash,
+    signatureImageKey: waiverSignatures.signatureImageKey, signatureImageHash: waiverSignatures.signatureImageHash,
+    signedAt: waiverSignatures.signedAt,
+  };
+  const bookingPredicate = (...rest: (SQL | undefined)[]) => and(eq(classBookings.gymId, grant.gymId), inArray(classBookings.memberId, memberIds), ...rest);
+  const attendancePredicate = (filter: HouseholdAttendanceFilter) => and(
+    eq(attendances.gymId, grant.gymId), inArray(attendances.memberId, memberIds),
+    filter.memberId ? eq(attendances.memberId, filter.memberId) : undefined,
+    filter.kind ? eq(attendances.kind, filter.kind) : undefined,
+    filter.classesOnly ? eq(attendances.kind, 'class') : undefined,
+    filter.since ? gte(attendances.occurredAt, filter.since) : undefined,
+    filter.until ? lt(attendances.occurredAt, filter.until) : undefined,
+    // Only session metadata is read for these two filters, never another household's rows.
+    filter.programId ? or(eq(attendances.programId, filter.programId), inArray(attendances.sessionId,
+      tx.select({ id: classSessionPrograms.sessionId }).from(classSessionPrograms).where(and(
+        eq(classSessionPrograms.gymId, grant.gymId), eq(classSessionPrograms.programId, filter.programId),
+      )))) : undefined,
+    filter.tagId ? inArray(attendances.sessionId,
+      tx.select({ id: classSessionTags.sessionId }).from(classSessionTags).where(and(
+        eq(classSessionTags.gymId, grant.gymId), eq(classSessionTags.tagId, filter.tagId),
+      ))) : undefined,
+  );
+  const membershipPredicate = (memberId: string) => and(eq(memberships.gymId, grant.gymId),
+    inArray(memberships.memberId, memberIds), eq(memberships.memberId, memberId));
+  const signaturePredicate = (requested: readonly string[]) => and(eq(waiverSignatures.gymId, grant.gymId),
+    inArray(waiverSignatures.memberId, memberIds), inArray(waiverSignatures.memberId, [...requested]));
   // No raw transaction, arbitrary predicate or unscoped relation loader escapes this API.
+  // The portal reads history through the bounded pages and lookups. `bookings`, `attendance`, `ranks`, `memberships`
+  // and `invoices` remain for tests, and `waivers` also for signed-link pages.
   return {
     members: async () => {
       requireAccess(grant.members.kind !== 'none');
@@ -110,7 +164,7 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       return tx.select(memberFields).from(members).where(and(memberPredicate, eq(members.id, id)));
     },
     household: async () => {
-      requireAccess(grant.householdProfile, 'Payer access required');
+      requireAccess(grant.householdProfile, 'payer_access_required');
       return tx.select({
         id: households.id, name: households.name, email: households.email, phone: households.phone,
         address: households.address, billingDay: households.billingDay, revision: households.revision,
@@ -118,28 +172,99 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     },
     bookings: async () => {
       requireAccess(grant.memberActivity);
-      return tx.select().from(classBookings).where(and(eq(classBookings.gymId, grant.gymId), inArray(classBookings.memberId, memberIds)));
+      return tx.select().from(classBookings).where(bookingPredicate());
+    },
+    /** One member's bookings, newest first. */
+    bookingPage: async (filter: { memberId: string; sessionId?: string | undefined; status?: string | undefined }, page: HouseholdPage) => {
+      requireAccess(grant.memberActivity);
+      const where = bookingPredicate(eq(classBookings.memberId, filter.memberId),
+        filter.sessionId ? eq(classBookings.sessionId, filter.sessionId) : undefined,
+        filter.status ? eq(classBookings.status, filter.status) : undefined);
+      const rows = await tx.select().from(classBookings).where(where)
+        .orderBy(desc(classBookings.createdAt), desc(classBookings.id)).limit(page.limit).offset(page.offset);
+      return { rows, total: await countRows(tx, classBookings, where) };
+    },
+    /** Whether this member holds this booking; an ID outside the grant finds nothing. */
+    booking: async (id: string, memberId: string) => {
+      requireAccess(grant.memberActivity);
+      return tx.select({ id: classBookings.id }).from(classBookings)
+        .where(bookingPredicate(eq(classBookings.id, id), eq(classBookings.memberId, memberId)));
+    },
+    /** The active places these members hold in these sessions, earliest first. */
+    sessionBookings: async (sessionIds: readonly string[], requested: readonly string[]) => {
+      requireAccess(grant.memberActivity);
+      if (!sessionIds.length || !requested.length) return [];
+      return tx.select().from(classBookings).where(bookingPredicate(inArray(classBookings.sessionId, [...sessionIds]),
+        inArray(classBookings.memberId, [...requested]), ne(classBookings.status, 'cancelled')))
+        .orderBy(asc(classBookings.createdAt), asc(classBookings.id));
     },
     attendance: async () => {
       requireAccess(grant.memberActivity);
       return tx.select().from(attendances).where(and(eq(attendances.gymId, grant.gymId), inArray(attendances.memberId, memberIds)));
     },
+    /** Newest first, then ID ascending, like the gym's attendance list. */
+    attendancePage: async (filter: HouseholdAttendanceFilter, page: HouseholdPage) => {
+      requireAccess(grant.memberActivity);
+      const where = attendancePredicate(filter);
+      const rows = await tx.select({ id: attendances.id, memberId: attendances.memberId, sessionId: attendances.sessionId,
+        programId: attendances.programId, occurredAt: attendances.occurredAt, source: attendances.source, kind: attendances.kind })
+        .from(attendances).where(where).orderBy(desc(attendances.occurredAt), asc(attendances.id)).limit(page.limit).offset(page.offset);
+      return { rows, total: await countRows(tx, attendances, where) };
+    },
+    attendanceCount: async (filter: HouseholdAttendanceFilter) => {
+      requireAccess(grant.memberActivity);
+      return countRows(tx, attendances, attendancePredicate(filter));
+    },
     ranks: async () => {
       requireAccess(grant.memberActivity);
       return tx.select().from(memberRanks).where(and(eq(memberRanks.gymId, grant.gymId), inArray(memberRanks.memberId, memberIds)));
+    },
+    /** One member's promotions. Promotion notes and the promoting coach are never selected. */
+    rankHistory: async (memberId: string) => {
+      requireAccess(grant.memberActivity);
+      return tx.select({ id: memberRanks.id, memberId: memberRanks.memberId, programId: memberRanks.programId, rankId: memberRanks.rankId,
+        rankSystemId: memberRanks.rankSystemId, subRank: memberRanks.subRank, promotedAt: memberRanks.promotedAt, createdAt: memberRanks.createdAt })
+        .from(memberRanks).where(and(eq(memberRanks.gymId, grant.gymId), inArray(memberRanks.memberId, memberIds), eq(memberRanks.memberId, memberId)));
     },
     memberships: async () => {
       requireAccess(grant.memberActivity);
       return tx.select().from(memberships).where(and(eq(memberships.gymId, grant.gymId), inArray(memberships.memberId, memberIds)));
     },
+    /** One member's memberships, latest start first. Amounts and billing state are not selected. */
+    membershipPage: async (memberId: string, page: HouseholdPage) => {
+      requireAccess(grant.memberActivity);
+      const where = membershipPredicate(memberId);
+      const rows = await tx.select({ id: memberships.id, memberId: memberships.memberId, planId: memberships.planId, status: memberships.status,
+        interval: memberships.interval, startsOn: memberships.startsOn, nextDueOn: memberships.nextDueOn, trialEndsOn: memberships.trialEndsOn,
+        commitmentEndsOn: memberships.commitmentEndsOn, revision: memberships.revision })
+        .from(memberships).where(where).orderBy(desc(memberships.startsOn), desc(memberships.id)).limit(page.limit).offset(page.offset);
+      return { rows, total: await countRows(tx, memberships, where) };
+    },
     waivers: async () => {
       requireAccess(grant.members.kind !== 'none');
-      return tx.select({
-        id: waiverSignatures.id, memberId: waiverSignatures.memberId, templateId: waiverSignatures.templateId,
-        snapshot: waiverSignatures.snapshot, snapshotHash: waiverSignatures.snapshotHash,
-        signatureImageKey: waiverSignatures.signatureImageKey, signatureImageHash: waiverSignatures.signatureImageHash,
-        signedAt: waiverSignatures.signedAt,
-      }).from(waiverSignatures).where(and(eq(waiverSignatures.gymId, grant.gymId), inArray(waiverSignatures.memberId, memberIds)));
+      return tx.select(waiverFields).from(waiverSignatures).where(and(eq(waiverSignatures.gymId, grant.gymId), inArray(waiverSignatures.memberId, memberIds)));
+    },
+    /** These members' signatures, newest first. */
+    signaturePage: async (requested: readonly string[], page: HouseholdPage) => {
+      requireAccess(grant.members.kind !== 'none');
+      if (!requested.length) return { rows: [], total: 0 };
+      const where = signaturePredicate(requested);
+      const rows = await tx.select(waiverFields).from(waiverSignatures).where(where)
+        .orderBy(desc(waiverSignatures.signedAt), desc(waiverSignatures.id)).limit(page.limit).offset(page.offset);
+      return { rows, total: await countRows(tx, waiverSignatures, where) };
+    },
+    /** Whether one of these members signed this signature; an ID outside the grant finds nothing. */
+    signature: async (id: string, requested: readonly string[]) => {
+      requireAccess(grant.members.kind !== 'none');
+      if (!requested.length) return [];
+      return tx.select({ id: waiverSignatures.id }).from(waiverSignatures).where(and(signaturePredicate(requested), eq(waiverSignatures.id, id)));
+    },
+    /** Which of these members signed which of these templates; snapshots are not read. */
+    signedTemplates: async (requested: readonly string[], templateIds: readonly string[]) => {
+      requireAccess(grant.members.kind !== 'none');
+      if (!requested.length || !templateIds.length) return [];
+      return tx.selectDistinct({ memberId: waiverSignatures.memberId, templateId: waiverSignatures.templateId }).from(waiverSignatures)
+        .where(and(signaturePredicate(requested), inArray(waiverSignatures.templateId, [...templateIds])));
     },
     waiverTemplates: async () => {
       requireAccess(grant.waiverTemplates);
@@ -149,22 +274,31 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       return tx.select().from(latest).where(isNull(latest.retiredAt));
     },
     invoices: async () => {
-      requireAccess(grant.invoices.kind !== 'none', 'Payer access required');
+      requireAccess(grant.invoices.kind !== 'none', 'payer_access_required');
       return tx.select().from(invoices).where(invoicePredicate);
     },
+    /** Issued invoices, latest due date first; drafts are never listed. */
+    invoicePage: async (filter: { status?: string | undefined }, page: HouseholdPage) => {
+      requireAccess(grant.invoices.kind !== 'none', 'payer_access_required');
+      const where = and(invoicePredicate, ne(invoices.status, 'draft'), filter.status ? eq(invoices.status, filter.status) : undefined);
+      const rows = await tx.select({ id: invoices.id, number: invoices.number, kind: invoices.kind, status: invoices.status, dueOn: invoices.dueOn,
+        amountCents: invoices.amountCents, currency: invoices.currency, paidAt: invoices.paidAt })
+        .from(invoices).where(where).orderBy(desc(invoices.dueOn), desc(invoices.number), desc(invoices.id)).limit(page.limit).offset(page.offset);
+      return { rows, total: await countRows(tx, invoices, where) };
+    },
     invoice: async (id: string) => {
-      requireAccess(grant.invoices.kind !== 'none', 'Payer access required');
+      requireAccess(grant.invoices.kind !== 'none', 'payer_access_required');
       return tx.select().from(invoices).where(and(invoicePredicate, eq(invoices.id, id)));
     },
     invoiceLines: async (invoiceId: string) => {
-      requireAccess(grant.invoices.kind !== 'none', 'Payer access required');
+      requireAccess(grant.invoices.kind !== 'none', 'payer_access_required');
       return tx.select().from(invoiceLineItems).where(and(
         eq(invoiceLineItems.gymId, grant.gymId), eq(invoiceLineItems.householdId, grant.householdId),
         resourcePredicate(invoiceLineItems.invoiceId, grant.invoices), eq(invoiceLineItems.invoiceId, invoiceId),
       ));
     },
     paymentMethods: async () => {
-      requireAccess(grant.cards, 'Payer access required');
+      requireAccess(grant.cards, 'payer_access_required');
       return tx.select({
         id: paymentMethods.id, brand: paymentMethods.brand, last4: paymentMethods.last4,
         expiryMonth: paymentMethods.expiryMonth, expiryYear: paymentMethods.expiryYear, isDefault: paymentMethods.isDefault,

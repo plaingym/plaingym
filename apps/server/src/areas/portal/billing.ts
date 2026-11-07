@@ -19,7 +19,7 @@ import { createSignedLinksService } from '../links/service.js';
 import { createSettingsService } from '../settings/settings.js';
 import messages from '../../../../../locales/en/portal/billing.json' with { type: 'json' };
 
-type InvoiceRow = Awaited<ReturnType<HouseholdQueries['invoices']>>[number];
+type InvoiceRow = Awaited<ReturnType<HouseholdQueries['invoicePage']>>['rows'][number];
 type LineRow = Awaited<ReturnType<HouseholdQueries['invoiceLines']>>[number];
 /** The signed-link Checkout service (C2.4), shared with `/l/*`: customer creation, card-saving policy and recovery. */
 export interface PortalCheckout { start(gymId: string, linkId: string): Promise<{ session: CheckoutSession; expiresAt: string }> }
@@ -83,9 +83,8 @@ export function createPortalBillingService(options: PortalBillingOptions) {
     async list(identity: PortalIdentity, input: unknown) {
       const query = portalInvoiceListQuerySchema.parse(input);
       await payer(identity);
-      const rows = (await read(identity, queries => queries.invoices())).filter(row => row.status !== 'draft' && (!query.status || row.status === query.status))
-        .sort((a, b) => b.dueOn.localeCompare(a.dueOn) || (b.number ?? 0) - (a.number ?? 0) || b.id.localeCompare(a.id));
-      return { data: rows.slice(query.offset, query.offset + query.limit).map(invoice), pagination: { limit: query.limit, offset: query.offset, total: rows.length } };
+      const { rows, total } = await read(identity, queries => queries.invoicePage({ status: query.status }, query));
+      return { data: rows.map(invoice), pagination: { limit: query.limit, offset: query.offset, total } };
     },
     get: detail,
     /** A short-lived PDF for a paid invoice, stored like waiver PDFs: deleted on write and swept later. */

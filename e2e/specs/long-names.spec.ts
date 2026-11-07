@@ -27,6 +27,14 @@ async function admin(page: Page, sandbox: Sandbox, owner: Client, path: string) 
   await page.goto(sandbox.origin + path);
 }
 const sandboxOwner = async (sandboxes: Sandbox[]) => ({ sandbox: sandboxes[1]!, owner: await demoClient(sandboxes[1]!, 'owner') });
+/** Invites the household's payer and opens a portal session for them in this page. */
+async function portalLogin(page: Page, sandbox: Sandbox, owner: Client, householdId: string, email: string) {
+  const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${householdId}/portal-invitations`, 'POST', { email, delivery: 'print', scope: 'payer' });
+  const before = await outboxIds(owner);
+  await new Client(sandbox.origin).json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1) });
+  const portal = await claimPortal(sandbox.origin, await outboxLink(owner, email, /^\/api\/auth\//, before));
+  await portal.browser(page.context());
+}
 
 // Each probe has its own household, so no spec depends on another leaving a seeded household untouched.
 test('the admin bookings panel wraps a class name with no break opportunity', async ({ page, sandboxes }) => {
@@ -136,11 +144,7 @@ test('the portal schedule wraps class and member names with no break opportunity
   const longMember = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: home.id, firstName: 'M',
     lastName: unbreakable('Member').slice(0, 55), status: 'active' })).data;
   await owner.json('/api/bookings', 'POST', { memberId: longMember.id, sessionId: session.id, allowWaitlist: false });
-  const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST', { email, delivery: 'print', scope: 'payer' });
-  const before = await outboxIds(owner);
-  await new Client(sandbox.origin).json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1) });
-  const portal = await claimPortal(sandbox.origin, await outboxLink(owner, email, /^\/api\/auth\//, before));
-  await portal.browser(page.context());
+  await portalLogin(page, sandbox, owner, home.id, email);
   await page.goto(sandbox.origin + '/portal/schedule');
   await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
   const loading = page.getByText('Loading classes…', { exact: true });
@@ -149,4 +153,22 @@ test('the portal schedule wraps class and member names with no break opportunity
   await expect(page.getByRole('list', { name: 'Household places' }).getByText(`${longMember.firstName} ${longMember.lastName}`, { exact: true })).toBeVisible();
   // The full layout check (axe, touch targets, horizontal scroll).
   await accessibleLayout(page, info, 'portal schedule');
+});
+
+test('portal progress shows a program with no rank yet, at 360 px and on desktop', async ({ page, sandboxes }, info) => {
+  test.setTimeout(180_000);
+  const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Noranks'), email = `norank-${randomBytes(4).toString('hex')}@example.invalid`;
+  const first = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data.find((program) => program.rankSystemId)!;
+  await owner.json('/api/programs', 'POST', { name, rankSystemId: first.rankSystemId, active: true });
+  const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'No-rank household', email })).data;
+  await owner.json('/api/members', 'POST', { householdId: home.id, firstName: 'Pat', lastName: 'Payer', email, status: 'active' });
+  await portalLogin(page, sandbox, owner, home.id, email);
+  await page.goto(sandbox.origin + '/portal/progress');
+  const program = page.getByRole('listitem').filter({ has: page.getByRole('heading', { name, exact: true }) });
+  await expect(program.getByText('No rank yet in this program.', { exact: true })).toBeVisible();
+  await expect(program.getByText(/^Next: /)).toBeVisible();
+  await accessibleLayout(page, info, 'portal progress at 360 px');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(program).toBeVisible();
+  await accessibleLayout(page, info, 'portal progress on desktop');
 });

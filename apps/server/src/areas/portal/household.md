@@ -80,8 +80,9 @@ uploads a signature image, signs, and returns a signed PDF link. Members never
 set an agreement's commitment end date: a portal signature that carries one is
 refused with 400, and staff record the term when they sign for a member.
 
-Signed lists and pending documents read whole signature rows through
-`forHousehold`, whose waiver query has no narrower projection. Uploads and
+The signed list reads one page of signatures in SQL, and pending documents read
+only which of the current templates each member signed, so neither loads the
+signature history. Uploads and
 signatures check the member against the household first, then call
 the waiver service, which validates the image, the current template version and
 the guardian rule and stores one immutable snapshot. A replay with the same image

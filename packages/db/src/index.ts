@@ -2,7 +2,8 @@
 export * from './schema/index.js';
 export { forGym, forHousehold, forSystem } from './client.js';
 export type { Transaction } from './client.js';
-export type { HouseholdScope } from './household.js';
+export { HouseholdAccessError } from './household.js';
+export type { HouseholdAttendanceFilter, HouseholdDenialCode, HouseholdScope } from './household.js';
 export { uuidv7 } from './id.js';
 export { advisoryLockNamespace, advisoryLocks, gymAdvisoryLocks, gymAdvisoryLockKey, lockGym } from './locks.js';
 export type { GymAdvisoryLock } from './locks.js';

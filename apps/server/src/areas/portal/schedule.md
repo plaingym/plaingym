@@ -17,9 +17,8 @@ class carries the booking engine's own times: `bookingOpensAt` (from
 allowed). The waitlist is promoted only until the same cutoff. `placesLeft`
 is a count from `openPlaces`: it is zero while anyone is waiting, because a new
 booking never jumps the waitlist, and `null` when the class needs no booking.
-`bookings` lists only the active places of members this login may see, read from
-the household's booking list (`forHousehold` has no narrower query) and narrowed to
-the page, with
+`bookings` lists only the active places of members this login may see, in the
+sessions of the page, with
 their place in the queue and without who created them. Staff notes and other
 members' places are never included.
 
@@ -45,12 +44,13 @@ the routes answer 503 after authorization.
 
 `GET /api/portal/members/{memberId}/progress` returns the member's promotion
 history, and for each program they hold a rank in, its current rank, next step and
-criterion progress. All of these come from the ranks service (`memberProgress`),
+criterion progress. These come from the ranks service (`memberProgress`),
 which uses the same rank-system ordering (`progression.ts`) and criterion providers
 as staff eligibility; attendance-based criteria count in the household's scope. The
 current rank, the next step and the history order come from one ordering, so equal
 promotion times can't make them disagree. `next` is `null` at the top rank and in
-inactive programs; `current` is nullable in the contract for a program without a rank.
+inactive programs. Active programs with ranks the member holds none in follow the ranked
+ones, with `current: null`, `next` at the program's first rank and no criterion progress.
 The reference `programs` and `ranks` carry only names, colors and sub-rank names
 the gym stored. Promotion notes, the promoting coach and criterion configuration
 are never returned.

@@ -43,24 +43,26 @@ export function createPortalWaiverService(options: {
     if (!payerMayActFor(context, member, clock.now(), timezone)) throw new AppError('forbidden', 'Adults sign their own waivers');
   }
   const actor = (identity: PortalIdentity) => ({ gymId: identity.gymId, actor: { kind: 'user' as const, userId: identity.userId } });
-  const page = <T>(rows: T[], query: { limit: number; offset: number }) =>
-    ({ data: rows.slice(query.offset, query.offset + query.limit), pagination: { limit: query.limit, offset: query.offset, total: rows.length } });
   return {
     /** Current documents (the latest version of each family that is not retired) each member has not signed. */
     async pending(identity: PortalIdentity, kind: PortalWaiverScope, input: unknown) {
       const query = portalWaiverListQuerySchema.parse(input), ids = await targets(identity, kind, query.memberId);
-      const { templates, signatures } = await read(identity, async queries => ({ templates: await queries.waiverTemplates(), signatures: await queries.waivers() }));
+      const { templates, signed } = await read(identity, async queries => {
+        const templates = await queries.waiverTemplates();
+        return { templates, signed: await queries.signedTemplates(ids, templates.map(row => row.id)) };
+      });
       const current: WaiverTemplate[] = templates.sort((a, b) => a.name.localeCompare(b.name)).map(row => ({ id: row.id, name: row.name,
         kind: waiverKindSchema.parse(row.kind), version: row.version, body: row.body, retiredAt: null, createdAt: row.createdAt.toISOString() }));
-      return page(ids.flatMap(memberId => current.filter(template => !signatures.some(row => row.memberId === memberId && row.templateId === template.id))
-        .map(template => ({ memberId, template }))), query);
+      // Current templates times members: this list is as long as the gym's documents, not the signature history.
+      const pending = ids.flatMap(memberId => current.filter(template => !signed.some(row => row.memberId === memberId && row.templateId === template.id))
+        .map(template => ({ memberId, template })));
+      return { data: pending.slice(query.offset, query.offset + query.limit), pagination: { limit: query.limit, offset: query.offset, total: pending.length } };
     },
     async signed(identity: PortalIdentity, kind: PortalWaiverScope, input: unknown) {
       const query = portalWaiverListQuerySchema.parse(input), ids = await targets(identity, kind, query.memberId);
-      const rows: WaiverSignature[] = (await read(identity, queries => queries.waivers())).filter(row => ids.includes(row.memberId))
-        .sort((a, b) => b.signedAt.getTime() - a.signedAt.getTime() || b.id.localeCompare(a.id))
-        .map(row => ({ ...row, signedAt: row.signedAt.toISOString() }));
-      return page(rows, query);
+      const { rows, total } = await read(identity, queries => queries.signaturePage(ids, query));
+      const data: WaiverSignature[] = rows.map(row => ({ ...row, signedAt: row.signedAt.toISOString() }));
+      return { data, pagination: { limit: query.limit, offset: query.offset, total } };
     },
     /** Signature images are checked against the grant first; the waiver service stores them under the member. */
     async upload(identity: PortalIdentity, kind: PortalWaiverScope, memberId: string, bytes: Uint8Array, timezone: string) {
@@ -77,7 +79,7 @@ export function createPortalWaiverService(options: {
     },
     async pdf(identity: PortalIdentity, kind: PortalWaiverScope, signatureId: string) {
       const ids = await targets(identity, kind);
-      if (!(await read(identity, queries => queries.waivers())).some(row => row.id === signatureId && ids.includes(row.memberId))) notFound();
+      if (!(await read(identity, queries => queries.signature(signatureId, ids)))[0]) notFound();
       return options.waivers().pdf(identity.gymId, signatureId);
     },
   };

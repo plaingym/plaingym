@@ -60,6 +60,14 @@ describe('portal progress', () => {
     await screen.findByText('No rank yet in this program.');
     expect(screen.getByText('Next: Second')).toBeDefined();
   });
+  it('shows a program with no rank yet after ranked ones, and promises nothing about its first rank', async () => {
+    const unranked = { id: 'p2', name: 'Striking', current: null, next: { rankId: 'r2', subRank: 0 } };
+    client.progress.mockResolvedValue(answer({ ...progress, programs: [...progress.programs, unranked], criteria: [] }));
+    page();
+    await screen.findByText('No rank yet in this program.');
+    expect(screen.getAllByRole('heading', { level: 3 }).map(item => item.textContent)).toEqual(['Grappling', 'Striking']);
+    expect(screen.getAllByText('Your coach decides when you are ready.')).toHaveLength(1);
+  });
   it('marks the top rank', async () => {
     client.progress.mockResolvedValue(answer({ ...progress, programs: [{ ...progress.programs[0], next: null }], criteria: [] }));
     page();
