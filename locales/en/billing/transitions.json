@@ -10,6 +10,8 @@
   "actionBody": "Your bank requires authentication for invoice {number}. Complete payment: {payUrl}\nUpdate your saved card: {updateUrl}",
   "duplicateSubject": "Duplicate payment for invoice {number}",
   "duplicateBody": "An additional card payment of {amount} arrived for invoice {number}, which was already paid. An automatic refund was queued. Check the refund status in billing.",
+  "duplicateReleasedSubject": "Duplicate payment for invoice {number} wasn't refunded automatically",
+  "duplicateReleasedBody": "The automatic refund of a duplicate payment for invoice {number} was stopped. {amount} of that payment isn't recorded as refunded yet, though a refund made in Stripe may still be pending. Check the payment in Stripe and in billing, and refund the payer only what they are still owed.",
   "refundFailedSubject": "Refund failed for invoice {number}",
   "refundFailedBody": "A refund of {amount} for invoice {number} failed, so the payer did not receive it. Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.",
   "refundReversedSubject": "Refund failed for invoice {number}",

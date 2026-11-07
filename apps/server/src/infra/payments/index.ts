@@ -99,6 +99,16 @@ export interface Refund {
    * attempted and did not reach the payer. Neither returns money, and neither moves again. */
   readonly status: 'succeeded' | 'pending' | 'failed' | 'canceled';
   readonly metadata: PaymentMetadata;
+  /** The local reservation this refund's own request named. A refund made outside the app, such as in the processor's
+   * dashboard, has none. */
+  readonly reservationId?: string;
+}
+/** reservationId is part of the idempotent request: a retry repeats it, or its absence, exactly. */
+export interface RefundRequest {
+  chargeId: string;
+  amount: number;
+  idempotencyKey: string;
+  reservationId?: string;
 }
 export interface Dispute {
   readonly id: string;
@@ -174,7 +184,7 @@ export interface Payments {
     changes: readonly PaymentChange[];
     nextCursor: string | null;
   }>;
-  refund(request: { chargeId: string; amount: number; idempotencyKey: string }): Promise<Refund>;
+  refund(request: RefundRequest): Promise<Refund>;
   createCheckout(request: CheckoutRequest): Promise<CheckoutSession>;
   expireCheckout(id: string): Promise<CheckoutExpiry>;
   /** The gym's customers with this email; `householdId` is the household a customer's metadata names, when it names one. */
@@ -643,12 +653,12 @@ export class FakePayments implements Payments {
     this.#record('checkout', id);
     return { status: 'expired' };
   }
-  async refund(request: { chargeId: string; amount: number; idempotencyKey: string }): Promise<Refund> {
+  async refund(request: RefundRequest): Promise<Refund> {
     assertNoTransaction('payments.refund');
     const result = this.#once(
       'refund',
       request.idempotencyKey,
-      JSON.stringify([request.chargeId, request.amount]),
+      JSON.stringify([request.chargeId, request.amount, ...(request.reservationId === undefined ? [] : [request.reservationId])]),
       () => {
         const charge = this.#charges.get(request.chargeId);
         if (!charge || charge.status !== 'succeeded')
@@ -665,6 +675,7 @@ export class FakePayments implements Payments {
           currency: charge.currency,
           metadata: charge.metadata,
           status: this.#nextRefund,
+          ...(request.reservationId === undefined ? {} : { reservationId: request.reservationId }),
         };
         this.#nextRefund = 'succeeded';
         this.#refunds.set(refund.id, refund);

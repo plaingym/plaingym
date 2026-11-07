@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash } from 'node:crypto';
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import { forGym, invoices, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
-import { stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
+import { refundReleased, stripeTestPaymentReference, terminalDisputeStatuses } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -14,6 +14,7 @@ import { holdGymSettings } from '../settings/settings.js';
 import { audit, lockInvoice } from './transitions/store.js';
 
 type Payment = typeof payments.$inferSelect;
+type RefundRow = typeof refunds.$inferSelect;
 type Succeeded = Extract<ChargeOutcome, { status: 'succeeded' }>;
 
 const terminal = new Set<string>(terminalDisputeStatuses);
@@ -30,6 +31,19 @@ export function processorRefundId(gymId: string, processorId: string): string {
   digest[8] = (digest[8]! & 0x3f) | 0x80;
   const hex = digest.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** The newest tagged reservations an external refund pushes past the payment. The processor never lets its refunds
+ * exceed the payment, so these can't have reached it. */
+function outrunReservations(rows: readonly RefundRow[], tagged: readonly RefundRow[], external: number, paid: number) {
+  let excess = rows.filter(row => !refundReleased(row)).reduce((sum, row) => sum + row.amountCents, external - paid);
+  const outrun: RefundRow[] = [];
+  for (const row of [...tagged].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))) {
+    if (excess <= 0) break;
+    outrun.push(row);
+    excess -= row.amountCents;
+  }
+  return outrun;
 }
 
 export interface DisputeRefundOptions {
@@ -65,24 +79,35 @@ export function createDisputeRefundWriter(options: DisputeRefundOptions) {
     }
     return { outcome, ...(payment ? { payment } : {}) };
   }
-  /** Applies a processor refund through the refund transition. A worker's reservation (duplicate-payment refunds) is
-   * reused; any other new refund gets a deterministic ID, so every path records it as one row. False when the refund
-   * does not belong to this payment. */
+  /** Applies a processor refund through the refund transition. A refund that names a tagged reservation on this payment
+   * takes that row; an untagged reservation, from before the marker, keeps matching any refund of its payment. Every
+   * other refund is external: it gets a deterministic ID, so every path records it as one row, and it leaves tagged
+   * reservations to the app's own refund, unless the processor has no room left for them: those never reached it, and
+   * are released. False when the refund does not belong to this payment. */
   async function refund(gymId: string, payment: Payment, value: Refund): Promise<boolean> {
     const currency = value.currency.toUpperCase();
     if (value.metadata.gymId !== gymId || currency !== payment.currency) return false;
-    const refundId = await scope(gymId, async tx => {
+    const { refundId, outrun } = await scope(gymId, async tx => {
       const existing = (await tx.select().from(refunds).where(eq(refunds.processorId, value.id)))[0];
-      if (existing) return existing.id;
-      const reservations = await tx.select().from(refunds).where(and(eq(refunds.paymentId, payment.id),
-        isNull(refunds.processorId), eq(refunds.status, 'pending')));
-      if (reservations.length) {
-        if (reservations.length !== 1 || reservations[0]!.amountCents !== value.amount
-          || reservations[0]!.currency !== currency) throw new Error('Refund reservation is ambiguous');
-        return reservations[0]!.id;
+      if (existing) return { refundId: existing.id, outrun: [] };
+      const rows = await tx.select().from(refunds).where(eq(refunds.paymentId, payment.id));
+      const reservations = rows.filter(row => row.processorId === null && row.status === 'pending');
+      const tagged = reservations.filter(row => row.taggedAt !== null);
+      const untagged = reservations.filter(row => row.taggedAt === null);
+      const own = tagged.find(row => row.id === value.reservationId && row.amountCents === value.amount);
+      if (own) return { refundId: own.id, outrun: [] };
+      if (value.reservationId === undefined && untagged.length) {
+        if (untagged.length !== 1 || untagged[0]!.amountCents !== value.amount
+          || untagged[0]!.currency !== currency) throw new Error('Refund reservation is ambiguous');
+        return { refundId: untagged[0]!.id, outrun: [] };
       }
-      return processorRefundId(gymId, value.id);
+      return { refundId: processorRefundId(gymId, value.id),
+        outrun: refundReleased(value) ? [] : outrunReservations(rows, tagged, value.amount, payment.amountCents) };
     });
+    // Each move is a transition of its own, which rechecks the row under the invoice lock. A replay after a crash here
+    // finds the amount already released.
+    for (const row of outrun) await options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
+      refundId: row.id, amountCents: row.amountCents, currency: row.currency, status: 'failed' });
     const apply = (id: string) => options.transitions.refund(system(gymId), { invoiceId: payment.invoiceId, paymentId: payment.id,
       refundId: id, processorId: value.id, amountCents: value.amount, currency: currency, status: value.status });
     try {

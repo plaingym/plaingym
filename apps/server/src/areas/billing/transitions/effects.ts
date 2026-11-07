@@ -18,6 +18,8 @@ import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublishe
 export const effectJob = 'billing.transitions.effect';
 /** How far back the publisher looks. A publish normally follows its commit at once, or within the hour. */
 export const publishWindowDays = 30;
+/** A release is committed just before the refund that caused it. Waiting lets the notice's amount count that refund. */
+export const releasedNoticeDelayMs = 15 * 60_000;
 export interface TransitionEffectOptions {
   scope?: typeof forGym;
   clock?: Clock;
@@ -49,7 +51,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     for (const row of rows) {
       const work = row.after as TransitionEffect;
       const runAt = work.kind === 'retry' ? retryAt(localDate(row.occurredAt, gym.timezone), work.retryDay!, gym.timezone)
-        : clock.now();
+        : work.notice === 'duplicate_released' ? new Date(clock.now().getTime() + releasedNoticeDelayMs) : clock.now();
       await options.jobs.enqueue(effectJob, { effectId: row.targetId },
         { gymId, timezone: gym.timezone, runAt, idempotencyKey: row.targetId, maxAttempts: 12 });
       await scope(gymId, async tx => {
@@ -72,6 +74,8 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       const refund = work.notice === 'refund_failed' && work.refundId
         ? (await tx.select().from(refunds).where(eq(refunds.id, work.refundId)))[0] : undefined;
       if (refund && refund.paymentId !== payment?.id) notFound();
+      const refunded = work.notice === 'duplicate_released' && payment
+        ? await tx.select({ amountCents: refunds.amountCents }).from(refunds).where(and(eq(refunds.paymentId, payment.id), eq(refunds.status, 'succeeded'))) : [];
       // A refund that failed after it was reported successful gets its own wording.
       const reversed = refund ? Boolean(await recorded(tx, 'billing.refund.reversed', refund.id)) : false;
       const attempt = work.attemptId ? (await tx.select().from(paymentAttempts).where(eq(paymentAttempts.id, work.attemptId)))[0] : undefined;
@@ -80,10 +84,10 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         .orderBy(asc(paymentAttempts.attemptNumber))).filter(row => !abandonedAttempt(row)).at(-1);
       const lines = work.kind === 'activate_memberships' ? await tx.select({ membershipId: invoiceLineItems.membershipId })
         .from(invoiceLineItems).where(and(eq(invoiceLineItems.invoiceId, invoice.id), eq(invoiceLineItems.kind, 'membership'))) : [];
-      return { event, work, invoice, payment, refund, reversed, attempt, latestAttempt, lines };
+      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines };
     });
     if (!loaded) return;
-    const { work, invoice, payment, refund, reversed, attempt, latestAttempt, lines } = loaded;
+    const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines } = loaded;
     const data = { gymId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
     if (work.kind === 'receipt') await options.notifications.receipt(data);
     else if (work.kind === 'activate_memberships') {
@@ -102,15 +106,20 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
       if (invoice.kind === 'cycle' && !terminal(invoice) && (await options.settings.get(gymId)).billingEnabled)
         await options.retry(invoice.id, context);
     } else if (work.kind === 'staff_notice') {
-      if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
+      if (work.notice === 'duplicate_released') {
+        if (!payment) throw new Error('Released duplicate refund notice has no payment');
+        // Only recorded refunds count: a pending one can still be canceled, and then nothing else would say so.
+        const unrefundedCents = refunded.reduce((left, row) => left - row.amountCents, payment.amountCents);
+        if (unrefundedCents > 0) await options.notifications.staffNotice({ ...data, reason: 'duplicate_released', unrefundedCents });
+      } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
       else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed });
       else throw new Error('Failed refund notice has no refund');
     }
     else if (work.kind === 'refund_duplicate') {
       if (!payment || !work.refundId || !payment.paymentIntentId) throw new Error('Duplicate payment has no processor identity');
       const reservation = await scope(gymId, async tx => (await tx.select().from(refunds).where(eq(refunds.id, work.refundId!)))[0] ?? notFound());
-      // A failed or canceled refund is final (the transition that recorded a failure queued the staff notice), so this
-      // work is done.
+      // A failed or canceled refund is final (the transition that recorded a failure or a release queued its staff
+      // notice), so this work is done.
       if (reservation.status === 'pending') {
         const provider = await options.payments(gymId);
         let refund: Refund | undefined;
@@ -119,13 +128,17 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
           if (found.status !== 'found' || found.value.kind !== 'refund') throw new Error('Refund cannot be reconciled');
           refund = found.value.object;
         } else {
-          // A lost response must be reconciled before another refund request, including after process restart.
+          // A lost response must be reconciled before another refund request, including after process restart. A tagged
+          // reservation takes only the refund that names it; any other is external, which the webhook records. An
+          // untagged one, from before the marker, can only match by its payment.
+          const tag = reservation.taggedAt ? { reservationId: reservation.id } : {};
           const matches = new Map<string, Refund>();
           let cursor: string | undefined;
           do {
             const page = await provider.listChangesSince(reservation.createdAt, cursor ? { cursor } : {});
             for (const change of page.changes) if (change.kind === 'refund'
-              && [payment.chargeId, payment.paymentIntentId].includes(change.object.chargeId)) matches.set(change.object.id, change.object);
+              && [payment.chargeId, payment.paymentIntentId].includes(change.object.chargeId)
+              && (!tag.reservationId || change.object.reservationId === tag.reservationId)) matches.set(change.object.id, change.object);
             cursor = page.nextCursor ?? undefined;
           } while (cursor !== undefined);
           if (matches.size > 1) throw new Error('Ambiguous duplicate refund; staff resolution required');
@@ -134,7 +147,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
             if (clock.now().getTime() - reservation.createdAt.getTime() >= 23 * 60 * 60 * 1000)
               throw new Error('Refund idempotency window elapsed; reconciliation required');
             refund = await provider.refund({ chargeId: payment.paymentIntentId, amount: payment.amountCents,
-              idempotencyKey: `invoice:${invoice.id}:duplicate:${payment.id}` });
+              idempotencyKey: `invoice:${invoice.id}:duplicate:${payment.id}`, ...tag });
           }
         }
         if (refund.amount !== payment.amountCents || refund.currency.toUpperCase() !== payment.currency

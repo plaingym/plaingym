@@ -38,9 +38,21 @@ the recorded payment confirms and clears the hold with an audit linked to that
 payment. The transitions handle a card outcome that races another payment.
 
 Refunds reserve their balance through the transitions before calling Stripe;
-pending refunds count against the refundable balance. A lost response leaves the
+pending refunds count against the refundable balance. A new card reservation is
+tagged (`refunds.tagged_at`) and its Stripe refund names the row in
+`reservation_id` metadata, so a refund made in Stripe's dashboard during the
+reservation can't take it (see the webhook handlers' README). A retry reads
+the tag from the stored row, so its request never changes; a reservation from
+before the column stays untagged and is sent without the metadata, as it was. A lost response leaves the
 reservation pending, and an explicit retry reuses that reservation's key inside
-the 23-hour window. Older pending refunds require reconciliation. A pending refund
+the 23-hour window. Past it, any staff refund request on the payment settles a tagged
+reservation that has no processor refund, from `Payments.listRefunds`: the refund naming
+the row is recorded, and with none the row is released (`failed`), since no retry can
+reach Stripe any more. That request moves no money and answers `refund_reconciled`, so
+staff decide again from the settled payment, and the stuck row no longer blocks the
+switch to live, go-live or a restore check. Older pending refunds, untagged or already
+at Stripe, require reconciliation. If a webhook releases the reservation between the
+two steps of a request, nothing is sent to Stripe (`refund_released`). A pending refund
 with a null reason can resume after a crash and save the requested reason. A card
 payment marked `Stripe test mode` by a switch from test to live is refused
 (`test_payment`) before anything is reserved: it lives in the test account, which

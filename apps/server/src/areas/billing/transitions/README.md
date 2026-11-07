@@ -108,14 +108,24 @@ and daily failures retain their invoice ID and message. Dispute reconciliation
 matches webhook rules (reject a different dispute, preserve won/lost, audit
 `billing.invoice.disputed` before/after); it does not change payment state here.
 
-An additional card payment reserves its full duplicate refund and queues a staff
-notice. The worker reconciles existing refunds before calling Payments.refund,
-using one stable idempotency key and the PaymentIntent ID expected by that
-interface. A lost response is recovered from provider changes. It never retries
+An additional card payment reserves its full duplicate refund, tagged in the same
+transaction, and queues a staff notice. The worker reconciles existing refunds before
+calling Payments.refund, using one stable idempotency key and the PaymentIntent ID
+expected by that interface. A lost response is recovered from provider changes: a
+tagged reservation takes only the refund that names its row, and a reservation from
+before `refunds.tagged_at` keeps taking the payment's single refund and is sent with
+no reservation ID, as it was. It never retries
 a create outside a conservative 23-hour idempotency window; ambiguous, missing
 or mismatched provider outcomes remain errors for staff resolution. A failed
 automatic refund is recorded as failed, which queues the failed-refund staff
-notice below, and the effect completes. A pending processor refund is stored for
+notice below, and the effect completes. A reservation released with no processor
+refund (a dashboard refund left it no room, or a staff request settled it past the
+window) also ends the effect, and queues a `notice: 'duplicate_released'` staff
+notice. Its job runs 15 minutes later, so the amount counts the refund that caused
+the release, and it names what the payment's succeeded refunds leave unrefunded.
+A pending refund doesn't count, because it can still be canceled; if nothing is
+left, no email is sent. The worker's refund is never reduced to the remainder,
+since that would change a retried request. A pending processor refund is stored for
 subsequent webhook/reconciliation updates.
 Refunds of excess payments never reduce the original invoice's paid balance.
 Pending refunds reserve their amounts, failed and canceled reservations release
@@ -142,7 +152,8 @@ a failure. A canceled automatic duplicate-payment refund completes its effect th
 same way.
 
 `createTransitionNotifications` sends localized receipts, signed pay/update-card
-links, and staff notices (a duplicate card payment, or a failed processor refund).
+links, and staff notices (a duplicate card payment, a failed processor refund, or
+a duplicate payment's released reservation).
 Runtime must supply a gym SMTP resolver (or demo outbox), trusted canonical origin and staff recipients. Household email respects
 the gym's email switch and matching member opt-outs/deliverability, through the
 household recipient helper shared with signed-link delivery and billing alerts. Receipts and

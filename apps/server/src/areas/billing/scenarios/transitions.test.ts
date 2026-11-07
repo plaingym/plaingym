@@ -265,7 +265,7 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
     expect(await f.drain()).toBe(0);
     expect(refund).toHaveBeenCalledTimes(1);
     expect(refund).toHaveBeenCalledWith({ chargeId: f.success.paymentIntentId, amount: f.invoice.amountCents,
-      idempotencyKey: `invoice:${f.invoice.id}:duplicate:${f.success.paymentId}` });
+      idempotencyKey: `invoice:${f.invoice.id}:duplicate:${f.success.paymentId}`, reservationId: state.refunds[0]!.id });
     expect(f.email.messages).toHaveLength(2);
     expect(f.email.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ to: 'payer@example.invalid', subject: 'Receipt for invoice 1' }),

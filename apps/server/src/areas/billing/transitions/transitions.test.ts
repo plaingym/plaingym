@@ -18,7 +18,8 @@ import { createMembershipService } from '../memberships.js';
 import { createSignedLinksService } from '../../links/service.js';
 import { createInvoiceTransitions } from './index.js';
 import { formatMinorUnits } from '@plaingym/shared/money';
-import { createTransitionEffects } from './effects.js';
+import { createDisputeRefundWriter } from '../disputes-refunds.js';
+import { createTransitionEffects, releasedNoticeDelayMs } from './effects.js';
 import { createTransitionJobs } from './transitions.jobs.js';
 import { createTransitionNotifications } from './notifications.js';
 import { applyChargeOutcome } from './outcomes.js';
@@ -292,16 +293,48 @@ describe('invoice transitions with real PostgreSQL', () => {
     expect(f.email.messages.filter(m => m.to === 'staff@example.invalid')).toHaveLength(1);
     expect(f.email.messages.filter(m => m.to === 'payer@example.invalid')).toHaveLength(1);
   });
+  it('sends a tagged duplicate refund past a dashboard refund on the same payment, instead of taking it', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    f.provider.respondNextRefund('pending');
+    const dashboard = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount: 10000, idempotencyKey: 'dashboard' });
+    f.provider.setRefundStatus(dashboard.id, 'canceled');
+    const sent = vi.spyOn(f.provider, 'refund');
+    await f.drain();
+    const [reservation] = (await f.read()).refunds;
+    expect(reservation).toMatchObject({ status: 'succeeded', reason: 'duplicate_payment' });
+    expect(reservation!.processorId).not.toBe(dashboard.id);
+    expect(sent.mock.calls).toEqual([[{ chargeId: f.success.paymentIntentId, amount: 10000,
+      idempotencyKey: `invoice:${f.invoice.id}:duplicate:${f.success.paymentId}`, reservationId: reservation!.id }]]);
+  });
+  it('keeps the old reconciliation and request for a duplicate reservation from before the marker', async () => {
+    const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
+    await f.transitions.cardSucceeded(f.context, f.success);
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ taggedAt: null }));
+    const sent = vi.spyOn(f.provider, 'refund');
+    f.provider.loseNextResponse('refund'); await f.drain();
+    expect(sent.mock.calls).toEqual([[{ chargeId: f.success.paymentIntentId, amount: 10000,
+      idempotencyKey: `invoice:${f.invoice.id}:duplicate:${f.success.paymentId}` }]]);
+    const [lost] = await f.provider.listRefunds(f.success.paymentIntentId);
+    f.clock.set('2028-03-10T17:00:02Z');
+    const job = f.jobs.jobs.find(j => j.status === 'queued' && j.runAt <= f.clock.now())!;
+    await f.effects.run((job.payload as { effectId: string }).effectId,
+      { jobId: job.id, gymId: f.gymId, timezone: 'America/Vancouver', attempt: 2, clock: f.clock });
+    expect(sent).toHaveBeenCalledTimes(1);
+    expect((await f.read()).refunds).toMatchObject([{ status: 'succeeded', processorId: lost!.id, taggedAt: null }]);
+  });
   it('recovers a lost duplicate-refund response after restart without issuing a second refund', async () => {
     const f = await fixture(); await succeed(f); await f.transitions.manualPayment(f.context, f.manual);
     await f.transitions.cardSucceeded(f.context, f.success);
     f.provider.loseNextResponse('refund'); await f.drain();
-    expect((await f.read()).refunds[0]!.status).toBe('pending');
+    expect((await f.read()).refunds[0]).toMatchObject({ status: 'pending', taggedAt: expect.any(Date) });
     f.clock.set('2028-03-10T17:00:02Z');
     const restored = createTransitionEffects({ ...f.effectOptions, transitions: createInvoiceTransitions(f.options) });
     const job = f.jobs.jobs.find(j => j.status === 'queued' && j.runAt <= f.clock.now())!;
+    const sent = vi.spyOn(f.provider, 'refund');
     await restored.run((job.payload as { effectId: string }).effectId,
       { jobId: job.id, gymId: f.gymId, timezone: 'America/Vancouver', attempt: 2, clock: f.clock });
+    expect(sent).not.toHaveBeenCalled();
     expect((await f.read()).refunds[0]!.status).toBe('succeeded');
     const changes = await f.provider.listChangesSince(new Date('2028-03-10T00:00:00Z'));
     expect(new Set(changes.changes.filter(c => c.kind === 'refund').map(c => c.object.id)).size).toBe(1);
@@ -427,6 +460,48 @@ describe('invoice transitions with real PostgreSQL', () => {
   const refundNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
     .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'refund_failed')
     .map(row => (row.after as { refundId: string }).refundId);
+  describe('a released duplicate-payment reservation', () => {
+    const releasedNotices = (rows: Awaited<ReturnType<Fixture['read']>>) => rows.audits
+      .filter(row => row.action === effectCreated && (row.after as { notice?: string }).notice === 'duplicate_released');
+    const staffEmails = (f: Fixture) => f.email.messages.filter(m => m.subject.includes("wasn't refunded automatically"));
+    /** A duplicate payment of 100.00, and the dashboard refund a webhook delivers before the worker runs. */
+    async function dashboardRefund(f: Fixture, amount: number, status: 'pending' | 'succeeded') {
+      await succeed(f); await f.transitions.manualPayment(f.context, f.manual); await f.drain();
+      await f.transitions.cardSucceeded(f.context, f.success);
+      const writer = createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.transitions });
+      const paid = (await f.read()).payments.find(row => row.id === f.success.paymentId)!;
+      const dashboard = await f.provider.refund({ chargeId: f.success.paymentIntentId, amount, idempotencyKey: 'dashboard' });
+      const deliver = (value: 'pending' | 'succeeded' | 'canceled') => writer.refund(f.gymId, paid, { ...dashboard, status: value });
+      await deliver(status);
+      return { deliver };
+    }
+    const settle = async (f: Fixture) => { f.clock.advance(releasedNoticeDelayMs); await f.drain(); };
+    it('tells staff what a partial dashboard refund left unrefunded, once, after the delay', async () => {
+      const f = await fixture(), sent = vi.spyOn(f.provider, 'refund'), { deliver } = await dashboardRefund(f, 5000, 'succeeded');
+      await f.drain();
+      expect(sent).toHaveBeenCalledTimes(1); // Only the dashboard refund: the worker sent nothing.
+      expect((await f.read()).refunds.find(row => row.reason === 'duplicate_payment')).toMatchObject({ status: 'failed', processorId: null });
+      expect(staffEmails(f)).toEqual([]);
+      await settle(f); await deliver('succeeded'); await settle(f);
+      expect(staffEmails(f)).toHaveLength(1);
+      expect(staffEmails(f)[0]).toMatchObject({ to: 'staff@example.invalid' });
+      expect(staffEmails(f)[0]!.text).toContain(`${formatMinorUnits(5000, 'CAD')} of that payment isn't recorded as refunded yet`);
+      expect(releasedNotices(await f.read())).toHaveLength(1);
+    });
+    it('names the whole payment when the pending dashboard refund that released it is canceled', async () => {
+      const f = await fixture(), { deliver } = await dashboardRefund(f, 10000, 'pending');
+      await deliver('canceled'); await f.drain(); await settle(f);
+      expect((await f.read()).refunds.filter(row => row.status === 'canceled')).toHaveLength(1);
+      expect(staffEmails(f)).toHaveLength(1);
+      expect(staffEmails(f)[0]!.text).toContain(`${formatMinorUnits(10000, 'CAD')} of that payment isn't recorded as refunded yet`);
+    });
+    it('sends no notice when a dashboard refund of the whole payment succeeded', async () => {
+      const f = await fixture(); await dashboardRefund(f, 10000, 'succeeded');
+      await f.drain(); await settle(f);
+      expect(releasedNotices(await f.read())).toHaveLength(1);
+      expect(staffEmails(f)).toEqual([]);
+    });
+  });
   it('notifies staff once when a processor refund fails while pending or is first recorded as failed', async () => {
     const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success); await f.drain();
     const base = { invoiceId: f.invoice.id, paymentId: f.success.paymentId, currency: 'CAD' };

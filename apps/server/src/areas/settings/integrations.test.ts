@@ -19,6 +19,7 @@ import { authConfig } from '../../infra/auth/config.js';
 import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { StripePayments } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
+import { createInvoiceTransitions } from '../billing/transitions/index.js';
 import type { StripeConfig } from '../setup/stripe-step.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
@@ -310,6 +311,12 @@ describe('Settings → Payments: test to live', () => {
     expect(await snapshot(gymC)).toEqual({ ...before, attempts: [...before.attempts, pending] });
     expect(await row(gymC)).toEqual(gym);
     await database.forGym(gymC, (tx) => tx.update(paymentAttempts).set({ status: 'failed', resolvedAt: clock.now() }).where(eq(paymentAttempts.id, pending.id)));
+    // So does a refund reservation, until it's released.
+    const transitions = createInvoiceTransitions({ scope: database.forGym, clock }), system = { gymId: gymC, actor: { kind: 'system' as const } };
+    const stuck = { invoiceId: paid.id, paymentId: cardPayment.id, refundId: uuidv7(), amountCents: 100, currency: cardPayment.currency };
+    await transitions.refund(system, { ...stuck, status: 'pending', tagged: true });
+    expect((await saveTo(appC(), 'rk_live_gymc', { clearTestData: true })).json?.error?.details).toEqual({ restrictedKey: ['payments_in_progress'] });
+    await transitions.refund(system, { ...stuck, status: 'failed' });
 
     const switched = await saveTo(appC(), 'rk_live_gymc', { clearTestData: true });
     expect(switched.status, JSON.stringify(switched.json)).toBe(200);

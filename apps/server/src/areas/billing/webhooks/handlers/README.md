@@ -26,7 +26,20 @@ refund or dispute arriving before success first applies the current successful
 payment with its provider timestamp; one whose payment hasn't succeeded stays
 retryable. Refunds use the transition service, retaining an existing local
 refund/reservation ID or a deterministic UUIDv5 for a new processor refund.
-Duplicate-payment refunds reuse the worker's reservation.
+A refund takes a tagged reservation only by the row ID in its own metadata, with
+the same amount, on the same payment (gym and payment ownership still come from
+the parent, never that ID). Any other refund, such as one made in Stripe's dashboard,
+is recorded as external under the UUIDv5, whether it ended succeeded, failed or
+canceled, and leaves tagged reservations to the app's own refund. If it leaves no room
+for them on the payment, Stripe can't have accepted those refunds, so the newest are
+released as `failed`, with no processor refund. A staff reservation sends no notice; a
+duplicate-payment reservation tells staff what's left unrefunded (see the transitions
+README). A refund that still turns up naming a released row is recorded as external. An untagged reservation,
+from before `refunds.tagged_at`, keeps the older match: a refund with no named
+reservation attaches to the payment's single untagged reservation of that amount, and
+any other amount is an error. Tagged duplicate-payment refunds reuse the worker's
+reservation the same way, and the worker's own reconciliation takes only a refund
+naming its reservation.
 
 Disputes update only the invoice's dispute ID/status, under its row lock, with an
 audit; the invoice transitions alone change its status. `won`, `lost`, and `closed`

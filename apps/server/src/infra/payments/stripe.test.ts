@@ -215,6 +215,38 @@ it('moves fake refunds only as the processor can', async () => {
   expect(payments.setRefundStatus(refund.id, 'failed')).toMatchObject({ status: 'failed' });
   expect(() => payments.setRefundStatus(refund.id, 'succeeded')).toThrow('cannot move');
 });
+it('sends a reservation ID only when asked, and reads it from the refund itself, never its parent', async () => {
+  const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
+  await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  const plain = await payments.refund({ chargeId: intent.id, amount: 10, idempotencyKey: 'plain' });
+  const request = { chargeId: intent.id, amount: 10, idempotencyKey: 'tagged', reservationId: 'reservation_1' };
+  const tagged = await payments.refund(request);
+  const sent = transport.requests.filter(input => input.method === 'POST' && input.path === '/v1/refunds');
+  expect(sent.map(input => input.params?.metadata)).toEqual([
+    { gym_id: gymId, invoice_id: 'invoice_fixture' }, { gym_id: gymId, invoice_id: 'invoice_fixture', reservation_id: 'reservation_1' }]);
+  expect(sent.map(input => input.idempotencyKey)).toEqual(['plain', 'tagged']);
+  expect(plain).not.toHaveProperty('reservationId');
+  expect(tagged).toMatchObject({ reservationId: 'reservation_1', metadata: { gymId } });
+  expect(await payments.readPaymentObject({ kind: 'refund', id: tagged.id })).toMatchObject({ value: { object: { reservationId: 'reservation_1' } } });
+  expect((await payments.listRefunds(intent.id)).map(refund => refund.reservationId)).toEqual([undefined, 'reservation_1']);
+  // A parent's metadata doesn't name a reservation.
+  (transport.objects.get(intent.id)!.metadata as { reservation_id?: string }).reservation_id = 'reservation_2';
+  expect(await payments.readPaymentObject({ kind: 'refund', id: plain.id })).toMatchObject({ value: { object: { id: plain.id } } });
+  expect(await payments.readPaymentObject({ kind: 'refund', id: plain.id })).not.toMatchObject({ value: { object: { reservationId: expect.anything() } } });
+});
+it('refuses a fake refund retried with other parameters, a reservation ID included', async () => {
+  const payments = new FakePayments(gymId), intent = await payments.createCharge(charge);
+  await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });
+  const request = { chargeId: intent.id, amount: 40, idempotencyKey: 'refund', reservationId: 'reservation_1' };
+  const refund = await payments.refund(request);
+  expect(refund.reservationId).toBe('reservation_1');
+  expect(await payments.refund(request)).toEqual(refund);
+  await expect(payments.refund({ chargeId: intent.id, amount: 40, idempotencyKey: 'refund' })).rejects.toThrow();
+  await expect(payments.refund({ ...request, reservationId: 'reservation_2' })).rejects.toThrow();
+  const plain = { chargeId: intent.id, amount: 10, idempotencyKey: 'plain' };
+  expect(await payments.refund(plain)).not.toHaveProperty('reservationId');
+  await expect(payments.refund({ ...plain, reservationId: 'reservation_1' })).rejects.toThrow();
+});
 it('keeps a cancelled refund apart from a failed one and reads an action-needed refund as pending', async () => {
   const { payments, transport } = fixture(), intent = await payments.createCharge(charge);
   await payments.confirmCharge(intent.id, { idempotencyKey: 'confirm' });

@@ -67,8 +67,8 @@ async function fixture(kind: 'cycle' | 'one_off' = 'cycle') {
   return { gymId, clock, household, invoice, attempt, provider, transport, jobs, email, inbox, composed, handlers, context, run, read, drain };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
-function refund(f: Fixture, id = 're_dashboard', amount = 2500, status = 'succeeded') {
-  f.transport.objects.set(id, { id, object: 'refund', charge: 'ch_2', amount, currency: 'usd', status, metadata: {}, created: 1792929600 });
+function refund(f: Fixture, id = 're_dashboard', amount = 2500, status = 'succeeded', metadata: Record<string, string> = {}) {
+  f.transport.objects.set(id, { id, object: 'refund', charge: 'ch_2', amount, currency: 'usd', status, metadata, created: 1792929600 });
 }
 function setup(f: Fixture, id = 'seti_new', method = 'pm_3155') {
   f.transport.objects.set(id, { id, object: 'setup_intent', customer: 'cus_fixture', status: 'succeeded',
@@ -377,9 +377,24 @@ describe('billing webhook handlers with PostgreSQL and Stripe adapter fixtures',
   it('adopts a duplicate-payment refund reservation without reducing the accepted payment', async () => {
     const f = await fixture(); await f.composed.transitions.manualPayment({ gymId: f.gymId, actor: { kind: 'system' } },
       { invoiceId: f.invoice.id, paymentId: uuidv7(), method: 'cash', amountCents: 10000, currency: 'USD', paidAt: f.clock.now().toISOString() });
-    await f.run('payment_intent.succeeded'); refund(f, 're_dashboard', 10000);
+    await f.run('payment_intent.succeeded');
+    const [reservation] = (await f.read()).refunds;
+    refund(f, 're_worker', 10000, 'succeeded', { reservation_id: reservation!.id });
     await f.run('charge.refunded');
-    expect((await f.read()).refunds).toHaveLength(1); expect((await f.read()).invoice.status).toBe('paid');
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation!.id, processorId: 're_worker', status: 'succeeded' }]);
+    expect((await f.read()).invoice.status).toBe('paid');
+  });
+  it('releases a duplicate-payment reservation that a dashboard refund of the whole payment leaves no room for', async () => {
+    const f = await fixture(); await f.composed.transitions.manualPayment({ gymId: f.gymId, actor: { kind: 'system' } },
+      { invoiceId: f.invoice.id, paymentId: uuidv7(), method: 'cash', amountCents: 10000, currency: 'USD', paidAt: f.clock.now().toISOString() });
+    await f.run('payment_intent.succeeded');
+    const [reservation] = (await f.read()).refunds;
+    refund(f, 're_dashboard', 10000);
+    await f.run('charge.refunded');
+    const rows = await f.read();
+    expect(rows.refunds).toHaveLength(2); expect(rows.invoice.status).toBe('paid');
+    expect(rows.refunds.find(row => row.id === reservation!.id)).toMatchObject({ status: 'failed', processorId: null });
+    expect(rows.refunds.find(row => row.processorId === 're_dashboard')).toMatchObject({ status: 'succeeded', amountCents: 10000 });
   });
   it.each(billingWebhookTypes.filter(t => t.startsWith('charge.dispute.')))('records current dispute state for %s without reopening paid invoices', async type => {
     const f = await fixture(); await f.run('payment_intent.succeeded');

@@ -81,6 +81,11 @@ refunds, and refuses a mismatched parent. It never scans events or unrelated
 payment intents/disputes. Refunds can be refreshed individually with
 `readPaymentObject` before applying invoice transitions.
 
+`refund` takes an optional `reservationId`, sent as `reservation_id` in the
+refund's metadata and read back from that metadata only, never the parent's. It is
+part of the idempotent request: a retry must repeat it, or its absence, exactly.
+A refund made outside the app has none.
+
 Refund status is normalized to `succeeded`, `pending` (including
 `requires_action`), `failed`, or `canceled`. A canceled refund was cancelled at
 the processor before it completed, usually by staff in the dashboard; it is kept

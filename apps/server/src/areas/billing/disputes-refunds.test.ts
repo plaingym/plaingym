@@ -65,7 +65,7 @@ async function fixture() {
     alertJobs: await tx.select().from(jobs).where(and(eq(jobs.gymId, gymId), eq(jobs.name, sendAlertJob))),
   }));
   const drain = async () => { for (let n = 0; n < 10 && await queue.runNext(); n++) { /* bounded */ } };
-  return { gymId, provider, email, mail, alerts, runner, webhook, restore, pause, read, drain };
+  return { gymId, provider, email, mail, alerts, runner, transitions, webhook, restore, pause, read, drain };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function charged(f: Fixture, options: { lost?: boolean } = {}) {
@@ -306,5 +306,124 @@ describe('one dispute and refund writer for webhooks and restore', () => {
     const refund = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: 'dashboard_refund' });
     expect(await intentReads()).toBe(baseline);
     expect((await f.read()).refunds).toEqual([expect.objectContaining({ processorId: refund.id })]);
+  });
+});
+
+describe('matching a processor refund to a refund reservation', () => {
+  const system = (f: Fixture) => ({ gymId: f.gymId, actor: { kind: 'system' as const } });
+  /** A reservation committed by the app; `tagged: false` is one from before the marker. */
+  async function reserve(f: Fixture, amountCents: number, tagged = true) {
+    const { invoice, payments: [payment] } = await f.read(), refundId = uuidv7();
+    await f.transitions.refund(system(f), { invoiceId: invoice.id, paymentId: payment!.id, refundId, amountCents,
+      currency: payment!.currency, status: 'pending', ...(tagged ? { tagged } : {}) });
+    return refundId;
+  }
+  const row = async (f: Fixture, id: string) => (await f.read()).refunds.find(refund => refund.id === id);
+  const dashboard = (f: Fixture, intentId: string, amount: number) => f.provider.refund({ chargeId: intentId, amount, idempotencyKey: `dashboard:${uuidv7()}` });
+  const delivered = (f: Fixture, id: string) => f.webhook('refund.updated', { kind: 'refund', id });
+
+  it('records a dashboard refund of the same amount as external and leaves the reservation pending', async () => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000);
+    const refund = await dashboard(f, intentId, 2000);
+    await delivered(f, refund.id); await delivered(f, refund.id);
+    expect(await row(f, reservation)).toMatchObject({ status: 'pending', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status: 'succeeded', processorId: refund.id, taggedAt: null });
+    expect((await f.read()).refunds).toHaveLength(2);
+    expect((await f.read()).invoice.status).toBe('partially_refunded');
+  });
+  it('matches the app’s own refund to its reservation by row ID, beside a dashboard refund of the same amount', async () => {
+    const f = await fixture(), intentId = await charged(f), first = await reserve(f, 2000), second = await reserve(f, 2000);
+    const external = await dashboard(f, intentId, 2000), own = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: `refund:${second}`, reservationId: second });
+    await delivered(f, own.id); await delivered(f, external.id);
+    expect(await row(f, second)).toMatchObject({ status: 'succeeded', processorId: own.id });
+    expect(await row(f, first)).toMatchObject({ status: 'pending', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, external.id))).toMatchObject({ status: 'succeeded', processorId: external.id });
+    expect((await f.read()).refunds).toHaveLength(3);
+  });
+  it('matches the reservation of a refund whose response was lost when restore finds it', async () => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000);
+    const own = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: `refund:${reservation}`, reservationId: reservation });
+    await f.restore();
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation, status: 'succeeded', processorId: own.id }]);
+  });
+  it('keeps the old match for a reservation from before the marker', async () => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000, false);
+    const other = await dashboard(f, intentId, 1500);
+    await expect(delivered(f, other.id)).rejects.toThrow('Refund reservation is ambiguous');
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation, status: 'pending', processorId: null, taggedAt: null }]);
+    const same = await dashboard(f, intentId, 2000);
+    await delivered(f, same.id);
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation, status: 'succeeded', processorId: same.id, taggedAt: null }]);
+  });
+  it.each(['failed', 'canceled'] as const)('still releases a reservation from before the marker when a refund ends %s', async status => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000, false);
+    f.provider.respondNextRefund('pending');
+    const refund = await dashboard(f, intentId, 2000);
+    f.provider.setRefundStatus(refund.id, status);
+    await delivered(f, refund.id);
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation, status, processorId: refund.id }]);
+  });
+  it.each(['failed', 'canceled'] as const)('releases a reservation when the app’s own refund ends %s', async status => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 10000);
+    f.provider.respondNextRefund('pending');
+    const own = await f.provider.refund({ chargeId: intentId, amount: 10000, idempotencyKey: `refund:${reservation}`, reservationId: reservation });
+    f.provider.setRefundStatus(own.id, status);
+    await delivered(f, own.id); await delivered(f, own.id);
+    expect((await f.read()).refunds).toMatchObject([{ id: reservation, status, processorId: own.id }]);
+    expect((await f.read()).invoice.status).toBe('paid');
+    // The amount is free again, for a new reservation of all of it.
+    await reserve(f, 10000);
+  });
+  it.each(['failed', 'canceled'] as const)('leaves a reservation pending when a dashboard refund ends %s', async status => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 10000);
+    f.provider.respondNextRefund('pending');
+    const refund = await dashboard(f, intentId, 10000);
+    f.provider.setRefundStatus(refund.id, status);
+    await delivered(f, refund.id);
+    expect(await row(f, reservation)).toMatchObject({ status: 'pending', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status, processorId: refund.id });
+  });
+  it('releases only as many of the newest reservations as a dashboard refund leaves no room for, without a staff notice', async () => {
+    const f = await fixture(), intentId = await charged(f);
+    const older = await reserve(f, 4000), newer = await reserve(f, 4000), refund = await dashboard(f, intentId, 4000);
+    await delivered(f, refund.id); await delivered(f, refund.id);
+    expect(await row(f, older)).toMatchObject({ status: 'pending', processorId: null });
+    expect(await row(f, newer)).toMatchObject({ status: 'failed', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status: 'succeeded', amountCents: 4000 });
+    const effects = (await f.read()).audits.filter(audit => audit.action === 'billing.invoice.effect_created');
+    expect(effects.filter(audit => (audit.after as { notice?: string }).notice === 'refund_failed')).toEqual([]);
+  });
+  it('records as external a refund that reached the processor after its reservation was released', async () => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000);
+    await f.transitions.refund(system(f), { invoiceId: (await f.read()).invoice.id, paymentId: (await f.read()).payments[0]!.id,
+      refundId: reservation, amountCents: 2000, currency: 'CAD', status: 'failed' });
+    const own = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: `refund:${reservation}`, reservationId: reservation });
+    await delivered(f, own.id);
+    expect(await row(f, reservation)).toMatchObject({ status: 'failed', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, own.id))).toMatchObject({ status: 'succeeded', processorId: own.id });
+  });
+  it('doesn’t attach a refund naming a reservation of another amount, an untagged row, or another payment', async () => {
+    const f = await fixture(), intentId = await charged(f), reservation = await reserve(f, 2000), legacy = await reserve(f, 500, false);
+    const { invoice } = await f.read();
+    const otherPayment = await factory('payments', f.gymId, { invoiceId: invoice.id, currency: 'CAD', amountCents: 3000 });
+    const elsewhere = uuidv7();
+    await db.forGym(f.gymId, tx => tx.insert(refunds).values({ id: elsewhere, gymId: f.gymId, paymentId: otherPayment.id, amountCents: 1000,
+      currency: 'CAD', taggedAt: new Date(), createdAt: new Date() }));
+    for (const [named, amount] of [[reservation, 1500], [legacy, 500], [elsewhere, 1000]] as const) {
+      const refund = await f.provider.refund({ chargeId: intentId, amount, idempotencyKey: `tagged:${named}`, reservationId: named });
+      await delivered(f, refund.id);
+      expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status: 'succeeded', processorId: refund.id, amountCents: amount });
+    }
+    for (const id of [reservation, legacy, elsewhere]) expect(await row(f, id)).toMatchObject({ status: 'pending', processorId: null });
+  });
+  it('never takes another gym’s reservation, whatever the refund’s metadata says', async () => {
+    const f = await fixture(), other = await fixture(), intentId = await charged(f);
+    await charged(other);
+    const theirs = await reserve(other, 2000), ours = await reserve(f, 2000);
+    const refund = await f.provider.refund({ chargeId: intentId, amount: 2000, idempotencyKey: 'foreign', reservationId: theirs });
+    await delivered(f, refund.id);
+    expect(await row(other, theirs)).toMatchObject({ status: 'pending', processorId: null });
+    expect(await row(f, ours)).toMatchObject({ status: 'pending', processorId: null });
+    expect(await row(f, processorRefundId(f.gymId, refund.id))).toMatchObject({ status: 'succeeded', processorId: refund.id });
   });
 });

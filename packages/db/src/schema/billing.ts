@@ -146,6 +146,8 @@ export const refunds = pgTable('refunds', {
   ...base(), paymentId: uuid('payment_id').notNull(), amountCents: integer('amount_cents').notNull(),
   currency: text('currency').notNull(), processorId: text('processor_id'), status: text('status').notNull().default('pending'),
   reason: text('reason'), resolvedAt: instant('resolved_at'),
+  /** Set when the app created this reservation to send its row ID on the processor refund; null on rows from before the column. */
+  taggedAt: instant('tagged_at'),
 }, (t) => [...scoped('refunds', t),
   foreignKey({ name: 'refunds_payment_fk', columns: [t.gymId, t.paymentId, t.currency], foreignColumns: [payments.gymId, payments.id, payments.currency] }),
   unique('refunds_processor_key').on(t.gymId, t.processorId),

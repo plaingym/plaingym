@@ -61,7 +61,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
       if (!isAccepted) {
         const refundId = uuidv7();
         await tx.insert(refunds).values({ id: refundId, gymId: context.gymId, paymentId: request.paymentId,
-          amountCents: request.amountCents, currency: request.currency, reason: 'duplicate_payment', createdAt: clock.now() });
+          amountCents: request.amountCents, currency: request.currency, reason: 'duplicate_payment', createdAt: clock.now(),
+          taggedAt: clock.now() });
         await audit(tx, context, clock, 'billing.refund.recorded', 'refund', refundId,
           { paymentId: request.paymentId, status: 'pending', amountCents: request.amountCents, currency: request.currency });
         await effect(tx, context, clock, { kind: 'refund_duplicate', invoiceId: invoice.id, paymentId: request.paymentId, refundId });
@@ -178,7 +179,8 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         if (previous) await tx.update(refunds).set(values).where(eq(refunds.id, request.refundId));
         else {
           const inserted = await tx.insert(refunds).values({ ...values, id: request.refundId, gymId: context.gymId,
-            paymentId: request.paymentId, amountCents: request.amountCents, currency: request.currency, createdAt: clock.now() })
+            paymentId: request.paymentId, amountCents: request.amountCents, currency: request.currency, createdAt: clock.now(),
+            taggedAt: request.tagged && request.status === 'pending' ? clock.now() : null })
             .onConflictDoNothing().returning();
           if (!inserted.length) conflict('Refund identity already recorded');
         }
@@ -192,6 +194,11 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
         // in the processor's dashboard), so it sends no notice.
         if (request.status === 'failed' && values.processorId !== null)
           await effect(tx, context, clock, { kind: 'staff_notice', notice: 'refund_failed', invoiceId: invoice.id,
+            paymentId: payment.id, refundId: request.refundId });
+        // A duplicate payment's reservation released with no processor refund stops its automatic refund for good, so
+        // staff hear what stayed with the gym.
+        else if (request.status === 'failed' && previous?.reason === 'duplicate_payment')
+          await effect(tx, context, clock, { kind: 'staff_notice', notice: 'duplicate_released', invoiceId: invoice.id,
             paymentId: payment.id, refundId: request.refundId });
         if (!(request.status === 'succeeded' || reversed && ['partially_refunded', 'refunded'].includes(invoice.status))
           || !await accepted(tx, payment.id)) return result('applied', invoice);

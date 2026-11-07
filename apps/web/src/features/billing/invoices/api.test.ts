@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { createInvoiceClient } from './api.js';
+import { createInvoiceClient, invoiceError, InvoiceRequestError } from './api.js';
 
 describe('invoice error reasons', () => {
   it('uses the shared structured reason reader', async () => {
@@ -16,5 +16,9 @@ describe('invoice error reasons', () => {
   it('keeps the unavailable fallback for a non-JSON proxy response', async () => {
     const client = createInvoiceClient(async () => new Response('Proxy error', { status: 503 }));
     await expect(client.invoices({})).rejects.toMatchObject({ reason: 'payments_unavailable' });
+  });
+  // Both answers follow a cleared reservation: a generic error would send staff back to refund again without checking.
+  it.each(['refund_reconciled', 'refund_released'])('tells staff to check the payment after %s', reason => {
+    expect(invoiceError(new InvoiceRequestError(reason))).toContain('only if it is still owed');
   });
 });

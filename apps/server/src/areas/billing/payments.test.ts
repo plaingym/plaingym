@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // eslint-disable-next-line database/system-tables -- One test reads backend PIDs to see a refund wait on the gym row lock.
 import { eq, sql } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- One test holds the gym row the way a settings save does.
-import { auditEvents, gyms, invoices, paymentAttempts, paymentMethods, payments, signedLinks, uuidv7 } from '@plaingym/db';
+import { auditEvents, gyms, invoices, paymentAttempts, paymentMethods, payments, refunds, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { canStaff, createTranslator, type StaffRole } from '@plaingym/shared';
@@ -22,12 +22,14 @@ import { StripeFixtures } from '../../infra/payments/stripe-fixtures.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
 import { FakeEmail } from '../../infra/email/index.js';
 import { authorize } from '../staff/auth.permissions.js';
+import { createGoLiveService } from '../settings/go-live.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createSignedLinksService } from '../links/service.js';
 import { createSignedLinksRoutes } from '../links/service.routes.js';
 import { createInvoiceTransitions } from './transitions/index.js';
 import { createTransitionNotifications } from './transitions/notifications.js';
 import { createPaymentService } from './payments.js';
+import { createDisputeRefundWriter, processorRefundId } from './disputes-refunds.js';
 import { createChargeRunner, type ChargeResult } from './runner/index.js';
 import { configurePayments, createPaymentRoutes } from './payments.routes.js';
 import { createPaymentJobs } from './payments.jobs.js';
@@ -59,6 +61,21 @@ async function fixture() {
   return { gymId, clock, user, home, card, provider, jobs, email, settings, context, options, runner, service, create, invoice, paid, payment, detachCard, links };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+const refundRows = (paymentId: string, f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(refunds).where(eq(refunds.paymentId, paymentId)));
+const paymentRow = async (paymentId: string, f: Fixture) => (await db.forGym(f.gymId, tx => tx.select().from(payments).where(eq(payments.id, paymentId))))[0]!;
+/** While the app's next refund is waiting to reach the processor, someone refunds the payment in its dashboard and the
+ * webhook for that refund is processed. Returns the dashboard refund's ID once it exists. */
+function dashboardRefund(f: Fixture, paid: typeof payments.$inferSelect, amount: number) {
+  const writer = createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions });
+  const send = f.provider.refund.bind(f.provider), made: { id?: string } = {};
+  vi.spyOn(f.provider, 'refund').mockImplementationOnce(async request => {
+    const dashboard = await send({ chargeId: request.chargeId, amount, idempotencyKey: 'dashboard' });
+    made.id = dashboard.id;
+    await writer.refund(f.gymId, paid, dashboard);
+    return send(request);
+  });
+  return made;
+}
 function app(f: Fixture, principal: Principal, realRegistrations = false) {
   if (realRegistrations) configurePayments(f.service);
   return createApp({ clock: f.clock, origin, authorize,
@@ -293,6 +310,140 @@ describe('one-off collection and payment durability', () => {
     expect(refund).toHaveBeenCalledTimes(1);
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).refunds).toHaveLength(1);
   });
+  it('retries a reservation from before the marker with its original request, and leaves it unmarked', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, refundId = uuidv7();
+    await f.options.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents: 500, currency: 'USD', status: 'pending' });
+    const refund = vi.spyOn(f.provider, 'refund');
+    await f.service.refund(f.context, payment.id, { amountCents: 500, currency: 'USD', reason: 'Returned item' });
+    expect(refund.mock.calls).toEqual([[{ chargeId: (await paymentRow(payment.id, f)).paymentIntentId, amount: 500, idempotencyKey: `refund:${refundId}` }]]);
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'succeeded', taggedAt: null }]);
+  });
+  it('tags a new card reservation and repeats the same request when a lost response is retried', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!;
+    const input = { amountCents: 1000, currency: 'USD', reason: 'Returned item' }, refund = vi.spyOn(f.provider, 'refund');
+    f.provider.loseNextResponse('refund'); await expect(f.service.refund(f.context, payment.id, input)).rejects.toThrow();
+    const [row] = await refundRows(payment.id, f);
+    expect(row).toMatchObject({ status: 'pending', processorId: null, taggedAt: f.clock.now() });
+    f.clock.set(new Date(f.clock.now().getTime() + 60_000).toISOString());
+    expect(await f.service.refund(f.context, payment.id, input)).toMatchObject({ id: row!.id, status: 'succeeded' });
+    const sent = { chargeId: (await paymentRow(payment.id, f)).paymentIntentId, amount: 1000, idempotencyKey: `refund:${row!.id}`, reservationId: row!.id };
+    expect(refund.mock.calls).toEqual([[sent], [sent]]);
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: row!.id, taggedAt: row!.taggedAt }]);
+  });
+  it('leaves a reservation to the app’s own refund when a same-amount dashboard refund lands first', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, paid = await paymentRow(payment.id, f);
+    const dashboard = dashboardRefund(f, paid, 1000), input = { amountCents: 1000, currency: 'USD', reason: 'Returned item' };
+    const own = await f.service.refund(f.context, payment.id, input);
+    expect(own).toMatchObject({ status: 'succeeded', amountCents: 1000 });
+    const rows = await refundRows(payment.id, f), external = rows.find(row => row.id !== own.id)!, reservation = rows.find(row => row.id === own.id)!;
+    expect(rows).toHaveLength(2);
+    expect(external).toMatchObject({ id: processorRefundId(f.gymId, dashboard.id!), processorId: dashboard.id, status: 'succeeded', taggedAt: null });
+    expect(reservation.processorId).not.toBe(dashboard.id);
+    expect(reservation).toMatchObject({ status: 'succeeded', reason: 'Returned item' });
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('partially_refunded');
+  });
+  it('releases a reservation when a dashboard refund of the whole payment leaves it no room', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, paid = await paymentRow(payment.id, f);
+    const dashboard = dashboardRefund(f, paid, 2500), input = { amountCents: 2500, currency: 'USD', reason: 'Returned item' };
+    await expect(f.service.refund(f.context, payment.id, input)).rejects.toThrow('Refund exceeds charge');
+    const rows = await refundRows(payment.id, f);
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.processorId === dashboard.id)).toMatchObject({ status: 'succeeded', amountCents: 2500 });
+    expect(rows.find(row => row.processorId === null)).toMatchObject({ status: 'failed', amountCents: 2500, reason: 'Returned item' });
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('refunded');
+    await expect(f.service.refund(f.context, payment.id, input)).rejects.toMatchObject({ code: 'conflict' });
+  });
+  /** A staff reservation committed 23 hours ago whose request never left, on a charged invoice of 25.00. */
+  async function lapsedReservation(f: Fixture, amountCents = 1000, tagged = true) {
+    await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!, refundId = uuidv7();
+    await f.options.transitions.refund(f.context, { invoiceId: f.invoice.id, paymentId: payment.id, refundId, amountCents,
+      currency: 'USD', status: 'pending', ...(tagged ? { tagged } : {}) });
+    f.clock.advance(23 * 3600_000);
+    return { payment, paid: await paymentRow(payment.id, f), refundId };
+  }
+  const staffRefund = { currency: 'USD', reason: 'Returned item' };
+  const readiness = async (f: Fixture) => (await createGoLiveService({ scope: db.forGym, clock: f.clock, smtpConfigured: async () => true })
+    .checklist(f.gymId)).items.find(item => item.id === 'reconciliation_complete')?.status;
+  it.each([1000, 500])('releases a tagged reservation that never reached Stripe once its window has passed, for a request of %i, moving no money', async amountCents => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
+    const dashboard = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: 'dashboard' });
+    await createDisputeRefundWriter({ scope: db.forGym, clock: f.clock, transitions: f.options.transitions }).refund(f.gymId, paid, dashboard);
+    expect(await refundRows(payment.id, f)).toHaveLength(2);
+    expect(await readiness(f)).toBe('needs_attention');
+    const refund = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['refund_reconciled'] } });
+    expect(refund).not.toHaveBeenCalled();
+    const rows = await refundRows(payment.id, f);
+    expect(rows.find(row => row.id === refundId)).toMatchObject({ status: 'failed', processorId: null });
+    expect(rows.find(row => row.processorId === dashboard.id)).toMatchObject({ status: 'succeeded', amountCents: 1000 });
+    expect(await readiness(f)).not.toBe('needs_attention');
+    // The next request is a new decision, with a new reservation and key.
+    expect(await f.service.refund(f.context, payment.id, { ...staffRefund, amountCents })).toMatchObject({ status: 'succeeded', amountCents });
+    expect(refund.mock.calls[0]![0].idempotencyKey).not.toBe(`refund:${refundId}`);
+  });
+  it('records the refund that names a tagged reservation past its window, and sends nothing', async () => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
+    const own = await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 1000, idempotencyKey: `refund:${refundId}`, reservationId: refundId });
+    const refund = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ details: { reason: ['refund_reconciled'] } });
+    expect(refund).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'succeeded', processorId: own.id }]);
+    expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('partially_refunded');
+  });
+  it('releases a tagged reservation past its window when the refund naming it has another amount', async () => {
+    const f = await fixture(), { payment, paid, refundId } = await lapsedReservation(f);
+    await f.provider.refund({ chargeId: paid.paymentIntentId!, amount: 700, idempotencyKey: 'edited', reservationId: refundId });
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ details: { reason: ['refund_reconciled'] } });
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'failed', processorId: null }]);
+  });
+  it('keeps refusing a reservation past its window that is unmarked or already at Stripe, without reading Stripe', async () => {
+    const unmarked = await fixture(), old = await lapsedReservation(unmarked, 1000, false);
+    const atStripe = await fixture(), sent = await lapsedReservation(atStripe);
+    await atStripe.options.transitions.refund(atStripe.context, { invoiceId: atStripe.invoice.id, paymentId: sent.payment.id, refundId: sent.refundId,
+      processorId: 're_at_stripe', amountCents: 1000, currency: 'USD', status: 'pending' });
+    for (const [f, { payment, refundId }] of [[unmarked, old], [atStripe, sent]] as const) {
+      const listed = vi.spyOn(f.provider, 'listRefunds'), refund = vi.spyOn(f.provider, 'refund');
+      await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 })).rejects.toMatchObject({ code: 'conflict' });
+      await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 500 }))
+        .rejects.toMatchObject({ details: { reason: ['pending_refund'] } });
+      expect(listed).not.toHaveBeenCalled(); expect(refund).not.toHaveBeenCalled();
+      expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'pending' }]);
+    }
+  });
+  it('leaves a tagged reservation inside its window alone, and another gym’s staff can’t reach one past it', async () => {
+    const f = await fixture(), other = await fixture(), { payment, refundId } = await lapsedReservation(f);
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 3600_000) }).where(eq(refunds.id, refundId)));
+    const listed = vi.spyOn(f.provider, 'listRefunds');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 500 }))
+      .rejects.toMatchObject({ details: { reason: ['pending_refund'] } });
+    expect(listed).not.toHaveBeenCalled();
+    await db.forGym(f.gymId, tx => tx.update(refunds).set({ createdAt: new Date(f.clock.now().getTime() - 24 * 3600_000) }).where(eq(refunds.id, refundId)));
+    await expect(other.service.refund(other.context, payment.id, { ...staffRefund, amountCents: 1000 })).rejects.toMatchObject({ code: 'not_found' });
+    expect(listed).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refundId, status: 'pending' }]);
+  });
+  it('sends nothing when a webhook releases the reservation between the two steps of a staff refund', async () => {
+    const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
+    const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!;
+    const transition = f.options.transitions.refund.bind(f.options.transitions);
+    vi.spyOn(f.options.transitions, 'refund').mockImplementationOnce(async (context, request) => {
+      await transition(context, request);
+      return transition(context, { ...request, status: 'failed' });
+    });
+    const refund = vi.spyOn(f.provider, 'refund');
+    await expect(f.service.refund(f.context, payment.id, { ...staffRefund, amountCents: 1000 }))
+      .rejects.toMatchObject({ code: 'conflict', details: { reason: ['refund_released'] } });
+    expect(refund).not.toHaveBeenCalled();
+    expect(await refundRows(payment.id, f)).toMatchObject([{ status: 'failed', processorId: null, reason: null }]);
+  });
   it('refuses to refund a card payment a switch to live marked as test, without calling Stripe', async () => {
     const f = await fixture(); await f.service.charge(f.context, f.invoice.id);
     const payment = (await f.service.getInvoice(f.gymId, f.invoice.id)).payments[0]!;
@@ -413,6 +564,8 @@ describe('one-off collection and payment durability', () => {
     const refund = await f.service.refund(f.context, payment.id, { amountCents: 500, currency: 'USD', reason: 'Returned cash' });
     expect(refund).toMatchObject({ status: 'succeeded', reason: 'Returned cash' });
     expect((await f.service.getInvoice(f.gymId, f.invoice.id)).invoice.status).toBe('partially_refunded');
+    // No processor refund will ever name it.
+    expect(await refundRows(payment.id, f)).toMatchObject([{ id: refund.id, taggedAt: null }]);
   });
   it('records the actual success time when looking up a delayed lost response', async () => {
     const f = await fixture(), paidAt = f.clock.now(); f.provider.loseNextResponse('confirmCharge');

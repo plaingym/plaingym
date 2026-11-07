@@ -6,7 +6,7 @@ import { clock as systemClock } from '../../core/clock.js';
 import { CustomerCreationInProgress, CustomerDeleted, ERASED_CUSTOMER_NAME, normalizeChargeOutcome, type DetachOptions, type Payments, type CreateCustomer, type CreateCharge, type CheckoutRequest,
   type CheckoutSession, type CheckoutExpiry, type ChargeReference, type ChargeOutcome, type PaymentMetadata,
   type PaymentObjectReference, type PaymentObjectResult, type PaymentObject, type PaymentChange,
-  type PaymentEvent, type Refund, type CustomerMatch } from './index.js';
+  type PaymentEvent, type Refund, type RefundRequest, type CustomerMatch } from './index.js';
 import type { Json, ObjectData, PaymentTransport, ProviderRequest } from './transport.js';
 import { PaymentWebhookError } from './webhook-error.js';
 
@@ -284,17 +284,20 @@ export class StripePayments implements Payments {
   }
   async #refund(object: ObjectData): Promise<Refund> {
     const parent = await this.#parentIntent(object);
+    // Only the refund's own metadata names a reservation; its gym still comes from the parent.
+    const reservationId = data(object.metadata ?? {}).reservation_id;
     return { id: id(object.id), chargeId: id(parent.id), amount: Number(object.amount), currency: String(object.currency),
       status: object.status === 'succeeded' ? 'succeeded' : object.status === 'canceled' ? 'canceled'
         : object.status === 'pending' || object.status === 'requires_action' ? 'pending' : 'failed',
-      metadata: this.#metadata(parent) };
+      metadata: this.#metadata(parent), ...(typeof reservationId === 'string' && reservationId ? { reservationId } : {}) };
   }
-  async refund(request: { chargeId: string; amount: number; idempotencyKey: string }): Promise<Refund> {
+  async refund(request: RefundRequest): Promise<Refund> {
     assertNoTransaction('payments.refund'); key(request.idempotencyKey);
     const parent = await this.#ownedIntent(request.chargeId); money(request.amount, String(parent.currency));
     if (parent.status !== 'succeeded') throw new Error('Only successful charges can be refunded');
     return this.#refund(await this.#post('/v1/refunds', { payment_intent: request.chargeId, amount: request.amount,
-      metadata: { gym_id: this.gymId, ...(data(parent.metadata).invoice_id ? { invoice_id: data(parent.metadata).invoice_id } : {}) } }, request.idempotencyKey));
+      metadata: { gym_id: this.gymId, ...(data(parent.metadata).invoice_id ? { invoice_id: data(parent.metadata).invoice_id } : {}),
+        ...(request.reservationId === undefined ? {} : { reservation_id: request.reservationId }) } }, request.idempotencyKey));
   }
   async listRefunds(chargeId: string): Promise<readonly Refund[]> {
     assertNoTransaction('payments.listRefunds');

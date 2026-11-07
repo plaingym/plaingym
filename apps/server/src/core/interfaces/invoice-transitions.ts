@@ -48,6 +48,9 @@ export interface RefundTransition extends Money {
   /** canceled: cancelled at the processor before it completed (by staff, so no notice); failed: it did not reach the
    * payer. Both are final and release the amount. */
   readonly status: 'pending' | 'succeeded' | 'failed' | 'canceled';
+  /** Marks a new reservation whose processor refund will carry its row ID. It applies only when this call creates the
+   * row with status pending, never to an existing row, so a retry of an older reservation keeps its request. */
+  readonly tagged?: boolean;
 }
 export interface InvoiceTransitionResult {
   readonly outcome: 'applied' | 'ignored' | 'duplicate_payment';

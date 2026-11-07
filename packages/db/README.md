@@ -53,6 +53,9 @@ Migration `0018_signed_links_campaign_index.sql` adds `signed_links_campaign_idx
 Migration `0020_intake_rate_limits.sql` adds `intake_rate_limits`, a system-only table of public intake
 counters, unique on `(gym_id, route_key, client_key, window_start)` with nulls not distinct, because a
 null gym means an install-level request. It starts empty and changes no existing data.
+Migration `0021_refund_tagged_at.sql` adds nullable `refunds.tagged_at`, set on a new card refund
+reservation whose processor refund carries the row ID. Existing rows stay null, with no backfill, and
+keep matching a processor refund as they did before.
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
