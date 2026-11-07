@@ -115,9 +115,12 @@ version you run.
 | "Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again" | Nothing was changed; the current version was restarted. | Set up backups, run the command again. |
 | "The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting." | The snapshot failed (bucket unreachable, credentials changed). The line above it says why. | Check the bucket and credentials under **Settings → Email, payments and backups**, and `sudo docker compose logs app`; run again. |
 | "Update failed; restarting the previous image." | The new version didn't start or didn't pass its health check. | The updater restarted the previous image and left the old image in `.env`. Read `sudo docker compose logs app` for the reason before trying again. Across a rollback floor it restarts the previous image only if nothing migrated ([below](#updating-across-a-rollback-floor)). |
-| "The failed update changed the database, and … can't run on it." | An update across a rollback floor migrated the database, then failed. | [Restore](restoring.md#when-rollback-is-refused) the pre-upgrade snapshot the message names. |
+| "The failed update changed the database, and … can't run on it." | An update across a rollback floor migrated the database, then failed. | Retry the same release with `sudo ./update.sh IMAGE`, or update to a newer compatible signed release, even while the app is stopped or restarting. To go back, [restore](restoring.md#when-rollback-is-refused) the snapshot the message names. |
+| "Update failed; the previous version stays stopped." | A retry after a migrated update failed. The previous version can't run on the database, so nothing restarts. | Read `sudo docker compose logs app`, then follow the next message: retry, or update to a newer compatible signed release. |
+| "Recovery requires … or a newer compatible signed release." or "Recovery requires a release whose rollback floor covers …" | The requested release can't recover this install ([below](#updating-across-a-rollback-floor)). Nothing was changed. | Use the failed release again or a newer compatible signed release, or restore the snapshot. |
+| "The recovery image is missing or incompatible." | The failed release's image is no longer on the server, so forward recovery can't take its snapshot. The app stays stopped. | Pull that release's image again and retry, or [restore](restoring.md#when-rollback-is-refused) the pre-upgrade snapshot. |
 | "Another update is running." | An `update.sh` is already running (it takes a lock). | Wait for it to finish. |
-| "The app must be running before an update." | The app container is stopped. | `sudo docker compose up -d`, then update. |
+| "The app must be running before an update." | The app is stopped and no migrated update is recorded for recovery. | Read `sudo docker compose logs app`. If the current release will not start, run `sudo ./update.sh --rollback`; the recorded floor still applies. If an update migrated and failed, retry its release or a newer compatible signed release as [below](#updating-across-a-rollback-floor). |
 
 ### Roll back a release
 
@@ -125,6 +128,8 @@ From the installation directory, run `sudo ./update.sh --rollback`. The updater
 selects the previous successful version from `version-history.tsv`, checks it
 against every rollback floor recorded since installation, takes another snapshot,
 and starts the previous image by its immutable digest. Keep that image locally.
+This also works when the app is stopped or restarting: its snapshot runs in a
+separate container, and the same floor check applies before anything changes.
 The history records the attempt and outcome; the health page records a successful
 rollback as a version change with its source and destination versions.
 
@@ -155,12 +160,37 @@ way back is the pre-upgrade snapshot.
 If such an update fails, the updater stops the new version and checks the database:
 
 * **Nothing was migrated.** The previous version starts again and the attempt leaves
-  no trace in the floor. Fix the cause and update again.
-* **The database changed.** The previous version stays stopped, and the updater names
-  the pre-upgrade snapshot to [restore](restoring.md#when-rollback-is-refused). The
-  floor stays recorded, even though startup failed.
+  no trace in the floor. Fix the cause and update again. On a retry after a migrated
+  failure the previous version stays stopped, because the earlier attempt already
+  changed the database.
+* **The database changed.** The previous version stays stopped. Retry the failed
+  release with `sudo ./update.sh IMAGE`, or choose a newer compatible signed release;
+  both work with the app stopped or restarting. The updater still verifies the
+  signature, digest and floor. To go back, [restore](restoring.md#when-rollback-is-refused)
+  the pre-upgrade snapshot named beside that option. The floor stays recorded, even
+  though startup failed, and older releases stay refused.
 * **The database can't be read.** The previous version stays stopped. Start PostgreSQL
   and run `update.sh` again, which also finishes an update that was killed part way.
+
+A newer compatible signed release is one newer than the failed release whose rollback
+floor is at or below the failed release, such as a patch of it or the next minor.
+
+Keep the failed release's image locally. Forward recovery takes its next snapshot
+with that compatible image's maintenance command, without starting its server or
+running migrations before the backup. These retry snapshots use manual-backup retention,
+so repeated retries cannot displace the original snapshot from the two pre-upgrade slots.
+`.schema-recovery` records the failed release and the snapshot from before the first
+migration until an update succeeds. A later failed migration updates the recovery release
+while keeping that original snapshot. Failure messages, rollback refusals and the schema
+guard keep naming that restore point, including after recovery succeeds and clears the
+record. While the record exists, a rollback refusal also names the retry, which keeps
+the data written since that snapshot. A retry that changes nothing preserves that record and the existing floor,
+so it can be tried again. Do not remove the record
+or `schema-compatibility.yaml` to force an older image to start.
+
+Every manual release update records the migrations before starting the target,
+including updates within the compatibility window. If a failed attempt changed
+nothing, it closes as `abandoned` and contributes no rollback floor.
 
 ### After the update
 

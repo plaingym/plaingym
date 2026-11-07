@@ -29,6 +29,8 @@ STATE="$ROOT/auto-update.state"
 PENDING="$ROOT/auto-update.result"
 INFLIGHT="$ROOT/.auto-update.inflight"
 ATTEMPT="$ROOT/.schema-attempt"
+RECOVERY="$ROOT/.schema-recovery"
+recovery_version=
 work=
 # A requested update fails; the nightly patch run has nothing to do.
 rotation_check() {
@@ -52,8 +54,12 @@ changed=false
 interrupted=false
 previous_id=
 attempt_end=failed
-# A failed attempt to cross a floor, which the guard already refuses the previous version on. Stopped, the target can't
-# still be migrating, so the database says what it did: unchanged, the guard comes down and the attempt never counted.
+recovery_notice() {
+  failed_version=$(cut -f3 "$RECOVERY")
+  restore_snapshot=$(cut -f6 "$RECOVERY")
+  echo "The failed update changed the database, and $from_version can't run on it. Retry $failed_version with ./update.sh IMAGE, or update to a newer compatible signed release. To go back, restore pre-upgrade snapshot $restore_snapshot; see docs/restoring.md." >&2
+}
+# Stop the target before comparing migrations. An unchanged attempt never counts towards the floor.
 settle_attempt() {
   [ -f "$ATTEMPT" ] || return 0
   compose stop app || true
@@ -63,8 +69,18 @@ settle_attempt() {
     return 1
   fi
   if [ "$state" != "$(cut -f1 "$ATTEMPT")" ]; then
-    rm -f "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
-    echo "The failed update changed the database, and $from_version can't run on it. Restore pre-upgrade snapshot $snapshot; see docs/restoring.md." >&2
+    rm -f "$ROOT/schema-compatibility.yaml.before"
+    if version_at_least "$from_version" "$(schema_floor)"; then rm -f "$ATTEMPT"; return 0; fi
+    if [ -f "$RECOVERY" ]; then
+      # A later migration changes the recovery release, but its snapshot is already past the original boundary.
+      restore_snapshot=$(cut -f6 "$RECOVERY")
+      awk -F '\t' -v snapshot="$restore_snapshot" 'BEGIN { OFS="\t" } { $6=snapshot; print }' "$ATTEMPT" > "$RECOVERY.next"
+      mv "$RECOVERY.next" "$RECOVERY"
+      rm -f "$ATTEMPT"
+    else
+      mv "$ATTEMPT" "$RECOVERY"
+    fi
+    recovery_notice
     return 1
   fi
   restore_schema_guard
@@ -74,6 +90,11 @@ settle_attempt() {
 }
 rollback() {
   settle_attempt || return 1
+  # A recovery retry that changed nothing still cannot restart code below the already-migrated floor.
+  if [ -f "$RECOVERY" ]; then
+    recovery_notice
+    return 1
+  fi
   APP_IMAGE="$previous_id" compose up -d --no-deps --pull never --wait --wait-timeout 90 app
 }
 cleanup() {
@@ -81,7 +102,9 @@ cleanup() {
   trap - EXIT HUP INT TERM
   outcome=unchanged
   if [ "$exit_status" -ne 0 ] && [ "$changed" = true ]; then
-    echo 'Update failed; restarting the previous image.' >&2
+    if [ "$requested_rollback" = true ]; then echo 'Rollback failed; restarting the original image.' >&2
+    elif [ -f "$RECOVERY" ]; then echo 'Update failed; the previous version stays stopped.' >&2
+    else echo 'Update failed; restarting the previous image.' >&2; fi
     if rollback; then outcome=rolled_back; else outcome=rollback_failed; exit_status=1; fi
   elif [ "$stopped" = true ]; then
     if rollback; then outcome=restarted; else outcome=rollback_failed; exit_status=1; fi
@@ -110,9 +133,11 @@ cleanup() {
   [ -z "$snapshot_file" ] || rm -f -- "$snapshot_file"
   exit "$exit_status"
 }
-# Stop the app, snapshot, start the target, check it, and pin it. The manual path pulls first, while the app runs.
+# Stop the app, snapshot, start the target, check it, and pin it. The manual path pulls first.
 swap_image() { # TARGET
-  compose ps --status running --services | grep -qx app || fail 'The app must be running before an update.'
+  if [ "$requested_rollback" = false ] && [ -z "$recovery_version" ]; then
+    app_running || fail 'The app must be running before an update.'
+  fi
   previous_id=$(docker image inspect "$current" --format '{{.Id}}')
   if [ "$patch" = false ] && [ "$requested_rollback" = false ] && [ -z "$target_id" ]; then
     stage=pull
@@ -127,8 +152,20 @@ swap_image() { # TARGET
   # immutable upload references, multipart retry/abort, retention, and backup_runs.
   # Its own message above says why it failed, such as backups that aren't set up yet (Settings → Email, payments and backups).
   snapshot_file=$(mktemp "$ROOT/.snapshot.XXXXXX")
-  compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade > "$snapshot_file" \
-    || fail 'The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting.'
+  if [ -n "$recovery_version" ]; then
+    # The pinned image is below the floor. Use the recorded compatible image's maintenance command directly:
+    # its ordinary entrypoint would run migrations before the snapshot. No server or migrations start here.
+    recovery_image=$(cut -f4 "$RECOVERY")
+    if [ "$(image_version "$recovery_image")" != "$recovery_version" ] || ! version_at_least "$recovery_version" "$(schema_floor)"; then
+      fail 'The recovery image is missing or incompatible. Restore the pre-upgrade snapshot; see docs/restoring.md.'
+    fi
+    # Keep retries out of the two pre-upgrade slots, so they cannot evict the pre-migration restore point.
+    APP_IMAGE="$recovery_image" compose run --rm --no-deps -T --entrypoint node app /app/maintenance.mjs snapshot manual > "$snapshot_file" \
+      || fail 'The pre-upgrade snapshot failed (reason above). The app stays stopped; retry the recovery update.'
+  else
+    compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade > "$snapshot_file" \
+      || fail 'The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting.'
+  fi
   snapshot_output=$(cat "$snapshot_file")
   rm -f -- "$snapshot_file"
   snapshot_file=
@@ -139,14 +176,17 @@ swap_image() { # TARGET
   if valid_version "$to_version" && valid_version "$target_floor" && [ "$requested_rollback" = false ]; then
     effective_floor=$(schema_floor)
     if [ -z "$effective_floor" ] || version_at_least "$target_floor" "$effective_floor"; then effective_floor=$target_floor; fi
-    # The guard goes up before the target can migrate. When it refuses the previous version, record the schema first.
-    if ! version_at_least "$from_version" "$effective_floor"; then
+    # Record every manual upgrade, including attempts within the compatibility window. Automatic patches already
+    # proved their migrations identical and keep their existing recovery path.
+    if [ "$patch" = false ]; then
       schema_before=$(schema_state)
       [ -n "$schema_before" ] || fail "The database's migrations couldn't be read. Nothing was changed; the current version is restarting."
       keep_schema_guard
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$schema_before" "$from_version" "$to_version" "$target_id" "$target_floor" "$snapshot" > "$ATTEMPT"
     fi
-    write_schema_guard "$effective_floor" "$to_version" "$snapshot"
+    schema_snapshot=$snapshot
+    [ ! -f "$RECOVERY" ] || schema_snapshot=$(cut -f6 "$RECOVERY")
+    write_schema_guard "$effective_floor" "$to_version" "$schema_snapshot"
   fi
   history_record "$to_version" "$target_id" starting "$target_floor" "$snapshot"
   history_started=true
@@ -161,7 +201,7 @@ swap_image() { # TARGET
   awk -v image="$1" 'BEGIN { found=0 } /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next } { print } END { if (!found) print "APP_IMAGE=" image }' "$ROOT/.env" > "$ROOT/.env.next"
   chmod 0600 "$ROOT/.env.next"
   mv "$ROOT/.env.next" "$ROOT/.env"
-  rm -f "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
+  rm -f "$RECOVERY" "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
   changed=false
   stage=finished
 }
@@ -202,7 +242,11 @@ send_pending() {
 report() { # RESULT REASON: keep the result, say it on the journal, and give it to the app.
   printf '%s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$from_version" "$to_version" > "$PENDING.next"
   mv "$PENDING.next" "$PENDING"
-  printf 'Automatic patch update: %s%s (running %s, newest %s).\n' "$1" "$([ "$2" = - ] || printf ', %s' "$2")" "$from_version" "$to_version"
+  if [ "$requested_rollback" = true ]; then
+    printf 'Rollback: %s%s (from %s to %s).\n' "$1" "$([ "$2" = - ] || printf ', %s' "$2")" "$from_version" "$to_version"
+  else
+    printf 'Automatic patch update: %s%s (running %s, newest %s).\n' "$1" "$([ "$2" = - ] || printf ', %s' "$2")" "$from_version" "$to_version"
+  fi
   send_pending || echo 'The app could not record this result yet; the next run sends it.' >&2
 }
 finish() { # RESULT REASON [STATUS]: report and stop. Expected situations exit 0; problems exit 1.
@@ -242,19 +286,26 @@ rotation_check
 trap cleanup EXIT
 trap 'interrupted=true; exit 130' HUP INT TERM
 
-# A run killed outright while crossing a floor left its record: finish what its exit handler would have done.
+# A run killed outright during a manual update left its record: finish what its exit handler would have done.
+# This run only does that, even when --rollback started it, so it reports the earlier update, not a rollback.
 if [ -f "$ATTEMPT" ]; then
   read -r _ from_version to_version target_id target_floor snapshot < "$ATTEMPT"
   previous_id=$(docker image inspect "$current" --format '{{.Id}}')
   if [ "$previous_id" = "$target_id" ]; then
-    rm -f "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
+    rm -f "$RECOVERY" "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
   else
     history_started=true
     changed=true
     stage=startup
     interrupted=true
-    fail 'An earlier update was interrupted; restarting the pinned image. Run the update again afterwards.'
+    requested_rollback=false
+    fail 'An earlier update was interrupted; checking the database, and restarting the pinned image if it can run. Run the update again afterwards.'
   fi
+fi
+
+if [ -f "$RECOVERY" ] && [ "$patch" = false ]; then
+  recovery_version=$(cut -f3 "$RECOVERY")
+  valid_version "$recovery_version" || fail 'Invalid schema recovery state. Restore the pre-upgrade snapshot; see docs/restoring.md.'
 fi
 
 if [ "$requested_rollback" = true ]; then
@@ -267,7 +318,9 @@ if [ "$requested_rollback" = true ]; then
   target_floor=$(schema_floor)
   if [ -n "$target_floor" ] && ! version_at_least "$to_version" "$target_floor"; then
     restore_snapshot=$(floor_snapshot "$target_floor")
-    fail "Cannot roll back to $to_version: the schema requires $target_floor. Restore pre-upgrade snapshot ${restore_snapshot:-listed in version-history.tsv}; see docs/restoring.md. Nothing was changed."
+    forward=
+    [ -z "$recovery_version" ] || forward=" Or retry $recovery_version with ./update.sh IMAGE, or update to a newer compatible signed release, which keeps the data written since that snapshot."
+    fail "Cannot roll back to $to_version: the schema requires $target_floor. Restore pre-upgrade snapshot ${restore_snapshot:-listed in version-history.tsv}; see docs/restoring.md.$forward Nothing was changed."
   fi
   printf '%s\n' "$target" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'The previous image digest is invalid.'
   target_id=$(docker image inspect "$target" --format '{{.Id}}') || fail 'The previous image is no longer local. Restore its pre-upgrade snapshot; see docs/restoring.md.'
@@ -282,7 +335,9 @@ fi
 
 if [ "$patch" = false ]; then
   target=$1
-  [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
+  if [ -z "$recovery_version" ]; then
+    [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
+  fi
   history_install
   from_version=$(image_version "$current")
   APP_IMAGE="$target" compose pull app
@@ -303,9 +358,16 @@ if [ "$patch" = false ]; then
     [ -n "$target_floor" ] || target_floor=$to_version
     previous_floor=$(schema_floor)
     [ -z "$previous_floor" ] || version_at_least "$to_version" "$previous_floor" || fail "The schema requires $previous_floor. Restore the pre-upgrade snapshot; see docs/restoring.md."
+    if [ -n "$recovery_version" ]; then
+      version_at_least "$to_version" "$recovery_version" || fail "Recovery requires $recovery_version or a newer compatible signed release. Restore the pre-upgrade snapshot to go back; see docs/restoring.md. Nothing was changed."
+      version_at_least "$recovery_version" "$target_floor" || fail "Recovery requires a release whose rollback floor covers $recovery_version; $to_version has floor $target_floor. Nothing was changed."
+    fi
     if ! version_at_least "$from_version" "$target_floor"; then
       echo "$to_version has rollback floor $target_floor. Once it migrates the database, $from_version can't run on it: --rollback will refuse, and the way back is the pre-upgrade snapshot (docs/restoring.md)."
     fi
+  fi
+  if [ -n "$recovery_version" ] && ! valid_version "$to_version"; then
+    fail "Recovery requires $recovery_version or a newer compatible signed release. Nothing was changed."
   fi
   swap_image "$target"
   printf 'Updated to %s. Coordinated pre-upgrade snapshot completed.\n' "$target"

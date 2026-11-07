@@ -60,6 +60,14 @@ schema_floor() { # The largest floor attempted, even if the newer image did not 
     END { raise(pending); print floor }' "$ROOT/version-history.tsv"
 }
 floor_snapshot() { # FLOOR: the snapshot from before the first attempt that kept this floor
+  # A recovery may raise the floor again. Its guard keeps the original restore point after recovery succeeds,
+  # while each history row still records the snapshot taken immediately before that particular attempt.
+  if [ -f "$ROOT/schema-compatibility.yaml" ]; then
+    guard_snapshot=$(awk -v floor="$1" '
+      $1 == "SCHEMA_ROLLBACK_FLOOR:" { gsub(/\047/, "", $2); matches=($2 == floor) }
+      $1 == "SCHEMA_SNAPSHOT:" && matches { gsub(/\047/, "", $2); print $2 }' "$ROOT/schema-compatibility.yaml")
+    if [ -n "$guard_snapshot" ] && [ "$guard_snapshot" != - ]; then printf '%s\n' "$guard_snapshot"; return; fi
+  fi
   awk -F '\t' -v floor="$1" '
     $4 == "abandoned" { if ($6 == found) found=""; next }
     found == "" && $4 == "starting" && $5 == floor && $6 != "-" { found=$6 }

@@ -14,8 +14,10 @@ export ROOT
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ] && [ -f "$temporary/output" ]; then cat "$temporary/output" >&2; fi
-  if [ -f "$ROOT/.env" ]; then compose down --volumes --remove-orphans >/dev/null 2>&1 || true; fi
-  docker image rm "$run_id:oldest" "$run_id:old" "$run_id:new" >/dev/null 2>&1 || true
+  if [ -f "$ROOT/.env" ]; then
+    timeout 120 docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
+  timeout 120 docker image rm "$run_id:oldest" "$run_id:old" "$run_id:new" >/dev/null 2>&1 || true
   rm -rf -- "$temporary"
 }
 trap cleanup EXIT
@@ -51,6 +53,8 @@ services:
   app:
     image: ${APP_IMAGE}
     cpus: 0.25
+    restart: on-failure:20
+    command: ['sh', '-c', '${APP_COMMAND:-exec timeout 300 nice -n 10 python -m http.server 3000 --bind 0.0.0.0}']
     ports:
       - '${TEST_LOOPBACK:-127.0.0.1}:0:3000'
     healthcheck:
@@ -60,6 +64,17 @@ services:
       retries: 20
 COMPOSE
 export TEST_LOOPBACK="${E2E_LOOPBACK:-127.0.0.1}"
+# Recreate the current image with a failing command, leaving the normal command and pin unchanged.
+crash_loop() {
+  APP_COMMAND='exit 1' compose up -d --no-deps app > "$temporary/output" 2>&1
+  container=$(compose ps -aq app)
+  for _ in $(seq 20); do
+    app_status=$(docker inspect "$container" --format '{{.State.Status}}')
+    [ "$app_status" != restarting ] || break
+    sleep 0.1
+  done
+  [ "$app_status" = restarting ]
+}
 printf 'COMPOSE_PROJECT_NAME=%s\nAPP_IMAGE=%s\n' "$run_id" "$run_id:new" > "$ROOT/.env"
 history_record v1.1.0 "$oldest_id" install v1.1.0 -
 history_record v1.2.0 "$old_id" update v1.1.0 00000000-0000-4000-8000-000000000003
@@ -69,12 +84,16 @@ write_schema_guard v1.1.0 v1.3.1 00000000-0000-4000-8000-000000000009
 grep -q 00000000-0000-4000-8000-000000000001 "$ROOT/schema-compatibility.yaml"
 grep -qx 'COMPOSE_FILE=compose.yaml:schema-compatibility.yaml' "$ROOT/.env"
 compose up -d --wait --wait-timeout 30 > "$temporary/output" 2>&1
+# A stopped app can be rolled back; the snapshot runs independently of it.
+compose stop app > "$temporary/output" 2>&1
 sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1
+grep -q 'Rollback: updated' "$temporary/output"
 [ "$(read_env APP_IMAGE)" = "$old_id" ]
 port=$(compose port app 3000 | sed 's/.*://')
 [ "$(curl --fail --silent "http://$TEST_LOOPBACK:$port/")" = 1.2.0 ]
 tail -n 1 "$ROOT/version-history.tsv" | grep -q "$(printf '\trollback\t')"
 # A second rollback keeps walking back, and never forward to the version just left; at the bottom there is nowhere to go.
+crash_loop
 sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1
 [ "$(read_env APP_IMAGE)" = "$oldest_id" ]
 port=$(compose port app 3000 | sed 's/.*://')
@@ -93,4 +112,13 @@ grep -q '00000000-0000-4000-8000-000000000002' "$temporary/output"
 [ "$before" = "$(cat "$ROOT/.env" "$ROOT/version-history.tsv" | sha256sum)" ]
 port=$(compose port app 3000 | sed 's/.*://')
 [ "$(curl --fail --silent "http://$TEST_LOOPBACK:$port/")" = 1.3.0 ]
-echo 'PASS: rollback serves the previous image by digest, walks back on a second run, records its snapshot and history, and refuses below the floor without changing the install.'
+for app_state in stopped restarting; do
+  if [ "$app_state" = stopped ]; then compose stop app > "$temporary/output" 2>&1
+  else crash_loop
+  fi
+  if sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1; then echo "Accepted rollback below the floor with app $app_state." >&2; exit 1; fi
+  grep -q 'Cannot roll back' "$temporary/output"
+  [ "$before" = "$(cat "$ROOT/.env" "$ROOT/version-history.tsv" | sha256sum)" ]
+done
+
+echo 'PASS: rollback from stopped and restarting apps serves the previous digest, walks back, records history and still refuses below the floor.'

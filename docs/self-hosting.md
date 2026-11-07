@@ -313,12 +313,14 @@ The updater:
    healthy;
 4. records the new image in `.env` only once the new version is healthy.
 
-If the new version fails to start, the updater restarts the previous image. Keep
-previous images on the server until you are sure of an update. Releases change the
-database only by adding to it (columns are dropped a release after they stop being
-used), so the previous version keeps working against the migrated database, and
-patch releases (x.y.Z) never change the database. Minor and major releases wait
-for you to run the updater.
+If the new version fails to start, the updater restarts the previous image when
+the recorded schema floor allows it. `sudo ./update.sh --rollback` also works with
+the app stopped or restarting, within that floor. If a failed update migrated
+across the floor, retry its release or update to a newer compatible signed release;
+to go back, restore the pre-upgrade snapshot. The [updating guide](updating.md)
+explains these recovery paths. Keep previous and failed-release images locally
+until you are sure of an update. Patch releases (x.y.Z) never change the database;
+minor and major releases wait for you to run the updater.
 
 ### Public website
 

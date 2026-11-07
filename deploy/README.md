@@ -300,12 +300,17 @@ sudo ./update.sh ghcr.io/plaingym/app:vX.Y.Z
 ```
 
 The updater takes an explicit semver tag or `sha256` digest, locks out
-concurrent updates, and requires the app to be running. It pulls the target
-image while the app still runs, verifies a release image against its signed
-manifest and digest, then stops the app and runs
+concurrent updates, and ordinarily requires the app to be running. A requested
+`--rollback` also accepts a stopped or restarting app, with the same floor check.
+After a recorded update migrated across a floor and failed, a manual update to
+that same release or a newer compatible signed release also accepts a stopped or
+restarting app. It pulls the target image, verifies a release image against its signed
+manifest and digest, then stops any running app and runs
 `node /app/maintenance.mjs snapshot pre-upgrade` in a one-off app container: a
-coordinated, encrypted install snapshot to the gym's backup destination, kept
-under the backup retention's pre-upgrade rule
+coordinated, encrypted install snapshot to the gym's backup destination, ordinarily kept
+under the backup retention's pre-upgrade rule. Forward-recovery retries use `snapshot manual`
+and its hourly/daily/weekly retention tiers, so they cannot displace the original snapshot
+from the two pre-upgrade slots
 (`apps/server/src/areas/health/backups.protocol.md`). Nothing is written between
 the snapshot and the start of the target image. Without configured backups the
 snapshot exits with "Backups are not set up: set them up in Settings → Email,
@@ -314,7 +319,14 @@ the current image. Any other snapshot failure prints a generic line (its cause g
 to the log without its message), with the same outcome. It then starts the target image, which applies its migrations before
 reporting healthy, runs the health check, and changes the persisted image pin
 in `.env` only on success. A failed image start or check restarts the exact
-previous local image (by image ID), so keep those images available. Restore a
+previous local image (by image ID) when the schema allows it, so keep those images available. If an update
+migrated across a floor, retry its release or update to a newer compatible signed
+release; the failure message names that option beside the snapshot to restore.
+Forward recovery snapshots with the failed release's compatible image, running
+its maintenance command directly so its entrypoint cannot migrate before the
+backup. Its recovery record and schema guard keep the snapshot from before the first
+failed migration, even if another attempt raises the floor. Failure and rollback-refusal
+messages name that original restore point. Keep that image locally. Restore a
 pre-upgrade snapshot like any other, from the setup wizard on a fresh install or
 with `gym-app restore`.
 
@@ -445,8 +457,11 @@ check or second check, a failed rollback, the nightly window, results kept until
 the app can record them, and an interrupted run. The floor test adds a fixture that
 refuses the previous image under a guard above it, as the app does: a failed update
 across a floor before and after migrating, an earlier guard put back, a skipped
-minor, a killed run, and the history a rollback reads. The rollback test swaps real
-local images and walks back two versions. The key rotation test drives
+minor, a killed run, unchanged attempts within the floor, and same-release or newer-release
+recovery with the app stopped or restarting. Numbered snapshots check that repeated
+recovery attempts retain and name the original restore point. The rollback test swaps real
+local images, walks back two versions from stopped and restarting apps, and checks
+that neither state permits a rollback below the floor. The key rotation test drives
 `rotate-key.sh` with the same kind of fixture: the order (stop, rotate, `.env`,
 CONNECT grant, start, health check), `.env` changing only after the rotation,
 a restart with the current key after repeated clean preflight refusals, the exact
@@ -481,10 +496,13 @@ have run; `abandoned` closes an attempt that left the database as it was, so its
 doesn't count. `update.sh --rollback` checks all recorded floors before changing
 anything, and reads the rows as a stack, so each run goes one version further back.
 `schema-compatibility.yaml` passes the checked floor, schema release and snapshot to
-the app. Keep it with the database. It goes up before a new image starts. When it
-refuses the running version, `.schema-attempt` keeps the database's migration state
+the app. Keep it with the database. It goes up before a new image starts. Before
+each manual release update, `.schema-attempt` keeps the database's migration state
 and `schema-compatibility.yaml.before` the guard it replaced, so a failed update or a
-later run can take it down if nothing migrated (`docs/updating.md`). A release changing
+later run can take it down if nothing migrated. If a migrated attempt leaves the
+pinned image below the floor, `.schema-recovery` keeps its identity until forward
+recovery succeeds; a retry that changes nothing preserves that record and floor
+(`docs/updating.md`). A release changing
 a file the installer copies (`update.sh`, `lib.sh`, `rotate-key.sh`, `compose.yaml`,
 `Caddyfile`, `postgres/`, systemd units or the signing key) names the required manual
 host-file steps in its notes;

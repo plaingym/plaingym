@@ -15,7 +15,7 @@ set -eu
 printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
 case "$*" in
   'image inspect '*) echo sha256:previous; exit 0 ;;
-  *' ps --status running --services') echo app ;;
+  *' ps --status running --services') [ "${APP_STATE:-running}" != running ] || echo app ;;
   *' pull app') [ "${FAIL_AT:-}" != pull ] ;;
   *' snapshot pre-upgrade')
     [ "${FAIL_AT:-}" != snapshot ] || { echo 'Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again' >&2; exit 1; } ;;
@@ -57,6 +57,15 @@ for stage in pull snapshot startup health; do
   else
     if grep -q ' stop app' "$CALLS"; then exit 1; fi
   fi
+done
+for app_state in stopped restarting; do
+  make_install "app_$app_state"
+  if APP_STATE="$app_state" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then
+    echo "Accepted an ordinary update with app $app_state and no recovery record." >&2; exit 1
+  fi
+  grep -q 'The app must be running before an update' "$temporary/output"
+  grep -qx APP_IMAGE=example:v1.0.0 "$case_dir/.env"
+  if grep -q 'stop app\|snapshot pre-upgrade\|up -d' "$CALLS"; then exit 1; fi
 done
 make_install locked
 touch "$case_dir/.rotate-key.inflight"
