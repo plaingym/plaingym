@@ -271,7 +271,9 @@ if [ "$requested_rollback" = true ]; then
   fi
   printf '%s\n' "$target" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'The previous image digest is invalid.'
   target_id=$(docker image inspect "$target" --format '{{.Id}}') || fail 'The previous image is no longer local. Restore its pre-upgrade snapshot; see docs/restoring.md.'
-  [ "$target_id" = "$target" ] && [ "$(image_version "$target")" = "$to_version" ] || fail 'The previous image identity does not match the history.'
+  if [ "$target_id" != "$target" ] || [ "$(image_version "$target")" != "$to_version" ]; then
+    fail 'The previous image identity does not match the history.'
+  fi
   from_version=$(image_version "$current")
   swap_image "$target"
   printf 'Rolled back to %s by digest. Pre-upgrade snapshot: %s.\n' "$to_version" "$snapshot"

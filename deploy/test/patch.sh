@@ -20,7 +20,8 @@ export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" RECORDS="$temporary/
 export UPDATE_SETTLE_SECONDS=0
 digest=sha256:$(printf 'd%.0s' $(seq 64))
 export DIGEST="$digest"
-export PREVIOUS_ID="sha256:$(printf 'a%.0s' $(seq 64))"
+PREVIOUS_ID="sha256:$(printf 'a%.0s' $(seq 64))"
+export PREVIOUS_ID
 
 # Docker: logs each call with the image it targets, and fails where FAIL_AT says.
 cat > "$temporary/bin/docker" <<'MOCK'
