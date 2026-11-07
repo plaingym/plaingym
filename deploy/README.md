@@ -34,6 +34,34 @@ SOURCE_URL=https://github.com/plaingym/plaingym/tree/REVIEWED_COMMIT \
 Use the release tag's source URL for a release build, or your fork's exact
 source URL for modifications. Docker's file-specific ignore list excludes
 credentials, Git history, dependencies, and local build outputs.
+
+To build an extracted source archive without Git history, use the pinned Node
+and pnpm versions from `.nvmrc` and `package.json`, then run
+`pnpm install --frozen-lockfile` in the extracted directory. Set `SOURCE_URL`
+to the exact public source URL for the archive, then run `pnpm build`.
+Without explicit build identity variables this embeds `<package version>+unknown` and commit
+`unknown`; it is a development build, not a release. Supply both
+`APP_BUILD_VERSION` and a full 40-character `APP_BUILD_REVISION` to embed a known
+identity; supplying only one is an error. Keep `SOURCE_URL` set when running
+the server too: the Source code link uses its `/source` redirect, which otherwise
+defaults to the project repository.
+Docker builds from an archive are also supported: run
+`docker build -f deploy/Dockerfile --build-arg SOURCE_URL=https://example.org/exact-source -t plaingym:archive .`
+in the extracted directory, replacing the example URL with the archive's public
+source URL. Omit both `VERSION` and `REVISION` build arguments to use the same
+`+unknown` identity. Empty runtime `APP_VERSION` and `APP_REVISION` values fall
+back to the embedded identity, so `/healthz` and the SPA agree. The image retains
+the supplied `SOURCE_URL` for its Source code link.
+Matching archive identities do not trigger a browser reload; a
+different version or commit does. Two archives with the same package version
+and unknown commit cannot be distinguished by the navigation check.
+
+The shared navigation check in admin, portal and kiosk runs at most once a
+minute and waits at most one second for `/healthz`. A changed identity loads the
+clicked destination, preserving its query and fragment. Link preloads and the
+development server do not check; failed checks leave navigation alone. If stale
+assets survive that load, the next check stops with an error instead of looping.
+
 Runtime images contain the server bundle, adjacent fonts, SPA, Node notices,
 dependency license texts, system copyright notices, and a package inventory at
 `/usr/local/share/system-packages.tsv`. The runtime image runs `node` alone: the

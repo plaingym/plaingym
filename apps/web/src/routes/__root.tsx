@@ -25,4 +25,4 @@ export function NotFound() {
   return <main id="main-content" className="p-6"><h1>{t('shell/shell:notFound')}</h1>
     <a href="/login" className="underline">{t('shell/shell:home')}</a></main>;
 }
-export const Route = createRootRoute({ beforeLoad: ({ preload }) => checkOnNavigation({ preload }), component: RootLayout, errorComponent: RootError, notFoundComponent: NotFound });
+export const Route = createRootRoute({ beforeLoad: ({ preload, location }) => checkOnNavigation({ preload, location }), component: RootLayout, errorComponent: RootError, notFoundComponent: NotFound });

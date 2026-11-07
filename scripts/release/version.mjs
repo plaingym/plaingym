@@ -23,7 +23,13 @@ export function buildInfo(cwd = root, env = process.env) {
   }
   const product = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')).version;
   if (!releasePattern.test(product)) throw new Error('package.json must contain a plain semantic version');
-  const commit = git(['rev-parse', 'HEAD'], cwd);
+  let commit;
+  try { commit = git(['rev-parse', 'HEAD'], cwd); }
+  catch (error) {
+    if (error.code === 'ENOENT' || /not a git repository/i.test(String(error.stderr)))
+      return { version: `${product}+unknown`, commit: 'unknown' };
+    throw error;
+  }
   const short = commit.slice(0, 7);
   const dirty = git(['status', '--porcelain', '--untracked-files=normal'], cwd) !== '';
   const tags = git(['tag', '--merged', 'HEAD', '--list', 'v*'], cwd).split('\n')

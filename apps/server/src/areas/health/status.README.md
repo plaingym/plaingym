@@ -47,8 +47,9 @@ advice: update by hand for the switch and a stopped timer; never install by hand
 (signature, digest, manifest, or a database change); otherwise the reason's own advice. The banner shows that message. Multi-gym mode, `UPDATE_CHECK=off`, a build whose version is not `X.Y.Z` or is `0.0.0` (a development
 build), and a `RELEASE_REPOSITORY` that is not `owner/name` are `not_configured`. `configureUpdateRoutes({ env })`
 (`updates.routes.ts`) gives the route the runtime's environment, as `configureHealthStatus` does the tile.
-Running version uses `APP_VERSION`, falling back to the Git identity embedded at
-build time (computed from the checkout for tsx development). The image sets
+Running version uses non-empty `APP_VERSION` and `APP_REVISION`, falling back to
+the identity embedded at build time (computed from the checkout for tsx
+development; source archives use `<package version>+unknown` and commit `unknown`). The image sets
 `APP_VERSION` and `APP_REVISION` from its `VERSION` and `REVISION` build arguments.
 The version tile includes the short commit in its message. `/healthz` exposes both
 the version and full commit without caching, for the browser's navigation guard.

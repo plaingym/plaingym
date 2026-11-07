@@ -5,7 +5,8 @@ export const clientVersion = typeof __BUILD_INFO__ === 'undefined' ? null : __BU
 type FollowOptions = {
   built?: { version: string; commit: string } | null;
   request?: typeof fetch;
-  reload?: () => void;
+  destination?: string;
+  reload?: (destination: string) => void;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 };
 
@@ -13,9 +14,13 @@ type FollowOptions = {
  * The root route's check. Hovering a link preloads its route, which must not reload the page under an
  * open form. `pnpm dev` runs two processes that compute the version apart, so the guard stays off there.
  */
-export function checkOnNavigation({ preload }: { preload: boolean }, options: FollowOptions & { development?: boolean } = {}) {
+let lastCheck = -Infinity;
+export function checkOnNavigation({ preload, location }: { preload: boolean; location: { href: string } }, options: FollowOptions & { development?: boolean } = {}) {
   if (preload || (options.development ?? import.meta.env.DEV)) return;
-  return followServerVersion(options);
+  const now = Date.now();
+  if (now - lastCheck < 60_000) return;
+  lastCheck = now;
+  return followServerVersion({ ...options, destination: location.href });
 }
 
 /** Shared root navigation guard covers admin, portal (including the installed PWA), and kiosk. */
@@ -25,7 +30,7 @@ export async function followServerVersion(options: FollowOptions = {}): Promise<
   const request = options.request ?? fetch;
   let remote: unknown;
   try {
-    const response = await request('/healthz', { cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(5000) });
+    const response = await request('/healthz', { cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(1000) });
     if (!response.ok) return;
     remote = await response.json();
   } catch { return; } // A network failure does not erase the current page.
@@ -36,5 +41,5 @@ export async function followServerVersion(options: FollowOptions = {}): Promise<
   const target = `${remote.version}:${remote.commit}`;
   if (storage.getItem(key) === target) throw new Error('The page could not load the server version');
   storage.setItem(key, target);
-  (options.reload ?? (() => window.location.reload()))();
+  (options.reload ?? ((destination) => window.location.assign(destination)))(options.destination ?? window.location.href);
 }
