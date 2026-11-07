@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@hono/zod-openapi';
 import { randomBytes } from 'node:crypto';
-import { describe, expect, inject, it } from 'vitest';
+import { describe, expect, inject, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { authAccount, encryptedFields, gyms, uuidv7 } from '@plaingym/db';
 import { cloneDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
+import { assertCatalog } from '../../../../../packages/db/src/security/catalog.js';
 // Maintenance fixtures must not keep an app session connected during a rotation.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection, scopedDatabase } from '@plaingym/db/client';
@@ -59,7 +60,9 @@ async function install(key: Buffer) {
 type Install = Awaited<ReturnType<typeof install>>;
 async function withInstall(key: Buffer, test: (install: Install) => Promise<void>) {
   const subject = await install(key);
-  try { await test(subject); } finally { await subject.cleanup(); }
+  try { await test(subject); } finally {
+    try { await subject.maintenance.restoreAppConnect(); } finally { await subject.cleanup(); }
+  }
 }
 /** Each value opens as v2 with `key` in its own row, with its own plaintext, and not with `other`. */
 function expectRotated(values: ReadonlyMap<string, string>, key: Buffer, other: Buffer) {
@@ -72,6 +75,90 @@ function expectRotated(values: ReadonlyMap<string, string>, key: Buffer, other: 
 }
 
 describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
+  it('waits for an existing session, refuses before rewriting, and restores CONNECT', async () => {
+    await withInstall(oldKey, async ({ database, maintenance, stored }) => {
+      const app = openConnection(database.appUrl, 1), probe = openConnection(database.appUrl, 1);
+      try {
+        await app.sql`select 1`;
+        const before = await stored();
+        await expect(maintenance.rotateKey(oldKey, newKey)).rejects.toThrow('1 app sessions remain');
+        expect(JSON.stringify([...(await stored())]) === JSON.stringify([...before])).toBe(true);
+        await expect(probe.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+        await maintenance.restoreAppConnect();
+        await probe.sql`select 1`;
+      } finally { await app.close(); await probe.close(); }
+    });
+  });
+
+  it('retains the host fence after committed pages and restores it after a crash rerun', async () => {
+    await withInstall(oldKey, async ({ database, maintenance, stored }) => {
+      const probe = openConnection(database.appUrl, 1);
+      try {
+        await expect(maintenance.rotateKey(oldKey, newKey, () => { throw new Error('Interrupted'); }))
+          .rejects.toThrow(KeyRotationIncompleteError);
+        await expect(probe.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+        // A new process can resume with CONNECT still revoked, then the host durably switches .env.
+        const resumed = new PostgresMaintenance(database.maintenanceUrl);
+        // A clean refusal in the next process must not release a prior attempt's fence.
+        await expect(resumed.rotateKey(randomBytes(32), newKey)).rejects.toThrow(UnreadableSecretsError);
+        await expect(probe.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+        await resumed.rotateKey(oldKey, newKey);
+        await expect(probe.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+        await resumed.restoreAppConnect();
+        await probe.sql`select 1`;
+        expectRotated(await stored(), newKey, oldKey);
+      } finally { await maintenance.restoreAppConnect(); await probe.close(); }
+    });
+  });
+
+  it('continues once existing sessions close, without terminating them', async () => {
+    await withInstall(oldKey, async ({ database, maintenance }) => {
+      const app = openConnection(database.appUrl, 1), check = openConnection(database.maintenanceUrl, 1);
+      let rotation: Promise<unknown> | undefined;
+      try {
+        await app.sql`select 1`;
+        rotation = maintenance.rotateKey(oldKey, newKey);
+        await vi.waitFor(async () => {
+          const [row] = await check.sql`select has_database_privilege('app', current_database(), 'CONNECT') as allowed`;
+          expect(row!.allowed).toBe(false);
+        }, { timeout: 10_000 });
+        await app.sql`select 1`;
+        await app.close();
+        await rotation;
+      } finally { await app.close(); try { await rotation; } finally { await check.close(); } }
+    });
+  });
+
+  it('keeps the fence when a session appears after the initial drain and reports a partial failure', async () => {
+    await withInstall(oldKey, async ({ database, maintenance }) => {
+      const app = openConnection(database.appUrl, 1);
+      const probe = openConnection(database.appUrl, 1);
+      try {
+        let connected = false;
+        await expect(maintenance.rotateKey(oldKey, newKey, async () => {
+          if (connected) return;
+          // Simulate a stray administrator grant admitting a connection after the first drain.
+          await maintenance.restoreAppConnect();
+          await app.sql`select 1`;
+          const owner = openConnection(database.maintenanceUrl, 1);
+          try { await owner.sql`revoke connect on database ${owner.sql(decodeURIComponent(new URL(database.maintenanceUrl).pathname.slice(1)))} from app`; }
+          finally { await owner.close(); }
+          connected = true;
+        })).rejects.toThrow('App sessions appeared during key rotation; run rotate-key.sh again to finish with the same keys');
+        await expect(probe.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+      } finally { await app.close(); await probe.close(); }
+    });
+  });
+
+  it('preserves the cause of an unexpected failure after a committed page', async () => {
+    await withInstall(oldKey, async ({ maintenance }) => {
+      const cause = new Error('Injected failure');
+      const error = await maintenance.rotateKey(oldKey, newKey, () => { throw cause; }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(KeyRotationIncompleteError);
+      expect((error as Error).cause === cause).toBe(true);
+    });
+  });
+
   it.each(['old-v1', 'old-v2', 'new-v1'] as const)('refuses a %s write into an already rotated row, then resumes', async (version) => {
     await withInstall(oldKey, async ({ database, stored, maintenance, gymIds }) => {
       const gymId = gymIds[0]!, context = { secretClass: 'smtp_config', owner: gymId } as const;
@@ -81,19 +168,23 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
         const value = version !== 'old-v2' ? legacySecret(version === 'new-v1' ? newKey : oldKey, 'smtp_config', plaintext(context))
           : encryptSecret(oldKey, context, plaintext(context));
         await database.forGym(gymId, (tx) => tx.update(gyms).set({ smtpConfig: value }).where(eq(gyms.id, gymId)));
-      })).rejects.toThrow(KeyRotationIncompleteError);
+      })).rejects.toThrow('A stored secret changed during key rotation; run rotate-key.sh again to finish with the same keys');
       expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(1);
       expectRotated(await stored(), newKey, oldKey);
     });
   });
 
-  it('refuses an app session opened after the first committed page, even with every value rotated', async () => {
+  it('refuses a new app connection during rotation and restores CONNECT afterwards', async () => {
     await withInstall(oldKey, async ({ database, maintenance }) => {
       const app = openConnection(database.appUrl, 1);
       try {
-        await expect(maintenance.rotateKey(oldKey, newKey, async () => {
-          await app.sql`select 1`;
-        })).rejects.toThrow('The app reconnected during key rotation');
+        await maintenance.rotateKey(oldKey, newKey, async () => {
+          await expect(app.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+        });
+        await expect(app.sql`select 1`).rejects.toMatchObject({ code: '42501' });
+        await maintenance.restoreAppConnect();
+        await app.sql`select 1`;
+        await assertCatalog(app.sql);
       } finally { await app.close(); }
       expect((await maintenance.rotateKey(oldKey, newKey)).rewritten).toBe(0);
     });
@@ -141,7 +232,7 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
       await expect(maintenance.rotateKey(oldKey, newKey, (table) => {
         commits.push(table);
         if (commits.length === 2) throw new Error('Power loss');
-      })).rejects.toThrow('Power loss');
+      })).rejects.toThrow(KeyRotationIncompleteError);
       expect(commits).toEqual(['auth_account', 'gyms']);
       const interrupted = await stored();
       for (const [where, value] of interrupted) {
@@ -197,7 +288,9 @@ describe('APP_ENCRYPTION_KEY rotation', { timeout: 60_000 }, () => {
         if (table === 'auth_account') await set(encryptSecret(randomBytes(32), stripe, 'written meanwhile'));
       }).catch((caught: unknown) => caught);
       expect(error).not.toBeInstanceOf(UnreadableSecretsError);
-      expect((error as Error).message).toBe('A stored secret changed during the key rotation');
+      expect(error).toBeInstanceOf(KeyRotationIncompleteError);
+      expect((error as Error).message).toBe('Key rotation stopped while rewriting stored secrets; run rotate-key.sh again to finish with the same keys');
+      expect(((error as Error).cause as Error).message).toBe('A stored secret changed during the key rotation');
       // What committed before stays rotated; gym B's row is untouched.
       const interrupted = await stored();
       expect(openSecret(newKey, { secretClass: 'qr_key', owner: gymIds[0]! }, interrupted.get('qr_key:' + gymIds[0])!).version).toBe('v2');

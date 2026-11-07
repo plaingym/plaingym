@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { logInfo } from '../core/log.js';
 import { parseEncryptionKey } from '../core/secrets.js';
-import { KeyRotationIncompleteError, UnreadableSecretsError, type PostgresMaintenance } from '../areas/health/backups.database.js';
+import { KeyRotationIncompleteError, KeyRotationSessionsError, UnreadableSecretsError, type PostgresMaintenance } from '../areas/health/backups.database.js';
 import type { RestoreGate } from '../areas/health/restore.gate.js';
 
-/** A refused or incomplete rotation. Its message is fixed text saying what to do, never a value. */
+/** Exit 3 proves a preflight refusal changed nothing. Its message names what to do, never a value. */
 export class KeyRotationRefusedError extends Error {
-  constructor(message: string) { super(message); this.name = 'KeyRotationRefusedError'; }
+  readonly exitCode: number = 3;
+  constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'KeyRotationRefusedError'; }
+}
+/** Exit 2 means committed pages may require the new key: the host must keep the app stopped. */
+export class KeyRotationPartialError extends KeyRotationRefusedError {
+  override readonly exitCode = 2;
 }
 export interface KeyRotationOptions {
   readonly database: PostgresMaintenance;
@@ -34,13 +39,16 @@ export async function rotateKey(options: KeyRotationOptions): Promise<void> {
   const current = key(options.currentKey, 'APP_ENCRYPTION_KEY'), next = key(options.newKey, 'NEW_APP_ENCRYPTION_KEY');
   if (current.equals(next)) throw new KeyRotationRefusedError('NEW_APP_ENCRYPTION_KEY is the current key; generate a new one');
   if (options.gate && await options.gate.isClosed()) throw new KeyRotationRefusedError('A restore is in progress; let it finish, then rotate the key');
-  if (await options.database.appSessions() > 0) throw new KeyRotationRefusedError('The app is still connected to the database; stop it, then rotate the key');
+  let complete = false;
   try {
     const { rewritten } = await options.database.rotateKey(current, next);
+    complete = true;
     logInfo('secrets.key_rotated', { rewritten });
     stdout('Stored secrets re-encrypted with the new key (' + rewritten + ' values changed)');
   } catch (error) {
-    if (error instanceof KeyRotationIncompleteError) throw new KeyRotationRefusedError(error.message);
+    if (complete) throw new KeyRotationPartialError('Stored secrets were rotated; run rotate-key.sh again to finish with the same keys');
+    if (error instanceof KeyRotationIncompleteError) throw new KeyRotationPartialError(error.message, { cause: error });
+    if (error instanceof KeyRotationSessionsError) throw new KeyRotationRefusedError(error.message);
     if (!(error instanceof UnreadableSecretsError)) throw error;
     for (const value of error.unreadable)
       stderr('Opens with neither key: ' + value.secretClass + ' of ' + (value.secretClass.startsWith('oauth_') ? 'sign-in account ' : 'gym ') + value.owner);

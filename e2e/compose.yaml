@@ -68,6 +68,7 @@ services:
       APP_PASSWORD: ${E2E_APP_PASSWORD:?required}
       MAINTENANCE_PASSWORD: ${E2E_MAINTENANCE_PASSWORD:?required}
       MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@demo-postgres:5432/plaingym
+      APP_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:?required}
   # S3-compatible storage for demo sandboxes: the seed stores waiver signature images.
   demo-s3:
     image: versity/versitygw:v1.0.20@sha256:c2f9b9289d237b85736214dfbef376b7d092b8540e1456d547aaa35dd03ad0b3
@@ -116,6 +117,7 @@ services:
       APP_PASSWORD: ${E2E_APP_PASSWORD:?required}
       MAINTENANCE_PASSWORD: ${E2E_MAINTENANCE_PASSWORD:?required}
       MAINTENANCE_DATABASE_URL: postgres://maintenance:${E2E_MAINTENANCE_PASSWORD}@multi-postgres:5432/plaingym
+      APP_ENCRYPTION_KEY: ${E2E_ENCRYPTION_KEY:?required}
   multi-s3:
     image: versity/versitygw:v1.0.20@sha256:c2f9b9289d237b85736214dfbef376b7d092b8540e1456d547aaa35dd03ad0b3
     entrypoint: [sh, -c, 'mkdir -p /data/plaingym && exec versitygw --port :7070 --region auto posix /data']

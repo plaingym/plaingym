@@ -16,6 +16,7 @@ import { rotateKey, upgradeStoredSecrets } from './restore.rotate-key.js';
 import { issuePaths, restoreFailureReason } from './restore.reason.js';
 import { RestoreFailure } from '../areas/health/restore.failure.js';
 import { z } from 'zod';
+import { logInfo } from '../core/log.js';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -45,6 +46,7 @@ export async function maintenanceCommand(args: readonly string[]): Promise<void>
     await database.migrate();
     // Then the one-time v1 to v2 rewrite; both install modes supply the app key to their migrate step.
     if (process.env.APP_ENCRYPTION_KEY) await upgradeStoredSecrets(database, parseEncryptionKey(process.env.APP_ENCRYPTION_KEY));
+    else logInfo('secrets.upgrade_skipped', { reason: 'APP_ENCRYPTION_KEY is not configured' });
     return;
   }
   if (args[0] === 'rotate-key') {

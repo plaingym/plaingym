@@ -34,6 +34,7 @@ describe.each(['rotation', 'restore'] as const)('pending backup credentials afte
       await f.sourceMaintenance.rotateKey(f.oldKey, f.currentKey);
       // Retry recognizes the pending envelope as already rotated too.
       expect((await f.sourceMaintenance.rotateKey(f.oldKey, f.currentKey)).rewritten).toBe(0);
+      await f.sourceMaintenance.restoreAppConnect();
     }
     const connection = openConnection(operation === 'restore' ? f.target.appUrl : f.source.appUrl, 1);
     try {

@@ -4,6 +4,7 @@
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { maintenanceCommand, reportRestoreResume } from './restore.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
+import { KeyRotationRefusedError } from './restore.rotate-key.js';
 
 const args = process.argv.slice(2);
 try {
@@ -16,5 +17,5 @@ try {
 } catch (error) {
   reportMaintenanceFailure(args, error);
   if (args[0] === 'restore' || args[0] === 'resume') await reportRestoreResume();
-  process.exitCode = 1;
+  process.exitCode = error instanceof KeyRotationRefusedError ? error.exitCode : 1;
 } finally { await closeDatabase(); }

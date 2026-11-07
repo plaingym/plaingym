@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -18,7 +18,7 @@ import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { RestoreGate } from '../areas/health/restore.gate.js';
 import { maintenanceCommand } from './restore.js';
 import { reportMaintenanceFailure } from './restore.failure.js';
-import { KeyRotationRefusedError, rotateKey } from './restore.rotate-key.js';
+import { KeyRotationPartialError, KeyRotationRefusedError, rotateKey } from './restore.rotate-key.js';
 
 const db = useTestDatabase(), make = createFactories(db);
 const current = randomBytes(32), next = randomBytes(32), third = randomBytes(32), gymId = uuidv7();
@@ -38,6 +38,7 @@ async function refusal(options: Partial<Parameters<typeof rotateKey>[0]>): Promi
   const error = await rotateKey({ database: new PostgresMaintenance(db.maintenanceUrl), currentKey: hex(current), newKey: hex(next),
     gate: null, ...io(), ...options }).catch((caught: unknown) => caught);
   expect(error).toBeInstanceOf(KeyRotationRefusedError);
+  expect((error as KeyRotationRefusedError).exitCode).toBe(error instanceof KeyRotationPartialError ? 2 : 3);
   return error as KeyRotationRefusedError;
 }
 beforeAll(async () => {
@@ -69,7 +70,7 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     await rm(gate.statePath);
     // The factories above used the app's pool, whose connections are still open.
     expect(await new PostgresMaintenance(db.maintenanceUrl).appSessions()).toBeGreaterThan(0);
-    expect((await refusal({ gate })).message).toBe('The app is still connected to the database; stop it, then rotate the key');
+    expect((await refusal({ gate })).message).toMatch(/^Key rotation refused: \d+ app sessions remain;/);
     expect(JSON.stringify(await storedValues()) === JSON.stringify(before)).toBe(true);
   });
 
@@ -78,6 +79,7 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
     await db.app.close(); await db.system.close();
     expect(await new PostgresMaintenance(db.maintenanceUrl).appSessions()).toBe(0);
     await rotateKey({ database: new PostgresMaintenance(db.maintenanceUrl), currentKey: hex(current), newKey: hex(next), gate: new RestoreGate(directory), ...io() });
+    await new PostgresMaintenance(db.maintenanceUrl).restoreAppConnect();
     expect(output).toEqual(['Stored secrets re-encrypted with the new key (2 values changed)']);
     const after = await storedValues();
     const openedStripe = openSecret(next, stripe, after.stripe);
@@ -133,5 +135,33 @@ describe('maintenance.mjs rotate-key', { timeout: 60_000 }, () => {
       expect(opened.version === 'v2' && opened.plaintext === 'other-smtp').toBe(true);
     } finally { await check.close(); }
     expect(logs.map((line) => JSON.parse(line) as Record<string, unknown>)).toEqual([expect.objectContaining({ event: 'secrets.upgraded', rewritten: 2, unreadable: 0 })]);
+  });
+
+  it('logs the skipped secret upgrade when migrate has no key', async () => {
+    const saved = { url: process.env.MAINTENANCE_DATABASE_URL, key: process.env.APP_ENCRYPTION_KEY };
+    const logs: string[] = [], previous = setLogSink((line) => logs.push(line));
+    try {
+      process.env.MAINTENANCE_DATABASE_URL = db.maintenanceUrl;
+      delete process.env.APP_ENCRYPTION_KEY;
+      await maintenanceCommand(['migrate']);
+    } finally {
+      setLogSink(previous);
+      for (const [name, value] of [['MAINTENANCE_DATABASE_URL', saved.url], ['APP_ENCRYPTION_KEY', saved.key]] as const)
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    expect(logs.map((line) => JSON.parse(line) as Record<string, unknown>)).toContainEqual(expect.objectContaining({ event: 'secrets.upgrade_skipped' }));
+  });
+
+  it.each([false, true])('reports partial rotation after a committed page or failed output (interrupted=%s)', async (interrupted) => {
+    const database = new PostgresMaintenance(db.maintenanceUrl), original = database.rotateKey.bind(database);
+    // Inject a failure after a real PostgreSQL commit; the database is not mocked.
+    const rotation = vi.spyOn(database, 'rotateKey').mockImplementation((from, to) => original(from, to, () => {
+      if (interrupted) throw new Error('Interrupted after commit');
+    }));
+    try {
+      const error = await refusal({ database, stdout: () => { throw new Error('Output unavailable'); } });
+      expect(error).toBeInstanceOf(KeyRotationPartialError);
+      expect((error as KeyRotationPartialError).exitCode).toBe(2);
+    } finally { rotation.mockRestore(); await database.restoreAppConnect(); }
   });
 });

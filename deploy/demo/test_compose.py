@@ -520,6 +520,12 @@ class HardeningTests(unittest.TestCase):
         # The app services themselves are not hardened in End-to-end.
         self.assertNotIn("read_only", services["demo"])
 
+    def test_end_to_end_migrate_steps_receive_the_app_key(self):
+        services = self.render([DEPLOY.parent / "e2e" / "compose.yaml"], E2E_ENV)
+        for name in ("demo", "multi"):
+            key = services[name + "-migrate"]["environment"].get("APP_ENCRYPTION_KEY")
+            self.assertTrue(bool(key) and key == services[name]["environment"]["APP_ENCRYPTION_KEY"])
+
     def test_a_new_key_on_the_app_fails_the_comparison(self):
         services = self.render([DEPLOY / "compose.yaml", HERE / "compose.yaml"], DEMO_ENV)
         for key, value in (("user", "1000"), ("ulimits", {"nofile": 1024}), ("cap_add", ["NET_ADMIN"])):

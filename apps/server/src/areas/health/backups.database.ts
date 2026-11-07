@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 // Reviewed maintenance infrastructure: a dedicated connection holds the backup lock outside transactions.
 // eslint-disable-next-line no-restricted-imports
 import { openConnection, type Connection } from '@plaingym/db/client';
@@ -15,14 +15,15 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { reencryptSecret, type SecretClass } from '../../core/secrets.js';
 
 type Transaction = Parameters<Parameters<Connection['db']['transaction']>[0]>[0];
-type SecretField = { readonly table: string; readonly column: string; readonly secretClass: SecretClass; readonly pending?: boolean };
+type SecretField = { readonly table: string; readonly column: string; readonly secretClass: SecretClass; readonly pending?: boolean;
+  readonly read: SQL; readonly write: (value: string) => SQL };
 // Pending credentials use the same envelope context as the active S3 column when staff confirm them.
 // They live in settings until then, so maintenance must also visit this JSON leaf.
-const maintenanceFields: readonly SecretField[] = [...encryptedFields,
-  { table: 'gyms', column: 'pending_s3_config', secretClass: 's3_config', pending: true }];
-function secretColumn(field: SecretField) {
-  return field.pending ? sql`settings #>> '{integrations,backup,s3Config}'` : sql`${sql.identifier(field.column)}`;
-}
+const maintenanceFields: readonly SecretField[] = [...encryptedFields.map((field) => ({ ...field,
+  read: sql`${sql.identifier(field.column)}`, write: (value: string) => sql`${sql.identifier(field.column)} = ${value}` })),
+  { table: 'gyms', column: 'pending_s3_config', secretClass: 's3_config', pending: true,
+    read: sql`settings #>> '{integrations,backup,s3Config}'`,
+    write: (value: string) => sql`settings = jsonb_set(settings, '{integrations,backup,s3Config}', to_jsonb(${value}::text), false)` }];
 type SecretRow = { id: string } & Record<string, string | null>;
 /** Where a stored secret that neither key opens is: its class and its row's ID, never its value. */
 export interface UnreadableSecret { readonly secretClass: SecretClass; readonly owner: string }
@@ -40,21 +41,21 @@ const secretTables = [...new Set(maintenanceFields.map((field) => field.table))]
 /** One keyset page of a table's rows that hold a registered secret (only `v1` ones with `legacyOnly`), in ID order. */
 async function secretRows(tx: Transaction | Connection['db'], table: string, fields: readonly SecretField[], after: string | null,
   limit: number, options: { lock: boolean; legacyOnly: boolean }): Promise<SecretRow[]> {
-  const columns = sql.join(fields.map((field) => sql`${secretColumn(field)} as ${sql.identifier(field.column)}`), sql`, `);
-  const holds = sql.join(fields.map((field) => options.legacyOnly ? sql`${secretColumn(field)} like 'v1.%'`
-    : sql`${secretColumn(field)} is not null`), sql` or `);
+  const columns = sql.join(fields.map((field) => sql`${field.read} as ${sql.identifier(field.column)}`), sql`, `);
+  const holds = sql.join(fields.map((field) => options.legacyOnly ? sql`${field.read} like 'v1.%'`
+    : sql`${field.read} is not null`), sql` or `);
   return [...await tx.execute<SecretRow>(sql`select id, ${columns} from ${sql.identifier(table)} where (${holds})
     ${after ? sql`and id > ${after}::uuid` : sql``} order by id limit ${limit} ${options.lock ? sql`for update` : sql``}`)];
 }
 /** A row's values as `v2` under `to` (only those that change), and those that open with neither key. */
 function rewriteRow(row: SecretRow, fields: readonly SecretField[], from: Buffer, to: Buffer) {
-  const set = new Map<string, string>(), unreadable: UnreadableSecret[] = [];
+  const set = new Map<SecretField, string>(), unreadable: UnreadableSecret[] = [];
   for (const field of fields) {
     const value = row[field.column];
     if (value == null) continue;
     try {
       const next = reencryptSecret(from, to, { secretClass: field.secretClass, owner: row.id }, value);
-      if (next !== null) set.set(field.column, next);
+      if (next !== null) set.set(field, next);
     } catch {
       // Pending credentials that open with neither key stay as they are, so they never block a restore or a
       // rotation: confirming them answers that staff must generate a new backup key.
@@ -63,12 +64,22 @@ function rewriteRow(row: SecretRow, fields: readonly SecretField[], from: Buffer
   }
   return { set, unreadable };
 }
-async function updateRow(tx: Transaction, table: string, id: string, set: ReadonlyMap<string, string>): Promise<void> {
+async function updateRow(tx: Transaction, table: string, id: string, set: ReadonlyMap<SecretField, string>): Promise<void> {
   if (!set.size) return;
-  const assignments = sql.join([...set].map(([column, value]) => column === 'pending_s3_config'
-    ? sql`settings = jsonb_set(settings, '{integrations,backup,s3Config}', to_jsonb(${value}::text), false)`
-    : sql`${sql.identifier(column)} = ${value}`), sql`, `);
+  const assignments = sql.join([...set].map(([field, value]) => field.write(value)), sql`, `);
   await tx.execute(sql`update ${sql.identifier(table)} set ${assignments} where id = ${id}::uuid`);
+}
+
+/** Both rotation checks visit the same bounded pages, including pending credentials. */
+async function walkSecrets(database: Connection['db'], visit: (row: SecretRow, fields: readonly SecretField[]) => void): Promise<void> {
+  for (const { table, fields } of secretTables) {
+    for (let after: string | null = null; ;) {
+      const rows = await secretRows(database, table, fields, after, 500, { lock: false, legacyOnly: false });
+      for (const row of rows) visit(row, fields);
+      if (rows.length < 500) break;
+      after = rows.at(-1)!.id;
+    }
+  }
 }
 
 export interface ToolCommand { command: string; args: string[]; env: NodeJS.ProcessEnv }
@@ -149,13 +160,13 @@ export class PostgresMaintenance {
     try {
       await connection.db.transaction(async (tx) => {
         for (const field of maintenanceFields) {
-          const table = sql.identifier(field.table), column = secretColumn(field);
+          const table = sql.identifier(field.table), column = field.read;
           const rows = await tx.execute<{ id: string; value: string }>(sql`select id, ${column} as value from ${table} where ${column} is not null for update`);
           for (const row of rows) {
             let value: string | null;
             try { value = reencryptSecret(oldKey, newKey, { secretClass: field.secretClass, owner: row.id }, row.value); }
             catch (error) { if (field.pending) continue; throw error; }
-            if (value !== null) await updateRow(tx, field.table, row.id, new Map([[field.column, value]]));
+            if (value !== null) await updateRow(tx, field.table, row.id, new Map([[field, value]]));
           }
           afterField?.(field.secretClass);
         }
@@ -215,46 +226,56 @@ export class PostgresMaintenance {
    * opens with one of the keys: if any doesn't (a wrong `from`), it throws {@link UnreadableSecretsError} and changes
    * nothing. It then commits a gym or a page of other rows at a time, and is safe to run again after a crash: a value
    * that opens as `v2` with `to` is done.
+   * Revokes CONNECT from app and PUBLIC, then waits up to 30 seconds for existing app sessions to drain without
+   * terminating them. The fence remains on success and failure, including preflight refusal on a resumed rotation.
+   * The caller must call restoreAppConnect only after switching .env, or abandoning an attempt known to have
+   * committed no pages across every run. PUBLIC stays revoked.
    */
   async rotateKey(from: Buffer, to: Buffer, afterCommit?: (table: string) => void | Promise<void>): Promise<{ rewritten: number }> {
     assertNoTransaction('secrets.rotate');
     if (from.length !== 32 || to.length !== 32 || from.equals(to)) throw new Error('Key rotation needs two different keys');
+    let rewriting = false;
     return this.locked(async () => {
       const connection = openConnection(this.url, 1);
       try {
+        const name = sql.identifier(decodeURIComponent(new URL(this.url).pathname.slice(1)));
+        await connection.db.execute(sql`revoke connect on database ${name} from app, public`);
+        // The host already stopped the app. Allow shutdown connections 30 seconds to drain; never kill one.
+        const deadline = Date.now() + 30_000;
+        let sessions = await this.appSessions();
+        while (sessions > 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          sessions = await this.appSessions();
+        }
+        if (sessions > 0) throw new KeyRotationSessionsError(sessions);
         const unreadable: UnreadableSecret[] = [];
-        for (const { table, fields } of secretTables) {
-          for (let after: string | null = null; ;) {
-            const rows = await secretRows(connection.db, table, fields, after, 500, { lock: false, legacyOnly: false });
-            for (const row of rows) unreadable.push(...rewriteRow(row, fields, from, to).unreadable);
-            if (rows.length < 500) break;
-            after = rows.at(-1)!.id;
-          }
-        }
+        await walkSecrets(connection.db, (row, fields) => { unreadable.push(...rewriteRow(row, fields, from, to).unreadable); });
         if (unreadable.length) throw new UnreadableSecretsError(unreadable);
+        // A lost COMMIT acknowledgement is uncertain too: only preflight failures guarantee no pages committed.
+        rewriting = true;
+        const { rewritten } = await this.#rewriteSecrets(from, to, { legacyOnly: false, skipUnreadable: false,
+          ...(afterCommit ? { afterCommit } : {}) });
+        await walkSecrets(connection.db, (row, fields) => {
+          const { set, unreadable: remaining } = rewriteRow(row, fields, from, to);
+          if (set.size || remaining.length) throw new KeyRotationIncompleteError('A stored secret changed during key rotation');
+        });
+        const remainingSessions = await this.appSessions();
+        if (remainingSessions > 0) throw new KeyRotationIncompleteError('App sessions appeared during key rotation');
+        return { rewritten };
       } finally { await connection.close(); }
-      const { rewritten } = await this.#rewriteSecrets(from, to, { legacyOnly: false, skipUnreadable: false, ...(afterCommit ? { afterCommit } : {}) });
-      // The host must not switch .env if an app restarted or wrote an old-key value into a row already passed.
-      // Keep the backup lock through both checks. A failure can leave committed pages; rerun with the same keys.
-      if (await this.appSessions() > 0) throw new KeyRotationIncompleteError('The app reconnected during key rotation');
-      const verification = openConnection(this.url, 1);
-      try {
-        for (const { table, fields } of secretTables) {
-          for (let after: string | null = null; ;) {
-            const rows = await secretRows(verification.db, table, fields, after, 500, { lock: false, legacyOnly: false });
-            // Done means nothing left to rewrite: every value opens as `v2` with `to`.
-            for (const row of rows) {
-              const { set, unreadable } = rewriteRow(row, fields, from, to);
-              if (set.size || unreadable.length) throw new KeyRotationIncompleteError('A stored secret changed during key rotation');
-            }
-            if (rows.length < 500) break;
-            after = rows.at(-1)!.id;
-          }
-        }
-      } finally { await verification.close(); }
-      if (await this.appSessions() > 0) throw new KeyRotationIncompleteError('The app reconnected during key rotation');
-      return { rewritten };
+    }).catch((error: unknown) => {
+      // Connection cleanup can also fail after a page committed. Keep verification's more specific advice.
+      if (rewriting && !(error instanceof KeyRotationIncompleteError))
+        throw new KeyRotationIncompleteError('Key rotation stopped while rewriting stored secrets', { cause: error });
+      throw error;
     });
+  }
+  async restoreAppConnect(): Promise<void> {
+    const connection = openConnection(this.url, 1);
+    try {
+      const name = sql.identifier(decodeURIComponent(new URL(this.url).pathname.slice(1)));
+      await connection.db.execute(sql`grant connect on database ${name} to app`);
+    } finally { await connection.close(); }
   }
   /** Open sessions of the `app` role in this database: a key rotation needs every app process stopped. */
   async appSessions(): Promise<number> {
@@ -270,8 +291,14 @@ export class PostgresMaintenance {
 }
 /** Unlike a preflight refusal, some pages may already be committed. Never discard either rotation key. */
 export class KeyRotationIncompleteError extends Error {
-  constructor(reason: string) {
-    super(reason + '; run rotate-key.sh again to finish with the same keys');
+  constructor(reason: string, options?: ErrorOptions) {
+    super(reason + '; run rotate-key.sh again to finish with the same keys', options);
     this.name = 'KeyRotationIncompleteError';
+  }
+}
+export class KeyRotationSessionsError extends Error {
+  constructor(count: number) {
+    super('Key rotation refused: ' + count + ' app sessions remain; stop every app process and retry');
+    this.name = 'KeyRotationSessionsError';
   }
 }

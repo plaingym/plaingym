@@ -390,29 +390,42 @@ requires the app to be running. It then:
 2. stops the app and runs `node /app/maintenance.mjs rotate-key` in a one-off
    app container, with the current key from `.env` and the new one in the
    container's environment (`NEW_APP_ENCRYPTION_KEY`, never on a command line).
+   It bypasses the image entrypoint, whose app-role check cannot connect under
+   a fence retained by an interrupted rotation. This image already ran on the
+   install; the rotation checks the restore gate itself without startup migrations.
    As the `maintenance` role and under the backup lock, the command refuses while
-   a restore is unfinished or any `app` role session is still connected, checks
+   a restore is unfinished. It revokes database CONNECT from `app` and `PUBLIC`,
+   waits up to 30 seconds for existing app sessions to close, and refuses with
+   their remaining count if any persist. It never terminates sessions. It checks
    that every value in the encrypted-field registry opens with one of the two
    keys (if one doesn't, it lists where, by secret class and gym or sign-in
    account ID, and changes nothing), then re-encrypts them as `v2` envelopes, a
    page of sign-in accounts and then one gym per short transaction. Pending
    backup credentials in settings are included (ones neither key opens are left
    as they are; confirming them asks for a new backup key). Before reporting
-   success it checks again for app sessions and verifies every value opens as
-   `v2` with the new key, still under the backup lock; a failed check requires a
-   rerun with the same keys;
-3. writes the new key into `.env`, recreates the app from it, runs the health
+   success it verifies every value opens as `v2` with the new key and checks for
+   app sessions again, still under the backup lock; a failed check requires a rerun
+   with the same keys;
+3. writes the new key into `.env`, restores CONNECT to `app` (`PUBLIC` stays
+   revoked), recreates the app from it, runs the health
    check, and removes `.rotate-key.inflight`.
 
-A failure in step 2 leaves `.env` as it was and restarts the app with the current
-key; a run stopped by a signal, or one that can't write `.env` after step 2
-succeeded, leaves the app stopped, since the stored secrets may already open only
-with the new key. Either way
+A definite preflight refusal (maintenance exit code 3) restores CONNECT and
+restarts the app with the current key if no earlier attempt may have committed
+pages. Repeated clean refusals restart it each time, allowing settings to be fixed
+in the admin. Before each attempt the marker durably records that pages may
+commit; only a definite refusal with no earlier uncertainty clears that state.
+Older markers without this state are treated as possibly committed.
+A partial rewrite (maintenance exit code 2), any other uncertain failure (including
+exit 1), a refusal after either, or a run that can't write `.env` after
+step 2 succeeded leaves the app stopped, since stored secrets may already open
+only with the new key. A failed CONNECT grant also leaves it stopped. In each case
 `.rotate-key.inflight` stays, and running `rotate-key.sh` again finishes the same
 rotation: values that already open with the new key are done. Keep the file
 until a run finishes, because it holds the only copy of the new key until then.
 If the app doesn't start after step 3, `.env` already holds the new key; the
-next run only starts the app.
+next run restores CONNECT again before starting the app. This also recovers a
+crash between switching `.env` and granting CONNECT.
 
 The app also derives the signatures of local download links and the cookies of
 a join or Checkout return in progress from `APP_ENCRYPTION_KEY`, so those stop
@@ -435,9 +448,12 @@ across a floor before and after migrating, an earlier guard put back, a skipped
 minor, a killed run, and the history a rollback reads. The rollback test swaps real
 local images and walks back two versions. The key rotation test drives
 `rotate-key.sh` with the same kind of fixture: the order (stop, rotate, `.env`,
-start, health check), `.env` changing only after the rotation, a restart with the
-current key after a failure, staying stopped when `.env` can't be written after
-the rotation, finishing with the same new key on the next run,
+CONNECT grant, start, health check), `.env` changing only after the rotation,
+a restart with the current key after repeated clean preflight refusals, the exact
+entrypoint bypass, durable marker state before each attempt, staying stopped
+after a partial rewrite, generic or abnormal exit, refused partial retry,
+failed CONNECT grant or `.env` write,
+finishing with the same new key and restoring CONNECT on the next run,
 the refusals, and that no key reaches a command line or the output. The separate
 image smoke test uses actual PostgreSQL, app, and Caddy containers:
 

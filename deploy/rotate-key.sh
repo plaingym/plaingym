@@ -23,23 +23,37 @@ exec 9>"$ROOT/.update.lock"
 flock -n 9 || fail 'An update or key rotation is running; run this again once it finishes. Nothing was changed.'
 
 stopped=false
-rotated=false
 switched=false
 interrupted=false
+may_have_committed=false
+write_inflight() { # MAY_HAVE_COMMITTED; replace atomically and durably before changing the in-memory state.
+  printf 'old=%s\nnew=%s\nmay_have_committed=%s\n' "$old" "$new" "$1" > "$INFLIGHT.next"
+  mv "$INFLIGHT.next" "$INFLIGHT"
+  sync
+}
+restore_connect() {
+  # The database owner restores only app's CONNECT; PUBLIC stays revoked as in bootstrap.
+  # shellcheck disable=SC2016
+  printf '%s\n' "SELECT format('GRANT CONNECT ON DATABASE %I TO app', current_database())" '\gexec' |
+    compose exec -T postgres sh -c 'PGPASSWORD="$MAINTENANCE_PASSWORD" exec psql -h 127.0.0.1 -U maintenance -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1'
+}
 cleanup() {
   exit_status=$?
   trap - EXIT HUP INT TERM
   if [ "$exit_status" -ne 0 ] && [ "$stopped" = true ] && [ "$switched" = false ]; then
     if [ "$interrupted" = true ]; then
       echo 'Interrupted. The app stays stopped; run ./rotate-key.sh again to finish the key rotation.' >&2
-    elif [ "$rotated" = true ]; then
-      # Every stored secret already opens only with the new key, so the app must not start with the one in .env.
-      echo 'The stored secrets use the new key, but .env was not updated (reason above). The app stays stopped; run ./rotate-key.sh again to finish.' >&2
+    elif [ "$may_have_committed" = true ]; then
+      # A previous or current attempt may have committed pages: the old key is unsafe for startup.
+      echo 'Stored secrets may use the new key, but .env was not updated (reason above). The app stays stopped; run ./rotate-key.sh again to finish.' >&2
     else
-      # .env still holds the key the app ran with. Secrets the rotation already reached open only with the new key,
-      # which .rotate-key.inflight keeps until a run finishes.
+      # Every attempt so far was definitely refused before committing any pages.
       echo 'The key rotation did not finish (reason above). Restarting the app with the current key; run ./rotate-key.sh again to finish.' >&2
-      compose up -d --no-deps --pull never --wait --wait-timeout 90 app || echo 'The app did not restart; run ./rotate-key.sh again.' >&2
+      if restore_connect; then
+        compose up -d --no-deps --pull never --wait --wait-timeout 90 app || echo 'The app did not restart; run ./rotate-key.sh again.' >&2
+      else
+        echo 'CONNECT could not be restored. The app stays stopped; run ./rotate-key.sh again.' >&2
+      fi
     fi
   fi
   exit "$exit_status"
@@ -53,6 +67,11 @@ if [ -f "$INFLIGHT" ]; then
   new=$(inflight_value new)
   { valid_key "$old" && valid_key "$new"; } || fail ".rotate-key.inflight is damaged. Keep it and .env, and don't run this again; see deploy/README.md, \"Rotating the encryption key\"."
   [ "$current" = "$old" ] || [ "$current" = "$new" ] || fail 'APP_ENCRYPTION_KEY in .env is neither key of the interrupted rotation in .rotate-key.inflight. Nothing was changed.'
+  # Markers from older scripts have no state line: they may describe a partial rewrite.
+  case "$(inflight_value may_have_committed)" in
+    false) may_have_committed=false ;;
+    *) may_have_committed=true ;;
+  esac
   echo 'Finishing the interrupted key rotation.'
 else
   valid_key "$current" || fail 'APP_ENCRYPTION_KEY in .env is not 64 hex characters. Nothing was changed.'
@@ -60,22 +79,32 @@ else
   old=$current
   new=$(openssl rand -hex 32)
   # Both keys are on disk before any secret is written with the new one.
-  printf 'old=%s\nnew=%s\n' "$old" "$new" > "$INFLIGHT.next"
-  mv "$INFLIGHT.next" "$INFLIGHT"
-  sync
+  write_inflight false
 fi
 
 if [ "$current" = "$old" ]; then
   stopped=true
   compose stop app
-  # A one-off app container with the current key from .env. The new key reaches it through the environment, never a
-  # command line. The command refuses while a restore is unfinished or the app is still connected.
+  # Bypass the image entrypoint: its app-role check cannot connect under a retained fence. This image already ran
+  # on this install, so no startup wait/resume/migrate is needed; rotate-key checks the restore gate itself.
+  # Both keys reach the one-off container through the environment, never a command line.
   # Exported, not a prefix assignment: POSIX leaves unspecified whether one reaches a shell function's commands.
   export NEW_APP_ENCRYPTION_KEY="$new"
-  compose run --rm --no-deps -T -e NEW_APP_ENCRYPTION_KEY app node /app/maintenance.mjs rotate-key \
-    || fail 'The key rotation failed (reason above).'
+  previously_committed=$may_have_committed
+  # A killed host or an unclassified command failure must leave durable evidence that pages may have committed.
+  write_inflight true
+  may_have_committed=true
+  rotation_status=0
+  compose run --rm --no-deps -T --entrypoint node -e NEW_APP_ENCRYPTION_KEY app /app/maintenance.mjs rotate-key || rotation_status=$?
+  if [ "$rotation_status" -ne 0 ]; then
+    # Only exit 3 proves this attempt changed nothing; it cannot clear an earlier attempt's uncertainty.
+    if [ "$rotation_status" -eq 3 ] && [ "$previously_committed" = false ]; then
+      write_inflight false
+      may_have_committed=false
+    fi
+    fail 'The key rotation failed (reason above); rerun with the same keys in .rotate-key.inflight.'
+  fi
   unset NEW_APP_ENCRYPTION_KEY
-  rotated=true
   # Every stored secret now opens with the new key: only then does .env name it.
   awk -v key="$new" 'BEGIN { found=0 } /^APP_ENCRYPTION_KEY=/ { print "APP_ENCRYPTION_KEY=" key; found=1; next } { print } END { if (!found) print "APP_ENCRYPTION_KEY=" key }' "$ROOT/.env" > "$ROOT/.env.next"
   chmod 0600 "$ROOT/.env.next"
@@ -83,6 +112,8 @@ if [ "$current" = "$old" ]; then
   sync
   switched=true
 fi
+# Idempotent even after a crash between the .env rename and this grant.
+restore_connect || fail 'CONNECT could not be restored. Run ./rotate-key.sh again.'
 # Recreated from .env, the app starts with the new key.
 compose up -d --no-deps --pull never --wait --wait-timeout 90 app \
   || fail 'The stored secrets and .env use the new key, but the app did not start. Check its log (docker compose logs app), then run ./rotate-key.sh again.'

@@ -76,6 +76,18 @@ other host files at the versions required by that release.
 While `/opt/plaingym/.rotate-key.inflight` exists, a manual update fails and
 the nightly update skips, both saying that key rotation is unfinished. Rerun `rotate-key.sh` to finish
 the rotation before updating; keep the marker and both keys until it succeeds.
+Rotation temporarily revokes the app's database CONNECT privilege and waits up
+to 30 seconds for existing sessions to close, refusing if any remain. It never
+terminates sessions. A partial rewrite (maintenance exit code 2) or any uncertain
+failure keeps the app stopped; rerun with the same keys in the marker. Rerunning also
+restores CONNECT after a crash, including one after `.env` was already switched.
+Only a definite preflight refusal (exit 3), with no earlier attempt that may have
+committed pages, restores CONNECT and restarts the app with its old key. Repeated
+clean refusals restart it each time so settings can be corrected in the admin;
+a refusal after a partial or uncertain attempt keeps the fence and app stopped.
+The marker records this distinction durably before each attempt. The one-off
+command bypasses the image's normal entrypoint so a retained fence cannot block
+the maintenance connection needed to finish the rotation.
 
 On the server:
 
