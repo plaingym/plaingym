@@ -88,7 +88,7 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
     });
     if (!loaded) return;
     const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines } = loaded;
-    const data = { gymId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
+    const data = { gymId, generation: effectId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
     if (work.kind === 'receipt') await options.notifications.receipt(data);
     else if (work.kind === 'activate_memberships') {
       for (const membershipId of new Set(lines.map(line => line.membershipId).filter((id): id is string => id !== null))) {

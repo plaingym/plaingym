@@ -13,7 +13,7 @@ import { authConfig } from './config.js';
 import { createAccountService } from './accounts.js';
 import { passwordAdapter } from './password.js';
 import { createAuthService } from './service.js';
-import { FakeEmail } from '../email/index.js';
+import { DeliveryError, FakeEmail } from '../email/index.js';
 import { captureSmtp } from '../email/test-smtp.js';
 import { createSmtpResolver, encryptSmtpConfig } from '../../areas/settings/smtp.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
@@ -96,8 +96,8 @@ it('sends through the gym SMTP and accepts email invitations without passwords i
     const gymId = uuidv7(), owner = await factory('staffRoles', gymA, { role: 'owner' });
     await factory('gyms', gymId, { smtpConfig: encryptSmtpConfig(key, gymId, { host: '127.0.0.1', port: capture.port, security: 'plain', from: 'gym@example.test', username: 'gym-user', password: 'gym-pass' }) });
     await factory('staffRoles', gymId, { userId: owner.userId, role: 'owner' });
-    const multi = createStaffInvitationService({ config: { ...config, tenancy: 'multi', passwordEnabled: false, passwordMode: 'off' }, smtpConfigured: smtp.configured, mailer: smtpMailer(smtp), database: () => db.system.db });
-    const result = await multi.inviteStaff({ gymId, actorUserId: owner.userId, clock }, { email: 'email-invite@example.test', role: 'coach', delivery: 'email' }, 'https://email-gym.example.test');
+    const multi = createStaffInvitationService({ config: { ...config, tenancy: 'multi', passwordEnabled: false, passwordMode: 'off' }, smtpConfigured: smtp.configured, mailer: smtpMailer(smtp), database: () => db.system.db, scope: db.forGym });
+    const result = await multi.inviteStaff({ gymId, actorUserId: owner.userId, clock }, { email: 'email-invite@example.test', role: 'coach', delivery: 'email', sendGeneration: uuidv7() }, 'https://email-gym.example.test');
     expect(inviteStaffResponseSchema.parse(result).data.delivery).toBe('email');
     expect(JSON.stringify(result)).not.toContain('invitationUrl');
     expect(capture.messages).toHaveLength(1); expect(capture.messages[0]).toContain('gym@example.test');
@@ -109,10 +109,10 @@ it('sends through the gym SMTP and accepts email invitations without passwords i
 });
 it('keeps failed delivery retryable, invalidates old retry links, and never sends inside a transaction', async () => {
   const email = uuidv7() + '@example.test', first = await printed(email), fake = new FakeEmail();
-  fake.respondNext(new Error('SMTP failure'));
-  const sender = createStaffInvitationService({ config, database: () => db.system.db, smtpConfigured: async () => true, mailer: async () => { expect(isInTransaction()).toBe(false); return fake; } });
-  await expect(sender.inviteStaff(actor(), { email, role: 'coach', delivery: 'email' }, 'https://gym-a.example.test')).rejects.toThrow('SMTP failure');
-  const retry = await sender.inviteStaff(actor(), { email, role: 'coach', delivery: 'email' }, 'https://gym-a.example.test');
+  fake.respondNext(new DeliveryError('not_accepted', 'SMTP failure')); const sendGeneration = uuidv7();
+  const sender = createStaffInvitationService({ config, database: () => db.system.db, scope: db.forGym, smtpConfigured: async () => true, mailer: async () => { expect(isInTransaction()).toBe(false); return fake; } });
+  await expect(sender.inviteStaff(actor(), { email, role: 'coach', delivery: 'email', sendGeneration }, 'https://gym-a.example.test')).rejects.toThrow('SMTP failure');
+  const retry = await sender.inviteStaff(actor(), { email, role: 'coach', delivery: 'email', sendGeneration }, 'https://gym-a.example.test');
   expect(retry.data.staffRole.id).toBe(first.staffRole.id); expect(fake.messages).toHaveLength(1);
   await expect(service.acceptInvitation(gymA, { token: first.token, name: 'Old', password: 'invitation-password-123' }, clock)).rejects.toMatchObject({ code: 'not_found' });
 });
@@ -141,5 +141,5 @@ it('rejects missing password, owner invites, unauthenticated invites and email d
   await expect(service.acceptInvitation(gymA, { token: invite.token, name: 'Coach' }, clock)).rejects.toMatchObject({ code: 'invalid_request' });
   expect((await post(server(), '/api/staff/invitations', { email: 'bad@example.test', role: 'owner', delivery: 'print' })).status).toBe(400);
   expect((await post(server('anonymous'), '/api/staff/invitations', { email: 'bad@example.test', role: 'coach', delivery: 'print' })).status).toBe(401);
-  await expect(service.inviteStaff(actor(), { email: 'no-smtp@example.test', role: 'coach', delivery: 'email' }, 'https://gym-a.example.test')).rejects.toMatchObject({ code: 'unavailable' });
+  await expect(service.inviteStaff(actor(), { email: 'no-smtp@example.test', role: 'coach', delivery: 'email', sendGeneration: uuidv7() }, 'https://gym-a.example.test')).rejects.toMatchObject({ code: 'unavailable' });
 });

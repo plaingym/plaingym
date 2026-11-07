@@ -261,13 +261,25 @@ export type PortalSignedLinkData = z.infer<typeof portalSignedLinkDataSchema>;
 
 export type PortalReceiptResponse = z.infer<typeof portalReceiptResponseSchema>;
 
-const portalInviteFields = { email: z.email().max(254), delivery: z.enum(['email', 'print']) };
-export const portalInvitationRequestSchema = z.discriminatedUnion('scope', [
-  z.strictObject({ ...portalInviteFields, scope: z.literal('payer'), memberId: idSchema.nullable().optional() }),
-  z.strictObject({ ...portalInviteFields, scope: z.literal('member'), memberId: idSchema }),
+const portalPrintFields = { email: z.email().max(254), delivery: z.literal('print') };
+const portalEmailFields = { email: z.email().max(254), delivery: z.literal('email'), sendGeneration: idSchema };
+/**
+ * `sendGeneration` identifies one emailed invitation: the client keeps it while retrying and picks a new one for a
+ * deliberate resend, and a replay sends no second email and leaves the emailed link working. A printed invitation
+ * returns its URL once and sends nothing, so it has no generation.
+ */
+export const portalInvitationRequestSchema = z.discriminatedUnion('delivery', [
+  z.discriminatedUnion('scope', [
+    z.strictObject({ ...portalEmailFields, scope: z.literal('payer'), memberId: idSchema.nullable().optional() }),
+    z.strictObject({ ...portalEmailFields, scope: z.literal('member'), memberId: idSchema }),
+  ]),
+  z.discriminatedUnion('scope', [
+    z.strictObject({ ...portalPrintFields, scope: z.literal('payer'), memberId: idSchema.nullable().optional() }),
+    z.strictObject({ ...portalPrintFields, scope: z.literal('member'), memberId: idSchema }),
+  ]),
 ]);
 // The household login is created only when the invitee accepts, so an invitation has no login yet.
-const portalPendingInvitationSchema = z.strictObject({ userId: idSchema, scope: z.enum(['payer', 'member']), memberId: idSchema.nullable(), expiresAt: instantSchema });
+export const portalPendingInvitationSchema = z.strictObject({ userId: idSchema, scope: z.enum(['payer', 'member']), memberId: idSchema.nullable(), expiresAt: instantSchema });
 export const portalInvitationResponseSchema = z.strictObject({ data: z.discriminatedUnion('delivery', [
   z.strictObject({ delivery: z.literal('email'), invitation: portalPendingInvitationSchema }),
   z.strictObject({ delivery: z.literal('print'), invitation: portalPendingInvitationSchema, invitationUrl: z.url({ protocol: /^https?$/ }) }),

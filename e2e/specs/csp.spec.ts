@@ -94,7 +94,7 @@ test('the outbox preview shows an email with its inline styles, under the previe
     if (!initial.memberEmailsEnabled) await owner.json('/api/settings/go-live', 'PATCH', { revision: initial.revision, memberEmailsEnabled: true });
     const household = (await owner.json<{ data: { id: string; email: string | null }[] }>('/api/households?limit=100')).data.find(home => home.email)!;
     const before = await outboxIds(owner);
-    await owner.json('/api/links/send', 'POST', { purpose: 'update_card', householdId: household.id, expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+    await owner.json('/api/links/send', 'POST', { sendGeneration: crypto.randomUUID(), purpose: 'update_card', householdId: household.id, expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
     await outboxLink(owner, household.email!, /^\/l\//, before);
     const message = (await owner.json<{ data: { id: string; subject: string; recipient: string }[] }>('/api/demo/outbox?limit=100')).data
       .find(entry => entry.recipient === household.email && !before.has(entry.id))!;

@@ -44,10 +44,20 @@ shared email layout. The URL is `/l/<token>` on the configured origin. The house
 recipient helper (`areas/members/household-recipient.ts`, shared with billing
 notifications and alerts) checks matching members' opt-out and deliverability flags;
 waiver sends also honor the target member's flags. No member address is substituted for a missing household
-address. Transport failures and suppressed sends revoke the undisclosed credential
-and return a generic unavailable error. Delivery reloads the persisted member-email
+address. Suppressed sends and transport failures that prove nothing was sent revoke the undisclosed credential
+and return a generic unavailable error; a possibly accepted send keeps its link usable and returns the same error. Delivery reloads the persisted member-email
 switch immediately before sending, after asynchronous preparation and rendering;
 the prepared value cannot authorize a send after the switch is turned off.
+
+`POST /api/links/send` requires `sendGeneration`, a UUID naming one send command: the client keeps it
+while retrying and picks a new one for a deliberate resend. The delivery key is
+`links.send.<purpose>:<household>:<generation>`, and its `email_deliveries` row is reserved and names
+the link in the transaction that creates the link. A replay returns that link's current metadata and
+sends nothing, once the first attempt was accepted or may have been (a crash mid-send counts); while
+that attempt is in flight it is a conflict, and so is a generation reused for another resource. An
+attempt that provably sent nothing revokes its link, and its replay creates a new link and sends again.
+The expiry isn't part of the command's identity. Campaign sends and reminders have their own
+occurrence reservations (`campaigns.README.md`) and don't use a generation.
 The email transport runs outside transactions.
 
 For a positive invoice below the card minimum or off the currency step, send checks

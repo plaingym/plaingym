@@ -8,6 +8,7 @@ import { text, money, minorUnitsToInput, parseMinorUnits } from './format.js';
 import { Button } from '../../../components/ui/button.js';
 import { useDialogOperation, useDialogSaved } from '../../../components/ui/dialog.js';
 import { t } from '../../../lib/i18n.js';
+import { createSendGeneration } from '../../../lib/send-generation.js';
 import { Label } from '../../../components/ui/label.js';
 import { Input } from '../../../components/ui/input.js';
 import { Select } from '../../../components/ui/select.js';
@@ -25,6 +26,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
   const [action, setAction] = useState<Action | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const [message, setMessage] = useState(''), [url, setUrl] = useState(''), [cardOffset, setCardOffset] = useState(0);
   const actionTitle = useId(), heading = useRef<HTMLHeadingElement>(null), trigger = useRef<HTMLElement | null>(null);
+  const linkSend = useRef(createSendGeneration());
   const [draft, setDraft] = useState(false), [discard, setDiscard] = useState(false), keep = useRef<HTMLButtonElement>(null);
   const markSaved = useDialogSaved();
   useDialogOperation(busy);
@@ -57,9 +59,10 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         { householdId: invoice.householdId, paymentMethodId: action.card.id });
       if (action.kind === 'receipt') { await client.call('resendReceipt', {}, { invoiceId }); setMessage(text('receiptQueued')); }
       if (action.kind === 'link') {
-        const send = form.get('delivery') === 'email';
+        const sendGeneration = form.get('delivery') === 'email' ? linkSend.current.for(invoiceId) : undefined;
         const result = await client.link({ purpose: 'pay_invoice', householdId: invoice.householdId, invoiceId,
-          expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }, send);
+          expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString() }, sendGeneration);
+        if (sendGeneration) linkSend.current.sent();
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
         else setMessage(text('linkSent'));
       }

@@ -59,11 +59,16 @@ export const staffProfileListQuerySchema = paginationSchema.extend({
 export const staffProfileResponseSchema = z.strictObject({ data: staffProfileSchema });
 export const staffProfileListResponseSchema = listResponseSchema(staffProfileSchema);
 
-export const inviteStaffRequestSchema = z.strictObject({
-  email: z.email(),
-  role: assignableStaffRoleSchema,
-  delivery: z.enum(['email', 'print']),
-});
+const inviteStaffFields = { email: z.email(), role: assignableStaffRoleSchema };
+/**
+ * `sendGeneration` identifies one emailed invitation: the client keeps it while retrying and picks a new one for a
+ * deliberate resend, and a replay sends no second email and leaves the emailed link working. A printed invitation
+ * returns its URL once and sends nothing, so it has no generation.
+ */
+export const inviteStaffRequestSchema = z.discriminatedUnion('delivery', [
+  z.strictObject({ ...inviteStaffFields, delivery: z.literal('email'), sendGeneration: idSchema }),
+  z.strictObject({ ...inviteStaffFields, delivery: z.literal('print') }),
+]);
 /** Printed invitation URLs are returned once at creation and never in a profile or role list. */
 export const inviteStaffResponseSchema = z.strictObject({
   data: z.discriminatedUnion('delivery', [

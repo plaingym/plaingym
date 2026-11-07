@@ -31,6 +31,24 @@ it('shows and dismisses a printed invitation without persisting it', async () =>
   expect(service.invite).toHaveBeenCalledWith({ email: 'coach@example.test', role: 'coach', delivery: 'print' });
   await user.click(screen.getByRole('button', { name: 'Dismiss link' })); expect(screen.queryByLabelText('Invitation link')).toBeNull();
 });
+it('keeps the send generation while retrying an emailed invitation and picks a new one to resend it', async () => {
+  const service = services(), user = userEvent.setup(), staffRole = { id: 'new-role', userId: 'new-user', role: 'coach' as const, revision: 1, createdAt: profile.createdAt };
+  vi.mocked(service.invite).mockRejectedValueOnce(new Error('Network')).mockResolvedValue({ delivery: 'email', staffRole });
+  render(<StaffManagement roles={['owner']} passwordEnabled services={service}/>);
+  await screen.findByRole('button', { name: 'Edit Alex Coach' }); await user.type(screen.getByLabelText('Email address'), 'coach@example.test');
+  await user.selectOptions(screen.getByLabelText('Delivery'), 'email');
+  const generations = () => vi.mocked(service.invite).mock.calls.map(([input]) => input.delivery === 'email' ? input.sendGeneration : null);
+  await user.click(screen.getByRole('button', { name: 'Invite staff' }));
+  await waitFor(() => expect(generations()).toHaveLength(1));
+  await user.click(await screen.findByRole('button', { name: 'Invite staff' }));
+  await waitFor(() => expect(generations()).toHaveLength(2));
+  expect(generations()[1]).toBe(generations()[0]);
+  await user.selectOptions(screen.getByLabelText('Delivery'), 'email');
+  await user.clear(screen.getByLabelText('Email address')); await user.type(screen.getByLabelText('Email address'), 'coach@example.test');
+  await user.click(await screen.findByRole('button', { name: 'Invite staff' }));
+  await waitFor(() => expect(generations()).toHaveLength(3));
+  expect(generations()[2]).not.toBe(generations()[1]);
+});
 it('submits the profile revision and keeps a stale edit for review with a conflict message', async () => {
   const service = services(), user = userEvent.setup(); vi.mocked(service.updateProfile).mockRejectedValue(new StaffRequestError(409));
   render(<StaffManagement roles={['admin']} passwordEnabled services={service}/>); await screen.findByRole('button', { name: 'Edit Alex Coach' });

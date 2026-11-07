@@ -20,7 +20,7 @@ it('uses generated invitation and profile-photo routes with same-origin credenti
     return Response.json(request.url.endsWith('/invitations') ? { data: { delivery: 'email', staffRole: { id: profile.id, userId: profile.id, role: 'coach', revision: 1, createdAt: profile.createdAt } } } : { data: profile });
   });
   const client = createStaffClient(fetcher);
-  expect((await client.invite({ email: 'coach@example.test', role: 'coach', delivery: 'email' })).delivery).toBe('email');
+  expect((await client.invite({ email: 'coach@example.test', role: 'coach', delivery: 'email', sendGeneration: crypto.randomUUID() })).delivery).toBe('email');
   expect(await client.uploadPhoto(profile.id, 1, new File([new Uint8Array([255, 216, 255, 224])], 'photo.jpg', { type: 'image/jpeg' }))).toEqual(profile);
   expect(requests.map((request) => new URL(request.url).pathname)).toEqual(['/api/staff/invitations', `/api/staff/profiles/${profile.id}/photo`]);
   expect(requests.every((request) => request.credentials === 'same-origin' && request.method === 'POST')).toBe(true);

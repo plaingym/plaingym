@@ -35,6 +35,17 @@ export const createSignedLinkRequestSchema = z.discriminatedUnion('purpose', [
   z.strictObject({ ...createLinkFields, purpose: z.literal('update_card') }),
   z.strictObject({ ...createLinkFields, purpose: z.literal('onboarding') }),
 ]);
+const sendLinkFields = { ...createLinkFields, sendGeneration: idSchema };
+/**
+ * `sendGeneration` identifies one send command: the client keeps it while retrying and picks a new one for a deliberate
+ * resend. A replay returns the first attempt's link and sends no second email.
+ */
+export const sendSignedLinkRequestSchema = z.discriminatedUnion('purpose', [
+  z.strictObject({ ...sendLinkFields, purpose: z.literal('pay_invoice'), invoiceId: idSchema }),
+  z.strictObject({ ...sendLinkFields, purpose: z.literal('sign_waiver'), memberId: idSchema }),
+  z.strictObject({ ...sendLinkFields, purpose: z.literal('update_card') }),
+  z.strictObject({ ...sendLinkFields, purpose: z.literal('onboarding') }),
+]);
 /** Only this creation result exposes the opaque secret, for a front-desk tablet or printed link. */
 export const createSignedLinkResponseSchema = z.strictObject({
   data: z.strictObject({
@@ -146,7 +157,7 @@ export const linksContracts = {
   createLink: { method: 'post', path: '/api/links', permission: { kind: 'staff', capability: 'links.send' },
     body: createSignedLinkRequestSchema, response: createSignedLinkResponseSchema },
   sendLink: { method: 'post', path: '/api/links/send', permission: { kind: 'staff', capability: 'links.send' },
-    body: createSignedLinkRequestSchema, response: signedLinkResponseSchema },
+    body: sendSignedLinkRequestSchema, response: signedLinkResponseSchema },
   listLinks: { method: 'get', path: '/api/links', permission: { kind: 'staff', capability: 'links.send' },
     query: signedLinkListQuerySchema, response: signedLinkListResponseSchema },
   getLink: { method: 'get', path: '/api/links/{linkId}', permission: { kind: 'staff', capability: 'links.send' },
@@ -171,6 +182,7 @@ export const linksContracts = {
 export type SignedLinkPurposeName = z.infer<typeof signedLinkPurposeSchema>;
 export type SignedLinkRecord = z.infer<typeof signedLinkSchema>;
 export type CreateSignedLinkRequest = z.infer<typeof createSignedLinkRequestSchema>;
+export type SendSignedLinkRequest = z.infer<typeof sendSignedLinkRequestSchema>;
 export type CreateSignedLinkResponse = z.infer<typeof createSignedLinkResponseSchema>;
 export type SignedLinkResponse = z.infer<typeof signedLinkResponseSchema>;
 export type SignedLinkListResponse = z.infer<typeof signedLinkListResponseSchema>;

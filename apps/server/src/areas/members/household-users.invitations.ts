@@ -3,11 +3,12 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { forGym, forHousehold, HouseholdAccessError, householdUsers, households, members, signedLinks, staffRoles, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, canStaff, createTranslator, type Clock, type StaffRole } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
-import { portalClaimCompletionRequestSchema, portalClaimRequestSchema, portalInvitationRequestSchema, portalOnboardingClaimRequestSchema, type PortalInvitationRequest } from '@plaingym/shared/contracts';
+import { portalClaimCompletionRequestSchema, portalClaimRequestSchema, portalInvitationRequestSchema, portalOnboardingClaimRequestSchema, portalPendingInvitationSchema, type PortalInvitationRequest } from '@plaingym/shared/contracts';
+import type { z } from 'zod';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { createPortalClaimCodes, createPortalInvitationStore, type PortalInvitationBinding, type PortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
-import type { Email } from '../../infra/email/index.js';
+import { commandDigest, createEmailDeliveries, type Email, type EmailMessage, type EmailReservation } from '../../infra/email/index.js';
 import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -48,6 +49,7 @@ async function lockOnboardingLink(tx: Transaction, linkId: string, clock: Clock)
 export function createPortalInvitationService(options: PortalInvitationOptions) {
   const accounts = createAccountService(options.config, options.database), store = createPortalInvitationStore(options.database);
   const codes = createPortalClaimCodes(options.config.secret), scope = options.scope ?? forGym;
+  const deliveries = createEmailDeliveries({ scope });
   const householdScope = options.householdScope ?? forHousehold;
   const t = createTranslator(locales.en ?? {});
   const passwordRequired = async (gymId: string) => options.config.tenancy === 'single' && passwordLogin(options.config, await options.smtpConfigured(gymId));
@@ -72,10 +74,26 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
       if (input.delivery === 'email' && !mailer) throw new AppError('unavailable', 'Email delivery is not configured');
       const url = new URL('/portal/claim', origin);
       if (!['http:', 'https:'].includes(url.protocol)) throw new AppError('invalid_request', 'Invalid gym origin');
-      let result: { token: string; invitation: PortalInvitationBinding & { expiresAt: Date } } | undefined;
-      await accounts.provisionUser(actor.gymId, input.email, input.email, actor.clock, async (tx, userId) => {
+      const assertManager = async (tx: Transaction) => {
         const roles = await tx.select({ role: staffRoles.role }).from(staffRoles).where(eq(staffRoles.userId, actor.userId));
         if (!canStaff(roles.map(row => row.role as StaffRole), 'portal_access.manage')) notFound();
+      };
+      const address = input.email.trim().toLowerCase();
+      // The generation is the attempt: a retry finds the first attempt, and a deliberate resend has a new generation.
+      const command = input.delivery === 'email' ? { key: `portal.invitation:${householdId.toLowerCase()}:${input.sendGeneration.toLowerCase()}`,
+        digest: commandDigest([address, input.scope, input.memberId?.toLowerCase() ?? null]) } : null;
+      if (command) {
+        // Before anything below can refuse an accepted invitation, provision its user again or replace its emailed link.
+        const replayed = await scope(actor.gymId, async tx => {
+          await assertManager(tx);
+          return deliveries.replay(tx, actor.gymId, command.key, command.digest);
+        });
+        if (replayed) return { data: { delivery: 'email' as const, invitation: portalPendingInvitationSchema.parse(replayed.result) } };
+      }
+      let result: { token: string; invitation: z.infer<typeof portalPendingInvitationSchema>; reservation: EmailReservation | null } | undefined;
+      await accounts.provisionUser(actor.gymId, input.email, input.email, actor.clock, async (tx, userId) => {
+        await assertManager(tx);
+        const reservation = command && await deliveries.reserve(tx, actor.gymId, command.key, command.digest);
         await refuseStaff(tx, userId);
         await assertPortalLoginTarget(tx, householdId, input.memberId ?? null, input.scope, actor.clock, actor.timezone);
         if ((await tx.select({ id: householdUsers.id }).from(householdUsers).where(and(eq(householdUsers.householdId, householdId), eq(householdUsers.userId, userId))))[0])
@@ -86,15 +104,25 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
         const issued = await store.issue(tx, actor.gymId, binding, actor.clock);
         await writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId, action: 'household_user.invited', targetType: 'household', targetId: householdId,
           after: { userId, scope: binding.scope, memberId: binding.memberId }, occurredAt: actor.clock.now() });
-        result = { token: issued.token, invitation: { ...binding, expiresAt: issued.expiresAt } };
+        const invitation = { userId, scope: binding.scope, memberId: binding.memberId, expiresAt: issued.expiresAt.toISOString() };
+        if (reservation) await deliveries.remember(tx, reservation, invitation);
+        result = { token: issued.token, invitation, reservation };
       });
       if (!result) throw new AppError('internal', 'Invitation creation failed');
       url.hash = result.token;
-      const invitation = { userId: result.invitation.userId, scope: result.invitation.scope, memberId: result.invitation.memberId, expiresAt: result.invitation.expiresAt.toISOString() };
+      const { invitation } = result;
       if (input.delivery === 'print') return { data: { delivery: 'print' as const, invitation, invitationUrl: url.toString() } };
-      const text = t('portal/access:invitationEmail') + '\n' + url.toString();
-      const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-      const sent = await mailer!.sendEmail({ to: input.email.trim().toLowerCase(), subject: t('portal/access:title'), text, html: '<p>' + escaped + '</p>' });
+      const reservation = result.reservation!;
+      let message: EmailMessage;
+      try {
+        const text = t('portal/access:invitationEmail') + '\n' + url.toString();
+        const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+        message = { to: address, subject: t('portal/access:title'), text, html: '<p>' + escaped + '</p>' };
+      } catch (error) {
+        await deliveries.release(reservation);
+        throw error;
+      }
+      const sent = await deliveries.attempt(reservation, mailer!, message);
       if (sent.status !== 'sent') throw new AppError('unavailable', 'Invitation was not delivered');
       return { data: { delivery: 'email' as const, invitation } };
     },

@@ -85,7 +85,7 @@ describe('go-live switch enforcement across entry paths', () => {
       prepare: async () => ({ email: f.email, origin: 'https://gym.example.test' }), staffRecipients: async () => ['owner@example.invalid'] });
     const invoice = { id: f.invoice.id, householdId: f.household.id, kind: 'cycle' as const, status: 'open' as const,
       number: 1, amountCents: f.invoice.amountCents, currency: f.invoice.currency, paidAt: null };
-    const notice = { gymId: f.gymId, invoice };
+    const notice = { gymId: f.gymId, generation: uuidv7(), invoice };
     await notices.receipt(notice); await notices.receipt(notice);
     await notices.dunning({ ...notice, actionRequired: false }); await notices.dunning({ ...notice, actionRequired: true });
     expect(f.email.messages).toHaveLength(0);
@@ -98,7 +98,7 @@ describe('go-live switch enforcement across entry paths', () => {
     const notices = createTransitionNotifications({ scope: db.forGym, clock: f.clock, settings: f.settings,
       prepare: async () => { await f.toggle({ memberEmailsEnabled: false }); return { email: f.email, origin: 'https://gym.example.test' }; },
       staffRecipients: async () => [] });
-    const notice = { gymId: f.gymId, invoice: { id: f.invoice.id, householdId: f.household.id, kind: 'cycle' as const, status: 'paid' as const,
+    const notice = { gymId: f.gymId, generation: uuidv7(), invoice: { id: f.invoice.id, householdId: f.household.id, kind: 'cycle' as const, status: 'paid' as const,
       number: 1, amountCents: f.invoice.amountCents, currency: f.invoice.currency, paidAt: f.clock.now().toISOString() } };
     if (kind === 'receipt') await notices.receipt(notice);
     else await notices.dunning({ ...notice, actionRequired: kind === 'action' });
@@ -114,7 +114,7 @@ describe('go-live switch enforcement across entry paths', () => {
       return { gymId: f.gymId, gymName: 'Test Gym', origin: 'https://gym.example.test', email: f.email,
         memberEmailsEnabled: enabled, t: (key: string) => key };
     } } });
-    await links.send(f.context, { purpose: 'update_card', householdId: f.household.id, expiresAt: '2026-11-01T12:00:00Z' })
+    await links.send(f.context, { sendGeneration: uuidv7(), purpose: 'update_card', householdId: f.household.id, expiresAt: '2026-11-01T12:00:00Z' })
       .catch(error => { expect(error).toMatchObject({ code: 'unavailable' }); });
     expect(f.email.messages).toHaveLength(0);
   });

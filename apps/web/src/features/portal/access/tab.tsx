@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { memberResponseSchema, membersContracts, portalAccessContracts, type HouseholdUser, type PortalOutstandingInvitation as OutstandingInvitation } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
 import { t } from '../../../lib/i18n.js';
+import { createSendGeneration } from '../../../lib/send-generation.js';
 import { memberRequest } from '../../members/api.js';
 import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
@@ -25,10 +26,14 @@ export function PortalAccessTab({ memberId }: ExtensionViewProps) {
     queryFn: ({ signal }) => memberRequest(portalAccessContracts.logins.response, `/api/households/${householdId}/portal-logins?offset=${offset}&limit=20`, 'GET', undefined, signal) });
   const pending = useQuery({ queryKey: [...key, 'invitations'], enabled: !!householdId,
     queryFn: ({ signal }) => memberRequest(portalAccessContracts.invitations.response, `/api/households/${householdId}/portal-invitations`, 'GET', undefined, signal) });
+  const inviteSend = useRef(createSendGeneration());
   const operation = useMutation({ mutationFn: async () => {
     if (!householdId || !edit) return;
     if (edit === 'invite') {
-      const result = await memberRequest(portalAccessContracts.invite.response, `/api/households/${householdId}/portal-invitations`, 'POST', { email, scope, memberId: scope === 'member' ? memberId : null, delivery });
+      const request = { email, scope, memberId: scope === 'member' ? memberId : null };
+      const result = await memberRequest(portalAccessContracts.invite.response, `/api/households/${householdId}/portal-invitations`, 'POST',
+        delivery === 'email' ? { ...request, delivery, sendGeneration: inviteSend.current.for({ householdId, ...request }) } : { ...request, delivery });
+      if (delivery === 'email') inviteSend.current.sent();
       if (result.data.delivery === 'print') setInvitation(result.data.invitationUrl);
     } else if (edit.kind === 'withdraw') await memberRequest(portalAccessContracts.revokeInvitation.response, `/api/households/${householdId}/portal-invitations/${edit.invitation.id}`, 'DELETE');
     else if (edit.kind === 'revoke') await memberRequest(membersContracts.revokeHouseholdUser.response, `/api/households/${householdId}/users/${edit.login.id}`, 'DELETE');

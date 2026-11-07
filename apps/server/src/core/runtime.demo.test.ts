@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Assembly test inspects install cleanup jobs and gym settings in real PostgreSQL.
-import { emailOutbox, gyms, householdUsers, jobs, kioskDevices, programs } from '@plaingym/db';
+import { emailOutbox, gyms, householdUsers, jobs, kioskDevices, programs, uuidv7 } from '@plaingym/db';
 import { SmtpEmail } from '../infra/email/index.js';
 import { createSignedLinksService } from '../areas/links/service.js';
 import { atomicJson } from '../areas/health/backups.files.js';
@@ -35,7 +35,7 @@ it('routes real login and signed-link email into the outbox without SMTP', async
   expect((await app.post('/api/auth/sign-in/magic-link', { email: `owner.${sandbox.gymId}@example.invalid`, callbackURL: '/admin' }, sandbox.origin)).status).toBe(200);
   const [household] = await database.forGym(sandbox.gymId, (tx) => tx.select().from(householdUsers));
   await database.forGym(sandbox.gymId, (tx) => tx.update(gyms).set({ memberEmailsEnabled: true }).where(eq(gyms.id, sandbox.gymId)));
-  await createSignedLinksService().send({ gymId: sandbox.gymId, actor: { kind: 'system' } }, {
+  await createSignedLinksService().send({ gymId: sandbox.gymId, actor: { kind: 'system' } }, { sendGeneration: uuidv7(),
     purpose: 'update_card', householdId: household!.householdId, expiresAt: new Date(Date.now() + 3600_000).toISOString(),
   });
   const messages = await database.forGym(sandbox.gymId, (tx) => tx.select().from(emailOutbox));

@@ -140,7 +140,7 @@ test('demo entry creates a gym, the slim bar and demo menu work at every size, f
   }
   const owner = new Client(sandbox.origin);
   owner.cookie = (await page.context().cookies(sandbox.origin)).map((cookie) => cookie.name + '=' + cookie.value).join('; ');
-  await owner.json('/api/staff/invitations', 'POST', { email: 'phone-preview@example.invalid', role: 'coach', delivery: 'email' });
+  await owner.json('/api/staff/invitations', 'POST', { email: 'phone-preview@example.invalid', role: 'coach', delivery: 'email', sendGeneration: crypto.randomUUID() });
   await page.goto(sandbox.origin + '/admin/outbox');
   await expect(page.getByRole('button', { name: 'Preview HTML', exact: true }).first()).toBeVisible();
   for (const size of sizes) {

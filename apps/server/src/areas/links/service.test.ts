@@ -17,7 +17,7 @@ import { TestClock } from '../../core/clock.js';
 import type { Principal, RequestEnvironment } from '../../core/context.js';
 import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
-import { FakeEmail } from '../../infra/email/index.js';
+import { DeliveryError, FakeEmail } from '../../infra/email/index.js';
 import { createSignedLinksService, type SignedLinkPrincipal } from './service.js';
 import { createSignedLinksRoutes } from './service.routes.js';
 import type { PreparedSignedLinkDelivery } from './service.delivery.js';
@@ -38,6 +38,7 @@ const request = (purpose: SignedLinkPurposeName = 'update_card'): CreateSignedLi
   return purpose === 'pay_invoice' ? { ...fields, purpose, invoiceId: invoiceA }
     : purpose === 'sign_waiver' ? { ...fields, purpose, memberId: memberA } : { ...fields, purpose };
 };
+const sendRequest = (purpose?: SignedLinkPurposeName) => ({ ...request(purpose), sendGeneration: uuidv7() });
 const sending = createSignedLinksService({ scope: database.forGym, clock, delivery: {
   async prepare(gymId) { expect(isInTransaction()).toBe(false); return { ...delivery, gymId }; },
 } });
@@ -95,7 +96,7 @@ describe('signed link creation and metadata', () => {
     for (const [memberId, status] of [[erased.id, 409], [foreign.id, 404], [other.id, 404]] as const) {
       const input = { ...request('sign_waiver'), householdId: household.id, memberId };
       expect((await post(server(), '/api/links', input)).status).toBe(status);
-      expect((await post(server(), '/api/links/send', input)).status).toBe(status);
+      expect((await post(server(), '/api/links/send', { ...input, sendGeneration: uuidv7() })).status).toBe(status);
     }
     expect(await database.forGym(gymA, async tx => ({ links: await tx.select().from(signedLinks).orderBy(asc(signedLinks.id)), audits: await tx.select().from(auditEvents).orderBy(asc(auditEvents.id)) }))).toEqual(before);
   });
@@ -267,7 +268,7 @@ describe('signed link HTTP contracts and permissions', () => {
     const created = await service.create(mutation, request());
     const results = [
       [await post(app, '/api/links', request()), createSignedLinkResponseSchema],
-      [await post(app, '/api/links/send', request()), signedLinkResponseSchema],
+      [await post(app, '/api/links/send', sendRequest()), signedLinkResponseSchema],
       [await app.request('/api/links?limit=1'), signedLinkListResponseSchema],
       [await app.request(`/api/links/${created.link.id}`), signedLinkResponseSchema],
       [await post(app, `/api/links/${created.link.id}/revoke`), signedLinkResponseSchema],
@@ -301,9 +302,10 @@ describe('signed link HTTP contracts and permissions', () => {
     const app = server(staff('owner'));
     const foreign = await service.create({ ...mutation, gymId: gymB }, { ...request(), householdId: householdB });
     for (const path of ['/api/links', '/api/links/send']) {
-      expect((await post(app, path, { ...request(), householdId: householdB })).status).toBe(404);
-      expect((await post(app, path, { ...request('pay_invoice'), invoiceId: invoiceB })).status).toBe(404);
-      expect((await post(app, path, { ...request('sign_waiver'), memberId: memberB })).status).toBe(404);
+      const send = path.endsWith('/send') ? { sendGeneration: uuidv7() } : {};
+      expect((await post(app, path, { ...send, ...request(), householdId: householdB })).status).toBe(404);
+      expect((await post(app, path, { ...send, ...request('pay_invoice'), invoiceId: invoiceB })).status).toBe(404);
+      expect((await post(app, path, { ...send, ...request('sign_waiver'), memberId: memberB })).status).toBe(404);
     }
     expect((await app.request(`/api/links/${foreign.link.id}`)).status).toBe(404);
     expect((await post(app, `/api/links/${foreign.link.id}/revoke`)).status).toBe(404);
@@ -312,7 +314,7 @@ describe('signed link HTTP contracts and permissions', () => {
     expect((await service.resolve(gymB, foreign.token)).status).toBe('active');
   });
   it('uses a configured canonical origin for email and never exposes the secret through send or metadata reads', async () => {
-    const result = await post(server(), '/api/links/send', request());
+    const result = await post(server(), '/api/links/send', sendRequest());
     expect(result.status).toBe(200);
     const body = signedLinkResponseSchema.parse(await result.json());
     const message = email.messages.at(-1)!;
@@ -340,7 +342,7 @@ describe('email failure and suppression', () => {
         return email.sendEmail(message);
       } } }; },
     } });
-    const result = await checkedSending.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
+    const result = await checkedSending.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
     const message = email.messages.at(-1)!;
     expect(message.text).toContain('Contact the gym to arrange a manual payment');
     expect(message.text).not.toContain('/l/');
@@ -357,7 +359,7 @@ describe('email failure and suppression', () => {
     const home = await factory('households', gymId, { email: 'payer@example.test' });
     const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents: 0, status: 'open', number: 1 });
     const before = email.messages.length;
-    await expect(sending.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id,
+    await expect(sending.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id,
       invoiceId: invoice.id, expiresAt: request().expiresAt })).rejects.toMatchObject({ code: 'conflict',
       message: 'This invoice settles on its due date', details: { reason: ['zero_invoice'] } });
     expect((await service.list(gymId)).pagination.total).toBe(0);
@@ -375,7 +377,7 @@ describe('email failure and suppression', () => {
       return database.forGym(id, fn);
     };
     const racing = createSignedLinksService({ scope, clock, delivery: { async prepare() { return { ...delivery, gymId }; } } });
-    const result = await racing.send({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
+    const result = await racing.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id, invoiceId: invoice.id, expiresAt: request().expiresAt });
     expect(email.messages.at(-1)!.text).toContain('Contact the gym to arrange a manual payment');
     expect(email.messages.at(-1)!.text).not.toContain('/l/');
     expect(result.revokedAt).toBe(clock.now().toISOString());
@@ -386,21 +388,21 @@ describe('email failure and suppression', () => {
     for (const input of [
       { ...request('pay_invoice'), householdId: householdA, invoiceId: invoiceOther },
       { ...request('pay_invoice'), householdId: householdB, invoiceId: invoiceB },
-    ]) await expect(sending.send(mutation, input)).rejects.toMatchObject({ code: 'not_found' });
+    ]) await expect(sending.send(mutation, { ...input, sendGeneration: uuidv7() })).rejects.toMatchObject({ code: 'not_found' });
     expect(email.messages).toHaveLength(before);
     expect((await service.list(gymA)).pagination.total).toBe(total);
   });
   it('requires explicit delivery configuration and does not mint a token when absent', async () => {
     const before = (await service.list(gymA)).pagination.total;
-    await expect(service.send(mutation, request())).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(service.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable' });
     expect((await service.list(gymA)).pagination.total).toBe(before);
   });
   it('does not prepare or deliver email inside a transaction', async () => {
-    await expect(runInTransaction(() => sending.send(mutation, request()))).rejects.toThrow();
+    await expect(runInTransaction(() => sending.send(mutation, sendRequest()))).rejects.toThrow();
   });
   it.each(['transport', 'suppressed'] as const)('revokes the fresh token on %s failure and hides transport errors', async (failure) => {
-    email.respondNext(failure === 'transport' ? new Error('SMTP private credentials') : { status: 'suppressed', reason: 'disabled' });
-    await expect(sending.send(mutation, request())).rejects.toMatchObject({ code: 'unavailable', message: 'Signed link email was not delivered' });
+    email.respondNext(failure === 'transport' ? new DeliveryError('not_accepted', 'SMTP private credentials') : { status: 'suppressed', reason: 'disabled' });
+    await expect(sending.send(mutation, sendRequest())).rejects.toMatchObject({ code: 'unavailable', message: 'Signed link email was not delivered' });
     const newest = (await service.list(gymA, { limit: 1 })).data[0]!;
     expect(newest.revokedAt).toBe(clock.now().toISOString());
     expect(newest.usedAt).toBeNull();
@@ -411,20 +413,20 @@ describe('email failure and suppression', () => {
   ])('rejects invalid configuration before creating a credential: %j', async (changes) => {
     const configured = createSignedLinksService({ scope: database.forGym, clock, delivery: { async prepare() { return { ...delivery, ...changes }; } } });
     const before = (await service.list(gymA)).pagination.total;
-    await expect(configured.send(mutation, request())).rejects.toThrow();
+    await expect(configured.send(mutation, sendRequest())).rejects.toThrow();
     expect((await service.list(gymA)).pagination.total).toBe(before);
   });
   it.each([{ emailOptOut: true }, { emailDeliverable: false }])('respects member suppression %j and revokes the undisclosed credential', async (flags) => {
     const household = await factory('households', gymA, { email: 'suppressed@example.test' });
     await factory('members', gymA, { householdId: household.id, email: household.email, ...flags });
     const before = email.messages.length;
-    await expect(sending.send(mutation, { ...request(), householdId: household.id })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(sending.send(mutation, { ...sendRequest(), householdId: household.id })).rejects.toMatchObject({ code: 'unavailable' });
     expect(email.messages).toHaveLength(before);
     expect((await service.list(gymA, { householdId: household.id })).data[0]!.revokedAt).not.toBeNull();
   });
   it('refuses missing household email without sending to a fallback member', async () => {
     const before = email.messages.length;
-    await expect(sending.send(mutation, { ...request(), householdId: householdOther })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(sending.send(mutation, { ...sendRequest(), householdId: householdOther })).rejects.toMatchObject({ code: 'unavailable' });
     expect(email.messages).toHaveLength(before);
   });
 });

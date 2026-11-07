@@ -65,8 +65,8 @@ children use their payer's household access.
 
 Email and printed invitations expire after seven days. Tokens are random,
 stored hashed in `auth_verification`, bound to the gym and to the household login
-they grant, and placed in URL fragments. Resending an invitation invalidates its
-old token. An invitation grants nothing by itself: the household login is created
+they grant, and placed in URL fragments. A deliberate resend (a new send generation) invalidates its
+old token, and a retry with the same `sendGeneration` returns the first result, sends no second email and leaves the emailed token working; its delivery key is `portal.invitation:<household>:<generation>` (`infra/email/README.md`). An invitation grants nothing by itself: the household login is created
 only when the invitation is accepted. An address that already has a login for the
 household, or a member who already has one, is a conflict. Staff identities cannot
 be claimed through a member invitation.

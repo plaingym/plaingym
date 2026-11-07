@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { eq } from 'drizzle-orm';
-import { staffRoles, staffProfiles, writeAudit } from '@plaingym/db';
+import { forGym, staffRoles, staffProfiles, writeAudit } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { acceptStaffInvitationRequestSchema, type AcceptStaffInvitationRequest, type InviteStaffRequest, type InviteStaffResponse } from '@plaingym/shared/contracts';
+import { acceptStaffInvitationRequestSchema, staffRoleSchema, type AcceptStaffInvitationRequest, type InviteStaffRequest, type InviteStaffResponse } from '@plaingym/shared/contracts';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { createInvitationStore } from '../../infra/auth/invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
-import { SmtpEmail, type Email } from '../../infra/email/index.js';
+import { commandDigest, createEmailDeliveries, recipientDigest, SmtpEmail, type Email, type EmailMessage, type EmailReservation } from '../../infra/email/index.js';
 import type { SmtpResolver } from '../settings/smtp.js';
 import { renderStaffInvitation } from '../../emails/staff/profiles.js';
 import { assertStaffManager, staffAudit, staffRoleRecord, type StaffActor } from './profiles.js';
@@ -19,6 +19,7 @@ export interface StaffInvitationOptions {
   /** The gym's sender (its own SMTP, the install fallback, or the demo outbox), or null when it has none. */
   mailer(gymId: string): Email | null | Promise<Email | null>;
   readonly database?: Parameters<typeof createAccountService>[1];
+  readonly scope?: typeof forGym;
 }
 /** Sends through the gym's SMTP settings, falling back to the install's. */
 export function smtpMailer(smtp: SmtpResolver) {
@@ -29,6 +30,7 @@ export function smtpMailer(smtp: SmtpResolver) {
 }
 export function createStaffInvitationService(options: StaffInvitationOptions) {
   const accounts = createAccountService(options.config, options.database), store = createInvitationStore(options.database);
+  const scope = options.scope ?? forGym, deliveries = createEmailDeliveries({ scope });
   const t = createTranslator(locales.en ?? {});
   async function passwordRequired(gymId: string) {
     return options.config.tenancy === 'single' && passwordLogin(options.config, await options.smtpConfigured(gymId));
@@ -43,9 +45,21 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
       const url = new URL('/staff-invitation', origin);
       if (!['https:', 'http:'].includes(url.protocol)) throw new AppError('invalid_request', 'Invalid gym origin');
       const email = input.email.trim().toLowerCase();
-      let result: { staffRole: InviteStaffResponse['data']['staffRole']; token: string } | undefined;
+      // The generation is the attempt: a retry finds the first attempt, and a deliberate resend has a new generation.
+      const command = input.delivery === 'email'
+        ? { key: `staff.invitation:${recipientDigest(email)}:${input.sendGeneration.toLowerCase()}`, digest: commandDigest([input.role]) } : null;
+      if (command) {
+        // Before anything below can refuse an accepted invitation, provision its user again or replace its emailed link.
+        const replayed = await scope(actor.gymId, async tx => {
+          await assertStaffManager(tx, actor.actorUserId);
+          return deliveries.replay(tx, actor.gymId, command.key, command.digest);
+        });
+        if (replayed) return { data: { delivery: 'email', staffRole: staffRoleSchema.parse(replayed.result) } };
+      }
+      let result: { staffRole: InviteStaffResponse['data']['staffRole']; token: string; reservation: EmailReservation | null } | undefined;
       await accounts.provisionUser(actor.gymId, email, email, actor.clock, async (tx, userId) => {
         await assertStaffManager(tx, actor.actorUserId);
+        const reservation = command && await deliveries.reserve(tx, actor.gymId, command.key, command.digest);
         const [row] = await tx.insert(staffRoles).values({ gymId: actor.gymId, userId, role: input.role, createdAt: actor.clock.now() }).onConflictDoNothing().returning();
         const current = row ?? (await tx.select().from(staffRoles).where(eq(staffRoles.userId, userId)))[0];
         if (!current || current.role !== input.role) throw new AppError('conflict', 'Account already has a different staff role');
@@ -55,13 +69,23 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
         if (row) await staffAudit(tx, actor, 'staff.role_granted', 'staff_role', row.id);
         const token = await store.issue(tx, actor.gymId, binding, actor.clock);
         await staffAudit(tx, actor, 'staff.invited', 'staff_role', current.id);
-        result = { staffRole: staffRoleRecord(current), token };
+        const staffRole = staffRoleRecord(current);
+        if (reservation) await deliveries.remember(tx, reservation, staffRole);
+        result = { staffRole, token, reservation };
       });
       if (!result) throw new AppError('internal', 'Invitation creation failed');
       // Fragments keep the bearer token out of request URLs, access logs and referrers.
       url.hash = result.token;
       if (input.delivery === 'print') return { data: { delivery: 'print', staffRole: result.staffRole, invitationUrl: url.toString() } };
-      const sent = await mailer!.sendEmail({ to: email, ...renderStaffInvitation(url.toString(), t) });
+      const reservation = result.reservation!;
+      let message: EmailMessage;
+      try {
+        message = { to: email, ...renderStaffInvitation(url.toString(), t) };
+      } catch (error) {
+        await deliveries.release(reservation);
+        throw error;
+      }
+      const sent = await deliveries.attempt(reservation, mailer!, message);
       if (sent.status !== 'sent') throw new AppError('unavailable', 'Staff invitation was not delivered');
       return { data: { delivery: 'email', staffRole: result.staffRole } };
     },

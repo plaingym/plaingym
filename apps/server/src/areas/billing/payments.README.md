@@ -97,6 +97,8 @@ erasure response still succeeds. Erasure retains accounting history; the Stripe
 Customer keeps its ID, metadata and payments, with its personal fields redacted
 by a separate job (`areas/members/README.md`).
 
+Each requested receipt resend is its own job, whose ID is the notice's send generation, so a retried job sends once and another resend sends again.
+
 Pay links use the existing signed-link creation/send contracts, with purpose
 `pay_invoice`, household ID, invoice ID, and a seven-day expiry. Creation can show
 a link to copy; sending uses the configured gym mail delivery. No Checkout session

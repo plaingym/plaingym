@@ -634,7 +634,7 @@ describe('one-off collection and payment durability', () => {
     const result = linksContracts.createLink.response.parse(await response.json()).data;
     expect(await f.links.resolve(f.gymId, result.token)).toMatchObject({ status: 'active', principal: { householdId: f.home.id, link: { purpose: 'pay_invoice', invoiceId: f.invoice.id } } });
     expect(JSON.stringify(await db.forGym(f.gymId, tx => tx.select().from(signedLinks)))).not.toContain(result.token);
-    await f.links.send(f.context, input); expect(f.email.messages[0]?.text).toContain(origin + '/l/');
+    await f.links.send(f.context, { ...input, sendGeneration: uuidv7() }); expect(f.email.messages[0]?.text).toContain(origin + '/l/');
     const sibling = await factory('households', f.gymId);
     await expect(f.links.create(f.context, { ...input, householdId: sibling.id })).rejects.toMatchObject({ code: 'not_found' });
   });

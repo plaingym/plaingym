@@ -28,6 +28,8 @@ export const emailOutbox = pgTable('email_outbox', {
  */
 export const emailDeliveries = pgTable('email_deliveries', {
   ...base(), key: text('key').notNull(), state: text('state').notNull(), attempts: integer('attempts').notNull().default(1),
+  // Set only on a send command's row: what the request was, and what a replay of it returns.
+  commandDigest: text('command_digest'), commandResult: jsonb('command_result'),
   updatedAt: instant('updated_at').notNull(),
 }, (t) => [...scoped('email_deliveries', t), unique('email_deliveries_key_key').on(t.gymId, t.key),
   choice('email_deliveries_state_check', t.state, ['sending', 'accepted', 'unknown', 'not_accepted']),

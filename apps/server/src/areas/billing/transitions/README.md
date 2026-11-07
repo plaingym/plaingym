@@ -5,6 +5,16 @@ cannot be charged, its email asks the payer to contact the gym for a manual paym
 without minting pay or card-update links. Receipts and staff notices keep their usual
 behavior.
 
+Every notice sends through `createEmailDeliveries`, under the key
+`billing.<purpose>:<object>:<generation>:<recipient hash>`. The purpose is `receipt`, `dunning`,
+`duplicate_payment` or `refund_failure`, and the object is the invoice, payment or refund it is about.
+The generation is the persisted work that asked for it: the effect, or the receipt job for a requested
+resend. So a repeated job sends nothing more, each new failure or resend has its own key, and a retry
+reaches only the staff the notice provably did not reach. A notice already accepted, or possibly
+accepted, mints no links. Dunning links are revoked when nothing was sent (a refusal, a suppression,
+or another attempt holding the key); a link that may have been delivered stays usable and is never
+sent again.
+
 `createInvoiceTransitions({ scope?, clock? })` implements the frozen
 `InvoiceTransitions` interface. Issued invoices are locked for every payment,
 failure and refund. Processor intent/Charge IDs and local payment/refund UUIDs

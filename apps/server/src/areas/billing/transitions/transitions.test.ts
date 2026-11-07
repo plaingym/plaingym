@@ -9,7 +9,7 @@ import { TestClock } from '../../../core/clock.js';
 import { setLogSink } from '../../../core/log.js';
 import { FakePayments, normalizeChargeOutcome } from '../../../infra/payments/index.js';
 import { FakeJobs } from '../../../infra/jobs/index.js';
-import { FakeEmail } from '../../../infra/email/index.js';
+import { DeliveryError, FakeEmail } from '../../../infra/email/index.js';
 import { StripePayments } from '../../../infra/payments/stripe.js';
 import { replayTransport } from '../../../infra/payments/transport.js';
 import type { Tape } from '../../../infra/payments/recording.js';
@@ -30,7 +30,7 @@ import type { InvoiceEffect } from '../../../core/interfaces/invoice-transitions
 const db = useTestDatabase(), factory = createFactories(db);
 it.each([[32, 'CAD'], [1255, 'KWD']] as const)('sends manual payment guidance for %s %s without minting pay links', async (amountCents, currency) => {
   const f = await fixture('cycle', currency);
-  for (const actionRequired of [false, true]) await f.notifications.dunning({ gymId: f.gymId,
+  for (const actionRequired of [false, true]) await f.notifications.dunning({ gymId: f.gymId, generation: uuidv7(),
     invoice: { ...f.invoice, kind: 'cycle', status: 'open', paidAt: null, number: f.invoice.number!, amountCents }, actionRequired });
   expect(f.email.messages).toHaveLength(2);
   for (const message of f.email.messages) {
@@ -656,7 +656,7 @@ describe('invoice transitions with real PostgreSQL', () => {
   it('recovers committed effects after a process/queue outage and retries failed email delivery', async () => {
     const f = await fixture(); await f.transitions.cardSucceeded(f.context, f.success);
     expect((await f.read()).audits.filter(a => a.action === effectCreated)).toHaveLength(2);
-    f.email.respondNext(new Error('SMTP unavailable')); await f.drain();
+    f.email.respondNext(new DeliveryError('not_accepted', 'SMTP unavailable')); await f.drain();
     expect(f.email.messages).toEqual([]); expect((await f.read()).invoice.status).toBe('paid');
     f.clock.set('2028-03-10T17:00:02Z'); await f.drain();
     expect(f.email.messages).toHaveLength(1);
@@ -715,7 +715,7 @@ describe('invoice transitions with real PostgreSQL', () => {
   });
   it('revokes undisclosed dunning links when delivery fails, then retries with usable links', async () => {
     const f = await fixture(); await f.transitions.cardFailed(f.context, f.failure);
-    f.email.respondNext(new Error('SMTP down')); await f.drain();
+    f.email.respondNext(new DeliveryError('not_accepted', 'SMTP down')); await f.drain();
     const links = await db.forGym(f.gymId, tx => tx.select().from(signedLinks));
     expect(links).toHaveLength(2); expect(links.every(link => link.revokedAt !== null)).toBe(true);
     f.clock.set('2028-03-10T17:00:02Z'); await f.drain(); expect(f.email.messages).toHaveLength(1);

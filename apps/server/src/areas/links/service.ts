@@ -9,12 +9,14 @@ import { AppError, type Clock } from '@plaingym/shared';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import {
-  createSignedLinkRequestSchema, signedLinkListQuerySchema, signedLinkSchema,
-  type CreateSignedLinkRequest, type SignedLinkRecord, type SignedLinkListQuery,
+  createSignedLinkRequestSchema, idSchema, sendSignedLinkRequestSchema, signedLinkListQuerySchema, signedLinkSchema,
+  type CreateSignedLinkRequest, type SendSignedLinkRequest, type SignedLinkRecord, type SignedLinkListQuery,
 } from '@plaingym/shared/contracts';
+import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { Principal } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
+import { commandDigest, createEmailDeliveries, deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery } from './service.delivery.js';
 
 type LinkRow = typeof signedLinks.$inferSelect;
@@ -23,6 +25,8 @@ export type SignedLinkResolution =
   | { readonly status: 'active'; readonly principal: SignedLinkPrincipal }
   | { readonly status: 'not_found' | 'expired' | 'used' | 'revoked' };
 export interface LinkScope { readonly gymId: string; readonly linkId: string }
+/** What a send command remembers for its replay. */
+const sentLinkSchema = z.strictObject({ linkId: idSchema });
 
 /** Explicit metadata projection: neither plaintext nor its hash can leave a read or audit. */
 function metadata(row: LinkRow): SignedLinkRecord {
@@ -150,6 +154,7 @@ export function createSignedLinksService(options: {
   delivery?: SignedLinkDelivery;
 } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const deliveries = createEmailDeliveries({ scope, clock });
   /** Creates every link or none, in one transaction (`createSignedLinksIn`). */
   async function createMany(context: MutationContext, inputs: CreateSignedLinkRequest[]) {
     return scope(context.gymId, tx => createSignedLinksIn(tx, context, inputs, clock.now()));
@@ -225,15 +230,28 @@ export function createSignedLinksService(options: {
         return metadata(row!);
       });
     },
-    async send(context: MutationContext, input: CreateSignedLinkRequest) {
+    /**
+     * One send command. Its generation is in the delivery key, so a retry finds the first attempt and a deliberate resend,
+     * which has a new generation, sends again. The key's row is reserved and names the link in the transaction that
+     * creates it, so a replay returns that link and no crash can leave a credential the key doesn't know.
+     */
+    async send(context: MutationContext, input: SendSignedLinkRequest) {
       assertNoTransaction('links.send');
       const delivery = options.delivery ?? configuredDelivery;
       if (!delivery) throw new AppError('unavailable', 'Signed link email delivery is not configured');
       // Resolve the trusted origin and delivery preferences before minting a credential.
       const prepared = await delivery.prepare(context.gymId);
       validateSignedLinkDelivery(prepared, context.gymId);
-      const created = await scope(context.gymId, async tx => {
-        const request = lowercaseIds(createSignedLinkRequestSchema.parse(input));
+      const { sendGeneration, ...fields } = sendSignedLinkRequestSchema.parse(input);
+      const request = lowercaseIds(fields);
+      const key = `links.send.${request.purpose}:${request.householdId}:${sendGeneration.toLowerCase()}`;
+      // The expiry isn't part of the request's identity: a client computes it afresh for each try.
+      const digest = commandDigest([request.purpose === 'pay_invoice' ? request.invoiceId : null,
+        request.purpose === 'sign_waiver' ? request.memberId : null, request.campaignId ?? null]);
+      const replayed = await scope(context.gymId, tx => deliveries.replay(tx, context.gymId, key, digest));
+      if (replayed) return get(context.gymId, sentLinkSchema.parse(replayed.result).linkId);
+      const { created, reservation } = await scope(context.gymId, async tx => {
+        const reservation = await deliveries.reserve(tx, context.gymId, key, digest);
         // Check the invoice before minting. Manual notices keep a revoked metadata record
         // for the send response, but never commit an active undisclosed credential.
         let manualPayment = false;
@@ -252,15 +270,26 @@ export function createSignedLinksService(options: {
           await audit(tx, context, 'signed_link.revoked', row!, now, before);
           created.link = metadata(row!);
         }
-        return created;
+        await deliveries.remember(tx, reservation, { linkId: created.link.id });
+        return { created, reservation };
       });
+      // All sending and its last-moment checks stay in service.delivery; this records what reached the transport.
+      let entered = false, suppressed = false;
+      const email: Email = { async sendEmail(message) {
+        entered = true;
+        const result = await deliveries.attempt(reservation, prepared.email, message);
+        suppressed = result.status !== 'sent';
+        return result;
+      } };
       let disclosed: boolean;
       try {
-        disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: prepared,
+        disclosed = await deliverSignedLink({ scope, context, link: created.link, token: created.token, delivery: { ...prepared, email },
           manualPayment: created.link.revokedAt !== null });
-      } catch {
-        // A failed or suppressed send cannot leave an undisclosed credential active.
-        await revoke(context, created.link.id);
+      } catch (error) {
+        if (!entered) await deliveries.release(reservation);
+        // A definite non-send can't leave an undisclosed credential active, and a retry mints a new one. A possibly
+        // delivered link stays usable: a replay returns it and never sends another.
+        if (!entered || suppressed || deliveryAcceptance(error) === 'not_accepted') await revoke(context, created.link.id);
         throw new AppError('unavailable', 'Signed link email was not delivered');
       }
       // The email was delivered, so a failure here must not report otherwise.

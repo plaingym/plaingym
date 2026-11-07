@@ -41,8 +41,9 @@ export function createInvoiceClient(fetcher: typeof fetch = fetch) {
     },
     households: (search: string) => billingRequest(membersContracts.listHouseholds, undefined, {}, { ...(search.trim() ? { search: search.trim() } : {}), limit: 25 }, checked),
     household: async (householdId: string) => (await billingRequest(membersContracts.getHousehold, undefined, { householdId }, {}, checked)).data,
-    link: (input: CreateSignedLinkRequest, send: boolean) => send
-      ? billingRequest(linksContracts.sendLink, input, {}, {}, checked)
+    /** With a send generation the link is emailed; without one it is created for the page to show. */
+    link: (input: CreateSignedLinkRequest, sendGeneration?: string) => sendGeneration
+      ? billingRequest(linksContracts.sendLink, { ...input, sendGeneration }, {}, {}, checked)
       : billingRequest(linksContracts.createLink, input, {}, {}, checked),
   };
 }

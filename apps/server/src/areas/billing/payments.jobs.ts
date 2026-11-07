@@ -26,7 +26,8 @@ export function createPaymentJobs(options?: DeliveryOptions): readonly JobRegist
         const invoice = (await tx.select().from(invoices).where(eq(invoices.id, invoiceId)))[0] ?? notFound();
         if (!invoice.paidAt) throw new Error('Invoice has no receipt');
         const payment = (await tx.select().from(payments).where(eq(payments.invoiceId, invoiceId)))[0];
-        return { gymId: ctx.gymId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
+        // Each requested resend is its own job, so it sends again, and a retry of this job does not.
+        return { gymId: ctx.gymId, generation: ctx.jobId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
       });
       await options.notifications.receipt(notice);
     } },

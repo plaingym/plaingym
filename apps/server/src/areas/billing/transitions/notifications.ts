@@ -6,7 +6,7 @@ import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import type { InvoiceSnapshot } from '../../../core/interfaces/invoice-transitions.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
-import type { Email, EmailResult } from '../../../infra/email/index.js';
+import { createEmailDeliveries, deliveryAcceptance, recipientDigest, type Email, type RecordedEmailResult } from '../../../infra/email/index.js';
 import { clock as defaultClock } from '../../../core/clock.js';
 import { formatMoney } from '../../../core/money.js';
 import { createSignedLinksService } from '../../links/service.js';
@@ -14,6 +14,9 @@ import { householdRecipient } from '../../members/household-recipient.js';
 
 export interface TransitionNotice {
   gymId: string;
+  /** The persisted work this notice belongs to, stable across its job's retries: the effect, or a resend request's job.
+   * Each failed charge and each requested receipt has its own, so a reminder or a resend gets its own send key. */
+  generation: string;
   invoice: InvoiceSnapshot;
   payment?: typeof payments.$inferSelect;
 }
@@ -42,8 +45,9 @@ export function createTransitionNotifications(options: {
 }): TransitionNotifications {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const links = createSignedLinksService({ scope, clock });
+  const deliveries = createEmailDeliveries({ scope, clock });
   async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'duplicateReleased' | 'refundFailed' | 'refundReversed',
-    amountCents?: number) {
+    subject: { purpose: string; id: string }, amountCents?: number) {
     assertNoTransaction('invoice notification');
     const { gymId, invoice } = notice;
     const staff = kind === 'duplicate' || kind === 'duplicateReleased' || kind === 'refundFailed' || kind === 'refundReversed';
@@ -52,6 +56,16 @@ export function createTransitionNotifications(options: {
       if (staff) throw new Error('No staff recipient configured for billing staff notices');
       return;
     }
+    // One key per recipient: a retry reaches only those the message provably did not reach.
+    const keyFor = (to: string) => `billing.${subject.purpose}:${subject.id}:${notice.generation}:${recipientDigest(to)}`;
+    // An accepted or possibly accepted notice is never sent again, so no second link is minted for it.
+    const pending: string[] = [];
+    for (const to of new Set(recipients)) {
+      const state = await deliveries.state(gymId, keyFor(to));
+      if (state === 'sending') throw new Error('Billing notice is still being sent');
+      if (state !== 'accepted' && state !== 'unknown') pending.push(to);
+    }
+    if (!pending.length) return;
     const prepared = await options.prepare(gymId);
     const t: Translator = (key, values) => {
       const translated = prepared.t?.(key, values);
@@ -60,8 +74,9 @@ export function createTransitionNotifications(options: {
     const origin = new URL(prepared.origin);
     if (!['https:', 'http:'].includes(origin.protocol) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
       throw new Error('Invalid billing notification origin');
-    let payUrl = '', updateUrl = '';
+    let payUrl = '', updateUrl = '', uncertain = false;
     const minted: string[] = [];
+    const revokeMinted = async () => { for (const linkId of minted) await links.revoke({ gymId, actor: { kind: 'system' } }, linkId); };
     try {
       const manualPayment = (kind === 'action' || kind === 'failed') && !!cardChargeIssue(invoice.amountCents, invoice.currency);
       if ((kind === 'action' || kind === 'failed') && !manualPayment) {
@@ -76,19 +91,28 @@ export function createTransitionNotifications(options: {
       }
       const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency), payUrl, updateUrl };
       const message = manualPayment ? 'manual' : kind;
-      const subject = t(`billing/transitions:${message}Subject`, values), text = t(`billing/transitions:${message}Body`, values);
-      for (const to of new Set(recipients)) {
+      const title = t(`billing/transitions:${message}Subject`, values), text = t(`billing/transitions:${message}Body`, values);
+      for (const to of pending) {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
         if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
-          for (const linkId of minted) await links.revoke({ gymId, actor: { kind: 'system' } }, linkId);
+          await revokeMinted();
           return;
         }
-        const sent: EmailResult = await prepared.email.sendEmail({ to, subject, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
+        let sent: RecordedEmailResult;
+        try {
+          sent = await deliveries.send(gymId, keyFor(to), prepared.email, { to, subject: title, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
+        } catch (error) {
+          uncertain = deliveryAcceptance(error) !== 'not_accepted';
+          throw error;
+        }
+        // Another attempt holds the key, so this attempt's links were never sent.
+        if (sent.status === 'skipped') await revokeMinted();
         if (sent.status === 'suppressed' && staff) throw new Error('Staff notice was suppressed');
         if (sent.status === 'suppressed' && minted.length) throw new Error('Dunning email was suppressed');
       }
     } catch (error) {
-      for (const linkId of minted) await links.revoke({ gymId, actor: { kind: 'system' } }, linkId);
+      // A possibly delivered link stays usable, because it is never sent again.
+      if (!uncertain) await revokeMinted();
       throw error;
     }
   }
@@ -100,13 +124,15 @@ export function createTransitionNotifications(options: {
     });
   }
   return {
-    async receipt(notice) { await deliver(notice, 'receipt'); },
-    async dunning(notice) { await deliver(notice, notice.actionRequired ? 'action' : 'failed'); },
+    async receipt(notice) { await deliver(notice, 'receipt', { purpose: 'receipt', id: notice.invoice.id }); },
+    // The purpose doesn't name the wording: one failed charge gets one notice, even if its attempt's status changes.
+    async dunning(notice) { await deliver(notice, notice.actionRequired ? 'action' : 'failed', { purpose: 'dunning', id: notice.invoice.id }); },
     async staffNotice(notice) {
       if (notice.reason === 'refund_failed')
-        await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', notice.refund.amountCents);
-      else if (notice.reason === 'duplicate_released') await deliver(notice, 'duplicateReleased', notice.unrefundedCents);
-      else await deliver(notice, 'duplicate');
+        await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', { purpose: 'refund_failure', id: notice.refund.id }, notice.refund.amountCents);
+      else if (notice.reason === 'duplicate_released')
+        await deliver(notice, 'duplicateReleased', { purpose: 'duplicate_released', id: notice.payment?.id ?? notice.invoice.id }, notice.unrefundedCents);
+      else await deliver(notice, 'duplicate', { purpose: 'duplicate_payment', id: notice.payment?.id ?? notice.invoice.id });
     },
   };
 }

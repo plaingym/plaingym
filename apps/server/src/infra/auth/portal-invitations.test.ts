@@ -105,7 +105,7 @@ describe('portal invitations', () => {
   });
   it('sends email invitations through the injected gym mailer and refuses passwords in passwordless mode', async () => {
     const f = await fixture(), before = mail.messages.length;
-    const body = { ...input(), delivery: 'email' };
+    const body = { ...input(), delivery: 'email', sendGeneration: uuidv7() };
     expect((await send(app(f, emailOnly), `/api/households/${f.home.id}/portal-invitations`, body)).status).toBe(200);
     expect(mail.messages.length).toBe(before + 1);
     const token = /#([a-f0-9]{64})/.exec(mail.messages.at(-1)!.text)![1]!;

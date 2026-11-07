@@ -31,7 +31,7 @@ test('local demo has lived-in data and working owner and coach logins', async ({
   const upload = await owner.request(`/api/members/${members.data[0].id}/photo`, 'POST',
     { revision: members.data[0].revision, base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9V8AAAAASUVORK5CYII=', contentType: 'image/png' });
   expect(upload.status).toBe(403);
-  await owner.json('/api/staff/invitations', 'POST', { email: 'outbox-only@example.invalid', role: 'coach', delivery: 'email' });
+  await owner.json('/api/staff/invitations', 'POST', { email: 'outbox-only@example.invalid', role: 'coach', delivery: 'email', sendGeneration: crypto.randomUUID() });
   const outbox = await owner.json<{ data: { recipient: string }[] }>('/api/demo/outbox');
   expect(outbox.data).toEqual(expect.arrayContaining([expect.objectContaining({ recipient: 'outbox-only@example.invalid' })]));
   expect((await owner.request('/api/setup')).status).toBe(404);

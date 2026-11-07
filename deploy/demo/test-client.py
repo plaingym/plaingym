@@ -61,7 +61,7 @@ def main():
     dashboard = owner.request("/api/dashboard")["data"]["widgets"]
     assert next(widget for widget in dashboard if widget["id"] == "promotion_ready")["count"] > 0
     recipient = "local-check-" + uuid.uuid4().hex + "@example.invalid"
-    owner.request("/api/staff/invitations", "POST", {"email": recipient, "role": "coach", "delivery": "email"})
+    owner.request("/api/staff/invitations", "POST", {"email": recipient, "role": "coach", "delivery": "email", "sendGeneration": str(uuid.uuid4())})
     assert any(row["recipient"] == recipient for row in owner.request("/api/demo/outbox")["data"])
     coach = Client(host, port, ca)
     coach.cookie = sandbox.get("coachCookie", "")
