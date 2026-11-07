@@ -106,6 +106,10 @@ payments and backups**, take precedence over these install-wide values; removing
 them there falls back to these. Use a sending service (Postmark, Brevo, Amazon SES or
 similar): mail sent directly from a server usually lands in spam.
 
+In multi-gym mode gym owners change email and payments only when
+`GYM_INTEGRATIONS=gym`; see [Tenancy and demo](#tenancy-and-demo). A gym's own SMTP server there must
+resolve only to public addresses, whichever way the variable is set.
+
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `SMTP_HOST` | unset | The SMTP server. Without it (and without a gym's own settings), no email is sent and password sign-in is used. Multi-gym mode requires it. |
@@ -168,6 +172,7 @@ restart; people then sign in another way.
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `TENANCY` | `single` | `single` serves the one gym created in setup. `multi` serves several gyms, each created with `gym-app gyms create` and found by hostname; it requires S3 uploads, `SMTP_HOST` and `AUTH_PASSWORD_LOGIN=off`, and has no in-process backups. |
+| `GYM_INTEGRATIONS` | `operator` | Multi-gym only; a single-gym install ignores it. `operator` makes the email and payments parts of **Settings → Email, payments and backups** read-only for gym owners: gyms send through the install's `SMTP_*`, and the API refuses changes with a 403. `gym` lets owners set their own SMTP server and Stripe key, which is how a gym connects Stripe, since there is no install-wide Stripe key. Settings already stored stay in use under `operator`. |
 | `DEMO_MODE` | `false` | `true` turns on sandbox gyms for visitors (multi-gym only). See `apps/server/src/demo/README.md`. |
 | `DEMO_DOMAIN` | none | Demo mode: the domain sandboxes are created under. |
 | `DEMO_MAX_SANDBOXES` | `50` | Demo mode: the most sandboxes that may exist at once. |

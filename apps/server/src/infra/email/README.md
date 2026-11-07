@@ -3,6 +3,8 @@
 
 `SmtpEmail` sends staff/security email through configured SMTP. `security` defaults to required STARTTLS; `tls` uses implicit TLS, and explicit `plain` supports a local mail capture server. Certificate validation stays enabled. Configure `host`, `port`, `from`, optional `auth` and default `replyTo`; an individual message can override `replyTo`. `verifyConnection()` authenticates without sending; `verifyTestSend(message)` verifies and delivers caller-supplied translated test content. `close()` ends any session still open; its pending call rejects as its stage classifies (below). Delivery failures reject for the caller/job to handle; the transport never retries on its own.
 
+With `publicHostOnly`, for a server a tenant named, each session resolves the host once (`smtp-host.ts`), refuses it unless every address is public, and connects to the first address it checked; Nodemailer gets that address, so it can't resolve the name again, and the name as the TLS server name, so the certificate is still checked against it. IPv4-mapped IPv6 addresses and anything else outside global unicast are refused.
+
 ## Delivery errors
 
 A failed send rejects with `DeliveryError`, whose `acceptance` (also its `code`, which structured logs and job rows record) is `not_accepted` or `unknown`. `not_accepted` is proof that no recipient received the message; everything else is `unknown`, and `deliveryAcceptance(error)` returns `unknown` for any error that is not a `DeliveryError`. Messages never quote recipients or server replies; the original Nodemailer error is the `cause`.
@@ -12,7 +14,7 @@ Nodemailer reports a lost socket or a timeout as command `CONN` in every phase, 
 | Failure | Acceptance |
 | :--- | :--- |
 | Invalid header or message composition, before connecting | `not_accepted` |
-| DNS, refused or failed connection, greeting, TLS or STARTTLS, authentication | `not_accepted` |
+| DNS, a host refused by `publicHostOnly`, refused or failed connection, greeting, TLS or STARTTLS, authentication | `not_accepted` |
 | Sender, every recipient or the DATA command refused (`EENVELOPE`), or a local size/TLS check before MAIL FROM | `not_accepted` |
 | A 4xx/5xx reply to the end of the message body (the server took no responsibility, RFC 5321) | `not_accepted` |
 | Connection lost or timed out once MAIL FROM is sent, including a lost acknowledgement of the body | `unknown` |

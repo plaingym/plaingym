@@ -387,3 +387,9 @@ It requires an S3 bucket for uploads and install-wide SMTP, uses emailed sign-in
 links only, has no in-process backups, and creates each gym with
 `gym-app gyms create`. The installer sets up single-gym installs only; the demo
 deployment (`deploy/demo/README.md`) is an example of a multi-gym install.
+
+By default gym owners can't change email or payments on a multi-gym install:
+gyms send through the install's SMTP, and there is no install-wide Stripe key, so
+a gym can't connect Stripe. `GYM_INTEGRATIONS=gym` lets every gym's owners set
+their own SMTP server and Stripe key; see
+[Tenancy and demo](configuration.md#tenancy-and-demo).

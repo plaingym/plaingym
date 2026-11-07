@@ -2,7 +2,7 @@
 import { createServer, type Socket } from 'node:net';
 
 /** Local SMTP capture fixture; never delivers outside this process. */
-export async function captureSmtp(auth?: { user: string; pass: string }) {
+export async function captureSmtp(auth?: { user: string; pass: string }, address = '127.0.0.1') {
   const sockets = new Set<Socket>();
   const messages: string[] = [];
   const commands: string[] = [];
@@ -56,12 +56,12 @@ export async function captureSmtp(auth?: { user: string; pass: string }) {
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
+    server.listen(0, address, resolve);
   });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('SMTP fixture did not bind');
+  const bound = server.address();
+  if (!bound || typeof bound === 'string') throw new Error('SMTP fixture did not bind');
   return {
-    port: address.port, messages, commands,
+    port: bound.port, messages, commands,
     get connections() { return connections; },
     /** Rejects every recipient, or only the given address. */
     rejectRecipient(value: boolean | string) { rejectRecipient = value; },

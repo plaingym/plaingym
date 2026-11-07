@@ -13,7 +13,7 @@ export const integrations: Integrations = {
     signInAfterSave: { password: false, magicLink: true }, signInAfterRemove: null, removeBlocked: false },
   payments: { configured: false, mode: null, webhookRegistered: false, accountLocked: false, testData: null, importedCustomersOnly: false },
   backups: { configured: false, destination: null, publicKey: null, pending: null, retentionBudgetBytes: 8_000_000_000 },
-  sandbox: false, revision: 3,
+  sandbox: false, integrationsEditable: true, revision: 3,
 };
 export const health = (lastReceivedAt: string | null, latestRestorableAt: string | null) => ({ data: { generatedAt: '2026-11-02T12:00:00Z', tiles: [
   { id: 'last_backup', status: 'healthy', checkedAt: '2026-11-02T12:00:00Z', message: 'ok', details: { latestRestorableAt, ageSeconds: 60, overdue: false,

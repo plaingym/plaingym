@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { forGym, gyms } from '@plaingym/db';
 import { SmtpEmail, type EmailMessage, type SmtpConfig } from '../../infra/email/index.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
+import { tenancyMode } from '../../core/tenancy.js';
 
 /** The gym's own sending service, stored encrypted in `gyms.smtp_config_encrypted`. */
 export const storedSmtpSchema = z.strictObject({
@@ -18,9 +19,9 @@ export type StoredSmtpConfig = z.infer<typeof storedSmtpSchema>;
 export function encryptSmtpConfig(key: Buffer, gymId: string, config: StoredSmtpConfig): string {
   return encryptSecret(key, { secretClass: 'smtp_config', owner: gymId }, JSON.stringify(storedSmtpSchema.parse(config)));
 }
-function fromStored(config: StoredSmtpConfig): SmtpConfig {
+function fromStored(config: StoredSmtpConfig, publicHostOnly = false): SmtpConfig {
   return { host: config.host, port: config.port, security: config.security, from: config.from,
-    auth: { user: config.username, pass: config.password } };
+    auth: { user: config.username, pass: config.password }, ...(publicHostOnly ? { publicHostOnly } : {}) };
 }
 /** Submitted settings (setup and Settings → Email) in their stored form: `secure` is implicit TLS, otherwise STARTTLS. */
 export function storedSmtpFromRequest(input: { host: string; port: number; secure: boolean; username: string; password: string; from: string }): StoredSmtpConfig {
@@ -29,12 +30,14 @@ export function storedSmtpFromRequest(input: { host: string; port: number; secur
 export type SendSmtpTest = (config: SmtpConfig, message: EmailMessage) => Promise<void>;
 /**
  * Sends `message` through these settings, outside any transaction, and answers whether the server accepted it. A
- * failure is never raised or logged: its message can quote the submitted host, user or password.
+ * failure is never raised or logged: its message can quote the submitted host, user or password. `publicHostOnly` is
+ * for a server a tenant named on a multi-gym install (`SmtpConfig`).
  */
-export async function sendSmtpTest(config: StoredSmtpConfig, message: EmailMessage, send?: SendSmtpTest): Promise<boolean> {
+export async function sendSmtpTest(config: StoredSmtpConfig, message: EmailMessage, send?: SendSmtpTest, publicHostOnly = false): Promise<boolean> {
+  const smtp = fromStored(config, publicHostOnly);
   try {
-    if (send) await send(fromStored(config), message);
-    else { const email = new SmtpEmail(fromStored(config)); try { await email.verifyTestSend(message); } finally { email.close(); } }
+    if (send) await send(smtp, message);
+    else { const email = new SmtpEmail(smtp); try { await email.verifyTestSend(message); } finally { email.close(); } }
     return true;
   } catch { return false; }
 }
@@ -56,11 +59,13 @@ export interface SmtpResolver {
 }
 export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessEnv; scope?: typeof forGym }): SmtpResolver {
   const scope = options.scope ?? forGym, fallback = smtpFromEnvironment(options.env);
+  // On a multi-gym install a gym's own server is a tenant's choice; the install's own never is.
+  const tenantHosts = tenancyMode((options.env ?? process.env).TENANCY) === 'multi';
   const storedConfig = (gymId: string) => scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
   async function config(gymId: string): Promise<SmtpConfig | null> {
     const stored = await storedConfig(gymId);
     if (!stored) return fallback;
-    return fromStored(readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored))));
+    return fromStored(readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored))), tenantHosts);
   }
   return { config, async configured(gymId) { return (await config(gymId)) !== null; },
     async source(gymId) { return await storedConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };

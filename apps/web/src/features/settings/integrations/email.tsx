@@ -23,8 +23,11 @@ function Field({ name, type = 'text', value, required = true, onChange }: { name
       {...(value === undefined ? {} : { value, onChange: (event) => onChange?.(event.target.value) })}/>
   </div>;
 }
-/** The gym's sending service: shown without its password, replaced only after a test email is accepted, or removed. */
-export function EmailIntegrationSection({ email, state }: { email: EmailIntegration; state: ReturnType<typeof useIntegrations> }) {
+/**
+ * The gym's sending service: shown without its password, replaced only after a test email is accepted, or removed. Only
+ * shown when `editable` is false, where the install's operator manages it.
+ */
+export function EmailIntegrationSection({ email, editable, state }: { email: EmailIntegration; editable: boolean; state: ReturnType<typeof useIntegrations> }) {
   const [busy, setBusy] = useState<'save' | 'remove' | null>(null), [message, setMessage] = useState<Message | null>(null);
   const [host, setHost] = useState(email.source === 'gym' ? email.host ?? '' : ''), [open, setOpen] = useState(false);
   const saveChangesSignIn = !same(email.signIn, email.signInAfterSave);
@@ -63,7 +66,7 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>
     <p className="text-sm text-muted-foreground">{text('email.signIn', { methods: methods(email.signIn) })}</p>
     {message && <p role={message.kind} className="rounded-md border border-border p-3 text-sm">{message.text}</p>}
-    <>
+    {editable && <>
       {email.source === 'gym' && <div className="grid min-w-0 gap-2">
         {email.removeBlocked ? <p className="text-sm text-muted-foreground">{label('onlySignIn')}</p>
           : removeChangesSignIn && <p className="text-sm">{text('email.signInChangesOnRemove', { methods: methods(email.signInAfterRemove!) })}</p>}
@@ -103,6 +106,6 @@ export function EmailIntegrationSection({ email, state }: { email: EmailIntegrat
           </div>
         </fieldset>
       </form>}
-    </>
+    </>}
   </div>;
 }

@@ -153,6 +153,7 @@ services:
       SMTP_SECURITY: plain
       SMTP_FROM: gym@multi.localhost
       # Each gym saves its own restricted test key; the fake Stripe below accepts it.
+      GYM_INTEGRATIONS: gym
       NODE_EXTRA_CA_CERTS: /stripe-ca/root.crt
     volumes: ['stripe-ca:/stripe-ca:ro']
   # A stateful stand-in for the Stripe API (stripe/server.mjs), so joins complete without Stripe keys.

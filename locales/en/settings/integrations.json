@@ -9,6 +9,7 @@
   "conflictKept": "Something changed elsewhere, so this change wasn’t saved. Your entries are still here; reload to see the latest settings, then try again.",
   "timeout": "The request took too long to answer and may still have gone through. Reload and check the settings before trying again.",
   "sandbox": "This sandbox sends email to the demo outbox and takes payments through the demo’s Stripe test account. They can’t be changed here.",
+  "operatorManaged": "Whoever runs this install manages email and payments, so they can’t be changed here. Ask them if either needs to change.",
   "email.title": "Email",
   "email.sourceGym": "Sends through your own SMTP service: {host}, port {port} ({security}), from {from}.",
   "email.sourceInstall": "Uses this install’s email settings (the SMTP_* values on the server).",

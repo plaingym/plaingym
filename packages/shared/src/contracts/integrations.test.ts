@@ -15,7 +15,7 @@ const integrations = {
     testData: { customers: 2, cards: 1, checkouts: 0, payments: 3, importedCustomers: 1, importedCards: 0 }, importedCustomersOnly: false },
   backups: { configured: true, destination: { endpoint: 'https://s3.example.test', region: 'auto', bucket: 'backups' },
     publicKey: 'age1example', pending: null, retentionBudgetBytes: 8_000_000_000 },
-  sandbox: false, revision: 3,
+  sandbox: false, integrationsEditable: true, revision: 3,
 };
 
 describe('integration settings contracts', () => {
@@ -29,6 +29,13 @@ describe('integration settings contracts', () => {
       expect(setupSmtpRequestSchema.safeParse({ choice: 'configure', ...input, port }).success).toBe(false);
       expect(saveEmailIntegrationRequestSchema.safeParse({ ...input, port }).success).toBe(false);
     }
+  });
+  it('requires integrationsEditable, as a boolean separate from the demo flag', () => {
+    expect(integrationsSchema.parse({ ...integrations, integrationsEditable: false })).toMatchObject({ integrationsEditable: false, sandbox: false });
+    const { integrationsEditable, ...without } = integrations;
+    expect(integrationsEditable).toBe(true);
+    expect(integrationsSchema.safeParse(without).success).toBe(false);
+    expect(integrationsSchema.safeParse({ ...integrations, integrationsEditable: 'true' }).success).toBe(false);
   });
   it('lets only owners reach every route, under /api/settings/integrations', () => {
     for (const contract of Object.values(integrationsContracts)) {

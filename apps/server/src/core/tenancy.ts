@@ -10,6 +10,16 @@ export function tenancyMode(value = process.env.TENANCY ?? 'single'): TenancyMod
   if (value !== 'single' && value !== 'multi') throw new Error('Invalid TENANCY mode');
   return value;
 }
+/**
+ * Whether gym owners may change the gym's email and payments. A single-gym install ignores the setting; on a multi-gym
+ * install those are the operator's unless `GYM_INTEGRATIONS=gym`, and an unknown value fails boot.
+ */
+export function gymIntegrationsEditable(mode: TenancyMode, env: NodeJS.ProcessEnv): boolean {
+  if (mode === 'single') return true;
+  const value = env.GYM_INTEGRATIONS || 'operator';
+  if (value !== 'operator' && value !== 'gym') throw new Error('Invalid GYM_INTEGRATIONS');
+  return value === 'gym';
+}
 /** A Host authority, never a forwarded header or URL supplied in request data. */
 export function normalizeHostname(authority: string): string | null {
   if (!authority || /[\s/@\\?#,%]/.test(authority)) return null;

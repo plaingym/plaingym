@@ -42,6 +42,7 @@ services:
       # Restore needs the maintenance role, so the app keeps no restore staging (and no restore gate).
       BACKUP_STAGING_DIR: !reset null
       TENANCY: multi
+      GYM_INTEGRATIONS: operator
       DEMO_MODE: 'true'
       DEMO_DOMAIN: ${GYM_HOSTNAME:?required}
       DEMO_MAX_SANDBOXES: ${DEMO_MAX_SANDBOXES:-50}

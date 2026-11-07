@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { isIP } from 'node:net';
 import type { Readable } from 'node:stream';
 import nodemailer, { type Transport, type Transporter } from 'nodemailer';
 import SMTPConnection from 'nodemailer/lib/smtp-connection/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { DeliveryError, type Email, type EmailMessage, type EmailResult } from './index.js';
+import { publicAddress, SmtpHostRefusedError, type HostCheck } from './smtp-host.js';
 
 export interface SmtpConfig {
   readonly host: string;
@@ -14,6 +16,8 @@ export interface SmtpConfig {
   readonly auth?: { readonly user: string; readonly pass: string };
   readonly from: string;
   readonly replyTo?: string;
+  /** A server a tenant named: connect only to a public address, resolved and checked once per session (`smtp-host.ts`). */
+  readonly publicHostOnly?: boolean;
 }
 
 const invalidHeader = (value: string) => !value.trim() || /[\r\n\0]/.test(value);
@@ -75,16 +79,43 @@ interface SessionConfig {
   readonly options: SMTPConnection.Options;
   readonly auth: SmtpConfig['auth'];
   /** Sessions still open, so close() can end them. */
-  readonly open: Set<SMTPConnection>;
+  readonly open: Set<Pick<SMTPConnection, 'close'>>;
   /** Tests shorten the session deadline. */
   readonly limitMs?: number;
+  /** Set for `publicHostOnly`: how this session's host is resolved and checked. */
+  readonly hostCheck?: HostCheck;
+}
+
+/**
+ * The connection options for one session. For `publicHostOnly` they name the address just checked, which Nodemailer
+ * connects to without a lookup of its own; the name stays the TLS server name, so the certificate is checked against it.
+ */
+async function connectionOptions(config: SessionConfig): Promise<SMTPConnection.Options> {
+  if (!config.hostCheck) return config.options;
+  const host = config.options.host!;
+  try {
+    const address = await publicAddress(host, config.hostCheck);
+    return { ...config.options, host: address, ...(isIP(host) ? {} : { servername: host }) };
+  } catch (error) {
+    if (error instanceof SmtpHostRefusedError) throw new DeliveryError('not_accepted', error.message);
+    throw new DeliveryError('not_accepted', 'SMTP connection failed', { cause: error });
+  }
 }
 
 /** One SMTP session per call; without a message it verifies the connection and credentials only. */
-function session(config: SessionConfig, message?: { envelope: SMTPConnection.Envelope; body: Readable }):
+async function session(config: SessionConfig, message?: { envelope: SMTPConnection.Envelope; body: Readable }):
   Promise<SMTPConnection.SentMessageInfo | undefined> {
+  // close() also reaches a session still resolving its host: nothing has connected, so it just never does.
+  let closed = false;
+  const resolving = { close() { closed = true; } };
+  config.open.add(resolving);
+  let options: SMTPConnection.Options;
+  try { options = await connectionOptions(config); } catch (error) { config.open.delete(resolving); throw error; }
+  // Handed over to the connection below in this same step, so no close() can fall between the two.
+  config.open.delete(resolving);
+  if (closed) throw new DeliveryError('not_accepted', 'SMTP connection failed');
   return new Promise((resolve, reject) => {
-    const connection = new SMTPConnection(config.options), auth = config.auth;
+    const connection = new SMTPConnection(options), auth = config.auth;
     let stage: Stage = 'connect', settled = false;
     config.open.add(connection);
     const deadline = setTimeout(() => fail(Object.assign(new Error('SMTP session time limit reached'), { code: 'ETIMEDOUT' })),
@@ -145,12 +176,13 @@ export class SmtpEmail implements Email {
   readonly #from: string;
   readonly #replyTo: string | undefined;
 
-  constructor(config: SmtpConfig, testing: { sessionLimitMs?: number } = {}) {
+  constructor(config: SmtpConfig, testing: { sessionLimitMs?: number; hostCheck?: HostCheck } = {}) {
     const { disableFileAccess, disableUrlAccess, ...options } = smtpOptions(config);
     // Credentials go to login() only; the connection options never hold them.
     delete options.auth;
     this.#session = { options: options as SMTPConnection.Options, auth: config.auth, open: new Set(),
-      ...(testing.sessionLimitMs ? { limitMs: testing.sessionLimitMs } : {}) };
+      ...(testing.sessionLimitMs ? { limitMs: testing.sessionLimitMs } : {}),
+      ...(config.publicHostOnly ? { hostCheck: testing.hostCheck ?? {} } : {}) };
     // A transport plugin receives the access restrictions through the message defaults.
     this.#transport = nodemailer.createTransport(smtpTransport(this.#session), { disableFileAccess, disableUrlAccess });
     this.#from = config.from;

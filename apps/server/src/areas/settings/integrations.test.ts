@@ -454,7 +454,7 @@ describe('Settings → Backups', () => {
     await database.forGym(gymA, (tx) => tx.update(gyms).set({ settings: before.settings, backupDestination: before.backupDestination }).where(eq(gyms.id, gymA)));
   });
   it('has no backups section in multi-gym mode', async () => {
-    const multiEnv = { ...installEnv, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' };
+    const multiEnv = { ...installEnv, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off', GYM_INTEGRATIONS: 'gym' };
     const multi = server({ gymId: gymB, routesService: createIntegrationsService({ ...base, env: multiEnv, config: authConfig(multiEnv) }) });
     const status = await read(multi);
     expect(status.backups).toBeNull();

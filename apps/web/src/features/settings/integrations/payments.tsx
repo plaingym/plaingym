@@ -26,8 +26,8 @@ function refusal(reply: ChangeResult<unknown>, mode: PaymentsIntegration['mode']
  * what is cleared and what stays, and only then is the key sent again with `clearTestData`. The live key waits in memory
  * for that confirmation and is dropped on cancel or success.
  */
-export function PaymentsIntegrationSection({ payments, lastEventAt, state }: {
-  payments: PaymentsIntegration; lastEventAt: string | null | undefined; state: ReturnType<typeof useIntegrations>;
+export function PaymentsIntegrationSection({ payments, editable, lastEventAt, state }: {
+  payments: PaymentsIntegration; editable: boolean; lastEventAt: string | null | undefined; state: ReturnType<typeof useIntegrations>;
 }) {
   const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [switchKey, setSwitchKey] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
@@ -63,10 +63,10 @@ export function PaymentsIntegrationSection({ payments, lastEventAt, state }: {
     {payments.configured && <p className="text-sm text-muted-foreground">{label(payments.webhookRegistered ? 'webhookRegistered' : 'webhookMissing')}</p>}
     {payments.configured && lastEventAt !== undefined && <p className="text-sm text-muted-foreground">
       {lastEventAt ? text('payments.lastEvent', { time: new Date(lastEventAt).toLocaleString() }) : label('noEvent')}</p>}
-    {payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
-    {payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
+    {editable && payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
+    {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
     {message && <p role={message.kind} className="rounded-md border border-border p-3 text-sm">{message.text}</p>}
-    {switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
+    {!editable ? null : switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4 rounded-md border border-border p-3">
         <h4 className="text-sm font-semibold">{label('switchTitle')}</h4>
         <p className="text-sm">{label('switchIntro')}</p>

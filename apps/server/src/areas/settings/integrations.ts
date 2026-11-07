@@ -12,6 +12,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { logError } from '../../core/log.js';
+import { gymIntegrationsEditable } from '../../core/tenancy.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
 import { StripePermissionError } from '../../infra/payments/setup.js';
@@ -74,6 +75,7 @@ export interface IntegrationsOptions {
 export function createIntegrationsService(options: IntegrationsOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const sandbox = options.sandbox ?? false, single = options.config.tenancy === 'single';
+  const integrationsEditable = gymIntegrationsEditable(options.config.tenancy, options.env);
   // A sandbox mails through the demo outbox and never reads the install's SMTP settings (as the runtime doesn't).
   const installSmtp = !sandbox && smtpFromEnvironment(options.env) !== null;
   const google = createGoogleClientResolver({ key: options.key, env: options.env, tenancy: options.config.tenancy, scope });
@@ -330,7 +332,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     return { email: await email(gym, userId),
       payments: { configured: config !== null, mode: config?.mode ?? null, webhookRegistered: Boolean(config?.endpointId),
         accountLocked: reference !== null && !imported, testData: test, importedCustomersOnly: imported },
-      backups: backups(gym), sandbox, revision: gym.revision };
+      backups: backups(gym), sandbox, integrationsEditable, revision: gym.revision };
   }
   const userOf = (context: MutationContext) => {
     if (context.actor.kind !== 'user') throw new AppError('forbidden', 'Owner access required');
@@ -338,6 +340,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   };
   function assertChangeable() {
     if (sandbox) throw new AppError('forbidden', 'A sandbox uses the demo’s own email and payments');
+    if (!integrationsEditable) throw new AppError('forbidden', 'This install’s operator manages email and payments', { integrations: ['operator_managed'] });
   }
   function assertBackups() {
     if (!single || sandbox) throw new AppError('not_found', 'Backups are not available on this install');
@@ -449,12 +452,14 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     async saveEmail(context: MutationContext, input: SaveEmailIntegrationRequest): Promise<{ test: 'sent' | 'failed'; integrations: Integrations }> {
       assertChangeable();
       const userId = userOf(context);
-      // On a multi-gym install the test connection is made for a tenant: only SMTP ports, so it can't probe other services.
+      // On a multi-gym install the test connection is made for a tenant: only SMTP ports and public addresses, so it
+      // can't probe other services or the operator's network. A refused host is simply a failed test, like a name that
+      // doesn't resolve, so the answer says nothing about which internal names exist.
       if (!single && !smtpPorts.includes(input.port))
         throw new AppError('invalid_request', 'Use an SMTP port: ' + smtpPorts.join(', '), { port: ['port_not_allowed'] });
       await assertCurrent(context.gymId, input.revision);
       const stored = storedSmtpFromRequest(input);
-      if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest))
+      if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest, !single))
         return { test: 'failed', integrations: await present(context.gymId, userId) };
       await save(context, input.revision, async (gym) => ({ set: { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) },
         action: 'integrations.email_saved', before: emailAudit(gym), after: emailAudit }));

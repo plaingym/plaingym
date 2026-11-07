@@ -140,6 +140,20 @@ never contain a password, key, signing secret or storage credential. It also
 covers **Settings → Updates**, the switch for automatic patch updates, and
 **Settings → Google sign-in** (with the wizard's Google page), whose client
 secret is never returned, logged or audited.
+
+On a multi-gym install the email and payments parts are the operator's by default
+(`GYM_INTEGRATIONS=operator`): the sections are read-only and their write routes
+answer 403 even for an owner. With `GYM_INTEGRATIONS=gym` owners can name their own
+SMTP server, so a gym owner's input reaches the server's network. Ports stay limited
+to 25, 465, 587 and 2525, and a gym's own server must be on the public internet: the
+app resolves the name once, refuses it if any address is private, loopback,
+link-local, reserved or IPv4-mapped, and connects to the address it checked, so a
+name that changes its answer can't reach a private one. TLS still verifies the name.
+This holds for the test message and every real send, under either setting. A
+refused host answers like any other failed test, so an owner can't tell it from a
+name that doesn't resolve. The install's own `SMTP_*` server is the operator's and
+isn't checked; neither is any server on a single-gym install.
+
 `payments.custom` is billing a custom amount; front desk bills catalog charge
 types and existing invoices only.
 

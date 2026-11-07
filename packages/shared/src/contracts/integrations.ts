@@ -63,10 +63,14 @@ export const backupsIntegrationSchema = z.strictObject({
   pending: z.strictObject({ destination: backupDestinationSchema, publicKey: recipientSchema }).nullable(),
   retentionBudgetBytes: z.int().nonnegative(),
 });
-/** `sandbox` is true in demo mode, where email and payments are the demo's own and nothing here can change. */
+/**
+ * `sandbox` is true in demo mode, where email and payments are the demo's own and nothing here can change.
+ * `integrationsEditable` is whether the gym's owners may change email and payments: always on a single-gym install; on a
+ * multi-gym one, only when the operator allows it. When false, those changes are refused and the sections are read-only.
+ */
 export const integrationsSchema = z.strictObject({
   email: emailIntegrationSchema, payments: paymentsIntegrationSchema, backups: backupsIntegrationSchema.nullable(),
-  sandbox: z.boolean(), revision: revisionSchema,
+  sandbox: z.boolean(), integrationsEditable: z.boolean(), revision: revisionSchema,
 });
 export const integrationsResponseSchema = z.strictObject({ data: integrationsSchema });
 
