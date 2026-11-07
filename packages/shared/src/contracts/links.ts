@@ -121,6 +121,7 @@ export const linkCampaignDetailSchema = z.strictObject({
 export const campaignRecipientSchema = z.strictObject({
   link: signedLinkSchema,
   state: campaignRecipientStateSchema,
+  customerMatchHeld: z.boolean().optional(),
 });
 export const linkCampaignParamsSchema = z.strictObject({ campaignId: idSchema });
 export const linkCampaignListQuerySchema = paginationSchema.extend({

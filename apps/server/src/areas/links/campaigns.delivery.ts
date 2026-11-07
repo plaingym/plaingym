@@ -28,7 +28,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   const token = 'campaign_' + randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const reservationId = uuidv7(clock.now().getTime());
-  const reservation = await scope(gymId, async tx => {
+  const reserve = (mode: 'link' | 'manual') => scope(gymId, async tx => {
     const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))).for('update');
     if (!row || campaignRecipient(row, clock.now()).state !== 'pending') return;
     const history = await deliveryHistory(tx, gymId, [linkId]);
@@ -38,13 +38,13 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
       return;
     }
     if (deliveryBlocked(history, linkId, occurrence, clock.now(), gym.timezone)) return;
-    await tx.update(signedLinks).set({ tokenHash }).where(eq(signedLinks.id, linkId));
+    if (mode === 'link') await tx.update(signedLinks).set({ tokenHash }).where(eq(signedLinks.id, linkId));
     await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_reserved',
       targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reservation: reservationId }, occurredAt: clock.now() });
-    return { link: campaignRecipient(row, clock.now()).link, previousHash: row.tokenHash };
+    return { previousHash: row.tokenHash };
   });
-  if (!reservation) return;
-  let outcome = 'cancelled', transportEntered = false, transportSuppressed = false, failure: unknown;
+  let reservation: Awaited<ReturnType<typeof reserve>>;
+  let outcome = 'sent', transportEntered = false, transportSuppressed = false, failure: unknown;
   // Observe the shared delivery's existing transport boundary. All sending and its last-moment
   // switch/recipient checks still live in service.delivery; no second outbound call site is added.
   const observed: Email = { sendEmail: new Proxy(prepared.email.sendEmail, {
@@ -57,23 +57,26 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     },
   }) };
   try {
-    // A completion or revoke committed during preparation stops the queued send.
+    // A completion or revoke committed during preparation stops the queued send before anything is reserved.
     const [current] = await scope(gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)));
-    if (current && current.tokenHash === tokenHash && campaignRecipient(current, clock.now()).state === 'pending') {
-      await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: reservation.link, token,
+    if (current && current.campaignId === campaignId && campaignRecipient(current, clock.now()).state === 'pending') {
+      await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: campaignRecipient(current, clock.now()).link, token,
+        prepareSelected: async mode => { reservation = await reserve(mode); return !!reservation; },
         delivery: { ...prepared, email: observed }, noticeKey: 'links/campaigns:replacementNotice' });
-      outcome = 'sent';
     }
   } catch (error) {
+    if (!reservation) throw error;
     if (!transportEntered || transportSuppressed) outcome = 'suppressed';
     // Only proof that no recipient got it permits a retry; SMTP can accept a message and lose the reply.
     else if (deliveryAcceptance(error) === 'not_accepted') { outcome = 'not_accepted'; failure = error; }
     else outcome = 'uncertain';
   }
+  if (!reservation) return;
+  const previousHash = reservation.previousHash;
   await scope(gymId, async tx => {
     if (outcome !== 'sent' && outcome !== 'uncertain') {
       // A definite non-send must preserve the earlier email. Never overwrite a newer attempt.
-      await tx.update(signedLinks).set({ tokenHash: reservation.previousHash })
+      await tx.update(signedLinks).set({ tokenHash: previousHash })
         .where(and(eq(signedLinks.id, linkId), eq(signedLinks.tokenHash, tokenHash)));
     }
     await writeAudit(tx, { gymId, actorKind: 'system', action: `link_campaign.delivery_${outcome}`,

@@ -12,7 +12,8 @@ import { t } from '../../lib/i18n.js';
 import { campaignClient } from './api.js';
 import { ApiError } from '../../lib/api.js';
 
-export const text = (key: string) => t('links/campaigns:' + key);
+const limitValues = Object.fromEntries(Object.entries(campaignLimits).map(([key, value]) => [key, value.toLocaleString('en')]));
+export const text = (key: string) => t('links/campaigns:' + key, limitValues);
 export function CampaignEditor({ households, timezone, save, close, loadNeedsCard = campaignClient.needsCard }: {
   households: Household[]; timezone: string; save(input: CreateLinkCampaignRequest): Promise<void>; close(): void;
   loadNeedsCard?(households: Household[]): Promise<string[]>;

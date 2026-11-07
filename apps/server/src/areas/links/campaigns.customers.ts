@@ -7,14 +7,19 @@ import { creationLeaseMs, creationReleasedAction, creationRetriedAction, custome
   reservationAction } from '../billing/customers.js';
 
 /**
- * All four actions serialize on the household lock. The newest event of each kind therefore suffices;
- * generation and attempt references discard older events. One statement, at most four returned rows.
+ * Select the newest event of each kind by transaction start time, with ID as a tie-breaker.
+ * This is not household-lock acquisition order. Generation and attempt references discard older events.
+ * One statement, at most four returned rows.
  */
 export async function campaignCreationLease(tx: Transaction, household: typeof households.$inferSelect, now: Date) {
   const events = await tx.selectDistinctOn([auditEvents.action]).from(auditEvents).where(and(
     eq(auditEvents.gymId, household.gymId), eq(auditEvents.targetType, 'household'), eq(auditEvents.targetId, household.id),
     inArray(auditEvents.action, [customerUnlinkedAction, reservationAction, creationRetriedAction, creationReleasedAction])))
     .orderBy(asc(auditEvents.action), desc(auditEvents.createdAt), desc(auditEvents.id));
+  return creationLease(events, household, now);
+}
+
+function creationLease(events: (typeof auditEvents.$inferSelect)[], household: typeof households.$inferSelect, now: Date) {
   const event = (action: string) => events.find(row => row.action === action);
   const unlinked = event(customerUnlinkedAction)?.id ?? null, reservation = event(reservationAction);
   const saved = reservation?.after as { unlinked?: string; requestHash?: string } | null;
@@ -26,6 +31,40 @@ export async function campaignCreationLease(tx: Transaction, household: typeof h
     : (release?.after as { attempt?: string } | null)?.attempt === latest.id ? 'released' : 'expired';
   return { state, reservation: reservation.id, attempt: latest.id,
     matchesRequest: saved?.requestHash === customerRequestHash(household, unlinked) };
+}
+
+type CreationLease = ReturnType<typeof creationLease>;
+/** After the lease, a reservation for other details holds matching until staff reconcile the household. */
+const matchHeld = (lease: CreationLease): lease is Exclude<CreationLease, { state: 'none' }> =>
+  lease.state !== 'none' && lease.state !== 'active' && !lease.matchesRequest;
+
+/** Two bounded reads for a recipient page; no per-household queries or provider calls. */
+export async function campaignCustomerHolds(tx: Transaction, householdIds: string[], now: Date) {
+  const held = new Set<string>();
+  if (!householdIds.length) return held;
+  const candidates = await tx.select().from(households).where(and(inArray(households.id, householdIds), isNull(households.stripeCustomerId)));
+  if (!candidates.length) return held;
+  const events = await tx.selectDistinctOn([auditEvents.targetId, auditEvents.action]).from(auditEvents).where(and(
+    eq(auditEvents.gymId, candidates[0]!.gymId), eq(auditEvents.targetType, 'household'),
+    inArray(auditEvents.targetId, candidates.map(household => household.id)),
+    inArray(auditEvents.action, [customerUnlinkedAction, reservationAction, creationRetriedAction, creationReleasedAction])))
+    .orderBy(asc(auditEvents.targetId), asc(auditEvents.action), desc(auditEvents.createdAt), desc(auditEvents.id));
+  for (const household of candidates) {
+    if (matchHeld(creationLease(events.filter(event => event.targetId === household.id), household, now))) held.add(household.id);
+  }
+  return held;
+}
+
+async function recordMatchHold(tx: Transaction, household: typeof households.$inferSelect, lease: CreationLease, now: Date) {
+  if (!matchHeld(lease)) return false;
+  // The caller holds the household lock, so concurrent passes cannot write this twice.
+  const events = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.gymId, household.gymId), eq(auditEvents.targetId, household.id), eq(auditEvents.targetType, 'household'),
+    eq(auditEvents.action, 'link_campaign.customer_match_held')));
+  if (!events.some(event => (event.after as { reservation?: string } | null)?.reservation === lease.reservation))
+    await writeAudit(tx, { gymId: household.gymId, actorKind: 'system', action: 'link_campaign.customer_match_held',
+      targetType: 'household', targetId: household.id, after: { reservation: lease.reservation }, occurredAt: now });
+  return true;
 }
 
 /**
@@ -42,11 +81,14 @@ export async function matchCampaignCustomer(options: {
 }, gymId: string, householdId: string) {
   const { scope, clock } = options;
   const before = await scope(gymId, async tx => {
-    const [household] = await tx.select().from(households).where(eq(households.id, householdId));
-    if (!household || household.stripeCustomerId || !household.email?.trim()) return undefined;
-    return { email: household.email, lease: await campaignCreationLease(tx, household, clock.now()) };
+    const [household] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
+    if (!household || household.stripeCustomerId) return undefined;
+    const lease = await campaignCreationLease(tx, household, clock.now());
+    if (await recordMatchHold(tx, household, lease, clock.now())) return undefined;
+    if (!household.email?.trim()) return undefined;
+    return { email: household.email, lease };
   });
-  if (!before || before.lease.state === 'active' || (before.lease.state !== 'none' && !before.lease.matchesRequest)) return;
+  if (!before || before.lease.state === 'active') return;
   const email = before.email.trim().toLowerCase();
   const matches = (await (await options.paymentsFor(gymId)).findCustomerByEmail(before.email.trim()))
     .filter(match => match.email.trim().toLowerCase() === email);
@@ -57,10 +99,11 @@ export async function matchCampaignCustomer(options: {
   try {
     await scope(gymId, async tx => {
       const [current] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
-      if (!current || current.stripeCustomerId || current.email !== before.email) return;
+      if (!current || current.stripeCustomerId) return;
       // Customer creation reserves and retries under this same household lock. Never race a creation that may still create.
       const lease = await campaignCreationLease(tx, current, clock.now());
-      if (lease.state === 'active' || (lease.state !== 'none' && !lease.matchesRequest)) return;
+      if (await recordMatchHold(tx, current, lease, clock.now())) return;
+      if (current.email !== before.email || lease.state === 'active') return;
       if (lease.state === 'expired' && !own.length) await writeAudit(tx, { gymId, actorKind: 'system', action: creationReleasedAction,
         targetType: 'household', targetId: householdId, after: { reservation: lease.reservation, attempt: lease.attempt }, occurredAt: clock.now() });
       if (!match) return;

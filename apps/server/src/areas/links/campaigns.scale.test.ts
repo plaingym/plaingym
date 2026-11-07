@@ -162,8 +162,9 @@ it('serves a 320-household campaign with batched creation, grouped progress, SQL
     expect(page.pagination, String(state)).toEqual({ total: expected.length, limit: 20, offset: 20 });
     expect(page.data.map(r => r.link.id), String(state)).toEqual(expected.slice(20, 40));
     expect(page.data.every(r => r.state === (state ?? r.state))).toBe(true);
-    const listed = reads.at(-1)!;
-    expect(reads).toHaveLength(2); // Campaign existence, then count and page in one statement.
+    const listed = reads[1]!;
+    // Campaign, count/page, then, for pending recipients only, bounded household and lease reads.
+    expect(reads.length).toBeLessThanOrEqual(4);
     expect(listed.rows).toBe(expected.slice(20, 40).length); expect(listed.sql).toMatch(/limit \$\d+ offset \$\d+/);
     expect(listed.sql).toContain('count(*)');
   }

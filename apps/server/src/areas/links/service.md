@@ -15,10 +15,11 @@ and returns each `{ link, token }` in request order; `create` is the one-link ca
 `createSignedLinksIn(tx, context, requests, now)` does the same inside a caller's
 transaction (campaign creation). Every request is checked before anything is inserted:
 one query per resource kind (households, invoices, waiver members, campaigns) and per
-500 IDs, with waiver members locked in ascending ID order across the whole request. The
-first failing request gets the error a one-by-one check would give; a past expiry is
-found before any lookup. Request IDs are compared in lowercase, as PostgreSQL compares
-UUIDs. Links and their `signed_link.created` audits then go in as two multi-row inserts
+500 IDs, with waiver members locked in ascending ID order across the whole request. A
+resource repeated in one call is refused first, with the contract's "may appear only
+once" message. After that, the first failing request gets the error a one-by-one check
+would give; a past expiry is found before any lookup. Request IDs are compared in
+lowercase, as PostgreSQL compares UUIDs. Links and their `signed_link.created` audits then go in as two multi-row inserts
 per 500 requests, with IDs ascending in request order. Rows, audits, tokens and digests
 match one-by-one creation, except that every link and audit of a call shares one
 `createdAt` / `occurredAt`.

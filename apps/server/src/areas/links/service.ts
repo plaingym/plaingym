@@ -126,6 +126,14 @@ async function checkResources(tx: Transaction, gymId: string, all: CreateSignedL
  */
 export async function createSignedLinksIn(tx: Transaction, context: MutationContext, inputs: CreateSignedLinkRequest[], now: Date) {
   const requests = inputs.map(input => lowercaseIds(createSignedLinkRequestSchema.parse(input)));
+  const seen = new Set<string>();
+  for (const request of requests) {
+    const kind = request.purpose === 'pay_invoice' ? 'invoice' : request.purpose === 'sign_waiver' ? 'member' : 'household';
+    const id = request.purpose === 'pay_invoice' ? request.invoiceId : request.purpose === 'sign_waiver' ? request.memberId : request.householdId;
+    const key = `${request.purpose}:${id}`;
+    if (seen.has(key)) throw new AppError('invalid_request', `${kind === 'invoice' ? 'An' : 'A'} ${kind} may appear only once`);
+    seen.add(key);
+  }
   await checkResources(tx, context.gymId, requests, now);
   const ids = requests.map(() => uuidv7()).sort(), auditIds = requests.map(() => uuidv7()).sort();
   const created: { link: SignedLinkRecord; token: string }[] = [];

@@ -15,7 +15,7 @@ import { createSignedLinksIn } from './service.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
 import { campaignDetail, campaignRecipient, campaignTallies, recipientState } from './campaigns.model.js';
 import { deliverCampaignLink } from './campaigns.delivery.js';
-import { matchCampaignCustomer } from './campaigns.customers.js';
+import { campaignCustomerHolds, matchCampaignCustomer } from './campaigns.customers.js';
 import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
 
 export const campaignSendJob = 'links.campaigns.send';
@@ -160,7 +160,11 @@ export function createCampaignsService(options: CampaignsOptions) {
         const page = tx.select().from(signedLinks).where(where).orderBy(asc(signedLinks.id)).limit(query.limit).offset(query.offset).as('page');
         // A left join retains the count even for an empty/out-of-range page, in the same snapshot.
         const rows = await tx.select().from(totals).leftJoin(page, eq(totals.total, totals.total)).orderBy(asc(page.id));
-        return { data: rows.flatMap(row => row.page ? [campaignRecipient(row.page, now)] : []),
+        const data = rows.flatMap(row => row.page ? [campaignRecipient(row.page, now)] : []);
+        // Sends match customers only for pending recipients of the purposes that use a card.
+        const matched = (row: (typeof data)[number]) => row.state === 'pending' && row.link.purpose !== 'sign_waiver';
+        const held = await campaignCustomerHolds(tx, [...new Set(data.filter(matched).map(row => row.link.householdId))], now);
+        return { data: data.map(row => ({ ...row, customerMatchHeld: matched(row) && held.has(row.link.householdId) })),
           pagination: { total: rows[0]!.totals.total, limit: query.limit, offset: query.offset } };
       });
     },

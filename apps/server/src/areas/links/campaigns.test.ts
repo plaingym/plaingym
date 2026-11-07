@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, asc, eq } from 'drizzle-orm';
-import { auditEvents, households, linkCampaigns, members, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
+import { auditEvents, households, invoices, linkCampaigns, members, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, createTranslator, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -31,7 +31,7 @@ import { FakeUploads } from '../../infra/storage/index.js';
 import { configureLinkPages } from '../../public/links/links.routes.js';
 import { createCampaignRoutes } from './campaigns.routes.js';
 import { createCampaignJobs } from './campaigns.jobs.js';
-import { matchCampaignCustomer } from './campaigns.customers.js';
+import { campaignCustomerHolds, matchCampaignCustomer } from './campaigns.customers.js';
 import type { SignedLinkDelivery } from './service.delivery.js';
 import campaignMessages from '../../../../../locales/en/links/campaigns.json' with { type: 'json' };
 
@@ -621,17 +621,37 @@ describe('campaign matching after a customer creation reservation', () => {
     expect(await f.customers.ensureCustomer(f.gymId, f.household.id)).toBe(created!.id);
     expect(create).not.toHaveBeenCalled();
   });
-  it('retains the hold after a lost reply and an email change, leaving reconciliation to staff', async () => {
-    const f = await reserved('lost');
+  it.each(['lost', 'failed'] as const)('audits one hold after a %s reply and an email change and shows it only to the owning gym', async outcome => {
+    const f = await reserved(outcome), c = await f.campaign();
     await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'changed@example.test' }).where(eq(households.id, f.household.id)));
     f.provider.seedCustomer({ id: 'cus_new_address', email: 'changed@example.test' });
     f.clock.advance(minutes(16));
     const lookup = vi.spyOn(f.provider, 'findCustomerByEmail');
     await f.match();
+    await f.match();
     expect(lookup).not.toHaveBeenCalled();
-    expect(await f.read()).toEqual({ customer: null, audits: ['billing.customer.creation_reserved'] });
+    const holds = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_match_held')));
+    expect(holds).toHaveLength(1);
+    expect(Object.keys(holds[0]!.after!)).toEqual(['reservation']);
+    expect((await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.customerMatchHeld).toBe(true);
+    const other = await fixture();
+    expect(await db.forGym(other.gymId, tx => campaignCustomerHolds(tx, [f.household.id], f.clock.now()))).toEqual(new Set());
+    await expect(f.service.recipients(other.gymId, c.campaign.id)).rejects.toMatchObject({ code: 'not_found' });
     await expect(f.customers.ensureCustomer(f.gymId, f.household.id)).rejects.toMatchObject({ reason: 'details_changed' });
-    expect(await f.provider.findCustomerByEmail('payer@example.test')).toHaveLength(1);
+    expect(await f.provider.findCustomerByEmail('payer@example.test')).toHaveLength(outcome === 'lost' ? 1 : 0);
+  });
+  it('shows a hold only on pending recipients of purposes that match customers', async () => {
+    const f = await reserved('failed'), c = await f.campaign();
+    const member = await factory('members', f.gymId, { householdId: f.household.id });
+    const waiver = await f.service.create(f.context, { ...f.input(), purpose: 'sign_waiver',
+      recipients: [{ householdId: f.household.id, memberId: member.id }] });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'changed@example.test' }).where(eq(households.id, f.household.id)));
+    f.clock.advance(minutes(16));
+    const held = async (id: string) => (await f.service.recipients(f.gymId, id)).data[0]!.customerMatchHeld;
+    expect(await held(c.campaign.id)).toBe(true);
+    expect(await held(waiver.campaign.id)).toBe(false);
+    await db.forGym(f.gymId, tx => tx.update(signedLinks).set({ usedAt: f.clock.now() }).where(eq(signedLinks.campaignId, c.campaign.id)));
+    expect(await held(c.campaign.id)).toBe(false);
   });
   it('rechecks the reservation hash under the lock when the household name changes during lookup', async () => {
     const f = await reserved('failed');
@@ -641,7 +661,17 @@ describe('campaign matching after a customer creation reservation', () => {
       return [{ id: 'cus_candidate', email: f.household.email! }];
     });
     await f.match();
-    expect(await f.read()).toEqual({ customer: null, audits: ['billing.customer.creation_reserved'] });
+    expect(await f.read()).toEqual({ customer: null, audits: ['billing.customer.creation_reserved', 'link_campaign.customer_match_held'] });
+  });
+  it('audits a released reservation once even when the email is removed, and clears the staff notice after linking', async () => {
+    const f = await reserved('failed'), c = await f.campaign();
+    f.clock.advance(minutes(16)); await f.match();
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: null }).where(eq(households.id, f.household.id)));
+    await Promise.all([f.match(), f.match()]); await f.match();
+    expect((await f.read()).audits).toEqual(['billing.customer.creation_released', 'billing.customer.creation_reserved', 'link_campaign.customer_match_held']);
+    expect((await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.customerMatchHeld).toBe(true);
+    await db.forGym(f.gymId, tx => tx.update(households).set({ stripeCustomerId: 'cus_reconciled' }).where(eq(households.id, f.household.id)));
+    expect((await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.customerMatchHeld).toBe(false);
   });
   it('releases a failed creation reservation once the lease ends and links the email match', async () => {
     const f = await reserved('failed');
@@ -720,6 +750,29 @@ describe('campaign completion and production registrations', () => {
       expect(format).not.toContain('/l/');
       expect(format).not.toContain(campaignMessages.replacementNotice);
       expect(format).not.toContain('links/campaigns:replacementNotice');
+    }
+  });
+  it.each([true, false])('uses the delivery-selected mode when an invoice changes during preparation (manual: %s)', async manual => {
+    const f = await fixture();
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 1000 });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice',
+      recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    await f.drain();
+    const original = f.token();
+    const amount = (amountCents: number) => db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents }).where(eq(invoices.id, invoice.id)));
+    await amount(manual ? 1000 : 20);
+    const prepare = f.prepare.getMockImplementation()!;
+    f.prepare.mockImplementationOnce(async id => { const delivery = await prepare(id); await amount(manual ? 20 : 1000); return delivery; });
+    f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
+    expect(f.email.messages).toHaveLength(2);
+    if (manual) {
+      expect(f.email.messages[1]!.text).not.toContain('/l/');
+      await amount(1000);
+      expect((await f.links.resolve(f.gymId, original)).status).toBe('active');
+    } else {
+      expect(f.token()).not.toBe(original);
+      expect((await f.links.resolve(f.gymId, f.token())).status).toBe('active');
+      expect((await f.links.resolve(f.gymId, original)).status).not.toBe('active');
     }
   });
   it.each(['update_card', 'pay_invoice'] as const)('protects the old %s token through Checkout and completes its real browser return', async purpose => {

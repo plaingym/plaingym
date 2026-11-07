@@ -39,6 +39,16 @@ async function bulkHouseholds(gymId: string, count: number) {
   return db.forGym(gymId, tx => tx.insert(households).values(Array.from({ length: count }, (_, i) => ({ gymId, name: 'Bulk ' + i })))
     .returning({ id: households.id }));
 }
+
+it.each(['onboarding', 'update_card', 'pay_invoice', 'sign_waiver'] as const)('rejects mixed-case duplicate %s recipients atomically', async purpose => {
+  const f = await fixture(), recipient = f.requests[purpose][0]!;
+  const upper = Object.fromEntries(Object.entries(recipient).map(([key, value]) => [key, value.toUpperCase()]));
+  const message = purpose === 'pay_invoice' ? 'An invoice' : purpose === 'sign_waiver' ? 'A member' : 'A household';
+  await expect(f.service.create(f.context, f.input(purpose, [recipient, upper])))
+    .rejects.toThrow(`${message} may appear only once`);
+  expect(await f.stored()).toEqual({ campaigns: [], links: [], audits: [] });
+  expect(f.jobs.jobs).toEqual([]);
+});
 /** A scope whose transactions report each property read, such as `insert` or `select`, before it happens. */
 function watching(onRead: (key: string | symbol) => void): typeof db.forGym {
   return (gymId, fn) => db.forGym(gymId, tx => fn(new Proxy(tx, { get(target, key) {

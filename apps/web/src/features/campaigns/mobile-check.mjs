@@ -28,7 +28,7 @@ try {
         expect(request.postDataJSON()).toMatchObject({ purpose: 'update_card', recipients: [{ householdId }] });
         return route.fulfill({ json: { data: detail } });
       }
-      if (url.pathname.endsWith('/recipients')) return route.fulfill({ json: list(completed ? [] : [{ state: 'pending', link: { id, householdId, campaignId: id,
+      if (url.pathname.endsWith('/recipients')) return route.fulfill({ json: list(completed ? [] : [{ state: 'pending', customerMatchHeld: true, link: { id, householdId, campaignId: id,
         purpose: 'onboarding', invoiceId: null, memberId: null, expiresAt: '2026-11-26T12:00:00Z', usedAt: null, revokedAt: null, createdBy: null, createdAt } }]) });
       if (url.pathname === '/api/link-campaigns') return route.fulfill({ json: list([detail]) });
       return route.fulfill({ json: { data: completed ? { ...detail, progress: { ...detail.progress, pending: 0, completed: 1 } } : detail } });
@@ -52,7 +52,8 @@ try {
     await page.getByRole('checkbox', { name: /Chen household/ }).check(); await check('editor');
     fail = true; await page.getByRole('button', { name: 'Create and send' }).click(); await page.getByRole('dialog').getByRole('alert').waitFor(); await check('error');
     fail = false; await page.getByRole('button', { name: 'Create and send' }).click(); await page.getByRole('button', { name: 'Remind pending households' }).waitFor();
-    await expect(page.getByText('Chen household with a long descriptive name')).toBeVisible(); await check('recipients');
+    await expect(page.getByText('Chen household with a long descriptive name')).toBeVisible();
+    await expect(page.getByText(/Customer matching is on hold/)).toBeVisible(); await check('recipients');
     await page.getByRole('button', { name: 'Remind pending households' }).click(); await expect(page.getByRole('status')).toContainText('Pending recipients queued: 1');
     completed = true; await page.getByLabel("Who's left?").selectOption('completed'); await expect(page.getByText('No recipients in this state')).toBeVisible(); await check('empty');
     await context.close();

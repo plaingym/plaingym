@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Signed-link pages
 
-Campaign reminders rotate their token. An unresolvable token in the public
+Campaign reminders with a link rotate their token. An unresolvable token in the public
 `campaign_` format renders a static **This link was replaced** page with instructions
 to use the newest email. It returns 404, exposes no data or actions, and looks the
 same for made-up tokens and tokens presented to another gym. The prefix does not

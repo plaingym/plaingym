@@ -4,9 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { Household, LinkCampaignDetail } from '@plaingym/shared/contracts';
+import { campaignLimits, type Household, type LinkCampaignDetail } from '@plaingym/shared/contracts';
 import { CampaignWorkspace } from './page.js';
-import { CampaignEditor } from './editor.js';
+import { CampaignEditor, text } from './editor.js';
 import type { CampaignClient } from './api.js';
 import { registration } from './registrations.js';
 import { ApiError } from '../../lib/api.js';
@@ -33,6 +33,22 @@ function mount(service: CampaignClient) {
   return render(<QueryClientProvider client={cache}><CampaignWorkspace gymId={id} timezone="America/Los_Angeles" client={service} /></QueryClientProvider>);
 }
 describe('campaign admin screens', () => {
+  it('interpolates every limit from the shared values', () => {
+    for (const [key, value] of [['nameLimit', campaignLimits.name], ['recipientLimit', campaignLimits.recipients],
+      ['scheduleLimit', campaignLimits.reminders], ['dayLimit', campaignLimits.reminderDay], ['expiryLimit', campaignLimits.expiryDays],
+      ['selectionHelp', campaignLimits.recipients], ['expiryHelp', campaignLimits.expiryDays],
+      ['daysHelp', campaignLimits.reminders], ['daysHelp', campaignLimits.reminderDay]] as const) {
+      expect(text(key)).toContain(value.toLocaleString('en')); expect(text(key)).not.toMatch(/[{}]/);
+    }
+    for (const value of Object.values(campaignLimits)) expect(text('limits')).toContain(value.toLocaleString('en'));
+  });
+  it('shows the customer matching hold to staff', async () => {
+    const service = client(), recipients = await service.recipients(id, undefined);
+    service.recipients = vi.fn(async () => ({ ...recipients, data: recipients.data.map(row => ({ ...row, customerMatchHeld: true })) }));
+    mount(service);
+    await userEvent.click(await screen.findByRole('button', { name: 'View October welcome' }));
+    expect((await screen.findByRole('note')).textContent).toContain('Customer matching is on hold');
+  });
   it('validates the 90-day expiry using the gym-local end of day and maps server invalid requests to limits', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-26T12:00:00Z').getTime());
     const save = vi.fn(async () => { throw new ApiError(400, 'invalid_request'); }), user = userEvent.setup();

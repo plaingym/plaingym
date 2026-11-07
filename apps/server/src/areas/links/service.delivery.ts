@@ -40,10 +40,19 @@ export async function deliverSignedLink(input: {
   noticeKey?: string;
   /** A send's preflight already refused the card amount and revoked its credential. */
   manualPayment?: boolean;
+  /** Runs outside a transaction after selecting the mode; false cancels delivery. */
+  prepareSelected?(mode: 'link' | 'manual'): Promise<boolean>;
 }): Promise<boolean> {
   assertNoTransaction('links.send');
   const { scope, context, link, token, delivery } = input;
   validateSignedLinkDelivery(delivery, context.gymId);
+  const manualPayment = link.purpose === 'pay_invoice' && await scope(context.gymId, async tx => {
+    const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)
+      .where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
+    if (!invoice) throw new AppError('not_found', 'Invoice not found');
+    return input.manualPayment || !!cardChargeIssue(invoice.amountCents, invoice.currency);
+  });
+  if (await input.prepareSelected?.(manualPayment ? 'manual' : 'link') === false) return false;
   const recipient = await scope(context.gymId, async (tx) => {
     // A waiver link also goes nowhere if its signer can't receive email.
     const found = await householdRecipient(tx, context.gymId, link.householdId,
@@ -51,12 +60,6 @@ export async function deliverSignedLink(input: {
     if (!found || /[\r\n\0]/.test(found.email)) throw new AppError('invalid_request', 'Household email is missing or invalid');
     if (found.suppressed) throw new AppError('unavailable', 'Signed link recipient email is suppressed');
     return found.email;
-  });
-  const manualPayment = link.purpose === 'pay_invoice' && await scope(context.gymId, async tx => {
-    const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)
-      .where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
-    if (!invoice) throw new AppError('not_found', 'Invoice not found');
-    return input.manualPayment || !!cardChargeIssue(invoice.amountCents, invoice.currency);
   });
   const url = manualPayment ? '' : new URL(`/l/${token}`, delivery.origin).href;
   const content = await renderSignedLink({ gymName: delivery.gymName, url, purpose: link.purpose, manualPayment,
