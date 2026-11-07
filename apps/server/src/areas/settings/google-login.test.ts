@@ -19,7 +19,7 @@ import { createAuthService } from '../../infra/auth/service.js';
 import { createGoogleAuthExtension } from '../../infra/auth/google.js';
 import { createIntegrationsService, type IntegrationsOptions } from './integrations.js';
 import { createIntegrationsRoutes } from './integrations.routes.js';
-import { createGoogleClientResolver, encryptGoogleConfig } from './google-login.js';
+import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig } from './google-login.js';
 import { encryptSmtpConfig } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database), clock = new TestClock('2026-11-04T12:00:00Z');
@@ -169,6 +169,11 @@ describe('Settings → Google sign-in', () => {
     expect(status).toMatchObject({ source: 'none', editable: false });
     expect((await save(sandbox, status.revision)).status).toBe(404);
     await setStored(gymB, null);
+  });
+  it('reads a stored client a newer release added a key to, and still refuses an unknown key on a save', () => {
+    const value = encryptSecret(key, { secretClass: 'google_config', owner: gymB }, JSON.stringify({ clientId, clientSecret, newerKey: true }));
+    expect(readGoogleConfig(key, value, gymB)).toEqual({ clientId, clientSecret });
+    expect(() => encryptGoogleConfig(key, gymB, { clientId, clientSecret, newerKey: true } as { clientId: string; clientSecret: string })).toThrow();
   });
   it('reports an unreadable client as off, does not count it as a way in, and logs once per value', async () => {
     const corrupt = () => encryptSecret(Buffer.alloc(32, 1), { secretClass: 'google_config', owner: gymB }, JSON.stringify({ clientId, clientSecret }));

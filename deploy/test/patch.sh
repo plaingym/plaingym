@@ -20,6 +20,7 @@ export PATH="$temporary/bin:$PATH" CALLS="$temporary/calls" RECORDS="$temporary/
 export UPDATE_SETTLE_SECONDS=0
 digest=sha256:$(printf 'd%.0s' $(seq 64))
 export DIGEST="$digest"
+export PREVIOUS_ID="sha256:$(printf 'a%.0s' $(seq 64))"
 
 # Docker: logs each call with the image it targets, and fails where FAIL_AT says.
 cat > "$temporary/bin/docker" <<'MOCK'
@@ -35,7 +36,7 @@ case "$*" in
   *' exec -T app gym-app auto-update record '*)
     [ "${FAIL_AT:-}" != record ] || exit 1
     printf '%s\n' "$*" | sed 's/.* auto-update record //' >> "$RECORDS" ;;
-  "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1; echo sha256:previous ;;
+  "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1; case "$3" in *@sha256:*) echo "$DIGEST" ;; *) echo "$PREVIOUS_ID" ;; esac ;;
   'image inspect '*'org.opencontainers.image.version'*)
     case "$3" in *@sha256:*) echo "${TARGET_LABEL:-v1.2.5}" ;; *) echo "${CURRENT_LABEL:-v1.2.3}" ;; esac ;;
   'image inspect '*RepoDigests*) echo "${REPO_DIGEST:-ghcr.io/example/app@$DIGEST}"; echo 'ghcr.io/example/app@sha256:0000000000000000000000000000000000000000000000000000000000000000' ;;
@@ -48,7 +49,7 @@ case "$*" in
     [ "${FAIL_AT:-}" != snapshot_signal ] || { kill -TERM "$PPID"; exit 143; }
     [ "${FAIL_AT:-}" != snapshot ] || { echo 'S3 refused the upload' >&2; exit 1; } ;;
   *'up -d '*)
-    if [ "${APP_IMAGE:-}" = sha256:previous ]; then [ "${FAIL_AT:-}" != rollback ]
+    if [ "${APP_IMAGE:-}" = "$PREVIOUS_ID" ]; then [ "${FAIL_AT:-}" != rollback ]
     elif [ -n "${APP_IMAGE:-}" ]; then [ "${FAIL_AT:-}" != startup ]
     else [ "${FAIL_AT:-}" != pinned ]; fi ;;
   *' node /app/deploy/healthcheck.mjs') case "${FAIL_AT:-}" in health|rollback) exit 1 ;; esac ;;
@@ -127,7 +128,9 @@ called 'curl https://github.com/example/app/releases/download/v1.2.5/release-man
 [ "$(line_of ' stop app')" -lt "$(line_of ' snapshot pre-upgrade')" ]
 [ "$(line_of ' snapshot pre-upgrade')" -lt "$(line_of ' up -d ')" ]
 grep -q " up -d .* IMAGE=$target" "$CALLS"
-never 'IMAGE=sha256:previous'
+never "IMAGE=$PREVIOUS_ID"
+[ "$(wc -l < "$case_dir/version-history.tsv")" -eq 3 ]
+awk -F '\t' 'NR == 1 { if ($2 != "v1.2.3" || $4 != "install") exit 1 } NR == 3 { if ($2 != "v1.2.5" || $4 != "update") exit 1 }' "$case_dir/version-history.tsv"
 [ ! -e "$case_dir/.auto-update.inflight" ] && [ ! -e "$case_dir/auto-update.result" ]
 grep -qx timezone=America/Denver "$case_dir/auto-update.state"
 grep -qx night=2026-11-03 "$case_dir/auto-update.state"
@@ -155,6 +158,21 @@ checks false true false
 expect_status 0 --patch --now
 recorded "--result skipped --reason backups_not_configured --from v1.2.3"
 never ' pull app'; never ' stop app'
+
+# A release the owner rolled back from stays out, without a pull or a download; only a newer patch comes in.
+make_install declined
+printf '2026-11-01T00:00:00Z\tv1.2.3\t%s\tinstall\tv1.2.3\t-\n2026-11-02T00:00:00Z\tv1.2.5\t%s\tupdate\tv1.2.0\t-\n2026-11-03T00:00:00Z\tv1.2.3\t%s\trollback\tv1.2.0\t-\n' \
+  "$PREVIOUS_ID" "$digest" "$PREVIOUS_ID" > "$case_dir/version-history.tsv"
+expect_status 0 --patch --now
+recorded "--result skipped --reason rolled_back_version --from v1.2.3 --to v1.2.5"
+pinned ghcr.io/example/app:v1.2.3
+never ' pull app'; never 'release-manifest.txt'
+cp "$FIXTURES/releases.json" "$temporary/releases.json"
+printf '[{"tag_name": "v1.2.6"}, {"tag_name": "v1.2.5"}, {"tag_name": "v1.2.3"}]\n' > "$FIXTURES/releases.json"
+write_manifest v1.2.6
+expect_status 0 TARGET_LABEL=v1.2.6 --patch --now
+recorded "--result updated --from v1.2.3 --to v1.2.6"
+cp "$temporary/releases.json" "$FIXTURES/releases.json"
 
 # A manifest changed after signing, or signed by another key, is refused before any pull.
 make_install tampered
@@ -202,7 +220,7 @@ make_install snapshot
 expect_status 1 FAIL_AT=snapshot --patch --now
 recorded "--result skipped --reason snapshot_failed --from v1.2.3 --to v1.2.5"
 pinned ghcr.io/example/app:v1.2.3
-grep 'up -d ' "$CALLS" | tail -n 1 | grep -q 'IMAGE=sha256:previous'
+grep 'up -d ' "$CALLS" | tail -n 1 | grep -q "IMAGE=$PREVIOUS_ID"
 never "up -d .* IMAGE=$target"
 [ ! -e "$case_dir/.auto-update.inflight" ]
 # Stopped during the snapshot: the new version never ran, so it reads as skipped, not rolled back.
@@ -210,7 +228,7 @@ make_install snapshot-signal
 expect_status 130 FAIL_AT=snapshot_signal --patch --now
 recorded "--result skipped --reason snapshot_failed --from v1.2.3 --to v1.2.5"
 pinned ghcr.io/example/app:v1.2.3
-grep 'up -d ' "$CALLS" | tail -n 1 | grep -q 'IMAGE=sha256:previous'
+grep 'up -d ' "$CALLS" | tail -n 1 | grep -q "IMAGE=$PREVIOUS_ID"
 never "up -d .* IMAGE=$target"
 [ ! -e "$case_dir/.auto-update.inflight" ]
 # The swap can't start (the running image can't be read): nothing stopped, and no marker for the next run.
@@ -226,7 +244,7 @@ for stage in startup health settle; do
   reason=health_check_failed; [ "$stage" != startup ] || reason=startup_failed
   recorded "--result rolled_back --reason $reason --from v1.2.3 --to v1.2.5"
   pinned ghcr.io/example/app:v1.2.3
-  grep 'up -d ' "$CALLS" | tail -n 1 | grep -q 'IMAGE=sha256:previous'
+  grep 'up -d ' "$CALLS" | tail -n 1 | grep -q "IMAGE=$PREVIOUS_ID"
   [ ! -e "$case_dir/.auto-update.inflight" ]
   no_secret
 done
@@ -260,6 +278,14 @@ never 'curl '
 make_install unknown-version
 expect_status 1 CURRENT_LABEL=0.0.0-dev --patch --now
 recorded "--result skipped --reason version_unknown"
+make_install development-metadata
+expect_status 1 CURRENT_LABEL=1.2.0+14.gabc1234 --patch --now
+recorded "--result skipped --reason version_unknown"
+never 'curl '
+make_install development-zero
+expect_status 1 CURRENT_LABEL=0.0.0 --patch --now
+recorded "--result skipped --reason version_unknown --from v0.0.0"
+never 'curl '
 make_install releases
 expect_status 1 FAIL_AT=releases --patch --now
 recorded "--result skipped --reason release_list_unavailable --from v1.2.3"

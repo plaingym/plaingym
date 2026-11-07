@@ -20,14 +20,16 @@ import { setupTestMessage } from '../../emails/setup/setup.js';
 import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
-import { encryptSmtpConfig, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, storedSmtpSchema, type SendSmtpTest } from './smtp.js';
+import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
 import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig } from './google-login.js';
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
 
 type Gym = typeof gyms.$inferSelect;
 /** A new destination and key waiting for the owner to prove they saved the private key. Kept in the gym's opaque settings. */
-const pendingBackupSchema = z.strictObject({ destination: backupDestinationSchema, publicKey: z.string(), s3Config: z.string() });
+// Read from the gym's settings: a newer release may store more keys, which this one ignores after a rollback.
+const storedDestinationSchema = z.object(backupDestinationSchema.shape);
+const pendingBackupSchema = z.object({ destination: storedDestinationSchema, publicKey: z.string(), s3Config: z.string() });
 type PendingBackup = z.infer<typeof pendingBackupSchema>;
 const defaultRetentionBytes = 8_000_000_000n;
 const smtpPorts = [25, 465, 587, 2525];
@@ -90,7 +92,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
   function gymSmtp(gym: Gym) {
     return readStoredSecret(options.key, 'smtp_config', gym.id, gym.smtpConfig, () =>
-      storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gym.id }, gym.smtpConfig!))));
+      readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gym.id }, gym.smtpConfig!))));
   }
   /** The email settings an audit records: never the username or password. */
   function emailAudit(gym: Gym) {
@@ -309,7 +311,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   }
   function backups(gym: Gym): BackupsIntegration | null {
     if (!single || sandbox) return null;
-    const destination = backupDestinationSchema.safeParse(gym.backupDestination);
+    const destination = storedDestinationSchema.safeParse(gym.backupDestination);
     const pending = pendingBackup(gym);
     return { configured: Boolean(gym.backupPublicKey && gym.backupBlobKey && gym.s3Config && gym.backupDestination),
       destination: destination.success ? destination.data : null, publicKey: gym.backupPublicKey,

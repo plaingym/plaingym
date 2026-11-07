@@ -97,6 +97,16 @@ it('repairs an insert/enqueue crash on redelivery without replacing the original
   clock.advance(1000); await deliver();
   expect((await rows())[0]).toEqual(saved); expect(jobs.jobs).toHaveLength(1); expect(enqueue).toHaveBeenCalledTimes(2);
 });
+it('dispatches a stored event written by a newer release and strips its unknown fields', async () => {
+  const handler = vi.fn();
+  inbox.register('payment_intent.succeeded', handler);
+  await deliver();
+  await database.forGym(gymA, (tx) => tx.update(stripeEvents).set({ payload: { ...event(), futureField: { version: 2 } } })
+    .where(eq(stripeEvents.eventId, 'evt_test')));
+  await inbox.dispatch({ eventId: 'evt_test', futureField: true }, context());
+  expect(handler).toHaveBeenCalledExactlyOnceWith(event(), expect.objectContaining({ gymId: gymA }));
+  expect((await rows())[0]).toMatchObject({ processedAt: clock.now(), error: null });
+});
 it('retries failed handlers with safe diagnostics, and replays completed events through the CLI', async () => {
   let calls = 0;
   inbox.register('payment_intent.succeeded', async () => { if (++calls === 1) throw new Error('secret and payer details'); });

@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assessRun, budget, report, resolveMarks, summarize } from './budget.mjs';
+import { buildInfo } from '../../../scripts/release/version.mjs';
 
 const here = fileURLToPath(new URL('./', import.meta.url)), deploy = resolve(here, '../..'), root = resolve(deploy, '..');
 const nodeImage = 'node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205';
@@ -122,7 +123,8 @@ async function buildImage(tag) {
   await new Promise((done, fail) => {
     const childOptions = { cwd: root, windowsHide: true, signal: controller.signal, timeout: 1_200_000, killSignal: 'SIGKILL' };
     const archive = spawn('git', ['-c', `safe.directory=${root.replaceAll('\\', '/')}`, 'archive', 'HEAD'], { ...childOptions, stdio: ['ignore', 'pipe', 'inherit'] });
-    const build = spawn('docker', ['build', '-t', tag, '-f', 'deploy/Dockerfile', '-'], { ...childOptions, stdio: ['pipe', 'inherit', 'inherit'] });
+    const identity = buildInfo(root);
+    const build = spawn('docker', ['build', '--build-arg', `VERSION=${identity.version}`, '--build-arg', `REVISION=${identity.commit}`, '-t', tag, '-f', 'deploy/Dockerfile', '-'], { ...childOptions, stdio: ['pipe', 'inherit', 'inherit'] });
     archive.stdout.pipe(build.stdin);
     build.stdin.on('error', () => {});
     let pending = 2, failure;

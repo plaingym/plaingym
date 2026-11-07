@@ -7,6 +7,40 @@ on:
 permissions:
   contents: read
 jobs:
+  history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - name: Check new commits and append-only migrations
+        env:
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          head=${PR_HEAD:-$GITHUB_SHA}
+          base=${PR_BASE:-$BEFORE}
+          # A new branch has no earlier tip, and a force-pushed branch's old tip isn't in this clone.
+          if [ -z "$base" ] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}"; then
+            base=$(git merge-base origin/main "$head")
+          fi
+          node scripts/release/check-commits.mjs "$base" "$head"
+          migration_base=$base
+          # A branch or pull request can sit behind main: compare it with where it left main, not main's tip.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            migration_base=$(git merge-base origin/main "$head")
+          fi
+          node scripts/release/check-migrations.mjs "$migration_base" "$head"
+      - name: Test release tooling in scratch repositories
+        run: node --test scripts/release/*.test.mjs
   reuse:
     # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
     # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.

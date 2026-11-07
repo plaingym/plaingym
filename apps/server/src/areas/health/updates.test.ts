@@ -315,7 +315,7 @@ describe('update_available tile', () => {
   it('is not set up for hosted mode, when switched off, and for a build that is not a release', async () => {
     const never: ReleaseCheck = { latest: vi.fn(async () => null) };
     for (const env of [{ TENANCY: 'multi' }, { UPDATE_CHECK: 'off' }, { UPDATE_CHECK: 'no' }, { UPDATE_CHECK: 'disabled' },
-      { APP_VERSION: 'dev' }, { APP_VERSION: '1.2.0-rc.1' }, { APP_VERSION: '0.0.0' }, { APP_VERSION: undefined }]) {
+      { APP_VERSION: 'dev' }, { APP_VERSION: '1.2.0-rc.1' }, { APP_VERSION: '1.2.0+14.gabc1234' }, { APP_VERSION: '0.0.0' }]) {
       expect(await tile(env, never), JSON.stringify(env)).toMatchObject({ status: 'not_configured', details: null });
     }
     expect(never.latest).not.toHaveBeenCalled();

@@ -5,6 +5,13 @@ React + Vite + Tailwind CSS for the staff admin, the member portal, the setup
 wizard and the kiosk. The shell (providers, routing, the admin layout) is
 described in [`src/app/README.md`](src/app/README.md).
 
+Vite embeds the Git version and commit. The root route checks `/healthz` before
+navigation in admin, portal and kiosk; a different server identity reloads the page.
+A second mismatch stops navigation rather than repeatedly reloading stale assets.
+A link's preload doesn't run the check, and `pnpm dev` turns it off.
+The portal worker keeps no offline page or API cache. Settings → Updates displays
+the same identity. See [versioning](../../docs/versioning.md).
+
 ## UI conventions
 
 **Mobile-first.** Build every screen for a 360 px wide phone first, then scale

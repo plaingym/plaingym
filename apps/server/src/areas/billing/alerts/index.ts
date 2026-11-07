@@ -21,14 +21,15 @@ export const sendAlertJob = 'billing.alerts.send';
 export const cardAlertMaxAttempts = 48;
 export const disputeAlertMaxAttempts = 18;
 export { terminalDisputeStatuses } from '@plaingym/shared/contracts';
-const cardPayload = z.strictObject({ kind: z.literal('card_expiry'), paymentMethodId: idSchema, cycle: dateSchema });
-const disputePayload = z.strictObject({ kind: z.literal('dispute'), invoiceId: idSchema, disputeId: z.string().min(1) });
-const payloadSchema = z.discriminatedUnion('kind', [cardPayload, disputePayload]);
+const cardPayload = z.object({ kind: z.literal('card_expiry'), paymentMethodId: idSchema, cycle: dateSchema });
+const disputePayload = z.object({ kind: z.literal('dispute'), invoiceId: idSchema, disputeId: z.string().min(1) });
+// Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
+export const alertPayloadSchema = z.discriminatedUnion('kind', [cardPayload, disputePayload]);
 /** Job idempotency keys and durable send-state keys: both are kept permanently. */
 const cardKey = (paymentMethodId: string, cycle: string) => `billing.alert.card_expiry:${paymentMethodId}:${cycle}`;
 const disputeKey = (disputeId: string) => `billing.alert.dispute:${disputeId}`;
 type Card = typeof paymentMethods.$inferSelect;
-type AlertPayload = z.infer<typeof payloadSchema>;
+type AlertPayload = z.infer<typeof alertPayloadSchema>;
 
 /** Cards remain valid through their expiry month; billing dates are gym-local calendar dates. */
 export function needsCardExpiryAlert(card: Pick<Card, 'expiryMonth' | 'expiryYear'>, cycle: string, today: string) {
@@ -139,7 +140,7 @@ export function createBillingAlerts(options: BillingAlertsOptions) {
     });
   }
   async function send(payload: unknown, context: JobContext) {
-    const work = payloadSchema.parse(payload), gymId = context.gymId;
+    const work = alertPayloadSchema.parse(payload), gymId = context.gymId;
     const gym = await options.settings.get(gymId);
     if (work.kind === 'card_expiry') {
       if (!gym.memberEmailsEnabled) return;

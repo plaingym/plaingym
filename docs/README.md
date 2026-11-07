@@ -6,6 +6,7 @@
 | [self-hosting.md](self-hosting.md) | Gym owners and operators | Installing on a server, the setup wizard, Stripe, sign-in, backups and restore, updates, day-to-day operation. |
 | [install.md](install.md) | Gym owners and operators | Step-by-step install: one command, cloud-init, or Docker Compose by hand. |
 | [updating.md](updating.md) | Gym owners and operators | Moving to a new release, what the updater does, and what to do when it stops. |
+| [versioning.md](versioning.md) | Owners and maintainers | Version meanings, compatibility, build identity, and preparing a signed release. |
 | [restoring.md](restoring.md) | Gym owners and operators | Bringing a gym back from a backup, from the setup wizard or the command line, and what to check afterwards. |
 | [importing.md](importing.md) | Gym owners | Importing members, memberships, ranks and attendance from another system with CSV files. |
 | [card-recollection.md](card-recollection.md) | Gym owners | Collecting cards again after an import, with campaign links. |

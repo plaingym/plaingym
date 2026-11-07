@@ -27,7 +27,9 @@ export interface CampaignsOptions {
   delivery: SignedLinkDelivery;
   paymentsFor(gymId: string): Promise<Payments>;
 }
-const payloadSchema = z.strictObject({ campaignId: z.uuid(), linkId: z.uuid(), occurrence: z.string().min(1).max(80) });
+// Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
+export const campaignSendPayload = z.object({ campaignId: z.uuid(), linkId: z.uuid(), occurrence: z.string().min(1).max(80) });
+export const campaignPublishPayload = z.object({ campaignId: z.uuid() });
 const missing = (): never => { throw new AppError('not_found', 'Campaign not found'); };
 function occurrenceAt(campaign: { createdAt: Date; reminderSchedule: unknown }, now: Date, timezone: string) {
   let occurrence = 'initial';
@@ -97,7 +99,7 @@ export function createCampaignsService(options: CampaignsOptions) {
   return {
     get,
     async publish(payload: unknown, gymId: string) {
-      const { campaignId } = z.strictObject({ campaignId: z.uuid() }).parse(payload);
+      const { campaignId } = campaignPublishPayload.parse(payload);
       await queue(gymId, campaignId, 'initial');
     },
     async create(context: MutationContext, input: CreateLinkCampaignRequest) {
@@ -209,7 +211,7 @@ export function createCampaignsService(options: CampaignsOptions) {
       }
     },
     async send(payload: unknown, gymId: string) {
-      const work = payloadSchema.parse(payload);
+      const work = campaignSendPayload.parse(payload);
       const gym = await settings.get(gymId);
       const [row] = await scope(gymId, tx => tx.select().from(signedLinks).where(and(
         eq(signedLinks.id, work.linkId), eq(signedLinks.campaignId, work.campaignId))));

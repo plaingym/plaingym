@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { loadLocale } from '../locales/loader.ts';
 import { generateApiSource } from './generate-api.mjs';
+import { buildInfo } from './release/version.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const webRoot = join(root, 'apps/web');
@@ -87,7 +88,7 @@ registry.mount(
 );
 const document = app.getOpenAPI31Document({
   openapi: '3.1.0',
-  info: { title: 'PlainGym API', version: '0.0.0' },
+  info: { title: 'PlainGym API', version: buildInfo().version },
 });
 await writeChanged(join(root, 'packages/shared/dist/api-client.gen.ts'), await generateApiSource(document));
 

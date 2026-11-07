@@ -3,6 +3,7 @@ import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { Button } from '../components/ui/button.js';
 import { t } from '../lib/i18n.js';
 import { DemoShell } from '../features/demo/notice.js';
+import { checkOnNavigation } from '../app/version.js';
 // `/source` redirects to the running install's SOURCE_URL, so a modified install can change it at runtime.
 export function SourceFooter({ sourceUrl = '/source' }: { sourceUrl?: string }) {
   return <footer className="border-t border-border px-4 py-2 text-center text-sm text-muted-foreground sm:px-6">
@@ -24,4 +25,4 @@ export function NotFound() {
   return <main id="main-content" className="p-6"><h1>{t('shell/shell:notFound')}</h1>
     <a href="/login" className="underline">{t('shell/shell:home')}</a></main>;
 }
-export const Route = createRootRoute({ component: RootLayout, errorComponent: RootError, notFoundComponent: NotFound });
+export const Route = createRootRoute({ beforeLoad: ({ preload }) => checkOnNavigation({ preload }), component: RootLayout, errorComponent: RootError, notFoundComponent: NotFound });

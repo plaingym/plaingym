@@ -2,6 +2,7 @@
 import { cp, mkdir } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { buildInfo } from '../../scripts/release/version.mjs';
 
 /**
  * @param {URL} outputDirectory
@@ -22,6 +23,7 @@ export async function buildServer(
     sourcemap: true,
     legalComments: 'eof',
     metafile: true,
+    define: { __BUILD_INFO__: JSON.stringify(buildInfo()) },
     banner: {
       js: [
         '// SPDX-License-Identifier: AGPL-3.0-only',

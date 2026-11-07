@@ -1,6 +1,6 @@
 {
   "name": "plaingym",
-  "version": "0.0.0",
+  "version": "0.4.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -10,6 +10,7 @@
   },
   "packageManager": "pnpm@10.34.7",
   "scripts": {
+    "release": "node scripts/release/release.mjs",
     "compliance": "pnpm generate && node --test scripts/compliance/compliance.test.mjs && node scripts/compliance/cli.mjs",
     "check-types": "pnpm generate && tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/server/tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
     "lint": "eslint . --max-warnings 0",

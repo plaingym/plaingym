@@ -255,6 +255,18 @@ describe('the pages', () => {
 });
 
 describe('the customization API', () => {
+  it('reads content a newer release added keys to, and a save keeps those keys', async () => {
+    const gymId = uuidv7(), photoId = uuidv7();
+    const photo = { id: photoId, key: `${gymId}/website/photos/mat.jpg`, contentType: 'image/jpeg', alt: 'Mat', newerKey: 'kept' };
+    const content = { tagline: 'Old', about: null, phone: null, email: null, accentColor: null, photos: [photo], newerKey: 'kept' };
+    await factory('gyms', gymId, { settings: { modules: { website: content } } });
+    const before = await service.settings(gymId);
+    expect(before).toMatchObject({ tagline: 'Old', photos: [{ id: photoId, alt: 'Mat' }] });
+    expect(JSON.stringify(before)).not.toContain('newerKey');
+    await service.update({ gymId, actor: { kind: 'system' } }, { revision: before.revision, tagline: 'New', about: '', phone: '', email: null, accentColor: null,
+      primaryColor: null, photos: [{ id: photoId, alt: 'Mats' }] });
+    expect((await createModuleSettings({ scope: db.forGym }).get(gymId, 'website')).value).toEqual({ ...content, tagline: 'New', photos: [{ ...photo, alt: 'Mats' }] });
+  });
   it('lets only owners and admins read and change the website', async () => {
     for (const role of staffRoles) {
       const principal: Principal = { kind: 'staff', gymId: gymA, userId: users.get(role)!, roles: [role] };

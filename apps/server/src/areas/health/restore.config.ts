@@ -7,7 +7,8 @@ import { decryptSecret, parseEncryptionKey } from '../../core/secrets.js';
 import { BackupService } from './backups.js';
 import { PostgresMaintenance } from './backups.database.js';
 
-const destinationSchema = z.strictObject({
+// Read from the gym row: a newer release may store more keys, which this one ignores after a rollback.
+const destinationSchema = z.object({
   bucket: z.string().min(1), endpoint: z.url().optional(), region: z.string().default('auto'),
   accessKeyId: z.string().min(1), secretAccessKey: z.string().min(1),
 });

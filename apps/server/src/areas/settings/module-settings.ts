@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { forGym, gyms, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { gymBrandingSchema, type GymBranding } from '@plaingym/shared/contracts';
@@ -12,6 +13,8 @@ export interface ModuleSettings { readonly value: unknown; readonly branding: Gy
 /** What a module's save writes: its own value, and the gym's branding when the module edits it (logo, colors). */
 export interface ModuleSettingsChange { readonly value: unknown; readonly branding?: GymBranding }
 
+// A newer release may store more branding keys. A save writes back what it read, so this keeps them.
+const storedBrandingSchema = z.looseObject(gymBrandingSchema.shape);
 const modulesOf = (settings: unknown): Record<string, unknown> => {
   const modules = settings && typeof settings === 'object' ? (settings as { modules?: unknown }).modules : undefined;
   return modules && typeof modules === 'object' && !Array.isArray(modules) ? modules as Record<string, unknown> : {};
@@ -19,7 +22,7 @@ const modulesOf = (settings: unknown): Record<string, unknown> => {
 const read = (row: { settings: unknown; branding: unknown; revision: number }, moduleId: string): ModuleSettings => ({
   value: modulesOf(row.settings)[moduleId] ?? null,
   // Stored branding was validated on save; anything else reads as none rather than failing a public page.
-  branding: gymBrandingSchema.catch({}).parse(row.branding), revision: row.revision,
+  branding: storedBrandingSchema.catch({}).parse(row.branding), revision: row.revision,
 });
 
 /** A module's settings, read inside a caller's gym scope so other reads share its transaction. */
@@ -54,7 +57,7 @@ export function createModuleSettings(options: { scope?: typeof forGym; clock?: C
           .from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!row) throw new AppError('not_found', 'Gym not found');
         const before = read(row, moduleId), next = change(before);
-        const branding = next.branding === undefined ? before.branding : gymBrandingSchema.parse(next.branding);
+        const branding = next.branding === undefined ? before.branding : storedBrandingSchema.parse(next.branding);
         const settings = { ...(row.settings && typeof row.settings === 'object' ? row.settings : {}),
           modules: { ...modulesOf(row.settings), [moduleId]: next.value } };
         const guard = revisionGuard(gyms.revision, revision), now = clock.now();

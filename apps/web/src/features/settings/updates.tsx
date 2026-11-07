@@ -8,6 +8,7 @@ import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { CheckboxField } from '../../components/ui/select.js';
 import { ErrorState, LoadingState } from '../../components/ui/states.js';
+import { clientVersion } from '../../app/version.js';
 
 const text = (key: string) => t('health/auto-update:' + key);
 export const autoUpdateKey = ['settings', 'auto-update'] as const;
@@ -43,6 +44,7 @@ export function AutoUpdateSettings() {
   return <div className="min-w-0 space-y-4">
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     <p className="text-sm text-muted-foreground">{text('section.description')}</p>
+    {clientVersion && <p className="break-all text-sm">{t('health/status:versionRunning', { version: `${clientVersion.version} (${clientVersion.commit.slice(0, 7)})` })}</p>}
     {query.isPending ? <LoadingState label={text('section.loading')}/>
       : query.isError ? <ErrorState message={text('section.loadFailed')} onRetry={() => void query.refetch()}/>
         : <>

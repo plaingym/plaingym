@@ -13,8 +13,9 @@ import { promoteWaitlist, type BookingOptions } from './bookings.js';
 
 export const promotionJob = 'bookings.promote';
 export const noticeJob = 'bookings.notice';
-export const promotionPayload = z.strictObject({ sessionId: idSchema });
-export const noticePayload = z.strictObject({ bookingId: idSchema });
+// Read from stored jobs: a newer release may add keys, which this one ignores after a rollback.
+export const promotionPayload = z.object({ sessionId: idSchema });
+export const noticePayload = z.object({ bookingId: idSchema });
 
 /** The runtime can supply its demo outbox instead; ordinary mail always resolves this gym's SMTP. */
 export function createBookingMailer(options: Parameters<typeof createSmtpResolver>[0]): (gymId: string) => Promise<Email | null> {

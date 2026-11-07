@@ -25,6 +25,15 @@ Before your first pull request can be merged, you sign our [Contributor License 
 
 ## Before You Open a Pull Request
 
+Every new commit uses `type(scope)!: subject` (scope and `!` are optional), following
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
+Allowed types are `feat`, `fix`, `refactor`, `docs`, `chore`, `build`, `ci`, `test`,
+`perf`, `style`, and `revert`. Use `!` or a `BREAKING CHANGE:` footer for an incompatible
+change. Repo compliance checks only new commits, including squash and integration
+commits, and rejects AI session trailers or attribution links. Existing migrations
+are immutable; their journal may only append entries. See [versioning](docs/versioning.md)
+for how these commits determine release versions and upgrade notes.
+
 * Read [`AGENTS.md`](AGENTS.md). It holds the project's engineering rules (authorization, schema, billing safety, vendor modules, discipline-agnostic core) and applies to human and AI contributors alike.
 * Use conventional commit prefixes (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`) with a concise body, in commit messages and PR titles. Don't add AI session trailers or attribution links.
 * Make sure strict type checking, lint, tests, and compliance pass: `pnpm verify` runs all four, with the tests your changes affect (`pnpm verify --full` runs every test). CI runs the full suite on your pull request.

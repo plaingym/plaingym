@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
 
-export const installHealthSchema = z.object({ status: z.literal('ok') });
+export const installHealthSchema = z.object({ status: z.literal('ok'), version: z.string(), commit: z.string() });
 export const installSourceSchema = z.object({ data: z.object({ url: z.url() }) });
 /** The document is produced by the server's OpenAPI generator. */
 export const installOpenApiSchema = z.custom<{ openapi: string; info: { title: string; version: string } }>()

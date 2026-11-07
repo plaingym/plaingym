@@ -102,22 +102,58 @@ version you run.
 | :--- | :--- | :--- |
 | "Backups are not set up: set them up in Settings → Email, payments and backups, then run the update again" | Nothing was changed; the current version was restarted. | Set up backups, run the command again. |
 | "The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting." | The snapshot failed (bucket unreachable, credentials changed). The line above it says why. | Check the bucket and credentials under **Settings → Email, payments and backups**, and `sudo docker compose logs app`; run again. |
-| "Update failed; restarting the previous image." | The new version didn't start or didn't pass its health check. | The updater restarted the previous image and left the old image in `.env`. Read `sudo docker compose logs app` for the reason before trying again. |
+| "Update failed; restarting the previous image." | The new version didn't start or didn't pass its health check. | The updater restarted the previous image and left the old image in `.env`. Read `sudo docker compose logs app` for the reason before trying again. Across a rollback floor it restarts the previous image only if nothing migrated ([below](#updating-across-a-rollback-floor)). |
+| "The failed update changed the database, and … can't run on it." | An update across a rollback floor migrated the database, then failed. | [Restore](restoring.md#when-rollback-is-refused) the pre-upgrade snapshot the message names. |
 | "Another update is running." | An `update.sh` is already running (it takes a lock). | Wait for it to finish. |
 | "The app must be running before an update." | The app container is stopped. | `sudo docker compose up -d`, then update. |
 
-Releases change the database only by adding to it, and a column is dropped only a
-release after the app stops using it, so the release just before the new one still
-works against the migrated database. If the new version runs but misbehaves and you
-need to go back, run `update.sh` with that release's tag. If you skipped releases
-in the update (for example 1.0 to 1.2), going back to the version you ran before
-isn't safe: [restore](restoring.md) the pre-upgrade backup the updater took instead.
-Restore it too if the data itself is damaged.
+### Roll back a release
+
+From the installation directory, run `sudo ./update.sh --rollback`. The updater
+selects the previous successful version from `version-history.tsv`, checks it
+against every rollback floor recorded since installation, takes another snapshot,
+and starts the previous image by its immutable digest. Keep that image locally.
+The history records the attempt and outcome; the health page records a successful
+rollback as a version change with its source and destination versions.
+
+Running it again goes back one more version, as far as the floor allows, and never
+forward to the version you just left. To go forward again, update to that release.
+
+After a rollback the nightly update skips the release you left, and any older patch
+of that minor, and the health page says why. A newer patch still installs by itself.
+To take the skipped release anyway, update to it by hand.
+
+The signed release manifest declares the oldest compatible code. If the previous
+version is below that floor, the command changes no app, image pin or history and
+names the pre-upgrade snapshot to [restore](restoring.md#when-rollback-is-refused).
+Restore is also needed when the data itself is damaged. See [versioning.md](versioning.md)
+for the compatibility window and major-release boundaries.
+
+Keep `schema-compatibility.yaml` with this installation's database. The updater
+passes its checked floor to both startup and migration; code below that floor
+refuses to start. Do not remove it to bypass a rollback refusal.
+
+### Updating across a rollback floor
+
+A release's floor can be above your version: a major that breaks compatibility, or a
+skipped minor such as 1.2 to 1.4. The update prints that first. Once that release has
+migrated the database, your version can't run on it, so `--rollback` refuses and the
+way back is the pre-upgrade snapshot.
+
+If such an update fails, the updater stops the new version and checks the database:
+
+* **Nothing was migrated.** The previous version starts again and the attempt leaves
+  no trace in the floor. Fix the cause and update again.
+* **The database changed.** The previous version stays stopped, and the updater names
+  the pre-upgrade snapshot to [restore](restoring.md#when-rollback-is-refused). The
+  floor stays recorded, even though startup failed.
+* **The database can't be read.** The previous version stays stopped. Start PostgreSQL
+  and run `update.sh` again, which also finishes an update that was killed part way.
 
 ### After the update
 
 * Open **System health** and check the running version, the last backup and that
   nothing is failing.
 * Sign in as staff and as a member to confirm the admin and portal load.
-* Once you are sure of the update, remove the old image with
-  `sudo docker image rm <old tag>` (`sudo docker image ls` lists them).
+* Keep the previous image while you need `--rollback`. Pruning it removes that
+  recovery option; `sudo docker image ls` lists local images.

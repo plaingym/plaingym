@@ -442,6 +442,17 @@ describe('Settings → Backups', () => {
     expect((await call(server(), 'POST', '/backups/confirm', { revision: confirmed.revision, privateKey: created.privateKey })).json?.error?.details)
       .toEqual({ privateKey: ['no_pending_key'] });
   });
+  it('reads a backup destination and a pending change a newer release added keys to', async () => {
+    const before = await row(), current = await read();
+    const created = createBackupKeyResponseSchema.parse((await call(server(), 'POST', '/backups', { revision: current.revision, destination: destination('third') })).json).data;
+    const pending = await row(), settings = pending.settings as { integrations: { backup: { destination: object } } };
+    const newer = { integrations: { backup: { ...settings.integrations.backup, newerKey: true, destination: { ...settings.integrations.backup.destination, newerKey: true } } } };
+    await database.forGym(gymA, (tx) => tx.update(gyms).set({ settings: newer, backupDestination: { ...before.backupDestination as object, newerKey: true } }).where(eq(gyms.id, gymA)));
+    const status = await read();
+    expect(status.backups).toMatchObject({ destination: { bucket: 'second' }, pending: { destination: { bucket: 'third' }, publicKey: created.publicKey } });
+    expect(JSON.stringify(status)).not.toContain('newerKey');
+    await database.forGym(gymA, (tx) => tx.update(gyms).set({ settings: before.settings, backupDestination: before.backupDestination }).where(eq(gyms.id, gymA)));
+  });
   it('has no backups section in multi-gym mode', async () => {
     const multiEnv = { ...installEnv, TENANCY: 'multi', AUTH_PASSWORD_LOGIN: 'off' };
     const multi = server({ gymId: gymB, routesService: createIntegrationsService({ ...base, env: multiEnv, config: authConfig(multiEnv) }) });

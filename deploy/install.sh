@@ -94,6 +94,7 @@ fi
 compose up -d --pull missing --wait --wait-timeout 180
 compose exec -T app /app/deploy/database.sh migrate
 compose exec -T app node /app/deploy/healthcheck.mjs
+history_install
 # A valid public certificate is part of success; never use curl -k.
 attempt=0
 until curl --fail --silent --show-error --connect-timeout 5 --max-time 10 "https://$hostname/healthz" >/dev/null; do

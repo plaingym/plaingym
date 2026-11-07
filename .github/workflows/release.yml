@@ -12,6 +12,7 @@ on:
     paths:
       - '.github/workflows/release*.yml'
       - 'deploy/release/**'
+      - 'scripts/release/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,11 +25,16 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.release.outputs.version }}
+      build_version: ${{ steps.release.outputs.build_version }}
+      image_tag: ${{ steps.release.outputs.image_tag }}
       publish: ${{ steps.release.outputs.publish }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
       - id: release
         name: Check the release tag
         env:
@@ -47,10 +53,14 @@ jobs:
             sh deploy/release/check-tag.sh "$version" "$GITHUB_SHA" --branches
             echo publish=true >> "$GITHUB_OUTPUT"
           else
-            version=v0.0.0
+            version=$(node scripts/release/version-cli.mjs)
             echo publish=false >> "$GITHUB_OUTPUT"
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "build_version=$(node scripts/release/version-cli.mjs)"
+            echo "image_tag=${version//+/_}"
+          } >> "$GITHUB_OUTPUT"
       - name: Test the release scripts
         run: sh deploy/test/release.sh
   build:
@@ -64,8 +74,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     env:
-      VERSION: ${{ needs.prepare.outputs.version }}
-      IMAGE: plaingym:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+      VERSION: ${{ needs.prepare.outputs.build_version }}
+      IMAGE: plaingym:${{ needs.prepare.outputs.image_tag }}-${{ matrix.arch }}
       # The AGPL source link names the release tag; a dry run names its commit.
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.version || github.sha }}
     steps:
@@ -95,6 +105,12 @@ jobs:
           test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
       - name: Test the production stack
         run: node deploy/test/smoke.mjs "$IMAGE"
+      - name: Run the previous minor on the new schema
+        if: matrix.arch == 'amd64' && needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.version }}
+        run: node deploy/release/previous-minor.mjs "$IMAGE" "$RELEASE_TAG"
       - name: Export the tested image
         run: docker save "$IMAGE" -o "${{ runner.temp }}/release-image-${{ matrix.arch }}.tar"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -131,6 +147,7 @@ jobs:
           openssl pkey -in "$RUNNER_TEMP/key.pem" -pubout -out "$RUNNER_TEMP/public.pem"
           sh deploy/release/publish.sh --registry localhost:5000 --name plaingym/app --insecure \
             --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --rollback-floor "$(cat deploy/release/rollback-floor.txt)" \
             --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
             --key "$RUNNER_TEMP/key.pem" --public-key "$RUNNER_TEMP/public.pem" --out "$RUNNER_TEMP/release"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -152,6 +169,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-image-*
@@ -178,7 +198,9 @@ jobs:
           owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           sh deploy/release/publish.sh --registry ghcr.io --name "$owner/app" \
             --version "$VERSION" --revision "$GITHUB_SHA" --migrations packages/db/src/migrations \
+            --rollback-floor "$(cat deploy/release/rollback-floor.txt)" \
             --archive "amd64=$RUNNER_TEMP/images/release-image-amd64.tar" --archive "arm64=$RUNNER_TEMP/images/release-image-arm64.tar" \
             --key "$RUNNER_TEMP/key.pem" --public-key deploy/release-signing.pem --out "$RUNNER_TEMP/release"
-          gh release create "$VERSION" --verify-tag --title "$VERSION" --generate-notes \
+          node scripts/release/notes.mjs "$VERSION" > "$RUNNER_TEMP/release/notes.md"
+          gh release create "$VERSION" -R "$GITHUB_REPOSITORY" --verify-tag --title "$VERSION" --notes-file "$RUNNER_TEMP/release/notes.md" \
             "$RUNNER_TEMP/release/release-manifest.txt" "$RUNNER_TEMP/release/release-manifest.txt.sig"

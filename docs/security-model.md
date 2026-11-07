@@ -36,8 +36,10 @@ Isolation is enforced in the database, not only in application code.
   `gym_id`, so a row can't point at another gym's row even through a bug.
 * **Checked on every start.** After migrations, a catalog check compares every
   table's policies, `ENABLE`/`FORCE` flags, privileges, ownership and tenant keys
-  with what the schema declares, and startup fails on any difference. CI runs the
-  same check.
+  with what the schema declares, and startup fails on any difference. A table the
+  running version doesn't declare (a newer release's, after a rollback) passes only
+  with exactly the gym policy or a system access kind's policies, forced, for the
+  `app` role alone, and no more than ordinary table privileges. CI runs the same check.
 * **Tests.** Every gym-owned route has a cross-gym test (gym A's session on gym
   B's resource is a 404).
 

@@ -34,4 +34,6 @@ if [ "$patch" != 0 ]; then
   git diff --quiet "$previous" "$commit" -- packages/db/src/migrations \
     || fail "$version is a patch release, but its migrations differ from $previous (packages/db/src/migrations). Patch releases never change the database; release it as the next minor version instead."
 fi
+[ "${version#v}" = "$(git show "$commit:package.json" | sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')" ] \
+  || fail "$version does not match the root package.json version at $commit."
 [ -z "$previous" ] || printf '%s\n' "$previous"

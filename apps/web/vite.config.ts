@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { developmentProxy } from './dev-proxy.js';
+import { buildInfo } from '../../scripts/release/version.mjs';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../..', '');
@@ -36,6 +37,7 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       __SOURCE_URL__: JSON.stringify(sourceUrl),
+      __BUILD_INFO__: JSON.stringify(buildInfo()),
     },
   };
 });

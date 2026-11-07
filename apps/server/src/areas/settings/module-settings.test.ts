@@ -40,10 +40,21 @@ it('keeps a module value beside the gym\'s other settings, under the gym revisio
 });
 
 it('leaves stored branding it can\'t read untouched by a save that doesn\'t change branding', async () => {
-  const gymId = uuidv7(), branding = { logoKey: `${gymId}/logo.png`, primaryColor: '#123456', extra: 'kept' };
+  const gymId = uuidv7(), branding = { logoKey: `${gymId}/logo.png`, primaryColor: 'red' };
   await factory('gyms', gymId, { branding });
   expect((await store.get(gymId, 'website')).branding).toEqual({});
   await store.save({ gymId, actor: system }, 'website', 1, () => ({ value: { about: 'Hello' } }));
   const [row] = await db.forGym(gymId, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId)));
   expect(row!.branding).toEqual(branding);
+});
+
+it('keeps branding keys a newer release stored, whether or not a save changes branding', async () => {
+  const gymId = uuidv7(), branding = { logoKey: `${gymId}/logo.png`, primaryColor: '#123456', newerKey: 'kept' };
+  await factory('gyms', gymId, { branding });
+  expect((await store.get(gymId, 'website')).branding).toEqual(branding);
+  const stored = async () => (await db.forGym(gymId, (tx) => tx.select({ branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId))))[0]!.branding;
+  await store.save({ gymId, actor: system }, 'website', 1, () => ({ value: 1 }));
+  expect(await stored()).toEqual(branding);
+  await store.save({ gymId, actor: system }, 'website', 2, (current) => ({ value: 2, branding: { ...current.branding, primaryColor: '#654321' } }));
+  expect(await stored()).toEqual({ ...branding, primaryColor: '#654321' });
 });

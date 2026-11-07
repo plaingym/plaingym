@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { statfs } from 'node:fs/promises';
-import release from '../../../../../package.json' with { type: 'json' };
+import { runningVersion } from './version.js';
 import { forGym } from '@plaingym/db';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import type { JobStatsQuery } from '../../core/interfaces/job-stats.js';
@@ -55,10 +55,10 @@ export function createStatusProviders(options: StatusOptions = {}) {
         message: statusMessage(volumes[1] ? 'diskFree' : 'diskFreeUploads', { uploads: Math.floor(volumes[0]!.availableBytes / 1048576), staging: volumes[1] ? Math.floor(volumes[1].availableBytes / 1048576) : 0 }) };
     }),
     healthProvider('version', async (context) => {
-      const version = env.APP_VERSION ?? release.version;
+      const { version, commit } = runningVersion(env);
       if (!version.trim()) throw new Error('Missing version');
       return { id: 'version', status: 'healthy', checkedAt: context.clock.now().toISOString(),
-        details: { version, sourceUrl: sourceUrl(env.SOURCE_URL) }, message: statusMessage('versionRunning', { version }) };
+        details: { version, sourceUrl: sourceUrl(env.SOURCE_URL) }, message: statusMessage('versionRunning', { version: `${version} (${commit.slice(0, 7)})` }) };
     }),
   ];
 }

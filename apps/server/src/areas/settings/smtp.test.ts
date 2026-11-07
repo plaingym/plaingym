@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { parseEncryptionKey } from '../../core/secrets.js';
+import { encryptSecret, parseEncryptionKey } from '../../core/secrets.js';
 import { createSmtpResolver, encryptSmtpConfig, smtpFromEnvironment } from './smtp.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
@@ -40,6 +40,13 @@ describe('per-gym SMTP with an install-wide fallback', () => {
   it('rejects stored settings encrypted with another key', async () => {
     const smtp = createSmtpResolver({ key: parseEncryptionKey('cd'.repeat(32)), env, scope: database.forGym });
     await expect(smtp.config(gymA)).rejects.toThrow();
+  });
+  it('reads a stored value a newer release added a key to, and still refuses an unknown key on a save', async () => {
+    const gymId = uuidv7();
+    await factory('gyms', gymId, { smtpConfig: encryptSecret(key, { secretClass: 'smtp_config', owner: gymId }, JSON.stringify({ ...own, newerKey: true })) });
+    const smtp = createSmtpResolver({ key, env: {}, scope: database.forGym });
+    expect(await smtp.config(gymId)).toEqual({ host: own.host, port: own.port, security: own.security, from: own.from, auth: { user: own.username, pass: own.password } });
+    expect(() => encryptSmtpConfig(key, gymId, { ...own, newerKey: true } as typeof own)).toThrow();
   });
   it('validates the install settings', () => {
     expect(smtpFromEnvironment({})).toBeNull();

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 import { databaseCode, forGym, gyms, plans, chargeTypes, memberships, invoices, revisionGuard, assertRevised, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
-import { billingRulesSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
+import { billingRulesSchema, gymAddressSchema, gymBrandingSchema, gymSettingsSchema, updateGymSettingsRequestSchema, updateBookingRulesRequestSchema, updateBillingRulesRequestSchema, updateGymCurrencyRequestSchema,
   updateDropInSettingsRequestSchema, type UpdateGymSettingsRequest, type UpdateBookingRulesRequest, type UpdateBillingRulesRequest, type UpdateGymCurrencyRequest,
   type UpdateDropInSettingsRequest } from '@plaingym/shared/contracts';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
@@ -19,7 +20,14 @@ const projection = {
   revision: gyms.revision, createdAt: gyms.createdAt, updatedAt: gyms.updatedAt,
 };
 type Row = { createdAt: Date; updatedAt: Date } & Record<string, unknown>;
-const present = (row: Row) => gymSettingsSchema.parse({ ...row, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
+// A newer release may store more keys in these. A read ignores them, because the response is strict; a save keeps them.
+const storedAddressSchema = z.object(gymAddressSchema.shape), storedBrandingSchema = z.object(gymBrandingSchema.shape);
+const present = (row: Row) => gymSettingsSchema.parse({ ...row, address: storedAddressSchema.parse(row.address), branding: storedBrandingSchema.parse(row.branding),
+  createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() });
+/** The stored value's keys this release doesn't know, under the saved value: the form never saw them. */
+function keepNewerKeys(stored: unknown, saved: object, known: object) {
+  return { ...Object.fromEntries(Object.entries(stored as object).filter(([key]) => !Object.hasOwn(known, key))), ...saved };
+}
 export { projection as gymProjection, present as presentGym };
 /** The gym's settings, read inside a caller's gym scope so other reads share its transaction and connection (at READ COMMITTED, not one snapshot). */
 export async function readGymSettings(tx: Transaction, gymId: string) {
@@ -76,7 +84,11 @@ export function createSettingsService(options: { scope?: typeof forGym; clock?: 
             if (!chargeType.active) throw new AppError('conflict', 'Choose an active charge type');
           }
           const guard = revisionGuard(gyms.revision, revision);
-          const after = assertRevised(await tx.update(gyms).set({ ...changes, revision: guard.next, updatedAt: clock.now() })
+          const stored = {
+            ...('address' in changes && changes.address ? { address: keepNewerKeys(before.address, changes.address, gymAddressSchema.shape) } : {}),
+            ...('branding' in changes && changes.branding ? { branding: keepNewerKeys(before.branding, changes.branding, gymBrandingSchema.shape) } : {}),
+          };
+          const after = assertRevised(await tx.update(gyms).set({ ...changes, ...stored, revision: guard.next, updatedAt: clock.now() })
             .where(and(eq(gyms.id, context.gymId), guard.matches)).returning(projection));
           await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
             ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),

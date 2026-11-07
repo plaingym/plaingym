@@ -4,7 +4,7 @@
 # ./update.sh --patch [--now] The nightly timer's run: install the newest signed patch release of the running minor
 #                             version, once a night between 02:00 and 05:00 in the gym's timezone (--now: at once).
 # The exit trap calls cleanup and what it uses, which shellcheck reads as unreachable.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -12,10 +12,12 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$ROOT/lib.sh"
 [ "$(id -u)" -eq 0 ] || fail 'Run update.sh as root.'
 [ -f "$ROOT/.env" ] || fail 'Missing installation .env.'
-usage='Usage: ./update.sh IMAGE (explicit semver tag or sha256 digest) | ./update.sh --patch [--now]'
+usage='Usage: ./update.sh IMAGE (explicit semver tag or sha256 digest) | ./update.sh --patch [--now] | ./update.sh --rollback'
 patch=false
 now=false
+requested_rollback=false
 case "$#:${1:-}:${2:-}" in
+  1:--rollback:) requested_rollback=true ;;
   1:--patch:) patch=true ;;
   2:--patch:--now) patch=true; now=true ;;
   1:-*) fail "$usage" ;;
@@ -26,6 +28,7 @@ current=$(read_env APP_IMAGE)
 STATE="$ROOT/auto-update.state"
 PENDING="$ROOT/auto-update.result"
 INFLIGHT="$ROOT/.auto-update.inflight"
+ATTEMPT="$ROOT/.schema-attempt"
 work=
 # A requested update fails; the nightly patch run has nothing to do.
 rotation_check() {
@@ -35,6 +38,11 @@ rotation_check() {
   echo "$message"
   exit 0
 }
+target_floor=-
+snapshot=-
+target_id=
+history_started=false
+snapshot_file=
 
 # --- Swapping the app image, shared by both paths ---------------------------------------------------------
 # `stage` says how far a swap got, so the exit handler knows what to undo and the patch path what to report.
@@ -43,7 +51,29 @@ stopped=false
 changed=false
 interrupted=false
 previous_id=
+attempt_end=failed
+# A failed attempt to cross a floor, which the guard already refuses the previous version on. Stopped, the target can't
+# still be migrating, so the database says what it did: unchanged, the guard comes down and the attempt never counted.
+settle_attempt() {
+  [ -f "$ATTEMPT" ] || return 0
+  compose stop app || true
+  state=$(schema_state)
+  if [ -z "$state" ]; then
+    echo "The database can't be read, so $from_version stays stopped. Once PostgreSQL is running, run update.sh again." >&2
+    return 1
+  fi
+  if [ "$state" != "$(cut -f1 "$ATTEMPT")" ]; then
+    rm -f "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
+    echo "The failed update changed the database, and $from_version can't run on it. Restore pre-upgrade snapshot $snapshot; see docs/restoring.md." >&2
+    return 1
+  fi
+  restore_schema_guard
+  rm -f "$ATTEMPT"
+  attempt_end=abandoned
+  target_floor=-
+}
 rollback() {
+  settle_attempt || return 1
   APP_IMAGE="$previous_id" compose up -d --no-deps --pull never --wait --wait-timeout 90 app
 }
 cleanup() {
@@ -57,14 +87,34 @@ cleanup() {
     if rollback; then outcome=restarted; else outcome=rollback_failed; exit_status=1; fi
   fi
   if [ "$patch" = true ] && [ "$stage" != none ]; then patch_finish; fi
+  if [ "$history_started" = true ]; then
+    if [ "$stage" = finished ]; then
+      history_outcome=update
+      [ "$requested_rollback" = false ] || history_outcome=rollback
+      history_record "$to_version" "$target_id" "$history_outcome" "$target_floor" "$snapshot"
+      if [ "$requested_rollback" = true ]; then report updated -; fi
+    else
+      history_record "$to_version" "$target_id" "$attempt_end" "$target_floor" "$snapshot"
+      if [ "$outcome" = rolled_back ] || [ "$outcome" = restarted ]; then
+        history_record "$from_version" "$previous_id" rollback "$(schema_floor)" "$snapshot"
+      fi
+    fi
+  fi
+  if [ "$requested_rollback" = true ] && [ "$stage" != none ] && [ "$stage" != finished ]; then
+    if [ "$stage" = snapshot ]; then report skipped snapshot_failed
+    elif [ "$outcome" = rollback_failed ]; then report failed rollback_failed
+    elif [ "$stage" = startup ]; then report rolled_back startup_failed
+    else report rolled_back health_check_failed; fi
+  fi
   [ -z "$work" ] || rm -rf -- "$work"
+  [ -z "$snapshot_file" ] || rm -f -- "$snapshot_file"
   exit "$exit_status"
 }
 # Stop the app, snapshot, start the target, check it, and pin it. The manual path pulls first, while the app runs.
 swap_image() { # TARGET
   compose ps --status running --services | grep -qx app || fail 'The app must be running before an update.'
   previous_id=$(docker image inspect "$current" --format '{{.Id}}')
-  if [ "$patch" = false ]; then
+  if [ "$patch" = false ] && [ "$requested_rollback" = false ] && [ -z "$target_id" ]; then
     stage=pull
     APP_IMAGE="$1" compose pull app
   fi
@@ -76,8 +126,30 @@ swap_image() { # TARGET
   # One coordinated install snapshot: stored age recipient, encrypted recovery bundle,
   # immutable upload references, multipart retry/abort, retention, and backup_runs.
   # Its own message above says why it failed, such as backups that aren't set up yet (Settings → Email, payments and backups).
-  compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade \
+  snapshot_file=$(mktemp "$ROOT/.snapshot.XXXXXX")
+  compose run --rm --no-deps -T app node /app/maintenance.mjs snapshot pre-upgrade > "$snapshot_file" \
     || fail 'The pre-upgrade snapshot failed (reason above). Nothing was changed; the current version is restarting.'
+  snapshot_output=$(cat "$snapshot_file")
+  rm -f -- "$snapshot_file"
+  snapshot_file=
+  [ -z "$snapshot_output" ] || printf '%s\n' "$snapshot_output"
+  snapshot=$(printf '%s\n' "$snapshot_output" | sed -n 's/^Snapshot: \([a-f0-9-]\{36\}\)$/\1/p' | tail -n 1)
+  [ -n "$snapshot" ] || snapshot=-
+  target_id=$(docker image inspect "$1" --format '{{.Id}}')
+  if valid_version "$to_version" && valid_version "$target_floor" && [ "$requested_rollback" = false ]; then
+    effective_floor=$(schema_floor)
+    if [ -z "$effective_floor" ] || version_at_least "$target_floor" "$effective_floor"; then effective_floor=$target_floor; fi
+    # The guard goes up before the target can migrate. When it refuses the previous version, record the schema first.
+    if ! version_at_least "$from_version" "$effective_floor"; then
+      schema_before=$(schema_state)
+      [ -n "$schema_before" ] || fail "The database's migrations couldn't be read. Nothing was changed; the current version is restarting."
+      keep_schema_guard
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$schema_before" "$from_version" "$to_version" "$target_id" "$target_floor" "$snapshot" > "$ATTEMPT"
+    fi
+    write_schema_guard "$effective_floor" "$to_version" "$snapshot"
+  fi
+  history_record "$to_version" "$target_id" starting "$target_floor" "$snapshot"
+  history_started=true
   stopped=false
   changed=true
   stage=startup
@@ -89,6 +161,7 @@ swap_image() { # TARGET
   awk -v image="$1" 'BEGIN { found=0 } /^APP_IMAGE=/ { print "APP_IMAGE=" image; found=1; next } { print } END { if (!found) print "APP_IMAGE=" image }' "$ROOT/.env" > "$ROOT/.env.next"
   chmod 0600 "$ROOT/.env.next"
   mv "$ROOT/.env.next" "$ROOT/.env"
+  rm -f "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
   changed=false
   stage=finished
 }
@@ -100,19 +173,6 @@ settle() { # TARGET
   [ "$(docker inspect "$container" --format '{{.State.Health.Status}} {{.RestartCount}}')" = 'healthy 0' ] || return 1
   APP_IMAGE="$1" compose exec -T app node /app/deploy/healthcheck.mjs
 }
-
-if [ "$patch" = false ]; then
-  target=$1
-  [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
-  exec 9>"$ROOT/.update.lock"
-  flock -n 9 || fail 'Another update is running.'
-  rotation_check
-  trap cleanup EXIT
-  trap 'exit 130' HUP INT TERM
-  swap_image "$target"
-  printf 'Updated to %s. Coordinated pre-upgrade snapshot completed.\n' "$target"
-  exit 0
-fi
 
 # --- Automatic patch updates (--patch) ---------------------------------------------------------------------
 # The app never holds the Docker socket: the owner's setting and each result cross through `gym-app auto-update`
@@ -163,7 +223,7 @@ patch_finish() { # From the exit handler, once a swap started.
     *) report failed rollback_failed ;;
   esac
 }
-image_version() { docker image inspect "$1" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || true; }
+image_version() { installed_version "$1" || true; }
 migrations_of() { # IMAGE: a digest of the migrations the image applies when it starts
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$1" \
     -c 'cd /app/migrations && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum' | awk '{ print $1 }'
@@ -177,10 +237,79 @@ download() { # URL FILE [MAX_BYTES]
 }
 
 exec 9>"$ROOT/.update.lock"
-flock -n 9 || { echo 'Another update is running; this run does nothing.'; exit 0; }
+flock -n 9 || { [ "$patch" = true ] && { echo 'Another update is running; this run does nothing.'; exit 0; }; fail 'Another update is running.'; }
 rotation_check
 trap cleanup EXIT
 trap 'interrupted=true; exit 130' HUP INT TERM
+
+# A run killed outright while crossing a floor left its record: finish what its exit handler would have done.
+if [ -f "$ATTEMPT" ]; then
+  read -r _ from_version to_version target_id target_floor snapshot < "$ATTEMPT"
+  previous_id=$(docker image inspect "$current" --format '{{.Id}}')
+  if [ "$previous_id" = "$target_id" ]; then
+    rm -f "$ATTEMPT" "$ROOT/schema-compatibility.yaml.before"
+  else
+    history_started=true
+    changed=true
+    stage=startup
+    interrupted=true
+    fail 'An earlier update was interrupted; restarting the pinned image. Run the update again afterwards.'
+  fi
+fi
+
+if [ "$requested_rollback" = true ]; then
+  [ -s "$ROOT/version-history.tsv" ] || fail 'No version history exists. Restore the pre-upgrade snapshot; see docs/restoring.md.'
+  current_id=$(docker image inspect "$current" --format '{{.Id}}')
+  candidate=$(previous_version "$current_id")
+  [ -n "$candidate" ] || fail 'There is no previous installed version in version-history.tsv.'
+  to_version=$(printf '%s\n' "$candidate" | cut -f2)
+  target=$(printf '%s\n' "$candidate" | cut -f3)
+  target_floor=$(schema_floor)
+  if [ -n "$target_floor" ] && ! version_at_least "$to_version" "$target_floor"; then
+    restore_snapshot=$(floor_snapshot "$target_floor")
+    fail "Cannot roll back to $to_version: the schema requires $target_floor. Restore pre-upgrade snapshot ${restore_snapshot:-listed in version-history.tsv}; see docs/restoring.md. Nothing was changed."
+  fi
+  printf '%s\n' "$target" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail 'The previous image digest is invalid.'
+  target_id=$(docker image inspect "$target" --format '{{.Id}}') || fail 'The previous image is no longer local. Restore its pre-upgrade snapshot; see docs/restoring.md.'
+  [ "$target_id" = "$target" ] && [ "$(image_version "$target")" = "$to_version" ] || fail 'The previous image identity does not match the history.'
+  from_version=$(image_version "$current")
+  swap_image "$target"
+  printf 'Rolled back to %s by digest. Pre-upgrade snapshot: %s.\n' "$to_version" "$snapshot"
+  exit 0
+fi
+
+if [ "$patch" = false ]; then
+  target=$1
+  [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
+  history_install
+  from_version=$(image_version "$current")
+  APP_IMAGE="$target" compose pull app
+  target_id=$(docker image inspect "$target" --format '{{.Id}}')
+  to_version=$(image_version "$target")
+  if valid_version "$to_version"; then
+    work=$(mktemp -d)
+    repository=$(read_env RELEASE_REPOSITORY); [ -n "$repository" ] || repository=plaingym/plaingym
+    printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || fail 'Invalid release repository.'
+    [ -f "$ROOT/release-signing.pem" ] || fail 'Install the release signing public key before updating a release.'
+    download "https://github.com/$repository/releases/download/$to_version/release-manifest.txt" "$work/manifest"
+    download "https://github.com/$repository/releases/download/$to_version/release-manifest.txt.sig" "$work/manifest.sig"
+    if ! manifest_verify "$ROOT/release-signing.pem" "$work/manifest" "$work/manifest.sig" || ! manifest_check "$work/manifest" "$to_version"; then fail 'Invalid signed release manifest.'; fi
+    manifest_image=$(manifest_value "$work/manifest" image); manifest_digest=$(manifest_value "$work/manifest" digest)
+    docker image inspect "$target" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -qxF "$manifest_image@$manifest_digest" || fail 'The requested image does not match its signed release digest.'
+    target="$manifest_image@$manifest_digest"
+    target_floor=$(manifest_value "$work/manifest" rollback_floor)
+    [ -n "$target_floor" ] || target_floor=$to_version
+    previous_floor=$(schema_floor)
+    [ -z "$previous_floor" ] || version_at_least "$to_version" "$previous_floor" || fail "The schema requires $previous_floor. Restore the pre-upgrade snapshot; see docs/restoring.md."
+    if ! version_at_least "$from_version" "$target_floor"; then
+      echo "$to_version has rollback floor $target_floor. Once it migrates the database, $from_version can't run on it: --rollback will refuse, and the way back is the pre-upgrade snapshot (docs/restoring.md)."
+    fi
+  fi
+  swap_image "$target"
+  printf 'Updated to %s. Coordinated pre-upgrade snapshot completed.\n' "$target"
+  exit 0
+fi
+
 work=$(mktemp -d)
 send_pending || true
 
@@ -220,6 +349,7 @@ if valid_version "$version"; then from_version=$version; fi
 [ "$(value_of "$work/check" backups)" = true ] || finish skipped backups_not_configured
 [ -f "$ROOT/release-signing.pem" ] || finish skipped no_signing_key
 [ "$from_version" != - ] || finish skipped version_unknown 1
+[ "$from_version" != v0.0.0 ] || finish skipped version_unknown 1
 
 repository=$(read_env RELEASE_REPOSITORY)
 [ -n "$repository" ] || repository=plaingym/plaingym
@@ -231,11 +361,16 @@ tags=$(grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]+"' "
 tag=$(newest_patch "$from_version" "$tags")
 [ -n "$tag" ] || finish up_to_date -
 to_version=$tag
+# The owner went back from this release or a newer patch: only a newer one installs by itself.
+if declined_patch "$tag"; then finish skipped rolled_back_version; fi
 { download "https://github.com/$repository/releases/download/$tag/release-manifest.txt" "$work/manifest" \
   && download "https://github.com/$repository/releases/download/$tag/release-manifest.txt.sig" "$work/manifest.sig"; } \
   || finish skipped manifest_unavailable 1
 manifest_verify "$ROOT/release-signing.pem" "$work/manifest" "$work/manifest.sig" || finish skipped signature_invalid 1
 manifest_check "$work/manifest" "$tag" || finish skipped manifest_invalid 1
+target_floor=$(manifest_value "$work/manifest" rollback_floor)
+[ -n "$target_floor" ] || target_floor=$(default_rollback_floor "$tag")
+version_at_least "$from_version" "$target_floor" || finish skipped manifest_invalid 1
 image=$(manifest_value "$work/manifest" image)
 digest=$(manifest_value "$work/manifest" digest)
 target="$image:$tag@$digest"
@@ -252,5 +387,6 @@ new=$(migrations_of "$target") || new=
 if ! printf '%s\n' "$old" | grep -Eq "$hash" || ! printf '%s\n' "$new" | grep -Eq "$hash"; then finish skipped image_check_failed 1; fi
 [ "$old" = "$new" ] || finish skipped migration_in_patch 1
 
+history_install
 swap_image "$target"
 exit 0

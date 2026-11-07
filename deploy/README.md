@@ -26,13 +26,9 @@ each to check this.
 Run from the repository root with Docker running:
 
 ```sh
-docker build -f deploy/Dockerfile \
-  --build-arg SOURCE_URL=https://github.com/plaingym/plaingym/tree/REVIEWED_COMMIT \
-  --build-arg REVISION=REVIEWED_COMMIT \
-  --build-arg VERSION=0.0.0-local \
-  -t plaingym:v0.0.0-local .
+node scripts/release/build-image.mjs plaingym:reviewed
 SOURCE_URL=https://github.com/plaingym/plaingym/tree/REVIEWED_COMMIT \
-  VERSION=0.0.0-local node deploy/test/smoke.mjs plaingym:v0.0.0-local
+  node deploy/test/smoke.mjs plaingym:reviewed
 ```
 
 Use the release tag's source URL for a release build, or your fork's exact
@@ -277,7 +273,8 @@ sudo ./update.sh ghcr.io/plaingym/app:vX.Y.Z
 
 The updater takes an explicit semver tag or `sha256` digest, locks out
 concurrent updates, and requires the app to be running. It pulls the target
-image while the app still runs, then stops the app and runs
+image while the app still runs, verifies a release image against its signed
+manifest and digest, then stops the app and runs
 `node /app/maintenance.mjs snapshot pre-upgrade` in a one-off app container: a
 coordinated, encrypted install snapshot to the gym's backup destination, kept
 under the backup retention's pre-upgrade rule
@@ -323,7 +320,8 @@ Each night, in order, the updater:
    image's `org.opencontainers.image.version` label isn't a release version;
 2. reads the tag names of the repository's GitHub releases (`RELEASE_REPOSITORY`,
    default `plaingym/plaingym`) and picks the newest `vX.Y.Z` with the running
-   X.Y and a higher Z; none means up to date;
+   X.Y and a higher Z; none means up to date, and a release the owner rolled back
+   from, or an older patch than that, is skipped and reported;
 3. downloads that release's `release-manifest.txt` and its signature, checks the
    signature with `release-signing.pem` and the manifest's fields (**Releases**,
    below);
@@ -403,7 +401,11 @@ and real Ed25519 signatures: patch selection, a changed manifest, another key's
 signature, a wrong digest or version label, a patch that changes migrations, the
 switch off, no backups, a failed snapshot, rollback after a failed start, health
 check or second check, a failed rollback, the nightly window, results kept until
-the app can record them, and an interrupted run. The key rotation test drives
+the app can record them, and an interrupted run. The floor test adds a fixture that
+refuses the previous image under a guard above it, as the app does: a failed update
+across a floor before and after migrating, an earlier guard put back, a skipped
+minor, a killed run, and the history a rollback reads. The rollback test swaps real
+local images and walks back two versions. The key rotation test drives
 `rotate-key.sh` with the same kind of fixture: the order (stop, rotate, `.env`,
 start, health check), `.env` changing only after the rotation, a restart with the
 current key after a failure, staying stopped when `.env` can't be written after
@@ -414,16 +416,41 @@ image smoke test uses actual PostgreSQL, app, and Caddy containers:
 ```sh
 sudo sh deploy/test/update.sh
 sudo sh deploy/test/patch.sh
+sudo sh deploy/test/floor.sh
+sudo sh deploy/test/rollback.sh
 sudo sh deploy/test/rotate-key.sh
 node deploy/test/smoke.mjs IMAGE
 ```
 
 ## Releases
 
+Use `pnpm release` (or `pnpm release 1.0.0` for the first public release) to prepare
+the version bump, reviewed changelog section, and signed annotated tag. It checks
+the branch, origin, CI and signing configuration first and never pushes. Patches
+come from `release/X.Y`; their changelog section is also committed on `main` without
+bumping `main`'s version. See [the versioning guide](../docs/versioning.md).
+
+The installer starts `version-history.tsv`; the updater appends tab-separated UTC
+time, version, immutable local image digest, outcome, rollback floor and snapshot
+identifier. `starting` and `failed` attempts matter because migrations may already
+have run; `abandoned` closes an attempt that left the database as it was, so its floor
+doesn't count. `update.sh --rollback` checks all recorded floors before changing
+anything, and reads the rows as a stack, so each run goes one version further back.
+`schema-compatibility.yaml` passes the checked floor, schema release and snapshot to
+the app. Keep it with the database. It goes up before a new image starts. When it
+refuses the running version, `.schema-attempt` keeps the database's migration state
+and `schema-compatibility.yaml.before` the guard it replaced, so a failed update or a
+later run can take it down if nothing migrated (`docs/updating.md`). A release changing
+a file the installer copies (`update.sh`, `lib.sh`, `rotate-key.sh`, `compose.yaml`,
+`Caddyfile`, `postgres/`, systemd units or the signing key) names the required manual
+host-file steps in its notes;
+host files do not update themselves. Format 2 requires the current host scripts:
+copy reviewed `update.sh` and `lib.sh` into the install before using its new manifests.
+
 The **Release** workflow (`.github/workflows/release.yml`) runs on a pushed
 `vX.Y.Z` tag. It accepts only an annotated tag that GitHub verified as signed,
 on `main` for `vX.Y.0` and on `release/X.Y` for a patch. `release/check-tag.sh`
-also refuses a patch release whose `packages/db/src/migrations` (journal
+requires the tag to match the root package version and refuses a patch whose `packages/db/src/migrations` (journal
 included) differs from the latest earlier `vX.Y` tag: installs apply patches on
 their own and roll one back by starting the previous image. The workflow then
 builds the image natively on amd64 and arm64 without the build cache, labelled
@@ -436,7 +463,7 @@ both files. No release has been published yet, and the repository has no
 `release-signing.pem`: until it does, automatic patch updates skip each night.
 
 Every other run (a push that changes the workflow or `release/`, or a manual
-run) is a dry run of the same steps as `v0.0.0`: the images go to a registry on
+run) is a dry run with its Git build-metadata version: the images go to a registry on
 the runner, and a throwaway key signs the manifest. It publishes nothing.
 `deploy/test/release.sh` tests both scripts, with a scratch Git repository and a
 dry release of two small images to a local registry:
@@ -451,8 +478,9 @@ bytes (`openssl pkeyutl -verify -pubin -inkey release-signing.pem -rawin -in
 release-manifest.txt -sigfile release-manifest.txt.sig`):
 
 ```text
-format=plaingym-release-manifest/1
+format=plaingym-release-manifest/2
 version=v1.2.3
+rollback_floor=v1.1.0
 image=ghcr.io/plaingym/app
 digest=sha256:<64 hex digits>
 digest.linux/amd64=sha256:<64 hex digits>
@@ -468,4 +496,12 @@ released=2026-11-03T12:00:00Z
 * `migrations` is the digest of the migrations directory, computed as
   `update.sh` does (`find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum`
   in it).
-* Readers ignore keys they don't know; a new format changes `format`.
+* `rollback_floor` is the oldest compatible release. A patch preserves its minor's
+  floor; an incompatible major sets the floor to itself. The release workflow smoke-tests
+  the previous minor on the new database before publishing a compatible `vX.Y.0`, and
+  Image checks runs the same test on any commit that changes the migrations. Older code
+  accepts a newer release's table only with the security shape every table has
+  ([versioning guide](../docs/versioning.md#compatibility-from-10)).
+* The current reader also accepts format 1. The old reader rejects the new underscore
+  key, so the format is bumped to 2 and the host scripts must be refreshed manually.
+* GitHub release notes come from the matching `CHANGELOG.md` section.

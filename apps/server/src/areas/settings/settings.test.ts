@@ -72,6 +72,22 @@ describe('settings service and routes', () => {
       expect((await patch(app, path, { revision: before.revision, name: 'Forged' })).status).toBe(404);
     expect(await service.get(gymB)).toEqual(before);
   });
+  it('reads address and branding a newer release added keys to, and a save keeps those keys', async () => {
+    const gymId = uuidv7(), newer = { gymId, actor: { kind: 'system' } } as const;
+    await factory('gyms', gymId, { address: { city: 'North', line2: 'Unit 1', newerKey: 'kept' }, branding: { primaryColor: '#123456', newerKey: 'kept' } });
+    const before = await service.get(gymId);
+    expect(before).toMatchObject({ address: { city: 'North', line2: 'Unit 1' }, branding: { primaryColor: '#123456' } });
+    expect(JSON.stringify(before)).not.toContain('newerKey');
+    const after = await service.update(newer, 'general', { revision: before.revision, address: { city: 'South' }, branding: {} });
+    expect(after).toMatchObject({ address: { city: 'South' }, branding: {} });
+    // A field the owner cleared stays cleared; only keys this release doesn't know survive.
+    const [row] = await database.forGym(gymId, (tx) => tx.select({ address: gyms.address, branding: gyms.branding }).from(gyms).where(eq(gyms.id, gymId)));
+    expect(row).toEqual({ address: { city: 'South', newerKey: 'kept' }, branding: { newerKey: 'kept' } });
+    // A save of something else leaves them alone.
+    await service.update(newer, 'general', { revision: after.revision, name: 'Renamed' });
+    const [same] = await database.forGym(gymId, (tx) => tx.select({ address: gyms.address }).from(gyms).where(eq(gyms.id, gymId)));
+    expect(same).toEqual({ address: { city: 'South', newerKey: 'kept' } });
+  });
   it('compares revisions, audits safe fields in the same transaction and reads the injected clock', async () => {
     const before = await service.get(gymA);
     const after = await service.update(mutation, 'general', { revision: before.revision, websiteEnabled: true });

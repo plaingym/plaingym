@@ -11,6 +11,8 @@ export const storedSmtpSchema = z.strictObject({
   security: z.enum(['starttls', 'tls', 'plain']), from: z.email(),
   username: z.string().min(1), password: z.string().min(1),
 });
+// A newer release may store more keys. This one ignores them, and a save replaces the whole value from the form.
+export const readSmtpSchema = z.object(storedSmtpSchema.shape);
 export type StoredSmtpConfig = z.infer<typeof storedSmtpSchema>;
 
 export function encryptSmtpConfig(key: Buffer, gymId: string, config: StoredSmtpConfig): string {
@@ -58,7 +60,7 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
   async function config(gymId: string): Promise<SmtpConfig | null> {
     const stored = await storedConfig(gymId);
     if (!stored) return fallback;
-    return fromStored(storedSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored))));
+    return fromStored(readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored))));
   }
   return { config, async configured(gymId) { return (await config(gymId)) !== null; },
     async source(gymId) { return await storedConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };

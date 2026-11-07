@@ -9,6 +9,8 @@ import { googleFromEnvironment, type GoogleCredentials } from '../../infra/auth/
 
 /** The gym's own Google OAuth client, stored encrypted in `gyms.google_config_encrypted` (secret class `google_config`). */
 export const storedGoogleSchema = z.strictObject({ clientId: googleClientValueSchema, clientSecret: googleClientValueSchema });
+// A newer release may store more keys. This one ignores them, and a save replaces the whole value from the form.
+const readGoogleSchema = z.object(storedGoogleSchema.shape);
 
 export function encryptGoogleConfig(key: Buffer, gymId: string, credentials: GoogleCredentials): string {
   return encryptSecret(key, { secretClass: 'google_config', owner: gymId }, JSON.stringify(storedGoogleSchema.parse(credentials)));
@@ -16,7 +18,7 @@ export function encryptGoogleConfig(key: Buffer, gymId: string, credentials: Goo
 /** The stored client, or null when there is none or it can't be read (logged as `logError` does: never the message). */
 export function readGoogleConfig(key: Buffer, value: string | null, gymId: string): GoogleCredentials | null {
   return readStoredSecret(key, 'google_config', gymId, value, () =>
-    storedGoogleSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, value!))));
+    readGoogleSchema.parse(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymId }, value!))));
 }
 
 export interface GoogleClientOptions {

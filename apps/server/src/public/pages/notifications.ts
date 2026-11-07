@@ -17,6 +17,8 @@ import messages from '../../../../../locales/en/public/pages.json' with { type: 
 export const staffNoticeJob = 'public.pages.staff_notice';
 /** The queued payload carries identifiers only; the visitor's details are read when the notice is sent. */
 const noticePayload = z.strictObject({ kind: z.enum(['trial', 'drop-in']), memberId: idSchema });
+// Read from a stored job: a newer release may add keys, which this one ignores after a rollback.
+export const storedNoticePayload = z.object(noticePayload.shape);
 type Notice = z.infer<typeof noticePayload>;
 interface Intake { name: string; contact: string; email: string; phone: string | null }
 
@@ -55,7 +57,7 @@ export function createPublicStaffNotices(options: PublicStaffNoticesOptions) {
     await options.jobs.enqueue(staffNoticeJob, notice, { gymId, timezone: gym.timezone, idempotencyKey: noticeKey(notice), maxAttempts: 18 });
   }
   async function send(payload: unknown, context: JobContext) {
-    const notice = noticePayload.parse(payload), gymId = context.gymId;
+    const notice = storedNoticePayload.parse(payload), gymId = context.gymId;
     const prepared = await options.prepare(gymId);
     if (!prepared) return;
     const [intake] = await scope(gymId, tx => tx.select({ firstName: members.firstName, lastName: members.lastName,

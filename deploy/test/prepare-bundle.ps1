@@ -8,7 +8,11 @@ $ErrorActionPreference = 'Stop'
 $deployRoot = Split-Path -Parent $PSScriptRoot
 $outputDirectory = Join-Path $deployRoot 'dist'
 $staging = Join-Path $outputDirectory 'staging'
-$localTag = 'plaingym:v0.0.0-local'
+$imageDetails = docker image inspect $Image | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Inspect the image before creating a bundle.' }
+$buildVersion = $imageDetails[0].Config.Labels.'org.opencontainers.image.version'
+if ($buildVersion -notmatch '^v?\d+\.\d+\.\d+(\+[A-Za-z0-9.-]+)?$') { throw 'The image has no build version.' }
+$localTag = 'plaingym:' + $buildVersion.Replace('+', '-')
 $architecture = docker image inspect $Image --format '{{.Architecture}}'
 if ($LASTEXITCODE -ne 0 -or $architecture -notin @('amd64', 'arm64')) { throw 'Build and test the matching image first.' }
 if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }

@@ -10,12 +10,14 @@ export const photoTypes = websitePhotoTypes;
 const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const optionalText = (max: number) => z.string().trim().max(max).nullable();
 
+// A newer release may store more keys. These schemas keep them, unlike a stripping read: a save writes back
+// what it read, and must not lose what the newer release wrote.
 /** One stored photo: its upload key stays on the server; pages and the admin address it by ID. */
-export const storedPhotoSchema = z.strictObject({
+export const storedPhotoSchema = z.looseObject({
   id: idSchema, key: z.string().min(1), contentType: z.enum(photoTypes), alt: z.string().trim().max(200),
 });
 /** What the website module keeps in the gym's module settings. Branding (logo, primary color) stays in `gyms.branding`. */
-export const storedContentSchema = z.strictObject({
+export const storedContentSchema = z.looseObject({
   tagline: optionalText(160), about: optionalText(5000), phone: optionalText(40),
   email: z.email().max(254).nullable(), accentColor: color.nullable(),
   photos: z.array(storedPhotoSchema).max(maxPhotos),

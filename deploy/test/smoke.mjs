@@ -47,6 +47,10 @@ const get = (protocol, port, ca, path = '/healthz', accept = 'application/json',
   request.end(payload ? JSON.stringify(payload) : undefined);
 });
 try {
+  if (process.env.SMOKE_MIGRATE_IMAGE) {
+    compose(['up', '-d', '--wait', '--wait-timeout', '120'], { env: { ...env, APP_IMAGE: process.env.SMOKE_MIGRATE_IMAGE } });
+    compose(['stop', 'app']);
+  }
   compose(['up', '-d', '--wait', '--wait-timeout', '120']);
   const appId = compose(['ps', '-q', 'app']).trim();
   const configuration = JSON.parse(docker(['inspect', appId]))[0];
@@ -97,7 +101,10 @@ try {
   assert.equal(redirect.status, 308);
   const response = await get(https, httpsPort, ca);
   assert.equal(response.status, 200);
-  assert.deepEqual(JSON.parse(response.body), { status: 'ok' });
+  const health = JSON.parse(response.body);
+  assert.equal(health.status, 'ok');
+  assert.match(health.version, /^\d+\.\d+\.\d+(?:\+[A-Za-z0-9.-]+)?$/);
+  assert.match(health.commit, /^[a-f0-9]{40}$/);
   const catalog = await get(https, httpsPort, ca, '/api/content-packs/catalog');
   assert.equal(catalog.status, 200);
   const packs = JSON.parse(catalog.body).data;
@@ -118,7 +125,8 @@ try {
   const source = await get(https, httpsPort, ca, '/source');
   assert.equal(source.status, 302);
   assert.equal(source.headers.location, process.env.SOURCE_URL ?? 'https://github.com/plaingym/plaingym');
-  assert.ok(configuration.Config.Env.includes('APP_VERSION=' + (process.env.VERSION ?? '0.0.0-dev')));
+  assert.ok(configuration.Config.Env.includes('APP_VERSION=' + health.version));
+  if (process.env.VERSION) assert.equal(health.version, process.env.VERSION);
   // gym-app dispatches CLI commands through the same bundle inside the container.
   const cli = spawnSync('docker', [...prefix, 'exec', '-T', 'app', 'gym-app', 'unknown-command'], { encoding: 'utf8', env });
   assert.equal(cli.status, 2);

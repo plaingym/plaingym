@@ -179,7 +179,11 @@ restart; people then sign in another way.
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `NODE_ENV` | `production` in the image | `production` turns on `Strict-Transport-Security`, production sign-in behavior, and the server's own multi-gym check that it holds no maintenance credentials. The image's entrypoint makes that check in multi-gym mode whatever `NODE_ENV` is. |
-| `APP_VERSION` | the image's version | The release shown on the health page. |
+| `APP_VERSION` | the embedded Git version | The version shown on the health page, in OpenAPI and by `/healthz`; build metadata marks a development build. |
+| `APP_REVISION` | the embedded Git commit | Full commit returned by `/healthz`; the UI displays its short form. |
+| `SCHEMA_ROLLBACK_FLOOR` | unset on a new install | Oldest compatible version, supplied by the updater's checked `schema-compatibility.yaml`. Keep that file with its database; see [rollback](updating.md#roll-back-a-release). |
+| `SCHEMA_RELEASE` | unset on a new install | Release that raised the recorded rollback floor, shown when older code is refused. |
+| `SCHEMA_SNAPSHOT` | unset on a new install | Pre-upgrade snapshot from before the recorded compatibility boundary, shown with restore instructions. |
 | `NODE_OPTIONS` | `--max-old-space-size=256` | Node's options; the default caps the JavaScript heap at 256 MiB. |
 
 ## Compose and Caddy
@@ -189,6 +193,7 @@ These are read by `deploy/compose.yaml`, not by the app.
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `APP_IMAGE` | none | The exact image to run: a version tag or a `sha256` digest, never `latest`. `update.sh` changes it. |
+| `COMPOSE_FILE` | `compose.yaml` | The updater appends `schema-compatibility.yaml` so ordinary Compose commands preserve the startup rollback guard. |
 | `ACME_EMAIL` | none | The email Caddy gives the certificate authority. |
 | `COMPOSE_PROJECT_NAME` | `plaingym` | The Compose project name (container and volume prefix). |
 | `HTTP_PORT` | `80` | The host port Caddy publishes for HTTP (certificate challenges and redirects). |

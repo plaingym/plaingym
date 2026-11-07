@@ -10,6 +10,23 @@ export type Sql = ReturnType<typeof postgres>;
 export type Database = PostgresJsDatabase;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 export type Connection = ReturnType<typeof openConnection>;
+/** Only validated version/snapshot identifiers or fixed instructions are included in this diagnostic. */
+export class SchemaCompatibilityError extends Error {
+  constructor(message: string) { super(message); this.name = 'SchemaCompatibilityError'; }
+}
+/** The updater passes the verified, highest rollback floor alongside this database's Compose configuration. */
+export function assertSchemaCompatibility(env: NodeJS.ProcessEnv = process.env): void {
+  if (!env.SCHEMA_ROLLBACK_FLOOR) return;
+  const parse = (value: string | undefined) => /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[A-Za-z0-9.-]+)?$/.exec(value ?? '')?.slice(1, 4).map(Number);
+  const current = parse(env.APP_VERSION), floor = parse(env.SCHEMA_ROLLBACK_FLOOR);
+  if (!current || !floor || ![...current, ...floor].every(Number.isSafeInteger)) throw new SchemaCompatibilityError('Invalid or missing application/schema version; keep schema-compatibility.yaml with the database');
+  const comparison = (current[0]! - floor[0]!) || (current[1]! - floor[1]!) || (current[2]! - floor[2]!);
+  if (comparison < 0) {
+    const migratedBy = parse(env.SCHEMA_RELEASE)?.every(Number.isSafeInteger) ? env.SCHEMA_RELEASE : env.SCHEMA_ROLLBACK_FLOOR;
+    const snapshot = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(env.SCHEMA_SNAPSHOT ?? '') ? env.SCHEMA_SNAPSHOT : '(see version-history.tsv)';
+    throw new SchemaCompatibilityError(`Cannot start ${env.APP_VERSION}: the database was upgraded by ${migratedBy} and requires at least ${env.SCHEMA_ROLLBACK_FLOOR}. Run update.sh --rollback within that floor, or restore pre-upgrade snapshot ${snapshot} using docs/restoring.md.`);
+  }
+}
 /**
  * Raw infrastructure entry point. Feature code imports scoped helpers instead.
  * context 'system' sets app.system for every connection in the pool (the authentication adapter's pool).
@@ -80,6 +97,7 @@ let applicationConnection: Connection | undefined;
 let systemConnection: Connection | undefined;
 export async function initializeDatabase(url: string, max: number = connectionBudget.application,
   systemMax: number = connectionBudget.authentication) {
+  assertSchemaCompatibility();
   if (applicationConnection) throw new Error('Database already initialized');
   for (const size of [max, systemMax]) if (!Number.isSafeInteger(size) || size < 1) throw new Error('Pool sizes must be positive integers');
   const connection = openConnection(url, max);
@@ -120,6 +138,7 @@ export const forHousehold: ReturnType<typeof scopedDatabase>['forHousehold'] = (
 export const forSystem: ReturnType<typeof scopedDatabase>['forSystem'] = (fn) => current().forSystem(fn);
 /** A dedicated one-connection pool keeps the session advisory lock through Drizzle's migrations. */
 export async function withMigrationConnection<T>(url: string, folder: string, after: (connection: Connection) => Promise<T>) {
+  assertSchemaCompatibility();
   const connection = openConnection(url, 1);
   let locked = false;
   try {

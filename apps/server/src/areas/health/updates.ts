@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import release from '../../../../../package.json' with { type: 'json' };
+import { runningVersion } from './version.js';
 import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import messages from '../../../../../locales/en/health/updates.json' with { type: 'json' };
 import type { UpdateAvailableHealthDetails } from '@plaingym/shared/contracts';
@@ -150,7 +150,7 @@ export function createUpdateAvailableProvider(options: UpdateProviderOptions = {
     const empty = (status: 'not_configured' | 'unavailable', key: string, at: string | null = null) =>
       ({ id: 'update_available' as const, status, checkedAt: at, details: null, message: message(key) });
     if (!updateCheckEnabled(env)) return empty('not_configured', 'off');
-    const running = (env.APP_VERSION ?? release.version).trim(), current = parseVersion(running);
+    const running = runningVersion(env).version.trim(), current = parseVersion(running);
     if (!current || isDevelopmentBuild(current)) return empty('not_configured', 'notRelease');
     const repository = releaseRepository(env);
     if (!repository) return empty('not_configured', 'badRepository');

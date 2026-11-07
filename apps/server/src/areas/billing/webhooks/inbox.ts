@@ -23,9 +23,12 @@ const eventSchema = z.strictObject({
   objectKind: z.enum(['charge', 'checkout', 'setup', 'payment_method', 'refund', 'dispute']),
   livemode: z.boolean().optional(),
 });
+// A newer release may persist more fields. An older reader keeps the fields it knows after rollback.
+const storedEventSchema = z.object(eventSchema.shape);
 /** Audited when a Stripe test-mode event is finished, unread, for a gym whose key is now live. */
 export const testEventSkippedAction = 'billing.webhook.test_event_skipped';
-const dispatchSchema = z.strictObject({ eventId: z.string().min(1), replay: z.boolean().optional() });
+// Read from a stored job: unknown keys are ignored for the same reason.
+const dispatchSchema = z.object({ eventId: z.string().min(1), replay: z.boolean().optional() });
 
 export function createWebhookInbox(options: {
   paymentsFor: PaymentsResolver;
@@ -85,7 +88,7 @@ export function createWebhookInbox(options: {
       const input = dispatchSchema.parse(payload), row = await stored(context.gymId, input.eventId);
       if (!row || (row.processedAt && !input.replay)) return;
       try {
-        const event = eventSchema.parse(row.payload);
+        const event = storedEventSchema.parse(row.payload);
         if (event.gymId !== context.gymId || event.id !== row.eventId || event.type !== row.type)
           throw new Error('Invalid stored webhook identity');
         const handler = handlers.get(event.type);

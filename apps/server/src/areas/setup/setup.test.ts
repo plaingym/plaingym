@@ -187,6 +187,10 @@ describe('first-boot setup', () => {
     expect(saved.recipient).toBe(keys.publicKey); expect(saved.blobKey).toHaveLength(32); expect(saved.budgetBytes).toBe(8_000_000_000);
     expect(saved.destination).toEqual(destination);
     const [row] = await database.forSystem((tx) => tx.select().from(gyms));
+    // A key a newer release stored doesn't stop this release's snapshots.
+    await database.forSystem((tx) => tx.update(gyms).set({ backupDestination: { ...row!.backupDestination as object, newerKey: true } }));
+    expect((await loadBackupConfig(key)).destination).toEqual(destination);
+    await database.forSystem((tx) => tx.update(gyms).set({ backupDestination: row!.backupDestination }));
     expect(decryptSecret(key, { secretClass: 's3_config', owner: gymId }, row!.s3Config!)).toContain('private-storage-key');
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);

@@ -19,7 +19,14 @@ function expectedSystemPolicies(access: string) {
     policy('a', null, systemPredicate), policy('d', systemPredicate, null)].sort();
   return ['unknown access ' + access];
 }
-/** Checks the live catalog, including properties not represented by Drizzle snapshots. */
+const accessKinds = ['system', 'gym', 'gym-config'];
+/**
+ * Checks the live catalog, including properties not represented by Drizzle snapshots. A table this image doesn't
+ * declare comes from a newer release, after a rollback (docs/versioning.md). It is accepted only with the security
+ * shape every table has: owner `maintenance`, ENABLE and FORCE, exactly the gym policy or one system access kind's
+ * policies, for `app` alone, and nothing beyond the app's ordinary privileges. A missing or changed declared table
+ * always fails.
+ */
 export async function assertCatalog(sql: Sql) {
   const failures: string[] = [];
   const roles = await sql`
@@ -56,11 +63,22 @@ export async function assertCatalog(sql: Sql) {
     from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind in ('r', 'p') order by c.relname
   `;
-  if (JSON.stringify(tables.map((t) => t.relname)) !== JSON.stringify(expectedTables)) failures.push('Unexpected or missing public tables');
+  for (const name of expectedTables) if (!tables.some((table) => table.relname === name)) failures.push(name + ': missing table');
+  const systemNames = new Set<string>(systemTables.map((entry) => entry.name));
   for (const table of tables) {
-    const name = String(table.relname);
-    const systemEntry = systemTables.find((entry) => entry.name === name);
-    const system = !!systemEntry;
+    const name = String(table.relname), declared = (expectedTables as readonly string[]).includes(name);
+    const policies = await sql`
+      select polcmd, polpermissive, pg_get_expr(polqual, polrelid) as using_expression,
+        pg_get_expr(polwithcheck, polrelid) as check_expression,
+        polroles = array[(select oid from pg_roles where rolname = 'app')] as app_only
+      from pg_policy where polrelid = ${table.oid}
+    `;
+    const actual = JSON.stringify(policies.map((p) => p.polcmd + '|' + normalize(p.using_expression ?? '') + '|' + normalize(p.check_expression ?? '')).sort());
+    // A table this image doesn't declare has no entry to read its kind from, so its policies must be exactly one kind's.
+    const access = systemTables.find((entry) => entry.name === name)?.access
+      ?? (declared ? undefined : accessKinds.find((kind) => actual === JSON.stringify(expectedSystemPolicies(kind))));
+    const system = access !== undefined;
+    if (system) systemNames.add(name);
     if (table.owner !== 'maintenance') failures.push(name + ': wrong owner');
     if (!table.has_gym && !system) failures.push(name + ': unregistered system table');
     const shape = await sql`
@@ -68,19 +86,13 @@ export async function assertCatalog(sql: Sql) {
       from pg_attribute a where a.attrelid = ${table.oid} and a.attnum > 0 and not a.attisdropped
     `;
     if (!system && !shape.some((column) => column.attname === 'gym_id' && column.type === 'uuid' && column.attnotnull)) failures.push(name + ': invalid gym_id');
-    if (!shape.some((column) => column.attname === 'id' && column.type === 'uuid' && column.attnotnull)) failures.push(name + ': invalid UUID identity');
-    if (shape.some((column) => column.type === 'timestamp without time zone')) failures.push(name + ': timestamp without timezone');
-    const policies = await sql`
-      select polcmd, polpermissive, pg_get_expr(polqual, polrelid) as using_expression,
-        pg_get_expr(polwithcheck, polrelid) as check_expression,
-        polroles = array[(select oid from pg_roles where rolname = 'app')] as app_only
-      from pg_policy where polrelid = ${table.oid}
-    `;
-    if (systemEntry) {
+    // Schema conventions that isolation doesn't depend on: they bind a release's own tables, not a newer release's.
+    if (declared && !shape.some((column) => column.attname === 'id' && column.type === 'uuid' && column.attnotnull)) failures.push(name + ': invalid UUID identity');
+    if (declared && shape.some((column) => column.type === 'timestamp without time zone')) failures.push(name + ': timestamp without timezone');
+    if (access) {
       // System tables are RLS-protected too: gym context sees only its own rows, infrastructure uses system context.
-      const actual = policies.map((p) => p.polcmd + '|' + normalize(p.using_expression ?? '') + '|' + normalize(p.check_expression ?? '')).sort();
       if (!table.relrowsecurity || !table.relforcerowsecurity || !policies.every((p) => p.polpermissive && p.app_only) ||
-          JSON.stringify(actual) !== JSON.stringify(expectedSystemPolicies(systemEntry.access))) failures.push(name + ': invalid system access policy');
+          actual !== JSON.stringify(expectedSystemPolicies(access))) failures.push(name + ': invalid system access policy');
     } else {
       const policy = policies[0];
       if (!table.relrowsecurity || !table.relforcerowsecurity || policies.length !== 1 || !policy ||
@@ -90,8 +102,9 @@ export async function assertCatalog(sql: Sql) {
     }
     const immutable = (appendOnlyTables as readonly string[]).includes(name);
     const attempt = name === 'payment_attempts', deletable = (deletableAppendOnlyTables as readonly string[]).includes(name);
-    if (!table.can_select || !table.can_insert || table.can_truncate || table.can_reference || table.can_trigger ||
-        table.can_update !== !(immutable || attempt) || table.can_delete !== (deletable || !(immutable || attempt))) {
+    // A newer release may hold its table to fewer privileges (an append-only one), never to more.
+    if (table.can_truncate || table.can_reference || table.can_trigger || (declared && (!table.can_select || !table.can_insert ||
+        table.can_update !== !(immutable || attempt) || table.can_delete !== (deletable || !(immutable || attempt))))) {
       failures.push(name + ': unexpected table privileges');
     }
     if (immutable || attempt) {
@@ -116,7 +129,7 @@ export async function assertCatalog(sql: Sql) {
     join pg_class source on source.oid = c.conrelid join pg_class target on target.oid = c.confrelid
     where c.contype = 'f' and source.relrowsecurity and target.relrowsecurity
   `;
-  const isSystem = (name: string) => systemTables.some((entry) => entry.name === name);
+  const isSystem = (name: string) => systemNames.has(name);
   for (const fk of foreignKeys) {
     if (isSystem(fk.source_table) || isSystem(fk.target_table)) continue; // System references are explicit columns, not tenant relationships.
     if (fk.source_columns[0] !== 'gym_id' || fk.target_columns[0] !== 'gym_id') failures.push(fk.conname + ': unscoped foreign key');

@@ -15,8 +15,9 @@ const image = { templateId: id, templateVersion: 1, signatureImageKey: 'gym/sign
 
 describe('shared install and admission contracts', () => {
   it('keeps the install liveness and source shapes', () => {
-    expect(installHealthSchema.parse({ status: 'ok' })).toEqual({ status: 'ok' });
-    expect(installHealthSchema.safeParse({ status: 'unhealthy' }).success).toBe(false);
+    const ok = { status: 'ok', version: '0.4.0', commit: 'abc1234' };
+    expect(installHealthSchema.parse(ok)).toEqual(ok);
+    expect(installHealthSchema.safeParse({ ...ok, status: 'unhealthy' }).success).toBe(false);
     expect(installSourceSchema.safeParse({ data: { url: 'https://example.test/source' } }).success).toBe(true);
     expect(installSourceSchema.safeParse({ data: { url: 'not a URL' } }).success).toBe(false);
     expect(installContracts.sourceRedirect.responses[302].headers.Location.schema.format).toBe('uri');

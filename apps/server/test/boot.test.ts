@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { buildServer } from '../build.mjs';
+import { buildInfo } from '../../../scripts/release/version.mjs';
 import { app } from '../src/closed-app.js';
 import { regularFontUrl } from '../src/assets.js';
 
@@ -21,7 +22,8 @@ const runtimeEnv = () => ({ ...process.env, TENANCY: 'single', DATABASE_URL: dat
 it('serves the explicitly public health probe', async () => {
   const response = await app.request('/healthz');
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ status: 'ok' });
+  expect(await response.json()).toEqual({ status: 'ok', ...buildInfo() });
+  expect(response.headers.get('cache-control')).toBe('no-store');
   expect((await app.request('/unknown')).status).toBe(404);
 });
 
@@ -59,7 +61,7 @@ it('boots a relocated bundle with its font and notice, independently of the work
       });
       const response = await fetch(address + '/healthz');
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ status: 'ok' });
+      expect(await response.json()).toEqual({ status: 'ok', ...buildInfo() });
       const source = await fetch(address + '/source', { redirect: 'manual' });
       expect(source.status).toBe(302);
       expect(source.headers.get('location')).toBe('https://example.org/source/v1');

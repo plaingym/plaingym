@@ -68,7 +68,10 @@ async function maintenance(args: readonly string[], environment: ReturnType<type
       throw error instanceof BackupsNotConfiguredError ? new BackupsNotSetUpError() : error;
     });
     const backup = configuredBackup(config, environment.database, clock, environment.stagingDirectory, environment.uploads.forGym);
-    try { await backup.service.snapshot(args[1] === 'pre-upgrade' ? 'pre_upgrade' : 'manual'); }
+    try {
+      const snapshot = await backup.service.snapshot(args[1] === 'pre-upgrade' ? 'pre_upgrade' : 'manual');
+      process.stdout.write(`Snapshot: ${snapshot.id}\n`);
+    }
     finally { backup.client.destroy(); }
     return;
   }

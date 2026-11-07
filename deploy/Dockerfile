@@ -15,7 +15,9 @@ COPY packages/shared/package.json packages/shared/
 RUN --mount=type=cache,id=plaingym-pnpm-store,target=/pnpm/store npm_config_store_dir=/pnpm/store pnpm install --frozen-lockfile
 COPY . .
 ARG SOURCE_URL=https://github.com/plaingym/plaingym
-RUN test -n "$SOURCE_URL" && SOURCE_URL="$SOURCE_URL" pnpm build
+ARG VERSION
+ARG REVISION
+RUN test -n "$SOURCE_URL" && SOURCE_URL="$SOURCE_URL" APP_BUILD_VERSION="$VERSION" APP_BUILD_REVISION="$REVISION" pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 COPY deploy/pgdg.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
@@ -47,9 +49,10 @@ RUN chmod 0555 /app/deploy/*.sh \
       cat /app/licenses/THIRD_PARTY_LICENSES; } > /app/THIRD_PARTY_LICENSES
 ARG SOURCE_URL=https://github.com/plaingym/plaingym
 ENV SOURCE_URL=${SOURCE_URL}
-ARG VERSION=0.0.0-dev
+ARG VERSION
 ENV APP_VERSION=${VERSION}
 ARG REVISION
+ENV APP_REVISION=${REVISION}
 LABEL org.opencontainers.image.source="https://github.com/plaingym/plaingym" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.revision="${REVISION}" \

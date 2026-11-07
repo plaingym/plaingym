@@ -90,6 +90,13 @@ or a count of later migrations. Appending a migration requires no helper changes
 
 ## Startup and security
 
+Before opening either the application or migration connection,
+`assertSchemaCompatibility` checks the updater's `SCHEMA_ROLLBACK_FLOOR` against
+`APP_VERSION`. `SCHEMA_RELEASE` and `SCHEMA_SNAPSHOT` identify recovery steps when
+older code is refused. This metadata is supplied by the checked installation file
+`schema-compatibility.yaml`; it adds no database table or migration. Keep that file
+with the database. See [rollback](../../docs/updating.md#roll-back-a-release).
+
 Database bootstrap creates `app` and `maintenance`. The app role has DML privileges,
 no DDL, no TRUNCATE, and no membership in maintenance. Maintenance owns the database
 and schema, has BYPASSRLS, and has no superuser, CREATEDB, or CREATEROLE privileges.
@@ -134,7 +141,9 @@ System tables have forced RLS too, with policies for two contexts:
 With neither context a connection sees no system rows and can't write any (fail
 closed). Access kinds: `gym` (domains, jobs, schedule cursors, sessions, webhook events), `gym-config`
 (`gyms`) and `system` (identity tables, backup history); the catalog check verifies
-each table's exact policies, ENABLE and FORCE. This prevents accidental cross-gym
+each table's exact policies, ENABLE and FORCE. A table the running image doesn't
+declare has no inventory entry, so the check reads its kind from its policies, which
+must match the gym policy or one access kind exactly (`docs/versioning.md`). This prevents accidental cross-gym
 queries on the app role's ordinary connections; it doesn't constrain `maintenance`
 (BYPASSRLS), and `forSystem` / `systemDatabase` are lint-limited to the
 infrastructure modules the inventory lists (`systemDatabase` to `infra/auth`).

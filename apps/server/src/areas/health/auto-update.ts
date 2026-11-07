@@ -17,14 +17,14 @@ export const autoUpdateAttemptAction = 'health.auto_update.attempted';
 export const autoUpdateReasons = {
   skipped: ['disabled', 'check_failed', 'backups_not_configured', 'restore_in_progress', 'no_signing_key', 'version_unknown',
     'release_list_unavailable', 'manifest_unavailable', 'manifest_invalid', 'signature_invalid', 'pull_failed', 'digest_mismatch',
-    'image_check_failed', 'migration_in_patch', 'snapshot_failed'],
+    'image_check_failed', 'migration_in_patch', 'snapshot_failed', 'rolled_back_version'],
   rolled_back: ['startup_failed', 'health_check_failed', 'interrupted'],
   failed: ['rollback_failed'],
 } as const;
 type Reason = (typeof autoUpdateReasons)[keyof typeof autoUpdateReasons][number];
 const allReasons = Object.values(autoUpdateReasons).flat() as [Reason, ...Reason[]];
 /** A release version as images label it: `v1.2.3`, or a development build such as `0.0.0-dev`. */
-export const autoUpdateVersionSchema = z.string().max(64).regex(/^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/);
+export const autoUpdateVersionSchema = z.string().max(64).regex(/^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
 /** What the host's updater reports about one attempt. Each result names exactly the facts it can know. */
 export const autoUpdateAttemptSchema = z.strictObject({
   attemptedAt: instantSchema,

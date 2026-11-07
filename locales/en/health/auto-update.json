@@ -29,6 +29,7 @@
   "reason.image_check_failed": "The database changes of the new and running versions couldn't be compared, so nothing was installed.",
   "reason.migration_in_patch": "This patch release changes the database, which patch releases never do, so it wasn't installed automatically.",
   "reason.snapshot_failed": "The backup before the update failed. The next nightly check tries again.",
+  "reason.rolled_back_version": "You rolled back from this version, so it does not install by itself. A newer patch release will. To install this one anyway, update by hand.",
   "reason.startup_failed": "The new version didn't start.",
   "reason.health_check_failed": "The new version failed its health check.",
   "reason.interrupted": "The update was interrupted, so the version recorded on the server was started again.",

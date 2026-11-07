@@ -6,6 +6,19 @@ or undoing a bad update. A restore always goes onto a **fresh install**; it repl
 that install's data with the snapshot's. How backups work (hourly snapshots,
 retention, encryption) is in [self-hosting.md](self-hosting.md#backups).
 
+## When rollback is refused
+
+`update.sh --rollback` prints the snapshot identifier when the previous image is
+below the recorded rollback floor, and so does a failed update across a floor that
+had already migrated the database. Find that pre-upgrade snapshot in the backup
+destination and follow this guide using the private backup key. For a downgrade
+across that boundary, restore into a fresh installation of the version that made
+the snapshot, with its own empty database and volumes. Keep the stopped original
+installation until the restored gym has been checked. Do not copy the newer
+installation's `schema-compatibility.yaml` into the restored installation or remove
+that file to run older code against the newer database. The source installation's
+`version-history.tsv` records the version, digest, floor and snapshot for each attempt.
+
 ## What you need
 
 Settings and System health report the last restorable snapshot for the current

@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { buildInfo } from '../scripts/release/version.mjs';
 
 const directory = fileURLToPath(new URL('./', import.meta.url));
 if (process.argv[2] === '--vm') {
@@ -29,12 +30,13 @@ function command(binary, args, options = {}) {
 }
 
 async function build() {
+  const identity = buildInfo(root);
   // Only committed source enters the image. This excludes local credentials,
   // dependencies and other worktrees without modifying the application build.
   await new Promise((resolve, reject) => {
     const archive = spawn('git', ['-c', `safe.directory=${root.replaceAll('\\', '/').replace(/\/$/, '')}`, 'archive', 'HEAD'],
       { cwd: root, env, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
-    const docker = spawn('docker', ['build', '-t', env.E2E_IMAGE, '-f', 'deploy/Dockerfile', '-'],
+    const docker = spawn('docker', ['build', '--build-arg', `VERSION=${identity.version}`, '--build-arg', `REVISION=${identity.commit}`, '-t', env.E2E_IMAGE, '-f', 'deploy/Dockerfile', '-'],
       { cwd: root, env, stdio: ['pipe', 'inherit', 'inherit'], windowsHide: true });
     archive.stdout.pipe(docker.stdin);
     docker.stdin.on('error', () => {});

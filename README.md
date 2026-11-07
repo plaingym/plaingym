@@ -146,6 +146,10 @@ not alter an existing database.
 
 ## Checks and boundaries
 
+The root package version is shared by all private workspace packages. Builds report
+their Git version and commit, and `CHANGELOG.md` records releases. See
+[versioning and compatibility](docs/versioning.md) and [updates and rollback](docs/updating.md).
+
 `pnpm install && pnpm test` works on a fresh clone with Node, pnpm, and Docker
 running; no `.env` or manual database startup is needed, and tests never read
 `.env` or your dev database. Tests split into two Vitest projects: `pnpm test:unit`

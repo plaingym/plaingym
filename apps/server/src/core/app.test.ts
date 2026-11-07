@@ -155,7 +155,7 @@ describe('server application composition', () => {
 
   it('keeps install health and source metadata ahead of tenancy and outside the limiter', async () => {
     const app = createApp({ resolveGym: () => { throw new Error('Must not resolve'); }, session, authorize: allow, sourceUrl: 'https://example.org/source/v1' });
-    for (let i = 0; i < 3; i++) expect(await (await app.request('/healthz')).json()).toEqual({ status: 'ok' });
+    for (let i = 0; i < 3; i++) expect(await (await app.request('/healthz')).json()).toEqual({ status: 'ok', version: expect.any(String), commit: expect.stringMatching(/^[a-f0-9]{40}$/) });
     const response = await app.request('/api/source');
     expect(await response.json()).toEqual({ data: { url: 'https://example.org/source/v1' } });
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -184,6 +184,7 @@ describe('server application composition', () => {
     expect(response.status).toBe(200);
     const document = await response.json();
     expect(document.openapi).toBe('3.0.3');
+    expect(document.info.version).toBe((await (await app.request('/healthz')).json()).version);
     expect(document.paths['/api/auth/bootstrap'].get).toBeDefined();
     expect(document.paths['/api/settings'].get.responses['200']).toBeDefined();
     expect(document.paths['/api/settings'].patch.requestBody).toBeDefined();

@@ -35,6 +35,8 @@ repository="$temporary/repository"
 git init -q -b main "$repository"
 cd "$repository"
 git config user.name Release; git config user.email release@example.org; git config commit.gpgsign false; git config tag.gpgsign false
+set_version() { printf '{\n  "version": "%s"\n}\n' "$1" > package.json; }
+set_version 1.2.0
 mkdir -p packages/db/src/migrations/meta
 printf 'create table a ();\n' > packages/db/src/migrations/0000_first.sql
 printf '{"entries":[0]}\n' > packages/db/src/migrations/meta/_journal.json
@@ -44,6 +46,7 @@ git tag -a v1.2.0 -m v1.2.0
 git branch release/1.2
 git checkout -q release/1.2
 printf 'fixed\n' > app.txt
+set_version 1.2.1
 git commit -q -am 'fix: one'
 fixed=$(git rev-parse HEAD)
 [ "$(sh "$check_tag" v1.2.1 "$fixed")" = v1.2.0 ]
@@ -58,11 +61,14 @@ expect_refusal 'migrations differ from v1.2.0' v1.2.1
 git reset -q --hard "$fixed"
 git tag -a v1.2.1 -m v1.2.1
 printf 'fixed again\n' > app.txt
+set_version 1.2.3
 git commit -q -am 'fix: two'
 # The latest earlier patch is the one compared, also after a skipped number.
 [ "$(sh "$check_tag" v1.2.3)" = v1.2.1 ]
+expect_refusal 'does not match the root package.json version' v1.2.4
 # A minor release may add migrations, and needs no earlier tag.
 git checkout -q main
+set_version 1.3.0
 printf 'alter table a add c int;\n' > packages/db/src/migrations/0001_third.sql
 git add -A; git commit -q -m 'feat: next'
 [ -z "$(sh "$check_tag" v1.3.0)" ]
@@ -75,7 +81,7 @@ git remote add origin "$temporary/origin.git"
 git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
 sh "$check_tag" v1.3.0 HEAD --branches > /dev/null
 expect_refusal 'must be tagged on release/1.2' v1.2.2 HEAD --branches
-sh "$check_tag" v1.2.2 release/1.2 --branches > /dev/null
+sh "$check_tag" v1.2.3 release/1.2 --branches > /dev/null
 expect_refusal 'must be tagged on main' v1.4.0 release/1.2 --branches
 cd "$source_dir"
 
@@ -118,6 +124,7 @@ manifest="$temporary/release/release-manifest.txt"
 # update.sh --patch accepts what was published: the signature, the fields, and an index with both architectures.
 manifest_verify "$temporary/public.pem" "$manifest" "$manifest.sig"
 manifest_check "$manifest" v1.2.3
+[ "$(manifest_value "$manifest" rollback_floor)" = v1.1.0 ]
 [ "$(manifest_value "$manifest" image)" = "$registry/release-test/app" ]
 digest=$(manifest_value "$manifest" digest)
 for arch in amd64 arm64; do
