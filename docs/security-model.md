@@ -308,7 +308,10 @@ Details: `apps/server/src/core/app.md`.
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
   address, shipping details, description, individual and business names and invoice
-  custom fields, and deletes its tax IDs. Customers erased before this was complete
+  custom fields, and deletes its tax IDs. The customer-redaction retry job commits
+  in the same transaction as the erasure, so a crash cannot lose the retry between
+  clearing the local customer ID and queuing it. Provider calls run after commit.
+  Customers erased before this was complete
   are redacted once from the erasure audits
   (`apps/server/src/areas/members/README.md`).
 * **Medical notes** are readable only by owners, admins and coaches, and are never

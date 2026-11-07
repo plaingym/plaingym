@@ -4,6 +4,17 @@
 `PostgresJobs` implements `Jobs`; `PostgresJobStatsQuery` implements the health
 query. The frozen interfaces and in-memory fake remain exported from `index.ts`.
 
+Gym-scoped `enqueue(name, payload, options, transaction?)` can insert on the
+caller's transaction. Use `withJobTransaction(forGym, gymId, async transaction =>
+{ ... })`, access application rows through `transaction.tx`, and pass that same
+transaction as enqueue's fourth argument. Both the insert and idempotency lookup
+use that handle, without opening another scope. The handle must be active and
+belong to the job's gym; PostgreSQL also checks the database gym context. Ordinary
+enqueue inside a transaction remains rejected, and install-level enqueue has no
+transaction argument. The helper notifies the in-memory fake after the caller's
+scope commits, so fake jobs and their keys are discarded on rollback and cannot
+run before commit. Existing callers outside transactions are unchanged.
+
 Register handlers, then call `startJobsWorker(queue, options)`. Await
 `worker.stop()` before closing the database: it stops new claims and waits for
 handlers and lease heartbeats. `runNext()` drains one due job without starting a

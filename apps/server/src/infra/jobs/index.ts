@@ -2,7 +2,9 @@
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
+import { assertJobTransaction, jobTransactionStates, type JobTransaction } from './transaction.js';
 
+export { assertJobTransaction, withJobTransaction, type JobTransaction } from './transaction.js';
 export interface JobOptions {
   readonly gymId: string;
   readonly timezone: string;
@@ -24,7 +26,7 @@ export interface HandleOptions {
   readonly lane?: JobLane;
 }
 export interface Jobs {
-  enqueue(name: string, payload: unknown, options: JobOptions): Promise<{ jobId: string }>;
+  enqueue(name: string, payload: unknown, options: JobOptions, transaction?: JobTransaction): Promise<{ jobId: string }>;
   handle(name: string, handler: JobHandler, options?: HandleOptions): void;
   schedule(name: string, cron: string, handler: JobHandler, options?: HandleOptions): void;
 }
@@ -57,6 +59,9 @@ export class FakeJobs implements Jobs, JobRecovery {
   readonly #schedules = new Map<string, string>();
   readonly #batch = new Set<string>();
   readonly #keys = new Map<string, string>();
+  readonly #pending = new WeakMap<JobTransaction, { jobs: FakeJob[]; keys: Map<string, string> }>();
+  readonly #reservations = new Map<string, { transaction: JobTransaction; settled: Promise<void> }>();
+  #nextId = 0;
   constructor(readonly clock: Clock = systemClock, readonly perGymConcurrency = 1) {
     if (!Number.isSafeInteger(perGymConcurrency) || perGymConcurrency < 1) throw new Error('Invalid concurrency cap');
   }
@@ -80,8 +85,9 @@ export class FakeJobs implements Jobs, JobRecovery {
     this.handle(name, handler, options);
     this.#schedules.set(name, cron);
   }
-  async enqueue(name: string, payload: unknown, options: JobOptions): Promise<{ jobId: string }> {
-    assertNoTransaction('jobs.enqueue');
+  async enqueue(name: string, payload: unknown, options: JobOptions, transaction?: JobTransaction): Promise<{ jobId: string }> {
+    if (transaction) assertJobTransaction(transaction, options.gymId);
+    else assertNoTransaction('jobs.enqueue');
     if (!name || !options.gymId) throw new Error('Job name and gym are required');
     new Intl.DateTimeFormat('en', { timeZone: options.timezone });
     if (
@@ -96,10 +102,37 @@ export class FakeJobs implements Jobs, JobRecovery {
       options.idempotencyKey === undefined
         ? undefined
         : JSON.stringify([options.gymId, name, options.idempotencyKey]);
-    const existing = key === undefined ? undefined : this.#keys.get(key);
+    // Match the unique index: another transaction's key waits for its commit or rollback.
+    if (key !== undefined) {
+      let reservation = this.#reservations.get(key);
+      while (reservation && reservation.transaction !== transaction) {
+        await reservation.settled;
+        if (this.#reservations.get(key) === reservation) this.#reservations.delete(key);
+        reservation = this.#reservations.get(key);
+      }
+      if (transaction) assertJobTransaction(transaction, options.gymId);
+    }
+    let pending = transaction ? this.#pending.get(transaction) : undefined;
+    if (transaction && !pending) {
+      pending = { jobs: [], keys: new Map() };
+      this.#pending.set(transaction, pending);
+      const staged = pending;
+      jobTransactionStates.get(transaction)!.committed.push(() => {
+        this.#jobs.push(...staged.jobs);
+        for (const [key, id] of staged.keys) this.#keys.set(key, id);
+      });
+    }
+    const existing = key === undefined ? undefined : pending?.keys.get(key) ?? this.#keys.get(key);
     if (existing) return { jobId: existing };
-    const id = `job_${this.#jobs.length + 1}`;
-    this.#jobs.push({
+    if (key !== undefined && transaction) {
+      const reservation = { transaction, settled: jobTransactionStates.get(transaction)!.settled };
+      this.#reservations.set(key, reservation);
+      void reservation.settled.then(() => {
+        if (this.#reservations.get(key) === reservation) this.#reservations.delete(key);
+      });
+    }
+    const id = `job_${++this.#nextId}`;
+    (pending?.jobs ?? this.#jobs).push({
       id,
       name,
       payload: structuredClone(payload),
@@ -108,7 +141,7 @@ export class FakeJobs implements Jobs, JobRecovery {
       attempt: 0,
       status: 'queued',
     });
-    if (key !== undefined) this.#keys.set(key, id);
+    if (key !== undefined) (pending?.keys ?? this.#keys).set(key, id);
     return { jobId: id };
   }
   /** Explicitly fires a scheduled occurrence; the fake does not interpret cron time. */

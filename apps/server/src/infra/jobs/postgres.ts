@@ -11,6 +11,7 @@ import { instantSchema, idSchema } from '@plaingym/shared/contracts';
 import { clock as systemClock } from '../../core/clock.js';
 import { describeError, logError } from '../../core/log.js';
 import type { Jobs, JobOptions, JobHandler, HandleOptions, JobContext, JobRecovery, FailedJob } from './index.js';
+import { assertJobTransaction, type JobTransaction } from './transaction.js';
 import { cronOccurrences, occurrenceKey, validateCron } from './cron.js';
 
 type Scope = { forGym: typeof forGym; forSystem: typeof forSystem };
@@ -143,10 +144,15 @@ export class PostgresJobs implements Jobs, JobRecovery {
     this.handle(name, handler, options);
     this.#schedules.set(name, cron);
   }
-  async enqueue(name: string, payload: unknown, options: JobOptions): Promise<{ jobId: string }> {
-    assertNoTransaction('jobs.enqueue');
+  async enqueue(name: string, payload: unknown, options: JobOptions, transaction?: JobTransaction): Promise<{ jobId: string }> {
+    if (transaction) {
+      assertJobTransaction(transaction, options.gymId);
+      const [context] = await transaction.tx.execute<{ gymId: string; system: string | null }>(sql`
+        select current_setting('app.gym_id', true) as "gymId", current_setting('app.system', true) as system`);
+      if (context?.gymId !== options.gymId || context.system === 'on') throw new Error('Job transaction has the wrong database scope');
+    } else assertNoTransaction('jobs.enqueue');
     idSchema.parse(options.gymId);
-    return this.#enqueue(name, payload, options, options.gymId);
+    return this.#enqueue(name, payload, options, options.gymId, undefined, transaction?.tx);
   }
   /** Install jobs have an explicit null gym context and a separate handler registry. */
   async enqueueSystem(name: string, payload: unknown, options: SystemJobOptions): Promise<{ jobId: string }> {
@@ -154,7 +160,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
     return this.#enqueue(name, payload, options, null);
   }
   async #enqueue(name: string, payload: unknown, options: SystemJobOptions, gymId: string | null,
-    schedule?: Envelope['schedule'] & { name: string }): Promise<{ jobId: string }> {
+    schedule?: Envelope['schedule'] & { name: string }, transaction?: Tx): Promise<{ jobId: string }> {
     if (!name) throw new Error('Job name is required');
     new Intl.DateTimeFormat('en', { timeZone: options.timezone });
     const maxAttempts = positive(options.maxAttempts ?? 3, 'maxAttempts');
@@ -183,6 +189,7 @@ export class PostgresJobs implements Jobs, JobRecovery {
       }
       throw new Error('Idempotent job disappeared');
     };
+    if (transaction) return insert(transaction);
     return gymId === null ? this.#database.forSystem(insert) : this.#database.forGym(gymId, insert);
   }
   /** `batch: false` leaves batch-lane jobs for later, when this process has no batch slot free. */

@@ -7,6 +7,8 @@ import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
+import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
+import { redactCustomerJob } from './erasure-redaction.js';
 
 // Deliberate projections keep medical notes and credentials out of every normal roster.
 const memberFields = { id: members.id, householdId: members.householdId, firstName: members.firstName,
@@ -91,9 +93,11 @@ export function createMembersService(options: MembersOptions = {}) {
       return (await service.eraseMember(context, id, input)).member;
     },
     /** Returns released storage keys, revoked cards and the household's erased provider customer for cleanup after the erasure commits. */
-    async eraseMember(context: MutationContext, id: string, input: c.AnonymizeMemberRequest) {
+    async eraseMember(context: MutationContext, id: string, input: c.AnonymizeMemberRequest,
+      redaction?: { jobs: Pick<Jobs, 'enqueue'>; timezone: string }) {
       const { revision } = c.anonymizeMemberRequestSchema.parse(input);
-      return scope(context.gymId, async (tx) => {
+      return withJobTransaction(scope, context.gymId, async (transaction) => {
+        const { tx } = transaction;
         const before = await getMemberRow(tx, id);
         const home = await getHouseholdRow(tx, before.householdId);
         editable(before); const guard = revisionGuard(members.revision, revision), now = clock.now();
@@ -157,6 +161,11 @@ export function createMembersService(options: MembersOptions = {}) {
         // The cleared provider customer ID (not personal data) stays on record until its redaction is confirmed.
         await audit(tx, context, last ? 'household.anonymized' : 'household.pin.cleared', 'household', home.id,
           billing?.customerId ? { stripeCustomerId: billing.customerId } : undefined);
+        // The cleared ID and its durable provider cleanup commit together; provider calls stay after commit.
+        if (billing?.customerId && redaction) await redaction.jobs.enqueue(redactCustomerJob, { customerId: billing.customerId }, {
+          gymId: context.gymId, timezone: redaction.timezone, idempotencyKey: `redact:${billing.customerId}`,
+          maxAttempts: 12, runAt: new Date(clock.now().getTime() + 60_000),
+        }, transaction);
         return { member: member(row), freedSessionIds, revokedCards, erasedCustomerId: billing?.customerId ?? null, files: [...(before.photoKey ? [before.photoKey] : []), ...waivers.map((waiver) => waiver.key)] };
       });
     },

@@ -79,13 +79,8 @@ export function createMembersRoutes(service?: MembersService, uploadsFor?: Membe
     }),
     jsonRoute(contracts.anonymizeMember, async (ctx, p, _q, b) => {
       const { revision } = c.anonymizeMemberRequestSchema.parse(b), { service, uploadsFor, detachCard, redactCustomer, jobs } = current();
-      const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), p.memberId!, { revision });
-      // The household no longer stores the customer ID, so queue its redaction before any other follow-up can fail.
-      // It runs a minute later, after the inline attempt below, and then finds the customer already redacted.
-      if (erasedCustomerId && jobs) await jobs.enqueue(redactCustomerJob, { customerId: erasedCustomerId }, {
-        gymId: ctx.gym.gymId, timezone: ctx.gym.timezone, idempotencyKey: `redact:${erasedCustomerId}`, maxAttempts: 12,
-        runAt: new Date(ctx.clock.now().getTime() + 60_000),
-      });
+      const { member, files, revokedCards, freedSessionIds, erasedCustomerId } = await service.eraseMember(mutation(ctx), p.memberId!, { revision },
+        jobs ? { jobs, timezone: ctx.gym.timezone } : undefined);
       for (const sessionId of freedSessionIds) await promoteWaitlist(ctx.gym.gymId, sessionId,
         current().clock ? { clock: current().clock! } : {});
       // Queue every detach before attempting it, so an outage leaves durable retries. An erasure also clears each card's billing

@@ -29,10 +29,13 @@ past-due invoices for review. `eraseMember` returns `files`, `revokedCards` and
 `erasedCustomerId` (the cleared Stripe customer ID) for storage cleanup, provider
 detachment and customer redaction after commit. The runtime passes the billing
 detach callback, the customer redaction callback (`Payments.redactCustomer`) and
-the job queue through `configureMembers`; the route queues a detach job for each
-revoked card and a `members.erasure.redact_customer` job carrying the customer ID
-before attempting either call; the redaction job is queued first, to run a minute
-later (after the inline attempt), and the
+the job queue through `configureMembers`. The route passes the queue and timezone
+into `eraseMember`, which inserts the `members.erasure.redact_customer`
+job carrying the customer ID in the erasure transaction: the erasure and job both
+commit or both roll back. Its key remains `redact:<customer ID>`, with 12 attempts
+and a one-minute delay after the inline attempt. No job is inserted without a
+cleared customer ID. The route queues detach jobs for revoked cards after commit,
+before attempting either provider call, and the
 `household.anonymized` audit event records the cleared customer ID. The Stripe
 Customer is kept for the books: its name
 becomes `Erased member` and its email, phone, address, shipping details, description, individual and business names and invoice
@@ -98,5 +101,8 @@ route for all staff roles, foreign-gym resource IDs, and non-staff principals
 (household payers/adults, signed links, kiosks and anonymous requests). It also
 covers revision races, tag filtering, PINs, anonymization with retained accounting
 and attendance rows, and photo storage/cleanup.
+
+`erasure-transaction.test.ts` covers erasure/job commit and rollback, including
+failure after the writes and the no-customer case, with the fake and PostgreSQL queues.
 
 The gate is `pnpm check-types`, `pnpm lint`, `pnpm test` and `pnpm compliance`.

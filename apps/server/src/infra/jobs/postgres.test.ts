@@ -13,7 +13,7 @@ import { setLogSink } from '../../core/log.js';
 import { jobsContract, infraContractGyms } from '../../core/registry-infra-contracts.js';
 import { PostgresJobs, PostgresJobStatsQuery, retentionJob, startJobsWorker } from './postgres.js';
 import { cronOccurrences, occurrenceKey } from './cron.js';
-import { FakeJobs, type Jobs, type JobOptions, type JobRecovery } from './index.js';
+import { FakeJobs, withJobTransaction, type JobTransaction, type Jobs, type JobOptions, type JobRecovery } from './index.js';
 
 const database = useTestDatabase();
 const factory = createFactories(database);
@@ -44,6 +44,78 @@ async function until(predicate: () => Promise<boolean>) {
 }
 
 jobsContract('Postgres Jobs contract', async () => queue());
+
+describe.each(['fake', 'postgres'] as const)('%s caller-transaction enqueue contract', kind => {
+  function subject() {
+    const q = kind === 'fake' ? new FakeJobs(clock) : new PostgresJobs({ clock, database: {
+      forGym: async () => { throw new Error('Enqueue opened another gym scope'); },
+      forSystem: async () => { throw new Error('Enqueue opened a system scope'); },
+    } });
+    return { q, ids: async () => q instanceof FakeJobs ? q.jobs.map(job => job.id) : (await rows()).map(job => job.id) };
+  }
+  it('commits its job, deduplicates on the caller handle, and opens no queue scope', async () => {
+    const { q, ids } = subject();
+    const opts = { ...options, idempotencyKey: 'transaction' };
+    let saved!: JobTransaction;
+    const first = await withJobTransaction(database.forGym, gymA, async transaction => {
+      saved = transaction;
+      const job = await q.enqueue('atomic', { value: 1 }, opts, transaction);
+      expect(await q.enqueue('atomic', { value: 2 }, opts, transaction)).toEqual(job);
+      if (q instanceof FakeJobs) expect(q.jobs).toEqual([]);
+      return job;
+    });
+    expect(await ids()).toEqual([first.jobId]);
+    await withJobTransaction(database.forGym, gymA, async transaction => {
+      expect(await q.enqueue('atomic', {}, opts, transaction)).toEqual(first);
+    });
+    await expect(q.enqueue('atomic', {}, opts, saved)).rejects.toThrow('active');
+  });
+  it('discards the inserted job and its key on rollback, allowing a later retry', async () => {
+    const { q, ids } = subject();
+    const opts = { ...options, idempotencyKey: 'rollback' };
+    let rolledBackId = '';
+    await expect(withJobTransaction(database.forGym, gymA, async transaction => {
+      rolledBackId = (await q.enqueue('atomic', {}, opts, transaction)).jobId;
+      throw new Error('failure before commit');
+    })).rejects.toThrow('failure before commit');
+    expect(await ids()).toEqual([]);
+    const retried = await withJobTransaction(database.forGym, gymA, transaction => q.enqueue('atomic', {}, opts, transaction));
+    expect(retried.jobId).not.toBe(rolledBackId);
+    expect(await ids()).toEqual([retried.jobId]);
+  });
+  it('rejects implicit enqueue and a foreign gym without publishing a job', async () => {
+    const { q, ids } = subject();
+    await withJobTransaction(database.forGym, gymA, async transaction => {
+      await expect(q.enqueue('atomic', {}, options)).rejects.toThrow('cannot run inside a transaction');
+      await expect(q.enqueue('atomic', {}, { ...options, gymId: gymB }, transaction)).rejects.toThrow('job gym');
+    });
+    expect(await ids()).toEqual([]);
+  });
+  it.each([false, true])('deduplicates a competing caller after the first transaction settles (rollback=%s)', async rollback => {
+    const { q, ids } = subject(), inserted = latch(), competing = latch();
+    const opts = { ...options, idempotencyKey: 'competing' };
+    let firstId = '';
+    // Attach rejection handling before the other transaction releases this one.
+    const first = withJobTransaction(database.forGym, gymA, async transaction => {
+      const job = await q.enqueue('atomic', {}, opts, transaction);
+      firstId = job.jobId;
+      inserted.resolve();
+      await competing.promise;
+      if (rollback) throw new Error('rollback first');
+      return job;
+    }).catch(error => { if (!rollback) throw error; return null; });
+    await inserted.promise;
+    const second = withJobTransaction(database.forGym, gymA, transaction => {
+      const job = q.enqueue('atomic', {}, opts, transaction);
+      competing.resolve();
+      return job;
+    });
+    const [one, two] = await Promise.all([first, second]);
+    expect(await ids()).toEqual([two.jobId]);
+    if (rollback) { expect(one).toBeNull(); expect(two.jobId).not.toBe(firstId); }
+    else expect(two).toEqual(one);
+  });
+});
 
 describe('Postgres enqueue and execution', () => {
   it('retries the insert when retention deletes the conflicting row before its lookup', async () => {
@@ -81,6 +153,14 @@ describe('Postgres enqueue and execution', () => {
     expect(conflicted).toBe(true);
     expect(replacement.jobId).not.toBe(original.jobId);
     expect((await rows()).map(r => r.id)).toEqual([replacement.jobId]);
+  });
+  it('rejects a caller wrapper around another gym or a system database scope', async () => {
+    const q = queue();
+    const wrongGym: typeof database.forGym = (_gymId, fn) => database.forGym(gymB, fn);
+    const system: typeof database.forGym = (_gymId, fn) => database.forSystem(fn);
+    for (const scope of [wrongGym, system]) await expect(withJobTransaction(scope, gymA,
+      transaction => q.enqueue('atomic', {}, options, transaction))).rejects.toThrow('wrong database scope');
+    expect(await rows()).toEqual([]);
   });
   it('stores only error names and codes, without private messages or query parameters', async () => {
     const q = queue();

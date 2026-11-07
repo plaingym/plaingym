@@ -155,6 +155,13 @@ other jobs. Jobs are at-least-once, so every
 external effect uses an idempotency key. Cron schedules are evaluated per gym in
 the gym's timezone. Finished jobs are pruned on a retention schedule.
 
+Producers that need a job to commit with application writes use
+`withJobTransaction(forGym, gymId, callback)` and pass its caller transaction to
+`Jobs.enqueue` as the optional fourth argument. Enqueue uses that same gym-scoped
+handle for insertion and deduplication; ordinary enqueue inside a transaction is
+rejected. The last household member's erasure queues customer redaction this way,
+then calls the payment provider after commit.
+
 ## Billing
 
 Billing uses the gym's own Stripe account. The local `invoices` table is the
