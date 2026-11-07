@@ -65,6 +65,12 @@ it('schedules daily job retention on the worker queue, keeping billing alert job
   const kept = await database.forSystem(tx => tx.select({ id: jobs.id }).from(jobs).where(inArray(jobs.id, [alert.id, other.id])));
   expect(kept).toEqual([{ id: alert.id }]);
 });
+it('registers the hourly lapsed refund sweep, and a run with nothing lapsed ends without a provider', async () => {
+  const handler = app.handlers.get('billing.payments.settle_lapsed');
+  expect(handler).toBeDefined();
+  // This runtime has no Stripe keys: with no lapsed reservation the sweep must not ask for a provider.
+  await expect(handler!({}, { gymId: app.sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 })).resolves.toBeUndefined();
+});
 it('registers the hourly per-gym portal invitation sweep, which leaves the install\'s other verification rows to the install sweep', async () => {
   const handler = app.handlers.get('members.portal-invitations.expire');
   expect(handler).toBeDefined();

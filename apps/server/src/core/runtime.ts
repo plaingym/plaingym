@@ -115,7 +115,7 @@ import { createMembershipService } from '../areas/billing/memberships.js';
 import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createPaymentService } from '../areas/billing/payments.js';
 import { configurePayments } from '../areas/billing/payments.routes.js';
-import { configurePaymentDelivery } from '../areas/billing/payments.jobs.js';
+import { configurePaymentDelivery, createLapsedRefundJobs } from '../areas/billing/payments.jobs.js';
 import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
 import { createAccountService } from '../infra/auth/accounts.js';
@@ -365,6 +365,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
       ...createPortalInvitationExpiryJobs(),
+      // Default lane: the per-gym cap of 1 keeps this sweep apart from the duplicate-refund workers.
+      ...createLapsedRefundJobs({ clock, transitions: billing.transitions, payments: requirePayments }),
       ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),
       ...createUploadSweepJobs({ uploadsFor: uploads.forGym, backupsConfigured: () => mode === 'multi' ? Promise.resolve(false) : backupsConfigured(key),
         ...(env.MAINTENANCE_DATABASE_URL ? { locked: (action) => new PostgresMaintenance(env.MAINTENANCE_DATABASE_URL!).locked(action) } : {}) })] };
