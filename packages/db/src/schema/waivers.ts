@@ -7,8 +7,18 @@ import { members } from './members.js';
 export const waiverTemplates = pgTable('waiver_templates', {
   ...base(), name: text('name').notNull(), kind: text('kind').notNull().default('waiver'),
   version: integer('version').notNull(), body: text('body').notNull(), retiredAt: instant('retired_at'),
+  documentKey: text('document_key'), documentHash: text('document_hash'),
+  documentPages: integer('document_pages'), documentBytes: integer('document_bytes'),
 }, (t) => [...scoped('waiver_templates', t), unique('waiver_templates_version_key').on(t.gymId, t.name, t.version),
   choice('waiver_templates_kind_check', t.kind, ['waiver', 'agreement']),
+  check('waiver_templates_content_check', sql`(
+    length(trim(${t.body})) > 0 and ${t.documentKey} is null and ${t.documentHash} is null and ${t.documentPages} is null and ${t.documentBytes} is null
+  ) or (
+    ${t.body} = '' and ${t.documentKey} is not null and ${t.documentKey} like ${t.gymId}::text || '/waivers/templates/%.pdf'
+    and ${t.documentHash} is not null and ${t.documentHash} ~ '^[a-f0-9]{64}$'
+    and ${t.documentPages} is not null and ${t.documentPages} between 1 and 20
+    and ${t.documentBytes} is not null and ${t.documentBytes} between 1 and 10485760
+  )`),
   check('waiver_templates_version_check', sql`${t.version} > 0`)]).enableRLS();
 export const waiverSignatures = pgTable('waiver_signatures', {
   ...base(), memberId: uuid('member_id').notNull(), templateId: uuid('template_id').notNull(),

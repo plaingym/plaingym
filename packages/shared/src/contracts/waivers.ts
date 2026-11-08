@@ -6,9 +6,12 @@ import { dateSchema, idSchema, instantSchema, listResponseSchema, paginationSche
 export const waiverKindSchema = z.enum(['waiver', 'agreement']);
 export const waiverTemplateVersionSchema = z.int32().positive();
 export const waiverDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const waiverDocumentSchema = z.strictObject({
+  key: z.string().min(1), hash: waiverDigestSchema, pages: z.int().min(1).max(20), bytes: z.int().min(1).max(10 * 1024 * 1024),
+});
 export const waiverTemplateSchema = z.strictObject({
   id: idSchema, name: z.string().min(1), kind: waiverKindSchema,
-  version: waiverTemplateVersionSchema, body: z.string().min(1),
+  version: waiverTemplateVersionSchema, body: z.string(), document: waiverDocumentSchema.optional(),
   retiredAt: instantSchema.nullable(), createdAt: instantSchema,
 });
 // Families are identified by name. Select the latest version before filtering
@@ -19,15 +22,17 @@ export const waiverTemplateListQuerySchema = paginationSchema.extend({
 });
 export const waiverTemplateListResponseSchema = listResponseSchema(waiverTemplateSchema);
 export const waiverTemplateResponseSchema = z.strictObject({ data: waiverTemplateSchema });
-export const waiverCreateTemplateRequestSchema = waiverTemplateSchema.pick({ name: true, kind: true, body: true });
+const templateInput = waiverTemplateSchema.pick({ name: true, kind: true, document: true }).extend({ body: z.string().default('') });
+const oneContent = (input: { body: string; document?: unknown }) => input.document ? input.body === '' : input.body.trim().length > 0;
+export const waiverCreateTemplateRequestSchema = templateInput.refine(oneContent, 'Provide either waiver text or a PDF document');
 // Templates are published as immutable versions. Services compare expectedVersion
 // with the current family version, returning the shared conflict error on a stale save.
 // Under the same per-family lock as publication, retirement checks the latest
 // family version and marks that immutable version retired. Repeating retirement is idempotent; publishing
 // a new version makes an older expectedVersion conflict. No row revision is needed.
-export const waiverPublishTemplateRequestSchema = waiverCreateTemplateRequestSchema.extend({
+export const waiverPublishTemplateRequestSchema = templateInput.extend({
   expectedVersion: waiverTemplateVersionSchema,
-});
+}).refine(oneContent, 'Provide either waiver text or a PDF document');
 export const waiverRetireTemplateRequestSchema = z.strictObject({ expectedVersion: waiverTemplateVersionSchema });
 export const waiverTemplateParamsSchema = z.strictObject({ templateId: idSchema });
 export const waiverSignatureParamsSchema = z.strictObject({ signatureId: idSchema });
@@ -39,7 +44,7 @@ export const waiverSignerSchema = z.discriminatedUnion('kind', [
 // Services validate this complete record, serialize it once, and hash its UTF-8
 // bytes. Reads and PDFs keep using that original text after a template changes.
 export const waiverSigningSnapshotSchema = z.strictObject({
-  template: waiverTemplateSchema.pick({ id: true, name: true, kind: true, version: true, body: true }),
+  template: waiverTemplateSchema.pick({ id: true, name: true, kind: true, version: true, body: true, document: true }),
   member: z.strictObject({ id: idSchema, firstName: z.string().min(1), lastName: z.string().min(1), dateOfBirth: dateSchema.nullable() }),
   signer: waiverSignerSchema, signedAt: instantSchema,
   commitmentEndsOn: dateSchema.nullable().optional(),
@@ -76,9 +81,23 @@ export const waiverUploadRequestSchema = z.strictObject({
 export const waiverUploadResponseSchema = z.strictObject({ data: z.strictObject({
   signatureImageKey: z.string().min(1), signatureImageHash: waiverDigestSchema,
 }) });
+export const waiverDocumentResponseSchema = z.strictObject({ data: waiverDocumentSchema });
+
+export const waiverDocumentReadContracts = {
+  portal: { method: 'get', path: '/api/portal/waiver-templates/{templateId}/document', permission: { kind: 'member', capability: 'waivers.self' },
+    params: waiverTemplateParamsSchema, response: waiverPdfResponseSchema.extend({ householdId: idSchema }) },
+  household: { method: 'get', path: '/api/portal/household/waiver-templates/{templateId}/document', permission: { kind: 'member', capability: 'waivers.household' },
+    params: waiverTemplateParamsSchema, response: waiverPdfResponseSchema.extend({ householdId: idSchema }) },
+  public: { method: 'get', path: '/api/public/waivers/{templateId}/document', permission: { kind: 'public' },
+    params: waiverTemplateParamsSchema, query: z.strictObject({ view: z.literal('1').optional() }), response: waiverPdfResponseSchema },
+  link: { method: 'get', path: '/api/links/sign-waiver/templates/{templateId}/document', permission: { kind: 'signed_link', purpose: 'sign_waiver' },
+    params: waiverTemplateParamsSchema, response: waiverPdfResponseSchema },
+} as const satisfies Record<string, EndpointContract>;
 
 
 export const waiverContracts = {
+  uploadDocument: { method: 'post', path: '/api/waivers/template-documents', permission: { kind: 'staff', capability: 'settings.manage' }, response: waiverDocumentResponseSchema },
+  document: { method: 'get', path: '/api/waivers/templates/{templateId}/document', permission: { kind: 'staff', capability: 'members.read' }, params: waiverTemplateParamsSchema, response: waiverPdfResponseSchema },
   uploadSignature: { method: 'post', path: '/api/waivers/signature-images', permission: { kind: 'staff', capability: 'members.manage' }, body: waiverUploadRequestSchema, response: waiverUploadResponseSchema },
   listTemplates: { method: 'get', path: '/api/waivers/templates', permission: { kind: 'staff', capability: 'members.read' }, query: waiverTemplateListQuerySchema, response: waiverTemplateListResponseSchema },
   createTemplate: { method: 'post', path: '/api/waivers/templates', permission: { kind: 'staff', capability: 'settings.manage' }, body: waiverCreateTemplateRequestSchema, response: waiverTemplateResponseSchema },
@@ -90,6 +109,7 @@ export const waiverContracts = {
 } as const satisfies Record<string, EndpointContract>;
 
 export type WaiverKind = z.infer<typeof waiverKindSchema>;
+export type WaiverDocument = z.infer<typeof waiverDocumentSchema>;
 export type WaiverTemplate = z.infer<typeof waiverTemplateSchema>;
 export type WaiverTemplateListQuery = z.infer<typeof waiverTemplateListQuerySchema>;
 export type WaiverCreateTemplateRequest = z.infer<typeof waiverCreateTemplateRequestSchema>;

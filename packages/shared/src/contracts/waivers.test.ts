@@ -64,7 +64,7 @@ describe('waiver version and signature contracts', () => {
     expect(waiverTemplateListQuerySchema.safeParse({ includeRetired: true }).success).toBe(false);
   });
   it('declares staff permissions for every endpoint and limits template changes to managers', () => {
-    const managers = new Set(['createTemplate', 'publishTemplate', 'retireTemplate']);
+    const managers = new Set(['createTemplate', 'publishTemplate', 'retireTemplate', 'uploadDocument']);
     for (const [name, contract] of Object.entries(waiverContracts)) {
       expect(isRoutePermission(contract.permission)).toBe(true);
       for (const role of staffRoles) {
@@ -85,7 +85,8 @@ describe('waiver version and signature contracts', () => {
     type SignatureRow = typeof waiverSignatures.$inferSelect;
     expectTypeOf<Pick<WaiverTemplate, 'id' | 'name' | 'version' | 'body'>>().toEqualTypeOf<Pick<TemplateRow, 'id' | 'name' | 'version' | 'body'>>();
     expectTypeOf<Pick<WaiverSignature, 'id' | 'memberId' | 'templateId' | 'snapshot' | 'snapshotHash' | 'signatureImageKey' | 'signatureImageHash'>>().toEqualTypeOf<Pick<SignatureRow, 'id' | 'memberId' | 'templateId' | 'snapshot' | 'snapshotHash' | 'signatureImageKey' | 'signatureImageHash'>>();
-    expectTypeOf<Exclude<keyof WaiverTemplate, keyof TemplateRow>>().toEqualTypeOf<never>();
+    // The public document reference combines the four nullable storage columns.
+    expectTypeOf<Exclude<keyof WaiverTemplate, keyof TemplateRow>>().toEqualTypeOf<'document'>();
     expectTypeOf<Exclude<keyof WaiverSignature, keyof SignatureRow>>().toEqualTypeOf<never>();
   });
 });

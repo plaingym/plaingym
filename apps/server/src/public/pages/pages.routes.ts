@@ -2,7 +2,7 @@
 import { z } from 'zod';
 import { bodyLimit } from 'hono/body-limit';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
-import { publicContracts as contracts, paginationSchema, publicTrialRequestSchema } from '@plaingym/shared/contracts';
+import { publicContracts as contracts, paginationSchema, publicTrialRequestSchema, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import { route, type RouteRegistration } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { setPolicy } from '../../core/csp.js';
@@ -11,8 +11,9 @@ import { createPublicPagesService, type PublicPagesOptions, type PublicPagesServ
 import { intakePage, publicPageDirectives, themeCss } from './page.js';
 import { publicBrowserScript } from './browser.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
+import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 
-const translator = createTranslator({ 'public/pages': messages });
+const translator = createTranslator({ 'public/pages': messages, 'waivers/waivers': waiverMessages });
 const stylesheet = cachedLinkAsset('./public/links.css');
 interface PublicRoutesOptions { service: PublicPagesService; t?: Translator; stylesheet?: () => Promise<string> }
 let configured: PublicRoutesOptions | undefined;
@@ -37,6 +38,12 @@ export function createPublicRoutes(supplied?: PublicRoutesOptions): readonly Rou
     });
   } });
   const result: RouteRegistration[] = [
+    route({ ...waiverDocumentReadContracts.public, middleware: rateLimit({ limit: 10 }),
+      request: { params: waiverDocumentReadContracts.public.params, query: waiverDocumentReadContracts.public.query },
+      responses: { ...json(waiverDocumentReadContracts.public.response), 302: { description: 'Open the waiver document' } } }, async ctx => {
+      const result = await options().service.document(ctx.get('context').gym.gymId, ctx.req.valid('param').templateId);
+      return ctx.req.valid('query').view === '1' ? ctx.redirect(result.data.url, 302) : ctx.json(result, 200);
+    }),
     route({ ...contracts.config, responses: json(contracts.config.response) }, async ctx => ctx.json(await options().service.config(ctx.get('context').gym.gymId), 200)),
     route({ ...contracts.waivers, request: { query: paginationSchema }, responses: json(contracts.waivers.response) }, async ctx =>
       ctx.json(await options().service.templates(ctx.get('context').gym.gymId, ctx.req.valid('query')), 200)),

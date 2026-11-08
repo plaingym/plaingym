@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { auditEvents, invoices, waiverSignatures, uuidv7 } from '@plaingym/db';
+import { auditEvents, invoices, waiverSignatures, waiverTemplates, uuidv7 } from '@plaingym/db';
 import { createTranslator } from '@plaingym/shared';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -14,6 +14,8 @@ import { areaContributions } from '../../core/registry-areas.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
+import { createWaiverDocumentDelivery } from '../../areas/waivers/document-delivery.js';
+import { waiverDocumentFixture } from '../../areas/waivers/document.fixture.js';
 import { createSignedLinkCheckout, CustomerNotLinked } from '../../areas/billing/signed-link-checkout.js';
 import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
 import { registerBillingWebhookHandlers } from '../../areas/billing/webhooks/handlers/index.js';
@@ -51,7 +53,9 @@ async function fixture(purpose: SignedLinkPurposeName = 'pay_invoice', customer 
   const provider = new FakePayments(gymId, clock), uploads = new FakeUploads(gymId, clock);
   // The household's customer is in the gym's Stripe account: Checkout reads a stored ID the app didn't link before using it.
   if (household.stripeCustomerId) provider.seedCustomer({ id: household.stripeCustomerId, email: household.email ?? 'payer@example.invalid' });
-  const waivers =createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => demo ? demoUploads(uploads) : uploads });
+  const uploadsFor = async () => demo ? demoUploads(uploads) : uploads;
+  const documentDelivery = createWaiverDocumentDelivery({ uploadsFor, clock, key: new Uint8Array(32).fill(8), originFor: async () => 'https://gym.example.test' });
+  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor, documentDelivery });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => provider, originFor: async () => 'https://gym.example.test' });
   const config = authConfig({ AUTH_SECRET: 'onboarding-test-secret-at-least-32-characters', AUTH_PASSWORD_LOGIN: 'on' }, false);
   const portalInvitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold, smtpConfigured: async () => false, mailer: async () => null, loginLink: async () => undefined });
@@ -242,8 +246,16 @@ describe('signed-link pages through production registrations', () => {
     const html = await response.text(); expect(html).toContain(state === 'used' ? 'Already done' : 'This link is unavailable');
     expect(html).not.toContain('Target'); expect(html).not.toContain('original terms');
   });
-  it('uploads through the waiver service, requires a guardian, stores immutable original terms, and consumes the link atomically', async () => {
+  it.each([false, true])('stores immutable guardian-signed terms and consumes the link (PDF: %s)', async pdfTemplate => {
     const f = await fixture('sign_waiver');
+    if (pdfTemplate) {
+      const document = await f.waivers.uploadDocument({ gymId: f.gymId, actor: { kind: 'system' } }, await waiverDocumentFixture());
+      await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set({ body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes }).where(eq(waiverTemplates.id, f.template.id)));
+      expect((await f.request(`/api/links/sign-waiver/templates/${f.template.id}/document`)).status).toBe(200);
+      expect((await f.app().request(`/l/${f.link.token}/documents/${f.template.id}`)).status).toBe(302);
+      expect((await f.app(uuidv7()).request(`/l/${f.link.token}/documents/${f.template.id}`)).status).toBe(404);
+      expect(await (await f.app().request(`/l/${f.link.token}`)).text()).toContain('Open the document');
+    }
     const upload = await f.request(f.path + '/signature-images', 'POST', { pngBase64: demoSignaturePng().toString('base64') });
     expect(upload.status).toBe(200);
     const image = actions.uploadWaiver.response.parse(await upload.json()).data;
@@ -252,7 +264,7 @@ describe('signed-link pages through production registrations', () => {
     const signed = await f.request(f.path, 'POST', { ...input, signer: { kind: 'guardian', name: 'Parent', relationship: 'Mother' } });
     expect(signed.status, await signed.clone().text()).toBe(200);
     const signature = contracts.signWaiver.response.parse(await signed.json()).data;
-    expect(signature.snapshot).toContain('Read these original terms.');
+    expect(signature.snapshot).toContain(pdfTemplate ? '"document":' : 'Read these original terms.');
     expect(signature.snapshot).toContain('Mother');
     expect((await f.links.resolve(f.gymId, f.link.token)).status).toBe('used');
     expect((await f.request(f.path, 'POST', input)).status).toBe(404);

@@ -6,6 +6,12 @@ import { claimPortal, outboxIds, outboxLink, signaturePng } from '../portal.js';
 interface Entry { method: string; path: string; permission: { kind: string; purpose?: string } }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
 const key = (entry: Entry) => `${entry.method} ${entry.path}`;
+// Current templates belong to the gym. Signed records below remain household-private.
+// Positive PDF reads by two households are exercised in waivers.spec.ts.
+const currentTemplateReads = new Set([
+  'GET /api/portal/waiver-templates/{templateId}/document',
+  'GET /api/portal/household/waiver-templates/{templateId}/document',
+]);
 interface Member extends RecordId { firstName: string; lastName: string }
 /** One household's resources, read through its own portal login. */
 interface Household {
@@ -66,6 +72,7 @@ async function sweepPortal(own: Household, target: Household, sessionId: string,
     'POST /api/portal/household/waivers/signature-images': { memberId: foreign.id, pngBase64: image },
   };
   for (const entry of inventory.filter(item => item.permission.kind === 'member')) {
+    if (currentTemplateReads.has(key(entry))) continue;
     const names = [...entry.path.matchAll(/\{(\w+)\}/g)].map(match => match[1]!);
     if (!names.length && !(key(entry) in bodyTargets)) continue;
     // A route with a member and a booking also tries the caller's own member with the other household's booking.
@@ -87,7 +94,7 @@ async function sweepPortal(own: Household, target: Household, sessionId: string,
 async function sweepReads(own: Household, target: Household) {
   const from = new Date(Date.now() - 7 * 86_400_000).toISOString(), to = new Date(Date.now() + 14 * 86_400_000).toISOString();
   const ids: Record<string, string> = { memberId: own.members[0]!.id, invoiceId: own.invoiceIds[0] ?? missingId,
-    signatureId: own.signatureIds[0] ?? missingId, id: own.bookingIds[0] ?? missingId };
+    signatureId: own.signatureIds[0] ?? missingId, id: own.bookingIds[0] ?? missingId, templateId: own.template.id };
   for (const entry of inventory.filter(item => item.permission.kind === 'member' && item.method === 'GET')) {
     const query = entry.path === '/api/portal/schedule' ? `?from=${from}&to=${to}&limit=100&offset=0`
       : ['/api/portal/invoices', '/api/portal/bookings'].includes(entry.path) ? '?limit=100&offset=0' : '';
@@ -161,7 +168,8 @@ test('household A and B logins, signed links, PINs and QR codes are refused on e
           : entry.path === '/api/links/onboarding/waivers' ? { memberId: foreign, templateId: b.template.id, templateVersion: b.template.version,
             signer: { kind: 'self', name: 'Cross household' }, signatureImageKey: 'cross-household', signatureImageHash: '0'.repeat(64), consent: true }
             : {};
-      const response = await link.request(entry.path, entry.method, body);
+      const path = entry.path.replace('{templateId}', a.template.id);
+      const response = await link.request(path, entry.method, body);
       const detail = `${key(entry)} with a ${purpose} link: ${response.status} ${response.text}`;
       for (const secret of secrets(b)) expect(response.text, detail).not.toContain(secret);
       // A link opens only the routes of its own purpose; on them, the other household's member is never found.
@@ -169,6 +177,8 @@ test('household A and B logins, signed links, PINs and QR codes are refused on e
       // A sign-waiver link fixes its member, so its routes take no member at all and refuse a body that names one.
       else if (entry.path.startsWith('/api/links/sign-waiver/') && body) expect(response.status, detail).toBe(400);
       else if (body && typeof body === 'object' && 'memberId' in body) expect([403, 404], detail).toContain(response.status);
+      // Seeded demo templates are text, so they have no uploaded document.
+      else if (entry.path === '/api/links/sign-waiver/templates/{templateId}/document') expect(response.status, detail).toBe(404);
       else if (entry.method === 'GET') expect(response.status, detail).toBe(200);
       // Its own actions run for household A only (or refuse the empty body); none may fail unhandled.
       else expect(response.status, detail).toBeLessThan(500);

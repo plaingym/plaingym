@@ -16,6 +16,7 @@ import { StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { conflict, gymToday, knownMinor, needsGuardian, usePortalContext, usePortalScope, type PortalScope } from '../household/api.js';
 import { portalWaiverEndpoints, type PortalWaiverEndpoints } from './endpoints.js';
+import { WaiverDocument, useWaiverDocument } from '../../waivers/document.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/waivers:' + key, values);
 type Person = { id: string; firstName: string; lastName: string; dateOfBirth: string | null };
@@ -82,6 +83,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
 export function SignWaiver({ template, member, minor, endpoints, scope, close, saved }: { template: WaiverTemplate; member: Person; minor: boolean;
   endpoints: PortalWaiverEndpoints; scope: PortalScope; close: () => void; saved: () => Promise<void> }) {
   const { own } = scope;
+  const document = useWaiverDocument(template, scope.key, async () => own(await scope.call(endpoints.document, undefined, { templateId: template.id })));
   const canvas = useRef<HTMLCanvasElement>(null), drawing = useRef(false), hasInk = useRef(false);
   const uploaded = useRef<{ signatureImageKey: string; signatureImageHash: string } | null>(null);
   const [typed, setTyped] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [changed, setChanged] = useState(false);
@@ -105,7 +107,7 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
     <form className="space-y-4" onSubmit={event => void submit(event)}>
       <h3 className="break-words font-semibold">{template.name} · {text('version', { version: template.version })}</h3>
       <p className="text-sm text-muted-foreground">{text('for', { name: `${member.firstName} ${member.lastName}` })}</p>
-      <div className="max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-border p-3" dir="auto" tabIndex={0}>{template.body}</div>
+      <WaiverDocument template={template} query={document} />
       {error && <Alert role="alert">{error}</Alert>}
       {minor && <p>{text('guardianNote')}</p>}
       <div><Label htmlFor="signer">{text(minor ? 'guardianName' : 'signer')}</Label><Input id="signer" name="signer" required maxLength={200} autoComplete="name" onChange={reset} /></div>
@@ -120,8 +122,8 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
           onPointerUp={() => { drawing.current = false; }} onPointerCancel={() => { drawing.current = false; }} />
         <Button type="button" variant="outline" disabled={busy} onClick={() => { canvas.current?.getContext('2d')?.clearRect(0, 0, 600, 180); hasInk.current = false; reset(); }}>{text('clear')}</Button></>}
       {typed && <canvas ref={canvas} width={600} height={180} className="hidden" aria-hidden="true" />}
-      <CheckboxField label={text('consent')} required />
-      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy}>{text('sign')}</Button><Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
+      <CheckboxField label={template.document ? t('waivers/waivers:documentConsent') : text('consent')} required />
+      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy || !!template.document && !document.data}>{text('sign')}</Button><Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
     </form>
   </Dialog>;
 }

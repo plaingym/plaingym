@@ -85,15 +85,30 @@ it('public route factories use the registered shared store before their validato
   }
   const allRoutes = [...createPublicRoutes(), ...createJoinRoutes()];
   const limited = allRoutes.filter(r => r.definition.middleware !== undefined);
-  expect(limited).toHaveLength(11);
+  const documentPath = '/api/public/waivers/{templateId}/document';
+  const intake = limited.filter(r => r.definition.path !== documentPath);
+  expect(intake).toHaveLength(11);
+  expect(limited.filter(r => r.definition.path === documentPath)).toHaveLength(1);
   const app = f.make(false, allRoutes);
-  for (const route of limited) {
+  for (const route of intake) {
     const response = await app.request(route.definition.path.replace(/\{[^}]+\}/g, 'invalid'), {
       method: route.definition.method.toUpperCase(),
       ...(route.definition.method === 'get' ? {} : { headers: { 'content-type': 'application/json', 'content-length': '13' }, body: '{invalid json' }),
     });
     expect(response.status, route.id).toBe(429);
   }
+  // Document reads have their own ten-per-client-per-minute download limit. An exhausted intake
+  // budget must not deny them; after ten attempts their own limiter precedes validation.
+  const buckets = () => db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.gymId, f.gymId)));
+  const before = await buckets();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    expect((await app.request('/api/public/waivers/invalid/document')).status).toBe(400);
+  }
+  const denied = await app.request('/api/public/waivers/invalid/document');
+  expect(denied.status).toBe(429);
+  expect(denied.headers.get('retry-after')).toBe('60');
+  expect((await app.request('/api/public/waivers/invalid/document', { headers: { 'test-ip': '192.0.2.2' } })).status).toBe(400);
+  expect(await buckets()).toEqual(before);
 });
 
 it('shares install-level buckets when no gym exists', async () => {

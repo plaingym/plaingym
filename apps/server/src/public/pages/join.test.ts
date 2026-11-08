@@ -7,7 +7,7 @@ import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
 import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, members, memberships, paymentMethods, plans, signedLinks,
-  waiverSignatures, uuidv7 } from '@plaingym/db';
+  waiverSignatures, waiverTemplates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError } from '@plaingym/shared';
@@ -18,6 +18,8 @@ import { TestClock } from '../../core/clock.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
+import { createWaiverDocumentDelivery } from '../../areas/waivers/document-delivery.js';
+import { waiverDocumentFixture } from '../../areas/waivers/document.fixture.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
 import { createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
@@ -70,7 +72,9 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const existingHome = await factory('households', gymId, { name: 'Existing household', email: 'existing@example.invalid' });
   const existing = await factory('members', gymId, { householdId: existingHome.id, status: 'active', email: 'existing@example.invalid', firstName: 'Private' });
   const provider = new FakePayments(gymId, clock), paymentsFor = async () => provider;
-  const uploads = new FakeUploads(gymId, clock), waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads });
+  const uploads = new FakeUploads(gymId, clock), uploadsFor = async () => uploads;
+  const documentDelivery = createWaiverDocumentDelivery({ uploadsFor, clock, key: new Uint8Array(32).fill(8), originFor: async () => origin });
+  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor, documentDelivery });
   const checkout = createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor, originFor: async () => origin });
   const config = mode === 'password' ? passwordConfig : emailConfig, mail = new FakeEmail(), sent: Parameters<PortalLoginLinkSender>[0][] = [];
   const invitations = createPortalInvitationService({ config, database: () => db.system.db, scope: db.forGym, householdScope: db.forHousehold,
@@ -293,8 +297,13 @@ describe('public join pages through the production registrations', () => {
     expect(Object.fromEntries(otherApi.data.map(p => [p.name, p.plusTax]))).toEqual({ Plain: true, 'Private other plan': false });
   });
 
-  it('activates a family only through the paid Checkout webhook, bills on the join-date anniversary and creates the portal login by email proof', async () => {
+  it.each([false, true])('activates a family only through paid Checkout with immutable waivers (PDF: %s)', async pdfTemplate => {
     const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout');
+    if (pdfTemplate) {
+      const document = await f.waivers.uploadDocument({ gymId: f.gymId, actor: { kind: 'system' } }, await waiverDocumentFixture());
+      await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set({ body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes }).where(eq(waiverTemplates.id, f.templates[0]!.id)));
+      expect(await (await f.get('/join?plan=' + f.plan.id)).text()).toContain('Open the document');
+    }
     const { response, cookie } = await f.submit([adult(), child()]);
     expect(response.status, await response.clone().text()).toBe(200);
     expect(publicSubmissionResponseSchema.parse(await response.json())).toEqual({ data: { status: 'received' } });

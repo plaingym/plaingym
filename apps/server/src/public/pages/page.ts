@@ -3,10 +3,18 @@ import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
+/** Native browser preview and a separate link also work without JavaScript. */
+export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
+  if (!template.document) return h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body);
+  return h('div', { class: 'min-w-0 space-y-2' },
+    preview ? h('iframe', { src: href, title: template.name, class: 'h-96 w-full rounded-lg border border-border', referrerpolicy: 'no-referrer' }) : null,
+    h('a', { href, target: '_blank', rel: 'noopener noreferrer', class: 'inline-flex min-h-11 items-center break-words underline' }, t('waivers/waivers:openDocument')),
+    h('p', { class: 'text-sm' }, t('waivers/waivers:documentHelp')));
+}
 
 /** The public pages' own policy (`/trial`, `/drop-in`, `/join`): script, styles and images from the app only. */
 export const publicPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self'", "base-uri 'none'",
-  "form-action 'self'", "frame-ancestors 'none'"];
+  "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
 export const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const inputClass = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'min-w-0 space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
@@ -63,7 +71,7 @@ function waiverForm(template: WaiverTemplate, i: number, t: Translator) {
     h('input', { type: 'hidden', name: prefix + '-template', value: template.id }),
     h('input', { type: 'hidden', name: prefix + '-version', value: template.version }),
     h('p', null, text('version', { version: template.version })),
-    h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body),
+    waiverDocumentView(template, t),
     h('p', null, text('guardianHelp')),
     h('label', { for: prefix + '-kind', class: 'block space-y-1' }, text('signerKind'),
       h('select', { id: prefix + '-kind', name: prefix + '-kind', class: inputClass }, h('option', { value: 'self' }, text('self')), h('option', { value: 'guardian' }, text('guardian')))),

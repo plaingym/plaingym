@@ -49,6 +49,9 @@ import { createCheckinCodeService } from '../areas/members/checkin-code.js';
 import { configureQrCheckin } from '../areas/kiosk/qr.routes.js';
 import { configureKiosk } from '../areas/kiosk/standing/standing.routes.js';
 import { configureWaivers } from '../areas/waivers/waivers.routes.js';
+import { createWaiverDocumentDelivery } from '../areas/waivers/document-delivery.js';
+import { documentByteLimit } from '../infra/pdf/document.js';
+import { defaultBodyLimits } from './body-limit.js';
 import { configureLinkPages } from '../public/links/links.routes.js';
 import { configurePublicPages } from '../public/pages/pages.routes.js';
 import { configureJoin } from '../public/pages/join.routes.js';
@@ -270,7 +273,11 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureQrCheckin({ codes: checkinCodes, uploadsFor: uploads.forGym, clock });
   configurePortalCheckin(checkinCodes);
   // Signature images and rendered waiver PDFs use the gym's file storage.
-  const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock });
+  const documentDelivery = createWaiverDocumentDelivery({
+    uploadsFor: uploads.forGym, originFor: gymOrigin, clock,
+    key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym waiver documents v1', 32)),
+  });
+  const waivers = configureWaivers({ uploadsFor: uploads.forGym, clock, documentDelivery });
   configurePortalWaivers(waivers);
   // Trial and drop-in staff notices are queued after the intake commits and sent to owners and admins by a job.
   const publicNotices = createPublicStaffNotices({ jobs: queue, accounts, clock,
@@ -389,6 +396,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const reportHostnames = new Map<string, string>();
   const app = createApp({
     contributions, clock, resolveGym: createTenantResolver({ mode }), tenancy: mode, authorize: createPortalAuthorization(),
+    // A waiver PDF may be up to 10 MiB; the default cap would stop it before the handler.
+    bodyLimits: { ...defaultBodyLimits, routes: { ...defaultBodyLimits.routes, '/api/waivers/template-documents': documentByteLimit } },
     ...(mode === 'multi' ? { cspReportHostnames: reportHostnames } : {}),
     // Signed-link routes resolve their own bearer after normal session loading.
     session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),

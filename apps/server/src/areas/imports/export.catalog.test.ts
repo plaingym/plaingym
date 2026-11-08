@@ -11,6 +11,21 @@ import { exportCatalog } from './export.catalog.js';
 const root = new URL('../../../../../', import.meta.url);
 const database = useTestDatabase(), factory = createFactories(database);
 describe('export schema coverage and secret exclusions', () => {
+  it('exports both waiver formats and retired PDF references only for the requested gym', async () => {
+    const gymA = uuidv7(), gymB = uuidv7();
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    const document = { documentKey: `${gymA}/waivers/templates/${uuidv7()}.pdf`, documentHash: 'a'.repeat(64), documentPages: 2, documentBytes: 1024 };
+    const text = await factory('waiverTemplates', gymA, { body: 'Original text terms.' });
+    const pdf = await factory('waiverTemplates', gymA, { body: '', ...document, retiredAt: new Date('2026-11-01T00:00:00Z') });
+    await factory('waiverTemplates', gymB, { body: '', ...document, documentKey: `${gymB}/waivers/templates/${uuidv7()}.pdf` });
+    const rows = await exportCatalog.waiver_templates.page(database.forGym, gymA, new Date('2099-01-01T00:00:00Z'));
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: text.id, body: text.body, document_key: null, document_hash: null, document_pages: null, document_bytes: null }),
+      expect.objectContaining({ id: pdf.id, body: '', document_key: document.documentKey, document_hash: document.documentHash,
+        document_pages: document.documentPages, document_bytes: document.documentBytes, retired_at: pdf.retiredAt }),
+    ]));
+  });
   it('exports annual anniversaries and processor timestamps from PostgreSQL only for the requested gym', async () => {
     const gymA = uuidv7(), gymB = uuidv7(), processorCreatedAt = new Date('2026-10-01T12:00:00Z');
     await factory('gyms', gymA); await factory('gyms', gymB);

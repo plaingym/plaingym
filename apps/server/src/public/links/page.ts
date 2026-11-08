@@ -6,12 +6,14 @@ import { zonedInstant } from '@plaingym/shared/time';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import { needsGuardian } from '../../areas/waivers/snapshot.js';
 import { formatMoney } from '../../core/money.js';
+import { waiverDocumentView } from '../pages/page.js';
 
 const button = 'inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg bg-primary px-4 py-3 text-center font-semibold text-primary-foreground disabled:opacity-50';
 const input = 'block min-h-11 w-full rounded-md border border-border bg-background px-3 py-2 text-base';
 const panel = 'space-y-4 rounded-xl border border-border bg-card p-4 sm:p-6';
 const h = jsx;
 export interface PageInput {
+  documentBase?: string;
   portalClaim?: { password: boolean } | undefined;
   data?: PortalSignedLinkData;
   state?: 'alreadyDone' | 'unavailable' | 'replaced' | 'cleared';
@@ -22,7 +24,7 @@ export interface PageInput {
   t: Translator;
 }
 /** Server-rendered Hono JSX; dynamic terms and names are escaped as text. */
-export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t }: PageInput) {
+export function linkPage({ data, state, portalClaim, tablet = false, now, timezone, locale = 'en', t, documentBase }: PageInput) {
   const text = (key: string, values?: Record<string, string | number>) => t('public/links:' + key, values);
   const title = text(state ?? data?.purpose ?? 'unavailable');
   const money = (value: number, currency: string) => formatMoney(value, currency, locale);
@@ -48,15 +50,17 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         ? h('p', { role: 'status' }, text('manualPayment'))
         : h('button', { type: 'button', class: button, 'data-checkout': true }, text('pay'))
       : h('p', null, text(['paid', 'partially_refunded', 'refunded'].includes(data.invoice.invoice.status) ? 'alreadyDoneBody' : 'paymentPending'))) : null;
+  const previewed = new Set<string>();
   function form(member: { id: string; firstName: string; lastName: string; dateOfBirth: string | null }, template: WaiverTemplate) {
     if (!data || !('signatures' in data)) return null;
     const id = member.id + '-' + template.id;
     const signed = data.signatures.some(s => s.memberId === member.id && s.templateId === template.id);
     const guardian = needsGuardian(member.dateOfBirth, now, timezone);
+    const preview = !previewed.has(template.id); previewed.add(template.id);
     return h('section', { class: panel }, h('h3', { class: 'text-lg font-semibold' }, template.name),
       h('p', null, text('member', { name: member.firstName + ' ' + member.lastName })),
       h('p', { class: 'text-sm text-muted-foreground' }, text('version', { version: template.version })),
-      h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body),
+      waiverDocumentView(template, t, documentBase ? documentBase + template.id : undefined, preview),
       signed ? h('p', { class: 'font-semibold' }, text('signed')) : h('form', { 'data-waiver': true, 'data-member': member.id, 'data-template': template.id, 'data-version': template.version, class: 'space-y-4' },
         guardian ? h('p', null, text('guardian')) : null,
         h('label', { for: id + '-kind', class: 'block space-y-1' }, text('signerKind'),

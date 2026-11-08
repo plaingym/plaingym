@@ -1,6 +1,37 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # PDF rendering
 
+`document.ts` validates uploaded static waiver PDFs and appends generated signing
+pages without painting or reflowing the original pages. It uses
+`@cantoo/pdf-lib` 2.11.1 (MIT) for parsing and page copying; PDFKit still generates
+the signing page. Validation and copying run in process, without network requests
+or evaluation, with one active operation and at most eight waiting requests.
+
+The upload envelope is checked before the repair-oriented parser runs: a PDF
+header, complete objects and streams, exact cross-reference offsets and a final
+EOF are required. Limits are 10 MiB, 20 pages, bounded syntax depth and object
+counts, and at most 8 MiB of aggregate object-stream inflation. Compressed syntax
+is checked before vendor object construction. Single-revision Word hybrid files,
+linearized files with forward cross-reference links, and Flate cross-reference
+streams with PNG prediction are accepted. Every section must belong to the final
+index, and every physical or compressed object must match that index. Free hybrid
+placeholders may resolve to live objects; conflicting live definitions, deleted
+definitions, unindexed objects and revised linearized files are refused. The
+object walk checks each indirect object once, allowing long bookmark chains and
+ordinary bookmark style flags; external-file keys are checked in their stream or
+reference-XObject context. References to another reference are refused because the
+copying parser and viewer can resolve them differently. Duplicate objects, page-tree cycles/sharing, inconsistent counts, and unsupported stream
+encodings are refused. Every parsed dictionary is checked for active actions,
+forms, annotations, alternate appearances, attachments, optional-content layers and external references. Annotated documents must be flattened to a static PDF. Parser
+success alone does not establish that an upload is valid. Refusals for conflicting
+revisions or unsupported compression ask for a flattened new copy or a standard
+Flate export respectively.
+
+The waiver service separately checks the stored document hash against the
+immutable signing snapshot before rendering or serving it. Original pages have
+no added stamp; the generated details page carries the snapshot hash. Independent
+PDF.js text-extraction tests check page order and the signing details.
+
 `renderPdf({ title, createdAt, footer, blocks })` accepts text, image and page-break
 blocks and returns PDF bytes. Callers own document meaning, labels, ordering and
 hashes. No PDFKit or Fontkit objects cross this boundary.

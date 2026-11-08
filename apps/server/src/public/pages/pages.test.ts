@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import '@hono/zod-openapi';
-import { auditEvents, members, households, waiverSignatures, invoices, uuidv7 } from '@plaingym/db';
+import { auditEvents, members, households, waiverSignatures, waiverTemplates, invoices, uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { publicContracts, publicSubmissionResponseSchema } from '@plaingym/shared/contracts';
@@ -12,6 +13,8 @@ import type { Principal } from '../../core/context.js';
 import { authorize } from '../../areas/staff/auth.permissions.js';
 import { createSettingsService } from '../../areas/settings/settings.js';
 import { createWaiversService } from '../../areas/waivers/waivers.js';
+import { createWaiverDocumentDelivery } from '../../areas/waivers/document-delivery.js';
+import { waiverDocumentFixture } from '../../areas/waivers/document.fixture.js';
 import { readSnapshot } from '../../areas/waivers/snapshot.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { demoUploads } from '../../demo/uploads.js';
@@ -37,7 +40,8 @@ async function fixture(demo = false) {
   const uploads = new Map([gymId, otherGym].map(id => [id, new FakeUploads(id, clock)]));
   await uploads.get(gymId)!.put(gymId + '/logo.png', png, 'image/png');
   const uploadsFor = async (id: string) => demo ? demoUploads(uploads.get(id)!) : uploads.get(id)!;
-  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor });
+  const documentDelivery = createWaiverDocumentDelivery({ uploadsFor, clock, key: new Uint8Array(32).fill(8), originFor: async () => origin });
+  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor, documentDelivery });
   // The staff-notice hook the runtime gives the public pages (it queues the notice after commit).
   const notices: { gymId: string; kind: string; memberId: string }[] = [];
   const service = configurePublicPages({ scope: db.forGym, clock, waivers, uploadsFor,
@@ -136,8 +140,17 @@ describe('core public pages through the production registrations', () => {
     expect((await f.server.request(origin + '/api/members')).status).toBe(401);
     expect((await f.post('/api/public/trial', { ...body(), householdId: f.existingHome.id, status: 'active' })).status).toBe(400);
   });
-  it('signs all immutable waivers, creates a visitor without a payment, and replays without duplicates', async () => {
-    const f = await fixture(), input = await f.admit();
+  it.each([false, true])('signs immutable waivers and replays without duplicate visitors (PDF: %s)', async pdfTemplate => {
+    const f = await fixture();
+    if (pdfTemplate) {
+      const document = await f.waivers.uploadDocument({ gymId: f.gymId, actor: { kind: 'system' } }, await waiverDocumentFixture());
+      await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set({ body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes }).where(eq(waiverTemplates.id, f.template.id)));
+      const documentPath = `/api/public/waivers/${f.template.id}/document`;
+      expect((await f.server.request(origin + documentPath)).status).toBe(200);
+      expect((await f.app(f.otherGym).request(origin + documentPath)).status).toBe(404);
+      expect(await (await f.server.request(origin + '/drop-in')).text()).toContain('Open the document');
+    }
+    const input = await f.admit();
     expect((await f.rows()).members.find(m => m.id === input.waivers[0]!.signatureImageKey.split('/')[2])!.status).toBe('prospect');
     const response = await f.post('/api/public/drop-in', input); expect(response.status).toBe(200);
     expect(publicSubmissionResponseSchema.parse(await response.json())).toEqual({ data: { status: 'received' } });

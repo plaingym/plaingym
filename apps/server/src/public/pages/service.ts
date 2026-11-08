@@ -16,7 +16,7 @@ import type { Uploads } from '../../infra/storage/index.js';
 export interface PublicPagesOptions {
   scope?: typeof forGym;
   clock?: Clock;
-  waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign'>;
+  waivers: Pick<WaiversService, 'listTemplates' | 'uploadSignature' | 'sign' | 'document'>;
   uploadsFor?: (gymId: string) => Promise<Uploads>;
   /** Given the config read's transaction, so the settings and the fee come over one connection. */
   dropInFeeFor?: (gymId: string, tx: Transaction) => Promise<{ amountCents: number; currency: string; plusTax: boolean } | null>;
@@ -94,6 +94,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
   }
   return {
     templates, required,
+    document: (gymId: string, templateId: string) => options.waivers.document(gymId, templateId, true),
     async config(gymId: string) {
       // One short transaction on one connection; a missing gym fails on the settings read before the fee is read.
       const { gym, dropInFee } = await scope(gymId, async tx => {

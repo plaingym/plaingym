@@ -16,8 +16,11 @@ export const sampleIntervalMs = 500;
 export const budget = {
   limits: { app: 512, postgres: 384, caddy: 128 },
   nodeOldSpaceMiB: 256,
-  // Capped (the shipped limits). Measured: app peak 422-444, app warm idle 287-303, Postgres peak 194-210,
-  // Caddy peak 54, stack warm idle 519-537, stack peak 662-680.
+  // Capped (the shipped limits). Original calibration: app peak 422-444, app warm idle 287-303,
+  // Postgres peak 194-210, Caddy peak 54, stack warm idle 519-537, stack peak 662-680.
+  // Two PDF runs on 2026-11-07 with image allocator defaults: app peak 395.0-405.8, warm idle 205.9-237.6,
+  // Postgres peak 217.8-220.8, Caddy peak 54.6-54.7, stack warm idle 451.9-472.5, stack peak 637.4-640.4.
+  // Matched main runs with the same allocator: stack peak 552.9-603.0. Ceilings below are unchanged.
   capped: {
     appPeakMiB: 520, appWarmIdleMiB: 360, postgresPeakMiB: 250, caddyPeakMiB: 70,
     stackIdleMiB: 640, stackPeakMiB: 820,

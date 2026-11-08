@@ -92,11 +92,21 @@ The checks cover:
 * Every portal and signed-link route in the inventory, both ways between two
   households of one sandbox (the student, and a seeded family that claims a portal
   login from its outbox invitation): each route with a path parameter, aimed at the
-  other household's members, invoices, waivers and bookings with a valid body, answers
+  other household's members, invoices, signed waivers and bookings with a valid body, answers
   403/404; every portal read and each of household A's signed links (all four
   purposes) shows nothing of household B; household A's kiosk PIN finds and checks in
   only A's people; its QR code checks in only its own member and stops working once
   replaced (`household-isolation.spec.ts`).
+  Current waiver templates belong to the gym and can be read by any authorized household;
+  `waivers.spec.ts` checks that distinction with uploaded PDF templates and private signed copies.
+* Uploaded PDF waivers (`waivers.spec.ts`): staff upload permissions and demo refusal, byte-identical
+  original downloads with sandboxed headers, foreign-gym and tampered-token denials, and immutable
+  signed records after switching a family back to text. Staff, portal, signed-link, join and drop-in
+  signing use the PDF reference; editor and signing previews run at 360 and 1280 px with the visible
+  fallback link, required consent, layout/axe checks and the suite's CSP guard. The portal/public
+  cases use the non-demo multi-gym fixtures, since the demo refuses template uploads.
+  Each portal, signed-link and public-intake reader keeps its own client address across viewport
+  checks and signing, so separate scenarios exercise separate production download budgets.
 * The sandbox join at 360 px and desktop (`demo-join.spec.ts`): plans, the signed
   form, the hosted test-card payment, activation only from the signed webhook, the
   outbox sign-in link into the portal, then signing in again without the owner: from
@@ -149,7 +159,7 @@ link, read from Mailpit's API at `https://mail.localhost`. Every invitation and 
 name its own hostname. Each gym's fixtures (`multi/support.ts`) hold one record of every kind the staff API
 serves: a coach, a rank system, rank and program, a household with a minor who signed the waiver and a PIN with its
 QR check-in code, a class (made with `createClass`, so its time is clear of midnight at any hour of the run) and
-its booking, a member tag, a kiosk device, a plan, a waiver template, two invoices (one paid at the desk, with
+its booking, a member tag, a kiosk device, a plan, an uploaded PDF waiver template, two invoices (one paid at the desk, with
 its payment and a refund), a charge type, a tax rate, a membership, a card saved through hosted Checkout and the
 gym's signed webhook, a signed link and a campaign, a schedule template, a class tag, a data export, an import run
 (a dry run of an uploaded CSV), pending invitations, and the household's portal login. Each successful write
@@ -193,6 +203,10 @@ to the gym's own hostname (`deliverStripeEvent` in `portal.ts`, shared with demo
   probe on a gym's own hostname may answer 400, 415 or 422.
   Routes with no ID in their path whose body or query names gym B's records are probed on gym A's hostname too; a
   kiosk check-in of gym B's member or QR code answers, as for any unknown member, with the front desk.
+  Signed-link document reads name a template in the path and must refuse the other gym's template too;
+  a positive control first proves that each gym's signing link reads its own uploaded PDF.
+  The sweep creates an adult member login for the self-service document read, since the household's
+  payer login has no member identity; that same credential supplies its positive and cross-gym controls.
 * A second pass aims a caller's own record in the path at gym B's IDs in the body (an own class or schedule
   template given gym B's programs, an own member given gym B's tag, an own household given gym B's member or
   login, a membership or plan given gym B's plan): every one must answer 404, and the controls then send the same

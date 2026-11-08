@@ -2,7 +2,7 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
-import { waiverSigningSnapshotSchema, type WaiverTemplate } from '@plaingym/shared/contracts';
+import { waiverSigningSnapshotSchema, type WaiverTemplate, type WaiverDocument as DocumentReference } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../app/context.js';
 import { t } from '../../lib/i18n.js';
 import { api } from '../../lib/api.js';
@@ -16,6 +16,7 @@ import { Select, Textarea, CheckboxField } from '../../components/ui/select.js';
 import { LoadingState, EmptyState, ErrorState } from '../../components/ui/states.js';
 import { Alert } from '../../components/ui/alert.js';
 import { waiversClient, WaiverRequestError, type WaiversClient } from './api.js';
+import { WaiverDocument, useWaiverDocument } from './document.js';
 
 const text = (key: string) => t('waivers/waivers:' + key);
 const errorText = (error: unknown, fallback: string) => error instanceof WaiverRequestError ? error.message : text(fallback);
@@ -29,7 +30,7 @@ export function Templates({ gymId, manage, client = waiversClient }: { gymId: st
     {query.data?.data.length === 0 && <EmptyState title={text('empty')} />}
     <ul className="space-y-3">{query.data?.data.map(row => <li key={row.id} className="min-w-0 space-y-3 rounded-xl border border-border p-4">
       <h2 className="break-words text-lg font-semibold">{row.name}</h2><p>{text(row.kind)} · {text('version')} {row.version} {row.retiredAt && text('retired')}</p>
-      <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{row.body.slice(0, 240)}</p>
+      <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{row.document ? text('pdfDocument') : row.body.slice(0, 240)}</p>
       {manage && <Button variant="outline" onClick={() => setEditor(row)}>{text('edit')}</Button>}
     </li>)}</ul>
     {query.data && <div className="flex flex-wrap gap-3"><Button variant="outline" disabled={!offset} onClick={() => setOffset(offset - 20)}>{text('previous')}</Button>
@@ -39,10 +40,20 @@ export function Templates({ gymId, manage, client = waiversClient }: { gymId: st
 }
 function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | 'new'; client: WaiversClient; close: () => void; saved: () => Promise<void> }) {
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
+  const [format, setFormat] = useState(row !== 'new' && row.document ? 'pdf' : 'text');
+  const [document, setDocument] = useState<DocumentReference | undefined>(row === 'new' ? undefined : row.document);
+  async function upload(file: File | undefined) {
+    if (!file) return;
+    setBusy(true); setError(null); setDocument(undefined);
+    try { setDocument((await client.uploadDocument(file)).data); }
+    catch (failure) { setError(errorText(failure, 'saveError')); }
+    finally { setBusy(false); }
+  }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget); setBusy(true); setError(null);
     try {
-      const input = { name: data.get('name'), kind: data.get('kind'), body: data.get('body') };
+      if (format === 'pdf' && !document) throw new WaiverRequestError(text('documentRequired'));
+      const input = { name: data.get('name'), kind: data.get('kind'), ...(format === 'pdf' ? { document } : { body: data.get('body') }) };
       if (row === 'new') await client.call('createTemplate', input);
       else await client.call('publishTemplate', { ...input, expectedVersion: row.version }, { templateId: row.id });
       await saved();
@@ -60,7 +71,14 @@ function TemplateEditor({ row, client, close, saved }: { row: WaiverTemplate | '
       <div><Label htmlFor="waiver-kind">{text('kind')}</Label><Select id="waiver-kind" name="kind" defaultValue={row === 'new' ? 'waiver' : row.kind}>
         {(row === 'new' ? ['waiver', 'agreement'] : [row.kind]).map(kind => <option key={kind} value={kind}>{text(kind)}</option>)}
       </Select></div>
-      <div><Label htmlFor="waiver-body">{text('body')}</Label><Textarea id="waiver-body" name="body" required maxLength={80_000} rows={14} defaultValue={row === 'new' ? '' : row.body} /></div>
+      <div><Label htmlFor="waiver-format">{text('documentKind')}</Label><Select id="waiver-format" value={format} disabled={busy} onChange={event => setFormat(event.target.value)}>
+        <option value="text">{text('textDocument')}</option><option value="pdf">{text('pdfDocument')}</option>
+      </Select></div>
+      {format === 'text' ? <div><Label htmlFor="waiver-body">{text('body')}</Label><Textarea id="waiver-body" name="body" required maxLength={80_000} rows={14} defaultValue={row === 'new' ? '' : row.body} /></div>
+        : <div className="min-w-0 space-y-2"><Label htmlFor="waiver-document">{text('uploadDocument')}</Label>
+          <Input id="waiver-document" type="file" accept="application/pdf,.pdf" disabled={busy} onChange={event => void upload(event.target.files?.[0])} />
+          <p>{text('documentLimits')}</p>{document && <p role="status">{text('documentSelected')} · {document.pages} · {document.bytes} B</p>}
+        </div>}
       <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy}>{text('publish')}</Button>
         {row !== 'new' && !row.retiredAt && <Button type="button" variant="destructive" disabled={busy} onClick={() => void retire()}>{text('retire')}</Button>}
         <Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
@@ -119,6 +137,7 @@ function Pager({ offset, total, setOffset }: { offset: number; total: number; se
     <Button variant="outline" disabled={offset + 20 >= total} onClick={() => setOffset(offset + 20)}>{text('next')}</Button></div>;
 }
 function Signing({ template, memberId, client, close, saved }: { template: WaiverTemplate; memberId: string; client: WaiversClient; close: () => void; saved: () => Promise<void> }) {
+  const document = useWaiverDocument(template, ['waivers', memberId], () => client.call('document', undefined, { templateId: template.id }));
   const canvas = useRef<HTMLCanvasElement>(null), drawing = useRef(false), hasInk = useRef(false);
   const uploaded = useRef<{ signatureImageKey: string; signatureImageHash: string } | null>(null);
   const [signatureChanged, setSignatureChanged] = useState(false);
@@ -139,7 +158,7 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
   return <Dialog title={text('reviewSign')} closeLabel={text('close')} dismissible={!busy} unsavedChanges={signatureChanged} onClose={close} size="wide">
     <form className="space-y-4" onSubmit={event => void submit(event)}>
       <h3 className="break-words font-semibold">{template.name} · {text('version')} {template.version}</h3>
-      <div className="whitespace-pre-wrap break-words rounded-lg border border-border p-3" dir="auto">{template.body}</div>
+      <WaiverDocument template={template} query={document} />
       {error && <Alert role="alert">{error}</Alert>}
       <p>{text('guardianNote')}</p>
       <CheckboxField checked={guardian} onChange={e => setGuardian(e.target.checked)} label={text('guardian')} />
@@ -155,8 +174,8 @@ function Signing({ template, memberId, client, close, saved }: { template: Waive
           ctx.lineTo((e.clientX - box.left) * 600 / box.width, (e.clientY - box.top) * 180 / box.height); ctx.stroke(); hasInk.current = true; setSignatureChanged(true); }}
         onPointerUp={() => { drawing.current = false; }} onPointerCancel={() => { drawing.current = false; }} />
       <Button type="button" variant="outline" disabled={busy} onClick={() => { canvas.current?.getContext('2d')?.clearRect(0, 0, 600, 180); hasInk.current = false; uploaded.current = null; }}>{text('clear')}</Button>
-      <CheckboxField label={text('consent')} required />
-      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy}>{text('sign')}</Button><Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
+      <CheckboxField label={text(template.document ? 'documentConsent' : 'consent')} required />
+      <div className="flex flex-wrap gap-3"><Button type="submit" disabled={busy || !!template.document && !document.data}>{text('sign')}</Button><Button type="button" variant="outline" disabled={busy} onClick={close}>{text('close')}</Button></div>
     </form>
   </Dialog>;
 }

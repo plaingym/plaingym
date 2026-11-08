@@ -8,6 +8,8 @@ import { route } from '../../core/registry.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import type { RequestContext, RequestEnvironment } from '../../core/context.js';
 import { createWaiversService, type WaiversService, type WaiverOptions } from './waivers.js';
+import { documentByteLimit } from '../../infra/pdf/document.js';
+import { createWaiverDocumentDownloadRoute } from './document-delivery.js';
 
 let configured: WaiversService | undefined;
 export function configureWaivers(options: WaiverOptions) { configured = createWaiversService(options); return configured; }
@@ -18,11 +20,15 @@ const mutation = (ctx: RequestContext) => {
 export function createWaiverRoutes(service?: WaiversService) {
   const get = () => { const value = service ?? configured; if (!value) throw new Error('Waivers not configured'); return value; };
   const pdfLimit = rateLimit({ limit: 10, windowMs: 60_000, perGym: true });
+  const uploadLimit = rateLimit({ limit: 10, windowMs: 60_000, perGym: true });
+  const documentLimit = rateLimit({ limit: 10, windowMs: 60_000 });
   const limitDemoPdf: MiddlewareHandler<RequestEnvironment> = async (ctx, next) => {
     if (await get().isDemo(ctx.get('context').gym.gymId)) return pdfLimit(ctx, next);
     await next();
   };
   const handlers: Record<keyof typeof c.waiverContracts, (ctx: RequestContext, p: Record<string, string>, q: unknown, b: unknown) => Promise<unknown>> = {
+    uploadDocument: async (ctx, _p, _q, b) => ({ data: await get().uploadDocument(mutation(ctx), b as Uint8Array) }),
+    document: (ctx, p) => get().document(ctx.gym.gymId, p.templateId!),
     listTemplates: (ctx, _p, q) => get().listTemplates(ctx.gym.gymId, q),
     createTemplate: async (ctx, _p, _q, b) => ({ data: await get().createTemplate(mutation(ctx), c.waiverCreateTemplateRequestSchema.parse(b)) }),
     publishTemplate: async (ctx, p, _q, b) => ({ data: await get().publishTemplate(mutation(ctx), p.templateId!, c.waiverPublishTemplateRequestSchema.parse(b)) }),
@@ -35,19 +41,23 @@ export function createWaiverRoutes(service?: WaiversService) {
       return { data: await get().uploadSignature(mutation(ctx), input.memberId, Buffer.from(input.pngBase64, 'base64')) };
     },
   };
-  return Object.entries(c.waiverContracts).map(([key, value]) => {
+  return [createWaiverDocumentDownloadRoute(() => get().documentDelivery()), ...Object.entries(c.waiverContracts).map(([key, value]) => {
     const contract: c.EndpointContract = value;
     return route({ ...contract,
-      middleware: [bodyLimit({ maxSize: 400_000, onError: () => { throw new AppError('invalid_request', 'Request too large'); } }),
-        ...(key === 'pdf' ? [limitDemoPdf] : [])],
+      middleware: [bodyLimit({ maxSize: key === 'uploadDocument' ? documentByteLimit : 400_000, onError: () => { throw new AppError('invalid_request', key === 'uploadDocument' ? 'The PDF must be no larger than 10 MiB' : 'Request too large'); } }),
+        ...(key === 'pdf' ? [limitDemoPdf] : key === 'document' ? [documentLimit] : key === 'uploadDocument' ? [uploadLimit] : [])],
       request: { ...(contract.params instanceof z.ZodObject ? { params: contract.params } : {}), ...(contract.query instanceof z.ZodObject ? { query: contract.query } : {}),
-        ...(contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}) },
+        ...(key === 'uploadDocument' ? { body: { required: true, content: { 'application/pdf': { schema: z.string().openapi({ format: 'binary' }) } } } }
+          : contract.body ? { body: { required: true, content: { 'application/json': { schema: contract.body } } } } : {}) },
       responses: { 200: { description: 'Waiver response', content: { 'application/json': { schema: contract.response } } } },
     }, async ctx => {
       const context = ctx.get('context'); mutation(context);
-      const result = await handlers[key as keyof typeof handlers](context, ctx.req.param(), ctx.req.query(), contract.body ? await ctx.req.json() : undefined);
+      if (key === 'uploadDocument' && ctx.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/pdf')
+        throw new AppError('invalid_request', 'Upload an application/pdf document');
+      const result = await handlers[key as keyof typeof handlers](context, ctx.req.param(), ctx.req.query(),
+        key === 'uploadDocument' ? new Uint8Array(await ctx.req.arrayBuffer()) : contract.body ? await ctx.req.json() : undefined);
       ctx.header('Cache-Control', 'no-store'); return ctx.json(contract.response.parse(result) as { data: unknown }, 200);
     });
-  });
+  })];
 }
 export const routes = createWaiverRoutes();

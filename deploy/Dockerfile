@@ -30,6 +30,9 @@ RUN sh /tmp/apt/apt-runtime.sh install /tmp/apt/apt-runtime-pins.txt \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 NODE_OPTIONS=--max-old-space-size=256
+# Keep large freed buffers out of glibc's heap: otherwise it raises its mmap threshold after the first large free.
+# These allocator defaults apply to every process in the app image.
+ENV MALLOC_MMAP_THRESHOLD_=131072 MALLOC_ARENA_MAX=2
 WORKDIR /app
 COPY --from=build /build/apps/server/dist/ ./
 COPY --from=build /build/apps/web/dist/ ./public/

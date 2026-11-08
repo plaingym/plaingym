@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Waivers and agreements
 
-`createWaiversService({ uploadsFor, clock?, scope? })` manages versioned templates,
+`createWaiversService({ uploadsFor, documentDelivery?, clock?, scope? })` manages versioned templates,
 signature uploads, signing, signed-copy reads and PDF downloads. All changes are
 audited without copying names, document text, IP addresses or signature bytes into
 the audit log. The image is stored through `Uploads`, never in the database.
@@ -18,7 +18,9 @@ Signing locks the member against erasure and the template family against edits.
 The complete snapshot is stored as serialized `text` and hashed as UTF-8.
 No signature update path exists; the database also denies updates. PDFs verify
 the stored bytes and image digest and never read the live template or member.
-They put SHA-256 of those exact stored bytes on every page.
+Text copies put SHA-256 of those exact stored bytes on every page. Uploaded PDF
+copies retain the original pages without stamps and append the generated signing
+details and snapshot SHA-256 footer.
 Signing preflights the complete snapshot outside a transaction, then locks and
 rechecks the member, current template and idempotency key before insertion. A
 failed render or a change during preflight leaves no new signature. Missing
@@ -72,15 +74,69 @@ limit to retain the same total budget.
 
 ## Composition
 
-`core/runtime.ts` calls `configureWaivers({ uploadsFor: uploads.forGym, clock })`
+`document-delivery.ts` exports `createWaiverDocumentDelivery({ key, originFor,
+uploadsFor, clock? })`. Pass that service as `documentDelivery` when composing
+waivers. The key must be stable across processes and restarts and derived for this
+purpose; origins must be the gym's canonical HTTP(S) origin. The area registrations
+mount its download route. Without this option, document uploads and publication
+are unavailable; text templates continue to work.
+
+The app composition must also pass `bodyLimits` with `defaultBodyLimits` and its
+route entries preserved, adding `/api/waivers/template-documents` with
+`documentByteLimit` from `infra/pdf/document.ts` (10 MiB); `core/runtime.ts` does
+both. Without it the app's default 1 MiB cap would reject larger documents before
+the waiver handler. Like other
+large uploads, this route requires a valid `Content-Length` and refuses transfer
+encoding before reading the body.
+
+`core/runtime.ts` calls `configureWaivers({ uploadsFor: uploads.forGym, clock,
+documentDelivery })` (the delivery key is derived from the install's encryption key)
 before serving the existing area registrations. The prewired waiver routes and web
 registrations need no barrel changes. Admin templates use `settings.manage`;
-signing/uploads use `members.manage`; reads and PDFs use `members.read`.
+signing/signature uploads use `members.manage`; reads and PDFs use `members.read`.
 These are staff routes, not portal or signed-link routes.
 
-The approved shared-contract additions are `uploadSignature` and the optional
-`commitmentEndsOn` request/snapshot field. No schema migration is needed.
+Template versions contain exactly one of nonblank `body` or a document reference
+(`key`, SHA-256, pages and bytes). The database stores PDF versions with an empty
+body and nullable document columns protected by an exclusivity check. Snapshots
+include the immutable document reference; older snapshots omit it and still read.
 The renderer's vendor boundary is documented in `../../infra/pdf/README.md`.
+
+## Uploaded template documents
+
+Staff with `settings.manage` upload raw `application/pdf` to
+`POST /api/waivers/template-documents`, then use the returned reference when
+creating or publishing a version. A version can switch between text and PDF.
+Documents are limited to 10 MiB and 20 pages, validated before storage under a new
+immutable `${gymId}/waivers/templates/<uuid>.pdf` key, and never logged. The demo
+refuses these uploads with its existing uploads-disabled message.
+
+Staff document reads require `members.read`. Portal and signed-link reads check
+the household credential and expose only current templates; public join and
+drop-in reads also expose only current templates. Each returns a five-minute
+gym-bound capability URL. Both disk and S3 documents are read through `Uploads`
+and served by the app with `application/pdf`, `nosniff`, no caching, and a sandboxed
+CSP permitting same-origin framing. Every signing surface offers a native inline
+frame and an always-visible **Open the document** link before consent. Family forms
+preview each template once, keeping separate consent for each member. Readers must
+open and read the document before confirming; an unavailable preview is not consent.
+React previews retain their initial URL while the separate link refreshes, so a
+refresh or a failed background request does not reset the reader's page.
+URL issuance checks storage metadata; serving the PDF verifies its full bytes.
+Document reads and downloads have separate ten-per-minute limits per client and
+gym. Uploads have a separate ten-per-minute gym budget, independent of reads and
+the demo's signed-copy budget. Invalid tokens cannot exhaust another client's budget.
+
+Upload validation rejects malformed or encrypted documents, active actions,
+attachments, forms, annotations, alternate appearances, external references and optional-content layers. Flatten annotations before uploading. Ambiguous
+incremental revisions and excessively complex object graphs are refused; save
+a flattened new PDF in those cases. Single-revision Word hybrid files, linearized
+files and predicted cross-reference streams are supported. Signing and rendering verify the original
+document's bytes and hash. Retiring a family or publishing a new version never
+deletes its original document. Abandoned uploads, like abandoned signature
+images, are not swept by this area; cleanup must keep every document a version
+or signature references. Waiver template exports include `document_key`,
+`document_hash`, `document_pages` and `document_bytes`, including retired versions.
 
 The web editor and signing form use the shared Dialog and mobile components.
 Signed rows display the stored snapshot's template name/version, signer,

@@ -186,6 +186,15 @@ never card numbers.
 
 ## Infrastructure modules
 
+Waiver versions contain either text or an immutable uploaded PDF reference.
+The waiver module validates PDF uploads through `infra/pdf/document.ts` and stores
+their bytes through `Uploads`. Signing snapshots retain the original reference,
+hash, page count and size; signed copies copy those pages and append generated
+signing details. Reads never substitute a newer template. Document delivery uses
+an injected stable signer and canonical gym origins: short-lived, gym-bound app
+URLs give local and S3 storage the same response headers. See
+[`areas/waivers/README.md`](../apps/server/src/areas/waivers/README.md) for composition.
+
 Third-party SDKs are imported only inside `apps/server/src/infra/` (lint-enforced).
 Each module has an interface, a production adapter and a fake, and a shared
 contract suite runs against both (`core/registry-infra-contracts.ts`):

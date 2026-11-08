@@ -987,5 +987,13 @@
   {"method": "GET", "path": "/l/return", "permission": {"kind": "public"}},
   {"method": "GET", "path": "/l/styles.css", "permission": {"kind": "public"}},
   {"method": "GET", "path": "/l/{token}", "permission": {"kind": "public"}},
-  {"method":"POST","path":"/csp-report","permission":{"kind":"public"}}
+  {"method":"POST","path":"/csp-report","permission":{"kind":"public"}},
+  {"method":"POST","path":"/api/waivers/template-documents","permission":{"kind":"staff","capability":"settings.manage"}},
+  {"method":"GET","path":"/api/waivers/templates/{templateId}/document","permission":{"kind":"staff","capability":"members.read"}},
+  {"method":"GET","path":"/api/waivers/template-document","permission":{"kind":"public"}},
+  {"method":"GET","path":"/api/portal/waiver-templates/{templateId}/document","permission":{"kind":"member","capability":"waivers.self"}},
+  {"method":"GET","path":"/api/portal/household/waiver-templates/{templateId}/document","permission":{"kind":"member","capability":"waivers.household"}},
+  {"method":"GET","path":"/api/links/sign-waiver/templates/{templateId}/document","permission":{"kind":"signed_link","purpose":"sign_waiver"}},
+  {"method":"GET","path":"/api/public/waivers/{templateId}/document","permission":{"kind":"public"}},
+  {"method":"GET","path":"/l/{token}/documents/{templateId}","permission":{"kind":"public"}}
 ]

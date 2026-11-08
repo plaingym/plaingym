@@ -9,6 +9,7 @@ import { Agent, request as httpsRequest } from 'node:https';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { crc32, deflateSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { waiverPdf } from './waiver-pdf.mjs';
 
 const env = (name, fallback) => process.env[name] ?? fallback ?? (() => { throw new Error('Missing ' + name); })();
 const gymHost = env('GYM_HOST', 'gym.localhost'), proxyHost = env('PROXY_HOST', 'caddy');
@@ -21,20 +22,21 @@ class Client {
   cookie = '';
   constructor(headers = {}) { this.headers = headers; }
   request(path, method = 'GET', body) {
-    const payload = body === undefined ? undefined : JSON.stringify(body);
+    const binary = Buffer.isBuffer(body);
+    const payload = binary ? body : body === undefined ? undefined : JSON.stringify(body);
     return new Promise((resolve, reject) => {
       const req = httpsRequest({ agent, hostname: proxyHost, port: 443, servername: gymHost, path, method, timeout: 60_000,
         headers: { host: gymHost, origin: 'https://' + gymHost, ...(path.startsWith('/api') ? {} : { accept: 'text/html' }), ...(this.cookie ? { cookie: this.cookie } : {}),
-          ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }), ...this.headers },
+          ...(payload === undefined ? {} : { 'content-type': binary ? 'application/pdf' : 'application/json', 'content-length': Buffer.byteLength(payload) }), ...this.headers },
       }, (res) => {
         const chunks = [];
         res.on('error', reject);
         res.on('data', (chunk) => chunks.push(chunk));
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
+          const bytes = Buffer.concat(chunks), text = bytes.toString('utf8');
           let json = null;
           try { json = JSON.parse(text); } catch { /* not JSON */ }
-          resolve({ status: res.statusCode, json, text, cookies: res.headers['set-cookie'] ?? [] });
+          resolve({ status: res.statusCode, json, text, bytes, cookies: res.headers['set-cookie'] ?? [] });
         });
       });
       req.on('error', reject);
@@ -113,10 +115,12 @@ async function seed() {
       members.push((await owner.ok('/api/members', 'POST', { householdId: home.id, firstName: `Member${index + 1}x${child + 1}`, lastName: `Surname${index + 1}`, dateOfBirth: '1990-01-01' })).data.id);
     }
   });
-  // Twenty pages: a form feed starts each one.
-  const section = (n) => `Section ${n}\n` + 'Training involves physical activity and the risk of injury. '.repeat(20);
+  const source = waiverPdf();
+  const document = (await owner.ok('/api/waivers/template-documents', 'POST', source)).data;
+  if (document.pages !== 20 || document.bytes !== 10 * 1024 ** 2 || document.hash !== createHash('sha256').update(source).digest('hex'))
+    throw new Error('Uploaded document fixture differs');
   const template = (await owner.ok('/api/waivers/templates', 'POST', { name: 'Participation (20 pages)', kind: 'waiver',
-    body: Array.from({ length: 20 }, (_, n) => section(n + 1)).join('\n\f\n') })).data;
+    document })).data;
   const png = signaturePng(), hash = createHash('sha256').update(png).digest('hex');
   const signatures = [];
   for (const memberId of members.slice(0, 6)) {
@@ -125,8 +129,8 @@ async function seed() {
     signatures.push((await owner.ok('/api/waivers/signatures', 'POST', { memberId, templateId: template.id, templateVersion: template.version,
       signer: { kind: 'self', name: 'Memory Signer' }, signatureImageKey: image.signatureImageKey, signatureImageHash: image.signatureImageHash, consent: true })).data.id);
   }
-  writeState({ members, signatures });
-  console.log(JSON.stringify({ step: 'seed', members: members.length, signatures: signatures.length }));
+  writeState({ members, signatures, document: { pages: document.pages, bytes: document.bytes, hash: document.hash } });
+  console.log(JSON.stringify({ step: 'seed', members: members.length, signatures: signatures.length, documentPages: document.pages, documentBytes: document.bytes }));
 }
 
 async function load() {
@@ -147,10 +151,19 @@ async function load() {
       timings.push(Date.now() - began);
     }
   };
-  // Six waiver PDFs at once (the 20-page render), twice, while the API traffic and the backup run.
+  // Six merged PDFs at once, twice, while the API traffic and the backup run.
   const renderPdfs = async () => {
     await Promise.all(state.signatures.map(async (id) => {
-      try { if ((await owner.request(`/api/waivers/signatures/${id}/pdf`)).status === 200) pdfs.ok++; else pdfs.failed++; } catch { pdfs.failed++; }
+      try {
+        const response = await owner.request(`/api/waivers/signatures/${id}/pdf`);
+        if (response.status !== 200 || !response.json?.data?.url) throw new Error('Missing signed copy');
+        const url = new URL(response.json.data.url);
+        if (url.origin !== 'https://' + gymHost) throw new Error('Unexpected signed-copy origin');
+        const copy = await owner.request(url.pathname + url.search);
+        if (copy.status !== 200 || copy.bytes.length < state.document.bytes * 0.99 || copy.bytes.subarray(0, 5).toString() !== '%PDF-')
+          throw new Error('Merged copy did not retain the document');
+        pdfs.ok++;
+      } catch { pdfs.failed++; }
     }));
   };
   const pdfTimer = (afterMs) => new Promise((resolve) => setTimeout(() => (Date.now() < stopAt ? renderPdfs() : Promise.resolve()).then(resolve), afterMs));

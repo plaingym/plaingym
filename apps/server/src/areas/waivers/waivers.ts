@@ -2,7 +2,7 @@
 import { and, asc, desc, eq, count, inArray, isNull } from 'drizzle-orm';
 import { databaseCode, forGym, members, signedLinks, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
-import type { Clock } from '@plaingym/shared';
+import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
@@ -13,10 +13,13 @@ import { DemoUploads } from '../../demo/uploads.js';
 import { reserveDemoSignature } from '../../demo/waiver-signatures.js';
 import { digest, invalid, needsGuardian, readSnapshot, serializeSnapshot, validateSignatureImage } from './snapshot.js';
 import { renderWaiver, validateTemplatePdf } from './pdf.js';
+import { validateDocumentPdf } from '../../infra/pdf/document.js';
+import { headWaiverDocument, readWaiverDocument, type WaiverDocumentDelivery } from './document-delivery.js';
 
 export interface WaiverOptions {
   scope?: typeof forGym; clock?: Clock; uploadsFor: (gymId: string) => Promise<Uploads>;
   render?: typeof renderWaiver;
+  documentDelivery?: WaiverDocumentDelivery;
 }
 /** Shared signed-link completion rule, matching the household current-template projection. */
 export async function signedLinkWaiversComplete(tx: Transaction, memberIds: string[]): Promise<boolean> {
@@ -29,13 +32,17 @@ export async function signedLinkWaiversComplete(tx: Transaction, memberIds: stri
   return memberIds.every(id => templates.filter(t => !t.retiredAt)
     .every(t => signatures.some(s => s.memberId === id && s.templateId === t.id)));
 }
+export const templateDocument = (r: Pick<typeof waiverTemplates.$inferSelect, 'documentKey' | 'documentHash' | 'documentPages' | 'documentBytes'>) =>
+  r.documentKey ? { document: c.waiverDocumentSchema.parse({ key: r.documentKey, hash: r.documentHash, pages: r.documentPages, bytes: r.documentBytes }) } : {};
 const template = (r: typeof waiverTemplates.$inferSelect): c.WaiverTemplate => ({ id: r.id, name: r.name, kind: c.waiverKindSchema.parse(r.kind),
-  version: r.version, body: r.body, retiredAt: r.retiredAt?.toISOString() ?? null, createdAt: r.createdAt.toISOString() });
+  version: r.version, body: r.body, ...templateDocument(r), retiredAt: r.retiredAt?.toISOString() ?? null, createdAt: r.createdAt.toISOString() });
+const documentColumns = (document?: c.WaiverDocument) => document ? { documentKey: document.key, documentHash: document.hash,
+  documentPages: document.pages, documentBytes: document.bytes } : {};
 const signature = (r: typeof waiverSignatures.$inferSelect): c.WaiverSignature => ({ id: r.id, memberId: r.memberId, templateId: r.templateId,
   snapshot: r.snapshot, snapshotHash: r.snapshotHash, signatureImageKey: r.signatureImageKey, signatureImageHash: r.signatureImageHash, signedAt: r.signedAt.toISOString() });
 function boundedTemplate(input: c.WaiverCreateTemplateRequest) {
   const parsed = c.waiverCreateTemplateRequestSchema.parse(input);
-  if (parsed.name.length > 200 || parsed.body.length > 80_000 || !parsed.name.trim() || !parsed.body.trim()) invalid('Template too large or empty');
+  if (parsed.name.length > 200 || parsed.body.length > 80_000 || !parsed.name.trim()) invalid('Template too large or empty');
   return parsed;
 }
 export function createWaiversService(options: WaiverOptions) {
@@ -69,6 +76,16 @@ export function createWaiversService(options: WaiverOptions) {
     if (digest(bytes) !== hash) invalid('Signature image digest mismatch');
     return bytes;
   }
+  async function documentBytes(gymId: string, document: c.WaiverDocument) {
+    return readWaiverDocument(await options.uploadsFor(gymId), gymId, document);
+  }
+  async function validateTemplate(gymId: string, input: c.WaiverCreateTemplateRequest) {
+    if (!input.document) return validateTemplatePdf(input);
+    service.documentDelivery();
+    const result = await validateDocumentPdf(await documentBytes(gymId, input.document));
+    if (result.pages !== input.document.pages) invalid('Waiver document page count mismatch');
+    await validateTemplatePdf({ name: input.name, body: '' });
+  }
   const service = {
     /** Complete an already-signed member link on first open, using the same locked rule as signing. */
     async completeSignedLink(gymId: string, linkId: string, memberId: string): Promise<boolean> {
@@ -95,9 +112,10 @@ export function createWaiversService(options: WaiverOptions) {
     },
     async createTemplate(ctx: MutationContext, input: c.WaiverCreateTemplateRequest) {
       const parsed = boundedTemplate(input);
-      await validateTemplatePdf(parsed);
+      await validateTemplate(ctx.gymId, parsed);
       try { return await scope(ctx.gymId, async tx => {
-        const [row] = await tx.insert(waiverTemplates).values({ ...base(ctx.gymId), ...parsed, version: 1 }).returning();
+        const [row] = await tx.insert(waiverTemplates).values({ ...base(ctx.gymId), name: parsed.name, kind: parsed.kind,
+          body: parsed.body, ...documentColumns(parsed.document), version: 1 }).returning();
         await audit(tx, ctx, 'waiver.template.created', row!.id); return template(row!);
       }); } catch (error) {
         if (databaseCode(error) === '23505') conflict('Template family already exists');
@@ -105,15 +123,16 @@ export function createWaiversService(options: WaiverOptions) {
       }
     },
     async publishTemplate(ctx: MutationContext, id: string, input: c.WaiverPublishTemplateRequest) {
-      const parsed = c.waiverPublishTemplateRequestSchema.parse(input), body = boundedTemplate({ name: parsed.name, body: parsed.body, kind: parsed.kind });
+      const parsed = c.waiverPublishTemplateRequestSchema.parse(input), body = boundedTemplate({ name: parsed.name, body: parsed.body, kind: parsed.kind, ...(parsed.document ? { document: parsed.document } : {}) });
       // Check authorization/existence before spending time on a trial layout.
       await scope(ctx.gymId, tx => family(tx, id));
-      await validateTemplatePdf(body);
+      await validateTemplate(ctx.gymId, body);
       return scope(ctx.gymId, async tx => {
         const current = await family(tx, id);
         if (current.version !== parsed.expectedVersion) conflict('Template changed; reload before saving');
         if (body.name !== current.name || body.kind !== current.kind) invalid('Template family name and kind cannot change');
-        const [row] = await tx.insert(waiverTemplates).values({ ...base(ctx.gymId), ...body, version: current.version + 1 }).returning();
+        const [row] = await tx.insert(waiverTemplates).values({ ...base(ctx.gymId), name: body.name, kind: body.kind,
+          body: body.body, ...documentColumns(body.document), version: current.version + 1 }).returning();
         await audit(tx, ctx, 'waiver.template.published', row!.id); return template(row!);
       });
     },
@@ -126,6 +145,35 @@ export function createWaiversService(options: WaiverOptions) {
         const [row] = await tx.update(waiverTemplates).set({ retiredAt: clock.now() }).where(eq(waiverTemplates.id, current.id)).returning();
         await audit(tx, ctx, 'waiver.template.retired', row!.id); return template(row!);
       });
+    },
+    async uploadDocument(ctx: MutationContext, bytes: Uint8Array): Promise<c.WaiverDocument> {
+      const uploads = await options.uploadsFor(ctx.gymId), key = `${ctx.gymId}/waivers/templates/${uuidv7(clock.now().getTime())}.pdf`;
+      // DemoUploads owns the existing uploads-disabled error. It refuses before examining the file.
+      if (uploads instanceof DemoUploads) await uploads.put();
+      service.documentDelivery();
+      const validated = await validateDocumentPdf(bytes);
+      await uploads.put(key, bytes, 'application/pdf');
+      try { await scope(ctx.gymId, tx => audit(tx, ctx, 'waiver.template_document.uploaded', key.split('/').at(-1)!.slice(0, -4))); }
+      catch (error) { await uploads.markDeleted(key); throw error; }
+      return { key, hash: digest(bytes), ...validated };
+    },
+    async document(gymId: string, id: string, currentOnly = false) {
+      const row = await scope(gymId, async tx => {
+        const [selected] = await tx.select().from(waiverTemplates).where(eq(waiverTemplates.id, id));
+        if (!selected) notFound();
+        if (currentOnly) {
+          const [current] = await tx.select().from(waiverTemplates).where(eq(waiverTemplates.name, selected.name)).orderBy(desc(waiverTemplates.version)).limit(1);
+          if (current?.id !== id || current.retiredAt) notFound();
+        }
+        return selected;
+      });
+      const document = templateDocument(row).document; if (!document) notFound();
+      await headWaiverDocument(await options.uploadsFor(gymId), gymId, document);
+      return service.documentDelivery().issue(gymId, document);
+    },
+    documentDelivery(): WaiverDocumentDelivery {
+      if (!options.documentDelivery) throw new AppError('unavailable', 'Waiver document delivery is not configured');
+      return options.documentDelivery;
     },
     async uploadSignature(ctx: MutationContext, memberId: string, bytes: Uint8Array) {
       validateSignatureImage(bytes);
@@ -160,7 +208,7 @@ export function createWaiversService(options: WaiverOptions) {
         if (needsGuardian(m.dateOfBirth, now, signing.timezone) && p.signer.kind !== 'guardian') invalid('A guardian must sign for this member');
         if (p.signer.name.length > 200 || (p.signer.kind === 'guardian' && p.signer.relationship.length > 100)) invalid('Signer details too long');
         if (p.commitmentEndsOn && (current.kind !== 'agreement' || p.commitmentEndsOn < localDate(now, signing.timezone))) invalid('Invalid commitment end date');
-        const snapshot = serializeSnapshot({ template: { id: current.id, name: current.name, kind: c.waiverKindSchema.parse(current.kind), version: current.version, body: current.body },
+        const snapshot = serializeSnapshot({ template: { id: current.id, name: current.name, kind: c.waiverKindSchema.parse(current.kind), version: current.version, body: current.body, ...templateDocument(current) },
           member: { id: m.id, firstName: m.firstName, lastName: m.lastName, dateOfBirth: m.dateOfBirth }, signer: p.signer,
           signedAt: now.toISOString(), signatureImage: { key: p.signatureImageKey, hash: p.signatureImageHash }, commitmentEndsOn: p.commitmentEndsOn ?? null });
         return { kind: 'prepared' as const, snapshot };
@@ -169,7 +217,9 @@ export function createWaiversService(options: WaiverOptions) {
       if (prepared.kind === 'existing') return prepared.value;
       // Never persist a snapshot whose full layout or signature PNG cannot render.
       // No rendering/storage work runs inside either short transaction.
-      await (options.render ?? renderWaiver)(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash, png);
+      const preparedDocument = readSnapshot(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash).template.document;
+      await (options.render ?? renderWaiver)(prepared.snapshot.snapshot, prepared.snapshot.snapshotHash, png,
+        preparedDocument ? await documentBytes(ctx.gymId, preparedDocument) : undefined);
       return scope(ctx.gymId, async tx => {
         const checked = await prepare(tx);
         if (checked.kind === 'existing') return checked.value;
@@ -200,7 +250,8 @@ export function createWaiversService(options: WaiverOptions) {
       const uploads = await options.uploadsFor(gymId);
       const render = async () => {
         const png = await image(gymId, row.memberId, row.signatureImageKey, row.signatureImageHash);
-        return (options.render ?? renderWaiver)(row.snapshot, row.snapshotHash, png);
+        return (options.render ?? renderWaiver)(row.snapshot, row.snapshotHash, png,
+          snapshot.template.document ? await documentBytes(gymId, snapshot.template.document) : undefined);
       };
       const freshKey = () => `${gymId}/waivers/${row.memberId}/pdf/${uuidv7(clock.now().getTime())}.pdf`;
       let key: string;

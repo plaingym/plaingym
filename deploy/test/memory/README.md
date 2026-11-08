@@ -7,6 +7,23 @@ every integration branch and push to `main`, nightly, and on demand.
 
     node --test deploy/test/memory/budget.test.mjs    # budget arithmetic and failure classification, no Docker
     node deploy/test/memory/run.mjs --mode both        # builds committed HEAD, then measures it
+    node --test deploy/test/memory/waiver-budget.test.mjs
+    node deploy/test/memory/waiver-budget.mjs baseline/capped branch/capped
+
+The PDF acceptance command takes two capped output directories, baseline first, and reads their
+`summary.json` files plus the branch's `state.json`. Make each pair back to back on the same machine:
+build `main` with the same allocator defaults as the branch, run its existing workload, then run the
+branch's 20-page, 10 MiB uploaded PDF workload with six signed copies. Both runs must succeed and
+pass the general capped budgets below. The branch's whole-stack process-memory peak may increase
+by at most **100 MB (100,000,000 bytes)** over the baseline. This relative check does not relax any
+general ceiling, including the app's 360 MiB warm-idle limit. Repeat the pair to check reproducibility;
+record requests served and p50/p95 response times alongside memory.
+
+The runtime image sets `MALLOC_MMAP_THRESHOLD_=131072` and `MALLOC_ARENA_MAX=2` for **all app
+processes**, including backup subprocesses. The fixed mmap threshold prevents glibc from raising it
+after freeing a large allocation and then retaining later large freed buffers in its heap; the arena
+limit bounds allocator arenas. These defaults affect ordinary traffic as well as PDF work, so both
+images in a PDF comparison must use them. The container and V8 limits stay unchanged.
 
 `run.mjs` needs Docker with Compose v2.24 or later and cgroup v2. Options: `--mode capped|uncapped|both`,
 `--image TAG` (skip the build; `MEMORY_IMAGE` works too), `--out DIR` (default `deploy/test/memory/out`,
@@ -32,12 +49,19 @@ limits installs get), laid over by `compose.memory.yaml`: no published port, CPU
 about the stack under test changes.
 
 1. **Setup** through the API: owner, gym, packs, and encrypted backups to the stand-in bucket.
-2. **Seed**: 100 households with 300 members, a 20-page waiver template and six signatures; a 115 MB
+2. **Seed**: 100 households with 300 members, an uploaded 20-page, 10 MiB waiver PDF and six signatures; a 115 MB
    table, read into `shared_buffers` with `pg_prewarm`, so PostgreSQL is warm and larger than its buffers.
-3. **Load for 45 seconds**: 20 concurrent workers over list, health and page routes; six 20-page
-   waiver PDFs rendered at once, twice; an encrypted `maintenance.mjs snapshot` (the app's `age`
+3. **Load for 45 seconds**: 20 concurrent workers over list, health and page routes; six signed
+   copies rendered and merged at once, twice, then downloaded through their signed URLs; an encrypted `maintenance.mjs snapshot` (the app's `age`
    encryption and `pg_dump`) started five seconds in; the in-process job worker runs throughout.
 4. **Settle** for 12 seconds, to measure warm idle.
+
+`waiver-pdf.mjs` creates the deterministic input with no PDF dependencies in the load container.
+More than 99% of its bytes are an uncompressed image referenced by the original pages; merging
+must retain that resource. The seed checks the server's page count, size and SHA-256, and load
+fails if a downloaded signed copy has lost the resource. The server PDF tests independently
+parse the fixture and merged copy and check their page counts and text. The fixture is synthetic;
+hostile validation fixtures are never opened in a browser.
 
 The load generator and sampler run in containers of their own (CPU-capped, `nice`, with `timeout`),
 and the run is removed afterwards: containers, volumes, network and the image it built.
@@ -94,6 +118,13 @@ The ceilings are the largest of two full runs on 2026-11-03 plus about 20% for C
 | Caddy RSS, peak | 54 | 70 | 55 | 70 |
 | Stack, warm idle | 519-537 | 640 | - | - |
 | Stack, peak | 662-680 | 820 | 860 | 1040 |
+
+Two capped PDF runs on 2026-11-07 with the image's allocator defaults measured app RSS peaks of
+395.0–405.8 MiB and warm idle of 205.9–237.6 MiB; stack peaks were 637.4–640.4 MiB and stack warm
+idle 451.9–472.5 MiB. Compared pairwise with `main` using the same allocator, stack peak increased
+by 91.7 MB and 36.0 MB. Both pairs passed the relative PDF check and every general capped budget.
+The original calibration and ceilings above are retained. These are Docker Desktop measurements,
+not a new whole-host 1 GB proof.
 
 The app figure is RSS of everything in its cgroup, including the backup's second Node process and
 `pg_dump`, and about 55 MiB of mapped program files that cgroup memory does not charge. Page cache is not counted: a

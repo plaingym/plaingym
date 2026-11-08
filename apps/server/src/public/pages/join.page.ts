@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { jsx as h } from 'hono/jsx';
+import { waiverDocumentView } from './page.js';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, PublicPlan, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
@@ -49,7 +50,7 @@ function waiver(template: WaiverTemplate, member: number, index: number, t: Tran
     h('input', { type: 'hidden', name: prefix + '-template', value: template.id }),
     h('input', { type: 'hidden', name: prefix + '-version', value: template.version }),
     h('p', null, text('version', { version: template.version })),
-    h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body),
+    waiverDocumentView(template, t, undefined, member === 0),
     h('label', { for: prefix + '-kind', class: 'block space-y-1' }, text('signerKind'),
       h('select', { id: prefix + '-kind', name: prefix + '-kind', class: inputClass }, h('option', { value: 'self' }, text('self')), h('option', { value: 'guardian' }, text('guardian')))),
     field(prefix + '-name', text('signerName'), 'text', true, 'name'),

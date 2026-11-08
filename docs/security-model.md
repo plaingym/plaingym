@@ -253,7 +253,10 @@ Details: `apps/server/src/infra/auth/README.md`.
   admin, portal, kiosk, setup wizard and API) scripts, styles, fonts, connections and
   form submissions stay on the app's origin, server-rendered inline scripts need the
   response's nonce, images may also be `data:` URLs or come from the uploads bucket,
-  and no page may be framed (`frame-ancestors 'none'`, plus `X-Frame-Options: DENY`).
+  and application pages may not be framed (`frame-ancestors 'none'`, plus `X-Frame-Options: DENY`).
+  Validated waiver documents allow same-origin framing, with a sandboxed policy
+  and `X-Frame-Options: SAMEORIGIN`; public signing pages allow these same-origin
+  frames. An always-visible document link supports browsers without inline PDFs.
   Public pages, signed links and downloads send stricter policies of their own; the
   public website's pages run no script and allow only their structured-data block,
   by the response's nonce.
@@ -272,6 +275,22 @@ Details: `apps/server/src/infra/auth/README.md`.
   before the handler runs.
 
 Details: `apps/server/src/core/app.md`.
+
+Uploaded waiver PDFs are hostile input. Before storage, the PDF module checks
+the file envelope, cross-reference tables, compressed-object syntax and page tree,
+including single-revision hybrid files, linearized files and bounded predicted
+cross-reference streams. The final index must account for every object without
+conflicting definitions. Validation rejects encryption, active actions, forms, attachments, hidden layers and
+external references. Size, page count, syntax, decompression, queue and concurrency
+bounds apply. The parser has no network or evaluation path; document bytes and
+text are not logged. Documents use immutable gym-prefixed keys, and signing and
+downloads verify their bytes against the snapshot's SHA-256. App-served five-minute
+capability URLs bind each read to its gym and document; both local and S3 responses
+use `application/pdf`, `nosniff`, sandboxed CSP and `Cache-Control: private, no-store`.
+Link issuance reads metadata only; the download checks the complete content hash.
+Document reads and capability downloads are rate-limited per client within each
+gym, separately from uploads. Bad tokens cannot consume a gym-wide download budget.
+Old versions and documents referenced by signatures remain retained after retirement.
 
 ## Secrets and personal data
 

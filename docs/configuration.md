@@ -191,6 +191,12 @@ restart; people then sign in another way.
 | `SCHEMA_SNAPSHOT` | unset on a new install | Pre-upgrade snapshot from before the recorded compatibility boundary, shown with restore instructions. |
 | `NODE_OPTIONS` | `--max-old-space-size=256` | Node's options; the default caps the JavaScript heap at 256 MiB. |
 
+The image also sets two defaults read internally by **glibc**, for every app process including backups:
+`MALLOC_MMAP_THRESHOLD_=131072` keeps large freed buffers from being retained in the heap after glibc
+would otherwise raise its mmap threshold, and `MALLOC_ARENA_MAX=2` limits allocation arenas.
+Container and V8 memory limits are unchanged. See the [memory check](../deploy/test/memory/README.md)
+for the measured effect.
+
 ## Compose and Caddy
 
 These are read by `deploy/compose.yaml`, not by the app.

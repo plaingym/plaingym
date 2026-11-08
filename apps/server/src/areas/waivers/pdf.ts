@@ -3,6 +3,7 @@ import { AppError, createTranslator } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import { renderPdf, missingGlyphs, type PdfBlock } from '../../infra/pdf/index.js';
 import { digest, readSnapshot, validateSignatureImage } from './snapshot.js';
+import { appendSignaturePdf } from '../../infra/pdf/document.js';
 const t = createTranslator(locales.en ?? {});
 function templateBlocks(template: { name: string; version: number; body: string }): PdfBlock[] {
   const blocks: PdfBlock[] = [{ kind: 'text', text: template.name, size: 16 },
@@ -26,11 +27,13 @@ export async function validateTemplatePdf(template: { name: string; body: string
 }
 
 /** Waiver-specific content and layout. Only the persisted text determines the footer. */
-export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array): Promise<Uint8Array> {
+export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array, document?: Uint8Array): Promise<Uint8Array> {
   if (snapshotText.length > 600_000) throw new AppError('invalid_request', 'Waiver is too large');
   const snapshot = readSnapshot(snapshotText, snapshotHash);
   validateSignatureImage(png);
   if (digest(png) !== snapshot.signatureImage.hash) throw new Error('Waiver image integrity failure');
+  if (snapshot.template.document && (!document || digest(document) !== snapshot.template.document.hash || document.length !== snapshot.template.document.bytes))
+    throw new Error('Waiver document integrity failure');
   const blocks = templateBlocks(snapshot.template);
   blocks.push({ kind: 'text', text: `${t('waivers/waivers:member')}: ${snapshot.member.firstName} ${snapshot.member.lastName}` },
     { kind: 'text', text: `${t('waivers/waivers:signer')}: ${snapshot.signer.name}` });
@@ -38,5 +41,7 @@ export async function renderWaiver(snapshotText: string, snapshotHash: string, p
   blocks.push({ kind: 'text', text: `${t('waivers/waivers:signedAt')}: ${snapshot.signedAt}` });
   if (snapshot.commitmentEndsOn) blocks.push({ kind: 'text', text: `${t('waivers/waivers:commitment')}: ${snapshot.commitmentEndsOn}` });
   blocks.push({ kind: 'image', bytes: png, width: 240, height: 70 });
-  return renderPdf({ title: snapshot.template.name, createdAt: new Date(snapshot.signedAt), footer: 'SHA-256 ' + digest(snapshotText), blocks });
+  const metadata = { title: snapshot.template.name, createdAt: new Date(snapshot.signedAt) };
+  const details = await renderPdf({ ...metadata, footer: 'SHA-256 ' + digest(snapshotText), blocks });
+  return snapshot.template.document ? appendSignaturePdf(document!, details, metadata) : details;
 }

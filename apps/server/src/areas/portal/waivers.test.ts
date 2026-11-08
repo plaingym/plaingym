@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, waiverSignatures } from '@plaingym/db';
+import { auditEvents, waiverSignatures, waiverTemplates } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the default app-role pools for the production registrations; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -14,6 +14,8 @@ import type { Principal } from '../../core/context.js';
 import { FakeUploads } from '../../infra/storage/index.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { createWaiversService } from '../waivers/waivers.js';
+import { createWaiverDocumentDelivery } from '../waivers/document-delivery.js';
+import { waiverDocumentFixture } from '../waivers/document.fixture.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
 import { createPortalWaiverService } from './waivers.js';
 import { configurePortalWaivers, createPortalWaiverRoutes } from './waivers.routes.js';
@@ -25,7 +27,9 @@ beforeAll(() => initializeDatabase(db.appUrl));
 afterAll(closeDatabase);
 async function fixture() {
   const f = await portalFixture(factory), uploads = new FakeUploads(f.gymId, clock);
-  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads, render: async () => new Uint8Array([37, 80, 68, 70]) });
+  const uploadsFor = async () => uploads;
+  const documentDelivery = createWaiverDocumentDelivery({ uploadsFor, clock, key: new Uint8Array(32).fill(8), originFor: async () => 'https://gym.example.test' });
+  const waivers = createWaiversService({ scope: db.forGym, clock, uploadsFor, documentDelivery });
   const ctx = { gymId: f.gymId, actor: { kind: 'system' as const } };
   const waiver = await waivers.createTemplate(ctx, { name: 'Participation', kind: 'waiver', body: 'I agree.' });
   const agreement = await waivers.createTemplate(ctx, { name: 'Membership agreement', kind: 'agreement', body: 'Terms.' });
@@ -53,8 +57,30 @@ function routes(base: string, memberId: string, signatureId: string, templateId:
 }
 
 describe('portal waiver routes', () => {
-  it('lets a member sign their own pending waivers, list them and download a PDF; signing stays immutable', async () => {
+  it('authorizes current PDF reads for each household while denying foreign gyms and the wrong household capability', async () => {
+    const f = await fixture(), foreign = await fixture();
+    const document = await f.waivers.uploadDocument(f.ctx, await waiverDocumentFixture());
+    await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set({ body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes }).where(eq(waiverTemplates.id, f.waiver.id)));
+    const selfPath = `/api/portal/waiver-templates/${f.waiver.id}/document`, householdPath = `/api/portal/household/waiver-templates/${f.waiver.id}/document`;
+    expect((await send(app(f, adultPrincipal(f)), 'GET', selfPath)).status).toBe(200);
+    expect((await send(app(f, payerPrincipal(f)), 'GET', householdPath)).status).toBe(200);
+    expect((await send(app(f, adultPrincipal(f)), 'GET', householdPath)).status).toBe(404);
+    for (const principal of [payerPrincipal(foreign), adultPrincipal(foreign), ...outsidePrincipals(f)]) {
+      expect((await send(app(f, principal), 'GET', selfPath)).status).toBe(404);
+      expect((await send(app(f, principal), 'GET', householdPath)).status).toBe(404);
+    }
+    expect((await send(app(f, payerPrincipal(f)), 'GET', `/api/portal/household/waiver-templates/${foreign.waiver.id}/document`)).status).toBe(404);
+    await f.waivers.retireTemplate(f.ctx, f.waiver.id, { expectedVersion: 1 });
+    expect((await send(app(f, adultPrincipal(f)), 'GET', selfPath)).status).toBe(404);
+  });
+  it.each([false, true])('lets a member sign and download immutable waivers (PDF: %s)', async pdfTemplate => {
     const f = await fixture(), server = app(f, adultPrincipal(f));
+    if (pdfTemplate) {
+      const document = await f.waivers.uploadDocument(f.ctx, await waiverDocumentFixture());
+      await db.forGym(f.gymId, tx => tx.update(waiverTemplates).set({ body: '', documentKey: document.key, documentHash: document.hash, documentPages: document.pages, documentBytes: document.bytes }).where(eq(waiverTemplates.id, f.waiver.id)));
+      expect((await send(server, 'GET', `/api/portal/waiver-templates/${f.waiver.id}/document`)).status).toBe(200);
+      expect((await send(app(f, otherPayerPrincipal(f)), 'GET', `/api/portal/waiver-templates/${f.waiver.id}/document`)).status).toBe(200);
+    }
     const pending = await send(server, 'GET', '/api/portal/waivers/pending');
     expect(contracts.pendingWaivers.response.parse(await pending.json()).data.map(row => [row.memberId, row.template.id]))
       .toEqual([[f.adult.id, f.agreement.id], [f.adult.id, f.waiver.id]]);

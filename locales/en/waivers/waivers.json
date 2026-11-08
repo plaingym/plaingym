@@ -10,7 +10,7 @@
   "previous": "Previous",
   "next": "Next",
   "close": "Close",
-  "versionNote": "Publishing creates a new version. Existing signed copies keep the exact text that was signed.",
+  "versionNote": "Publishing creates a new version. Existing signed copies keep the exact document that was signed.",
   "saveError": "Could not save. The template may have changed; close and reopen it before trying again.",
   "name": "Template name",
   "kind": "Template kind",
@@ -37,8 +37,18 @@
   "draw": "Draw your signature, or choose the typed-name option above.",
   "clear": "Clear signature",
   "consent": "I have read this text and agree to sign it electronically.",
+  "documentConsent": "I have read this document and agree to sign it electronically.",
   "sign": "Sign agreement",
   "member": "Member",
   "guardianSignature": "Guardian signature",
-  "signedAt": "Signed at"
+  "signedAt": "Signed at",
+  "openDocument": "Open the document",
+  "documentHelp": "Open the document to read it in a new tab if needed. Confirm only after you have read it. If it will not open, contact the gym before signing.",
+  "pdfDocument": "PDF document",
+  "textDocument": "Waiver text",
+  "documentKind": "Document format",
+  "uploadDocument": "Upload a PDF",
+  "documentLimits": "Up to 10 MiB and 20 pages. Use a static PDF without passwords, forms, attachments or links.",
+  "documentRequired": "Choose a PDF before saving.",
+  "documentSelected": "PDF uploaded and validated."
 }

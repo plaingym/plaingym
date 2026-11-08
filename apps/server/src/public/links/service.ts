@@ -3,12 +3,12 @@ import { forHousehold, HouseholdAccessError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import { portalSignedLinkDataSchema, type PortalSignedLinkData, type WaiverSignRequest } from '@plaingym/shared/contracts';
 import type { RequestContext } from '../../core/context.js';
-import type { WaiversService } from '../../areas/waivers/waivers.js';
+import { templateDocument, type WaiversService } from '../../areas/waivers/waivers.js';
 import type { createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
 
 export interface LinkPageOptions {
   scope?: typeof forHousehold;
-  waivers: Pick<WaiversService, 'uploadSignedLink' | 'signSignedLink' | 'completeSignedLink'>;
+  waivers: Pick<WaiversService, 'uploadSignedLink' | 'signSignedLink' | 'completeSignedLink' | 'document'>;
   checkout: ReturnType<typeof createSignedLinkCheckout>;
 }
 export function linkPrincipal(context: RequestContext) {
@@ -36,7 +36,7 @@ export function createLinkPageService(options: LinkPageOptions) {
         const people = p.link.purpose === 'sign_waiver' ? await q.member(p.link.memberId) : await q.members();
         if (p.link.purpose === 'sign_waiver' && people.length !== 1) throw new AppError('not_found', 'Member not found');
         const members = people.map(m => ({ id: m.id, firstName: m.firstName, lastName: m.lastName, dateOfBirth: m.dateOfBirth, revision: m.revision }));
-        const templates = (await q.waiverTemplates()).map(t => ({ id: t.id, name: t.name, body: t.body, kind: t.kind, version: t.version, retiredAt: null, createdAt: t.createdAt.toISOString() }));
+        const templates = (await q.waiverTemplates()).map(t => ({ id: t.id, name: t.name, body: t.body, ...templateDocument(t), kind: t.kind, version: t.version, retiredAt: null, createdAt: t.createdAt.toISOString() }));
         const signatures = (await q.waivers()).map(s => ({ ...s, signedAt: s.signedAt.toISOString() }));
         return portalSignedLinkDataSchema.parse(p.link.purpose === 'sign_waiver'
           ? { purpose: p.link.purpose, member: members[0], templates, signatures }
@@ -55,6 +55,11 @@ export function createLinkPageService(options: LinkPageOptions) {
   }
   return {
     read,
+    async document(context: RequestContext, templateId: string) {
+      const data = await read(context), p = linkPrincipal(context);
+      if (!('templates' in data) || !data.templates.some(template => template.id === templateId)) throw new AppError('not_found', 'Document not found');
+      return options.waivers.document(p.gymId, templateId, true);
+    },
     async completeWaiverOnOpen(context: RequestContext) {
       const data = await read(context), p = linkPrincipal(context);
       if (data.purpose !== 'sign_waiver') return false;

@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { Client, cached, createClass, expect, missingId, type ClassSession, type Person, type Program, type RecordId } from '../support.js';
 import { claimPortal, signaturePng, stripeOrigin, deliverStripeEvent } from '../portal.js';
+import { waiverPdf } from '../../deploy/test/memory/waiver-pdf.mjs';
 
 /** The two gyms of the multi-gym install, each on its own hostname. */
 export const gyms = [
@@ -177,8 +178,11 @@ export async function createGym(gym: (typeof gyms)[number], afterWrite: (step: '
     const integrations = await owner.json<{ data: { revision: number } }>('/api/settings/integrations');
     await write(owner, 'settings-integrations-stripe', '/api/settings/integrations/stripe', 'PUT', { revision: integrations.data.revision, restrictedKey: stripeKey });
     const plan = (await write<{ data: RecordId }>(owner, 'billing-plans', '/api/billing/plans', 'POST', { name: gym.name + ' monthly', amountCents: 9000, currency: 'USD', interval: 'monthly' })).data;
-    const template = (await write<{ data: RecordId }>(owner, 'waivers-templates', '/api/waivers/templates', 'POST', { name: gym.name + ' liability waiver', kind: 'waiver',
-      body: `I understand that training at ${gym.name} carries a risk of injury and I accept it.` })).data;
+    // A real PDF gives the document routes positive controls as well as cross-gym refusals.
+    const document = (await write<{ data: { key: string; hash: string; pages: number; bytes: number } }>(owner, 'waiver-document',
+      '/api/waivers/template-documents', 'POST', waiverPdf({ pages: 2, bytes: 8192, imageSide: 32 }), { 'content-type': 'application/pdf' })).data;
+    const template = (await write<{ data: RecordId }>(owner, 'waivers-templates', '/api/waivers/templates', 'POST',
+      { name: gym.name + ' liability waiver', kind: 'waiver', document })).data;
     const switches = await owner.json<{ data: { revision: number } }>('/api/settings/go-live');
     await write(owner, 'settings-go-live', '/api/settings/go-live', 'PATCH', { revision: switches.data.revision, billingEnabled: true, memberEmailsEnabled: true });
     const dueOn = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);

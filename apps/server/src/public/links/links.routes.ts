@@ -3,7 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { Context } from 'hono';
 import { z } from 'zod';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
-import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema, portalAccessContracts } from '@plaingym/shared/contracts';
+import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema, portalAccessContracts, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
 import { rateLimit } from '../../core/rate-limit.js';
 import { setPolicy } from '../../core/csp.js';
@@ -16,13 +16,14 @@ import { checkoutReceipts } from './receipt.js';
 import { linkPage } from './page.js';
 import { cachedLinkAsset } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
+import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
 
-const t = createTranslator({ 'public/links': messages });
+const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages });
 export const receiptCookie = 'plaingym_link_checkout';
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
 /** Signed-link pages load their script, styles and images (`data:` QR codes) from the app only. */
 const linkPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self' data:", "base-uri 'none'",
-  "form-action 'self'", "frame-ancestors 'none'"];
+  "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
 interface PageRoutesOptions {
   portalInvitations?: PortalInvitationService;
   service: LinkPageService;
@@ -71,11 +72,23 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
   }
   function html(c: Context<RequestEnvironment>, input: Parameters<typeof linkPage>[0], status: 200 | 404 = 200) {
     setPolicy(c, linkPageDirectives);
-    return c.html(linkPage(input), status);
+    const token = c.req.param('token');
+    return c.html(linkPage({ ...input, ...(token ? { documentBase: '/l/' + encodeURIComponent(token) + '/documents/' } : {}) }), status);
   }
   const textResponses = { 200: { description: 'Signed-link page' }, 404: { description: 'Unavailable signed link' } };
   const publicRoute = (entry: RouteRegistration) => protect(entry, false);
   const result: RouteRegistration[] = [
+    protect(route({ ...waiverDocumentReadContracts.link, middleware: rateLimit({ limit: 10 }),
+      request: { params: waiverDocumentReadContracts.link.params }, responses: json(waiverDocumentReadContracts.link.response) }, async c =>
+      c.json(await options().service.document(c.get('context'), c.req.valid('param').templateId), 200))),
+    publicRoute(route({ method: 'get', path: '/l/{token}/documents/{templateId}', permission: { kind: 'public' }, middleware: rateLimit({ limit: 10 }),
+      request: { params: z.strictObject({ token: z.string().max(128), templateId: z.uuid() }) }, responses: { 302: { description: 'Open the waiver document' } } }, async c => {
+      const context = c.get('context'), params = c.req.valid('param');
+      const resolved = await options().links.resolve(context.gym.gymId, params.token);
+      if (resolved.status !== 'active') throw new AppError('not_found', 'Document not found');
+      const result = await options().service.document({ ...context, principal: resolved.principal }, params.templateId);
+      return c.redirect(result.data.url, 302);
+    })),
     publicRoute(route({ method: 'get', path: '/l/client.js', permission: { kind: 'public' }, responses: { 200: { description: 'Signed-link progressive enhancement' } } }, async c => {
       c.header('Content-Type', 'text/javascript; charset=utf-8'); return c.body(await (options().browserScript ?? browserScript)());
     })),

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
 import { test, expect, Client, missingId, type Document } from '../support.js';
-import { signaturePng } from '../portal.js';
-import { multiGyms, withCookie, type Context } from './support.js';
+import { claimPortal, signaturePng } from '../portal.js';
+import { mailIds, mailLink, multiGyms, withCookie, type Context } from './support.js';
 import { bodiesOf, hasJsonBody, namesTarget, outOfScope, pathFor, pathParams, queryOf, routeKey, routesOf, snapshot, targetOf,
   type Aim, type Route, type Target } from './probe.js';
 
@@ -24,6 +24,7 @@ type Images = Record<'link' | 'household' | 'staff' | 'onboarding', SignatureIma
 /** One run's view of a pair of gyms: the credentials of the caller, and what it aims at. */
 class Sweep {
   readonly links: Record<string, Client> = {};
+  private self!: Client;
   images!: Images;
   private pngBase64 = '';
   private readonly revisions = new Map<string, number>();
@@ -31,6 +32,18 @@ class Sweep {
 
   async prepare() {
     const { from } = this, expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+    // The household payer has no member identity. Give the self-service document
+    // route an adult member login, so both its positive and foreign-gym probes reach the template.
+    const email = `document-reader@${from.slug}.example.invalid`;
+    const member = (await from.owner.json<{ data: { id: string } }>('/api/members', 'POST', {
+      householdId: from.householdId, firstName: 'Document', lastName: 'Reader', dateOfBirth: '1990-01-01', email,
+    })).data;
+    const invitation = (await from.owner.json<{ data: { invitationUrl: string } }>(`/api/households/${from.householdId}/portal-invitations`, 'POST',
+      { email, scope: 'member', memberId: member.id, delivery: 'print' })).data;
+    const before = await mailIds();
+    await new Client(from.origin).json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.invitationUrl).hash.slice(1) });
+    this.self = await claimPortal(from.origin, await mailLink(email, /^\/api\/auth\//, before));
+    this.self.headers['X-Portal-Household'] = from.householdId;
     for (const [purpose, extra] of [['onboarding', {}], ['update_card', {}], ['sign_waiver', { memberId: from.student.id }], ['pay_invoice', { invoiceId: from.invoiceId }]] as const) {
       const created = await from.owner.json<{ data: { token: string } }>('/api/links', 'POST', { purpose, householdId: from.householdId, expiresAt, ...extra });
       this.links[purpose] = new Client(from.origin, { authorization: 'Bearer ' + created.data.token });
@@ -44,12 +57,17 @@ class Sweep {
       household: await image(from.household, '/api/portal/household/waivers/signature-images', { memberId: from.student.id, pngBase64 }),
       staff: await image(from.owner, '/api/waivers/signature-images', { memberId: from.student.id, pngBase64 }),
     };
+    // The parameterized document read must reach an actual document with its own link;
+    // the sweep below aims that same credential at the other gym's template.
+    expect((await this.links.sign_waiver!.request(`/api/links/sign-waiver/templates/${from.templateId}/document`)).status).toBe(200);
   }
 
   credentials(route: Route, origin: string): Client | undefined {
     const { from } = this;
     if (route.kind === 'staff') return withCookie(origin, from.cookies.owner);
-    if (route.kind === 'member') return withCookie(origin, from.cookies.household, { 'X-Portal-Household': from.householdId });
+    if (route.kind === 'member') return withCookie(origin,
+      route.path === '/api/portal/waiver-templates/{templateId}/document' ? this.self.cookie : from.cookies.household,
+      { 'X-Portal-Household': from.householdId });
     if (route.kind === 'kiosk') return new Client(origin, { authorization: 'Bearer ' + from.kioskToken });
     if (route.kind === 'signed_link') { const link = this.links[route.purpose ?? '']; return link && new Client(origin, link.headers); }
     return undefined;
@@ -80,6 +98,9 @@ class Sweep {
       'POST /api/portal/waivers': signed(images.household),
       'POST /api/portal/household/waivers': signed(images.household),
       'POST /api/waivers/signatures': signed(images.staff),
+      // OpenAPI cannot express the text/PDF refinement: the default empty body is not a valid version.
+      'POST /api/waivers/templates/{templateId}/versions': { name: this.to.name + ' liability waiver', kind: 'waiver',
+        body: 'Cross-gym terms', expectedVersion: 1 },
       'POST /api/links/onboarding/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
       'POST /api/portal/household/waivers/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
       'POST /api/portal/waivers/signature-images': { memberId: ids.memberId, pngBase64: this.pngBase64 },
@@ -102,8 +123,9 @@ class Sweep {
       for (const [where, origin] of [['own host', from.origin], ['foreign host', to.origin]] as const) {
         const client = this.credentials(route, origin);
         if (!client) continue;
-        // A signed link opens its own purpose only, and a GET of it on its own host shows the caller's own data.
-        if (where === 'own host' && route.kind === 'signed_link' && route.method === 'GET') {
+        // A parameterless signed-link GET on its own host shows the caller's own data.
+        // A document GET naming the other gym's template must instead reach the refusal checks below.
+        if (where === 'own host' && route.kind === 'signed_link' && route.method === 'GET' && !names.length) {
           const own = await client.request(url);
           expect(own.status, `${routeKey(route)}: ${own.text}`).toBe(200);
           for (const secret of target.secrets) expect(own.text, `${routeKey(route)} leaks`).not.toContain(secret);
@@ -204,10 +226,11 @@ test('no route answers a gym\'s credentials with another gym\'s data, in either 
   expect(await snapshots()).toEqual(before);
 
   // Controls: the same credentials do reach the gym's own records, so the refusals above are the gym boundary and not broken requests.
-  for (const [gym, own] of [[alpha, alphaTarget], [beta, betaTarget]] as const) {
+  for (const sweep of sweeps) {
+    const { from: gym, own } = sweep;
     const unread: string[] = [];
     for (const route of swept.filter((entry) => entry.method === 'GET' && pathParams(entry).length && entry.kind !== 'signed_link' && entry.kind !== 'kiosk')) {
-      const client = route.kind === 'member' ? gym.household : gym.owner;
+      const client = sweep.credentials(route, gym.origin)!;
       const response = await client.request(pathFor(route, own) + queryOf(route, { target: own, optionalIds: true }));
       if (response.status !== 200) unread.push(`${routeKey(route)} ${response.status}`);
     }

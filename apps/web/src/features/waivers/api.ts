@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { waiverContracts } from '@plaingym/shared/contracts';
+import { waiverContracts, waiverDocumentResponseSchema } from '@plaingym/shared/contracts';
 import { billingRequest } from '../billing/catalog/api.js';
 export class WaiverRequestError extends Error {}
 export function createWaiversClient(fetcher: typeof fetch = fetch) {
   const transport: typeof fetch = async (url, init) => {
     const response = await fetcher(url, init);
-    if (response.status === 409 || response.status === 403 || (response.status === 400 && String(url).startsWith('/api/waivers/templates'))) {
+    if (response.status === 409 || response.status === 403 || (response.status === 400 && String(url).startsWith('/api/waivers/template'))) {
       const body: unknown = await response.clone().json().catch(() => null);
       const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
       if (error && typeof error === 'object' && 'code' in error && 'message' in error
@@ -17,7 +17,11 @@ export function createWaiversClient(fetcher: typeof fetch = fetch) {
     }
     return response;
   };
-  return { call: <K extends keyof typeof waiverContracts>(name: K, input?: unknown, params: Record<string, string> = {}, query: Record<string, string | number> = {}) =>
+  return { uploadDocument: async (file: File) => {
+    const response = await transport(waiverContracts.uploadDocument.path, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: file });
+    if (!response.ok) throw new Error('Document upload failed');
+    return waiverDocumentResponseSchema.parse(await response.json());
+  }, call: <K extends keyof typeof waiverContracts>(name: K, input?: unknown, params: Record<string, string> = {}, query: Record<string, string | number> = {}) =>
     billingRequest(waiverContracts[name], input, params, query, transport) as Promise<ReturnType<typeof waiverContracts[K]['response']['parse']>> };
 }
 export const waiversClient = createWaiversClient();

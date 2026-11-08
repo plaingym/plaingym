@@ -18,7 +18,9 @@ const matrix: Record<string, Role[]> = {
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$)|settings\/integrations(?:\/|$))/.test(path)
-  || ['/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
+  || ['/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
+    '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
+    '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
   || /^\/(?:csp-report|api\/public\/(?:config|waivers|trial|drop-in|plans|join)|drop-in\/signatures|public\/pages\/(?:client\.js|styles\.css|theme\.css|logo\/\{revision\})|(?:trial|drop-in)(?:\/received)?|l\/(?:\{token\}|client\.js|styles\.css|cleared|return)|join(?:\/(?:signatures|checkout|return|cancelled|sign-in|portal-login|client\.js))?)$/.test(path);
 const key = (entry: Pick<Entry, 'method' | 'path'>) => `${entry.method} ${entry.path}`;
 // Each intake form and its API route share ten attempts per gym/IP per fifteen minutes, before validation.
@@ -31,6 +33,8 @@ const budgetedPublicIntake = new Set(['POST /api/public/trial', 'POST /api/publi
 
 // The signed-link Checkout return finds its link from the receipt cookie the link's page set; without one it is unavailable.
 const receiptReturn = 'GET /l/return';
+// This public capability requires a valid signed query token, not a session.
+const documentCapability = 'GET /api/waivers/template-document';
 // Public portal routes that act for the signed-in user (choosing a household, completing a claim): anonymous callers get 401.
 const signedInPublic = new Set(['GET /api/portal/households', 'POST /api/portal/households/current', 'POST /api/portal/claims/complete']);
 
@@ -79,7 +83,7 @@ test('every route enforces all staff roles, anonymous access and device boundari
     else if (role === 'device' && entry.permission.kind !== 'kiosk') expect(response.status, detail).toBe(404);
     // A missing ID makes 404 the right answer only where the path has one; on a collection route a 404 is a
     // missing mount or a wrong denial, never an allowed response.
-    else if (allowed) expect(/\{[^}]+\}/.test(entry.path) || key(entry) === receiptReturn ? [200, 400, 404, 409]
+    else if (allowed) expect(/\{[^}]+\}/.test(entry.path) || [receiptReturn, documentCapability].includes(key(entry)) ? [200, 400, 404, 409]
       : [200, ...noContent.has(key(entry)) ? [204] : [], 400, 409], detail).toContain(response.status);
     else if (entry.permission.kind === 'member') expect(response.status, detail).toBe(404);
     // Only a link's own bearer token opens a signed-link route; sessions and missing tokens are unauthenticated.
