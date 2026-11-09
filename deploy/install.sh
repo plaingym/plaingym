@@ -57,8 +57,9 @@ check_dns "$hostname"
 # A proxied re-run needs this install's own files to carry the Cloudflare support: the app reads TRUST_CLOUDFLARE
 # only through compose.yaml, and the origin check needs the Caddyfile's handler. Host files don't update themselves.
 if [ "$existing" = true ] && [ "$dns_proxied" = true ]; then
-  grep -q TRUST_CLOUDFLARE "$ROOT/compose.yaml" && grep -q plaingym-origin "$ROOT/Caddyfile" ||
+  if ! grep -q TRUST_CLOUDFLARE "$ROOT/compose.yaml" || ! grep -q plaingym-origin "$ROOT/Caddyfile"; then
     fail "$hostname is behind Cloudflare's proxy, but this install's compose.yaml and Caddyfile predate support for it. Copy both from the current deployment files into $ROOT, then re-run. Nothing was changed."
+  fi
 fi
 # add_env KEY VALUE: add a line to .env, rewriting it so a missing final newline can't merge two lines.
 add_env() {

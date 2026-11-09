@@ -233,6 +233,8 @@ in_cloudflare_ranges() {
 # installer then proves the name reaches this server through it before printing the
 # setup link (install.sh, the origin check).
 check_dns() {
+  # Read by install.sh after the call.
+  # shellcheck disable=SC2034
   dns_proxied=false
   dns_retry="If you recently added or changed the record, cached answers can remain until their TTL expires, which can take an hour or more; retry the installer after that. Nothing was changed."
   dns_status=0
@@ -267,6 +269,7 @@ check_dns() {
         fail "$1 resolves to a loopback address. Point it at this server's public IP. $dns_retry" ;;
     esac
     if [ -n "${CLOUDFLARE_RANGES:-}" ] && in_cloudflare_ranges "$address" "$CLOUDFLARE_RANGES"; then
+      # shellcheck disable=SC2034
       dns_proxied=true
       continue
     fi
