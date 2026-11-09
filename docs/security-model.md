@@ -240,10 +240,17 @@ Details: `apps/server/src/infra/auth/README.md`.
   Public intake routes name stable budgets for the PostgreSQL counter store;
   runtime startup enables it with `registerIntakeRateLimits`. These limits run
   before route body parsing and validation, group IPv6 clients by /64, and use
-  fixed windows shared across processes and restarts. A rejected counter write
-  returns the usual 429 with `Retry-After` when a separate connectivity probe
-  succeeds; a database outage follows normal request error handling. The daily
-  sweep removes expired windows. App factories without runtime registration and
+  fixed windows shared across processes and restarts. The public token routes
+  (portal invitation acceptance, portal claim completion and staff invitation
+  acceptance) have named budgets too. Once the database refuses a budget, the
+  process refuses that client locally until the window ends, without another
+  database transaction; another process may still ask the database once. A
+  rejected counter write returns the usual 429 with `Retry-After` when a separate
+  connectivity probe succeeds, is logged (`rate_limit.intake_store_failed`, at most
+  once a minute per process) and is remembered for one second only, so the
+  database is asked again soon after it recovers; a database outage
+  follows normal request error handling. An hourly sweep removes expired windows
+  in batches of at most 5,000 rows. App factories without runtime registration and
   unnamed budgets keep in-memory counting; authentication and kiosk budgets are
   independent.
 * **Body limits** per route, applied before parsing. Routes allowing more than

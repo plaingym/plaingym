@@ -26,9 +26,13 @@ process memory holds only short-lived state such as the general flood-protection
 Public intake budgets count atomically in PostgreSQL across processes, enabled by
 `registerIntakeRateLimits` at startup. Named budgets separate join submissions,
 admissions, payment/mail steps, trial/drop-in submissions and admissions, signed-link
-claims, demo creation and demo login. Counters contain only the gym ID (null for
+claims, portal invitation acceptance and claim completion, staff invitation acceptance,
+demo creation and demo login. Counters contain only the gym ID (null for
 install-level requests), route budget, client address key, window and count. The
-system-only table uses forced RLS and a daily system job removes expired windows.
+system-only table uses forced RLS and an hourly system job removes expired windows in
+short batches. Each process also remembers, in memory, the budgets the database has
+refused until their window ends, so a client over its limit costs no further database
+work there.
 
 On start, the container entrypoint (`deploy/container/`) checks the database roles,
 resumes an interrupted restore and applies migrations as the `maintenance` role,

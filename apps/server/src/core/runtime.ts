@@ -239,7 +239,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const queue = new PostgresJobs({ clock, listGyms: () => listGyms(), retention: { keep: [sendAlertJob] } });
   // Expired magic links and staff invitations are swept by one install job an hour, in either tenancy mode.
   const verificationSweep = registerVerificationSweep(queue, clock);
-  // The public forms' named limits are counted in the database, so every process shares one window; one job a day removes expired counters.
+  // The public forms' named limits are counted in the database, so every process shares one window; each process remembers
+  // the budgets it saw refused, and one job an hour removes expired counters.
   const intakeLimits = registerIntakeRateLimits(queue, clock);
   const bookingDelivery = createBookingDelivery({ jobs: queue, settings, clock,
     mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId) });

@@ -109,8 +109,34 @@ export interface RateLimitOptions extends ClientIpOptions {
 }
 
 export interface SharedRateLimitStore {
+  /** `failed` marks a refusal because the counter couldn't be written, not because the budget is spent. */
   consume(input: { gymId: string | null; routeKey: string; clientKey: string; now: number; windowMs: number; limit: number }):
-    Promise<{ allowed: boolean; resetAt: number }>;
+    Promise<{ allowed: boolean; resetAt: number; failed?: boolean }>;
+}
+
+/**
+ * Wraps a store so a budget it refused is refused in memory until its window ends, without asking the store again.
+ * A refusal from a failed counter write is remembered for at most `failureMs`, so a broken table costs the store
+ * about one call a second per client instead of one per request. Another process may still ask the store once,
+ * which refuses as well. A full table drops its oldest entry, which only sends that client back to the store.
+ */
+export function cacheRefusals(store: SharedRateLimitStore, maxEntries = 10_000, failureMs = 1000): SharedRateLimitStore {
+  const refused = new Map<string, { until: number; resetAt: number; failed: boolean }>();
+  return {
+    async consume(input) {
+      const key = `${input.gymId ?? ''}\u0000${input.routeKey}\u0000${input.clientKey}\u0000${input.windowMs}\u0000${input.limit}`;
+      const known = refused.get(key);
+      if (known && known.until > input.now) return { allowed: false, resetAt: known.resetAt, ...(known.failed ? { failed: true } : {}) };
+      if (known) refused.delete(key);
+      const result = await store.consume(input);
+      if (!result.allowed) {
+        if (refused.size >= maxEntries) refused.delete(refused.keys().next().value!);
+        const failed = result.failed === true;
+        refused.set(key, { until: failed ? Math.min(result.resetAt, input.now + failureMs) : result.resetAt, resetAt: result.resetAt, failed });
+      }
+      return result;
+    },
+  };
 }
 let sharedStore: SharedRateLimitStore | undefined;
 /** App factories without runtime infrastructure retain their local budgets. Returns a shutdown reset. */

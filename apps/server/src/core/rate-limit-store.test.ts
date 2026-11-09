@@ -6,11 +6,18 @@ import { intakeRateLimits, uuidv7 } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
-import { rateLimit } from './rate-limit.js';
-import { createIntakeRateLimitStore, registerIntakeRateLimits } from './rate-limit-store.js';
+import { cacheRefusals, rateLimit, type SharedRateLimitStore } from './rate-limit.js';
+import { createIntakeRateLimitStore, registerIntakeRateLimits, sweepIntakeRateLimits } from './rate-limit-store.js';
 import { PostgresJobs } from '../infra/jobs/postgres.js';
 import { createPublicRoutes } from '../public/pages/pages.routes.js';
 import { createJoinRoutes } from '../public/pages/join.routes.js';
+import { createLinkRoutes } from '../public/links/links.routes.js';
+import { createPortalInvitationRoutes } from '../areas/portal/access.routes.js';
+import { createStaffInvitationRoutes } from '../areas/staff/profiles.routes.js';
+import { createDemoRoutes } from '../demo/demo.routes.js';
+import { demoLoginRateLimit } from '../demo/identities.js';
+import type { DemoService } from '../demo/service.js';
+import { demoContracts, portalAccessContracts, staffInvitationContracts } from '@plaingym/shared/contracts';
 import type { RouteRegistration } from './registry.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -19,7 +26,7 @@ afterEach(() => { reset?.(); reset = undefined; });
 async function fixture() {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-11-05T12:00:00Z');
   await factory('gyms', gymId); await factory('gyms', otherGym);
-  const make = (shared = true, routes: readonly RouteRegistration[] = []) => {
+  const make = (shared = true, routes: readonly RouteRegistration[] = [], store?: SharedRateLimitStore) => {
     const app = createApp({ clock, rateLimit: { limit: 1000 }, contributions: { routes },
       resolveGym: async (c, next) => {
         c.set('context', { ...c.get('context'), gym: { gymId: c.req.header('test-gym') ?? gymId, timezone: 'UTC', enabledModules: new Set() },
@@ -29,7 +36,7 @@ async function fixture() {
       session: async (_c, next) => { await next(); }, authorize: () => async (_c, next) => { await next(); },
     });
     app.post('/api/intake', rateLimit({ sharedKey: 'test.intake', limit: 2, windowMs: 2000,
-      ...(shared ? { sharedStore: createIntakeRateLimitStore(db.forSystem) } : {}) }), async c => {
+      ...(shared ? { sharedStore: store ?? createIntakeRateLimitStore(db.forSystem) } : {}) }), async c => {
       await c.req.json(); return c.json({ ok: true });
     });
     return app;
@@ -117,16 +124,119 @@ it('shares install-level buckets when no gym exists', async () => {
   expect((await createIntakeRateLimitStore(db.forSystem).consume(input)).allowed).toBe(false);
 });
 
-it('fails closed on a rejected upsert but propagates a database outage', async () => {
+it('fails closed on a rejected upsert and reports it, but propagates a database outage', async () => {
   // Nonexistent FK makes the upsert fail while the connectivity probe succeeds on real PostgreSQL.
   const input = { gymId: uuidv7(), routeKey: 'test', clientKey: 'unknown', now: 0, windowMs: 1000, limit: 1 };
-  expect((await createIntakeRateLimitStore(db.forSystem).consume(input)).allowed).toBe(false);
+  const report = vi.fn(), failing = createIntakeRateLimitStore(db.forSystem, report);
+  expect(await failing.consume(input)).toEqual({ allowed: false, resetAt: 1000, failed: true });
+  expect(report).toHaveBeenCalledTimes(1); expect(report.mock.calls[0]![0]).toBeInstanceOf(Error);
+  // At most one report a minute per store, however often the write fails.
+  await failing.consume({ ...input, now: 59_999 }); expect(report).toHaveBeenCalledTimes(1);
+  await failing.consume({ ...input, now: 60_000 }); expect(report).toHaveBeenCalledTimes(2);
+  report.mockClear();
+  // A report that throws doesn't change the answer.
+  expect((await createIntakeRateLimitStore(db.forSystem, () => { throw new Error('sink down'); }).consume(input)).allowed).toBe(false);
   const outage = new Error('database unavailable'), scope = vi.fn(async (): Promise<never> => { throw outage; });
-  await expect(createIntakeRateLimitStore(scope).consume(input)).rejects.toBe(outage);
-  expect(scope).toHaveBeenCalledTimes(2);
+  await expect(createIntakeRateLimitStore(scope, report).consume(input)).rejects.toBe(outage);
+  expect(scope).toHaveBeenCalledTimes(2); expect(report).not.toHaveBeenCalled();
 });
 
-it('registers shared counting and one daily sweep for the install, retaining live windows', async () => {
+it('remembers a refused budget until its window ends instead of asking the store again', async () => {
+  const f = await fixture(), real = createIntakeRateLimitStore(db.forSystem);
+  const consume = vi.fn((input: Parameters<SharedRateLimitStore['consume']>[0]) => real.consume(input));
+  const app = f.make(true, [], cacheRefusals({ consume }));
+  expect((await f.request(app)).status).toBe(200); expect((await f.request(app)).status).toBe(200);
+  expect((await f.request(app)).status).toBe(429);
+  expect(consume).toHaveBeenCalledTimes(3);
+  f.clock.advance(500);
+  for (let i = 0; i < 5; i++) {
+    const refused = await f.request(app, {}, '{invalid json');
+    expect(refused.status).toBe(429); expect(refused.headers.get('retry-after')).toBe('2');
+  }
+  expect(consume).toHaveBeenCalledTimes(3);
+  // Another client, gym or budget still asks the store.
+  expect((await f.request(app, { 'test-ip': '192.0.2.9' })).status).toBe(200);
+  expect((await f.request(app, { 'test-gym': f.otherGym })).status).toBe(200);
+  expect(consume).toHaveBeenCalledTimes(5);
+  f.clock.advance(1500); expect((await f.request(app)).status).toBe(200);
+  expect(consume).toHaveBeenCalledTimes(6);
+});
+
+it('remembers a refusal from a failed counter write for a second only', async () => {
+  const f = await fixture();
+  const consume = vi.fn(async () => ({ allowed: false, resetAt: f.clock.now().getTime() + 2000, failed: true }));
+  const app = f.make(true, [], cacheRefusals({ consume }));
+  expect((await f.request(app)).status).toBe(429); expect((await f.request(app)).status).toBe(429);
+  expect(consume).toHaveBeenCalledTimes(1);
+  f.clock.advance(1000); expect((await f.request(app)).status).toBe(429);
+  expect(consume).toHaveBeenCalledTimes(2);
+});
+
+it('keeps refusals per budget size and drops the oldest when full', async () => {
+  const consume = vi.fn(async ({ limit, now }: { limit: number; now: number }) => ({ allowed: limit > 5, resetAt: now + 1000 }));
+  const cached = cacheRefusals({ consume }, 2), base = { gymId: null, routeKey: 'r', windowMs: 1000, now: 0 };
+  expect((await cached.consume({ ...base, clientKey: 'a', limit: 1 })).allowed).toBe(false);
+  // The same key at another size isn't answered by the stricter refusal.
+  expect((await cached.consume({ ...base, clientKey: 'a', limit: 10 })).allowed).toBe(true);
+  await cached.consume({ ...base, clientKey: 'b', limit: 1 }); await cached.consume({ ...base, clientKey: 'c', limit: 1 });
+  expect(consume).toHaveBeenCalledTimes(4);
+  // 'a' was the oldest and was dropped for 'c'; 'b' and 'c' are still answered from memory.
+  await cached.consume({ ...base, clientKey: 'b', limit: 1 }); await cached.consume({ ...base, clientKey: 'c', limit: 1 });
+  expect(consume).toHaveBeenCalledTimes(4);
+  await cached.consume({ ...base, clientKey: 'a', limit: 1 });
+  expect(consume).toHaveBeenCalledTimes(5);
+});
+
+it('sweeps ended windows in short batches and keeps live ones', async () => {
+  const now = new Date('2026-11-05T12:00:00Z'), routeKey = uuidv7(), at = (offset: number) => new Date(now.getTime() + offset);
+  await db.forSystem(tx => tx.insert(intakeRateLimits).values([
+    ...Array.from({ length: 5 }, (_, i) => ({ gymId: null, routeKey, clientKey: `ended-${i}`, windowStart: at(-2000), expiresAt: at(-i), count: 1 })),
+    { gymId: null, routeKey, clientKey: 'live', windowStart: now, expiresAt: at(1), count: 1 },
+  ]));
+  expect(await sweepIntakeRateLimits(now, db.forSystem, 2)).toBeGreaterThanOrEqual(5);
+  const left = await db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.routeKey, routeKey)));
+  expect(left.map(row => row.clientKey)).toEqual(['live']);
+});
+
+it('public token routes count in the registered shared store before their validators', async () => {
+  const f = await fixture();
+  reset = registerIntakeRateLimits(new PostgresJobs({ database: db, clock: f.clock }), f.clock, db.forSystem).reset;
+  const store = createIntakeRateLimitStore(db.forSystem);
+  const app = f.make(false, [...createPortalInvitationRoutes(),
+    ...createStaffInvitationRoutes(() => { throw new Error('not reached'); }, () => 'http://localhost')]);
+  for (const [routeKey, path] of [['portal.invitation_accept', portalAccessContracts.claim.path],
+    ['portal.claim_complete', portalAccessContracts.completeClaim.path],
+    ['staff.invitation_accept', staffInvitationContracts.acceptInvitation.path]] as const) {
+    const send = () => app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{invalid json' });
+    expect((await send()).status, routeKey).toBe(400);
+    for (let i = 0; i < 9; i++) await store.consume({ gymId: f.gymId, routeKey, clientKey: '192.0.2.1', now: f.clock.now().getTime(), limit: 10, windowMs: 60_000 });
+    expect((await send()).status, routeKey).toBe(429);
+    const [row] = await db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.routeKey, routeKey)));
+    expect(row, routeKey).toMatchObject({ gymId: f.gymId, clientKey: '192.0.2.1', count: 11 });
+  }
+});
+
+it('demo creation, demo login and the onboarding claim use the shared store through their real mounts', async () => {
+  const f = await fixture(), now = () => f.clock.now().getTime();
+  reset = registerIntakeRateLimits(new PostgresJobs({ database: db, clock: f.clock }), f.clock, db.forSystem).reset;
+  const store = createIntakeRateLimitStore(db.forSystem), unreached = async () => { throw new Error('not reached'); };
+  const service = { create: unreached, status: unreached, live: unreached, login: unreached, expire: unreached, setJoinReadiness() {} } as unknown as DemoService;
+  const links = { resolve: async () => ({ status: 'active', principal: { kind: 'signed_link', gymId: f.gymId, linkId: uuidv7(), purpose: 'onboarding' } }) };
+  const app = f.make(false, [...createDemoRoutes(service, { installOrigin: 'http://localhost', enabled: true, tenancy: 'multi' }),
+    ...createLinkRoutes({ links } as unknown as Parameters<typeof createLinkRoutes>[0])]);
+  const malformed = { 'content-type': 'application/json', 'content-length': '13' }, body = '{invalid json';
+  // Creation is mounted before gym resolution, so its budget is the install's, keyed by the socket address.
+  for (let i = 0; i < 3; i++) await store.consume({ gymId: null, routeKey: 'demo.create', clientKey: 'unknown', now: now(), limit: 3, windowMs: 3_600_000 });
+  expect((await app.request('http://localhost' + demoContracts.create.path, { method: 'POST', headers: { ...malformed, origin: 'http://localhost' }, body })).status).toBe(429);
+  const { max, window } = demoLoginRateLimit;
+  for (let i = 0; i < max; i++) await store.consume({ gymId: f.gymId, routeKey: 'demo.login', clientKey: '192.0.2.1', now: now(), limit: max, windowMs: window * 1000 });
+  expect((await app.request(demoContracts.login.path, { method: 'POST', headers: malformed, body })).status).toBe(429);
+  for (let i = 0; i < 10; i++) await store.consume({ gymId: f.gymId, routeKey: 'links.claim', clientKey: '192.0.2.1', now: now(), limit: 10, windowMs: 60_000 });
+  expect((await app.request(portalAccessContracts.claimOnboarding.path, { method: 'POST',
+    headers: { ...malformed, authorization: 'Bearer ' + 'a'.repeat(43) }, body })).status).toBe(429);
+});
+
+it('registers shared counting and one hourly sweep for the install, retaining live windows', async () => {
   const f = await fixture(), jobs = new PostgresJobs({ database: db, clock: f.clock });
   const registered = registerIntakeRateLimits(jobs, f.clock, db.forSystem);
   reset = registered.reset;
@@ -144,4 +254,8 @@ it('registers shared counting and one daily sweep for the install, retaining liv
   expect(await db.forSystem(tx => tx.select().from(intakeRateLimits).where(eq(intakeRateLimits.routeKey, installBudget)))).toEqual([]);
   expect(await db.forGym(f.gymId, tx => tx.select().from(intakeRateLimits))).toEqual([]);
   expect(await db.app.db.select().from(intakeRateLimits)).toEqual([]);
+  // The next hour schedules its own run.
+  f.clock.advance(60 * 60 * 1000); await registered.scheduleDue();
+  expect(await jobs.runNext()).toBe(true);
+  expect(await jobs.runNext()).toBe(false);
 });

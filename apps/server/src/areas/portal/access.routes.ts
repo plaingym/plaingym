@@ -103,12 +103,12 @@ export function createPortalInvitationRoutes(options?: InvitationOptions, sessio
       ctx.header('Cache-Control', 'no-store');
       return ctx.json(await current().service.revokeInvitation({ gymId: identity.gymId, userId: identity.actor.userId, clock }, params.householdId, params.invitationId), 200);
     }),
-    route({ ...claim, middleware: rateLimit({ limit: 10 }), request: { body: { required: true, content: { 'application/json': { schema: claim.body } } } }, responses: { 200: { description: 'Portal invitation accepted', content: { 'application/json': { schema: claim.response } } } } }, async ctx => {
+    route({ ...claim, middleware: rateLimit({ sharedKey: 'portal.invitation_accept', limit: 10 }), request: { body: { required: true, content: { 'application/json': { schema: claim.body } } } }, responses: { 200: { description: 'Portal invitation accepted', content: { 'application/json': { schema: claim.response } } } } }, async ctx => {
       const { gym, clock } = ctx.get('context');
       ctx.header('Cache-Control', 'no-store');
       return ctx.json(await current().service.accept(gym.gymId, ctx.req.valid('json'), clock, gym.timezone), 200);
     }),
-    route({ ...complete, middleware: rateLimit({ limit: 10 }), request: { body: { required: true, content: { 'application/json': { schema: complete.body } } } }, responses: { 200: { description: 'Portal claim completed', content: { 'application/json': { schema: complete.response } } } } }, async ctx => {
+    route({ ...complete, middleware: rateLimit({ sharedKey: 'portal.claim_complete', limit: 10 }), request: { body: { required: true, content: { 'application/json': { schema: complete.body } } } }, responses: { 200: { description: 'Portal claim completed', content: { 'application/json': { schema: complete.response } } } } }, async ctx => {
       const context = ctx.get('context'), user = signedIn(context), session = requestSession(ctx.req.raw);
       const householdId = await current().service.completeClaim(context.gym.gymId, user.userId, ctx.req.valid('json'), context.clock, context.gym.timezone);
       // Open the household just claimed; a failure here leaves the claim complete and the picker available.

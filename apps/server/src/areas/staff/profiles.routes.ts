@@ -59,7 +59,7 @@ export function createStaffInvitationRoutes(service: StaffInvitationService | ((
   return [route({ ...invite, request: { body: { required: true, content: { 'application/json': { schema: invite.body } } } }, responses: { 200: { description: 'Staff invitation', content: { 'application/json': { schema: invite.response } } } } }, async (c) => {
     c.header('Cache-Control', 'no-store'); return c.json(await current().inviteStaff(actor(c), c.req.valid('json'), origin(c)), 200);
   }),
-  route({ ...accept, middleware: rateLimit({ limit: 10 }),
+  route({ ...accept, middleware: rateLimit({ sharedKey: 'staff.invitation_accept', limit: 10 }),
     request: { body: { required: true, content: { 'application/json': { schema: accept.body } } } },
     responses: { 200: { description: 'Invitation accepted', content: { 'application/json': { schema: accept.response } } } },
   }, async (c) => {

@@ -250,7 +250,7 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | auth_account | Provider identities, password hashes and encrypted OAuth credentials |
 | auth_verification | Hashed login verification state and expiry |
 | auth_rate_limit | Persistent authentication request counters |
-| intake_rate_limits | Public intake request counters by gym, budget, client address key and window, removed daily once expired |
+| intake_rate_limits | Public intake request counters by gym, budget, client address key and window, removed hourly once expired |
 | households | Household contacts, billing-day anchor, PIN hash and saved processor references |
 | household_users | User access to a household as payer or a specific member |
 | members | Member profiles, status, contact data and revocable check-in hash/version |
