@@ -177,8 +177,9 @@ allow that path if a Cloudflare security setting challenges it, and re-run with 
 same options. An install whose `compose.yaml` and Caddyfile predate proxy support
 refuses a proxied re-run before changing anything; copy both from the current
 deployment files first. If you proxy the record after installing, re-run the
-installer so the app trusts Cloudflare's header. Set SSL/TLS to Full (strict), turn Always Use HTTPS off for the first
-certificate, and add a Cloudflare rate-limiting rule
+installer so the app trusts Cloudflare's header. Set SSL/TLS to Full (strict) (Always
+Use HTTPS can stay on; Cloudflare doesn't redirect `/.well-known/acme-challenge/`)
+and add a Cloudflare rate-limiting rule, such as 50 requests in 10 seconds per IP
 ([../docs/install.md](../docs/install.md#behind-cloudflares-proxy-recommended)).
 When the published ranges change, `node scripts/cloudflare-ranges.mjs` rewrites
 both pinned copies; the app's copy ships in the image.

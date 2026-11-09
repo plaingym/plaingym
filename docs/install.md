@@ -52,23 +52,27 @@ If your domain is on Cloudflare, put the server behind its proxy from the start:
 floods and TLS are then handled at Cloudflare's edge, and the server's address never
 appears in public DNS. The installer needs no option for it:
 
-1. In Cloudflare, make the record **Proxied** (orange cloud). Under **SSL/TLS**
-   choose **Full (strict)**, and turn **Always Use HTTPS** off (SSL/TLS → Edge
-   Certificates), at least until the first certificate is issued: the server gets
-   its certificate from Let's Encrypt through the proxy, over plain HTTP on
-   `/.well-known/acme-challenge/`, and a redirect there stops it. Don't add any
-   other redirect or rule for that path.
+1. In Cloudflare, make the record **Proxied** (orange cloud) and under **SSL/TLS**
+   choose **Full (strict)**. **Always Use HTTPS** can stay on: the server gets its
+   certificate from Let's Encrypt through the proxy, over plain HTTP on
+   `/.well-known/acme-challenge/`, and Cloudflare doesn't redirect that path. Don't
+   add a redirect or rule of your own for it.
 2. Run the installer as usual. Its DNS check recognizes Cloudflare's addresses
    (`deploy/cloudflare-ranges.txt`) and writes `TRUST_CLOUDFLARE=true` to `.env`, so
    the app reads each visitor's address from Cloudflare's `CF-Connecting-IP` header,
    but only on requests that arrive from Cloudflare's published ranges. Rate limits
    and sign-in limits then count real visitors, not Cloudflare's edge.
 3. **Add a rate-limiting rule in Cloudflare** (Security → WAF → Rate limiting
-   rules; the free plan includes one): for example, block a client that sends more
-   than 300 requests in a minute to your hostname. The proxy alone passes a single
-   noisy client on to your server; this rule refuses it at the edge. Keep it the
-   same as the app's own limit (`RATE_LIMIT_PER_MINUTE`, 300 by default) or a little
-   higher, so the app still gives its usual answers.
+   rules; the free plan includes one): match your hostname (expression
+   `(http.host eq "gym.example.org")`), count requests per IP, and block an address
+   that sends more than 50 requests in 10 seconds, for 10 seconds. The proxy alone
+   passes a single noisy client on to your server; this rule refuses it at the
+   edge. 50 in 10 seconds matches the app's own limit (`RATE_LIMIT_PER_MINUTE`, 300
+   a minute by default); don't set it lower. Members on the gym's Wi-Fi share one
+   address, so if they get blocked before a busy class, raise it (100 in 10 seconds,
+   say). A blocked visitor gets Cloudflare's plain `error code: 1015` page (HTTP
+   429) until the block ends; in the app, the screen shows its usual error and
+   works again when retried.
 
 Limits: the server also accepts connections that don't come through the proxy, so
 someone who learns its address can reach it directly, around Cloudflare's
@@ -79,8 +83,9 @@ limit). Keep the server's address private: proxy the record before the first
 install rather than after, so the address never appears in public DNS.
 
 If the certificate isn't issued, check that the record is proxied, SSL/TLS is Full
-(strict), Always Use HTTPS is off and nothing redirects or blocks
-`/.well-known/acme-challenge/`; then `sudo docker compose logs caddy` in the install
+(strict) and no rule of yours redirects or blocks `/.well-known/acme-challenge/`
+(Caddy first tries a TLS check that Cloudflare's proxy can't pass, so a
+`Cannot negotiate ALPN protocol "acme-tls/1"` line in its log is expected); then `sudo docker compose logs caddy` in the install
 directory. If the installer says the hostname answered with an HTTP error, a
 Cloudflare security setting (Bot Fight Mode, Under Attack mode, a WAF or
 rate-limiting rule) may be challenging it: allow `/.well-known/plaingym-origin` and
