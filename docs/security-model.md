@@ -233,7 +233,11 @@ Details: `apps/server/src/infra/auth/README.md`.
   path is exempt because it verifies Stripe's signature; kiosk calls use a bearer
   token instead of cookies.
 * **Rate limit.** 300 requests per minute per gym and client address by default
-  (`RATE_LIMIT_PER_MINUTE`), held in process memory as flood protection. Sign-in,
+  (`RATE_LIMIT_PER_MINUTE`), held in process memory as flood protection. On a
+  single-gym install it runs before the gym is looked up, keyed per client for the
+  whole install (the one gym's budget, whatever `Host` a request carries), so a
+  refused request costs no database work; a multi-gym install checks it after
+  resolving the gym. Sign-in,
   kiosk PINs and CSP reports have their own limits. Behind Caddy, `TRUST_PROXY=true`
   makes the last `X-Forwarded-For` entry the client address; nothing else trusts
   forwarded headers.

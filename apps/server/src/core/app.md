@@ -102,7 +102,10 @@ Set `installOrigin` to the install's canonical origin for first-boot writes,
 which have no resolved gym. These requests have a separate install/client IP
 rate-limit bucket and never call a gym-dependent origin function.
 
-Rate limiting defaults to 300 requests per minute per gym and client key,
+Rate limiting defaults to 300 requests per minute per gym and client key (in
+single-gym mode the app-wide limit runs before tenant resolution, keyed per client
+for the install, so a refused request costs no database work; before setup, requests
+that would get a 404 count too),
 with at most 10,000 in-memory buckets per process. `clientKey` keeps an IPv4
 address as it is, counts an IPv4-mapped IPv6 address as IPv4, and groups other
 IPv6 addresses by /64, as Better Auth's limiter does; every limiter uses it. A

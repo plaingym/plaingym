@@ -20,7 +20,7 @@ const session: MiddlewareHandler<RequestEnvironment> = async (_context, next) =>
 const allow: PermissionMiddleware = () => async (_context, next) => { await next(); };
 
 describe('server application composition', () => {
-  it('runs context, tenancy, limiter, session, CSRF, authorization, validation, and handler in order', async () => {
+  it('runs context, limiter, tenancy, session, CSRF, authorization, validation, and handler in order (single-gym)', async () => {
     const calls: string[] = [];
     const entry = route({ method: 'post', path: '/api/fixture', permission: { kind: 'public' },
       request: { body: { required: true, content: { 'application/json': { schema: z.object({ value: z.string() }) } } } },
@@ -30,7 +30,7 @@ describe('server application composition', () => {
       expect(context.get('context').clock).toBe(clock);
       return context.json(context.req.valid('json'), 200);
     });
-    const app = createApp({ clock, contributions: { routes: [entry] },
+    const app = createApp({ clock, tenancy: 'single', contributions: { routes: [entry] },
       resolveGym: async (context, next) => {
         expect(context.get('context').requestId).toMatch(/^[a-f0-9-]{36}$/);
         expect(context.get('context').clock).toBe(clock);
@@ -55,9 +55,42 @@ describe('server application composition', () => {
     expect((await request('{}', 'https://evil.example')).status).toBe(403);
     expect(calls).toEqual(['address', 'gym', 'session', 'csrf']);
     calls.length = 0;
-    // The limiter answers before the session middleware, which handles auth requests itself.
+    // The limiter answers before gym resolution, so a refused request costs no database work, and before the session
+    // middleware, which handles auth requests itself.
     expect((await request('{}')).status).toBe(429);
-    expect(calls).toEqual(['address', 'gym']);
+    expect(calls).toEqual(['address']);
+  });
+
+  it('runs the flood limit after gym resolution in multi-gym mode, where each gym has its own budget', async () => {
+    const resolved: string[] = [];
+    const app = createApp({ clock, tenancy: 'multi', session, authorize: () => allow({ kind: 'public' }),
+      rateLimit: { limit: 1, peerAddress: () => '127.0.0.1' },
+      resolveGym: async (context, next) => {
+        const gymId = new URL(context.req.url).hostname.split('.')[0]!; resolved.push(gymId);
+        context.set('context', { ...context.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } });
+        await next();
+      },
+    });
+    app.get('/api/plain', (context) => context.json({ ok: true }));
+    expect((await app.request('https://a.example.test/api/plain')).status).toBe(200);
+    expect((await app.request('https://a.example.test/api/plain')).status).toBe(429);
+    // Another gym on the same install has its own budget for the same client.
+    expect((await app.request('https://b.example.test/api/plain')).status).toBe(200);
+    expect(resolved).toEqual(['a', 'a', 'b']);
+  });
+
+  it('refuses a client over the flood limit before gym resolution in single-gym mode', async () => {
+    let resolutions = 0;
+    const app = createApp({ clock, tenancy: 'single', session, authorize: () => allow({ kind: 'public' }),
+      rateLimit: { limit: 2, peerAddress: () => '127.0.0.1' },
+      resolveGym: async (context, next) => { resolutions++; return resolveGym(context, next); },
+    });
+    app.get('/api/plain', (context) => context.json({ ok: true }));
+    for (let i = 0; i < 2; i++) expect((await app.request('/api/plain')).status).toBe(200);
+    for (let i = 0; i < 5; i++) expect((await app.request('/api/plain')).status).toBe(429);
+    // A different Host header doesn't open a new budget: the install serves one gym for any hostname.
+    expect((await app.request('https://other.example.test/api/plain')).status).toBe(429);
+    expect(resolutions).toBe(2);
   });
 
   it('enforces the default policy, which forbids framing, on every response without its own', async () => {

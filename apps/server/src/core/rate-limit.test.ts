@@ -4,9 +4,10 @@ import { createApp } from './app.js';
 import { TestClock } from './clock.js';
 import { clientKey, RateBuckets, rateLimit, type RateLimitOptions } from './rate-limit.js';
 
-function fixture(options: RateLimitOptions = {}) {
+// Multi-gym mode by default: the flood limit runs after gym resolution, so these tests see per-gym budgets.
+function fixture(options: RateLimitOptions = {}, tenancy: 'single' | 'multi' = 'multi') {
   const clock = new TestClock('2026-01-01T00:00:00Z');
-  const app = createApp({ clock,
+  const app = createApp({ clock, tenancy,
     resolveGym: async (context, next) => {
       const gymId = new URL(context.req.url).hostname;
       context.set('context', { ...context.get('context'), gym: { gymId, timezone: 'UTC', enabledModules: new Set() } });
@@ -20,8 +21,8 @@ function fixture(options: RateLimitOptions = {}) {
   return { app, clock };
 }
 
-it('enforces the exact threshold, supplies retry timing, and resets using the injected clock', async () => {
-  const { app, clock } = fixture();
+it.each(['multi', 'single'] as const)('enforces the exact threshold, supplies retry timing, and resets using the injected clock (%s)', async (tenancy) => {
+  const { app, clock } = fixture({}, tenancy);
   const responses = await Promise.all(Array.from({ length: 5 }, () => app.request('/api/action')));
   expect(responses.map((response) => response.status)).toEqual([200, 200, 429, 429, 429]);
   const denied = responses[2]!;
@@ -40,14 +41,14 @@ it('isolates rate-limit buckets by gym', async () => {
   expect((await app.request('https://b.example/api/action')).status).toBe(200);
 });
 
-it('ignores spoofed forwarding headers when the socket peer is not trusted', async () => {
-  const { app } = fixture({ limit: 1, trustedProxy: (address) => address === '192.0.2.5' });
+it.each(['multi', 'single'] as const)('ignores spoofed forwarding headers when the socket peer is not trusted (%s)', async (tenancy) => {
+  const { app } = fixture({ limit: 1, trustedProxy: (address) => address === '192.0.2.5' }, tenancy);
   expect((await app.request('/api/action', { headers: { 'x-forwarded-for': '192.0.2.1' } })).status).toBe(200);
   expect((await app.request('/api/action', { headers: { 'x-forwarded-for': '192.0.2.2', 'x-real-ip': '192.0.2.3' } })).status).toBe(429);
 });
 
-it('uses only the closest forwarded client behind a trusted socket peer', async () => {
-  const { app } = fixture({ limit: 1, trustedProxy: (address) => address === '127.0.0.1' });
+it.each(['multi', 'single'] as const)('uses only the closest forwarded client behind a trusted socket peer (%s)', async (tenancy) => {
+  const { app } = fixture({ limit: 1, trustedProxy: (address) => address === '127.0.0.1' }, tenancy);
   const request = (value: string) => app.request('/api/action', { headers: { 'x-forwarded-for': value } });
   expect((await request('198.51.100.2, 192.0.2.1')).status).toBe(200);
   expect((await request('198.51.100.3, 192.0.2.1')).status).toBe(429);

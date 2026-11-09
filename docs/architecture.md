@@ -86,10 +86,13 @@ maintenance credentials (`deploy/README.md`, "Which process holds the maintenanc
 3. **Restore gate.** While a restore holds the install, everything after this
    point waits or fails.
 4. **Static assets**, so an empty install can still load `/setup`.
-5. **Tenant resolution** (`core/tenancy.ts`). Single-gym mode takes the install's
+5. **Rate limit** (single-gym mode) per client address, install-wide. The install
+   serves one gym for any hostname, so this is the same budget as per gym, and
+   running it before the lookup means a refused request costs no database work.
+6. **Tenant resolution** (`core/tenancy.ts`). Single-gym mode takes the install's
    one gym; multi-gym mode looks up the request's `Host` in `gym_domains`. No gym,
-   or an inactive one, is a 404.
-6. **Rate limit** per gym and client address.
+   or an inactive one, is a 404. Multi-gym mode then applies its **rate limit**
+   per gym and client address.
 7. **Session loading.** A staff or member session from Better Auth, a kiosk device
    token, or a signed-link token, each bound to the resolved gym.
 8. **CSRF.** Cookie-authenticated writes need a matching `Origin`.

@@ -138,9 +138,12 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   for (const entry of demoInstallRoutes) entry.mount(app, authorizeInstall);
   for (const entry of installRoutes.filter((entry) => entry.id === catalogId)) entry.mount(app, authorizeInstall);
   app.use('*', staticAssets(options.publicDirectory));
-  app.use('*', options.resolveGym);
-  // Flood protection runs before the session middleware, which answers auth requests itself.
-  app.use('*', rateLimit(options.rateLimit));
+  // Flood protection runs before the session middleware, which answers auth requests itself. A single-gym install
+  // serves its one gym for any hostname, so the limit runs before gym resolution under one install-wide key per
+  // client (the same budget, and one no Host header can dodge): a refused request costs no database work. A
+  // multi-gym install budgets each gym separately, so its limit runs after resolution.
+  const floodLimit = rateLimit(options.rateLimit);
+  for (const handler of mode === 'single' ? [floodLimit, options.resolveGym] : [options.resolveGym, floodLimit]) app.use('*', handler);
   app.use('*', options.session);
   app.use('*', csrf(options.origin));
   const registry = createServerRegistry({ ...contributions,
