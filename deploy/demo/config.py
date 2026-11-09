@@ -215,16 +215,21 @@ def cloudflare_check(config, base="https://api.cloudflare.com/client/v4"):
     api(path + "/" + record["id"], "DELETE")
 
 
-def s3_request(config, method, key, body=b""):
-    """AWS SigV4, path-style, same endpoint/region as the runtime S3 adapter."""
+def s3_request(config, method, key, body=b"", query=None, headers=None):
+    """AWS SigV4, path-style, same endpoint/region as the runtime S3 adapter.
+
+    An empty key addresses the bucket itself (a listing). `query` is signed; extra `headers` are sent unsigned.
+    """
     now = datetime.datetime.now(datetime.timezone.utc)
     stamp, date = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
     endpoint = urllib.parse.urlsplit(config["UPLOADS_S3_ENDPOINT"])
-    path = "/" + config["UPLOADS_S3_BUCKET"] + "/" + urllib.parse.quote(key, safe="/-_.~")
+    path = "/" + config["UPLOADS_S3_BUCKET"] + ("/" + urllib.parse.quote(key, safe="/-_.~") if key else "")
+    query_string = "&".join(urllib.parse.quote(name, safe="-_.~") + "=" + urllib.parse.quote(value, safe="-_.~")
+                            for name, value in sorted((query or {}).items()))
     payload_hash = hashlib.sha256(body).hexdigest()
     canonical_headers = f"host:{endpoint.netloc}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{stamp}\n"
     signed_headers = "host;x-amz-content-sha256;x-amz-date"
-    canonical = "\n".join((method, path, "", canonical_headers, signed_headers, payload_hash))
+    canonical = "\n".join((method, path, query_string, canonical_headers, signed_headers, payload_hash))
     region = config["UPLOADS_S3_REGION"]
     scope = f"{date}/{region}/s3/aws4_request"
     string_to_sign = "\n".join(("AWS4-HMAC-SHA256", stamp, scope, hashlib.sha256(canonical.encode()).hexdigest()))
@@ -232,19 +237,52 @@ def s3_request(config, method, key, body=b""):
     for part in (date, region, "s3", "aws4_request"):
         signing_key = hmac.new(signing_key, part.encode(), hashlib.sha256).digest()
     signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
-    headers = {"x-amz-content-sha256": payload_hash, "x-amz-date": stamp, "Content-Type": "application/octet-stream",
-               "Authorization": f"AWS4-HMAC-SHA256 Credential={config['UPLOADS_S3_ACCESS_KEY_ID']}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"}
-    return request(f"{endpoint.scheme}://{endpoint.netloc}{path}", method, body if method == "PUT" else None, headers)
+    sent = {"x-amz-content-sha256": payload_hash, "x-amz-date": stamp, "Content-Type": "application/octet-stream",
+            "Authorization": f"AWS4-HMAC-SHA256 Credential={config['UPLOADS_S3_ACCESS_KEY_ID']}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
+            **(headers or {})}
+    url = f"{endpoint.scheme}://{endpoint.netloc}{path}" + ("?" + query_string if query_string else "")
+    return request(url, method, body if method in ("PUT", "POST") else None, sent)
 
 
 def s3_check(config):
-    key, body = "plaingym-preflight/" + secrets.token_hex(16), secrets.token_bytes(32)
-    s3_request(config, "PUT", key, body)
+    """Every kind of request the app's storage adapter makes (apps/server/src/infra/storage/s3.ts), in a private
+    preflight prefix, so credentials or storage that can't serve one fail here rather than at the first sandbox:
+    write, read, metadata (HEAD), listing, a conditional write that must refuse to overwrite, a multipart upload
+    (started and aborted) and delete. Everything written is deleted again."""
+    prefix = "plaingym-preflight/" + secrets.token_hex(16) + "/"
+    key, guarded, multipart, body = prefix + "object", prefix + "guarded", prefix + "multipart", secrets.token_bytes(32)
+    written = []
+
+    def step(name, *args, **kwargs):
+        try:
+            return s3_request(config, *args, **kwargs)
+        except urllib.error.HTTPError as error:
+            raise ValueError(f"S3 refused the test {name} (HTTP {error.code}). The credentials need object read, write, "
+                             "list and delete on the bucket.") from None
     try:
-        if s3_request(config, "GET", key) != body:
+        step("write", "PUT", key, body)
+        written.append(key)
+        if step("read", "GET", key) != body:
             raise ValueError("S3 test read did not match its test write.")
+        step("metadata read (HEAD)", "HEAD", key)
+        if key.encode() not in step("listing", "GET", "", query={"list-type": "2", "prefix": prefix, "max-keys": "10"}):
+            raise ValueError("S3 test listing did not include the test object.")
+        step("conditional write", "PUT", guarded, body, headers={"If-None-Match": "*"})
+        written.append(guarded)
+        try:
+            s3_request(config, "PUT", guarded, body, headers={"If-None-Match": "*"})
+        except urllib.error.HTTPError as error:
+            if error.code != 412:
+                raise ValueError(f"S3 answered a repeated conditional write with HTTP {error.code}, not 412.") from None
+        else:
+            raise ValueError("S3 overwrote an object despite If-None-Match; the app needs storage that honours conditional writes.")
+        started = re.search(rb"<UploadId>([^<]+)</UploadId>", step("multipart upload", "POST", multipart, query={"uploads": ""}))
+        if not started:
+            raise ValueError("S3 did not start the test multipart upload.")
+        step("multipart abort", "DELETE", multipart, query={"uploadId": started.group(1).decode()})
     finally:
-        s3_request(config, "DELETE", key)
+        for name in written:
+            step("delete", "DELETE", name)
 
 
 def main():
@@ -282,7 +320,7 @@ def main():
     # value, even false, is the operator's and stays; install.sh adds this one to an older install's .env.
     if proxied and "TRUST_CLOUDFLARE" not in config:
         config["TRUST_CLOUDFLARE"] = "true"
-    print("Preflight passed: inputs and S3 write/read/delete" + ("; local DNS/TLS stand-in." if config["DEMO_LOCAL_TEST"] == "true" else ", base/wildcard DNS" + (" (through Cloudflare's proxy)" if proxied else "") + " and Cloudflare DNS edit."))
+    print("Preflight passed: inputs and S3 storage" + ("; local DNS/TLS stand-in." if config["DEMO_LOCAL_TEST"] == "true" else ", base/wildcard DNS" + (" (through Cloudflare's proxy)" if proxied else "") + " and Cloudflare DNS edit."))
     if args.check_only:
         return
     if not args.output:

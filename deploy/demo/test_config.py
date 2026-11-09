@@ -173,13 +173,81 @@ class PreflightTests(unittest.TestCase):
     def test_s3_cleanup_after_failed_read(self):
         methods = []
 
-        def s3(conf, method, key, body=b""):
+        def s3(conf, method, key, body=b"", **_):
             methods.append(method)
             if method == "GET":
                 raise OSError("read failed")
         with patch.object(config, "s3_request", s3), self.assertRaises(OSError):
             config.s3_check(inputs())
         self.assertEqual(methods, ["PUT", "GET", "DELETE"])
+
+    def test_s3_check_covers_every_request_kind_and_cleans_up(self):
+        store = FakeS3()
+        with patch.object(config, "s3_request", store):
+            config.s3_check(inputs())
+        self.assertEqual([call[0] for call in store.calls],
+                         ["PUT object", "GET object", "HEAD object", "GET (bucket)", "PUT guarded", "PUT guarded",
+                          "POST multipart", "DELETE multipart", "DELETE object", "DELETE guarded"])
+        self.assertEqual(store.objects, {})
+        self.assertEqual(store.uploads, set())
+        listing = store.calls[3]
+        self.assertEqual(listing[1]["list-type"], "2")
+        self.assertTrue(listing[1]["prefix"].startswith("plaingym-preflight/") and listing[1]["prefix"].endswith("/"))
+        self.assertEqual(store.calls[4][2], {"If-None-Match": "*"})
+
+    def test_s3_check_names_the_refused_request_and_still_cleans_up(self):
+        for refused in ("HEAD", "list", "conditional", "POST"):
+            with self.subTest(refused=refused):
+                store = FakeS3(refuse=refused)
+                with patch.object(config, "s3_request", store), self.assertRaises(ValueError) as caught:
+                    config.s3_check(inputs())
+                self.assertIn("HTTP 403", str(caught.exception))
+                self.assertIn("read, write, list and delete", str(caught.exception))
+                self.assertEqual(store.objects, {})
+
+    def test_s3_check_refuses_storage_that_ignores_conditional_writes(self):
+        store = FakeS3(ignore_conditional=True)
+        with patch.object(config, "s3_request", store), self.assertRaisesRegex(ValueError, "If-None-Match"):
+            config.s3_check(inputs())
+        self.assertEqual(store.objects, {})
+
+
+class FakeS3:
+    """An in-memory stand-in for config.s3_request: objects, listing, If-None-Match and multipart start/abort.
+
+    `refuse` answers 403 to one kind of request: HEAD, list (the bucket listing), conditional (an If-None-Match
+    write) or POST (starting a multipart upload)."""
+
+    def __init__(self, refuse=None, ignore_conditional=False):
+        self.objects, self.uploads, self.calls = {}, set(), []
+        self.refuse, self.ignore_conditional = refuse, ignore_conditional
+
+    def __call__(self, conf, method, key, body=b"", query=None, headers=None):
+        name = key.rsplit("/", 1)[-1] if key else "(bucket)"
+        self.calls.append((f"{method} {name}", query or {}, headers or {}))
+        kind = "list" if not key else "conditional" if headers and headers.get("If-None-Match") else method
+        if kind == self.refuse:
+            raise urllib.error.HTTPError("https://s3.example.test", 403, "Forbidden", None, None)
+        if method == "PUT":
+            if kind == "conditional" and key in self.objects and not self.ignore_conditional:
+                raise urllib.error.HTTPError("https://s3.example.test", 412, "Precondition Failed", None, None)
+            self.objects[key] = body
+            return b""
+        if method == "GET" and not key:
+            prefix = query["prefix"]
+            return "".join(f"<Key>{name}</Key>" for name in self.objects if name.startswith(prefix)).encode()
+        if method in ("GET", "HEAD"):
+            return self.objects[key] if method == "GET" else b""
+        if method == "POST":
+            self.uploads.add(key)
+            return b"<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>"
+        if method == "DELETE":
+            if query and "uploadId" in query:
+                self.uploads.discard(key)
+            else:
+                self.objects.pop(key, None)
+            return b""
+        raise AssertionError(method)
 
     def test_failed_preflight_never_publishes_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

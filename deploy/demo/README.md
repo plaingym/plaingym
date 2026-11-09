@@ -49,9 +49,15 @@ ACME email, Cloudflare DNS token, S3 endpoint, bucket, access key and secret key
 Prompts use the controlling terminal even when the bootstrap is piped into `sh`.
 Secrets are hidden at the terminal. They never need to be put in shell history,
 `.env` or Compose by hand. It checks base and wildcard DNS against the server (or
-Cloudflare's proxy, for both names alike), actually creates/deletes a temporary TXT record, and writes/reads/deletes a
-temporary S3 object **before changing host configuration**. A failed check stops
-with no host configuration written.
+Cloudflare's proxy, for both names alike), actually creates/deletes a temporary TXT
+record, and tries every kind of S3 request the app makes, under a temporary
+`plaingym-preflight/` prefix it removes again: write, read, metadata read, listing,
+a conditional write that must refuse to overwrite (storage that ignores
+`If-None-Match` is refused), and a multipart upload started and aborted. All of
+this happens **before changing host configuration**. A failed check stops with no
+host configuration written, and names the S3 request that was refused. A key
+deleted or narrowed after the install shows up later, as sandboxes that fail to
+create.
 
 Success prints the demo's address (`https://` and the demo domain). Open it, create a sandbox, and select
 owner or coach from the start page or the **Demo menu**. Everything about the sandbox happens in the
