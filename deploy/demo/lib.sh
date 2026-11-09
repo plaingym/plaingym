@@ -65,6 +65,14 @@ merge_demo_billing() {
   printf '%s\n%s\n' "$merge_kept" "$merge_new" | env_next
   commit_env_next
 }
+# The installer's preflight writes TRUST_CLOUDFLARE=true to its inputs file ($1) for a proxied hostname. A re-run
+# never replaces the saved .env, so that line is added to a saved .env with no TRUST_CLOUDFLARE line; a saved
+# one, even false, is the operator's and stays. Prints nothing.
+merge_demo_trust() {
+  if grep -q '^TRUST_CLOUDFLARE=' "$ROOT/.env" || ! grep -qx 'TRUST_CLOUDFLARE=true' "$1"; then return 0; fi
+  { awk 1 "$ROOT/.env"; printf 'TRUST_CLOUDFLARE=true\n'; } | env_next
+  commit_env_next
+}
 demo_health() {
   compose exec -T app node /app/deploy/healthcheck.mjs
   if [ "$(read_env DEMO_LOCAL_TEST)" = true ]; then
@@ -75,7 +83,7 @@ demo_health() {
   until curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
     "https://$(read_env GYM_HOSTNAME)/healthz" >/dev/null; do
     attempts=$((attempts + 1))
-    [ "$attempts" -lt 36 ] || fail 'HTTPS is not ready; rerun the same installer after correcting DNS or API credentials.'
+    [ "$attempts" -lt 36 ] || fail "HTTPS is not ready; rerun the same installer after correcting DNS or API credentials. Behind Cloudflare's proxy, also check that SSL/TLS is Full (strict) and that no Cloudflare security setting (Bot Fight Mode, Under Attack mode, a WAF or rate-limiting rule) challenges /healthz."
     sleep 5
   done
 }

@@ -225,6 +225,7 @@ class ComposeVersionTests(unittest.TestCase):
         bundle = self.root / "bundle"
         (bundle / "demo").mkdir(parents=True)
         shutil.copy(DEPLOY / "lib.sh", bundle / "lib.sh")
+        shutil.copy(DEPLOY / "cloudflare-ranges.txt", bundle / "cloudflare-ranges.txt")
         shutil.copy(HERE / "lib.sh", bundle / "demo" / "lib.sh")
         release = self.root / "os-release"
         release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
@@ -424,6 +425,46 @@ class MergeDemoBillingTests(unittest.TestCase):
         self.assertEqual(subprocess.run(["sh", "-c", script], capture_output=True, text=True).returncode, 0)
         self.assertEqual((self.root / ".env").read_text(), "CADDY_IMAGE=new:v2.0.0\nA=1\n")
         self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX shell test")
+class MergeDemoTrustTests(unittest.TestCase):
+    """A re-run adds the Cloudflare trust setting for a hostname proxied since, and keeps a saved one."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        shutil.copy(DEPLOY / "lib.sh", self.root / "base-lib.sh")
+        self.inputs = self.root / "inputs"
+
+    def merge(self, saved, given):
+        (self.root / ".env").write_text(saved)
+        (self.root / ".env").chmod(0o644)
+        self.inputs.write_text(given)
+        result = subprocess.run(["sh", "-c", f'umask 022; ROOT="{self.root}"; . "{HERE / "lib.sh"}"; merge_demo_trust "{self.inputs}"'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse((self.root / ".env.next").exists())
+        return (self.root / ".env").read_text()
+
+    def test_a_proxied_rerun_adds_the_setting_keeps_every_line_and_leaves_0600(self):
+        # A saved .env without a final newline still gets the setting on a line of its own.
+        result = self.merge("# comment\nAPP_IMAGE=a:v1.0.0\n\nCADDY_IMAGE=c:v1.0.0", "GYM_HOSTNAME=x\nTRUST_CLOUDFLARE=true\n")
+        self.assertEqual(result, "# comment\nAPP_IMAGE=a:v1.0.0\n\nCADDY_IMAGE=c:v1.0.0\nTRUST_CLOUDFLARE=true\n")
+        self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o600)
+
+    def test_a_saved_setting_even_false_is_kept(self):
+        for saved in ("A=1\nTRUST_CLOUDFLARE=false\n", "A=1\nTRUST_CLOUDFLARE=true\n", "A=1\nTRUST_CLOUDFLARE=\n"):
+            with self.subTest(saved=saved):
+                self.assertEqual(self.merge(saved, "TRUST_CLOUDFLARE=true\n"), saved)
+                self.assertEqual(stat.S_IMODE((self.root / ".env").stat().st_mode), 0o644)
+
+    def test_nothing_changes_for_a_hostname_that_is_not_proxied(self):
+        for given in ("GYM_HOSTNAME=x\n", "TRUST_CLOUDFLARE=false\n", "TRUST_CLOUDFLARE=truex\n"):
+            with self.subTest(given=given):
+                self.assertEqual(self.merge("A=1\n", given), "A=1\n")
 
 
 def interpolated_names(text):

@@ -119,6 +119,57 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 config.dns_check(inputs())
 
+    def dns(self, *answers):
+        """Run dns_check on a server at 8.8.8.8 whose base and wildcard names resolve to `answers` in turn."""
+        interfaces = json.dumps([{"addr_info": [{"local": "8.8.8.8"}]}])
+        rows = [[(None, None, None, None, (value, 443)) for value in answer] for answer in answers]
+        with patch.object(config.subprocess, "check_output", return_value=interfaces), \
+                patch.object(config, "request", return_value=b"8.8.8.8"), \
+                patch.object(config.socket, "getaddrinfo", side_effect=rows):
+            return config.dns_check(inputs())
+
+    def test_dns_accepts_cloudflare_proxy_for_both_names_and_reports_it(self):
+        self.assertIs(self.dns(["104.16.1.1", "2606:4700::1111"], ["172.67.1.1"]), True)
+        self.assertIs(self.dns(["8.8.8.8"], ["8.8.8.8"]), False)
+
+    def test_dns_refuses_mixed_or_foreign_answers(self):
+        cases = ((["104.16.1.1"], ["8.8.8.8"]),          # base proxied, wildcard direct
+                 (["8.8.8.8"], ["104.16.1.1"]),          # the other way round
+                 (["104.16.1.1", "9.9.9.9"], ["104.16.1.1"]),  # one proxied name also resolves elsewhere
+                 (["9.9.9.9"], ["9.9.9.9"]),             # another server, not proxied
+                 ([], ["8.8.8.8"]))                     # nothing resolves
+        for answers in cases:
+            with self.subTest(answers=answers), self.assertRaises(ValueError):
+                self.dns(*answers)
+
+    def test_cloudflare_networks_read_the_shipped_list_and_refuse_an_empty_one(self):
+        networks = config.cloudflare_networks()
+        self.assertTrue(any(config.ipaddress.ip_address("104.16.1.1") in network for network in networks))
+        self.assertTrue(any(config.ipaddress.ip_address("2606:4700::1111") in network for network in networks))
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "ranges.txt"
+            empty.write_text("# SPDX-License-Identifier: AGPL-3.0-only\n\n")
+            with self.assertRaises(ValueError):
+                config.cloudflare_networks(empty)
+
+    def test_a_proxied_install_writes_trust_and_a_saved_value_is_kept(self):
+        def run(existing_lines, proxied):
+            with tempfile.TemporaryDirectory() as directory:
+                existing, output = Path(directory) / ".env", Path(directory) / "next"
+                if existing_lines is not None:
+                    existing.write_text("DEMO_INSTALL=1\n" + "".join(f"{k}={v}\n" for k, v in {**inputs(), **existing_lines}.items()))
+                args = ["config.py", "--existing", str(existing), "--output", str(output)]
+                with patch.dict(os.environ, inputs(), clear=True), patch.object(config, "dns_check", return_value=proxied), \
+                        patch.object(config, "cloudflare_check"), patch.object(config, "s3_check"), \
+                        patch.object(config, "has_terminal", return_value=False), \
+                        patch.object(config.sys, "argv", args), contextlib.redirect_stdout(io.StringIO()):
+                    config.main()
+                return config.read_env(output)
+        self.assertEqual(run(None, True).get("TRUST_CLOUDFLARE"), "true")
+        self.assertNotIn("TRUST_CLOUDFLARE", run(None, False))
+        self.assertEqual(run({"TRUST_CLOUDFLARE": "false"}, True)["TRUST_CLOUDFLARE"], "false")
+        self.assertEqual(run({}, True)["TRUST_CLOUDFLARE"], "true")
+
     def test_s3_cleanup_after_failed_read(self):
         methods = []
 

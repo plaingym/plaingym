@@ -28,6 +28,8 @@ LABELS = ("Demo domain", "ACME email", "App image (version or digest)", "Cloudfl
           "Cloudflare DNS API token", "S3 endpoint", "S3 bucket", "S3 access key", "S3 secret key")
 BILLING_KEY, BILLING_SECRET = "DEMO_STRIPE_TEST_KEY", "DEMO_STRIPE_WEBHOOK_SECRET"
 SECRET_INPUTS = {"CLOUDFLARE_API_TOKEN", "UPLOADS_S3_ACCESS_KEY_ID", "UPLOADS_S3_SECRET_ACCESS_KEY"}
+# The gym installer's pinned list of Cloudflare's proxy addresses, shipped in the same bundle.
+CLOUDFLARE_RANGES = Path(__file__).resolve().parent.parent / "cloudflare-ranges.txt"
 
 
 def read_env(path):
@@ -143,7 +145,21 @@ def request(url, method="GET", body=None, headers=None):
         return response.read()
 
 
+def cloudflare_networks(path=CLOUDFLARE_RANGES):
+    networks = [ipaddress.ip_network(line.strip()) for line in path.read_text().splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+    if not networks:
+        raise ValueError("The bundle's Cloudflare address list is empty.")
+    return networks
+
+
 def dns_check(config):
+    """Both names must resolve only to this server (DNS only) or only to Cloudflare's proxy, the same way.
+
+    Returns True when they are proxied. The proxy hides the server's address, so then the DNS check can't
+    tell which server is behind it; the demo prints no private link, and the HTTPS health check that follows
+    goes through the hostname.
+    """
     addresses = set()
     interfaces = json.loads(subprocess.check_output(["ip", "-j", "address", "show"], text=True))
     for interface in interfaces:
@@ -159,10 +175,19 @@ def dns_check(config):
             pass
     if not addresses:
         raise ValueError("Could not discover this server's public IP address.")
+    networks = cloudflare_networks()
+    modes = set()
     for host in (config["GYM_HOSTNAME"], secrets.token_hex(6) + "." + config["GYM_HOSTNAME"]):
         resolved = {row[4][0] for row in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
-        if not resolved or not resolved.issubset(addresses):
-            raise ValueError("Both base and wildcard DNS must point directly at this server (Cloudflare DNS only, including AAAA).")
+        if resolved and resolved.issubset(addresses):
+            modes.add("direct")
+        elif resolved and all(any(ipaddress.ip_address(value) in network for network in networks) for value in resolved):
+            modes.add("proxied")
+        else:
+            raise ValueError("Both base and wildcard DNS must point at this server, DNS only or through Cloudflare's proxy (including AAAA).")
+    if len(modes) > 1:
+        raise ValueError("Proxy both the base and wildcard records through Cloudflare, or neither.")
+    return modes == {"proxied"}
 
 
 def cloudflare_check(config, base="https://api.cloudflare.com/client/v4"):
@@ -246,13 +271,18 @@ def main():
     # The required inputs are validated and checked before the optional billing question, so a mistake in
     # them is reported before the operator types a key.
     validate(config)
+    proxied = False
     if config["DEMO_LOCAL_TEST"] != "true":
-        dns_check(config)
+        proxied = dns_check(config) is True
         cloudflare_check(config)
     s3_check(config)
     billing_inputs(config, ask=not args.check_only)
     validate_billing(config)
-    print("Preflight passed: inputs and S3 write/read/delete" + ("; local DNS/TLS stand-in." if config["DEMO_LOCAL_TEST"] == "true" else ", base/wildcard DNS and Cloudflare DNS edit."))
+    # A proxied demo trusts Cloudflare's visitor header (on requests from Cloudflare's addresses only). A saved
+    # value, even false, is the operator's and stays; install.sh adds this one to an older install's .env.
+    if proxied and "TRUST_CLOUDFLARE" not in config:
+        config["TRUST_CLOUDFLARE"] = "true"
+    print("Preflight passed: inputs and S3 write/read/delete" + ("; local DNS/TLS stand-in." if config["DEMO_LOCAL_TEST"] == "true" else ", base/wildcard DNS" + (" (through Cloudflare's proxy)" if proxied else "") + " and Cloudflare DNS edit."))
     if args.check_only:
         return
     if not args.output:

@@ -42,6 +42,7 @@ check_compose() {
 # adds Compose to a host that has none; a re-install or --local-test must already have it.
 if [ "$DEMO_LOCAL_TEST" != true ] && [ ! -f "$ROOT/.env" ]; then check_compose missing-ok; else check_compose; fi
 command -v python3 >/dev/null || fail 'Ubuntu python3 is required.'
+[ -f "$DEPLOY/cloudflare-ranges.txt" ] || fail "The bundle is missing $DEPLOY/cloudflare-ranges.txt; use a complete demo bundle."
 if [ -f "$SOURCE/images.env" ]; then
   # Generated bundle metadata has image references only, never credentials.
   APP_IMAGE=${APP_IMAGE:-$(awk -F= '$1 == "APP_IMAGE" { print $2 }' "$SOURCE/images.env")}
@@ -141,8 +142,9 @@ if [ "$DEMO_LOCAL_TEST" = true ]; then caddyfile=Caddyfile.local.conf; else cadd
 copy_deploy "$SOURCE/$caddyfile" Caddyfile 0644
 # shellcheck source=/dev/null
 . "$ROOT/lib.sh"
-# A re-run never replaces the saved .env, so demo billing values given now are added to it here.
-if [ "$refreshing" = true ]; then merge_demo_billing "$inputs"; fi
+# A re-run never replaces the saved .env, so demo billing values given now, and the Cloudflare trust setting for
+# a hostname proxied since, are added to it here.
+if [ "$refreshing" = true ]; then merge_demo_billing "$inputs"; merge_demo_trust "$inputs"; fi
 compose pull --policy missing postgres
 DEMO_TARGET_CADDY_IMAGE="$desired_caddy" compose run --rm --no-deps -T caddy \
   caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null

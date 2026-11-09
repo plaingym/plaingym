@@ -11,11 +11,30 @@ database role: a one-shot `migrate` service applies migrations and exits before
 the app starts, and the app refuses to start with maintenance credentials
 ([which process holds the role](../README.md#which-process-holds-the-maintenance-role)).
 
-Create DNS-only A records for `demo.plaingym.app` and `*.demo.plaingym.app` pointing
-at the VPS. Add AAAA only if the server has working public IPv6. Create a token
-with **Zone Read** and **DNS Edit**, scoped to the domain's zone, and a dedicated
-S3-compatible bucket with object read/write/delete credentials. R2 uses region
-`auto`. These DNS records and API credentials are the only manual prerequisites.
+Sandboxes get their own names under the demo domain (`<id>.` and the domain). Give
+the demo a domain of its own, such as `demo-example.org`, rather than a name under
+a domain that serves anything else: visitors write what sandboxes show. Create A
+records for the domain and its wildcard (`demo-example.org` and
+`*.demo-example.org`) pointing at the VPS, both **Proxied** through Cloudflare
+(recommended) or both DNS only. Add AAAA only if the server has working public
+IPv6. Create a token with **Zone Read** and **DNS Edit**, scoped to the domain's
+zone, and a dedicated S3-compatible bucket with object read/write/delete
+credentials. R2 uses region `auto`. These DNS records and API credentials are the
+only manual prerequisites.
+
+Behind Cloudflare's proxy, set SSL/TLS to **Full (strict)**; Always Use HTTPS can
+stay on, since Caddy gets its certificate through the DNS challenge. Cloudflare's
+free edge certificate covers a zone and one level below it, which is why the demo
+domain should be the zone itself: sandboxes one level further down (under
+`demo.example.org`) need a paid edge certificate. Add a rate-limiting rule for both
+names, for example
+`(http.host eq "demo-example.org" or ends_with(http.host, ".demo-example.org"))`, 50
+requests per 10 seconds per IP ([install guide](../../docs/install.md#behind-cloudflares-proxy-recommended)).
+The installer recognizes Cloudflare's addresses (`deploy/cloudflare-ranges.txt`)
+and writes `TRUST_CLOUDFLARE=true`, so sandbox rate limits count real visitors.
+With the proxy, the DNS check can't see which server is behind it; the HTTPS check
+that follows goes through the domain. The same limits as a proxied gym install
+apply.
 
 The maintainer supplies an HTTPS bundle URL, SHA256 and bootstrap URL. Paste this
 single command in an SSH terminal, substituting those three values:
@@ -29,12 +48,12 @@ it, loads its prebuilt app and proxy images, and prompts for the demo domain,
 ACME email, Cloudflare DNS token, S3 endpoint, bucket, access key and secret key.
 Prompts use the controlling terminal even when the bootstrap is piped into `sh`.
 Secrets are hidden at the terminal. They never need to be put in shell history,
-`.env` or Compose by hand. It checks base and wildcard DNS against the server,
-actually creates/deletes a temporary TXT record, and writes/reads/deletes a
+`.env` or Compose by hand. It checks base and wildcard DNS against the server (or
+Cloudflare's proxy, for both names alike), actually creates/deletes a temporary TXT record, and writes/reads/deletes a
 temporary S3 object **before changing host configuration**. A failed check stops
 with no host configuration written.
 
-Success prints **https://demo.plaingym.app**. Open it, create a sandbox, and select
+Success prints the demo's address (`https://` and the demo domain). Open it, create a sandbox, and select
 owner or coach from the start page or the **Demo menu**. Everything about the sandbox happens in the
 web interface. Email stays in its outbox, uploads are disabled, and it expires
 after 24 hours. The sample [kiosk instructions](../../apps/server/src/demo/README.md)
@@ -64,7 +83,9 @@ bundle, and skips host setup on subsequent runs. The same bundle leaves files
 and containers unchanged. A failed first start resumes with the saved configuration. Inputs may also
 come from the named environment variables in `config.py`; `--hostname` and
 `--email` are optional installer arguments after `--`. Existing installation
-values take precedence. It refuses another install's directory or switching a
+values take precedence, so a re-run keeps the saved demo domain; a re-run adds
+`TRUST_CLOUDFLARE=true` when the records have been proxied since, and keeps a saved
+value. It refuses another install's directory or switching a
 local install to public TLS. Default directory: `/opt/plaingym-demo`.
 
 Caddy manages only the demo hostname and its wildcard, using the Cloudflare DNS
