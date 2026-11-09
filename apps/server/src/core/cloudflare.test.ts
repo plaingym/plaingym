@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { expect, it } from 'vitest';
+import { Hono } from 'hono';
+import { cloudflareRanges } from './cloudflare-ranges.js';
+import { clientIp, isCloudflareAddress, type ClientIpOptions } from './rate-limit.js';
+import type { RequestEnvironment } from './context.js';
+
+const cloudflareEdge = '172.70.1.2', cloudflareEdge6 = '2606:4700:10::ac43:1', visitor = '198.51.100.7';
+
+function resolver(options: ClientIpOptions) {
+  const app = new Hono<RequestEnvironment>();
+  app.get('/', (context) => context.text(clientIp(context, { peerAddress: () => '172.18.0.4', ...options })));
+  return async (headers: Record<string, string>) => (await app.request('/', { headers })).text();
+}
+
+it('keeps the app list and the installer list the same', () => {
+  const file = fileURLToPath(new URL('../../../../deploy/cloudflare-ranges.txt', import.meta.url));
+  const listed = readFileSync(file, 'utf8').split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+  expect(listed).toEqual([...cloudflareRanges]);
+});
+
+it('matches addresses inside Cloudflare ranges only, in both families', () => {
+  for (const address of ['173.245.48.1', '173.245.63.255', '104.16.0.0', '104.23.255.255', cloudflareEdge, cloudflareEdge6,
+    '2a06:98c7:ffff::1', '::ffff:162.158.1.1']) expect(isCloudflareAddress(address), address).toBe(true);
+  for (const address of ['173.245.64.0', '104.32.0.0', '192.0.2.1', visitor, '2a06:98c8::1', '2001:db8::1',
+    '::ffff:192.0.2.1', 'not-an-address', '']) expect(isCloudflareAddress(address), address).toBe(false);
+});
+
+it('takes CF-Connecting-IP only behind a trusted proxy, with the switch on, from a Cloudflare address', async () => {
+  const on = resolver({ trustedProxy: () => true, cloudflare: true });
+  expect(await on({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': visitor })).toBe(visitor);
+  expect(await on({ 'x-forwarded-for': cloudflareEdge6, 'cf-connecting-ip': '2001:db8::7' })).toBe('2001:db8::7');
+  // The proxy appends the real peer last: a client can't forge its way into Cloudflare's range.
+  expect(await on({ 'x-forwarded-for': `${cloudflareEdge}, 192.0.2.50`, 'cf-connecting-ip': visitor })).toBe('192.0.2.50');
+  // A forged header from any other peer is ignored.
+  expect(await on({ 'x-forwarded-for': '192.0.2.50', 'cf-connecting-ip': visitor })).toBe('192.0.2.50');
+  // An invalid or missing header falls back to the forwarded peer.
+  expect(await on({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': 'not-an-address' })).toBe(cloudflareEdge);
+  expect(await on({ 'x-forwarded-for': cloudflareEdge })).toBe(cloudflareEdge);
+  // Switch off, or no trusted proxy: the header is never read.
+  expect(await resolver({ trustedProxy: () => true })({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': visitor })).toBe(cloudflareEdge);
+  expect(await resolver({ cloudflare: true })({ 'x-forwarded-for': cloudflareEdge, 'cf-connecting-ip': visitor })).toBe('172.18.0.4');
+});

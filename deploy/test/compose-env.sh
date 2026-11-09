@@ -42,6 +42,8 @@ expect() {
 }
 
 # Each forwarded variable: its default when unset or empty, and the value from .env.
+expect TRUST_CLOUDFLARE '' ''
+expect TRUST_CLOUDFLARE true 'TRUST_CLOUDFLARE=true'
 expect AUTH_PASSWORD_LOGIN auto ''
 expect AUTH_PASSWORD_LOGIN auto 'AUTH_PASSWORD_LOGIN='
 expect AUTH_PASSWORD_LOGIN on 'AUTH_PASSWORD_LOGIN=on'

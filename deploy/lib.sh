@@ -174,9 +174,66 @@ newest_patch() { # VERSION TAGS
     BEGIN { best = part(current, 3) }
     END { if (tag != "") print tag }'
 }
+# Whether an IPv4 or IPv6 address is inside one of the ranges in a list such as
+# cloudflare-ranges.txt (one CIDR per line, # comments). Written for mawk: no hex helpers.
+in_cloudflare_ranges() {
+  awk -v address="$1" '
+    function hex(text,   i, digit, value) {
+      value = 0; text = tolower(text)
+      if (text == "" || length(text) > 4) invalid = 1
+      for (i = 1; i <= length(text); i++) {
+        digit = index("0123456789abcdef", substr(text, i, 1)) - 1
+        if (digit < 0) invalid = 1
+        value = value * 16 + digit
+      }
+      return value
+    }
+    function expand6(text, out,   n, halves, left, right, a, b, i, k) {
+      n = split(text, halves, "::"); if (n > 2) return 0
+      a = halves[1] == "" ? 0 : split(halves[1], left, ":")
+      b = (n == 2 && halves[2] != "") ? split(halves[2], right, ":") : 0
+      if ((n == 1 && a != 8) || (n == 2 && a + b > 7)) return 0
+      k = 0
+      for (i = 1; i <= a; i++) out[++k] = hex(left[i])
+      for (i = 0; i < 8 - a - b; i++) out[++k] = 0
+      for (i = 1; i <= b; i++) out[++k] = hex(right[i])
+      return 1
+    }
+    function expand4(text, out,   parts, i) {
+      if (split(text, parts, ".") != 4) return 0
+      for (i = 1; i <= 4; i++) {
+        if (parts[i] !~ /^[0-9]+$/ || parts[i] + 0 > 255) return 0
+        out[i] = parts[i] + 0
+      }
+      return 1
+    }
+    # Compare the first `prefix` bits of two addresses held as units of `width` bits.
+    function within(a, b, width, prefix,   i, full, rest, scale) {
+      full = int(prefix / width); rest = prefix % width
+      for (i = 1; i <= full; i++) if (a[i] != b[i]) return 0
+      if (rest == 0) return 1
+      scale = 2 ^ (width - rest)
+      return int(a[full + 1] / scale) == int(b[full + 1] / scale)
+    }
+    # Anything that is not a plain address (an embedded IPv4 in IPv6, stray characters) matches no range.
+    BEGIN { family = index(address, ":") ? 6 : 4; invalid = 0; if (!(family == 6 ? expand6(address, mine) : expand4(address, mine)) || invalid) exit 1 }
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      split($1, range, "/"); if ((index(range[1], ":") ? 6 : 4) != family) next
+      delete network
+      if (!(family == 6 ? expand6(range[1], network) : expand4(range[1], network))) next
+      if (within(mine, network, family == 6 ? 16 : 8, range[2] + 0)) { found = 1; exit }
+    }
+    END { exit found ? 0 : 1 }' "$2"
+}
 # Every address the hostname resolves to must belong to this server, so the
 # certificate and the private setup link work. Runs before any host change.
+# Addresses in CLOUDFLARE_RANGES (when set) are Cloudflare's proxy in front of this
+# server: they pass, and dns_proxied=true tells the installer to trust the proxy. The
+# installer then proves the name reaches this server through it before printing the
+# setup link (install.sh, the origin check).
 check_dns() {
+  dns_proxied=false
   dns_retry="If you recently added or changed the record, cached answers can remain until their TTL expires, which can take an hour or more; retry the installer after that. Nothing was changed."
   dns_status=0
   case "$1" in
@@ -209,6 +266,10 @@ check_dns() {
       127.*|::1) case "$1" in *.localhost) continue ;; esac
         fail "$1 resolves to a loopback address. Point it at this server's public IP. $dns_retry" ;;
     esac
+    if [ -n "${CLOUDFLARE_RANGES:-}" ] && in_cloudflare_ranges "$address" "$CLOUDFLARE_RANGES"; then
+      dns_proxied=true
+      continue
+    fi
     if ! printf '%s\n' "$own" | grep -qxF "$address"; then
       # Only consult the matching public-address service after a local miss,
       # once per family. This also covers providers that NAT the public address.
@@ -255,7 +316,7 @@ $public"
       if [ "$lookup_failed" = true ]; then
         dns_unconfirmed="$1 resolves to $address, which is not assigned to this server's network interfaces. The public-address lookup failed, so the installer could not confirm this server's public address. Check that curl is installed and outbound HTTPS works with no filtering proxy or captive portal in the way, then retry the installer. Nothing was changed."
       else
-        dns_mismatch="$1 resolves to $address, which is not this server. Use a DNS-only record (no proxy) that points here. $dns_retry"
+        dns_mismatch="$1 resolves to $address, which is not this server. Point the record here, DNS only or through Cloudflare's proxy; other proxies aren't supported. $dns_retry"
       fi
     fi
   done

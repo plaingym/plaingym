@@ -17,5 +17,8 @@
 			}
 		}
 	}
+	# A random value per install: the installer fetches it through the hostname, so through any proxy in front, and
+	# prints the private setup link only when it comes back, proving the name reaches this server. Not a secret.
+	respond /.well-known/plaingym-origin "{$PLAINGYM_ORIGIN_NONCE}" 200
 	reverse_proxy app:3000
 }

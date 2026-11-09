@@ -240,7 +240,18 @@ Details: `apps/server/src/infra/auth/README.md`.
   resolving the gym. Sign-in,
   kiosk PINs and CSP reports have their own limits. Behind Caddy, `TRUST_PROXY=true`
   makes the last `X-Forwarded-For` entry the client address; nothing else trusts
-  forwarded headers.
+  forwarded headers, except that with `TRUST_CLOUDFLARE=true` (set by the installer
+  when the hostname is proxied by Cloudflare) the app takes the client from
+  `CF-Connecting-IP` when, and only when, the address Caddy forwarded is in
+  Cloudflare's published ranges (pinned in `deploy/cloudflare-ranges.txt` and
+  `core/cloudflare-ranges.ts`, kept identical by a test). From any other address the
+  header is ignored, so it changes nothing for a server that isn't behind
+  Cloudflare. **Limit:** those ranges are shared by every Cloudflare customer, and
+  the server also accepts connections that don't come through the proxy, so
+  traffic sent from inside Cloudflare's network (for example a Worker opening its
+  own connection to the server's address) can choose `CF-Connecting-IP`. That
+  defeats per-address limits only: not authentication, and not the per-account
+  sign-in limit.
   Public intake routes name stable budgets for the PostgreSQL counter store;
   runtime startup enables it with `registerIntakeRateLimits`. These limits run
   before route body parsing and validation, group IPv6 clients by /64, and use

@@ -28,7 +28,11 @@ printf '203.0.113.20 api.ipify.org\n2a01:4f8::1 mixed.invalid\n49.12.0.9 mixed.i
 printf '203.0.113.6 multi4.invalid\n192.0.2.10 multi4.invalid\n2001:db8::6 multi6.invalid\n2001:db8::10 multi6.invalid\n192.0.2.10 foreign4.invalid\n192.0.2.11 foreign4.invalid\n2001:db8::10 foreign6.invalid\n2001:db8::11 foreign6.invalid\n2001:db8:0:1:2:3:4:6 full6.invalid\n' >> "$HOSTS"
 stub() { printf '#!/bin/sh\n%s\n' "$2" > "$temporary/bin/$1"; chmod 0700 "$temporary/bin/$1"; }
 for command in apt-get systemctl ufw fallocate mkswap; do stub "$command" "printf '$command %s\n' \"\$*\" >> \"\$CALLS\""; done
+# Cloudflare proxy addresses (deploy/cloudflare-ranges.txt) for a proxied hostname.
+printf '104.16.1.1 proxied.invalid\n2606:4700::1111 proxied.invalid\n' >> "$HOSTS"
 stub swapon 'echo /swapfile partition 1G 0B -2'
+# The installer's HTTPS retries wait in between; the fixture answers at once.
+stub sleep ':'
 stub openssl 'echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 # shellcheck disable=SC2016
 stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 203.0.113.5/24 brd 203.0.113.255 scope global eth0"; echo "2: eth0    inet6 fe80::5/64 scope link"; echo "2: eth0    inet6 fd00::5/64 scope global eth0"; echo "2: eth0    inet6 20::5/64 scope global eth0"; if [ "${GLOBAL6:-false}" = true ]; then echo "2: eth0    inet6 2001:db8::5/64 scope global eth0"; fi'
@@ -42,7 +46,14 @@ case "$last" in
   https://api.ipify.org) echo 'public lookup 4' >> "$CALLS"; printf '%s' "${PUBLIC4-203.0.113.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
   https://api6.ipify.org) echo 'public lookup 6' >> "$CALLS"; printf '%s' "${PUBLIC6-2001:db8::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
   */api/setup) printf '%s' "${SETUP_STATUS:-200}" ;;
-  */healthz) exit 0 ;;
+  # The openssl stub makes every install's origin value this one; WRONG_ORIGIN is a hostname fronting another server.
+  # The installer asks for the body and then the status on its own line; ORIGIN_STATUS is a Cloudflare challenge.
+  */.well-known/plaingym-origin)
+    printf 'origin %s\n' "$*" >> "$CALLS"
+    if [ -n "${ORIGIN_STATUS:-}" ]; then printf 'challenge page\n%s' "$ORIGIN_STATUS"
+    elif [ "${WRONG_ORIGIN:-false}" = true ]; then printf 'another-server\n200'
+    else printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n200'; fi ;;
+  */healthz) printf 'ok\n%s' "${HEALTH_STATUS:-200}" ;;
   *) exit 22 ;;
 esac
 MOCK
@@ -197,10 +208,80 @@ if sh "$source_dir/install.sh" --directory "$root" --hostname gym.localhost --em
 grep -q 'use update.sh' "$temporary/output"
 [ "$before" = "$(hashes)" ]
 
+# Cloudflare's proxy: the range check (mawk-safe), automatic detection, and the origin check before the setup link.
+ranges="$source_dir/cloudflare-ranges.txt"
+in_ranges() { sh -c 'set -eu; . "$1"; in_cloudflare_ranges "$2" "$3"' sh "$source_dir/lib.sh" "$1" "$ranges"; }
+for address in 173.245.48.1 173.245.63.255 104.16.0.0 104.23.255.255 2606:4700::1 2a06:98c7:ffff::1 2c0f:f248::; do in_ranges "$address"; done
+for address in 173.245.64.0 104.32.0.0 192.0.2.1 203.0.113.5 2a06:98c8::1 2001:db8::1 not-an-address 2606:4700::zz 2606:4700::12345 ::ffff:104.16.0.1 104.16.0.256; do
+  if in_ranges "$address"; then echo "In Cloudflare's ranges by mistake: $address" >&2; exit 1; fi
+done
+# A DNS-only install carries its origin value and doesn't trust Cloudflare.
+grep -q '^PLAINGYM_ORIGIN_NONCE=.' "$root/.env"
+if grep -q TRUST_CLOUDFLARE "$root/.env"; then echo 'A DNS-only install trusts Cloudflare.' >&2; exit 1; fi
+proxied="$temporary/proxied"
+install_proxied() { sh "$source_dir/install.sh" --directory "$proxied" --image plaingym:v0.0.0-local --image-archive "$temporary/image.tar" --hostname proxied.invalid --email owner@example.org > "$temporary/output" 2>&1; }
+: > "$CALLS"
+CLOUDFLARE_RANGES="$ranges" check_dns_only proxied.invalid
+if grep -q '^public lookup' "$CALLS"; then echo 'A Cloudflare address queried a public-address service.' >&2; exit 1; fi
+# A proxied hostname installs with no flag, trusts the proxy, and passes the origin check through it.
+: > "$CALLS"
+install_proxied
+grep -qx TRUST_CLOUDFLARE=true "$proxied/.env"
+grep -q 'setup#token=fixture' "$temporary/output"
+# The origin check connects to the address public DNS gives, not whatever /etc/hosts says.
+grep -q '^origin .*--resolve proxied.invalid:443:104.16.1.1 ' "$CALLS"
+grep -qx 'ufw allow 80/tcp' "$CALLS"
+grep -qx 'ufw allow 443/tcp' "$CALLS"
+proxied_env=$(cat "$proxied/.env")
+install_proxied
+[ "$(cat "$proxied/.env")" = "$proxied_env" ]
+# A hostname that answers from another server gets no setup link.
+: > "$CALLS"
+if WRONG_ORIGIN=true sh "$source_dir/install.sh" --directory "$temporary/elsewhere" --image plaingym:v0.0.0-local --image-archive "$temporary/image.tar" --hostname proxied.invalid --email owner@example.org > "$temporary/output" 2>&1; then
+  echo 'Printed a setup link for a hostname that reaches another server.' >&2; exit 1
+fi
+grep -qF 'answers, but not from this server, so the private setup link was not printed' "$temporary/output"
+if grep -q 'token=' "$temporary/output"; then echo 'Printed a setup link after a failed origin check.' >&2; exit 1; fi
+# The install is complete (its update timer is in place); only the link was withheld.
+grep -qx "ExecStart=/bin/sh $temporary/elsewhere/update.sh --patch" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+# A Cloudflare challenge on the check names the likely setting, not a wrong server.
+if ORIGIN_STATUS=403 sh "$source_dir/install.sh" --directory "$temporary/challenged" --image plaingym:v0.0.0-local --image-archive "$temporary/image.tar" --hostname proxied.invalid --email owner@example.org > "$temporary/output" 2>&1; then exit 1; fi
+grep -qF 'The private setup link was not printed' "$temporary/output"
+grep -qF 'It answered HTTP 403' "$temporary/output"
+grep -qF 'Bot Fight Mode' "$temporary/output"
+if grep -q 'token=\|not from this server' "$temporary/output"; then echo 'A challenge was reported as another server, or printed the link.' >&2; exit 1; fi
+# A challenge on /healthz fails after the update timer is in place, naming the likely setting.
+if HEALTH_STATUS=503 sh "$source_dir/install.sh" --directory "$temporary/unhealthy" --image plaingym:v0.0.0-local --image-archive "$temporary/image.tar" --hostname proxied.invalid --email owner@example.org > "$temporary/output" 2>&1; then exit 1; fi
+grep -qF 'the update timer is installed, but https://proxied.invalid/healthz failed' "$temporary/output"
+grep -qF 'It answered HTTP 503' "$temporary/output"
+grep -qx "ExecStart=/bin/sh $temporary/unhealthy/update.sh --patch" "$SYSTEMD_UNIT_DIR/plaingym-update.service"
+# An empty origin value is replaced on a re-run, never compared.
+printf 'PLAINGYM_ORIGIN_NONCE=\n' >> "$proxied/.env"
+install_proxied
+[ -n "$(sh -c '. "$1"; ROOT=$2; read_env PLAINGYM_ORIGIN_NONCE' sh "$source_dir/lib.sh" "$proxied")" ]
+# An owner's own TRUST_CLOUDFLARE value stays on a proxied re-run.
+sed 's/^TRUST_CLOUDFLARE=true$/TRUST_CLOUDFLARE=false/' "$proxied/.env" > "$proxied/.env.next"; mv "$proxied/.env.next" "$proxied/.env"; chmod 0600 "$proxied/.env"
+install_proxied
+[ "$(grep -c '^TRUST_CLOUDFLARE=' "$proxied/.env")" -eq 1 ] && grep -qx TRUST_CLOUDFLARE=false "$proxied/.env"
+# A proxied re-run of an install whose files predate Cloudflare support is refused before any host change.
+grep -v plaingym-origin "$proxied/Caddyfile" > "$proxied/Caddyfile.old"; cp "$proxied/Caddyfile" "$proxied/Caddyfile.current"; mv "$proxied/Caddyfile.old" "$proxied/Caddyfile"
+: > "$CALLS"
+if install_proxied; then echo 'Re-ran a proxied install on files without Cloudflare support.' >&2; exit 1; fi
+grep -qF 'predate support for it' "$temporary/output"
+if grep -Eq '^(apt-get|ufw|systemctl|docker)' "$CALLS"; then echo 'Host changed before refusing old files.' >&2; exit 1; fi
+mv "$proxied/Caddyfile.current" "$proxied/Caddyfile"
+# An install from before the origin value gains it, and only it, on a re-run.
+grep -v '^PLAINGYM_ORIGIN_NONCE=' "$root/.env" > "$root/.env.next"; mv "$root/.env.next" "$root/.env"; chmod 0600 "$root/.env"
+env_before=$(cat "$root/.env")
+install_gym --hostname gym.localhost --email owner@example.org
+[ "$(grep -v '^PLAINGYM_ORIGIN_NONCE=' "$root/.env")" = "$env_before" ]
+grep -q '^PLAINGYM_ORIGIN_NONCE=.' "$root/.env"
+[ "$(stat -c %a "$root/.env")" = 600 ]
+
 # The bootstrap verifies the bundle before extracting or installing anything.
 bundle="$temporary/bundle"
 mkdir -p "$bundle/deploy/postgres" "$bundle/deploy/images" "$bundle/deploy/systemd"
-for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh rotate-key.sh postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
+for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh rotate-key.sh cloudflare-ranges.txt postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
 # A bundle carries the release signing key; the installer puts it beside update.sh.
 printf 'fixture public key\n' > "$bundle/deploy/release-signing.pem"
 : > "$bundle/deploy/images/app.tar"
@@ -224,4 +305,4 @@ tar -cf "$temporary/foreign.tar" -C "$bundle" deploy
 if sh "$source_dir/bootstrap.sh" --bundle-file "$temporary/foreign.tar" --sha256 "$(sha256sum "$temporary/foreign.tar" | cut -d' ' -f1)" -- --hostname gym.localhost --email owner@example.org --directory "$temporary/foreign" > "$temporary/output" 2>&1; then exit 1; fi
 [ ! -s "$CALLS" ] && [ ! -e "$temporary/foreign" ]
 if sh "$source_dir/bootstrap.sh" --bundle-url http://example.org/bundle.tar --sha256 "$sum" > /dev/null 2>&1; then exit 1; fi
-echo 'PASS: input and DNS checks before host changes, convergent re-runs, refused mismatches, verified bundles.'
+echo 'PASS: input and DNS checks before host changes, convergent re-runs, refused mismatches, Cloudflare proxy detection and the origin check, verified bundles.'

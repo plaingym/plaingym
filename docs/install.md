@@ -13,9 +13,11 @@ guide writes `vX.Y.Z`, put the version you are installing.
 
 ## Before you start
 
-1. Point your hostname at the server with a DNS-only record: an A record, plus an
-   AAAA record if the server has working public IPv6. A proxied record (for example
-   Cloudflare's orange cloud) fails the installer's DNS check.
+1. Point your hostname at the server: an A record, plus an AAAA record if the
+   server has working public IPv6. Cloudflare's proxy (the orange cloud) is
+   recommended if your domain is on Cloudflare; see
+   [Behind Cloudflare's proxy](#behind-cloudflares-proxy-recommended). Otherwise use
+   a DNS-only record. Any other proxy fails the installer's DNS check.
 2. Open TCP 80 and 443, and your SSH port, in any firewall your provider runs in
    front of the server.
 3. Decide which email address the certificate authority may contact. It is not your
@@ -38,6 +40,59 @@ other than an address, the installer could not confirm an address behind NAT:
 check that `curl` is installed and outbound HTTPS works with no filtering proxy or
 captive portal in the way. A confirmed mismatch takes priority over an unconfirmed
 address. Each refusal confirms: "Nothing was changed."
+
+Before it prints the private setup link, the installer also fetches a random
+value of this install's through the hostname (`/.well-known/plaingym-origin`, served
+by Caddy). If what answers isn't this server, it stops without printing the link,
+so the link's secret never goes to another server.
+
+## Behind Cloudflare's proxy (recommended)
+
+If your domain is on Cloudflare, put the server behind its proxy from the start:
+floods and TLS are then handled at Cloudflare's edge, and the server's address never
+appears in public DNS. The installer needs no option for it:
+
+1. In Cloudflare, make the record **Proxied** (orange cloud). Under **SSL/TLS**
+   choose **Full (strict)**, and turn **Always Use HTTPS** off (SSL/TLS → Edge
+   Certificates), at least until the first certificate is issued: the server gets
+   its certificate from Let's Encrypt through the proxy, over plain HTTP on
+   `/.well-known/acme-challenge/`, and a redirect there stops it. Don't add any
+   other redirect or rule for that path.
+2. Run the installer as usual. Its DNS check recognizes Cloudflare's addresses
+   (`deploy/cloudflare-ranges.txt`) and writes `TRUST_CLOUDFLARE=true` to `.env`, so
+   the app reads each visitor's address from Cloudflare's `CF-Connecting-IP` header,
+   but only on requests that arrive from Cloudflare's published ranges. Rate limits
+   and sign-in limits then count real visitors, not Cloudflare's edge.
+3. **Add a rate-limiting rule in Cloudflare** (Security → WAF → Rate limiting
+   rules; the free plan includes one): for example, block a client that sends more
+   than 300 requests in a minute to your hostname. The proxy alone passes a single
+   noisy client on to your server; this rule refuses it at the edge. Keep it the
+   same as the app's own limit (`RATE_LIMIT_PER_MINUTE`, 300 by default) or a little
+   higher, so the app still gives its usual answers.
+
+Limits: the server also accepts connections that don't come through the proxy, so
+someone who learns its address can reach it directly, around Cloudflare's
+protections. Cloudflare's ranges are shared by every Cloudflare customer, so traffic
+sent from inside Cloudflare's network can set `CF-Connecting-IP` itself and get
+around per-address limits (not sign-in itself, and not the per-account sign-in
+limit). Keep the server's address private: proxy the record before the first
+install rather than after, so the address never appears in public DNS.
+
+If the certificate isn't issued, check that the record is proxied, SSL/TLS is Full
+(strict), Always Use HTTPS is off and nothing redirects or blocks
+`/.well-known/acme-challenge/`; then `sudo docker compose logs caddy` in the install
+directory. If the installer says the hostname answered with an HTTP error, a
+Cloudflare security setting (Bot Fight Mode, Under Attack mode, a WAF or
+rate-limiting rule) may be challenging it: allow `/.well-known/plaingym-origin` and
+re-run with the same options. The server is installed either way; only the setup
+link waits for the check.
+
+If you proxy the record after installing, re-run the installer with the same options
+so the app trusts Cloudflare's header; until then every visitor counts as one of
+Cloudflare's addresses for rate limits. An install whose `compose.yaml` and Caddyfile
+predate proxy support refuses that re-run until you copy both from the current
+deployment files. When Cloudflare's published ranges change, a release updates both
+pinned lists.
 
 ## Route 1: one command
 

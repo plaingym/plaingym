@@ -12,7 +12,7 @@ secret.
 `deploy/compose.yaml` has no `env_file`: the app container gets only the variables
 its `environment:` block names. From `.env` it passes `GYM_HOSTNAME`, the `SMTP_*`
 settings, `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, `SOURCE_URL`, `APP_ENCRYPTION_KEY`, `AUTH_SECRET`, `SETUP_TOKEN`,
-`POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `NODE_OPTIONS`,
+`POSTGRES_DB`, `APP_PASSWORD`, `MAINTENANCE_PASSWORD`, `NODE_OPTIONS`, `TRUST_CLOUDFLARE`,
 `AUTH_PASSWORD_LOGIN`, `RATE_LIMIT_PER_MINUTE`, `UPDATE_CHECK`, `RELEASE_REPOSITORY` and `DATABASE_POOL_MAX` (the last
 five with their defaults when unset or empty); it fixes
 `NODE_ENV`, `HOST`, `PORT`, `TENANCY=single`, `TRUST_PROXY`, `DATABASE_URL`,
@@ -54,6 +54,8 @@ and the Repo compliance workflow runs them even for Markdown-only changes.
 | `HOST` | `127.0.0.1` | The address the server listens on. Compose sets `0.0.0.0` inside the container. |
 | `PORT` | `3000` | The port the server listens on. |
 | `TRUST_PROXY` | unset | `true` makes the last `X-Forwarded-For` entry the client address (for rate limits and sign-in). Set only when a reverse proxy is the app's only peer, as Caddy is in Compose. |
+| `TRUST_CLOUDFLARE` | unset | `true` (written by the installer when the hostname is proxied by Cloudflare) reads the client address from `CF-Connecting-IP` when the address the trusted proxy forwarded is in Cloudflare's published ranges (`deploy/cloudflare-ranges.txt`); from any other address the header is ignored. Needs `TRUST_PROXY=true`. Any other value leaves it off. See [install.md](install.md#behind-cloudflares-proxy-recommended) and its limits in [security-model.md](security-model.md). |
+| `PLAINGYM_ORIGIN_NONCE` | unset | Written by the installer: a random value Caddy serves at `/.well-known/plaingym-origin`, which the installer fetches through the hostname before printing the setup link. Not a secret. |
 | `SOURCE_URL` | `https://github.com/plaingym/plaingym` | Where the "Source code" link points (AGPL section 13). A modified install must point it at its own source. |
 
 ## Database

@@ -70,6 +70,9 @@ services:
       GYM_HOSTNAME: ${GYM_HOSTNAME:?required}
       # Only Caddy can reach the app, so its X-Forwarded-For entry is the client address.
       TRUST_PROXY: "true"
+      # Behind Cloudflare's proxy (the installer sets it when the hostname is proxied): read the visitor from
+      # CF-Connecting-IP, only on requests Caddy forwarded from Cloudflare's published ranges. Anything but "true" is off.
+      TRUST_CLOUDFLARE: ${TRUST_CLOUDFLARE:-}
       # Optional install-wide email; a gym's own SMTP settings from setup take precedence.
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -114,6 +117,8 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:?required}
       # Access log: `discard` (off) or `stderr` (deploy/README.md, "Access log").
       CADDY_ACCESS_LOG: ${CADDY_ACCESS_LOG:-discard}
+      # Served at /.well-known/plaingym-origin for the installer's check that the hostname reaches this server.
+      PLAINGYM_ORIGIN_NONCE: ${PLAINGYM_ORIGIN_NONCE:-}
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"

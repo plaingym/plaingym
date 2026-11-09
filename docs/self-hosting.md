@@ -16,9 +16,10 @@ For building images and the installer's internals, see
   (running the whole stack on 1 GB isn't established). The installer adds 1 GB of
   swap if none is active.
 * **A hostname** such as `gym.example.org`, with an A record (and an AAAA record,
-  if you use IPv6) pointing at the server. Use a DNS-only record: a proxied record
-  (for example Cloudflare's orange cloud) fails the installer's DNS check and the
-  certificate request.
+  if you use IPv6) pointing at the server. Behind Cloudflare's proxy (the orange
+  cloud) is recommended if your domain is on Cloudflare
+  ([install guide](install.md#behind-cloudflares-proxy-recommended)); otherwise use a
+  DNS-only record. Other proxies fail the installer's DNS check.
 * **Open ports**: TCP 80 and 443, and your SSH port.
 * **A PlainGym image** for the server's CPU architecture, as a version tag or
   digest, or a bundle file built with `deploy/test/prepare-bundle.ps1`. The server

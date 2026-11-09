@@ -193,6 +193,9 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const { key, mode, config: initialConfig, install, smtp } = await prepare(env);
   // Caddy is the only peer that can reach the app in the Compose deployment.
   const trustedProxy = env.TRUST_PROXY === 'true' ? () => true : undefined;
+  // Behind Cloudflare's proxy, the client comes from CF-Connecting-IP, but only on requests Caddy forwarded from
+  // Cloudflare's published ranges (core/rate-limit.ts, clientIp).
+  const proxyTrust = { ...(trustedProxy ? { trustedProxy } : {}), ...(env.TRUST_CLOUDFLARE === 'true' ? { cloudflare: true } : {}) };
   const limit = floodLimit(env);
   const originFor = (context: Context<RequestEnvironment>): string => {
     if (mode === 'single') return install!;
@@ -210,7 +213,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
 
   const uploads = createRuntimeUploads(env, key, gymOrigin);
   const demo = await createDemoRuntime({ env, installOrigin: install ?? '', removeUploads: uploads.removeGym,
-    ...(trustedProxy ? { clientIp: { trustedProxy } } : {}) });
+    clientIp: proxyTrust });
   const config = demo?.authConfig ?? initialConfig;
   const smtpConfigured = (gymId: string) => demo ? Promise.resolve(true) : smtp!.configured(gymId);
   // The install's GOOGLE_* variables win; otherwise a single-gym owner's stored client. Each Google request and the login methods look it up.
@@ -381,7 +384,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const session = sessionMiddleware({ auth, smtpConfigured,
     principal: (userId, context, bound) => createPortalPrincipalLoader()(context.get('context').gym.gymId, userId, bound),
     resolve: (context) => {
-    const address = clientIp(context, { ...(trustedProxy ? { trustedProxy } : {}) });
+    const address = clientIp(context, proxyTrust);
     return { gymId: context.get('context').gym.gymId, origin: originFor(context), clientIp: address === 'unknown' ? '0.0.0.0' : address };
   } });
   // Photos load from the uploads bucket's signed URLs when S3 is configured. A host the policy can't name (such as a
@@ -392,7 +395,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     try { return imageOrigins([uploads.imageOrigin]); }
     catch (error) { logError('runtime.csp.image_origin_skipped', {}, error); return []; }
   })();
-  const kioskSession = createKioskAuthMiddleware({ ...(trustedProxy ? { trustedProxy } : {}), session });
+  const kioskSession = createKioskAuthMiddleware({ ...proxyTrust, session });
   // One map, passed to the app and refilled in place: the CSP report route reads it live and never queries the database.
   const reportHostnames = new Map<string, string>();
   const app = createApp({
@@ -403,7 +406,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
     // Signed-link routes resolve their own bearer after normal session loading.
     session: (context, next) => context.req.path.startsWith('/api/links/') ? session(context, next) : kioskSession(context, next),
     origin: originFor, ...(install ? { installOrigin: install } : {}), strictTransportSecurity: env.NODE_ENV === 'production',
-    rateLimit: { ...(trustedProxy ? { trustedProxy } : {}), ...(limit ? { limit } : {}) },
+    rateLimit: { ...proxyTrust, ...(limit ? { limit } : {}) },
     ...(demo ? { restoreGate: demoWebhookMiddleware({ configured: Boolean(env.DEMO_STRIPE_TEST_KEY), inbox, demoGyms: demo.payments.demoGyms,
       ...(gate ? { restoreGate: gate.middleware() } : {}) }) } : gate ? { restoreGate: gate.middleware() } : {}),
     ...(env.SOURCE_URL ? { sourceUrl: env.SOURCE_URL } : {}),

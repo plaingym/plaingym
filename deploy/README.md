@@ -161,8 +161,27 @@ exist. The image is never built on the server; use the matching CPU
 architecture.
 
 Before changing anything, the installer checks its inputs: the hostname must
-resolve (A, and AAAA if present) only to this server, so use DNS-only records,
-not a proxy. If a check fails, nothing on the server was changed.
+resolve (A, and AAAA if present) only to this server or to Cloudflare's proxy
+(the addresses in `cloudflare-ranges.txt`). If a check fails, nothing on the server
+was changed.
+
+A hostname proxied by Cloudflare needs no option: the installer writes
+`TRUST_CLOUDFLARE=true` to `.env`, so the app takes the visitor from
+`CF-Connecting-IP` on requests from Cloudflare's ranges only. Since the DNS check
+can't see past the proxy, the installer then fetches this install's random
+`PLAINGYM_ORIGIN_NONCE` through the hostname (Caddy serves it at
+`/.well-known/plaingym-origin`) and prints the private setup link only if it comes
+back. That check runs once the stack is up, so when it fails the server is
+installed (update timer included) but the link is withheld: fix the record, or
+allow that path if a Cloudflare security setting challenges it, and re-run with the
+same options. An install whose `compose.yaml` and Caddyfile predate proxy support
+refuses a proxied re-run before changing anything; copy both from the current
+deployment files first. If you proxy the record after installing, re-run the
+installer so the app trusts Cloudflare's header. Set SSL/TLS to Full (strict), turn Always Use HTTPS off for the first
+certificate, and add a Cloudflare rate-limiting rule
+([../docs/install.md](../docs/install.md#behind-cloudflares-proxy-recommended)).
+When the published ranges change, `node scripts/cloudflare-ranges.mjs` rewrites
+both pinned copies; the app's copy ships in the image.
 
 ### One command from a bundle
 

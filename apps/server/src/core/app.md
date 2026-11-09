@@ -117,8 +117,11 @@ with refused clients. Each new key makes its room in one walk of the table. Refu
 `Retry-After`. This is process-local flood protection; auth
 retains its database-backed limiter. `peerAddress` defaults to the Node socket
 address. Set `trustedProxy` to a predicate matching only the immediate reverse
-proxy; only then is the rightmost X-Forwarded-For address used. Pass the same
-`clientIp` helper and proxy options to the auth binding.
+proxy; only then is the rightmost X-Forwarded-For address used. With `cloudflare`
+also set, when that address is in Cloudflare's published ranges
+(`cloudflare-ranges.ts`, checked with Node's `BlockList`), `CF-Connecting-IP` is the
+client instead, if it's a valid address. Pass the same `clientIp` helper and proxy
+options to the auth binding.
 
 `SOURCE_URL` is read when constructing the app, defaults to the public source
 repository, and is passed through Docker and Compose. Footers can use `/source`
@@ -147,7 +150,9 @@ mounts entry/creation before tenancy, and schedules cleanup behind the restore g
 The public origin is `PUBLIC_ORIGIN`, or `https://` plus `GYM_HOSTNAME`, in
 single mode; in multi mode it is the hostname the tenant resolver matched.
 `TRUST_PROXY=true` (set in Compose, where only Caddy reaches the app) makes the
-last `X-Forwarded-For` entry the client address for rate limits and login.
+last `X-Forwarded-For` entry the client address for rate limits and login;
+`TRUST_CLOUDFLARE=true` (the installer sets it for a hostname behind Cloudflare's
+proxy) adds the Cloudflare rule above. Its limits are in `docs/security-model.md`.
 `RATE_LIMIT_PER_MINUTE` (an integer from 1 to 100,000) replaces the flood limit's
 default of 300 requests per minute per gym and client address; route limiters and
 the auth limiter keep their own limits.

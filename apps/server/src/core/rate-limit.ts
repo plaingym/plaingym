@@ -1,14 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { AppError } from '@plaingym/shared';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { RequestEnvironment } from './context.js';
+import { cloudflareRanges } from './cloudflare-ranges.js';
 
 export interface ClientIpOptions {
   /** Immediate socket peer, supplied by the server adapter, never request headers. */
   readonly peerAddress?: (context: Context<RequestEnvironment>) => string | undefined;
   readonly trustedProxy?: (address: string) => boolean;
+  /**
+   * `TRUST_CLOUDFLARE`: behind a trusted proxy, when the address it forwards is one of Cloudflare's published
+   * ranges, take the client from `CF-Connecting-IP`. From any other address the header is ignored, so this changes
+   * nothing for a server that isn't behind Cloudflare. Those ranges are shared by every Cloudflare customer, so
+   * traffic sent from inside Cloudflare (a Worker opening its own connection to this server) can still set the
+   * header; only per-address limits depend on it (docs/security-model.md).
+   */
+  readonly cloudflare?: boolean;
 }
 
 export function clientIp(context: Context<RequestEnvironment>, options: ClientIpOptions = {}): string {
@@ -22,9 +31,27 @@ export function clientIp(context: Context<RequestEnvironment>, options: ClientIp
   if (options.trustedProxy?.(peer)) {
     // The closest proxy appends the actual client; never trust the caller's first entry.
     const forwarded = context.req.header('x-forwarded-for')?.split(',').at(-1)?.trim();
-    if (forwarded && isIP(forwarded)) return forwarded;
+    if (forwarded && isIP(forwarded)) {
+      if (options.cloudflare && isCloudflareAddress(forwarded)) {
+        const visitor = context.req.header('cf-connecting-ip')?.trim();
+        if (visitor && isIP(visitor)) return visitor;
+      }
+      return forwarded;
+    }
   }
   return peer;
+}
+
+const cloudflareNetworks = new BlockList();
+for (const range of cloudflareRanges) {
+  const [base, prefix] = range.split('/') as [string, string];
+  cloudflareNetworks.addSubnet(base, Number(prefix), isIP(base) === 6 ? 'ipv6' : 'ipv4');
+}
+/** Whether an address is inside one of Cloudflare's published proxy ranges (`cloudflare-ranges.ts`). */
+export function isCloudflareAddress(address: string): boolean {
+  const version = isIP(address);
+  // BlockList also matches an IPv4-mapped IPv6 address against the IPv4 ranges.
+  return version !== 0 && cloudflareNetworks.check(address, version === 6 ? 'ipv6' : 'ipv4');
 }
 
 /**
