@@ -47,23 +47,23 @@ it('keeps a signed-in session without staff roles or household links, so the adm
   const get = async (path: string, cookie: string) => (await runtime!.app.request(origin + path, { headers: headers(cookie) })).status;
 
   const unlinkedCookie = await signIn('unlinked@example.test', 'unlinked-user-password');
-  expect(await bootstrap(unlinkedCookie)).toEqual({ userId: unlinked.userId, displayName: 'Unlinked', roles: [], member: false });
+  expect(await bootstrap(unlinkedCookie)).toEqual({ userId: unlinked.userId, displayName: 'Unlinked', roles: [], member: false, staffProfileId: null });
   expect(await get('/api/members', unlinkedCookie)).toBe(403);
   expect(await get('/api/portal/context', unlinkedCookie)).toBe(404);
 
   // A revoked household login keeps its session but loses access, rather than looping back to login.
   const memberCookie = await signIn('member@example.test', 'linked-member-password');
-  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: true });
+  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: true, staffProfileId: null });
   expect(await get('/api/portal/context', memberCookie)).toBe(200);
   await db.forGym(gymId, tx => tx.delete(householdUsers).where(eq(householdUsers.id, login.id)));
-  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: false });
+  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: false, staffProfileId: null });
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
   expect(await get('/api/members', memberCookie)).toBe(403);
 
   // A login with several households keeps its session and is offered the picker, never the first household.
   const first = await factory('households', gymId, { name: 'First household' }), second = await factory('households', gymId, { name: 'Second household' });
   for (const household of [first, second]) await factory('householdUsers', gymId, { householdId: household.id, userId: member.userId, scope: 'payer', memberId: null });
-  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: true });
+  expect(await bootstrap(memberCookie)).toEqual({ userId: member.userId, displayName: 'Member', roles: [], member: true, staffProfileId: null });
   expect(await get('/api/portal/context', memberCookie)).toBe(404);
   const choices = await (await runtime!.app.request(origin + '/api/portal/households', { headers: headers(memberCookie) })).json();
   expect(choices).toEqual({ data: { current: null, households: [
