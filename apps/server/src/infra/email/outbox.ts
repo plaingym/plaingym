@@ -2,13 +2,15 @@
 import { emailOutbox, forGym, uuidv7, writeAudit } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { DeliveryError, type Email, type EmailMessage, type EmailResult } from './index.js';
+import { DeliveryError, listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
 
 /** Demo transport: its only side effect is a gym-scoped outbox write. */
 export class OutboxEmail implements Email {
   constructor(readonly gymId: string, readonly clock: Clock, private readonly scope: typeof forGym = forGym) {}
   async sendEmail(message: EmailMessage): Promise<EmailResult> {
     assertNoTransaction('email.sendEmail');
+    // Demo captures content only. Validate the transport metadata, then deliberately omit it.
+    listUnsubscribeUrl(message.listUnsubscribe);
     const id = uuidv7(this.clock.now().getTime()), now = this.clock.now();
     try {
       await this.scope(this.gymId, async (tx) => {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gt, lte } from 'drizzle-orm';
 import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
-import { forGym, staffRoles, staffProfiles, households, members, householdUsers, memberTags, memberTagLinks, installedPacks, rankSystems, programs, ranks, memberRanks, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, attendances, classBookings, taxRates, plans, planTaxRates, chargeTypes, chargeTypeTaxRates, memberships, invoices, invoiceSequences, invoiceLineItems, paymentMethods, paymentAttempts, payments, refunds, waiverTemplates, waiverSignatures, kioskDevices, linkCampaigns, signedLinks, auditEvents, emailOutbox } from '@plaingym/db';
+import { forGym, staffRoles, staffProfiles, households, members, householdUsers, memberTags, memberTagLinks, installedPacks, rankSystems, programs, ranks, memberRanks, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, attendances, classBookings, taxRates, plans, planTaxRates, chargeTypes, chargeTypeTaxRates, memberships, invoices, invoiceSequences, invoiceLineItems, paymentMethods, paymentAttempts, payments, refunds, waiverTemplates, waiverSignatures, kioskDevices, linkCampaigns, signedLinks, auditEvents, emailOutbox, announcements, announcementOptOuts } from '@plaingym/db';
 import type { ExportDataset } from '@plaingym/shared/contracts';
 type ExportTable = PgTable & { id: AnyPgColumn; gymId: AnyPgColumn; createdAt: AnyPgColumn };
 function dataset(table: ExportTable, columns: Record<string, AnyPgColumn>) {
@@ -11,6 +11,8 @@ function dataset(table: ExportTable, columns: Record<string, AnyPgColumn>) {
 }
 /** Explicit safe projections: new schema columns require review before they can leave the server. */
 export const exportCatalog = {
+  announcements: dataset(announcements, { id: announcements.id, gym_id: announcements.gymId, created_at: announcements.createdAt, created_by: announcements.createdBy, subject: announcements.subject, body: announcements.body, audience: announcements.audience, recipient_count: announcements.recipientCount, status: announcements.status, completed_at: announcements.completedAt }),
+  announcement_opt_outs: dataset(announcementOptOuts, { id: announcementOptOuts.id, gym_id: announcementOptOuts.gymId, created_at: announcementOptOuts.createdAt, member_id: announcementOptOuts.memberId }),
   staff_roles: dataset(staffRoles, { id: staffRoles.id, gym_id: staffRoles.gymId, created_at: staffRoles.createdAt, user_id: staffRoles.userId, role: staffRoles.role, revision: staffRoles.revision }),
   staff_profiles: dataset(staffProfiles, { id: staffProfiles.id, gym_id: staffProfiles.gymId, created_at: staffProfiles.createdAt, user_id: staffProfiles.userId, member_id: staffProfiles.memberId, display_name: staffProfiles.displayName, bio: staffProfiles.bio, photo_key: staffProfiles.photoKey, rank: staffProfiles.rank, is_public: staffProfiles.isPublic, revision: staffProfiles.revision }),
   households: dataset(households, { id: households.id, gym_id: households.gymId, created_at: households.createdAt, name: households.name, email: households.email, phone: households.phone, address: households.address, billing_day: households.billingDay, stripe_customer_id: households.stripeCustomerId, family_discount_basis_points: households.familyDiscountBasisPoints, revision: households.revision }),

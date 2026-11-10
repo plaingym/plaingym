@@ -38,7 +38,7 @@ export class MemberEmail implements Email {
       throw error instanceof DeliveryError ? error : new DeliveryError('not_accepted', 'Member email checks failed', { cause: error });
     }
     if (reason) return { status: 'suppressed', reason };
-    // Both settings and member reads have committed before any network call.
+    // Both reads have committed before any network call. Pass all metadata, including listUnsubscribe, unchanged.
     return this.#options.email.sendEmail(message);
   }
 

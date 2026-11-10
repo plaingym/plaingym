@@ -7,6 +7,8 @@ export interface EmailMessage {
   readonly html: string;
   readonly text: string;
   readonly replyTo?: string;
+  /** One absolute HTTPS URL without credentials, at most 2,048 characters once serialized; never raw header content. */
+  readonly listUnsubscribe?: string;
 }
 export type EmailResult =
   | { status: 'sent'; messageId: string }
@@ -32,6 +34,20 @@ export function deliveryAcceptance(error: unknown): DeliveryAcceptance {
   return error instanceof DeliveryError ? error.acceptance : 'unknown';
 }
 
+/** Validate before any transport connects; return the URL serialization for Nodemailer's list option. */
+export function listUnsubscribeUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  // eslint-disable-next-line no-control-regex -- Refuse controls before URL parsing can silently strip them.
+  if (value.length <= 2048 && /^https:\/\//i.test(value) && !/[\s<>\x00-\x1f\x7f]/.test(value)) {
+    try {
+      const url = new URL(value);
+      // The serialized URL is what the header carries: percent-encoding can lengthen it, and it never holds credentials.
+      if (url.protocol === 'https:' && url.hostname && !url.username && !url.password && url.href.length <= 2048) return url.href;
+    } catch { /* Invalid URL: refuse it before the transport is called. */ }
+  }
+  throw new DeliveryError('not_accepted', 'Invalid email listUnsubscribe');
+}
+
 export class FakeEmail implements Email {
   readonly #messages: EmailMessage[] = [];
   #nextResult: EmailResult | Error | undefined;
@@ -43,6 +59,7 @@ export class FakeEmail implements Email {
   }
   async sendEmail(message: EmailMessage): Promise<EmailResult> {
     assertNoTransaction('email.sendEmail');
+    listUnsubscribeUrl(message.listUnsubscribe);
     const result = this.#nextResult;
     this.#nextResult = undefined;
     if (result instanceof Error) throw result;

@@ -11,6 +11,25 @@ import { exportCatalog } from './export.catalog.js';
 const root = new URL('../../../../../', import.meta.url);
 const database = useTestDatabase(), factory = createFactories(database);
 describe('export schema coverage and secret exclusions', () => {
+  it('exports announcement history and member consent only for the requested gym', async () => {
+    const gymA = uuidv7(), gymB = uuidv7();
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    const announcement = await factory('announcements', gymA);
+    const optOut = await factory('announcementOptOuts', gymA);
+    await factory('announcementRecipients', gymA, { announcementId: announcement.id });
+    await factory('announcements', gymB); await factory('announcementOptOuts', gymB);
+    const cutoff = new Date('2099-01-01T00:00:00Z');
+    expect(await exportCatalog.announcements.page(database.forGym, gymA, cutoff)).toEqual([{
+      id: announcement.id, gym_id: gymA, created_at: announcement.createdAt, created_by: announcement.createdBy,
+      subject: announcement.subject, body: announcement.body, audience: announcement.audience,
+      recipient_count: announcement.recipientCount, status: announcement.status, completed_at: announcement.completedAt,
+    }]);
+    expect(await exportCatalog.announcement_opt_outs.page(database.forGym, gymA, cutoff)).toEqual([{
+      id: optOut.id, gym_id: gymA, created_at: optOut.createdAt, member_id: optOut.memberId,
+    }]);
+    expect(await exportCatalog.announcements.page(database.forGym, gymA, new Date(0))).toEqual([]);
+    expect(exportDatasets).not.toContain('announcement_recipients');
+  });
   it('exports both waiver formats and retired PDF references only for the requested gym', async () => {
     const gymA = uuidv7(), gymB = uuidv7();
     await factory('gyms', gymA); await factory('gyms', gymB);
@@ -71,7 +90,7 @@ describe('export schema coverage and secret exclusions', () => {
     expect(tableNames.length).toBeGreaterThan(exportDatasets.length);
     // Operational run state has its own retention deadline; it is not a portable gym dataset. Email send state
     // only guards this install's job keys against resending.
-    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries']);
+    const runState = new Set(['import_runs', 'import_chunks', 'export_runs', 'email_deliveries', 'announcement_recipients']);
     expect(tableNames.filter((name) => !systemNames.has(name) && !runState.has(name)).sort()).toEqual(Object.keys(exportCatalog).sort());
     expect(Object.keys(exportCatalog).sort()).toEqual([...exportDatasets].sort());
   });

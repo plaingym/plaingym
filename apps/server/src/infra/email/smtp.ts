@@ -5,7 +5,7 @@ import nodemailer, { type Transport, type Transporter } from 'nodemailer';
 import SMTPConnection from 'nodemailer/lib/smtp-connection/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
-import { DeliveryError, type Email, type EmailMessage, type EmailResult } from './index.js';
+import { DeliveryError, listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
 import { publicAddress, SmtpHostRefusedError, type HostCheck } from './smtp-host.js';
 
 export interface SmtpConfig {
@@ -192,6 +192,7 @@ export class SmtpEmail implements Email {
   /** Throws DeliveryError: `not_accepted` only when no recipient can have received the message. */
   async sendEmail(message: EmailMessage): Promise<EmailResult> {
     assertNoTransaction('email.sendEmail');
+    const unsubscribe = listUnsubscribeUrl(message.listUnsubscribe);
     const replyTo = message.replyTo ?? this.#replyTo;
     for (const [name, value] of [['to', message.to], ['subject', message.subject], ['replyTo', replyTo]] as const)
       if (value !== undefined && invalidHeader(value)) throw new DeliveryError('not_accepted', `Invalid email ${name}`);
@@ -204,6 +205,11 @@ export class SmtpEmail implements Email {
         html: message.html,
         text: message.text,
         ...(replyTo !== undefined ? { replyTo } : {}),
+        ...(unsubscribe !== undefined ? {
+          list: { unsubscribe },
+          // The list option formats values as <URLs>; RFC 8058 requires this literal value instead.
+          headers: { 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
+        } : {}),
       });
     } catch (error) {
       if (error instanceof DeliveryError) throw error;
@@ -224,6 +230,7 @@ export class SmtpEmail implements Email {
   /** Setup supplies translated content and an explicitly chosen test recipient. */
   async verifyTestSend(message: EmailMessage): Promise<EmailResult> {
     assertNoTransaction('email.verifyTestSend');
+    listUnsubscribeUrl(message.listUnsubscribe);
     await this.verifyConnection();
     return this.sendEmail(message);
   }

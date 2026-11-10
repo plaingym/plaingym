@@ -5,6 +5,18 @@
 
 With `publicHostOnly`, for a server a tenant named, each session resolves the host once (`smtp-host.ts`), refuses it unless every address is public, and connects to the first address it checked; Nodemailer gets that address, so it can't resolve the name again, and the name as the TLS server name, so the certificate is still checked against it. IPv4-mapped IPv6 addresses and anything else outside global unicast are refused.
 
+`EmailMessage.listUnsubscribe` optionally carries one absolute HTTPS URL of at most 2,048
+characters as sent (after percent-encoding), with no user name or password. Whitespace
+(including CR/LF), controls and angle brackets are refused with
+`DeliveryError('not_accepted', ...)` before SMTP connects, including setup test sends.
+`SmtpEmail` uses Nodemailer's `list.unsubscribe` option for `List-Unsubscribe: <url>` and a
+fixed internal `List-Unsubscribe-Post: List-Unsubscribe=One-Click` header. Nodemailer's list
+option wraps values as URLs, so it cannot represent the latter's literal value. No caller
+can supply arbitrary headers. Both headers are absent when the field is omitted.
+`MemberEmail` passes the field through unchanged; `FakeEmail` validates and records it.
+The demo `OutboxEmail` validates it, then deliberately drops transport headers: its stored
+HTML and text remain the complete in-app preview, and it never contacts SMTP.
+
 ## Delivery errors
 
 A failed send rejects with `DeliveryError`, whose `acceptance` (also its `code`, which structured logs and job rows record) is `not_accepted` or `unknown`. `not_accepted` is proof that no recipient received the message; everything else is `unknown`, and `deliveryAcceptance(error)` returns `unknown` for any error that is not a `DeliveryError`. Messages never quote recipients or server replies; the original Nodemailer error is the `cause`.

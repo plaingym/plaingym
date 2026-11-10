@@ -155,6 +155,12 @@ describe('signed-link household grants', () => {
 });
 
 describe('signed-link resource constraints', () => {
+  it('binds unsubscribe to a member of its own gym and household', async () => {
+    for (const memberId of [data.outsider.id, data.foreignMember.id]) {
+      await expect(factory('signedLinks', gym, { householdId: data.household.id, purpose: 'unsubscribe', memberId }))
+        .rejects.toMatchObject({ cause: { code: '23503' } });
+    }
+  });
   it.each(['invoice', 'member'] as const)('rejects another household or gym owning the linked %s', async (resource) => {
     const overrides = resource === 'invoice'
       ? [{ purpose: 'pay_invoice', invoiceId: data.outsiderInvoice.id }, { purpose: 'pay_invoice', invoiceId: data.foreignInvoice.id }]
@@ -165,14 +171,14 @@ describe('signed-link resource constraints', () => {
     }
   });
 
-  it.each(purposes)('requires exactly the resource columns for %s', async (purpose) => {
+  it.each([...purposes, 'unsubscribe'] as const)('requires exactly the resource columns for %s', async (purpose) => {
     const combinations = [
       { invoiceId: null, memberId: null }, { invoiceId: data.invoice.id, memberId: null },
       { invoiceId: null, memberId: data.member.id }, { invoiceId: data.invoice.id, memberId: data.member.id },
     ];
     for (const pair of combinations) {
       const valid = purpose === 'pay_invoice' ? pair.invoiceId !== null && pair.memberId === null
-        : purpose === 'sign_waiver' ? pair.memberId !== null && pair.invoiceId === null
+        : purpose === 'sign_waiver' || purpose === 'unsubscribe' ? pair.memberId !== null && pair.invoiceId === null
         : pair.invoiceId === null && pair.memberId === null;
       const insert = factory('signedLinks', gym, { householdId: data.household.id, purpose, ...pair });
       if (valid) await expect(insert).resolves.toMatchObject({ purpose, ...pair });

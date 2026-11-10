@@ -41,6 +41,39 @@ describe('SMTP transport', () => {
     expect(capture.messages.at(-1)).not.toContain('support@example.test');
   });
 
+  it('emits the HTTPS unsubscribe URL and literal one-click header only when requested', async () => {
+    const listUnsubscribe = 'https://gym.example.test/l/unsubscribe-token?source=email';
+    await email.sendEmail({ ...message, listUnsubscribe });
+    const mime = capture.messages.at(-1)!.replace(/\r\n[ \t]+/g, ' ');
+    expect(mime).toContain(`List-Unsubscribe: <${listUnsubscribe}>\r\n`);
+    expect(mime).toContain('List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n');
+    await email.sendEmail(message);
+    expect(capture.messages.at(-1)).not.toMatch(/^List-Unsubscribe(?:-Post)?:/im);
+  });
+
+  it.each([
+    'https://gym.example.test/l/token\rBcc: victim@example.test',
+    'https://gym.example.test/l/token\nBcc: victim@example.test',
+    'https://gym.example.test/l/token\r\nBcc: victim@example.test',
+    'http://gym.example.test/l/token', '/l/token', 'mailto:member@example.test',
+    'https:token', 'https://', '<https://gym.example.test/l/token>',
+    'https://gym.example.test/l/one, <https://other.example.test/two>',
+    'https://gym.example.test/\0token', 'https://gym.example.test/' + 'a'.repeat(2048),
+    'https://gym.example.test/' + 'é'.repeat(1000), 'https://user:secret@gym.example.test/l/token',
+  ])('refuses invalid unsubscribe metadata before send or setup verification connects (%#)', async listUnsubscribe => {
+    const before = capture.connections;
+    const invalid = { ...message, listUnsubscribe };
+    await expect(email.sendEmail(invalid)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+    await expect(email.verifyTestSend(invalid)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+    expect(capture.connections).toBe(before);
+  });
+
+  it('accepts a 2,048-character HTTPS unsubscribe URL', async () => {
+    const prefix = 'https://gym.example.test/l/';
+    await expect(email.sendEmail({ ...message, listUnsubscribe: prefix + 'a'.repeat(2048 - prefix.length) }))
+      .resolves.toMatchObject({ status: 'sent' });
+  });
+
   it('verifies without sending and supports an explicit setup test send', async () => {
     const before = capture.messages.length;
     await email.verifyConnection();

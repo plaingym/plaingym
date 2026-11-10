@@ -63,7 +63,7 @@ export const exportDatasets = [
   'attendances', 'class_bookings', 'tax_rates', 'plans', 'plan_tax_rates', 'charge_types', 'charge_type_tax_rates',
   'memberships', 'invoices', 'invoice_sequences', 'invoice_line_items', 'payment_methods', 'payment_attempts',
   'payments', 'refunds', 'waiver_templates', 'waiver_signatures', 'kiosk_devices', 'link_campaigns', 'signed_links',
-  'audit_events', 'email_outbox',
+  'audit_events', 'email_outbox', 'announcements', 'announcement_opt_outs',
 ] as const;
 export const exportDatasetSchema = z.enum(exportDatasets);
 export const createExportRequestSchema = z.strictObject({ format: z.literal('csv') });

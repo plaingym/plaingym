@@ -41,6 +41,16 @@ beforeAll(async () => {
 afterAll(async () => { smtp?.close(); await capture?.close(); });
 
 describe('member-targeted suppression', () => {
+  it('passes listUnsubscribe unchanged to the underlying transport', async () => {
+    setEnabled(gymA, true);
+    await database.forGym(gymA, tx => tx.update(members).set({ emailOptOut: false, emailDeliverable: true })
+      .where(eq(members.id, memberA)));
+    const delivered = new FakeEmail();
+    const bound = new MemberEmail({ gymId: gymA, memberId: memberA, settings, email: delivered, forGym: database.forGym });
+    const announcement = { ...message, listUnsubscribe: 'https://gym.example.test/l/member-unsubscribe?source=email' };
+    await bound.sendEmail(announcement);
+    expect(delivered.messages).toEqual([announcement]);
+  });
   it.each([
     { reason: 'disabled', enabled: false, optOut: false, deliverable: true },
     { reason: 'opt_out', enabled: true, optOut: true, deliverable: true },

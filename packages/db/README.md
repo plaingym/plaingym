@@ -58,6 +58,20 @@ null gym means an install-level request. It starts empty and changes no existing
 Migration `0021_refund_tagged_at.sql` adds nullable `refunds.tagged_at`, set on a new card refund
 reservation whose processor refund carries the row ID. Existing rows stay null, with no backfill, and
 keep matching a processor refund as they did before.
+Migration `0024_announcements.sql` adds `announcements`, `announcement_recipients` and
+`announcement_opt_outs`, all gym-owned with forced RLS and composite references between
+gym-owned rows. Announcements store the sending user, bounded subject/body, status/program
+audience, recipient count and completion state. Recipient rows store only member references,
+send state and a checked safe reason (`opt_out`, `undeliverable`, `disabled`, `anonymized`,
+`ineligible`, `missing_email`, `duplicate_address`, `not_accepted`, `unknown`), never copied
+addresses, bodies or SMTP responses. Their send scan index leads with gym, announcement,
+state and ID; each member appears once per announcement. Opt-outs are unique per gym/member
+and separate from the member's transactional-email flag. Announcement history and opt-outs
+are gym export datasets; recipient rows are install-local delivery run state, excluded from
+exports like `email_deliveries`. The migration also widens the signed-link database checks
+for `unsubscribe`: a member in the link's household is required and an invoice is forbidden.
+The application purpose union and link handlers still accept only their existing purposes.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -295,6 +309,9 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | stripe_events | Deduplicated verified webhook inbox |
 | audit_events | Append-only activity records with a user, device or system actor |
 | email_outbox | Per-gym captured email for demo mode |
+| announcements | Gym announcement content, audience and delivery summary |
+| announcement_recipients | Per-member announcement delivery run state, without copied addresses or bodies |
+| announcement_opt_outs | Per-member consent to announcement email |
 
 Amounts are integers in the currency's minor units (cents for USD, whole yen for
 JPY; `@plaingym/shared/money`), with a currency. Each gym has one billing currency:

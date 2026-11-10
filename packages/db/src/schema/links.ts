@@ -29,10 +29,10 @@ export const signedLinks = pgTable('signed_links', {
   foreignKey({ name: 'signed_links_member_fk', columns: [t.gymId, t.householdId, t.memberId],
     foreignColumns: [members.gymId, members.householdId, members.id] }),
   unique('signed_links_hash_key').on(t.gymId, t.tokenHash),
-  choice('signed_links_purpose_check', t.purpose, ['onboarding', 'pay_invoice', 'update_card', 'sign_waiver']),
+  choice('signed_links_purpose_check', t.purpose, ['onboarding', 'pay_invoice', 'update_card', 'sign_waiver', 'unsubscribe']),
   check('signed_links_resource_check', sql`
     (${t.purpose} = 'pay_invoice' and ${t.invoiceId} is not null and ${t.memberId} is null)
-    or (${t.purpose} = 'sign_waiver' and ${t.memberId} is not null and ${t.invoiceId} is null)
+    or (${t.purpose} in ('sign_waiver', 'unsubscribe') and ${t.memberId} is not null and ${t.invoiceId} is null)
     or (${t.purpose} in ('update_card', 'onboarding') and ${t.invoiceId} is null and ${t.memberId} is null)
   `),
   sha256Check('signed_links_hash_check', t.tokenHash)]).enableRLS();
