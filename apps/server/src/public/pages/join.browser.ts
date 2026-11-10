@@ -67,7 +67,11 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
           const file = fields.get('waiver-' + i + '-' + j + '-image');
           const pngBase64 = file instanceof File && file.size ? await readImage(file) : images.get(waiver.querySelector('canvas'))();
           if (!pngBase64) throw new Error('signatureRequired');
-          return { templateId: waiver.dataset.template, templateVersion: Number(waiver.dataset.version), pngBase64 };
+          const prefix = 'waiver-' + i + '-' + j;
+          const signer = value(prefix + '-kind') === 'guardian'
+            ? { kind: 'guardian', name: value(prefix + '-name'), relationship: value(prefix + '-relationship') }
+            : { kind: 'self', name: value(prefix + '-name') };
+          return { templateId: waiver.dataset.template, templateVersion: Number(waiver.dataset.version), pngBase64, signer };
         })),
       })));
       const admission = { planId: value('planId'), contact, members, honeypot: value('honeypot') }, key = JSON.stringify(admission);

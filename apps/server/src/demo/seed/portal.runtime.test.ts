@@ -60,7 +60,7 @@ it('lets a visitor join with the test card, activates only from the shared webho
   const admitted = await admissions();
   const person = { firstName: 'Riley', lastName: 'Visitor', dateOfBirth: '1994-05-06' }, contact = { name: 'Riley Visitor', email: 'riley.visitor@example.invalid' };
   const admission = await send(sandbox.origin, '/join/signatures', { body: { planId: plan!.id, contact, honeypot: '', members: [{ member: person,
-    signatures: [{ templateId: template!.id, templateVersion: template!.version, pngBase64: demoSignaturePng().toString('base64') }] }] } });
+    signatures: [{ templateId: template!.id, templateVersion: template!.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Riley Visitor' } }] }] } });
   expect(admission.status, await admission.clone().text()).toBe(200);
   // The drawn signature takes one of the sandbox's bounded, audited signature-image admissions.
   expect(await admissions()).toBe(admitted + 1);

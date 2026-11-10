@@ -34,7 +34,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
           h('p', { class: 'break-words font-semibold' }, input.gym.name), h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, input.title)),
         input.content,
         h('footer', { class: 'flex flex-wrap gap-3' },
-          ...[['/trial', 'trial'], ['/drop-in', 'drop-in'], ['/portal', 'portal'], ['/source', 'source']].map(([href, key]) =>
+          ...[['/join', 'join'], ['/trial', 'trial'], ['/drop-in', 'drop-in'], ['/portal', 'portal'], ['/source', 'source']].map(([href, key]) =>
             h('a', { href, class: 'inline-flex min-h-11 items-center underline', rel: 'noreferrer' }, text(key!))))))).toString();
 }
 export interface IntakePageInput {

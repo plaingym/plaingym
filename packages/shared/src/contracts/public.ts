@@ -75,7 +75,8 @@ export const publicAdmittedSignatureSchema = z.strictObject({
 export const publicAdmissionResponseSchema = z.strictObject({ data: z.array(publicAdmittedSignatureSchema) });
 export const joinAdmissionSchema = z.strictObject({
   planId: idSchema, contact: publicContactSchema, honeypot: z.literal(''),
-  members: z.array(z.strictObject({ member: publicApplicantSchema, signatures: z.array(publicSignatureUploadSchema).min(1).max(maxJoinDocuments) })).min(1).max(maxJoinMembers),
+  members: z.array(z.strictObject({ member: publicApplicantSchema,
+    signatures: z.array(publicSignatureUploadSchema.extend({ signer: waiverSignerSchema })).min(1).max(maxJoinDocuments) })).min(1).max(maxJoinMembers),
 });
 export const joinAdmissionResponseSchema = z.strictObject({ data: z.array(z.array(publicAdmittedSignatureSchema)) });
 

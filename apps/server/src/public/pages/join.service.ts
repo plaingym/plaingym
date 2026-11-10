@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { isDeepStrictEqual } from 'node:util';
 import { forGym, auditEvents, households, householdUsers, invoices, members, memberships, plans, planTaxRates, signedLinks,
-  staffRoles, taxRates, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  paymentMethods, staffRoles, taxRates, uuidv7, writeAudit, revisionGuard, assertRevised, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import * as c from '@plaingym/shared/contracts';
@@ -24,6 +24,10 @@ import { assertPortalLoginTarget, requestPortalConfirmation } from '../../areas/
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
 import type { AccountService } from '../../infra/auth/accounts.js';
 import { createPortalInvitationStore } from '../../infra/auth/portal-invitations.js';
+import type { Uploads } from '../../infra/storage/index.js';
+import { createJoinCleanup } from './join.cleanup.js';
+import { createInvoiceTransitions } from '../../areas/billing/transitions/index.js';
+import { joinAdmissionExpired } from './join.expiry.js';
 
 const t = createTranslator(locales.en ?? {});
 /** Fixed same-origin return pages, never request values. Checkout and its reservation last an hour. */
@@ -36,7 +40,7 @@ const admitted = z.strictObject({ planId: c.idSchema, joinedOn: c.dateSchema, me
 const received = admitted.extend({ linkId: c.idSchema, invoiceId: c.idSchema });
 const invoiced = z.strictObject({ invoiceId: c.idSchema, next: z.array(z.strictObject({ membershipId: c.idSchema, nextDueOn: c.dateSchema })) });
 /** `closed`: unpaid, and staff voided the invoice or revoked the join's link, so it can no longer be paid here. */
-export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string };
+export type JoinState = { status: 'missing' | 'closed' } | { status: 'pending' | 'active' | 'manual'; householdId: string; cardOnly?: boolean };
 
 export interface JoinOptions {
   scope?: typeof forGym;
@@ -50,8 +54,9 @@ export interface JoinOptions {
   invitations: Pick<PortalInvitationService, 'accept' | 'passwordRequired'>;
   accounts: Pick<AccountService, 'provisionUser'>;
   invitationStore?: Pick<ReturnType<typeof createPortalInvitationStore>, 'issue'>;
-  memberships?: Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update'>;
+  memberships?: Pick<ReturnType<typeof createMembershipService>, 'assign' | 'get' | 'update' | 'activate'>;
   links?: Pick<ReturnType<typeof createSignedLinksService>, 'create' | 'revoke'>;
+  uploadsFor?(gymId: string): Promise<Uploads>;
 }
 function missing(): never { throw new AppError('not_found', 'Join not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Online joining is not available'); }
@@ -74,8 +79,8 @@ async function plansPlusTax(tx: Transaction, ids: readonly string[]) {
     .where(and(inArray(planTaxRates.planId, [...ids]), addsTaxOnTop));
   return new Set(rows.map(row => row.planId));
 }
-/** Plans a visitor can pay for now: a trial or a free first period has no Checkout payment to collect. */
-const joinable = (currency: string) => and(eq(plans.active, true), eq(plans.trialDays, 0), gt(plans.amountCents, 0), eq(plans.currency, currency));
+/** Active plans in the gym's currency, including trials and free plans. */
+const joinable = (currency: string) => and(eq(plans.active, true), eq(plans.currency, currency));
 async function recorded<T extends z.ZodType>(tx: Transaction, action: string, householdId: string, schema: T): Promise<z.infer<T> | null> {
   const [row] = await tx.select({ after: auditEvents.after }).from(auditEvents)
     .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, householdId))).limit(1);
@@ -91,6 +96,11 @@ export function createJoinService(options: JoinOptions) {
   const lifecycle = options.memberships ?? createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) });
   const links = options.links ?? createSignedLinksService({ scope, clock });
   const store = options.invitationStore ?? createPortalInvitationStore();
+  const transitions = createInvoiceTransitions({ scope, clock });
+  const cleanup = createJoinCleanup({ scope, clock, uploadsFor: gymId => {
+    if (!options.uploadsFor) unavailable();
+    return options.uploadsFor(gymId);
+  } });
   const audit = (tx: Transaction, gymId: string, action: string, targetType: string, targetId: string, after?: unknown, before?: unknown) =>
     writeAudit(tx, { gymId, actorKind: 'system', action, targetType, targetId, occurredAt: clock.now(),
       ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }) });
@@ -99,6 +109,12 @@ export function createJoinService(options: JoinOptions) {
     const today = localDate(clock.now(), timezone);
     if (contact.name.length > 200 || contact.email.length > 254 || (contact.phone?.length ?? 0) > 100
       || people.some(p => p.dateOfBirth > today || p.firstName.length > 200 || p.lastName.length > 200)) invalid('Invalid applicant');
+  }
+  function signers(people: readonly { member: c.PublicApplicant; signatures: readonly { signer: c.WaiverSigner }[] }[], timezone: string) {
+    for (const person of people) for (const { signer } of person.signatures) {
+      if (needsGuardian(person.member.dateOfBirth, clock.now(), timezone) && signer.kind !== 'guardian') invalid('A parent or guardian must sign for a minor');
+      if (signer.name.length > 200 || signer.kind === 'guardian' && signer.relationship.length > 100) invalid('Signer details too long');
+    }
   }
   /** The plan row when it can be paid for online; a submission needs no tax lookup. */
   async function joinableRow(gymId: string, planId: string) {
@@ -146,7 +162,7 @@ export function createJoinService(options: JoinOptions) {
         || home.name !== input.contact.name || home.phone !== (input.contact.phone ?? null) || !isDeepStrictEqual(home.address, input.contact.address ?? {})) missing();
       const membershipIds = ids.map((id, i) => {
         const index = record.memberIds.indexOf(id), person = people.find(p => p.id === id)!, requested = input.members[i]!.member;
-        if (index < 0 || person.anonymizedAt || !['prospect', 'active'].includes(person.status) || person.firstName !== requested.firstName
+        if (index < 0 || person.anonymizedAt || !['prospect', 'trial', 'active'].includes(person.status) || person.firstName !== requested.firstName
           || person.lastName !== requested.lastName || person.dateOfBirth !== requested.dateOfBirth) missing();
         return record.membershipIds[index]!;
       });
@@ -163,24 +179,30 @@ export function createJoinService(options: JoinOptions) {
       const rows = await tx.select().from(memberships).where(inArray(memberships.id, [...membershipIds])).for('update');
       // The admission set the new household's billing day to its join date.
       const billingDay = Number(today.slice(8));
-      if (home.billingDay !== billingDay || rows.length !== membershipIds.length
-        || rows.some(r => r.householdId !== home.id || r.status !== 'pending' || r.startsOn !== today || r.nextDueOn !== today)) changed();
+      if (rows.length !== membershipIds.length
+        || rows.some(r => r.householdId !== home.id || r.status !== 'pending' || r.startsOn !== today || r.nextDueOn !== (r.trialEndsOn ?? today))) changed();
       const [row] = await tx.select().from(plans).where(eq(plans.id, planId));
       if (!row) missing();
+      if (home.billingDay !== Number((rows[0]!.trialEndsOn ?? today).slice(8))) changed();
       const currency = c.currencySchema.parse(row.currency);
       const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths, inclusive: taxRates.inclusive })
         .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, planId)).orderBy(asc(taxRates.id));
       // Priced as the runner prices an active membership on its due date; the memberships stay pending until it is paid.
-      const cycle = calculateCycleInvoice({ householdId: home.id, currency, billingDay, familyDiscountBasisPoints: home.familyDiscountBasisPoints,
+      const cycle = row.trialDays > 0 ? null : calculateCycleInvoice({ householdId: home.id, currency, billingDay, familyDiscountBasisPoints: home.familyDiscountBasisPoints,
         discountDescription: t('billing/runner:familyDiscount'), dueOn: today, memberships: rows.map(r => ({ membership: { ...snapshot(r), status: 'active' as const },
           description: row.name, taxRates: taxes, ...(r.anniversaryOn === null ? {} : { annualAnchorOn: r.anniversaryOn }) })) });
-      if (!cycle.invoice) changed();
+      if (cycle && !cycle.invoice) changed();
       const fees = row.signupFeeCents > 0 ? calculateOneOffInvoice({ householdId: home.id, currency, dueOn: today, charges: rows.map(r => ({
         kind: 'signup_fee' as const, description: t('billing/runner:signupFee', { plan: row.name }), membershipId: r.id,
         amountCents: row.signupFeeCents, currency, taxRates: taxes })) }) : null;
-      const invoiceId = await issue(tx, system(gymId), clock, { ...cycle.invoice,
-        amountCents: cycle.invoice.amountCents + (fees?.amountCents ?? 0), lineItems: [...cycle.invoice.lineItems, ...(fees?.lineItems ?? [])] });
-      const result = invoiced.parse({ invoiceId, next: cycle.nextDueDates.map(d => ({ membershipId: d.membershipId, nextDueOn: d.nextDueOn })) });
+      // A trial owes only its sign-up fee now; its first full period is due when the trial ends.
+      // Trial invoices have no membership lines: the generic paid-invoice effect would activate trials early.
+      const base = cycle?.invoice ?? { householdId: home.id, currency, kind: 'cycle' as const, dueOn: today,
+        periodStartsOn: today, periodEndsOn: rows[0]!.trialEndsOn!, amountCents: 0,
+        lineItems: [] };
+      const invoiceId = await issue(tx, system(gymId), clock, { ...base,
+        amountCents: base.amountCents + (fees?.amountCents ?? 0), lineItems: [...base.lineItems, ...(fees?.lineItems ?? [])] });
+      const result = invoiced.parse({ invoiceId, next: row.trialDays > 0 ? [] : cycle!.nextDueDates.map(d => ({ membershipId: d.membershipId, nextDueOn: d.nextDueOn })) });
       await audit(tx, gymId, 'public.join.invoiced', 'household', home.id, result);
       return result;
     });
@@ -209,7 +231,7 @@ export function createJoinService(options: JoinOptions) {
     const home = await household(gymId, householdId), invitation = await invite(gymId, householdId, home.email, home.name);
     if (invitation.status === 'invited') await options.invitations.accept(gymId, { token: invitation.token }, clock);
   }
-  /** Once the join's invoice is paid, the joined prospects become active members and the join completes, once.
+  /** Once the join's invoice is paid, the joined prospects become trial or active members and the join completes, once.
    * Passwordless, the payer's sign-in link goes out with it; in password mode the address awaits staff confirmation. */
   async function complete(gymId: string, find: (tx: Transaction) => Promise<{ householdId: string; invoiceId?: string } | undefined>) {
     // Every paid invoice and link-tagged Checkout reaches this: one short read, and only an unfinished join goes on.
@@ -226,10 +248,22 @@ export function createJoinService(options: JoinOptions) {
       if (!record) return false;
       const [bill] = await tx.select({ status: invoices.status }).from(invoices).where(eq(invoices.id, record.invoiceId));
       if (!bill || !settled.includes(bill.status) || await marked(tx, 'public.join.completed', householdId)) return false;
+      const joinedMemberships = await tx.select().from(memberships).where(and(eq(memberships.householdId, householdId),
+        inArray(memberships.id, record.membershipIds))).for('update');
+      // Joining keeps trials pending until payment/card setup is recorded. Start the trial atomically with completion.
+      for (const membership of joinedMemberships) {
+        if (membership.status !== 'pending' || !membership.trialEndsOn) continue;
+        const guard = revisionGuard(memberships.revision, membership.revision);
+        assertRevised(await tx.update(memberships).set({ status: 'trial', revision: guard.next })
+          .where(and(eq(memberships.id, membership.id), guard.matches)).returning({ id: memberships.id }));
+        await audit(tx, gymId, 'public.join.trial_started', 'membership', membership.id, { status: 'trial', revision: membership.revision + 1 },
+          { status: membership.status, revision: membership.revision });
+      }
       for (const person of await tx.select().from(members).where(inArray(members.id, record.memberIds)).for('update')) {
         if (person.status !== 'prospect' || person.anonymizedAt) continue;
-        await tx.update(members).set({ status: 'active', revision: person.revision + 1 }).where(and(eq(members.id, person.id), eq(members.revision, person.revision)));
-        await audit(tx, gymId, 'public.join.member_activated', 'member', person.id, { status: 'active', revision: person.revision + 1 },
+        const status = joinedMemberships.some(m => m.memberId === person.id && m.trialEndsOn && ['pending', 'trial'].includes(m.status)) ? 'trial' : 'active';
+        await tx.update(members).set({ status, revision: person.revision + 1 }).where(and(eq(members.id, person.id), eq(members.revision, person.revision)));
+        await audit(tx, gymId, 'public.join.member_activated', 'member', person.id, { status, revision: person.revision + 1 },
           { status: person.status, revision: person.revision });
       }
       await audit(tx, gymId, 'public.join.completed', 'household', householdId);
@@ -242,7 +276,33 @@ export function createJoinService(options: JoinOptions) {
     try { await signIn(gymId, householdId); }
     catch (error) { logError('public.join.sign_in_failed', { gymId, householdId }, error); }
   }
+  async function settleFree(gymId: string, householdId: string) {
+    const saved = await scope(gymId, async tx => {
+      const record = await recorded(tx, 'public.join.received', householdId, received);
+      if (!record) return null;
+      const [bill] = await tx.select().from(invoices).where(eq(invoices.id, record.invoiceId));
+      if (!bill || bill.amountCents !== 0 || bill.status === 'void') return null;
+      const [link] = await tx.select().from(signedLinks).where(eq(signedLinks.id, record.linkId));
+      if (!link || link.revokedAt) return null;
+      if (link.purpose === 'update_card') {
+        if (!link.usedAt || !(await tx.select({ id: paymentMethods.id }).from(paymentMethods)
+          .where(and(eq(paymentMethods.householdId, householdId), isNull(paymentMethods.revokedAt))).limit(1)).length) return null;
+      }
+      return record;
+    });
+    if (!saved) return;
+    await transitions.settleZero(system(gymId), { invoiceId: saved.invoiceId });
+    for (const id of saved.membershipIds) {
+      const membership = await lifecycle.get(gymId, id);
+      if (membership.status === 'pending' && !membership.trialEndsOn) {
+        try { await lifecycle.activate(system(gymId), { membershipId: id, revision: membership.revision }); }
+        catch (error) { if (!(error instanceof AppError && error.code === 'conflict') || (await lifecycle.get(gymId, id)).status === 'pending') throw error; }
+      }
+    }
+    await complete(gymId, async () => ({ householdId, invoiceId: saved.invoiceId }));
+  }
   const service = {
+    cleanup,
     ready, joinablePlan,
     passwordMode: (gymId: string) => options.invitations.passwordRequired(gymId),
     async plans(gymId: string, query: c.Pagination) {
@@ -261,7 +321,8 @@ export function createJoinService(options: JoinOptions) {
     async admit(gymId: string, body: unknown, timezone: string) {
       const input = c.joinAdmissionSchema.parse(body);
       applicants(input.contact, input.members.map(m => m.member), timezone);
-      await joinableRow(gymId, input.planId);
+      signers(input.members, timezone);
+      const selected = await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.signatures));
       const images = input.members.map(m => m.signatures.map(s => Buffer.from(s.pngBase64, 'base64')));
@@ -270,40 +331,66 @@ export function createJoinService(options: JoinOptions) {
       const memberIds = await scope(gymId, async tx => {
         const now = clock.now(), householdId = uuidv7(now.getTime()), ids = input.members.map(() => uuidv7(now.getTime()));
         await tx.insert(households).values({ id: householdId, gymId, name: input.contact.name, email: input.contact.email,
-          phone: input.contact.phone ?? null, address: input.contact.address ?? {}, billingDay: Number(today.slice(8)), createdAt: now });
+          phone: input.contact.phone ?? null, address: input.contact.address ?? {}, billingDay: Number(addDays(today, selected.trialDays).slice(8)), createdAt: now });
         await tx.insert(members).values(input.members.map((m, i) => ({ id: ids[i]!, gymId, householdId, ...m.member,
           email: input.contact.email, status: 'prospect', createdAt: now })));
         await audit(tx, gymId, 'household.created', 'household', householdId);
         // The join date is fixed here, so a submission retried after midnight repeats the same memberships.
         await audit(tx, gymId, 'public.join.admitted', 'household', householdId,
           admitted.parse({ planId: input.planId, joinedOn: today, memberIds: ids, membershipIds: ids.map(() => uuidv7(now.getTime())) }));
-        return ids;
+        return { ids, householdId };
       });
       const data = [];
-      for (const [i, person] of input.members.entries()) {
-        const stored = [];
-        for (const [j, accepted] of person.signatures.entries())
-          stored.push({ templateId: accepted.templateId, templateVersion: accepted.templateVersion,
-            ...await options.waivers.uploadSignature(system(gymId), memberIds[i]!, images[i]![j]!) });
-        data.push(stored);
+      const uploaded: string[] = [];
+      try {
+        for (const [i, person] of input.members.entries()) {
+          const stored = [];
+          for (const [j, accepted] of person.signatures.entries()) {
+            const image = await options.waivers.uploadSignature(system(gymId), memberIds.ids[i]!, images[i]![j]!);
+            uploaded.push(image.signatureImageKey);
+            stored.push({ templateId: accepted.templateId, templateVersion: accepted.templateVersion, ...image });
+          }
+          data.push(stored);
+        }
+        await scope(gymId, async tx => {
+          const [home] = await tx.select({ id: households.id }).from(households).where(eq(households.id, memberIds.householdId)).for('update');
+          if (!home || await marked(tx, 'public.join.cleanup.started', home.id)) missing();
+        });
+        return c.joinAdmissionResponseSchema.parse({ data });
+      } catch (error) {
+        // Best effort: the caller sees the original error, and the daily cleanup retries what fails here.
+        if (options.uploadsFor) {
+          try {
+            const uploads = await options.uploadsFor(gymId);
+            for (const key of uploaded) await uploads.markDeleted(key);
+          } catch (failure) { logError('public.join.admit_cleanup_failed', { gymId, householdId: memberIds.householdId }, failure); }
+          try { await cleanup.remove(gymId, memberIds.householdId); }
+          catch (failure) { logError('public.join.admit_cleanup_failed', { gymId, householdId: memberIds.householdId }, failure); }
+        }
+        throw error;
       }
-      return c.joinAdmissionResponseSchema.parse({ data });
     },
     /** Signs, assigns pending memberships, issues the first invoice and an undisclosed pay link. Replays return the same join. */
     async join(gymId: string, body: unknown, timezone: string, ipAddress: string) {
       const input = c.publicJoinRequestSchema.parse(body);
       if (input.members.length > c.maxJoinMembers) invalid('Too many members');
       applicants(input.contact, input.members.map(m => m.member), timezone);
+      signers(input.members.map(m => ({ member: m.member, signatures: m.waivers })), timezone);
       await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.waivers));
       const found = await admission(gymId, input), today = found.joinedOn;
       const done = await scope(gymId, tx => recorded(tx, 'public.join.received', found.householdId, received));
-      if (done) return { linkId: done.linkId };
+      if (done) { await settleFree(gymId, found.householdId); return { linkId: done.linkId }; }
       // A day's grace for midnight; an older admission would start memberships, and bill periods, in the past.
-      if (addDays(today, 1) < localDate(clock.now(), timezone)) changed();
+      if (joinAdmissionExpired(today, clock.now(), timezone)) changed();
       for (const m of input.members) if (needsGuardian(m.member.dateOfBirth, clock.now(), timezone) && m.waivers.some(w => w.signer.kind !== 'guardian'))
         invalid('A parent or guardian must sign for a minor');
+      await scope(gymId, async tx => {
+        const [home] = await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update');
+        if (!home || await marked(tx, 'public.join.cleanup.started', home.id)) missing();
+        if (!await marked(tx, 'public.join.submitting', home.id)) await audit(tx, gymId, 'public.join.submitting', 'household', home.id);
+      });
       for (const [i, m] of input.members.entries()) for (const acceptance of m.waivers)
         await options.waivers.sign(system(gymId), { ...acceptance, memberId: found.memberIds[i]! }, { timezone, ipAddress });
       if (!await scope(gymId, tx => signedLinkWaiversComplete(tx, found.memberIds))) changed();
@@ -320,10 +407,14 @@ export function createJoinService(options: JoinOptions) {
           if (!(error instanceof AppError && error.code === 'conflict') || (await lifecycle.get(gymId, change.membershipId)).nextDueOn !== change.nextDueOn) throw error;
         }
       }
+      const [bill] = await scope(gymId, tx => tx.select().from(invoices).where(eq(invoices.id, first.invoiceId)));
+      const selectedPlan = await joinableRow(gymId, input.planId);
+      const purpose = bill!.amountCents === 0 && selectedPlan.amountCents > 0 ? 'update_card' : 'pay_invoice';
       const [reusable] = await scope(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).where(and(eq(signedLinks.householdId, found.householdId),
-        eq(signedLinks.invoiceId, first.invoiceId), eq(signedLinks.purpose, 'pay_invoice'), isNull(signedLinks.revokedAt), isNull(signedLinks.usedAt))).limit(1));
+        eq(signedLinks.purpose, purpose), purpose === 'pay_invoice' ? eq(signedLinks.invoiceId, first.invoiceId) : undefined,
+        isNull(signedLinks.revokedAt), isNull(signedLinks.usedAt))).limit(1));
       // The link's token is never disclosed: the link only binds Checkout and its webhook completion to this invoice.
-      const linkId = reusable?.id ?? (await links.create(system(gymId), { purpose: 'pay_invoice', householdId: found.householdId, invoiceId: first.invoiceId,
+      const linkId = reusable?.id ?? (await links.create(system(gymId), { ...(purpose === 'pay_invoice' ? { purpose, invoiceId: first.invoiceId } : { purpose }), householdId: found.householdId,
         expiresAt: new Date(clock.now().getTime() + linkLifetimeMs).toISOString() })).link.id;
       const kept = await scope(gymId, async tx => {
         await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update');
@@ -334,31 +425,35 @@ export function createJoinService(options: JoinOptions) {
         return linkId;
       });
       if (kept !== linkId && !reusable) await links.revoke(system(gymId), linkId);
+      await settleFree(gymId, found.householdId);
       return { linkId: kept };
     },
     /** Starts or reuses the short Checkout for the pending join, returning to the fixed join pages. */
     async checkout(gymId: string, linkId: string) {
       return (await options.checkout.start(gymId, linkId, false, joinCheckoutFlow)).session.url;
     },
-    /** Read-only: active only after the webhook paid the invoice, activated the memberships and completed the join. */
+    /** Read-only: ready only after settlement, membership start and join completion. Trials count as started. */
     async state(gymId: string, linkId: string): Promise<JoinState> {
       return scope(gymId, async tx => {
-        const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt }).from(signedLinks).where(eq(signedLinks.id, linkId));
+        const [link] = await tx.select({ householdId: signedLinks.householdId, revokedAt: signedLinks.revokedAt, purpose: signedLinks.purpose }).from(signedLinks).where(eq(signedLinks.id, linkId));
         const record = link ? await recorded(tx, 'public.join.received', link.householdId, received) : null;
         if (!link || !record || record.linkId !== linkId) return { status: 'missing' };
         const [bill] = await tx.select({ status: invoices.status, amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices).where(eq(invoices.id, record.invoiceId));
         // A paid invoice wins over a revoked link: staff may have collected it another way.
         if (!bill || !settled.includes(bill.status))
           return bill?.status === 'void' || link.revokedAt ? { status: 'closed' }
-            : { status: bill && ['open', 'past_due'].includes(bill.status) && cardChargeIssue(bill.amountCents, bill.currency) ? 'manual' : 'pending', householdId: link.householdId };
+            : { status: bill && bill.amountCents > 0 && ['open', 'past_due'].includes(bill.status) && cardChargeIssue(bill.amountCents, bill.currency) ? 'manual' : 'pending',
+              householdId: link.householdId, cardOnly: link.purpose === 'update_card' };
         const rows = await tx.select({ status: memberships.status }).from(memberships).where(inArray(memberships.id, record.membershipIds));
-        const active = rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
-        return { status: active ? 'active' : 'pending', householdId: link.householdId };
+        const active = rows.length === record.membershipIds.length && rows.every(r => r.status !== 'pending') && await marked(tx, 'public.join.completed', link.householdId);
+        return { status: active ? 'active' : 'pending', householdId: link.householdId, cardOnly: link.purpose === 'update_card' };
       });
     },
     /** Webhook only, after a payment or card is recorded: once the join's invoice is paid, by its own Checkout or any
-     * other link of its household, the joined prospects become active members, once. */
+     * other link of its household, the joined prospects become trial or active members, once. */
     async afterCheckout(gymId: string, linkId: string) {
+      const [link] = await scope(gymId, tx => tx.select({ householdId: signedLinks.householdId }).from(signedLinks).where(eq(signedLinks.id, linkId)));
+      if (link) await settleFree(gymId, link.householdId);
       await complete(gymId, async tx => (await tx.select({ householdId: signedLinks.householdId }).from(signedLinks).where(eq(signedLinks.id, linkId)))[0]);
     },
     /** The invoice transitions' paid-invoice hook, after the memberships activate: completes a join however its invoice

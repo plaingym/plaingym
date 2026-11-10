@@ -21,7 +21,7 @@ it('refuses a join once the sandbox has used its signature-image admissions', as
     await reserveDemoSignature(db.forGym, { gymId: other.gymId, actor: { kind: 'system' } }, anyone!.id, clock.now());
   const person = { firstName: 'Limit', lastName: 'Visitor', dateOfBirth: '1994-05-06' };
   const admission = await app.send(other.origin, '/join/signatures', { body: { planId: plan!.id, contact: { name: 'Limit Visitor', email: 'limit@example.invalid' },
-    honeypot: '', members: [{ member: person, signatures: [{ templateId: template!.id, templateVersion: template!.version, pngBase64: demoSignaturePng().toString('base64') }] }] } });
+    honeypot: '', members: [{ member: person, signatures: [{ templateId: template!.id, templateVersion: template!.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Limit Visitor' } }] }] } });
   expect(admission.status).toBe(429);
   expect(await admission.json()).toMatchObject({ error: { code: 'rate_limited' } });
 }, 60_000);

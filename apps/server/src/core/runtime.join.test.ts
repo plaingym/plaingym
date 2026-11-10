@@ -63,7 +63,7 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
 
   const person = { firstName: 'Avery', lastName: 'Joiner', dateOfBirth: '1990-01-02' }, contact = { name: 'Avery Joiner', email: 'avery@example.invalid' };
   const admission = await post('/join/signatures', { planId: plan.id, contact, honeypot: '', members: [{ member: person,
-    signatures: [{ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64') }] }] });
+    signatures: [{ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Avery Joiner' } }] }] });
   expect(admission.status, await admission.clone().text()).toBe(200);
   const images = (await admission.json()).data as Record<string, unknown>[][];
   const submitted = await post('/api/public/join', { planId: plan.id, contact, honeypot: '', members: [{ member: person,
@@ -100,7 +100,7 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   // A second family pays its join in cash at the desk: the runtime's paid-invoice hook completes it, once.
   const cash = { name: 'Casey Cash', email: 'casey@example.invalid' }, payer = { firstName: 'Casey', lastName: 'Cash', dateOfBirth: '1988-03-04' };
   const signed = await post('/join/signatures', { planId: plan.id, contact: cash, honeypot: '', members: [{ member: payer,
-    signatures: [{ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64') }] }] });
+    signatures: [{ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Casey Cash' } }] }] });
   expect(signed.status, await signed.clone().text()).toBe(200);
   const cashImages = (await signed.json()).data as Record<string, unknown>[][];
   const cashJoin = await post('/api/public/join', { planId: plan.id, contact: cash, honeypot: '', members: [{ member: payer,

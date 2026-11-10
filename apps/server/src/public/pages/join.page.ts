@@ -28,6 +28,7 @@ function price(input: JoinPageInput, plan: PublicPlan) {
   const text = joinText(input.t);
   const which = plan.plusTax ? 'plusTax' : 'plain';
   return [h('p', { class: 'font-semibold' }, text(priceKeys[plan.interval][which], { amount: formatMoney(plan.amountCents, plan.currency, input.locale) })),
+    plan.trialDays ? h('p', null, text('trialDays', { days: plan.trialDays })) : null,
     plan.signupFeeCents ? h('p', null, text(signupFeeKeys[which], { amount: formatMoney(plan.signupFeeCents, plan.currency, input.locale) })) : null,
     plan.commitmentMonths ? h('p', null, text('commitment', { months: plan.commitmentMonths })) : null];
 }
@@ -82,13 +83,15 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     h('div', { hidden: true, 'aria-hidden': 'true' }, h('label', null, text('honeypot'), h('input', { name: 'honeypot', tabindex: -1, autocomplete: 'off' }))),
     ...people,
     h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
-    h('button', { type: 'submit', class: button }, text('submit')),
+    h('button', { type: 'submit', class: button }, plan.signupFeeCents === 0 && (plan.trialDays > 0 || plan.amountCents === 0)
+      ? text(plan.amountCents > 0 ? 'submitCard' : 'submitFree') : text('submit')),
     ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
-  const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')), h('p', { class: 'text-sm text-muted-foreground' }, text('dueToday')));
+  const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
+    h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, summary, counter, form), true);
 }
 export type JoinPageState = 'continue' | 'confirming' | 'welcomeEmail' | 'resent' | 'welcomePassword'
-  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual';
+  | 'cancelled' | 'closed' | 'missing' | 'unavailable' | 'failed' | 'tooLarge' | 'manual' | 'card' | 'confirmingCard' | 'cancelledCard';
 /** Every step after the form. None of these pages grants anything; actions post back to fixed join routes.
  * In a demo sandbox, `testCardHint` names the test card on the steps that lead to payment. */
 export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; testCardHint?: string | undefined }) {
@@ -98,25 +101,28 @@ export function joinStatusPage(input: JoinPageInput & { state: JoinPageState; te
   // The script polls /join/return and replaces this page once it settles; without it the noscript refresh in the head and this link keep working.
   const progress = h('div', { class: 'flex items-center gap-3', 'data-join-progress': true },
     h('span', { 'aria-hidden': 'true', class: 'inline-block size-6 shrink-0 animate-spin rounded-full border-4 border-border border-t-foreground motion-reduce:animate-none' }),
-    h('span', null, text('confirmingProgress')));
+    h('span', null, text(state === 'confirmingCard' ? 'confirmingCardProgress' : 'confirmingProgress')));
   const stalled = h('p', { hidden: true, 'data-join-stalled': true }, text('confirmingStalled'));
   const [title, body, ...next] = {
     continue: ['continueTitle', 'continueBody', h('a', { href: '/join/checkout', class: button }, text('pay'))],
+    card: ['submitCard', 'cardBody', h('a', { href: '/join/checkout', class: button }, text('saveCard'))],
     confirming: ['confirmingTitle', 'confirmingBody', progress, stalled, h('a', { href: '/join/return', class: link }, text('checkAgain'))],
+    confirmingCard: ['confirmingCardTitle', 'confirmingCardBody', progress, stalled, h('a', { href: '/join/return', class: link }, text('checkAgain'))],
     manual: ['manualTitle', 'manualBody', h('a', { href: '/join/return', class: link }, text('checkAgain'))],
     welcomeEmail: ['welcomeTitle', 'welcomeEmail', action('/join/sign-in', 'resend')],
     resent: ['welcomeTitle', 'resent', action('/join/sign-in', 'resend')],
     // Password mode: no account and no password until staff confirm the person and issue a printed invitation.
     welcomePassword: ['welcomeTitle', 'welcomePassword', h('a', { href: '/portal', class: link }, text('portal'))],
     cancelled: ['cancelledTitle', 'cancelledBody', h('a', { href: '/join/checkout', class: button }, text('pay')), start],
+    cancelledCard: ['cancelledCardTitle', 'cancelledCardBody', h('a', { href: '/join/checkout', class: button }, text('saveCard')), start],
     closed: ['closedTitle', 'closedBody', h('a', { href: '/portal', class: link }, text('portal'))],
     missing: ['missingTitle', 'missingBody', start],
     unavailable: ['title', 'unavailable', start],
     failed: ['title', 'failed', start],
     tooLarge: ['title', 'tooLarge', h('a', { href: '/join', class: link }, text('startOver'))],
   }[state] as [string, string, ...ReturnType<typeof h>[]];
-  const waiting = state === 'confirming';
-  const testCard = input.testCardHint && (state === 'continue' || state === 'cancelled')
+  const waiting = state === 'confirming' || state === 'confirmingCard';
+  const testCard = input.testCardHint && ['continue', 'cancelled', 'card', 'cancelledCard'].includes(state)
     ? h('p', { class: 'rounded-lg border border-border bg-muted p-3', 'data-demo-test-card': true }, input.testCardHint) : null;
   return layout(input, text(title), h('section', { class: panel, role: 'status', ...(waiting ? { 'aria-live': 'polite', 'data-join-confirming': true } : {}) },
     h('p', null, text(body)), testCard, ...next), waiting, waiting);

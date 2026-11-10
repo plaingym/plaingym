@@ -63,11 +63,12 @@ describe('shared install and admission contracts', () => {
   });
 
   it('keeps join admission bounded to six people and eight signatures each', () => {
-    const person = { member, signatures: [signature] };
+    const signed = { ...signature, signer: { kind: 'self', name: 'Visitor' } };
+    const person = { member, signatures: [signed] };
     const input = { contact, planId: id, honeypot: '', members: [person] };
     expect(joinAdmissionSchema.parse(input)).toEqual(input);
     for (const members of [[], Array.from({ length: 7 }, () => person), [{ member, signatures: [] }],
-      [{ member, signatures: Array.from({ length: 9 }, () => signature) }]])
+      [{ member, signatures: Array.from({ length: 9 }, () => signed) }], [{ member, signatures: [signature] }]])
       expect(joinAdmissionSchema.safeParse({ ...input, members }).success).toBe(false);
     expect(joinAdmissionSchema.safeParse({ ...input, householdId: id }).success).toBe(false);
     expect(joinAdmissionResponseSchema.parse({ data: [[image]] })).toEqual({ data: [[image]] });

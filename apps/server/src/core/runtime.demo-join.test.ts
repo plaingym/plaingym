@@ -17,7 +17,7 @@ async function startJoin() {
   const templates = await database.forGym(sandbox.gymId, tx => tx.select().from(waiverTemplates));
   const person = { firstName: 'Riley', lastName: 'Joiner', dateOfBirth: '1991-05-06' }, contact = { name: 'Riley Joiner', email: 'riley@example.invalid' };
   const admission = await app.post('/join/signatures', { planId: plan.id, contact, honeypot: '', members: [{ member: person,
-    signatures: templates.map(template => ({ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64') })) }] }, sandbox.origin);
+    signatures: templates.map(template => ({ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Riley Joiner' } })) }] }, sandbox.origin);
   expect(admission.status, await admission.clone().text()).toBe(200);
   const images = (await admission.json()).data as Record<string, unknown>[][];
   const submitted = await app.post('/api/public/join', { planId: plan.id, contact, honeypot: '', members: [{ member: person,

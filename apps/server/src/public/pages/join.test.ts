@@ -44,6 +44,7 @@ import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureJoin } from './join.routes.js';
 import { joinBodyBytes } from './join.service.js';
 import { joinCookie } from './join.continuation.js';
+import { jobs as joinJobs } from './join.jobs.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng(), pngBase64 = png.toString('base64');
 const origin = 'https://gym.example.test', timezone = 'America/Vancouver', key = new Uint8Array(32).fill(9);
@@ -54,10 +55,10 @@ type Person = { firstName: string; lastName: string; dateOfBirth: string };
 const adult = (firstName = 'Avery'): Person => ({ firstName, lastName: 'Joiner', dateOfBirth: '1990-01-02' });
 const child = (firstName = 'Kai'): Person => ({ firstName, lastName: 'Joiner', dateOfBirth: '2016-05-06' });
 
-async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z', currency = 'CAD') {
+async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29T18:00:00Z', currency = 'CAD', gymTimezone = timezone) {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock(start);
-  await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
-  await factory('gyms', otherGym, { name: 'Other private gym', currency: 'CAD', timezone, billingEnabled: true });
+  await factory('gyms', gymId, { name: 'North <Gym>', currency, timezone: gymTimezone, billingEnabled: true, memberEmailsEnabled: true, websiteEnabled: false });
+  await factory('gyms', otherGym, { name: 'Other private gym', currency: 'CAD', timezone: gymTimezone, billingEnabled: true });
   const plan = await factory('plans', gymId, { name: 'Adult monthly', amountCents: 15000, currency, interval: 'monthly', signupFeeCents: 5000 });
   const gst = await factory('taxRates', gymId, { name: 'GST', rateMillionths: 50_000, inclusive: false });
   await factory('planTaxRates', gymId, { planId: plan.id, taxRateId: gst.id });
@@ -82,7 +83,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const accounts = createAccountService(config, () => db.system.db);
   const settings = createGymSettingsAccessor({ scope: db.forGym, clock }), lifecycle = createMembershipService({ scope: db.forGym, clock, settings });
   const paymentsConfigured = vi.fn(async (id: string) => id === gymId);
-  const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts,
+  const join = configureJoin({ scope: db.forGym, clock, key, waivers, checkout, paymentsConfigured, invitations, accounts, uploadsFor,
     memberships: lifecycle, invitationStore: createPortalInvitationStore(() => db.system.db) });
   const jobs = new FakeJobs(clock), transitions = createInvoiceTransitions({ scope: db.forGym, clock });
   const notifications = createTransitionNotifications({ scope: db.forGym, clock, settings, async prepare() { return { email: mail, origin }; }, async staffRecipients() { return []; } });
@@ -101,12 +102,12 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   registerBillingWebhookHandlers({ register(type, handler) { handlers.set(type, handler); } }, { scope: db.forGym, clock, transitions, afterCheckoutRecorded: afterCheckout });
   async function webhook(sessionId: string, type = 'checkout.session.completed') {
     const event = { id: 'evt_' + uuidv7(), type, gymId, objectKind: 'checkout' as const, objectId: sessionId };
-    await handlers.get(type)!(event, { gymId, clock, timezone, jobId: uuidv7(), attempt: 1, payments: provider });
+    await handlers.get(type)!(event, { gymId, clock, timezone: gymTimezone, jobId: uuidv7(), attempt: 1, payments: provider });
     await drain();
   }
   async function drain() { await effects.publish(gymId); while (await jobs.runNext()) { /* every effect now due */ } }
   const app = (resolved = gymId) => createApp({ skipSetup: true, clock, authorize, contributions: areaContributions, origin, rateLimit: { limit: 10_000 },
-    resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId: resolved, timezone, enabledModules: new Set() } }); await next(); },
+    resolveGym: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), gym: { gymId: resolved, timezone: gymTimezone, enabledModules: new Set() } }); await next(); },
     session: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), principal: { kind: 'anonymous' } }); await next(); } });
   const server = app();
   const get = (path: string, cookie = '', target = server) => target.request(origin + path, { headers: cookie ? { cookie } : {} });
@@ -116,7 +117,7 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     : { kind: 'self' as const, name: person.firstName + ' ' + person.lastName };
   async function admit(people: Person[], email: string, planId: string) {
     const response = await post('/join/signatures', { planId, contact: { name: 'Pat Payer', email }, honeypot: '',
-      members: people.map(member => ({ member, signatures: templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64 })) })) });
+      members: people.map(member => ({ member, signatures: templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64, signer: signer(member) })) })) });
     expect(response.status, await response.clone().text()).toBe(200);
     return joinAdmissionResponseSchema.parse(await response.json()).data;
   }
@@ -140,10 +141,194 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     logins: await tx.select().from(householdUsers), methods: await tx.select().from(paymentMethods), audits: await tx.select().from(auditEvents) }));
   const joined = async () => (await rows()).homes.filter(h => h.id !== existingHome.id);
   return { gymId, otherGym, clock, plan, annual, trial, free, retired, foreignPlan, templates, foreignTemplate, existingHome, existing, provider, paymentsFor,
-    paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, join, jobs, transitions, sent, mail, afterCheckout, afterInvoicePaid, webhook, drain,
+    uploads, uploadsFor, paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, join, jobs, transitions, sent, mail, afterCheckout, afterInvoicePaid, webhook, drain,
     app, server, get, post, admit, body, submit, pay, rows, joined };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+describe('trial and zero-value joining', () => {
+  it.each(['trial', 'free'] as const)('supports native multipart joining for a %s plan', async kind => {
+    const f = await fixture(), form = nativeForm(f, f[kind].id, `${kind}-native@example.invalid`);
+    const response = await f.server.request(await requestWithLength(origin + '/join', { method: 'POST', headers: { origin }, body: form }));
+    if (kind === 'trial') {
+      expect(response.status).toBe(200); expect(await response.text()).toContain('Save card securely');
+    } else {
+      expect(response.status).toBe(303); expect(response.headers.get('location')).toBe('/join/return');
+    }
+  });
+  it('starts a trial only after its recorded card setup and bills the first full period at trial end', async () => {
+    const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout'), charge = vi.spyOn(f.provider, 'createCharge');
+    const { cookie, images } = await f.submit([adult(), child()], 'trial@example.invalid', f.trial.id);
+    const [home] = await f.joined();
+    expect(home!.billingDay).toBe(5);
+    const initial = await f.rows(), bill = initial.invoices.find(i => i.householdId === home!.id)!;
+    expect(bill).toMatchObject({ amountCents: 0, status: 'open', paidAt: null });
+    expect(initial.memberships.filter(m => m.householdId === home!.id).map(m => [m.status, m.nextDueOn, m.trialEndsOn]))
+      .toEqual([['pending', '2026-11-05', '2026-11-05'], ['pending', '2026-11-05', '2026-11-05']]);
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('Confirming your card setup');
+    const page = await f.get('/join/checkout', cookie), sessionId = new URL(page.headers.get('location')!).pathname.slice(1);
+    expect(create.mock.calls[0]![0]).toMatchObject({ mode: 'setup', saveForOffSession: true, successUrl: origin + '/join/return', cancelUrl: origin + '/join/cancelled' });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('Confirming your card setup');
+    await f.join.afterCheckout(f.gymId, initial.links.find(l => l.householdId === home!.id)!.id);
+    expect((await f.rows()).invoices.find(i => i.id === bill.id)!.status).toBe('open');
+    f.provider.completeCheckout(sessionId);
+    await f.webhook(sessionId); await f.webhook(sessionId);
+    const finished = await f.rows();
+    expect(finished.invoices.find(i => i.id === bill.id)).toMatchObject({ status: 'paid', amountCents: 0 });
+    expect(finished.methods.filter(m => m.householdId === home!.id)).toHaveLength(1);
+    expect(finished.memberships.filter(m => m.householdId === home!.id).map(m => [m.status, m.nextDueOn]))
+      .toEqual([['trial', '2026-11-05'], ['trial', '2026-11-05']]);
+    expect(finished.members.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['trial', 'trial']);
+    expect(f.sent).toHaveLength(1); expect(charge).not.toHaveBeenCalled();
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    // Submission and effect replay must not reactivate trials before their end date.
+    expect((await f.post('/api/public/join', f.body([adult(), child()], images, 'trial@example.invalid', f.trial.id))).status).toBe(200);
+    const runner = createChargeRunner({ scope: db.forGym, clock: f.clock, transitions: f.transitions, settings: f.settings, jobs: f.jobs, payments: f.paymentsFor });
+    f.clock.set('2026-11-04T18:00:00Z');
+    expect(await f.lifecycle.processDates(f.gymId, timezone)).toBe(0);
+    expect((await runner.daily(f.gymId)).errors).toEqual([]);
+    expect((await f.rows()).invoices.filter(i => i.householdId === home!.id)).toHaveLength(1);
+    f.clock.set('2026-11-05T18:00:00Z');
+    expect(await f.lifecycle.processDates(f.gymId, timezone)).toBe(2);
+    expect((await f.rows()).memberships.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active', 'active']);
+    expect((await runner.daily(f.gymId)).errors).toEqual([]);
+    const cycle = (await f.rows()).invoices.filter(i => i.householdId === home!.id && i.id !== bill.id);
+    expect(cycle).toMatchObject([{ status: 'paid', amountCents: 2 * f.trial.amountCents, periodStartsOn: '2026-11-05', periodEndsOn: '2026-12-05' }]);
+  });
+  it('settles a free plan without Checkout or a payment and keeps submission replay idempotent', async () => {
+    const f = await fixture(), create = vi.spyOn(f.provider, 'createCheckout'), charge = vi.spyOn(f.provider, 'createCharge');
+    const people = [adult()], email = 'free@example.invalid';
+    const { cookie, images } = await f.submit(people, email, f.free.id);
+    const [home] = await f.joined();
+    const state = await f.rows();
+    expect(state.invoices.find(i => i.householdId === home!.id)).toMatchObject({ status: 'paid', amountCents: 0 });
+    expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ status: 'active', nextDueOn: '2026-11-29' });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect((await f.get('/join/checkout', cookie)).headers.get('location')).toBe('/join/return');
+    expect((await f.post('/api/public/join', f.body(people, images, email, f.free.id))).status).toBe(200);
+    expect(f.sent).toHaveLength(1); expect(create).not.toHaveBeenCalled(); expect(charge).not.toHaveBeenCalled();
+    await f.drain(); expect(f.sent).toHaveLength(1);
+  });
+  it('collects the sign-up fee on a trial now and preserves the first period until trial end', async () => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: 7, amountCents: 12000, signupFeeCents: 2000 });
+    const { cookie } = await f.submit([adult()], 'trial-fee@example.invalid', plan.id);
+    const [home] = await f.joined();
+    expect((await f.rows()).invoices.find(i => i.householdId === home!.id)).toMatchObject({ amountCents: 2000, status: 'open' });
+    await f.pay(cookie);
+    await f.drain();
+    const state = await f.rows();
+    expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial', nextDueOn: '2026-11-05' });
+    expect(state.members.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial' });
+    expect(state.lines.filter(l => l.invoiceId === state.invoices.find(i => i.householdId === home!.id)!.id).map(l => l.kind)).toEqual(['signup_fee']);
+    f.clock.set('2026-11-05T18:00:00Z');
+    expect(await f.lifecycle.processDates(f.gymId, timezone)).toBe(1);
+    const runner = createChargeRunner({ scope: db.forGym, clock: f.clock, transitions: f.transitions, settings: f.settings, jobs: f.jobs, payments: f.paymentsFor });
+    expect((await runner.daily(f.gymId)).errors).toEqual([]);
+    expect((await f.rows()).invoices.filter(i => i.householdId === home!.id)).toMatchObject([
+      { status: 'paid', amountCents: 2000 },
+      { status: 'paid', amountCents: 12000, periodStartsOn: '2026-11-05', periodEndsOn: '2026-12-05' },
+    ]);
+  });
+  it('starts a zero-price trial without Checkout and keeps its trial status after settlement effects', async () => {
+    const f = await fixture(), trial = await factory('plans', f.gymId, { trialDays: 7, amountCents: 0 });
+    const create = vi.spyOn(f.provider, 'createCheckout'), { cookie } = await f.submit([adult()], 'free-trial@example.invalid', trial.id);
+    await f.drain();
+    const [home] = await f.joined(), state = await f.rows();
+    expect(state.invoices.find(i => i.householdId === home!.id)).toMatchObject({ amountCents: 0, status: 'paid' });
+    expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial', nextDueOn: '2026-11-05' });
+    expect(state.members.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial' });
+    expect(await (await f.get('/join/return', cookie)).text()).toContain('We sent a sign-in link');
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+describe('join admission cleanup', () => {
+  it.each([
+    ['ordinary day', '2026-10-29T04:05:00Z', '2026-10-31T03:59:59.999Z', '2026-10-31T04:00:00Z'],
+    ['fall clock change', '2026-11-01T04:05:00Z', '2026-11-03T04:59:59.999Z', '2026-11-03T05:00:00Z'],
+    ['spring clock change', '2026-03-08T05:05:00Z', '2026-03-10T03:59:59.999Z', '2026-03-10T04:00:00Z'],
+  ])('preserves the full local submission window across %s', async (_label, admittedAt, graceEnd, expiredAt) => {
+    const zone = 'America/New_York', f = await fixture('email', admittedAt, 'CAD', zone), people = [adult()], email = 'grace@example.invalid';
+    const accepted = await f.admit(people, email, f.plan.id), abandoned = await f.admit(people, 'expired@example.invalid', f.plan.id);
+    f.clock.set(graceEnd!);
+    const job = joinJobs.find(j => j.id === 'public.join.cleanup')!;
+    await job.handler({}, { gymId: f.gymId, timezone: zone, clock: f.clock, jobId: uuidv7(), attempt: 1 });
+    expect((await f.uploads.head(accepted[0]![0]!.signatureImageKey))!.deletedAt).toBeUndefined();
+    expect((await f.uploads.head(abandoned[0]![0]!.signatureImageKey))!.deletedAt).toBeUndefined();
+    expect((await f.post('/api/public/join', f.body(people, accepted, email, f.plan.id))).status).toBe(200);
+    f.clock.set(expiredAt!);
+    expect((await f.post('/api/public/join', f.body(people, abandoned, 'expired@example.invalid', f.plan.id))).status).toBe(409);
+    expect(await f.join.cleanup.run(f.gymId, zone)).toBe(1);
+    expect((await f.uploads.head(abandoned[0]![0]!.signatureImageKey))!.deletedAt).toEqual(f.clock.now());
+    expect((await f.rows()).homes.some(h => h.email === email)).toBe(true);
+    expect((await f.rows()).homes.some(h => h.email === 'expired@example.invalid')).toBe(false);
+  });
+  it('rejects invalid signer and guardian details before creating a household, person or image', async () => {
+    const f = await fixture(), before = await f.rows(), upload = vi.spyOn(f.waivers, 'uploadSignature');
+    for (const [member, signer] of [[child(), { kind: 'self', name: 'Minor' }], [adult(), { kind: 'self', name: 'x'.repeat(201) }],
+      [child(), { kind: 'guardian', name: 'Parent', relationship: 'x'.repeat(101) }]] as const) {
+      const response = await f.post('/join/signatures', { planId: f.plan.id, contact: { name: 'Payer', email: 'bad@example.invalid' }, honeypot: '',
+        members: [{ member, signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64, signer })) }] });
+      expect(response.status).toBe(400);
+    }
+    const after = await f.rows(); expect(after.homes).toEqual(before.homes); expect(after.members).toEqual(before.members);
+    expect(upload).not.toHaveBeenCalled(); expect(await f.uploads.list()).toEqual([]);
+  });
+  it('compensates a failed image upload, including earlier successful uploads', async () => {
+    const f = await fixture(), before = await f.rows(), upload = f.waivers.uploadSignature.bind(f.waivers);
+    let calls = 0;
+    vi.spyOn(f.waivers, 'uploadSignature').mockImplementation(async (...args) => { if (++calls === 2) throw new Error('storage unavailable'); return upload(...args); });
+    await expect(f.join.admit(f.gymId, { planId: f.plan.id, contact: { name: 'Payer', email: 'failed@example.invalid' }, honeypot: '',
+      members: [{ member: adult(), signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64, signer: { kind: 'self', name: 'Avery' } })) }] }, timezone))
+      .rejects.toThrow('storage unavailable');
+    const after = await f.rows(); expect(after.homes).toEqual(before.homes); expect(after.members).toEqual(before.members);
+    expect((await f.uploads.list()).every(image => image.deletedAt !== null)).toBe(true);
+  });
+  it('daily job deletes only old unsubmitted admissions, scopes the gym, and retries safely', async () => {
+    const f = await fixture(), old = await f.admit([adult()], 'old@example.invalid', f.plan.id);
+    const oldKey = old[0]![0]!.signatureImageKey;
+    const submitted = await f.submit([adult()], 'submitted@example.invalid');
+    const paid = await f.submit([adult()], 'paid@example.invalid'); await f.pay(paid.cookie);
+    f.clock.set('2026-10-31T06:59:59.999Z');
+    expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(0); // The next local calendar day is still valid.
+    f.clock.advance(1);
+    const fresh = await f.admit([adult()], 'fresh@example.invalid', f.plan.id);
+    expect(await f.join.cleanup.run(f.otherGym, timezone)).toBe(0);
+    expect(await f.uploads.head(oldKey)).not.toBeNull();
+    const job = joinJobs.find(j => j.id === 'public.join.cleanup')!;
+    expect(job.cron).toBe('29 3 * * *');
+    await job.handler({}, { gymId: f.gymId, timezone, clock: f.clock, jobId: uuidv7(), attempt: 1 });
+    const rows = await f.rows();
+    expect(rows.homes.some(h => h.email === 'old@example.invalid')).toBe(false);
+    expect(rows.homes.some(h => h.email === 'fresh@example.invalid')).toBe(true);
+    expect(rows.homes.some(h => h.email === 'submitted@example.invalid')).toBe(true);
+    expect(rows.homes.some(h => h.email === 'paid@example.invalid')).toBe(true);
+    expect(rows.members.some(m => oldKey.includes('/' + m.id + '/'))).toBe(false);
+    expect((await f.uploads.head(oldKey))!.deletedAt).toEqual(f.clock.now());
+    expect(await f.uploads.head(fresh[0]![0]!.signatureImageKey)).not.toBeNull();
+    expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(0);
+    expect((await f.get('/join/return', submitted.cookie)).status).toBe(200);
+  });
+  it('keeps the durable cleanup claim after a storage failure and rejects a racing submission', async () => {
+    const f = await fixture(), people = [adult()], email = 'retry@example.invalid', images = await f.admit(people, email, f.plan.id);
+    f.clock.set('2026-10-31T07:00:00Z');
+    vi.spyOn(f.uploads, 'markDeleted').mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(f.join.cleanup.run(f.gymId, timezone)).rejects.toThrow('storage unavailable');
+    const response = await f.post('/api/public/join', f.body(people, images, email, f.plan.id));
+    expect(response.status).toBe(404);
+    expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(1);
+    expect((await f.uploads.list()).every(image => image.deletedAt !== null)).toBe(true);
+  });
+  it('cleans the remaining admissions when one household fails, then fails the run so it retries', async () => {
+    const f = await fixture(), first = await f.admit([adult()], 'first@example.invalid', f.plan.id);
+    const second = await f.admit([adult()], 'second@example.invalid', f.plan.id);
+    f.clock.set('2026-10-31T07:00:00Z');
+    vi.spyOn(f.uploads, 'markDeleted').mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(f.join.cleanup.run(f.gymId, timezone)).rejects.toThrow('storage unavailable');
+    expect((await f.uploads.head(first[0]![0]!.signatureImageKey))!.deletedAt).toBeUndefined();
+    expect((await f.uploads.head(second[0]![0]!.signatureImageKey))!.deletedAt).toEqual(f.clock.now());
+    expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(1);
+    expect((await f.uploads.list()).every(image => image.deletedAt !== null)).toBe(true);
+  });
+});
 it('shows manual payment for a newly issued first invoice below the card minimum', async () => {
   const f = await fixture(), smallPlan = await factory('plans', f.gymId, { amountCents: 32, signupFeeCents: 0, trialDays: 0 });
   const create = vi.spyOn(f.provider, 'createCheckout'), { cookie } = await f.submit([adult()], 'small@example.invalid', smallPlan.id);
@@ -218,11 +403,12 @@ describe('public join pages through the production registrations', () => {
     const api = publicContracts.plans.response.parse(await (await f.get('/api/public/plans?limit=100&offset=0', '', f.app(yenGym))).json());
     expect(api.data.map(p => [p.name, p.amountCents, p.currency])).toEqual([['Annual yen', 120000, 'JPY'], ['Monthly yen', 12000, 'JPY']]);
   });
-  it('lists only plans payable online, renders the join form with the website off, and projects nothing from another gym', async () => {
+  it('lists eligible paid, trial and free plans, renders with the website off, and projects nothing from another gym', async () => {
     const f = await fixture(), list = await f.get('/join'), html = await list.text();
     expect(list.status).toBe(200); expect(html).toContain('North &lt;Gym&gt;'); expect(html).toContain('href="/source"');
     expect(html).toContain('Adult monthly'); expect(html).toContain('Annual'); expect(html).toContain('$150.00\u00a0+\u00a0tax per month'); expect(html).toMatch(/Sign-up fee: [A-Z]*\$50\.00\u00a0\+\u00a0tax/);
-    for (const hidden of ['Trial plan', 'Free plan', 'Retired plan', 'Private other plan', 'Private']) expect(html).not.toContain(hidden);
+    expect(html).toContain('Trial plan'); expect(html).toContain('Free plan'); expect(html).toContain('href="/join"');
+    for (const hidden of ['Retired plan', 'Private other plan', 'Private']) expect(html).not.toContain(hidden);
     expect(list.headers.get('content-security-policy')).toContain("form-action 'self'"); expect(list.headers.get('cache-control')).toBe('no-store');
     expect(list.headers.get('content-security-policy')).toMatch(/; report-uri \/csp-report; report-to csp$/);
     expect(list.headers.get('reporting-endpoints')).toBe('csp="/csp-report"');
@@ -230,10 +416,11 @@ describe('public join pages through the production registrations', () => {
     expect(form.match(/data-member=/g)).toHaveLength(2); expect(form.match(/data-waiver/g)).toHaveLength(4);
     expect(form).toContain('&lt;script&gt;bad()&lt;/script&gt;'); expect(form).not.toContain('<script>bad()'); expect(form).toContain('src="/join/client.js"');
     expect(form).toContain('enctype="multipart/form-data"');
-    for (const path of [`/join?plan=${f.trial.id}`, `/join?plan=${f.foreignPlan.id}`, '/join?plan=not-an-id&members=99']) expect(await (await f.get(path)).text()).not.toContain('data-join-form');
+    for (const path of [`/join?plan=${f.foreignPlan.id}`, '/join?plan=not-an-id&members=99']) expect(await (await f.get(path)).text()).not.toContain('data-join-form');
+    expect(await (await f.get(`/join?plan=${f.trial.id}`)).text()).toContain('First 7 days free');
     expect(await (await f.get(`/join?plan=${f.plan.id}&members=99`)).text()).toMatch(/data-member="5"/);
     const api = publicContracts.plans.response.parse(await (await f.get('/api/public/plans?limit=1&offset=0')).json());
-    expect(api).toMatchObject({ data: [{ id: f.plan.id, signupFeeCents: 5000, trialDays: 0 }], pagination: { limit: 1, offset: 0, total: 2 } });
+    expect(api).toMatchObject({ data: [{ id: f.plan.id, signupFeeCents: 5000, trialDays: 0 }], pagination: { limit: 1, offset: 0, total: 4 } });
     const other = f.app(f.otherGym);
     for (const path of ['/join', `/join?plan=${f.plan.id}`, '/api/public/plans']) {
       const text = await (await f.get(path, '', other)).text();
@@ -287,7 +474,7 @@ describe('public join pages through the production registrations', () => {
     expect(form).toContain(`$80.00${plus} per month`); expect(form).toMatch(/Sign-up fee: [A-Z]*\$20\.00\u00a0\+\u00a0tax/);
     const api = publicContracts.plans.response.parse(await (await f.get('/api/public/plans?limit=100&offset=0')).json());
     expect(Object.fromEntries(api.data.map(p => [p.name, p.plusTax]))).toEqual({ 'Adult monthly': true, Annual: false, 'Annual taxed': true, Plain: false,
-      'Inclusive only': false, 'Both rates': true, 'Archived exclusive': true, 'Zero rate': false });
+      'Inclusive only': false, 'Both rates': true, 'Archived exclusive': true, 'Zero rate': false, 'Free plan': false, 'Trial plan': false });
     // The other gym's exclusive rate on its own plan leaves this gym's plain plan alone, and shows only on its page.
     const foreignRate = await factory('taxRates', f.otherGym, { name: 'Other GST', rateMillionths: 50_000, inclusive: false });
     const [foreign] = await db.forGym(f.otherGym, tx => tx.select().from(plans).where(eq(plans.name, 'Plain')));
@@ -438,16 +625,16 @@ describe('public join pages through the production registrations', () => {
 
   it('rejects bots, unavailable billing and stale documents before creating any household or Checkout session', async () => {
     const f = await fixture(), before = (await f.rows()).homes.length, create = vi.spyOn(f.provider, 'createCheckout');
-    const signatures = f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64 }));
+    const signatures = f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64, signer: { kind: 'self', name: 'Visitor' } }));
     const admission = (changes: Record<string, unknown> = {}) => ({ planId: f.plan.id, contact: { name: 'Bot', email: 'bot@example.invalid' }, honeypot: '',
       members: [{ member: adult(), signatures }], ...changes });
     expect((await f.post('/join/signatures', admission({ honeypot: 'spam' }))).status).toBe(400);
     expect((await f.post('/api/public/join', { ...admission({ honeypot: 'spam' }), members: [] })).status).toBe(400);
-    expect((await f.post('/join/signatures', admission({ planId: f.trial.id }))).status).toBe(404);
+    expect((await f.post('/join/signatures', admission({ planId: f.retired.id }))).status).toBe(404);
     expect((await f.post('/join/signatures', admission({ planId: f.foreignPlan.id }))).status).toBe(404);
     expect((await f.post('/join/signatures', admission({ members: [{ member: adult(), signatures: [signatures[0]] }] }))).status).toBe(409);
     expect((await f.post('/join/signatures', admission({ members: [{ member: adult(), signatures: [signatures[0],
-      { templateId: f.foreignTemplate.id, templateVersion: 1, pngBase64 }] }] }))).status).toBe(409);
+      { templateId: f.foreignTemplate.id, templateVersion: 1, pngBase64, signer: { kind: 'self', name: 'Visitor' } }] }] }))).status).toBe(409);
     expect((await f.post('/join/signatures', admission({ members: Array.from({ length: 7 }, () => ({ member: adult(), signatures })) }))).status).toBe(400);
     f.paymentsConfigured.mockResolvedValueOnce(false);
     expect((await f.post('/join/signatures', admission())).status).toBe(503);
@@ -637,7 +824,8 @@ describe('public join pages through the production registrations', () => {
     // Three adults with two chosen PNG files each: over the install's 1 MiB default, inside the join's cap.
     const people = [adult('Ana'), adult('Ben'), adult('Cy')];
     const admission = { planId: f.plan.id, contact: { name: 'Pat Payer', email: 'big@example.invalid' }, honeypot: '',
-      members: people.map(member => ({ member, signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64: bigBase64 })) })) };
+      members: people.map(member => ({ member, signatures: f.templates.map(t => ({ templateId: t.id, templateVersion: t.version, pngBase64: bigBase64,
+        signer: { kind: 'self', name: member.firstName } })) })) };
     const body = JSON.stringify(admission);
     expect(body.length).toBeGreaterThan(1024 * 1024); expect(body.length).toBeLessThan(joinBodyBytes);
     const admitted = await f.post('/join/signatures', admission);

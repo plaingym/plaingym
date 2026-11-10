@@ -15,6 +15,7 @@ import { createJoinService, joinBodyBytes, type JoinOptions,
 import { joinContinuations, joinCookie, joinCookieLifetimeMs, type JoinContinuations } from './join.continuation.js';
 import { joinFormPage, joinPlansPage, joinStatusPage, type JoinPageState } from './join.page.js';
 import { joinBrowserScript } from './join.browser.js';
+import { configureJoinCleanup } from './join.jobs.js';
 import pages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
 import messages from '../../../../../locales/en/public/join.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
@@ -27,6 +28,7 @@ let configured: JoinRouteOptions | undefined;
 /** Runtime supplies the shared waiver and signed-link Checkout services, portal invitations, accounts, payment readiness and a stable key. */
 export function configureJoin(options: JoinOptions & { key: Uint8Array; t?: Translator; testCardHint?: TestCardHint }) {
   const service = createJoinService(options);
+  configureJoinCleanup(service.cleanup);
   configured = { service, continuations: joinContinuations(options.key), ...(options.t ? { t: options.t } : {}),
     ...(options.testCardHint ? { testCardHint: options.testCardHint } : {}) };
   return service;
@@ -63,7 +65,7 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
   async function page(ctx: Context<RequestEnvironment>, state: JoinPageState, status: 200 | 400 | 413 | 503 = 200) {
     const config = options();
     // Only the steps that lead to payment show the hint, so the other pages skip the lookup.
-    const testCardHint = config.testCardHint && (state === 'continue' || state === 'cancelled') ? await config.testCardHint(gymOf(ctx)) : undefined;
+    const testCardHint = config.testCardHint && ['continue', 'cancelled', 'card', 'cancelledCard'].includes(state) ? await config.testCardHint(gymOf(ctx)) : undefined;
     return ctx.html(joinStatusPage({ gym: await config.service.branding(gymOf(ctx)), t: config.t ?? translator, state, testCardHint }), status);
   }
   /** HttpOnly, Secure, SameSite=Lax (it survives the return from Checkout), signed, short-lived and scoped to /join. */
@@ -124,14 +126,17 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
         const signatures = await Promise.all(people.map((_, i) => Promise.all(documents.map(async j => {
           const prefix = `waiver-${i}-${j}`, file = fields.get(prefix + '-image');
           if (!(file instanceof File) || !file.size || file.size > 256 * 1024 || value(prefix + '-consent') !== 'on') throw new AppError('invalid_request', 'Signature and consent required');
-          return { templateId: value(prefix + '-template'), templateVersion: Number(value(prefix + '-version')), pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64') };
+          return { templateId: value(prefix + '-template'), templateVersion: Number(value(prefix + '-version')),
+            pngBase64: Buffer.from(await file.arrayBuffer()).toString('base64'), signer: signer(value, prefix) };
         }))));
         const images = await service.admit(gymId, { ...common, members: people.map((member, i) => ({ member, signatures: signatures[i]! })) }, context.gym.timezone);
         const { linkId } = await service.join(gymId, { ...common, members: people.map((member, i) => ({ member,
           waivers: images.data[i]!.map((image, j) => ({ ...image, consent: true, signer: signer(value, `waiver-${i}-${j}`) })) })) },
         context.gym.timezone, context.clientIp ?? 'unknown');
         remember(ctx, linkId);
-        return page(ctx, (await service.state(gymId, linkId)).status === 'manual' ? 'manual' : 'continue');
+        const state = await service.state(gymId, linkId), status = state.status;
+        if (status === 'active') return ctx.redirect('/join/return', 303);
+        return page(ctx, status === 'manual' ? 'manual' : 'cardOnly' in state && state.cardOnly ? 'card' : 'continue');
       } catch (error) {
         if (error instanceof AppError && error.code === 'unavailable') return page(ctx, 'unavailable', 503);
         if (error instanceof z.ZodError || error instanceof AppError && ['invalid_request', 'not_found', 'conflict'].includes(error.code)) return page(ctx, 'failed', 400);
@@ -159,14 +164,14 @@ export function createJoinRoutes(supplied?: JoinRouteOptions): readonly RouteReg
       const linkId = pending(ctx), service = options().service;
       const state = linkId ? await service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
       if (state.status === 'missing' || state.status === 'closed') return page(ctx, state.status);
-      if (state.status === 'pending') return page(ctx, 'confirming');
+      if (state.status === 'pending') return page(ctx, state.cardOnly ? 'confirmingCard' : 'confirming');
       if (state.status === 'manual') return page(ctx, 'manual');
       return page(ctx, await service.passwordMode(gymOf(ctx)) ? 'welcomePassword' : 'welcomeEmail');
     }),
     route({ method: 'get', path: '/join/cancelled', permission: { kind: 'public' }, responses: html }, async ctx => {
       const linkId = pending(ctx), state = linkId ? await options().service.state(gymOf(ctx), linkId) : { status: 'missing' as const };
       if (state.status === 'active') return ctx.redirect('/join/return', 303);
-      return state.status === 'pending' ? page(ctx, 'cancelled') : page(ctx, state.status);
+      return state.status === 'pending' ? page(ctx, state.cardOnly ? 'cancelledCard' : 'cancelled') : page(ctx, state.status);
     }),
     route({ method: 'post', path: '/join/sign-in', permission: { kind: 'public' }, middleware: [steps], responses: html }, async ctx => {
       const linkId = pending(ctx);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { auditEvents, forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
+import { auditEvents, forGym, households, invoices, members, paymentAttempts, paymentMethods, signedLinks, uuidv7, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { cardChargeIssue } from '@plaingym/shared/money';
@@ -50,7 +50,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     if (!household) missing();
     return { link, household };
   }
-  const audit = (tx: Transaction, gymId: string, action: string, id: string, after: { sessionId: string; customerId?: string } | null = null) => writeAudit(tx, {
+  const audit = (tx: Transaction, gymId: string, action: string, id: string, after: { sessionId?: string; customerId?: string; attemptKey?: string; expiresAt?: string } | null = null) => writeAudit(tx, {
     gymId, actorKind: 'system', action, targetType: 'signed_link', targetId: id,
     before: null, after, occurredAt: clock.now(),
   });
@@ -65,13 +65,14 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     const [row] = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
       eq(auditEvents.targetType, 'signed_link'), eq(auditEvents.targetId, linkId),
       eq(auditEvents.action, 'billing.card_setup.started'))).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
-    const after = row?.after as { sessionId?: unknown; customerId?: unknown } | null | undefined;
+    const after = row?.after as { sessionId?: unknown; customerId?: unknown; expiresAt?: unknown } | null | undefined;
     const recorded = typeof after?.sessionId === 'string' ? after.sessionId : null;
-    if (!recorded) return { sessionId: null, stale: null };
+    if (!recorded) return { sessionId: null, stale: null, expiresAt: null };
     const stale = typeof after?.customerId === 'string' ? after.customerId !== household.stripeCustomerId
       : (await tx.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.targetType, 'household'),
         eq(auditEvents.targetId, household.id), eq(auditEvents.action, customerUnlinkedAction))).limit(1)).length > 0;
-    return stale ? { sessionId: null, stale: recorded } : { sessionId: recorded, stale: null };
+    return stale ? { sessionId: null, stale: recorded, expiresAt: null } : { sessionId: recorded, stale: null,
+      expiresAt: typeof after?.expiresAt === 'string' ? new Date(after.expiresAt) : null };
   }
   const setupStart = async (tx: Transaction, linkId: string, household: Household) => (await setupState(tx, linkId, household)).sessionId;
   function ownedSetup(session: CheckoutSession, gymId: string, linkId: string, customerId: string) {
@@ -103,7 +104,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       || setup.customerId !== session.customerId || setup.paymentMethodId !== session.paymentMethodId) unavailable();
     await cards.collect(gymId, provider, session.customerId, session.paymentMethodId);
   }
-  async function startCard(gymId: string, linkId: string, customerId: string, provider: Payments, returnUrl: string) {
+  async function startCard(gymId: string, linkId: string, customerId: string, provider: Payments, successUrl: string, cancelUrl: string, flow?: CheckoutReturn) {
     // The persisted start association also supplies the next attempt's stable key. Concurrent
     // clicks and lost creation responses retry one attempt; terminal sessions advance the key.
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -124,14 +125,35 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
             if (household.stripeCustomerId !== customerId || await setupStart(tx, linkId, household) !== session.id)
               throw new AppError('conflict', 'Card setup changed');
           });
-          return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(), clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
+          return { session, expiresAt: new Date(Math.min(prepared.link.expiresAt.getTime(), prepared.expiresAt?.getTime()
+            ?? clock.now().getTime() + 23 * 60 * 60 * 1000)).toISOString() };
         }
         await recoverCard(gymId, linkId, session, provider);
       }
-      const session = await provider.createCheckout({ mode: 'setup', customerId, linkId, successUrl: returnUrl,
-        cancelUrl: returnUrl, saveForOffSession: true,
-        idempotencyKey: `signed-link:${linkId}:setup` + (prepared.sessionId ? `:after:${prepared.sessionId}`
-          : prepared.stale ? `:after:${prepared.stale}` : '') });
+      const attemptKey = `signed-link:${linkId}:setup` + (prepared.sessionId ? `:after:${prepared.sessionId}`
+        : prepared.stale ? `:after:${prepared.stale}` : '');
+      // A short setup flow persists its exact expiry before calling out. Lost creation responses and concurrent
+      // clicks must reuse identical parameters; after expiry a fresh reservation gets a distinct provider key.
+      const reservation = flow ? await scope(gymId, async tx => {
+        const { household, link } = await locked(tx, gymId, linkId);
+        if (household.stripeCustomerId !== customerId) missing();
+        const [previous] = await tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, linkId),
+          eq(auditEvents.action, 'billing.card_setup.reserved'))).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+        const saved = previous?.after as { attemptKey?: string; expiresAt?: string; customerId?: string } | undefined;
+        if (previous && saved?.attemptKey === attemptKey && saved.customerId === customerId && saved.expiresAt
+          && new Date(saved.expiresAt).getTime() > clock.now().getTime() + 31 * 60_000)
+          return { id: previous.id, expiresAt: new Date(saved.expiresAt) };
+        const expiresAt = new Date(Math.min(link.expiresAt.getTime(), clock.now().getTime() + flow.lifetimeMs));
+        if (expiresAt.getTime() < clock.now().getTime() + 35 * 60_000) unavailable();
+        const id = uuidv7(clock.now().getTime());
+        await writeAudit(tx, { id, gymId, actorKind: 'system', action: 'billing.card_setup.reserved', targetType: 'signed_link', targetId: linkId,
+          occurredAt: clock.now(), after: { attemptKey, expiresAt: expiresAt.toISOString(), customerId } });
+        return { id, expiresAt };
+      }) : null;
+      const session = await provider.createCheckout({ mode: 'setup', customerId, linkId, successUrl,
+        cancelUrl, saveForOffSession: true,
+        ...(reservation ? { expiresAt: reservation.expiresAt } : {}),
+        idempotencyKey: attemptKey + (reservation ? `:reservation:${reservation.id}` : '') });
       ownedSetup(session, gymId, linkId, customerId);
       await scope(gymId, async tx => {
         const { household } = await locked(tx, gymId, linkId);
@@ -139,7 +161,8 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         const current = await setupStart(tx, linkId, household);
         if (current === session.id) return;
         if (current !== prepared.sessionId) throw new AppError('conflict', 'Card setup changed');
-        await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id, customerId });
+        await audit(tx, gymId, 'billing.card_setup.started', linkId, { sessionId: session.id, customerId,
+          ...(reservation ? { expiresAt: reservation.expiresAt.toISOString() } : {}) });
       });
       // A POST retry can contain Stripe's original open response after expiry/completion.
       // Retrieve the persisted session on the next iteration before exposing its URL.
@@ -193,7 +216,6 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1) : [];
       return { link, customerId: household.stripeCustomerId, invoice, savesCard, reservationLinkId: reservation?.linkId, replaying };
     });
-    if (flow && !prepared.invoice) unavailable();
     await checkBilling(gymId, !!prepared.invoice);
     let customerId: string, provider: Payments;
     try {
@@ -211,7 +233,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
     }
     let session: CheckoutSession;
     await checkBilling(gymId, !!prepared.invoice);
-    if (!prepared.invoice) return startCard(gymId, linkId, customerId, provider, returnUrl);
+    if (!prepared.invoice) return startCard(gymId, linkId, customerId, provider, successUrl, cancelUrl, flow);
     if (prepared.invoice.checkoutSessionId) {
       const found = await provider.readPaymentObject({ kind: 'checkout', id: prepared.invoice.checkoutSessionId });
       if (found.status !== 'found' || found.value.kind !== 'checkout') unavailable();

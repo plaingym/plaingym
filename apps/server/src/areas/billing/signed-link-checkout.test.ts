@@ -29,6 +29,26 @@ import { createSignedLinkCheckout } from './signed-link-checkout.js';
 import { customerUnlinkedAction } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+it('replays short card setup with a persisted expiry after a lost response, and renews expired setup', async () => {
+  const f = await fixture('update_card'), flow = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 3_600_000 };
+  const create = f.provider.createCheckout.bind(f.provider);
+  let lost: CheckoutSession | undefined;
+  const spy = vi.spyOn(f.provider, 'createCheckout').mockImplementationOnce(async request => {
+    lost = await create(request); throw new Error('lost response');
+  });
+  await expect(f.checkout.start(f.gymId, f.linkId, false, flow)).rejects.toThrow('lost response');
+  f.clock.advance(60_000);
+  const retries = await Promise.all([f.checkout.start(f.gymId, f.linkId, false, flow), f.checkout.start(f.gymId, f.linkId, false, flow)]);
+  expect(retries.map(r => r.session.id)).toEqual([lost!.id, lost!.id]);
+  expect(retries.map(r => r.expiresAt)).toEqual(['2026-10-27T13:00:00.000Z', '2026-10-27T13:00:00.000Z']);
+  expect(spy.mock.calls.every(([request]) => request.expiresAt?.toISOString() === spy.mock.calls[0]![0].expiresAt?.toISOString())).toBe(true);
+  expect(spy.mock.calls[0]![0]).toMatchObject({ mode: 'setup', successUrl: origin + '/join/return', cancelUrl: origin + '/join/cancelled' });
+  const firstKey = spy.mock.calls[0]![0].idempotencyKey;
+  f.clock.advance(3_600_000);
+  const renewed = await f.checkout.start(f.gymId, f.linkId, false, flow);
+  expect(renewed.session.id).not.toBe(lost!.id);
+  expect(spy.mock.calls.at(-1)![0].idempotencyKey).not.toBe(firstKey);
+});
 const origin = 'https://gym.example.test', secret = 'synthetic-signing-secret';
 async function fixture(purpose: 'pay_invoice' | 'update_card' | 'onboarding' = 'update_card', stripe = false, currency = 'USD') {
   const gymId = uuidv7(), clock = new TestClock('2026-10-27T12:00:00Z');
@@ -766,9 +786,11 @@ describe('fixed return flows with real PostgreSQL', () => {
     expect(create).not.toHaveBeenCalled();
     expect((await saved(f)).checkoutExpiresAt).toBeNull();
   });
-  it('refuses a flow for card links, which have no invoice to pay', async () => {
+  it('uses setup mode and the fixed return pages for a card-only flow', async () => {
     const f = await fixture('update_card'), create = vi.spyOn(f.fake, 'createCheckout');
-    await expect(f.checkout.start(f.gymId, f.linkId, false, flow)).rejects.toMatchObject({ code: 'unavailable' });
-    expect(create).not.toHaveBeenCalled();
+    const result = await f.checkout.start(f.gymId, f.linkId, false, flow);
+    expect(result.session.mode).toBe('setup');
+    expect(create.mock.calls[0]![0]).toMatchObject({ successUrl: origin + '/join/return', cancelUrl: origin + '/join/cancelled',
+      expiresAt: new Date('2026-10-27T13:00:00Z') });
   });
 });

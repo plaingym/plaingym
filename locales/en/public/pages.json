@@ -1,5 +1,6 @@
 {
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
+  "join": "Join the gym",
   "trial": "Try a class",
   "drop-in": "Plan a drop-in visit",
   "trialHelp": "Tell us who will be training. Our team will contact you to arrange a trial.",
