@@ -92,6 +92,13 @@ export function createAccountService(config: AuthConfig, database = systemDataba
         .innerJoin(authUser, eq(authUser.id, staffRoles.userId)).where(inArray(staffRoles.role, [...roles])).orderBy(asc(authUser.email)));
       return rows.map((row) => row.email);
     },
+    /** Login email of one staff user of the gym, or null when the user holds no role there. */
+    async userEmail(gymId: string, userId: string) {
+      assertNoTransaction('auth.userEmail');
+      const [row] = await forGym(gymId, (tx) => tx.select({ email: authUser.email }).from(staffRoles)
+        .innerJoin(authUser, eq(authUser.id, staffRoles.userId)).where(eq(staffRoles.userId, userId)).limit(1));
+      return row?.email ?? null;
+    },
     async hasPassword(userId: string) {
       const [account] = await database().select({ id: authAccount.id }).from(authAccount).where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential')));
       return Boolean(account);

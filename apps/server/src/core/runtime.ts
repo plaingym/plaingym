@@ -70,6 +70,7 @@ import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
+import { configureAnnouncements, createAnnouncementsService } from '../areas/announcements/send.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
 import { backupsConfigured, configuredBackup, loadBackupConfig } from '../areas/health/restore.config.js';
@@ -315,6 +316,20 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   }
   configureCampaigns(createCampaignsService({ jobs: queue, clock, paymentsFor: requirePayments,
     delivery: { prepare: async gymId => ({ gymId, ...await gymMail(gymId) }) } }));
+  // Announcements send through the gym's SMTP (or the demo outbox, which needs no resolver) to the members it selects.
+  configureAnnouncements(createAnnouncementsService({ jobs: queue, clock, smtp: smtp ?? { configured: async () => true },
+    mailer: async gymId => {
+      if (demo) return demo.emailFor(gymId);
+      const email = await smtpMailer(smtp!)(gymId);
+      if (!email) throw new AppError('unavailable', 'Email is not configured for this gym');
+      return email;
+    }, origin: gymOrigin, demoMode: Boolean(demo),
+    ...(demo ? { demoEmailFor: demo.emailFor } : {}),
+    async senderEmail(gymId, userId) {
+      const email = await accounts.userEmail(gymId, userId);
+      if (!email) throw new AppError('forbidden', 'Announcement sender has no login email');
+      return email;
+    } }));
   const inbox = webhookInbox(paymentsFor, queue);
   configureWebhookInboxRoutes(inbox);
   configureWebhookInboxJobs(inbox);

@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import { authSession, authUser, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { authConfig } from './config.js';
 import { createAccountService } from './accounts.js';
 import { TestClock } from '../../core/clock.js';
@@ -36,4 +36,14 @@ it('lists only the requested roles of the requested gym', async () => {
     .map((row) => row.email).sort();
   expect((await accounts.staffEmails(gymA, ['owner', 'admin'])).sort()).toEqual(expected);
   expect(await accounts.staffEmails(gymA, [])).toEqual([]);
+});
+
+it("reads one staff user's login email only inside that user's gym", async () => {
+  const gymA = uuidv7(), gymB = uuidv7();
+  await factory('gyms', gymA); await factory('gyms', gymB);
+  const owner = await factory('staffRoles', gymA, { role: 'owner' });
+  const [user] = await db.system.db.select({ email: authUser.email }).from(authUser).where(eq(authUser.id, owner.userId));
+  expect(await accounts.userEmail(gymA, owner.userId)).toBe(user!.email);
+  expect(await accounts.userEmail(gymB, owner.userId)).toBeNull();
+  expect(await accounts.userEmail(gymA, uuidv7())).toBeNull();
 });
