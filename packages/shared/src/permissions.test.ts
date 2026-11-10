@@ -29,6 +29,7 @@ const rows: readonly [StaffPermission, readonly StaffRole[]][] = [
       'members.anonymize',
       'kiosk_devices.manage',
       'payments.custom',
+      'announcements.send',
     ] as const
   ).map((permission): [StaffPermission, StaffRole[]] => [permission, ['owner', 'admin']]),
   ...(

@@ -129,6 +129,7 @@ keeps these tables in step with it.
 | `households.manage` | yes | yes | | yes |
 | `tags.manage` | yes | yes | | yes |
 | `links.send` | yes | yes | | yes |
+| `announcements.send` | yes | yes | | |
 | `payments.record` | yes | yes | | yes |
 | `payments.custom` | yes | yes | | |
 | `billing.read` | yes | yes | | yes |

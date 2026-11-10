@@ -29,6 +29,8 @@ import { routes as waiversRoutes } from '../areas/waivers/routes.js';
 import { jobs as waiversJobs } from '../areas/waivers/jobs.js';
 import { routes as linksRoutes } from '../areas/links/routes.js';
 import { jobs as linksJobs } from '../areas/links/jobs.js';
+import { routes as announcementRoutes } from '../areas/announcements/routes.js';
+import { jobs as announcementJobs } from '../areas/announcements/jobs.js';
 import { routes as dashboardRoutes } from '../areas/dashboard/routes.js';
 import { jobs as dashboardJobs } from '../areas/dashboard/jobs.js';
 import { routes as healthRoutes } from '../areas/health/routes.js';
@@ -111,6 +113,7 @@ export const areaContributions = {
     ...billingRoutes,
     ...waiversRoutes,
     ...linksRoutes,
+    ...announcementRoutes,
     ...dashboardRoutes,
     ...healthRoutes,
     ...setupRoutes,
@@ -131,6 +134,7 @@ export const areaContributions = {
     ...billingJobs,
     ...waiversJobs,
     ...linksJobs,
+    ...announcementJobs,
     ...dashboardJobs,
     ...healthJobs,
     ...setupJobs,

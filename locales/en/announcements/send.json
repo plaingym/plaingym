@@ -1,0 +1,10 @@
+{
+  "_license": "SPDX-License-Identifier: AGPL-3.0-only",
+  "testSubject": "[Test] {subject}",
+  "testNotice": "This is a test announcement. No members received it.",
+  "testUnsubscribe": "Unsubscribe from announcements (inactive in this test).",
+  "unsubscribe": "Unsubscribe from announcements",
+  "disabled": "Enable member email in Go live before sending announcements.",
+  "noSmtp": "Configure email in Settings before sending announcements.",
+  "failed": "The test announcement could not be sent."
+}

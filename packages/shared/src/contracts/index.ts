@@ -7,6 +7,7 @@ export * from './members.js';
 export * from './staff.js';
 export * from './shell.js';
 export * from './links.js';
+export * from './announcements.js';
 export * from './schedule.js';
 export * from './bookings.js';
 export * from './attendance.js';

@@ -20,6 +20,9 @@ function table(heading: string): Record<string, boolean[]> {
 }
 
 describe('docs/security-model.md', () => {
+  it('restricts announcement composition and history to owners and admins', () => {
+    expect(table('Staff capabilities')['announcements.send']).toEqual([true, true, false, false]);
+  });
   it('documents the announcement-only unsubscribe purpose, reusable credentials and the independent preference', () => {
     expect(isRoutePermission({ kind: 'signed_link', purpose: 'unsubscribe' })).toBe(true);
     for (const detail of ['one member\'s announcement subscription', 'last 90 days', 'remain reusable',
