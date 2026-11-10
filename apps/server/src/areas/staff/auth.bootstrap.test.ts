@@ -96,8 +96,21 @@ describe('bootstrap session identity', () => {
   it('names a staff login by its profile, with the roles the request already resolved', async () => {
     const f = await fixture();
     await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'coach' });
-    await factory('staffProfiles', f.gymId, { userId: f.user.id, displayName: 'Coach Alpha' });
-    expect(await bootstrap(routeApp(f, { tenancy: 'single' }), f, f.gymId)).toEqual({ userId: f.user.id, displayName: 'Coach Alpha', roles: ['coach'], member: false });
+    const profile = await factory('staffProfiles', f.gymId, { userId: f.user.id, displayName: 'Coach Alpha' });
+    expect(await bootstrap(routeApp(f, { tenancy: 'single' }), f, f.gymId)).toEqual({ userId: f.user.id, staffProfileId: profile.id, displayName: 'Coach Alpha', roles: ['coach'], member: false });
+  });
+  it('returns no profile for an unlinked coach and different profile IDs for one login in two gyms', async () => {
+    const f = await fixture();
+    await factory('staffRoles', f.gymId, { userId: f.user.id, role: 'coach' });
+    await factory('staffRoles', f.otherGymId, { userId: f.user.id, role: 'coach' });
+    expect(await bootstrap(routeApp(f, { tenancy: 'single' }), f, f.gymId)).toMatchObject({ roles: ['coach'], staffProfileId: null });
+    const first = await factory('staffProfiles', f.gymId, { userId: f.user.id });
+    const second = await factory('staffProfiles', f.otherGymId, { userId: f.user.id });
+    for (const tenancy of ['single', 'multi'] as const) {
+      const app = routeApp(f, { tenancy });
+      expect(await bootstrap(app, f, f.gymId)).toMatchObject({ staffProfileId: first.id });
+      expect(await bootstrap(app, f, f.otherGymId)).toMatchObject({ staffProfileId: second.id });
+    }
   });
   it('names a member login by the member it is linked to in the open household, and no other', async () => {
     const f = await fixture();
@@ -107,7 +120,7 @@ describe('bootstrap session identity', () => {
     await factory('householdUsers', f.gymId, { userId: f.user.id, householdId: first.id, memberId: mia.id, scope: 'member' });
     await factory('householdUsers', f.gymId, { userId: f.user.id, householdId: second.id, memberId: noa.id, scope: 'member' });
     expect(await bootstrap(routeApp(f, { tenancy: 'single', principal: memberOf(f.gymId, second.id, noa.id) }), f, f.gymId))
-      .toEqual({ userId: f.user.id, displayName: 'Noa Second', roles: [], member: true });
+      .toEqual({ userId: f.user.id, staffProfileId: null, displayName: 'Noa Second', roles: [], member: true });
     expect(await bootstrap(routeApp(f, { tenancy: 'single', principal: memberOf(f.gymId, first.id, mia.id) }), f, f.gymId))
       .toMatchObject({ displayName: 'Mia First', roles: [], member: true });
   });
@@ -139,7 +152,7 @@ describe('bootstrap session identity', () => {
   it('has no name, and never the user ID, for a principal without a request session', async () => {
     const f = await fixture();
     const session = await bootstrap(routeApp(f, { tenancy: 'single', session: false }), f, f.gymId, false);
-    expect(session).toEqual({ userId: f.user.id, displayName: null, roles: ['coach'], member: false });
+    expect(session).toEqual({ userId: f.user.id, staffProfileId: null, displayName: null, roles: ['coach'], member: false });
     expect(await bootstrap(routeApp(f, { tenancy: 'multi', session: false }), f, f.gymId, false)).toMatchObject({ displayName: null });
   });
   it('runs one household query and no staff role query for a staff login and a member login', async () => {

@@ -23,6 +23,15 @@ const session = {
 };
 
 describe('weekly templates and materialized sessions', () => {
+  it('limits cancellation notices to explicit opt-in and a plain text note of at most 1,000 characters', () => {
+    const schema = scheduleContracts.cancelSession.body;
+    expect(schema.parse({ revision: 1 })).toEqual({ revision: 1 });
+    expect(schema.parse({ revision: 1, notify: true, note: '<b>Closed</b>\nTomorrow' })).toMatchObject({ notify: true, note: '<b>Closed</b>\nTomorrow' });
+    expect(schema.safeParse({ revision: 1, notify: false, note: 'a'.repeat(1_000) }).success).toBe(true);
+    for (const extra of [{ note: 'a'.repeat(1_001) }, { notify: 'true' }, { note: null }, { memberIds: [id] }, { gymId: otherId }])
+      expect(schema.safeParse({ revision: 1, ...extra }).success).toBe(false);
+    expect(scheduleRevisionRequestSchema.safeParse({ revision: 1, notify: true }).success).toBe(false);
+  });
   it('preserves local wall time and accepts the repeated DST hour as a positive duration', () => {
     // Kind defaults to a class on create.
     expect(createClassTemplateRequestSchema.parse(template)).toEqual({ ...template, kind: 'class' });

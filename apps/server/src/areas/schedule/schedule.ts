@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gte, ilike, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
-import { forGym, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
+import { forGym, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, programs, staffProfiles, staffRoles, revisionGuard, assertRevised, writeAudit, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { classTagSchema, classTemplateSchema, classSessionSchema, createClassTagRequestSchema, updateClassTagRequestSchema, createClassTemplateRequestSchema, updateClassTemplateRequestSchema, createClassSessionRequestSchema, updateClassSessionRequestSchema, classTagListQuerySchema, classTemplateListQuerySchema, classSessionListQuerySchema, scheduleRevisionRequestSchema, swapSessionCoachRequestSchema, updateSessionNotesRequestSchema, updateSessionCapacityRequestSchema,
   type ClassTemplate, type ClassSession, type CreateClassTagRequest, type UpdateClassTagRequest, type CreateClassTemplateRequest, type UpdateClassTemplateRequest, type CreateClassSessionRequest, type UpdateClassSessionRequest, type ClassTagListQuery, type ClassTemplateListQuery, type ClassSessionListQuery, type ScheduleRevisionRequest, type SwapSessionCoachRequest, type UpdateSessionNotesRequest, type UpdateSessionCapacityRequest } from '@plaingym/shared/contracts';
@@ -10,6 +10,10 @@ import { localDate, occurrences } from './schedule.time.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { reconcileSessionBookings } from '../bookings/bookings.rules.js';
+import { cancelSessionRequestSchema, type CancelSessionRequest } from '@plaingym/shared/contracts';
+import { readCancellationRecipients } from '../bookings/bookings.recipients.js';
+import { cancellationNotice, type CancellationNotice } from '../announcements/cancellation.js';
+import { withJobTransaction } from '../../infra/jobs/index.js';
 
 function missing(): never { throw new AppError('not_found', 'Schedule record not found'); }
 const conflict = (): never => { throw new AppError('conflict', 'The schedule record is in use'); };
@@ -66,7 +70,7 @@ async function safe<T>(work: () => Promise<T>): Promise<T> {
     throw error;
   }
 }
-export function createScheduleService(options: { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor } = {}) {
+export function createScheduleService(options: { scope?: typeof forGym; clock?: Clock; settings?: GymSettingsAccessor; cancellation?: Pick<CancellationNotice, 'enqueue'> } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const settings = options.settings ?? createGymSettingsAccessor({ scope });
   const audit = async (tx: Transaction, context: MutationContext, action: string, id: string, before: unknown, after: unknown) => {
@@ -240,8 +244,34 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         await audit(tx, context, 'session.updated', id, before, after); return after;
       }));
     },
-    async changeSession(context: MutationContext, id: string, kind: 'cancel' | 'coach' | 'notes' | 'capacity', input: ScheduleRevisionRequest | SwapSessionCoachRequest | UpdateSessionNotesRequest | UpdateSessionCapacityRequest) {
-      const schema = kind === 'cancel' ? scheduleRevisionRequestSchema : kind === 'coach' ? swapSessionCoachRequestSchema : kind === 'notes' ? updateSessionNotesRequestSchema : updateSessionCapacityRequestSchema;
+    async changeSession(context: MutationContext, id: string, kind: 'cancel' | 'coach' | 'notes' | 'capacity', input: CancelSessionRequest | SwapSessionCoachRequest | UpdateSessionNotesRequest | UpdateSessionCapacityRequest) {
+      if (kind === 'cancel') {
+        const value = cancelSessionRequestSchema.parse(input);
+        const gym = value.notify ? await settings.get(context.gymId) : undefined;
+        return safe(() => withJobTransaction(scope, context.gymId, async transaction => {
+          const { tx } = transaction;
+          const [row] = await tx.select().from(classSessions).where(eq(classSessions.id, id)).for('update'); if (!row) missing();
+          if (value.notify) {
+            const roles = context.actor.kind === 'user' ? await tx.select({ role: staffRoles.role }).from(staffRoles)
+              .where(eq(staffRoles.userId, context.actor.userId)) : [];
+            const manager = roles.some(({ role }) => role === 'owner' || role === 'admin');
+            const [profile] = context.actor.kind === 'user' && roles.some(({ role }) => role === 'coach') && row.coachId
+              ? await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(and(eq(staffProfiles.id, row.coachId), eq(staffProfiles.userId, context.actor.userId))) : [];
+            if (!manager && !profile) throw new AppError('forbidden', 'Only the session coach, an admin or an owner may send a cancellation notice');
+          }
+          const before = await sessionView(tx, row), guard = revisionGuard(classSessions.revision, value.revision);
+          const afterRow = assertRevised(await tx.update(classSessions).set({ status: 'cancelled', revision: guard.next })
+            .where(and(eq(classSessions.id, id), guard.matches)).returning());
+          if (value.notify && row.status !== 'cancelled') {
+            const memberIds = await readCancellationRecipients(tx, id);
+            await (options.cancellation ?? cancellationNotice()).enqueue(transaction, { sessionId: id, memberIds, note: value.note ?? '' }, gym!.timezone);
+          }
+          const after = await sessionView(tx, afterRow);
+          await audit(tx, context, 'session.cancel', id, before, after);
+          return after;
+        }));
+      }
+      const schema = kind === 'coach' ? swapSessionCoachRequestSchema : kind === 'notes' ? updateSessionNotesRequestSchema : updateSessionCapacityRequestSchema;
       const { revision, ...value } = schema.parse(input);
       return safe(() => scope(context.gymId, async (tx) => {
         // All session mutations share the row lock with attendance and booking changes.
@@ -249,7 +279,7 @@ export function createScheduleService(options: { scope?: typeof forGym; clock?: 
         const before = await sessionView(tx, row);
         if ('coachId' in value && typeof value.coachId === 'string' && !(await tx.select({ id: staffProfiles.id }).from(staffProfiles).where(eq(staffProfiles.id, value.coachId))).length) missing();
         const guard = revisionGuard(classSessions.revision, revision);
-        const afterRow = assertRevised(await tx.update(classSessions).set({ ...value, ...(kind === 'cancel' ? { status: 'cancelled' } : {}), revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
+        const afterRow = assertRevised(await tx.update(classSessions).set({ ...value, revision: guard.next }).where(and(eq(classSessions.id, id), guard.matches)).returning());
         if (kind === 'capacity') await reconcileSessionBookings(tx, afterRow, context, clock.now());
         const after = await sessionView(tx, afterRow); await audit(tx, context, 'session.' + kind, id, before, after); return after;
       }));

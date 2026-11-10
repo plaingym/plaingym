@@ -12,6 +12,11 @@ const nameSchema = z.string().trim().min(1);
 const relatedIdsSchema = z.array(idSchema).refine((ids) => new Set(ids).size === ids.length, 'IDs must be unique');
 export const scheduleIdParamsSchema = z.strictObject({ id: idSchema });
 export const scheduleRevisionRequestSchema = z.strictObject({ revision: revisionSchema });
+export const cancelSessionRequestSchema = z.strictObject({
+  revision: revisionSchema,
+  notify: z.boolean().optional(),
+  note: z.string().max(1_000).optional(),
+});
 export { classKindSchema, classSessionStatusSchema } from './states.js';
 /** Sunday is 0. Local wall time is interpreted in the gym timezone during materialization. */
 export const classTemplateFieldsSchema = z.strictObject({
@@ -99,7 +104,7 @@ export const scheduleContracts = {
   getSession: { method: 'get', path: '/api/schedule/sessions/{id}', permission: readSchedule, params: scheduleIdParamsSchema, response: classSessionResponseSchema },
   createSession: { method: 'post', path: '/api/schedule/sessions', permission: manageSchedule, body: createClassSessionRequestSchema, response: classSessionResponseSchema },
   updateSession: { method: 'put', path: '/api/schedule/sessions/{id}', permission: manageSchedule, params: scheduleIdParamsSchema, body: updateClassSessionRequestSchema, response: classSessionResponseSchema },
-  cancelSession: { method: 'post', path: '/api/schedule/sessions/{id}/cancel', permission: manageSchedule, params: scheduleIdParamsSchema, body: scheduleRevisionRequestSchema, response: classSessionResponseSchema },
+  cancelSession: { method: 'post', path: '/api/schedule/sessions/{id}/cancel', permission: manageSchedule, params: scheduleIdParamsSchema, body: cancelSessionRequestSchema, response: classSessionResponseSchema },
   swapCoach: { method: 'post', path: '/api/schedule/sessions/{id}/coach', permission: manageSchedule, params: scheduleIdParamsSchema, body: swapSessionCoachRequestSchema, response: classSessionResponseSchema },
   updateNotes: { method: 'patch', path: '/api/schedule/sessions/{id}/notes', permission: manageNotes, params: scheduleIdParamsSchema, body: updateSessionNotesRequestSchema, response: classSessionResponseSchema },
   updateCapacity: { method: 'patch', path: '/api/schedule/sessions/{id}/capacity', permission: manageSchedule, params: scheduleIdParamsSchema, body: updateSessionCapacityRequestSchema, response: classSessionResponseSchema },
@@ -122,6 +127,7 @@ export type SwapSessionCoachRequest = z.infer<typeof swapSessionCoachRequestSche
 export type UpdateSessionNotesRequest = z.infer<typeof updateSessionNotesRequestSchema>;
 export type UpdateSessionCapacityRequest = z.infer<typeof updateSessionCapacityRequestSchema>;
 export type ScheduleRevisionRequest = z.infer<typeof scheduleRevisionRequestSchema>;
+export type CancelSessionRequest = z.infer<typeof cancelSessionRequestSchema>;
 
 export type ClassTagResponse = z.infer<typeof classTagResponseSchema>;
 export type ClassTagListResponse = z.infer<typeof classTagListResponseSchema>;

@@ -18,8 +18,8 @@ const id = '00000000-0000-7000-8000-000000000001', programId = '00000000-0000-70
 const options = { timezone: 'America/New_York', programs: [{ id: programId, name: 'Program A' }], coaches: [] };
 const session: ClassSession = { id, name: 'Evening class', startsAt: '2026-03-02T23:00:00Z', endsAt: '2026-03-03T00:00:00Z',
   templateId: null, coachId: null, status: 'scheduled', capacity: null, notes: '<script>Keep plain</script>', kind: 'class', programIds: [programId], tagIds: [], revision: 4, createdAt: '2026-03-01T00:00:00Z' };
-function bootstrap(roles: StaffRole[] = ['owner'], gymId = id) {
-  const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, displayName: 'Test User', roles, member: !roles.length }, login: { password: true, magicLink: false } };
+function bootstrap(roles: StaffRole[] = ['owner'], gymId = id, staffProfileId: string | null = null) {
+  const data: ShellBootstrap = { gym: { id: gymId, name: 'Gym', timezone: 'UTC', currency: 'USD', enabledModules: [] }, session: { userId: id, staffProfileId, displayName: 'Test User', roles, member: !roles.length }, login: { password: true, magicLink: false } };
   vi.mocked(useBootstrap).mockReturnValue(new QueryObserver(new QueryClient(), { queryKey: ['bootstrap'], queryFn: async () => data, initialData: data }).getCurrentResult());
 }
 beforeEach(() => {
@@ -31,6 +31,59 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); vi.useRealTimers(); });
 describe('schedule calendar and session detail', () => {
+  function noticeRegistries() {
+    const counts = { booked: 2, waitlisted: 1, checkedIn: 0 };
+    const Panel = () => { usePublishSessionCounts(counts); return null; };
+    return createRegistries([{ sessionPanels: [{ id: 'test.notice-counts', labelKey: 'schedule/schedule:bookings', enabled: true,
+      permission: { kind: 'staff', capability: 'schedule.manage' }, component: Panel }] }]);
+  }
+  it.each(['owner', 'admin', 'coach'] as const)('offers %s an optional notice and submits its plain text note', async role => {
+    bootstrap([role], id, programId);
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    const onSaved = vi.fn();
+    render(<SessionDetail session={{ ...session, coachId: programId }} options={options} roles={[role]} enabledModules={[]} onSaved={onSaved} registries={noticeRegistries()}/>);
+    const checkbox = screen.getByRole('checkbox', { name: 'Email the 3 booked and waitlisted members' });
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByLabelText(/Optional cancellation note/)).toBeNull();
+    fireEvent.click(checkbox);
+    const note = screen.getByLabelText(/Optional cancellation note/);
+    expect(note.getAttribute('maxlength')).toBe('1000');
+    fireEvent.change(note, { target: { value: '<b>Closed</b>\nTomorrow' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4, notify: true, note: '<b>Closed</b>\nTomorrow' } });
+  });
+  it.each(['other_coach', 'unlinked_coach', 'front_desk'] as const)('hides the notice option from %s', kind => {
+    const role = kind === 'front_desk' ? 'front_desk' : 'coach';
+    bootstrap([role], id, kind === 'other_coach' ? id : null);
+    render(<SessionDetail session={{ ...session, coachId: programId }} options={options} roles={[role]} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+    expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
+  });
+  it('keeps cancellation without email available and hides the option on an already cancelled session', async () => {
+    vi.mocked(api.POST).mockResolvedValue({ response: new Response(), data: { data: { ...session, revision: 5, status: 'cancelled' } } } as Awaited<ReturnType<typeof api.POST>>);
+    const view = render(<SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel session' }));
+    await waitFor(() => expect(api.POST).toHaveBeenCalledWith('/api/schedule/sessions/{id}/cancel', { params: { path: { id } }, body: { revision: 4 } }));
+    view.rerender(<SessionDetail session={{ ...session, status: 'cancelled' }} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={noticeRegistries()}/>);
+    expect(screen.queryByRole('checkbox', { name: /Email the/ })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Cancel session' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  it('retains a selected email option while stale counts require a roster refresh', () => {
+    let counts = { booked: 2, waitlisted: 1, checkedIn: 0, stale: false };
+    const Panel = () => { usePublishSessionCounts(counts); return null; };
+    const registries = createRegistries([{ sessionPanels: [{ id: 'test.stale-notice', labelKey: 'schedule/schedule:bookings', enabled: true,
+      permission: { kind: 'staff', capability: 'schedule.manage' }, component: Panel }] }]);
+    const detail = () => <SessionDetail session={session} options={options} roles={['owner']} enabledModules={[]} onSaved={vi.fn()} registries={registries}/>;
+    const view = render(detail());
+    fireEvent.click(screen.getByRole('checkbox', { name: /Email the 3/ }));
+    fireEvent.change(screen.getByLabelText(/Optional cancellation note/), { target: { value: 'Keep this note' } });
+    counts = { ...counts, stale: true }; view.rerender(detail());
+    expect((screen.getByRole('checkbox', { name: /Email the 3/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('button', { name: 'Cancel session' }) as HTMLButtonElement).disabled).toBe(true);
+    counts = { ...counts, stale: false }; view.rerender(detail());
+    expect((screen.getByRole('button', { name: 'Cancel session' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByLabelText(/Optional cancellation note/) as HTMLTextAreaElement).value).toBe('Keep this note');
+  });
   it('uses gym dates, calendar weeks and DST offsets independently of the browser', () => {
     expect(calendarDate(new Date('2026-03-02T02:00:00Z'), 'America/New_York')).toBe('2026-03-01');
     expect(weekStart('2026-03-08')).toBe('2026-03-02');

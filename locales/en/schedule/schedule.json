@@ -40,6 +40,8 @@
   "saveCapacity": "Save capacity",
   "saveNotes": "Save notes",
   "cancelSession": "Cancel session",
+  "cancelNotify": "Email the {count} booked and waitlisted members",
+  "cancelNote": "Optional cancellation note (up to 1,000 characters)",
   "saved": "Saved.",
   "error": "Unable to save or load the schedule. Check the fields and try again.",
   "conflict": "This record changed or is in use. Reload before trying again.",

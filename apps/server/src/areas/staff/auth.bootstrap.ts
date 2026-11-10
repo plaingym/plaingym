@@ -43,7 +43,7 @@ export function createAuthBootstrapRoutes(options: {
           .from(householdUsers).leftJoin(members, and(eq(members.gymId, householdUsers.gymId), eq(members.id, householdUsers.memberId), isNull(members.anonymizedAt)))
           .where(eq(householdUsers.userId, principal.userId)).orderBy(asc(householdUsers.createdAt), asc(householdUsers.id));
         // This gym's own records come first, so a login in two gyms is known by each gym's name for it.
-        const [profile] = await tx.select({ name: staffProfiles.displayName }).from(staffProfiles).where(eq(staffProfiles.userId, principal.userId)).limit(1);
+        const [profile] = await tx.select({ id: staffProfiles.id, name: staffProfiles.displayName }).from(staffProfiles).where(eq(staffProfiles.userId, principal.userId)).limit(1);
         // A payer link with no member (the payer is not a person on the roster), or one to an erased member, has no name
         // here and falls back to the login's own.
         const portal = principal.kind === 'member' ? principal.scope : undefined;
@@ -51,7 +51,7 @@ export function createAuthBootstrapRoutes(options: {
           && (!portal || link.householdId === portal.householdId) && (!portal?.memberId || link.memberId === portal.memberId));
         // Without a request session there is no login name either: the shell shows its generic label, never the user ID.
         const displayName = [profile?.name, linked && `${linked.firstName} ${linked.lastName}`, loginName].map(value => value?.trim()).find(Boolean) ?? null;
-        return { userId: principal.userId, displayName, roles: principal.kind === 'staff' ? [...principal.roles] : [], member: links.length > 0 };
+        return { userId: principal.userId, staffProfileId: profile?.id ?? null, displayName, roles: principal.kind === 'staff' ? [...principal.roles] : [], member: links.length > 0 };
       });
     }
     const login = await (options.login ?? configuredLogin ?? installLogin)(gym.gymId);

@@ -36,10 +36,26 @@ Referenced tags cannot be deleted.
 
 The local `GET /api/schedule/options` response projects the gym timezone and
 program/coach IDs and names for schedule readers (TODO: move the response into the shared contract).
-All other endpoints use the frozen schedule contracts.
+All other endpoints use the shared schedule contracts. The cancel request accepts
+optional `notify: true` and a plain text `note` of at most 1,000 characters.
+With notification requested, the service checks the current user's stored roles
+and linked staff profile under the session row lock: only an owner, admin or
+that session's assigned coach may proceed. A refusal rolls back the entire
+cancellation. Without notification, the existing cancellation permission applies.
+The cancellation, audit and notice job commit together. The payload snapshots only
+that session's booked and waitlisted member IDs and the note; bookings themselves
+are unchanged. Repeated cancellation does not queue another notice.
+
+The session dialog offers an unchecked email option with the booked-plus-waitlisted
+count when fresh panel counts are available and the actor may notify. Selecting it
+reveals the optional note. A failed roster refresh keeps a selected option and
+note, and waits for fresh counts before sending. Coach visibility compares the bootstrap's gym-scoped
+`staffProfileId` with the session's `coachId`; API authorization is independent.
 
 The existing area route/job barrels load `schedule.routes.ts` and
-`schedule.jobs.ts`. No extra runtime wiring is required. The admin calendar
+`schedule.jobs.ts`. Notification delivery requires the announcements area's
+`configureCancellationNotice` runtime setup (see its README); ordinary cancellation
+does not. The admin calendar
 renders enabled, permitted `sessionPanels` contributions without importing
 their components directly. A panel can publish booking counts for the session
 dialog's summary (`lib/session-summary.tsx`); the dialog shows them beside the

@@ -69,3 +69,38 @@ runtime), the routes answer 503.
 The unsubscribe service and public signed-link pages retain the independent,
 one-member announcement preference. They do not change the member's global email
 opt-out or suppress transactional mail.
+
+## Class-cancellation notices
+
+The schedule service enqueues `announcements.cancellation` in the cancellation's
+transaction with a snapshot of booked and waitlisted member IDs, the session ID
+and an optional plain text note. Its job key is `schedule-cancel-notice:<sessionId>`.
+This is a notice about the member's own booking: it ignores `announcement_opt_outs`
+and carries no unsubscribe link. It honors the member-email go-live switch,
+`members.email_opt_out`, email deliverability and erasure. Any globally opted-out
+or undeliverable member at an address blocks that address, including members
+outside the cancellation snapshot.
+
+Delivery reloads the snapshot's current addresses, groups them after trimming and
+lower-casing, and sends one email per address naming all of its booked and
+waitlisted members. It never adds members outside the snapshot. Each message
+identifies the gym and class, the date and time in the gym's timezone, the escaped
+plain text note, and the portal schedule link. The group is checked again at the
+send boundary and the transport is wrapped in `MemberEmail`.
+
+A short session-row lock serializes `email_deliveries` reservations. Keys contain
+the session ID and the address group's first member ID; a digest of session ID
+and normalized address also prevents duplicate destinations when addresses change
+or converge. No SMTP runs inside a transaction. Live reservations defer to a job
+retry. Accepted, unknown and definitely rejected attempts are not resent by this
+notice; a setup failure before reservation can be retried. A send outcome writes
+an audit without the address or message content.
+
+Runtime composition must call
+`configureCancellationNotice(createCancellationNotice({ jobs, mailer, origin, ... }))`.
+`mailer` resolves each gym's SMTP configuration, and `origin` supplies its canonical
+HTTPS origin. The area's job barrel already registers the handler. Demo composition
+passes `demoMode: true` and `demoEmailFor` from the demo runtime: the production
+mailer is never called, and a missing demo outbox fails closed. Until configured,
+requesting notification fails with 503 and rolls back the cancellation. Tests may
+inject the same service through `createScheduleService({ cancellation })`.

@@ -8,6 +8,8 @@ import type { EndpointContract } from './definition.js';
 /** Host-resolved public gym details and only the current login's access. */
 export const shellSessionSchema = z.strictObject({
   userId: idSchema,
+  /** This login's staff profile in the current gym; presentation data, never authorization. */
+  staffProfileId: idSchema.nullable().optional(),
   /**
    * The name this gym knows the login by (staff profile, else the linked member), else the login's own name, or its
    * address in `multi` mode (another gym may have set the name). Null without a request session; clients show a generic label.
