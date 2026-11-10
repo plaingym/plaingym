@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { Client, cached, createClass, expect, missingId, type ClassSession, type Person, type Program, type RecordId } from '../support.js';
@@ -86,6 +86,8 @@ export interface GymFixture {
   paymentMethodId: string;
   /** A signed link, and a campaign that sent one. */
   linkId: string; campaignId: string;
+  /** An announcement the owner sent. */
+  announcementId: string;
   /** A weekly schedule template, a class tag, a data export, and an import run (dry run) with its CSV upload. */
   scheduleTemplateId: string; classTagId: string; exportId: string; importId: string; uploadId: string;
 }
@@ -274,7 +276,9 @@ export async function createGym(gym: (typeof gyms)[number], afterWrite: (step: '
     const upload = (await write<{ data: { id: string } }>(owner, 'imports-uploads', '/api/imports/uploads', 'POST', file.body, file.headers)).data;
     const imported = (await write<{ data: RecordId }>(owner, 'imports', '/api/imports', 'POST', { uploadId: upload.id, mapper: 'people', duplicatePolicy: 'skip', dryRun: true,
       mapping: [{ sourceColumn: 'First', targetField: 'firstName' }, { sourceColumn: 'Last', targetField: 'lastName' }] })).data;
-    return { campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id };
+    const announcement = (await write<{ data: RecordId }>(owner, 'announcements', '/api/announcements/send', 'POST', { subject: gym.name + ' notice', body: 'Placed announcement.',
+      sendGeneration: randomUUID(), confirm: true })).data;
+    return { announcementId: announcement.id, campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id };
   });
 
   return { slug: gym.slug, name: gym.name, origin: gym.origin, gymId: opened.gymId, ownerEmail: gym.ownerEmail, coachEmail, stripeKey,

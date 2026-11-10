@@ -49,7 +49,7 @@ export async function targetOf(gym: Context): Promise<Target> {
     rankId: gym.rankId, staffRoleId: roles.at(-1)?.id ?? missingId, userId: roles.at(-1)?.userId ?? missingId, staffProfileId: profiles[0]?.id ?? missingId,
     templateId: gym.templateId, planId: gym.planId, householdUserId: householdUsers[0]?.id ?? missingId, invitationId: invitations[0]?.id ?? missingId,
     chargeTypeId: gym.chargeTypeId, taxRateId: gym.taxRateId, membershipId: gym.membershipId, paymentId: gym.paymentId, refundId: gym.refundId,
-    paymentMethodId: gym.paymentMethodId, linkId: gym.linkId, campaignId: gym.campaignId, scheduleTemplateId: gym.scheduleTemplateId, classTagId: gym.classTagId,
+    paymentMethodId: gym.paymentMethodId, linkId: gym.linkId, campaignId: gym.campaignId, announcementId: gym.announcementId, scheduleTemplateId: gym.scheduleTemplateId, classTagId: gym.classTagId,
     exportId: gym.exportId, importId: gym.importId, uploadId: gym.uploadId, paidInvoiceId: gym.paidInvoiceId };
   // Every kind of record exists in the gym's fixtures: an ID nothing holds would make a refusal prove nothing.
   for (const [name, id] of Object.entries(ids)) expect(id, `${gym.slug} fixture holds a ${name}`).toBeTruthy();
