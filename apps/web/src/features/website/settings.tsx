@@ -16,8 +16,8 @@ import { prepareImage } from './images.js';
 
 const text = (key: string, values?: Record<string, string>) => t('website/website:' + key, values);
 const maxPhotos = maxWebsitePhotos;
-type Draft = Omit<WebsiteSettingsData, 'revision' | 'logo'>;
-const draftOf = ({ revision: _revision, logo: _logo, ...draft }: WebsiteSettingsData): Draft => draft;
+type Draft = Omit<WebsiteSettingsData, 'revision' | 'logo' | 'logoVersion'>;
+const draftOf = ({ revision: _revision, logo: _logo, logoVersion: _logoVersion, ...draft }: WebsiteSettingsData): Draft => draft;
 type Sent = { response: { ok: boolean; status: number }; data?: unknown };
 const defaultPrimary = '#155e55', defaultAccent = '#e3eeec';
 
@@ -122,7 +122,7 @@ export function WebsiteSettings() {
     {failed && <ErrorState message={text('error')} onRetry={() => void load()} retryLabel={text('reload')}/>}
     <section className="space-y-3" aria-label={text('logo')}>
       <h3 className="text-base font-semibold">{text('logo')}</h3>
-      {data.logo ? <img src={'/public/pages/logo/' + Math.max(data.revision, gym.settings?.revision ?? 0)} alt={text('logoPreview')} className="h-20 w-20 rounded-md border border-border object-contain"/>
+      {data.logoVersion ? <img src={'/public/pages/logo/' + data.logoVersion} alt={text('logoPreview')} className="h-20 w-20 rounded-md border border-border object-contain"/>
         : <p className="text-sm text-muted-foreground">{text('noLogo')}</p>}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <Label className="grid min-w-0 flex-1 gap-2">{text(data.logo ? 'replaceLogo' : 'uploadLogo')}

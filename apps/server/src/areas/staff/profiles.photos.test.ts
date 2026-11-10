@@ -89,6 +89,23 @@ it('marks the new upload deleted if a concurrent edit wins before attachment', a
   const objects = await store.list(`${gymA}/staff/${profile.id}/`);
   expect(objects).toHaveLength(1); expect(objects[0]!.deletedAt).not.toBeNull();
 });
+it('answers the attach conflict even when cleanup of the failed upload also fails', async () => {
+  const profile = (await profiles.createProfile(actor(), { displayName: 'Failed attach and cleanup' })).data;
+  const store = stores.get(gymA)!, put = store.put.bind(store);
+  const race = vi.spyOn(store, 'put').mockImplementationOnce(async (...args) => {
+    const result = await put(...args);
+    await profiles.updateProfile(actor(), profile.id, { revision: 1, bio: 'Concurrent edit' });
+    return result;
+  });
+  const failing = vi.spyOn(store, 'markDeleted').mockRejectedValue(new Error('storage unavailable'));
+  const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+  try {
+    expect((await post(server(), profile.id, body())).status).toBe(409);
+    expect(failing).toHaveBeenCalledOnce();
+    expect(lines.some(line => line.includes('staff.photo.release_failed'))).toBe(true);
+    expect((await profiles.getProfile(gymA, profile.id)).data).toMatchObject({ revision: 2, photoKey: null });
+  } finally { race.mockRestore(); failing.mockRestore(); setLogSink(previous); }
+});
 it('logs a storage failure that follows a committed photo save and keeps the save', async () => {
   const profile = (await profiles.createProfile(actor(), { displayName: 'Release failure' })).data;
   const store = stores.get(gymA)!, first = (await service.upload(actor(), profile.id, 1, jpeg, 'image/jpeg')).data;

@@ -18,7 +18,7 @@ const gym: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', timezone: 'Ameri
   billingEnabled: false, memberEmailsEnabled: false, retryDays: [3, 7], dropInChargeTypeId: null, revision: 4,
   createdAt: '2026-11-03T12:00:00Z', updatedAt: '2026-11-03T12:00:00Z' };
 const website: WebsiteSettingsData = { revision: 4, tagline: 'Train with friends', about: 'Since 2010', phone: null, email: null,
-  accentColor: null, primaryColor: '#123456', logo: false, photos: [{ id: id(10), alt: 'Mats' }, { id: id(11), alt: 'Class' }] };
+  accentColor: null, primaryColor: '#123456', logo: false, logoVersion: null, photos: [{ id: id(10), alt: 'Mats' }, { id: id(11), alt: 'Class' }] };
 const reply = (status: number, data?: unknown) => ({ response: { ok: status < 300, status }, data });
 let cache: QueryClient, stored: WebsiteSettingsData;
 const start = () => render(<QueryClientProvider client={cache}><WebsiteSettings/></QueryClientProvider>);
@@ -102,11 +102,11 @@ describe('website settings', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn(), fillRect: vi.fn() } as unknown as CanvasRenderingContext2D);
     vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockImplementation((type?: string) => `data:${type};base64,Ynl0ZXM=`);
     client.POST.mockImplementation(async (path: string) => {
-      stored = path === '/api/website/logo' ? { ...stored, revision: stored.revision + 1, logo: true }
+      stored = path === '/api/website/logo' ? { ...stored, revision: stored.revision + 1, logo: true, logoVersion: '123456abcdef' }
         : { ...stored, revision: stored.revision + 1, photos: [...stored.photos, { id: id(12), alt: '' }] };
       return reply(200, { data: stored });
     });
-    client.DELETE.mockImplementation(async () => { stored = { ...stored, revision: stored.revision + 1, logo: false }; return reply(200, { data: stored }); });
+    client.DELETE.mockImplementation(async () => { stored = { ...stored, revision: stored.revision + 1, logo: false, logoVersion: null }; return reply(200, { data: stored }); });
     start();
     const tagline = await screen.findByRole('textbox', { name: 'Tagline' });
     await user.clear(tagline); await user.type(tagline, 'Unsaved line');
@@ -116,7 +116,7 @@ describe('website settings', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(3);
     expect((screen.getByRole('textbox', { name: 'Tagline' }) as HTMLInputElement).value).toBe('Unsaved line');
     await user.upload(screen.getByLabelText('Upload a logo (PNG, JPEG or WebP)'), new File(['png'], 'logo.png', { type: 'image/png' }));
-    await screen.findByRole('img', { name: 'Current logo' });
+    expect((await screen.findByRole('img', { name: 'Current logo' })).getAttribute('src')).toBe('/public/pages/logo/123456abcdef');
     expect(client.POST).toHaveBeenLastCalledWith('/api/website/logo', expect.objectContaining({ body: { revision: 5, base64: 'Ynl0ZXM=', contentType: 'image/png' } }));
     await waitFor(() => expect((screen.getByRole('textbox', { name: 'Tagline' }) as HTMLInputElement).value).toBe('Unsaved line'));
     await user.click(screen.getByRole('button', { name: 'Remove logo' }));

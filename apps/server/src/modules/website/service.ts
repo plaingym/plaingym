@@ -11,7 +11,8 @@ import type { Uploads } from '../../infra/storage/index.js';
 import { createModuleSettings, readGymAndModuleSettings, type ModuleSettings } from '../../areas/settings/module-settings.js';
 import { logoVersion, serveGymImage } from '../../public/pages/service.js';
 import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
-import { releaseFiles, validatePhoto } from '../../areas/members/photos.js';
+import { validatePhoto } from '../../areas/members/photos.js';
+import { releaseFiles } from '../../infra/storage/release.js';
 import { maxPhotos, storedContent, type StoredContent, type UpdateWebsiteRequest, type WebsiteSettings,
   uploadLogoRequestSchema, uploadPhotoRequestSchema, removeLogoRequestSchema, updateWebsiteRequestSchema } from './content.js';
 
@@ -63,6 +64,7 @@ function present(saved: ModuleSettings): WebsiteSettings {
   const content = storedContent(saved.value);
   return { revision: saved.revision, tagline: content.tagline, about: content.about, phone: content.phone, email: content.email,
     accentColor: content.accentColor, primaryColor: saved.branding.primaryColor ?? null, logo: !!saved.branding.logoKey,
+    logoVersion: saved.branding.logoKey ? logoVersion(saved.branding.logoKey) : null,
     photos: content.photos.map(({ id, alt }) => ({ id, alt })) };
 }
 /** The branding with a new primary color, or none (the default theme). */

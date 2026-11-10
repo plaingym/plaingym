@@ -5,6 +5,11 @@ Import `LocalUploads`, `S3Uploads`, `S3BackupObjectStore`, or `createS3Client` f
 `infra/storage/index.ts`. The existing interfaces and in-memory fakes are unchanged.
 Every storage operation rejects calls inside application database transactions.
 
+`releaseFiles` in `release.ts` marks released upload keys deleted without masking
+the save's outcome. It resolves the gym's store once per nonempty call, logs
+resolution or deletion failures, and continues with other keys after a deletion
+failure. Member photos, staff photos and website uploads share this helper.
+
 `LocalUploads` takes `{ root, gymId, downloadUrl, signingKey, clock? }`.
 `downloadUrl` is the absolute URL of the application's download handler, without a
 query string. `signingKey` must contain at least 32 random bytes and remain stable

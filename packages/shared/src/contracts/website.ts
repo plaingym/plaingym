@@ -15,7 +15,7 @@ const manage = { kind: 'staff', capability: 'settings.manage' } as const satisfi
 export const websiteSettingsSchema = z.strictObject({
   revision: revisionSchema, tagline: z.string().nullable(), about: z.string().nullable(), phone: z.string().nullable(),
   email: z.string().nullable(), accentColor: z.string().nullable(), primaryColor: z.string().nullable(),
-  logo: z.boolean(), photos: z.array(z.strictObject({ id: idSchema, alt: z.string() })),
+  logo: z.boolean(), logoVersion: z.string().regex(/^[0-9a-f]{12}$/).nullable(), photos: z.array(z.strictObject({ id: idSchema, alt: z.string() })),
 });
 export type WebsiteSettings = z.infer<typeof websiteSettingsSchema>;
 export const websiteSettingsResponseSchema = z.strictObject({ data: websiteSettingsSchema });

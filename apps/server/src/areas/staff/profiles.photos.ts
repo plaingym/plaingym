@@ -7,7 +7,8 @@ import { staffContracts } from '@plaingym/shared/contracts';
 import type { Uploads } from '../../infra/storage/index.js';
 import { route } from '../../core/registry.js';
 import { assertStaffManager, createStaffProfileService, type StaffActor } from './profiles.js';
-import { releaseFiles, validatePhoto } from '../members/photos.js';
+import { validatePhoto } from '../members/photos.js';
+import { releaseFiles } from '../../infra/storage/release.js';
 
 export function createStaffPhotoService(uploadsFor: (gymId: string) => Promise<Uploads>, scope = forGym) {
   const profiles = createStaffProfileService(scope);
@@ -21,7 +22,7 @@ export function createStaffPhotoService(uploadsFor: (gymId: string) => Promise<U
       await store.put(key, bytes, contentType);
       let saved;
       try { saved = await profiles.attachPhoto(actor, id, revision, key); }
-      catch (error) { await store.markDeleted(key); throw error; }
+      catch (error) { await releaseFiles(actor.gymId, [key], async () => store, 'staff.photo.release_failed'); throw error; }
       if (before.photoKey) await releaseFiles(actor.gymId, [before.photoKey], async () => store, 'staff.photo.release_failed');
       return saved;
     },

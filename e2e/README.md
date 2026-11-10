@@ -69,6 +69,9 @@ entry point and uses real one-click sessions.
 
 The checks cover:
 
+* Logo versions after unrelated settings saves and replacement uploads, with
+  rendered admin previews and core public pages at 360 px and desktop widths
+  (`website-branding.spec.ts`).
 * A reviewed route inventory and the full staff-role/anonymous/device permission
   sweep, including additional permissions. Each allowed role must reach request
   validation or the handler; denied roles must fail before validation. Mutations

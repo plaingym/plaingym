@@ -9,7 +9,7 @@ import { route, type RouteRegistration } from '../../core/registry.js';
 import { cspNonce, setPolicy } from '../../core/csp.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { createWebsiteService, type SitePart, type WebsiteOptions, type WebsiteService } from './service.js';
-import { pagePath, renderSitePage, sitePages, siteThemeCss, type SitePage } from './site.page.js';
+import { pagePath, renderSitePage, sitePages, siteThemeCss, siteThemeVersion, type SitePage } from './site.page.js';
 import { coachParamsSchema, photoParamsSchema, removeLogoRequestSchema, updateWebsiteRequestSchema, uploadLogoRequestSchema,
   uploadPhotoRequestSchema, websiteSettingsResponseSchema } from './content.js';
 import messages from '../../../../../locales/en/website/site.json' with { type: 'json' };
@@ -70,9 +70,9 @@ export function createWebsiteRoutes(supplied?: WebsiteRouteOptions): readonly Ro
     })),
     route({ method: 'get', path: '/website/theme.css', permission: publicAccess, responses: { 200: { description: 'Website colors' } } }, async (c) => {
       const site = await options().service.site(c.get('context').gym.gymId);
-      // The pages link it as `?v=<revision>`, so a matching `v` names these exact colors; any other request revalidates.
+      // Only the content hash names these exact colors; missing or stale versions revalidate.
       c.header('Content-Type', 'text/css; charset=utf-8'); c.header('X-Content-Type-Options', 'nosniff');
-      c.header('Cache-Control', c.req.query('v') === String(site.gym.revision) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      c.header('Cache-Control', c.req.query('v') === siteThemeVersion(site.gym.primaryColor, site.content.accentColor) ? 'public, max-age=31536000, immutable' : 'no-cache');
       return c.body(siteThemeCss(site.gym.primaryColor, site.content.accentColor));
     }),
     route({ method: 'get', path: '/website/photos/{photoId}', permission: publicAccess, request: { params: photoParamsSchema },

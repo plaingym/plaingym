@@ -408,6 +408,23 @@ describe('members and households', () => {
     const abandoned = (await uploads.list(`${gymA}/members/${person.id}/`)).filter((object) => object.key !== first.photoKey && object.key !== second.photoKey);
     expect(abandoned).toHaveLength(1); expect(abandoned[0]!.deletedAt).toBeDefined();
   });
+  it('preserves the attach conflict when cleanup of the failed upload also fails', async () => {
+    const { person } = await routeFixture(gymA), uploads = await uploadsFor(gymA), put = uploads.put.bind(uploads);
+    const race = vi.spyOn(uploads, 'put').mockImplementationOnce(async (...args) => {
+      const info = await put(...args);
+      await service.updateMember(context(), person.id, { revision: 1, firstName: 'Concurrent edit' });
+      return info;
+    });
+    const failing = vi.spyOn(uploads, 'markDeleted').mockRejectedValue(new Error('storage unavailable'));
+    const lines: string[] = [], previous = setLogSink(line => { lines.push(line); });
+    try {
+      const response = await send(staff('owner'), `/api/members/${person.id}/photo`, 'POST', { revision: 1, contentType: 'image/png', base64: png.toString('base64') });
+      expect(response.status).toBe(409);
+      expect(failing).toHaveBeenCalledOnce();
+      expect(lines.some(line => line.includes('member.photo.release_failed'))).toBe(true);
+      expect(await service.getMember(gymA, person.id)).toMatchObject({ revision: 2, photoKey: null });
+    } finally { race.mockRestore(); failing.mockRestore(); setLogSink(previous); }
+  });
   it('logs a storage failure that follows a committed photo save and reports the save', async () => {
     const { person } = await routeFixture(gymA), uploads = await uploadsFor(gymA);
     const first = await photos.upload(context(), person.id, 1, png, 'image/png');

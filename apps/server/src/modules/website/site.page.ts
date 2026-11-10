@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { jsx as h } from 'hono/jsx';
+import { createHash } from 'node:crypto';
 import type { Translator } from '@plaingym/shared';
 import { formatMoney } from '../../core/money.js';
 import type { Site, SiteClass, SitePlan, SiteSession } from './service.js';
@@ -91,7 +92,7 @@ function layout(input: SitePageInput, content: Node) {
       h('meta', { property: 'og:title', content: title }), h('meta', { property: 'og:description', content: description }),
       h('meta', { property: 'og:url', content: url }),
       image ? h('meta', { property: 'og:image', content: origin + photoUrl(image.id) }) : null,
-      h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }), h('link', { rel: 'stylesheet', href: '/website/theme.css?v=' + site.gym.revision }),
+      h('link', { rel: 'stylesheet', href: '/public/pages/styles.css' }), h('link', { rel: 'stylesheet', href: '/website/theme.css?v=' + siteThemeVersion(site.gym.primaryColor, site.content.accentColor) }),
       structured ? h('script', { type: 'application/ld+json', nonce: input.nonce, dangerouslySetInnerHTML: { __html: scriptJson(localBusiness(site, origin)) } }) : null),
     h('body', { class: 'm-0 bg-background text-foreground' },
       h('a', { href: '#main', class: 'sr-only focus:not-sr-only focus:block focus:p-3' }, text('skip')),
@@ -247,6 +248,10 @@ const pages: Record<SitePage, (input: SitePageInput) => (Node | null)[]> = {
 export function renderSitePage(input: SitePageInput): string {
   return layout(input, h('div', { class: 'space-y-8' }, ...pages[input.page](input)));
 }
+
+/** Hash the rendered colors so restoring an older settings revision cannot reuse a different theme's URL. */
+export const siteThemeVersion = (primary: string | null, accent: string | null) =>
+  createHash('sha256').update(siteThemeCss(primary, accent)).digest('hex').slice(0, 12);
 
 /** Validated colors only: nothing a gym types can reach the stylesheet except a `#rrggbb` value. */
 export function siteThemeCss(primary: string | null, accent: string | null) {

@@ -24,7 +24,7 @@ is mounted first and hands the request on while the website is on.
 
 Supporting routes: `/website/theme.css` (the primary and accent colors, validated
 as `#rrggbb` before they reach CSS, with black or white text chosen for contrast;
-the pages link it as `?v=<gym revision>`, and a request whose `v` matches is cached
+the pages link it as `?v=<color content hash>`, and a request whose `v` matches is cached
 as immutable, any other revalidates),
 `/website/photos/{photoId}` and `/website/coaches/{staffProfileId}/photo` (streamed
 from the gym's uploads; a coach photo only while the profile is public), and for
@@ -64,6 +64,8 @@ share one helper, `serveGymImage`: the gym's own key, a PNG, JPEG or WebP, at mo
   error at that point is logged (`website.release_failed`) and the save still
   succeeds: the file simply waits for the sweep. The request and response schemas
   are `websiteContracts` in `@plaingym/shared/contracts`, shared with the admin.
+  Settings responses include a nullable `logoVersion` (the short hash of its key);
+  the admin preview and core public pages use that version too.
 
 ## Storage
 

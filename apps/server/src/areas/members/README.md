@@ -71,6 +71,8 @@ responses. Uploads happen outside transactions; attaching a photo compares the
 member revision. Replaced, removed and anonymized photos are marked for deferred
 deletion. Storage failures after a database commit are repaired by the cleanup
 job; already completed database changes remain committed.
+If attachment fails, cleanup errors are logged and the original save error reaches
+the caller, including a revision conflict that asks staff to reload.
 
 `createMemberPhotoJobs` reconciles uploads left by failed or interrupted requests.
 Before retiring an unreferenced key it locks the member and advances its revision,

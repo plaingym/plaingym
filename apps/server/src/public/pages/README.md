@@ -36,6 +36,8 @@ text, uses `t()`, keeps `/source`, and serves only same-origin assets under a st
 CSP. CSS reuses the existing signed-link Tailwind asset, with validated gym color
 tokens in an external stylesheet. The color's foreground is chosen for contrast.
 Logos are streamed through the gym upload wrapper; foreign keys and SVG are refused.
+Core pages address logos by a short hash of their immutable upload key, so unrelated
+settings saves keep the same URL and replacing the logo changes it.
 `publicBrowserScript` is standalone browser JavaScript, with no server bundler
 helpers, hydration or build entry point. Native POST forms also work: signature PNG files
 replace the canvas when JavaScript is unavailable.

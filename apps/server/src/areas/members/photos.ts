@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { uuidv7, RevisionConflictError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
-import { logError } from '../../core/log.js';
+import { releaseFiles } from '../../infra/storage/release.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import type { Uploads } from '../../infra/storage/index.js';
 import type { MembersService } from './members.js';
@@ -15,16 +15,6 @@ export function validatePhoto(bytes: Uint8Array, contentType: string) {
   if (!bytes.length || bytes.length > maxPhotoBytes || !(contentType === 'image/png' && png || contentType === 'image/jpeg' && jpeg || contentType === 'image/webp' && webp))
     throw new AppError('invalid_request', 'Invalid photo');
 }
-/**
- * Marks files deleted after the save that released them committed. A storage failure is logged, not thrown: the save
- * stands (reporting it as failed would leave the caller on a stale revision), and the file stays for the uploads sweep.
- */
-export async function releaseFiles(gymId: string, keys: readonly string[], uploadsFor: MemberUploads, event = 'photo.release_failed') {
-  for (const key of keys) {
-    try { await (await uploadsFor(gymId)).markDeleted(key); }
-    catch (error) { logError(event, { gymId, key }, error); }
-  }
-}
 export function createMemberPhotoService(members: MembersService, uploadsFor: MemberUploads) {
   return {
     async upload(context: MutationContext, memberId: string, revision: number, bytes: Uint8Array, contentType: string) {
@@ -36,7 +26,7 @@ export function createMemberPhotoService(members: MembersService, uploadsFor: Me
       await uploads.put(key, bytes, contentType);
       let saved;
       try { saved = await members.attachPhoto(context, memberId, revision, key); }
-      catch (error) { await uploads.markDeleted(key); throw error; }
+      catch (error) { await releaseFiles(context.gymId, [key], async () => uploads, 'member.photo.release_failed'); throw error; }
       if (before.photoKey) await releaseFiles(context.gymId, [before.photoKey], async () => uploads, 'member.photo.release_failed');
       return saved;
     },

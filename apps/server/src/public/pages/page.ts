@@ -3,6 +3,7 @@ import { jsx as h } from 'hono/jsx';
 import type { Translator } from '@plaingym/shared';
 import type { PublicBranding, WaiverTemplate } from '@plaingym/shared/contracts';
 import { formatMoney } from '../../core/money.js';
+import { logoVersion } from './service.js';
 /** Native browser preview and a separate link also work without JavaScript. */
 export function waiverDocumentView(template: WaiverTemplate, t: Translator, href = `/api/public/waivers/${template.id}/document?view=1`, preview = true) {
   if (!template.document) return h('div', { class: 'max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4', tabindex: 0, 'aria-label': template.name }, template.body);
@@ -30,7 +31,7 @@ export function publicLayout(input: { gym: PublicBranding; title: string; t: Tra
       input.script ? h('script', { src: '/public/pages/client.js', defer: true }) : null),
     h('body', { class: 'm-0 bg-background text-foreground' },
       h('main', { class: 'mx-auto w-full max-w-2xl space-y-6 px-4 py-6 sm:px-6 sm:py-10' },
-        h('header', { class: 'space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo/' + input.gym.revision, alt: input.gym.name, width: 64, height: 64 }) : null,
+        h('header', { class: 'space-y-2' }, input.gym.logoKey ? h('img', { src: '/public/pages/logo/' + logoVersion(input.gym.logoKey), alt: input.gym.name, width: 64, height: 64 }) : null,
           h('p', { class: 'break-words font-semibold' }, input.gym.name), h('h1', { class: 'text-2xl font-bold sm:text-3xl' }, input.title)),
         input.content,
         h('footer', { class: 'flex flex-wrap gap-3' },

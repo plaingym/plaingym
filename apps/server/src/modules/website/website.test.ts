@@ -87,8 +87,8 @@ const get = (path: string, target = app()) => target.request(origin + path, { he
 const send = (method: string, path: string, body: unknown, target = app(gymA, owner())) =>
   target.request(origin + path, { method, headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 const revision = async (gymId = gymA) => (await settings.get(gymId)).revision;
-/** The fields a save sends back: a settings response without its read-only `logo` flag. */
-const editable = ({ logo: _logo, ...rest }: Awaited<ReturnType<typeof service.settings>>) => rest;
+/** The fields a save sends back, without the read-only logo fields. */
+const editable = ({ logo: _logo, logoVersion: _logoVersion, ...rest }: Awaited<ReturnType<typeof service.settings>>) => rest;
 async function toggle(gymId: string, on: boolean) {
   await settings.update({ gymId, actor: { kind: 'system' } }, 'general', { websiteEnabled: on, revision: await revision(gymId) });
 }
@@ -340,16 +340,36 @@ describe('the customization API', () => {
     const uploaded = await send('POST', '/api/website/logo', { revision: await revision(), contentType: 'image/png', base64: png.toString('base64') });
     expect(uploaded.status).toBe(200);
     const first = (await settings.get(gymA)).branding.logoKey!;
+    expect((await uploaded.json() as { data: { logoVersion: string } }).data.logoVersion).toBe(logoVersion(first));
     expect(first.startsWith(`${gymA}/website/logo/`)).toBe(true);
     expect((await get('/public/pages/logo/' + await revision())).status).toBe(200);
     expect(await (await get('/')).text()).toContain(`/public/pages/logo/${logoVersion(first)}`);
+    const logoOnCorePages = async (key: string) => {
+      for (const path of ['/trial', '/drop-in', '/trial/received', '/drop-in/received']) {
+        const response = await get(path), html = await response.text();
+        expect(response.status, path).toBe(200);
+        expect(html, path).toContain(`src="/public/pages/logo/${logoVersion(key)}"`);
+      }
+    };
+    await logoOnCorePages(first);
+    const before = await service.settings(gymA);
+    await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...editable(before), tagline: 'New tagline, same logo' });
+    await logoOnCorePages(first);
+    expect((await service.settings(gymA)).logoVersion).toBe(logoVersion(first));
+    const foreign = await get('/api/website', app(gymB, owner(gymB)));
+    expect((await foreign.json() as { data: { logoVersion: string | null } }).data.logoVersion).toBeNull();
+    expect((await get('/public/pages/logo/' + logoVersion(first), app(gymB))).status).toBe(404);
     expect((await send('POST', '/api/website/logo', { revision: await revision(), contentType: 'image/jpeg', base64: jpeg.toString('base64') })).status).toBe(200);
     expect((await uploads.get(gymA)!.head(first))?.deletedAt).toBeTruthy();
     const second = (await settings.get(gymA)).branding.logoKey!;
+    expect(logoVersion(second)).not.toBe(logoVersion(first));
+    await logoOnCorePages(second);
+    expect((await service.settings(gymA)).logoVersion).toBe(logoVersion(second));
     const removed = await send('DELETE', '/api/website/logo', { revision: await revision() });
     expect(removed.status).toBe(200);
     expect((await removed.json() as { data: { logo: boolean } }).data.logo).toBe(false);
     expect((await settings.get(gymA)).branding.logoKey).toBeNull();
+    expect((await service.settings(gymA)).logoVersion).toBeNull();
     expect((await uploads.get(gymA)!.head(second))?.deletedAt).toBeTruthy();
     // A stale upload stores nothing.
     const files = (await uploads.get(gymA)!.list(`${gymA}/website/logo/`)).length;
@@ -469,16 +489,34 @@ describe('follow-ups', () => {
     expect(reads.count).toBe(1);
   });
 
-  it('serves theme.css as immutable only for the revision it names', async () => {
-    const current = String(await revision());
-    const matching = await get('/website/theme.css?v=' + current);
+  it('serves theme.css as immutable only for the content hash it names, even after a restore lowers the revision', async () => {
+    const themeUrl = async (target = app()) => (await (await get('/', target)).text()).match(/href="(\/website\/theme\.css\?v=([a-f0-9]{12}))"/)![1]!;
+    const original = await themeUrl(), before = await service.settings(gymA);
+    await service.update({ gymId: gymA, actor: { kind: 'system' } }, { ...editable(before), tagline: 'Unrelated save' });
+    expect(await themeUrl()).toBe(original);
+    // An independent persisted snapshot models a restored lower revision at the same hostname,
+    // without reaching into the settings module's system table. Its next save repeats the cached revision.
+    const restoredGym = uuidv7();
+    await factory('gyms', restoredGym, { websiteEnabled: true, revision: before.revision - 1 });
+    expect(await revision(restoredGym)).toBeLessThan(before.revision);
+    await service.update({ gymId: restoredGym, actor: { kind: 'system' } }, { ...editable(await service.settings(restoredGym)),
+      primaryColor: before.primaryColor === '#123456' ? '#654321' : '#123456', accentColor: before.accentColor });
+    expect(await revision(restoredGym)).toBe(before.revision);
+    const restored = app(restoredGym), url = await themeUrl(restored), current = url.split('v=')[1]!;
+    expect(url).not.toBe(original);
+    const matching = await get('/website/theme.css?v=' + current, restored);
     expect(matching.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
     expect(matching.headers.get('content-type')).toContain('text/css');
-    const page = await (await get('/')).text();
+    const page = await (await get('/', restored)).text();
     expect(page).toContain(`href="/website/theme.css?v=${current}"`);
-    for (const path of ['/website/theme.css', '/website/theme.css?v=' + (Number(current) - 1), '/website/theme.css?v=']) {
-      expect((await get(path)).headers.get('cache-control'), path).toBe('no-cache');
+    for (const path of ['/website/theme.css', original, '/website/theme.css?v=wrong', '/website/theme.css?v=' + await revision(), '/website/theme.css?v=']) {
+      expect((await get(path, restored)).headers.get('cache-control'), path).toBe('no-cache');
     }
+    // Another gym never serves this gym's colors or treats its version as immutable.
+    const foreign = await get(url, app(gymB));
+    expect(foreign.headers.get('cache-control')).toBe('no-cache');
+    expect(await foreign.text()).not.toBe(await matching.text());
+    expect(await themeUrl(app(gymB))).not.toBe(url);
   });
 
   describe('the schedule', () => {

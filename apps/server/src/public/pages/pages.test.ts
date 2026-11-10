@@ -22,6 +22,7 @@ import { demoSignatureReservation } from '../../demo/waiver-signatures.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configurePublicPages, createPublicRoutes } from './pages.routes.js';
 import { themeCss } from './page.js';
+import { logoVersion } from './service.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng();
 const origin = 'https://gym.example.test';
@@ -92,7 +93,7 @@ describe('core public pages through the production registrations', () => {
     expect((await other.request(origin + '/public/pages/logo/1')).status).toBe(404);
     expect((await f.server.request(origin + '/public/pages/logo/1')).headers.get('content-type')).toBe('image/png');
     expect((await f.server.request(origin + '/public/pages/logo/2')).status).toBe(404);
-    expect(await (await f.server.request(origin + '/trial')).text()).toContain('src="/public/pages/logo/1"');
+    expect(await (await f.server.request(origin + '/trial')).text()).toContain(`src="/public/pages/logo/${logoVersion(f.gymId + '/logo.png')}"`);
     const config = await (await f.server.request(origin + '/api/public/config')).json();
     expect(publicContracts.config.response.parse(config).data.dropInFee).toEqual({ amountCents: 2500, currency: 'CAD', plusTax: false });
     const page = await (await f.server.request(origin + '/api/public/waivers?limit=1&offset=1')).json();
