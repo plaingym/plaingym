@@ -1,0 +1,8 @@
+{
+  "title": "Announcement preferences",
+  "subscribed": "{name} is subscribed to this gym’s announcements.",
+  "unsubscribed": "{name} is unsubscribed from this gym’s announcements.",
+  "help": "This changes announcements for this member only. Other gym emails are unaffected.",
+  "unsubscribe": "Unsubscribe",
+  "resubscribe": "Subscribe again"
+}

@@ -66,12 +66,14 @@ export type MemberScope = {
 
 export type SignedLink =
   | { readonly purpose: 'pay_invoice'; readonly invoiceId: string }
+  | { readonly purpose: 'unsubscribe'; readonly memberId: string }
   | { readonly purpose: 'sign_waiver'; readonly memberId: string }
   | { readonly purpose: 'update_card' }
   | { readonly purpose: 'onboarding' };
 export type SignedLinkPurpose = SignedLink['purpose'];
 
 const signedLinkPurposes: readonly SignedLinkPurpose[] = [
+  'unsubscribe',
   'pay_invoice',
   'update_card',
   'sign_waiver',

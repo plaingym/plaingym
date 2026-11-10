@@ -6,7 +6,7 @@ import {
   campaignRecipientListQuerySchema, campaignReminderScheduleSchema, createLinkCampaignRequestSchema,
   createSignedLinkRequestSchema, createSignedLinkResponseSchema, linkCampaignProgressSchema,
   linkCampaignResponseSchema, linksContracts, signedLinkListQuerySchema, signedLinkListResponseSchema,
-  signedLinkSchema,
+  signedLinkSchema, signedLinkPurposeSchema, sendSignedLinkRequestSchema,
   type CreateSignedLinkRequest, type LinkCampaign, type SignedLinkRecord,
 } from '@plaingym/shared/contracts';
 
@@ -24,6 +24,16 @@ const campaignInput = { name: 'Welcome', expiresAt, reminderSchedule: [3, 7, 14]
 type Wire<T> = { [K in keyof T]: T[K] extends Date ? string : T[K] extends Date | null ? string | null : T[K] };
 
 describe('purpose-scoped signed links', () => {
+  it('reads member unsubscribe metadata but never accepts staff creation, sending or campaigns for it', () => {
+    expect(signedLinkPurposeSchema.parse('unsubscribe')).toBe('unsubscribe');
+    expect(signedLinkSchema.parse({ ...link, purpose: 'unsubscribe', memberId: id }).memberId).toBe(id);
+    expect(signedLinkSchema.safeParse({ ...link, purpose: 'unsubscribe' }).success).toBe(false);
+    const input = { householdId, expiresAt, purpose: 'unsubscribe', memberId: id };
+    expect(createSignedLinkRequestSchema.safeParse(input).success).toBe(false);
+    expect(sendSignedLinkRequestSchema.safeParse({ ...input, sendGeneration: id }).success).toBe(false);
+    expect(createLinkCampaignRequestSchema.safeParse({ ...campaignInput, purpose: 'unsubscribe', recipients: [{ householdId, memberId: id }] }).success).toBe(false);
+    expect(signedLinkListQuerySchema.safeParse({ purpose: 'unsubscribe' }).success).toBe(false);
+  });
   it.each([
     { purpose: 'onboarding' }, { purpose: 'update_card' },
     { purpose: 'pay_invoice', invoiceId: id }, { purpose: 'sign_waiver', memberId: id },

@@ -66,7 +66,7 @@ maintenance credentials (`deploy/README.md`, "Which process holds the maintenanc
 | `/` | The gym's public website when the website module is on; otherwise a redirect to `/portal`. |
 | `/programs`, `/schedule`, `/plans`, `/coaches`, `/contact`, `/sitemap.xml`, `/robots.txt`, `/website/*` | The rest of the public website, its search-engine files, theme and photos. Only while the website module is on; 404 otherwise. |
 | `/join`, `/trial`, `/drop-in` | Public sign-up, trial and drop-in pages. Always on. |
-| `/l/*` | Signed-link pages: pay an invoice, update a card, sign a waiver, onboarding. |
+| `/l/*` | Signed-link pages: pay an invoice, update a card, sign a waiver, onboarding, announcement preferences. |
 | `/webhooks/stripe` | The Stripe webhook inbox. |
 | `/admin` | Staff admin. |
 | `/portal` | Member portal, an installable PWA. |
@@ -187,6 +187,10 @@ source of truth; Stripe is the processor. In outline:
   event once, process it in a job.
 * **Signed links and campaigns** (`areas/links/`): pay, update-card, waiver and
   onboarding links, sent one at a time or as a campaign.
+  Announcement unsubscribe links (`areas/announcements/unsubscribe.ts`) are
+  minted inside their caller's transaction and excluded from staff link actions.
+  Their page and strict one-click POST change only the linked member's separate
+  announcement preference through `forHousehold`.
 
 Cards are collected only on Stripe-hosted pages; the app stores processor IDs,
 never card numbers.

@@ -2,9 +2,10 @@
 import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
+import { writeAudit } from './audit.js';
 import {
   attendances, classBookings, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
-  memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
+  announcementOptOuts, memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
 /** User identity or a verified link ID comes from request context. now is supplied by the request clock. */
@@ -24,6 +25,7 @@ interface HouseholdGrant {
   waiverTemplates: boolean;
   /** Emergency contacts: logged-in household users only, never signed links. */
   contacts: boolean;
+  announcementMemberId: string | null;
 }
 const all = { kind: 'all' } as const;
 const none = { kind: 'none' } as const;
@@ -75,7 +77,7 @@ async function resolveGrant(tx: Transaction, scope: HouseholdScope): Promise<Hou
       gymId: scope.gymId, householdId: link.householdId,
       members: payer ? all : { kind: 'one', id: link.memberId! },
       invoices: payer ? all : none, cards: payer, householdProfile: payer,
-      memberActivity: true, waiverTemplates: true, contacts: true,
+      memberActivity: true, waiverTemplates: true, contacts: true, announcementMemberId: null,
     };
   }
 
@@ -86,9 +88,12 @@ async function resolveGrant(tx: Transaction, scope: HouseholdScope): Promise<Hou
   const grant: HouseholdGrant = {
     gymId: link.gymId, householdId: link.householdId,
     members: none, invoices: none, cards: false, householdProfile: false,
-    memberActivity: false, waiverTemplates: false, contacts: false,
+    memberActivity: false, waiverTemplates: false, contacts: false, announcementMemberId: null,
   };
   switch (link.purpose) {
+    case 'unsubscribe':
+      requireAccess(link.memberId !== null);
+      return { ...grant, announcementMemberId: link.memberId };
     case 'pay_invoice':
       requireAccess(link.invoiceId !== null);
       return { ...grant, invoices: { kind: 'one', id: link.invoiceId } };
@@ -151,10 +156,47 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     inArray(memberships.memberId, memberIds), eq(memberships.memberId, memberId));
   const signaturePredicate = (requested: readonly string[]) => and(eq(waiverSignatures.gymId, grant.gymId),
     inArray(waiverSignatures.memberId, memberIds), inArray(waiverSignatures.memberId, [...requested]));
+  async function announcementMember(lock: boolean, now: () => Date) {
+    requireAccess(scope.kind === 'signed_link' && grant.announcementMemberId !== null);
+    // Lock the member before the link, as member erasure does (it revokes the member's links last), so the two can't deadlock.
+    const memberQuery = tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName })
+      .from(members).where(and(eq(members.gymId, grant.gymId), eq(members.id, grant.announcementMemberId!),
+        eq(members.householdId, grant.householdId), isNull(members.anonymizedAt)));
+    const [member] = await (lock ? memberQuery.for('update') : memberQuery);
+    const linkQuery = tx.select().from(signedLinks).where(and(
+      eq(signedLinks.gymId, scope.gymId), eq(signedLinks.id, scope.linkId),
+    ));
+    const [link] = await (lock ? linkQuery.for('update') : linkQuery);
+    requireAccess(!!link && link.purpose === 'unsubscribe' && link.householdId === grant.householdId
+      && link.memberId === grant.announcementMemberId);
+    // Read the clock after both locks: revocation, moves and expiry cannot authorize a waiting writer.
+    const at = now();
+    requireAccess(!!member && link.revokedAt === null && link.usedAt === null && link.expiresAt > at);
+    return { member, at, linkId: link.id };
+  }
+  const optOutPredicate = () => and(eq(announcementOptOuts.gymId, grant.gymId),
+    eq(announcementOptOuts.memberId, grant.announcementMemberId!));
   // No raw transaction, arbitrary predicate or unscoped relation loader escapes this API.
   // The portal reads history through the bounded pages and lookups. `bookings`, `attendance`, `ranks`, `memberships`
   // and `invoices` remain for tests, and `waivers` also for signed-link pages.
   return {
+    announcementPreference: async () => {
+      requireAccess(scope.kind === 'signed_link');
+      const { member } = await announcementMember(false, () => scope.now);
+      const [row] = await tx.select({ id: announcementOptOuts.id }).from(announcementOptOuts).where(optOutPredicate());
+      return { member: { firstName: member.firstName, lastName: member.lastName }, optedOut: !!row };
+    },
+    setAnnouncementOptOut: async (optedOut: boolean, now: () => Date) => {
+      const { member, at, linkId } = await announcementMember(true, now);
+      const changed = optedOut
+        ? await tx.insert(announcementOptOuts).values({ gymId: grant.gymId, memberId: member.id, createdAt: at })
+          .onConflictDoNothing({ target: [announcementOptOuts.gymId, announcementOptOuts.memberId] }).returning({ id: announcementOptOuts.id })
+        : await tx.delete(announcementOptOuts).where(optOutPredicate()).returning({ id: announcementOptOuts.id });
+      if (changed.length) await writeAudit(tx, { gymId: grant.gymId, actorKind: 'system',
+        action: optedOut ? 'announcement.unsubscribed' : 'announcement.resubscribed', targetType: 'member', targetId: member.id,
+        before: { optedOut: !optedOut }, after: { optedOut, linkId }, occurredAt: at });
+      return { member: { firstName: member.firstName, lastName: member.lastName }, optedOut };
+    },
     members: async () => {
       requireAccess(grant.members.kind !== 'none');
       return tx.select(memberFields).from(members).where(memberPredicate);

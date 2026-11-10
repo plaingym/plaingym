@@ -10,6 +10,13 @@ Creation returns a fresh 256-bit URL-safe token once. Only its SHA-256 digest is
 stored. Get, list, revoke, and send return metadata without the token or digest.
 The HTTP creation result and metadata responses use `Cache-Control: no-store`.
 
+Announcement unsubscribe links use the same resolver and principal with one
+member resource. They are created only by `issueUnsubscribeLink` in
+`areas/announcements/unsubscribe.ts`; staff creation, send, metadata, revocation
+and completion commands exclude them. Campaign recipient lists, tallies and
+delivery also leave them out. Their 90-day, reusable preference page is described
+in `public/links/README.md`.
+
 `createMany(context, requests)` creates several links in one transaction, all or none,
 and returns each `{ link, token }` in request order; `create` is the one-link case.
 `createSignedLinksIn(tx, context, requests, now)` does the same inside a caller's

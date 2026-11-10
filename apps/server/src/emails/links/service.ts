@@ -9,7 +9,7 @@ import { EmailButton, EmailHeading, EmailText, renderEmail } from '../_shared/in
 export function renderSignedLink(input: {
   gymName: string; url: string; purpose: SignedLinkPurposeName; manualPayment?: boolean; noticeKey?: string;
 }, t: Translator) {
-  const purpose = signedLinkPurposeSchema.parse(input.purpose);
+  const purpose = signedLinkPurposeSchema.exclude(['unsubscribe']).parse(input.purpose);
   return renderEmail({
     gymName: input.gymName, t, subjectKey: `links/service:${purpose}.subject`, footerKey: 'links/service:footer',
     children: createElement('div', null,
@@ -30,7 +30,7 @@ export const templates: readonly EmailTemplate[] = [{
         || ('manualPayment' in data && typeof data.manualPayment !== 'boolean')
         || ('noticeKey' in data && typeof data.noticeKey !== 'string'))
       throw new Error('Expected signed link email data');
-    return renderSignedLink({ gymName: data.gymName, url: data.url, purpose: signedLinkPurposeSchema.parse(data.purpose),
+    return renderSignedLink({ gymName: data.gymName, url: data.url, purpose: signedLinkPurposeSchema.exclude(['unsubscribe']).parse(data.purpose),
       ...('manualPayment' in data ? { manualPayment: data.manualPayment as boolean } : {}),
       ...('noticeKey' in data ? { noticeKey: data.noticeKey as string } : {}) }, t);
   },

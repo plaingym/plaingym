@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { memberPermissions, memberRoles, staffPermissions, staffRoles } from './permissions.js';
+import { isRoutePermission, memberPermissions, memberRoles, staffPermissions, staffRoles } from './permissions.js';
 
 const page = readFileSync(fileURLToPath(new URL('../../../docs/security-model.md', import.meta.url)), 'utf8');
 
@@ -20,6 +20,11 @@ function table(heading: string): Record<string, boolean[]> {
 }
 
 describe('docs/security-model.md', () => {
+  it('documents the announcement-only unsubscribe purpose, reusable credentials and the independent preference', () => {
+    expect(isRoutePermission({ kind: 'signed_link', purpose: 'unsubscribe' })).toBe(true);
+    for (const detail of ['one member\'s announcement subscription', 'last 90 days', 'remain reusable',
+      'GET page never changes preferences', '`announcement_opt_outs`', '`members.email_opt_out`']) expect(page).toContain(detail);
+  });
   it('shows the staff capabilities exactly as granted', () => {
     const expected = Object.fromEntries(Object.entries(staffPermissions)
       .map(([capability, roles]) => [capability, staffRoles.map((role) => (roles as readonly string[]).includes(role))]));

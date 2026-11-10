@@ -176,6 +176,7 @@ export const portalSignedLinkDataSchema = z.discriminatedUnion('purpose', [
   z.strictObject({ purpose: z.literal('update_card'), paymentMethods: portalPaymentMethodsResponseSchema.shape.data }),
   z.strictObject({ purpose: z.literal('sign_waiver'), member: portalLinkMemberSchema, templates: z.array(waiverTemplateSchema), signatures: z.array(waiverSignatureResponseSchema.shape.data) }),
   z.strictObject({ purpose: z.literal('onboarding'), members: z.array(portalLinkMemberSchema), templates: z.array(waiverTemplateSchema), signatures: z.array(waiverSignatureResponseSchema.shape.data), paymentMethods: portalPaymentMethodsResponseSchema.shape.data }),
+  z.strictObject({ purpose: z.literal('unsubscribe'), member: z.strictObject({ firstName: z.string(), lastName: z.string() }), optedOut: z.boolean() }),
 ]);
 export const portalSignedLinkResponseSchema = z.strictObject({ data: portalSignedLinkDataSchema });
 
@@ -219,6 +220,9 @@ export const portalContracts = {
 // A verified link principal supplies linkId and the resource; no body may choose
 // a different household, invoice, or member. Middleware consumes the raw token.
 export const portalSignedLinkContracts = {
+  unsubscribe: { method: 'get', path: '/api/links/unsubscribe', permission: { kind: 'signed_link', purpose: 'unsubscribe' }, response: z.strictObject({ data: portalSignedLinkDataSchema.options[4] }) },
+  announcementPreference: { method: 'post', path: '/api/links/unsubscribe', permission: { kind: 'signed_link', purpose: 'unsubscribe' }, body: z.strictObject({ optedOut: z.boolean() }), response: z.strictObject({ data: portalSignedLinkDataSchema.options[4] }) },
+  oneClickUnsubscribe: { method: 'post', path: '/l/{token}', permission: { kind: 'public' }, params: z.strictObject({ token: z.string().max(128) }), response: z.strictObject({ data: z.strictObject({ optedOut: z.literal(true) }) }) },
   invoice: { method: 'get', path: '/api/links/pay-invoice', permission: { kind: 'signed_link', purpose: 'pay_invoice' }, response: z.strictObject({ data: portalSignedLinkDataSchema.options[0] }) },
   payInvoice: { method: 'post', path: '/api/links/pay-invoice/checkout', permission: { kind: 'signed_link', purpose: 'pay_invoice' }, response: portalCheckoutResponseSchema },
   card: { method: 'get', path: '/api/links/update-card', permission: { kind: 'signed_link', purpose: 'update_card' }, response: z.strictObject({ data: portalSignedLinkDataSchema.options[1] }) },

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gt, isNull, notExists } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, isNull, ne, notExists } from 'drizzle-orm';
 import { auditEvents, forGym, households, linkCampaigns, paymentMethods, signedLinks, writeAudit } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
@@ -70,7 +70,7 @@ export function createCampaignsService(options: CampaignsOptions) {
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled) return 0;
     const rows = await scope(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).where(and(
-      eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, campaignId), isNull(signedLinks.usedAt),
+      eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, campaignId), ne(signedLinks.purpose, 'unsubscribe'), isNull(signedLinks.usedAt),
       isNull(signedLinks.revokedAt), gt(signedLinks.expiresAt, clock.now()))).orderBy(asc(signedLinks.id)));
     if (!rows.length) return 0;
     const history = await scope(gymId, tx => deliveryHistory(tx, gymId, rows.map(r => r.id)));
@@ -155,6 +155,7 @@ export function createCampaignsService(options: CampaignsOptions) {
         if (!campaign) return missing();
         // One clock reading, so the page and its total partition the states alike.
         const now = clock.now(), where = and(eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, campaignId),
+          ne(signedLinks.purpose, 'unsubscribe'),
           query.state ? recipientState(query.state, now) : undefined);
         const totals = tx.select({ total: count().as('total') }).from(signedLinks).where(where).as('totals');
         const page = tx.select().from(signedLinks).where(where).orderBy(asc(signedLinks.id)).limit(query.limit).offset(query.offset).as('page');
@@ -203,7 +204,7 @@ export function createCampaignsService(options: CampaignsOptions) {
         const rows = await scope(gymId, tx => tx.select({ id: linkCampaigns.id, createdAt: linkCampaigns.createdAt,
           reminderSchedule: linkCampaigns.reminderSchedule }).from(linkCampaigns)
           .innerJoin(signedLinks, and(eq(signedLinks.gymId, gymId), eq(signedLinks.campaignId, linkCampaigns.id)))
-          .where(and(eq(linkCampaigns.gymId, gymId), isNull(signedLinks.usedAt), isNull(signedLinks.revokedAt),
+          .where(and(eq(linkCampaigns.gymId, gymId), ne(signedLinks.purpose, 'unsubscribe'), isNull(signedLinks.usedAt), isNull(signedLinks.revokedAt),
             gt(signedLinks.expiresAt, clock.now()), cursor ? gt(linkCampaigns.id, cursor) : undefined))
           .groupBy(linkCampaigns.id).orderBy(asc(linkCampaigns.id)).limit(100));
         for (const row of rows) {
@@ -219,7 +220,7 @@ export function createCampaignsService(options: CampaignsOptions) {
       const gym = await settings.get(gymId);
       const [row] = await scope(gymId, tx => tx.select().from(signedLinks).where(and(
         eq(signedLinks.id, work.linkId), eq(signedLinks.campaignId, work.campaignId))));
-      if (!row || campaignRecipient(row, clock.now()).state !== 'pending') return;
+      if (!row || row.purpose === 'unsubscribe' || campaignRecipient(row, clock.now()).state !== 'pending') return;
       if (!gym.memberEmailsEnabled) {
         await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_skipped',
           targetType: 'signed_link', targetId: row.id, after: { campaignId: work.campaignId, occurrence: work.occurrence,

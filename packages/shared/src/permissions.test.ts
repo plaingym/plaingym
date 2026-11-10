@@ -146,7 +146,7 @@ describe('member access', () => {
     }
     expect(isRoutePermission({ kind: 'public' })).toBe(true);
     expect(isRoutePermission({ kind: 'kiosk', capability: 'checkin' })).toBe(true);
-    for (const purpose of ['pay_invoice', 'sign_waiver', 'update_card', 'onboarding']) {
+    for (const purpose of ['pay_invoice', 'sign_waiver', 'update_card', 'onboarding', 'unsubscribe']) {
       expect(isRoutePermission({ kind: 'signed_link', purpose })).toBe(true);
     }
   });

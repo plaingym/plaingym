@@ -19,6 +19,16 @@ const line = { id, kind: 'membership', description: 'Training', amountCents: 100
 const card = { id, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true };
 
 describe('portal access and safe projections', () => {
+  it('limits announcement preferences to the named member and forbids resource selectors', () => {
+    const data = { purpose: 'unsubscribe', member: { firstName: 'Alex', lastName: 'Example' }, optedOut: false };
+    expect(portalSignedLinkDataSchema.parse(data)).toEqual(data);
+    for (const extra of [{ email: 'private@example.test' }, { id }, { dateOfBirth: '2000-01-01' }])
+      expect(portalSignedLinkDataSchema.safeParse({ ...data, member: { ...data.member, ...extra } }).success).toBe(false);
+    const contract = portalSignedLinkContracts.announcementPreference;
+    expect(contract.body.parse({ optedOut: true })).toEqual({ optedOut: true });
+    for (const selector of ['memberId', 'householdId', 'gymId'])
+      expect(contract.body.safeParse({ optedOut: true, [selector]: other }).success).toBe(false);
+  });
   it('leaves booking endpoints to their area and gives receipts their own response schema', () => {
     expect(Object.values(portalContracts).some(contract => contract.path.includes('/bookings'))).toBe(false);
     const receipt = { data: { url: 'https://gym.example/receipt.pdf', expiresAt: '2026-10-21T12:00:00Z' }, householdId: id };

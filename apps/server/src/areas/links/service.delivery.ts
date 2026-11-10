@@ -45,6 +45,7 @@ export async function deliverSignedLink(input: {
 }): Promise<boolean> {
   assertNoTransaction('links.send');
   const { scope, context, link, token, delivery } = input;
+  if (link.purpose === 'unsubscribe') throw new AppError('not_found', 'Signed link not found');
   validateSignedLinkDelivery(delivery, context.gymId);
   const manualPayment = link.purpose === 'pay_invoice' && await scope(context.gymId, async tx => {
     const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)

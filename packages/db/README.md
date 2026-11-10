@@ -228,6 +228,15 @@ and resource claims cannot widen access.
 | `update_card` | Masked household payment methods |
 | `sign_waiver` | The linked member, that member's signed waivers, and current gym templates |
 | `onboarding` | Household members, their signed waivers, current gym templates, and masked payment methods |
+| `unsubscribe` | Only `announcementPreference()` and `setAnnouncementOptOut(optedOut, now)` for the stored member |
+
+The announcement preference exposes only the member's name and opt-out state.
+Its mutation accepts no resource selectors, locks and rechecks the link and
+member, and changes only that member's `announcement_opt_outs` row with an audit
+in the same transaction. Pass the injected clock as a callback so expiry is
+checked after acquiring the locks. Repeated opt-outs and resubscriptions are
+no-ops. Other signed-link purposes and logged-in users cannot call these two
+methods; an unsubscribe grant cannot call any of the other queries.
 
 Every query checks the resolved grant. A disallowed query throws `HouseholdAccessError`, whose
 `code` is `household_access_denied` or `payer_access_required`; map the code, never the message.
@@ -359,7 +368,7 @@ Storage references contain keys, never image bytes.
 
 Signed links reference invoices and members through composite foreign keys containing
 gym and household IDs. A CHECK requires only `invoice_id` for `pay_invoice`, only
-`member_id` for `sign_waiver`, and neither for `update_card` or `onboarding`.
+`member_id` for `sign_waiver` and `unsubscribe`, and neither for `update_card` or `onboarding`.
 Audit target IDs are polymorphic identifiers without foreign keys. Household Stripe
 customer IDs and payment-method processor IDs are processor references, not local
 row IDs.

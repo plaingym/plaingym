@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, count, eq, gt, inArray, isNotNull, isNull, lte, max, or } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNotNull, isNull, lte, max, ne, or } from 'drizzle-orm';
 import { linkCampaignSchema, signedLinkSchema, type CampaignRecipient, type CampaignRecipientState, type LinkCampaignDetail,
   type LinkCampaignProgress } from '@plaingym/shared/contracts';
 import { signedLinks, type linkCampaigns, type Transaction } from '@plaingym/db';
@@ -29,7 +29,7 @@ export interface CampaignTally { progress: LinkCampaignProgress; lastUsedAt: Dat
 export async function campaignTallies(tx: Transaction, gymId: string, campaignIds: string[], now: Date) {
   const tallies = new Map<string, CampaignTally>();
   if (!campaignIds.length) return tallies;
-  const scoped = and(eq(signedLinks.gymId, gymId), inArray(signedLinks.campaignId, campaignIds));
+  const scoped = and(eq(signedLinks.gymId, gymId), ne(signedLinks.purpose, 'unsubscribe'), inArray(signedLinks.campaignId, campaignIds));
   const all = tx.select({ campaignId: signedLinks.campaignId, total: count().as('total'), completed: count(signedLinks.usedAt).as('completed'),
     lastUsedAt: max(signedLinks.usedAt).as('last_used_at') }).from(signedLinks).where(scoped).groupBy(signedLinks.campaignId).as('all_links');
   const closed = tx.select({ campaignId: signedLinks.campaignId, closed: count().as('closed'), revoked: count(signedLinks.revokedAt).as('revoked') })

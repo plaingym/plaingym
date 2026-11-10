@@ -5,7 +5,8 @@ import {
   idSchema, instantSchema, listResponseSchema, paginationSchema,
 } from './common.js';
 
-export const signedLinkPurposeSchema = z.enum(['onboarding', 'pay_invoice', 'update_card', 'sign_waiver']);
+export const signedLinkPurposeSchema = z.enum(['onboarding', 'pay_invoice', 'update_card', 'sign_waiver', 'unsubscribe']);
+const staffLinkPurposeSchema = signedLinkPurposeSchema.exclude(['unsubscribe']);
 const signedLinkFields = {
   id: idSchema,
   householdId: idSchema,
@@ -18,6 +19,7 @@ const signedLinkFields = {
 };
 /** Typed resources match the database CHECK; metadata never includes a token or its hash. */
 export const signedLinkSchema = z.discriminatedUnion('purpose', [
+  z.strictObject({ ...signedLinkFields, purpose: z.literal('unsubscribe'), invoiceId: z.null(), memberId: idSchema }),
   z.strictObject({ ...signedLinkFields, purpose: z.literal('pay_invoice'), invoiceId: idSchema, memberId: z.null() }),
   z.strictObject({ ...signedLinkFields, purpose: z.literal('sign_waiver'), invoiceId: z.null(), memberId: idSchema }),
   z.strictObject({ ...signedLinkFields, purpose: z.literal('update_card'), invoiceId: z.null(), memberId: z.null() }),
@@ -59,7 +61,7 @@ export const signedLinkParamsSchema = z.strictObject({ linkId: idSchema });
 export const signedLinkListQuerySchema = paginationSchema.extend({
   householdId: idSchema.optional(),
   campaignId: idSchema.optional(),
-  purpose: signedLinkPurposeSchema.optional(),
+  purpose: staffLinkPurposeSchema.optional(),
 });
 export const signedLinkTokenParamsSchema = z.strictObject({
   token: createSignedLinkResponseSchema.shape.data.shape.token,
@@ -74,7 +76,7 @@ export const campaignReminderScheduleSchema = z.array(z.int32().positive().max(c
 export const linkCampaignSchema = z.strictObject({
   id: idSchema,
   name: z.string().trim().min(1).max(campaignLimits.name),
-  purpose: signedLinkPurposeSchema,
+  purpose: staffLinkPurposeSchema,
   createdBy: idSchema.nullable(),
   reminderSchedule: campaignReminderScheduleSchema,
   completedAt: instantSchema.nullable(),
@@ -125,7 +127,7 @@ export const campaignRecipientSchema = z.strictObject({
 });
 export const linkCampaignParamsSchema = z.strictObject({ campaignId: idSchema });
 export const linkCampaignListQuerySchema = paginationSchema.extend({
-  purpose: signedLinkPurposeSchema.optional(),
+  purpose: staffLinkPurposeSchema.optional(),
 });
 export const campaignRecipientListQuerySchema = paginationSchema.extend({
   state: campaignRecipientStateSchema.optional(),
@@ -180,7 +182,8 @@ export const linksContracts = {
     query: householdsNeedingCardQuerySchema, response: householdsNeedingCardResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
-export type SignedLinkPurposeName = z.infer<typeof signedLinkPurposeSchema>;
+/** Purposes accepted by staff creation, sending and campaign commands. */
+export type SignedLinkPurposeName = z.infer<typeof staffLinkPurposeSchema>;
 export type SignedLinkRecord = z.infer<typeof signedLinkSchema>;
 export type CreateSignedLinkRequest = z.infer<typeof createSignedLinkRequestSchema>;
 export type SendSignedLinkRequest = z.infer<typeof sendSignedLinkRequestSchema>;

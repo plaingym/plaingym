@@ -1,4 +1,7 @@
 [
+  {"method": "GET", "path": "/api/links/unsubscribe", "permission": {"kind": "signed_link", "purpose": "unsubscribe"}},
+  {"method": "POST", "path": "/api/links/unsubscribe", "permission": {"kind": "signed_link", "purpose": "unsubscribe"}},
+  {"method": "POST", "path": "/l/{token}", "permission": {"kind": "public"}},
   {"method": "GET", "path": "/api/bookings", "permission": {"kind": "staff", "capability": "bookings.manage"}},
   {"method": "POST", "path": "/api/bookings", "permission": {"kind": "staff", "capability": "bookings.manage"}},
   {"method": "POST", "path": "/api/bookings/{id}/cancel", "permission": {"kind": "staff", "capability": "bookings.manage"}},

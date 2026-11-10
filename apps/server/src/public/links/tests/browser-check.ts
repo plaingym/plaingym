@@ -10,6 +10,7 @@ import messages from '../../../../../../locales/en/public/links.json' with { typ
 import { validateSignatureImage } from '../../../areas/waivers/snapshot.js';
 import { renderSignedLink } from '../../../emails/links/service.js';
 import linkMessages from '../../../../../../locales/en/links/service.json' with { type: 'json' };
+import unsubscribeMessages from '../../../../../../locales/en/links/unsubscribe.json' with { type: 'json' };
 
 const output = resolve('coverage/signed-links/browser');
 // Optional browser tooling is installed separately in e2e; normal type checks need no browser install.
@@ -18,11 +19,13 @@ await mkdir(output, { recursive: true });
 await buildLinkAssets(output);
 const css = await readFile(resolve(output, 'links.css'), 'utf8');
 const browserSource = await readFile(resolve(output, 'links.js'), 'utf8');
-const t = createTranslator({ 'public/links': messages }), now = new Date('2026-10-25T12:00:00Z');
+const t = createTranslator({ 'public/links': messages, 'links/unsubscribe': unsubscribeMessages }), now = new Date('2026-10-25T12:00:00Z');
 const member = { id: 'member', firstName: 'Alex', lastName: 'Example', dateOfBirth: '2015-04-01', revision: 1 };
 const templates = [{ id: 'template', name: 'Participation waiver', body: 'Please read these terms before signing.\n' + 'Training involves physical activity. '.repeat(100), version: 1, kind: 'waiver' as const, retiredAt: null, createdAt: now.toISOString() },
   { id: 'agreement', name: 'Training agreement', body: 'Please review the training agreement.', version: 1, kind: 'agreement' as const, retiredAt: null, createdAt: now.toISOString() }];
 const fixtures: Record<string, PortalSignedLinkData> = {
+  unsubscribe: { purpose: 'unsubscribe', member: { firstName: 'Alex', lastName: 'Example' }, optedOut: false },
+  unsubscribed: { purpose: 'unsubscribe', member: { firstName: 'Alex', lastName: 'Example' }, optedOut: true },
   pay_invoice: { purpose: 'pay_invoice', invoice: { invoice: { id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents: 10000, currency: 'USD', paidAt: null },
     lines: [{ id: 'line', kind: 'charge', description: 'Training fees with a long description that wraps on a phone', amountCents: 10000, currency: 'USD', quantity: 1, taxInclusive: null, taxRateMillionths: null }] } },
   update_card: { purpose: 'update_card', paymentMethods: [] },
@@ -50,7 +53,13 @@ const server = createServer(async (req, res) => {
     // Browser-only fixtures model persisted signatures and confirmed card setup;
     // production authorization, snapshots and completion are exercised in links.test.ts.
     const chunks = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
-    const input = JSON.parse(Buffer.concat(chunks).toString()) as { templateId?: string; pngBase64?: string };
+    const input = JSON.parse(Buffer.concat(chunks).toString()) as { templateId?: string; pngBase64?: string; optedOut?: boolean };
+    if (url.pathname === '/api/links/unsubscribe') {
+      const name = req.headers.authorization?.slice(7) ?? '', fixture = fixtures[name];
+      if (fixture?.purpose !== 'unsubscribe') throw new Error('Missing unsubscribe fixture');
+      fixture.optedOut = input.optedOut!;
+      res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ data: fixture })); return;
+    }
     const purpose = url.pathname.includes('sign-waiver') ? 'sign_waiver' : 'onboarding';
     const data = fixtures[purpose]!;
     if (!('signatures' in data)) throw new Error('Missing signing fixture');
@@ -76,7 +85,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/l/sign_waiver' && fixtures.sign_waiver?.purpose === 'sign_waiver' && fixtures.sign_waiver.signatures.length === templates.length) {
     res.end(linkPage({ state: 'alreadyDone', now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet') })); return;
   }
-  res.end(linkPage({ data: fixtures[url.pathname.split('/')[2] ?? ''] ?? fixtures.onboarding!, now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet'), portalClaim: { password: true } }));
+  res.end(linkPage({ data: fixtures[url.pathname.split('/')[2] ?? ''] ?? fixtures.onboarding!, gymName: 'Example Academy', now, timezone: 'UTC', t, tablet: url.searchParams.has('tablet'), portalClaim: { password: true } }));
 });
 await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port');
@@ -112,6 +121,19 @@ try {
     }));
     if (metrics.overflow || metrics.shortControls.length) throw new Error(name + ' ' + width + ': ' + JSON.stringify(metrics));
     await page.screenshot({ path: resolve(output, `${name}-${width}.png`), fullPage: true });
+  }
+  for (const width of [360, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(origin + '/l/unsubscribe');
+    await expect(page.getByText('Example Academy', { exact: true })).toBeVisible();
+    await expect(page.locator('[data-checkout], [data-waiver], [data-complete]')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Unsubscribe', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Subscribe again', exact: true })).toBeVisible();
+    await expect(page.locator('[data-announcement-status]')).toContainText('is unsubscribed');
+    await page.getByRole('button', { name: 'Subscribe again', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Unsubscribe', exact: true })).toBeVisible();
+    await expect(page.locator('[data-announcement-status]')).toContainText('is subscribed');
+    await page.screenshot({ path: resolve(output, `unsubscribe-restored-${width}.png`), fullPage: true });
   }
   for (const width of [360, 1280]) {
     await page.setViewportSize({ width, height: 900 });
@@ -210,7 +232,7 @@ try {
   await page.clock.fastForward(121_000);
   await page.waitForURL('**/l/cleared');
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log('Passed: seven screens at 360 px and desktop, including replaced links, manual payment, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
+  console.log('Passed: signed-link screens at 360 px and desktop, including announcement opt-out and resubscribe, replaced links, manual payment, 44 px controls, signature drawing, two-template waiver/onboarding flows, automatic Checkout return retries and exhaustion, tablet clear and inactivity reset.');
 } finally {
   await browser.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

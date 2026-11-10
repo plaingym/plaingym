@@ -17,8 +17,29 @@ emails also give manual-payment instructions without a card link for these amoun
 An open zero invoice shows only a note that it settles on its due date, with no
 payment action or manual-payment instructions.
 
-`/l/<token>` renders invoice payment, card update, member waiver signing, or
-household onboarding without a login. Add `?tablet=1` for a front-desk tablet:
+`/l/<token>` renders invoice payment, card update, member waiver signing,
+household onboarding, or one member's announcement preferences without a login.
+Announcement links show only the gym name, member name and subscription state.
+GET never changes that preference. The button posts `{ optedOut: true }` (or
+`false` to subscribe again) to `/api/links/unsubscribe` with the existing bearer
+credential. Neither request can choose a different member or household.
+
+For mail clients, a cookie-less `POST /l/<token>` accepts only the RFC 8058 body:
+exactly `List-Unsubscribe=One-Click` as `application/x-www-form-urlencoded` (an
+optional UTF-8 charset is accepted), or `multipart/form-data` with that one field
+and value and nothing else. It shares a 30-request per gym/IP/minute
+budget with the preference button and returns the same 404 for unknown, expired,
+revoked, used, wrong-purpose and other gyms' tokens. Cookie-bearing requests
+retain the normal same-origin CSRF check. Repeated opt-outs are no-ops. The
+separate announcement preference never changes `members.email_opt_out`.
+
+`areas/announcements/unsubscribe.ts` exports `issueUnsubscribeLink(tx, gymId,
+memberId, now)`: call it inside a send reservation transaction and use its token
+for the message's link and one-click header URL. It stores only the token digest,
+expires in 90 days and stays reusable, including after subscribing again. Staff
+link lists, lookups, sends and revokes exclude this purpose.
+
+Add `?tablet=1` for a front-desk tablet:
 large controls, a clear-screen action, and a two-minute inactivity reset. The
 browser replaces the tablet page when leaving for Checkout, clears its document
 on navigation, and reloads restored history entries. No bearer token is placed
@@ -158,6 +179,8 @@ The public-area barrel includes these routes. The runtime calls
   the same per-gym provider as the webhook inbox and a trusted canonical origin;
 - `receiptKey`: a stable secret of at least 32 bytes, derived from the install's
   encryption key with a distinct context, never generated per process;
+- optional `gymNameFor(gymId)` for announcement pages; by default the existing
+  gym settings service reads the current gym's name;
 - the default translator and asset readers. An optional `localeFor(gymId)` resolver
   is supported. The context
   and settings currently have no display-locale field; the resolver defaults to

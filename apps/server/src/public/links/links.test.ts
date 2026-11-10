@@ -390,20 +390,24 @@ describe('signed-link pages through production registrations', () => {
     expect(await (await f.request(f.path + '/complete', 'POST', {}, cookie)).json()).toEqual({ data: { completed: true } });
     expect(await (await f.app().request('/l/' + f.link.token)).text()).toContain('Already done');
   });
-  for (const [name, contract] of Object.entries({ ...contracts, ...actions })) it(`${name} requires its exact link purpose; no staff, portal or kiosk credential substitutes`, async () => {
-    const f = await fixture(contract.permission.purpose);
-    const server = f.app();
-    for (const principal of [{ kind: 'anonymous' }, ...['owner', 'admin', 'coach', 'front_desk'].map(role => ({ kind: 'staff', gymId: f.gymId, userId: uuidv7(), roles: [role] })),
-      { kind: 'kiosk', gymId: f.gymId, deviceId: uuidv7() }, { kind: 'member', userId: uuidv7(), scope: { gymId: f.gymId, householdId: f.household.id, role: 'payer', memberId: null } }] as Principal[]) {
-      const response = await f.app(f.gymId, principal).request(contract.path, { method: contract.method.toUpperCase(), headers: { 'content-type': 'application/json' }, ...(contract.method === 'post' ? { body: '{}' } : {}) });
-      expect(response.status).toBe(401);
-    }
-    const other = await f.create(contract.permission.purpose === 'pay_invoice' ? 'update_card' : 'pay_invoice');
-    expect((await f.request(contract.path, contract.method.toUpperCase(), {}, '', other.token, server)).status).toBe(403);
-    // For write endpoints, invalid payload is reached only after successful authorization.
-    const allowed = await f.request(contract.path, contract.method.toUpperCase());
-    expect([200, 400]).toContain(allowed.status);
-    const gymB = uuidv7(); await factory('gyms', gymB);
-    expect((await f.request(contract.path, contract.method.toUpperCase(), {}, '', f.link.token, f.app(gymB))).status).toBe(404);
-  });
+  for (const [name, contract] of Object.entries({ ...contracts, ...actions })) {
+    if (contract.permission.kind !== 'signed_link' || contract.permission.purpose === 'unsubscribe') continue;
+    const purpose = contract.permission.purpose;
+    it(`${name} requires its exact link purpose; no staff, portal or kiosk credential substitutes`, async () => {
+      const f = await fixture(purpose);
+      const server = f.app();
+      for (const principal of [{ kind: 'anonymous' }, ...['owner', 'admin', 'coach', 'front_desk'].map(role => ({ kind: 'staff', gymId: f.gymId, userId: uuidv7(), roles: [role] })),
+        { kind: 'kiosk', gymId: f.gymId, deviceId: uuidv7() }, { kind: 'member', userId: uuidv7(), scope: { gymId: f.gymId, householdId: f.household.id, role: 'payer', memberId: null } }] as Principal[]) {
+        const response = await f.app(f.gymId, principal).request(contract.path, { method: contract.method.toUpperCase(), headers: { 'content-type': 'application/json' }, ...(contract.method === 'post' ? { body: '{}' } : {}) });
+        expect(response.status).toBe(401);
+      }
+      const other = await f.create(purpose === 'pay_invoice' ? 'update_card' : 'pay_invoice');
+      expect((await f.request(contract.path, contract.method.toUpperCase(), {}, '', other.token, server)).status).toBe(403);
+      // For write endpoints, invalid payload is reached only after successful authorization.
+      const allowed = await f.request(contract.path, contract.method.toUpperCase());
+      expect([200, 400]).toContain(allowed.status);
+      const gymB = uuidv7(); await factory('gyms', gymB);
+      expect((await f.request(contract.path, contract.method.toUpperCase(), {}, '', f.link.token, f.app(gymB))).status).toBe(404);
+    });
+  }
 });

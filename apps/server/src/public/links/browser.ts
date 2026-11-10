@@ -48,6 +48,13 @@ export function linkBrowser() {
     if (footer) main.append(footer);
     main.querySelector<HTMLElement>('section')?.focus();
   }
+  const announcementButton = document.querySelector<HTMLButtonElement>('[data-announcement-opt-out]');
+  announcementButton?.addEventListener('click', () => {
+    void busy(announcementButton, async () => {
+      await call('', { optedOut: announcementButton.dataset.announcementOptOut === 'true' });
+      location.reload();
+    });
+  });
   const portalClaim = document.querySelector<HTMLFormElement>('[data-portal-claim]');
   portalClaim?.addEventListener('submit', event => {
     event.preventDefault();

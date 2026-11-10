@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { createHash, randomBytes } from 'node:crypto';
-import { and, asc, count, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, ne } from 'drizzle-orm';
 import {
   auditEvents, forGym, households, invoices, linkCampaigns, members, signedLinks, uuidv7, writeAudit,
   type Transaction,
@@ -41,7 +41,7 @@ function metadata(row: LinkRow): SignedLinkRecord {
 function principal(row: LinkRow): SignedLinkPrincipal {
   const link = metadata(row);
   const resource = link.purpose === 'pay_invoice' ? { purpose: link.purpose, invoiceId: link.invoiceId }
-    : link.purpose === 'sign_waiver' ? { purpose: link.purpose, memberId: link.memberId }
+    : link.purpose === 'sign_waiver' || link.purpose === 'unsubscribe' ? { purpose: link.purpose, memberId: link.memberId }
       : { purpose: link.purpose };
   return { kind: 'signed_link', gymId: row.gymId, linkId: row.id, householdId: row.householdId, link: resource };
 }
@@ -173,7 +173,7 @@ export function createSignedLinksService(options: {
   async function get(gymId: string, linkId: string) {
     return scope(gymId, async (tx) => {
       const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.gymId, gymId), eq(signedLinks.id, linkId)));
-      if (!row) missing();
+      if (!row || row.purpose === 'unsubscribe') missing();
       return metadata(row);
     });
   }
@@ -182,7 +182,7 @@ export function createSignedLinksService(options: {
       const [before] = await tx.select().from(signedLinks).where(and(
         eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
       )).for('update');
-      if (!before) missing();
+      if (!before || before.purpose === 'unsubscribe') missing();
       if (before.revokedAt !== null) return metadata(before);
       const now = clock.now();
       const [row] = await tx.update(signedLinks).set({ revokedAt: now }).where(and(
@@ -197,7 +197,7 @@ export function createSignedLinksService(options: {
     async list(gymId: string, input: Partial<SignedLinkListQuery> = {}) {
       const query = signedLinkListQuerySchema.parse(input);
       return scope(gymId, async (tx) => {
-        const filter = and(eq(signedLinks.gymId, gymId),
+        const filter = and(eq(signedLinks.gymId, gymId), ne(signedLinks.purpose, 'unsubscribe'),
           query.householdId ? eq(signedLinks.householdId, query.householdId) : undefined,
           query.campaignId ? eq(signedLinks.campaignId, query.campaignId) : undefined,
           query.purpose ? eq(signedLinks.purpose, query.purpose) : undefined);
@@ -225,7 +225,7 @@ export function createSignedLinksService(options: {
         const [before] = await tx.select().from(signedLinks).where(and(
           eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, context.linkId),
         )).for('update');
-        if (!before) missing();
+        if (!before || before.purpose === 'unsubscribe') missing();
         const status = state(before, clock.now());
         if (status !== 'active') throw new AppError('conflict', `Signed link is ${status}`);
         const now = clock.now();

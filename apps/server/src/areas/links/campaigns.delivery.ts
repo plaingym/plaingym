@@ -13,6 +13,9 @@ import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery 
 export async function deliverCampaignLink(options: { scope: typeof forGym; clock: Clock; delivery: SignedLinkDelivery },
   gymId: string, campaignId: string, linkId: string, occurrence: string) {
   const { scope, clock, delivery } = options;
+  const [candidate] = await scope(gymId, tx => tx.select({ purpose: signedLinks.purpose }).from(signedLinks)
+    .where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))));
+  if (candidate?.purpose === 'unsubscribe') return;
   const gym = await createGymSettingsAccessor({ scope }).get(gymId);
   let prepared;
   try {
@@ -30,7 +33,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   const reservationId = uuidv7(clock.now().getTime());
   const reserve = (mode: 'link' | 'manual') => scope(gymId, async tx => {
     const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))).for('update');
-    if (!row || campaignRecipient(row, clock.now()).state !== 'pending') return;
+    if (!row || row.purpose === 'unsubscribe' || campaignRecipient(row, clock.now()).state !== 'pending') return;
     const history = await deliveryHistory(tx, gymId, [linkId]);
     if (checkoutInProgress(history, linkId, clock.now())) {
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_deferred',
@@ -59,7 +62,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   try {
     // A completion or revoke committed during preparation stops the queued send before anything is reserved.
     const [current] = await scope(gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)));
-    if (current && current.campaignId === campaignId && campaignRecipient(current, clock.now()).state === 'pending') {
+    if (current && current.purpose !== 'unsubscribe' && current.campaignId === campaignId && campaignRecipient(current, clock.now()).state === 'pending') {
       await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: campaignRecipient(current, clock.now()).link, token,
         prepareSelected: async mode => { reservation = await reserve(mode); return !!reservation; },
         delivery: { ...prepared, email: observed }, noticeKey: 'links/campaigns:replacementNotice' });

@@ -67,10 +67,18 @@ pages.
   any handler runs, including Checkout and booking changes. The header never
   supplies authority: the gym session and current household link still do.
 * **Signed links** grant exactly one purpose for one resource: pay one invoice,
-  update the household's card, sign one member's waivers, or onboarding. The
+  update the household's card, sign one member's waivers, onboarding, or change
+  one member's announcement subscription. The
   token is 256 random bits; only its SHA-256 digest is stored. Each request
   reloads the link and refuses it once revoked, used or expired. A link can't
   read bookings, attendance, ranks, memberships or emergency contacts.
+  Announcement unsubscribe links last 90 days and remain reusable until expiry.
+  Their GET page never changes preferences; a button or a cookie-less one-click
+  POST opts out only the stored member, and the page can subscribe that member
+  again. The separate `announcement_opt_outs` row leaves `members.email_opt_out`
+  untouched. This link grants no household, billing or waiver access and is
+  excluded from staff link lists, resends and revocation. Preference writes lock
+  and recheck the link and member, with their audit in the same transaction.
 * **Kiosk.** A kiosk authenticates with a revocable device token (256 random bits,
   stored as a SHA-256 hash, checked on every request) that reaches only the
   check-in endpoints, never a staff session. Settings shows the token once, as a

@@ -11,20 +11,24 @@ import { route, type RouteRegistration } from '../../core/registry.js';
 import type { RequestEnvironment } from '../../core/context.js';
 import { createSignedLinksService } from '../../areas/links/service.js';
 import { CustomerNotLinked } from '../../areas/billing/signed-link-checkout.js';
+import { createSettingsService } from '../../areas/settings/settings.js';
 import { createLinkPageService, linkPrincipal, type LinkPageOptions, type LinkPageService } from './service.js';
 import { checkoutReceipts } from './receipt.js';
 import { linkPage } from './page.js';
 import { cachedLinkAsset } from './assets.js';
 import messages from '../../../../../locales/en/public/links.json' with { type: 'json' };
 import waiverMessages from '../../../../../locales/en/waivers/waivers.json' with { type: 'json' };
+import unsubscribeMessages from '../../../../../locales/en/links/unsubscribe.json' with { type: 'json' };
 
-const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages });
+const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages, 'links/unsubscribe': unsubscribeMessages });
+const settings = createSettingsService();
 export const receiptCookie = 'plaingym_link_checkout';
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
 /** Signed-link pages load their script, styles and images (`data:` QR codes) from the app only. */
 const linkPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self' data:", "base-uri 'none'",
   "form-action 'self'", "frame-src 'self'", "frame-ancestors 'none'"];
 interface PageRoutesOptions {
+  gymNameFor?: (gymId: string) => Promise<string>;
   portalInvitations?: PortalInvitationService;
   service: LinkPageService;
   links: Pick<ReturnType<typeof createSignedLinksService>, 'resolve'>;
@@ -36,10 +40,10 @@ interface PageRoutesOptions {
 }
 let configured: PageRoutesOptions | undefined;
 /** Runtime supplies real services, canonical payment origins and a stable receipt key. */
-export function configureLinkPages(options: LinkPageOptions & { portalInvitations?: PortalInvitationService; receiptKey: Uint8Array; links?: PageRoutesOptions['links']; t?: Translator; localeFor?: PageRoutesOptions['localeFor']; stylesheet?: () => Promise<string>; browserScript?: () => Promise<string> }) {
+export function configureLinkPages(options: LinkPageOptions & { gymNameFor?: PageRoutesOptions['gymNameFor']; portalInvitations?: PortalInvitationService; receiptKey: Uint8Array; links?: PageRoutesOptions['links']; t?: Translator; localeFor?: PageRoutesOptions['localeFor']; stylesheet?: () => Promise<string>; browserScript?: () => Promise<string> }) {
   const service = createLinkPageService(options);
   configured = { service, ...(options.portalInvitations ? { portalInvitations: options.portalInvitations } : {}), links: options.links ?? createSignedLinksService(), receipts: checkoutReceipts(options.receiptKey),
-    ...(options.t ? { t: options.t } : {}), ...(options.localeFor ? { localeFor: options.localeFor } : {}), ...(options.stylesheet ? { stylesheet: options.stylesheet } : {}), ...(options.browserScript ? { browserScript: options.browserScript } : {}) };
+    ...(options.gymNameFor ? { gymNameFor: options.gymNameFor } : {}), ...(options.t ? { t: options.t } : {}), ...(options.localeFor ? { localeFor: options.localeFor } : {}), ...(options.stylesheet ? { stylesheet: options.stylesheet } : {}), ...(options.browserScript ? { browserScript: options.browserScript } : {}) };
   return service;
 }
 export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRegistration[] {
@@ -51,6 +55,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       locale: await config.localeFor?.(ctx.gym.gymId) ?? 'en' };
   }
   const empty = z.strictObject({});
+  const unsubscribeLimit = rateLimit({ sharedKey: 'links.unsubscribe', limit: 30 });
   const json = <T extends z.ZodType>(schema: T) => ({ 200: { description: 'Signed-link result', content: { 'application/json': { schema } } } });
   function protect(entry: RouteRegistration, bearer = true): RouteRegistration {
     return { ...entry, mount(app, authorize) {
@@ -120,14 +125,38 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
         const data = await config.service.read(verified);
         if (data.purpose === 'sign_waiver' && await config.service.completeWaiverOnOpen(verified))
           return html(c, { ...common, state: 'alreadyDone' });
-        return html(c, { ...common, data });
+        const gymName = data.purpose === 'unsubscribe'
+          ? await (config.gymNameFor ?? (async gymId => (await settings.get(gymId)).name))(ctx.gym.gymId) : undefined;
+        return html(c, { ...common, data, ...(gymName ? { gymName } : {}) });
       } catch (error) {
         if (error instanceof AppError && error.code === 'not_found') return html(c, { ...common, state: 'unavailable' }, 404);
         throw error;
       }
     })),
   ];
-  for (const name of ['invoice', 'card', 'waiver', 'onboarding'] as const) {
+  const oneClick = contracts.oneClickUnsubscribe;
+  result.push(publicRoute(route({ ...oneClick, middleware: unsubscribeLimit,
+    request: { params: oneClick.params, query: empty }, responses: json(oneClick.response) }, async c => {
+    const ctx = c.get('context'), config = options();
+    const resolved = await config.links.resolve(ctx.gym.gymId, c.req.valid('param').token);
+    if (resolved.status !== 'active' || resolved.principal.link.purpose !== 'unsubscribe') throw new AppError('not_found', 'Link not found');
+    // RFC 8058: mail clients send the one field as multipart/form-data (SHOULD) or URL-encoded (MAY).
+    const type = c.req.header('content-type') ?? '';
+    const fields = /^multipart\/form-data\s*;/i.test(type) ? [...(await c.req.formData().catch(() => new FormData())).entries()] : [];
+    const oneClickBody = /^application\/x-www-form-urlencoded(?:\s*;\s*charset=utf-8)?$/i.test(type)
+      ? await c.req.text() === 'List-Unsubscribe=One-Click'
+      : fields.length === 1 && fields[0]![0] === 'List-Unsubscribe' && fields[0]![1] === 'One-Click';
+    if (!oneClickBody) throw new AppError('invalid_request', 'Invalid one-click request');
+    await config.service.announcementPreference({ ...ctx, principal: resolved.principal }, true);
+    return c.json({ data: { optedOut: true as const } }, 200);
+  })));
+  const preference = contracts.announcementPreference;
+  result.push(protect(route({ ...preference, middleware: unsubscribeLimit,
+    request: { query: empty, body: { content: { 'application/json': { schema: preference.body } }, required: true } },
+    responses: json(preference.response) }, async c => c.json(preference.response.parse({
+      data: await options().service.announcementPreference(c.get('context'), c.req.valid('json').optedOut),
+    }), 200))));
+  for (const name of ['invoice', 'card', 'waiver', 'onboarding', 'unsubscribe'] as const) {
     const contract = contracts[name];
     result.push(protect(route({ ...contract, request: { query: empty }, responses: json(contract.response) }, async c =>
       c.json(contract.response.parse({ data: await options().service.read(c.get('context')) }), 200))));

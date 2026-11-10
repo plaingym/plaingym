@@ -5,6 +5,7 @@ import { portalSignedLinkDataSchema, type PortalSignedLinkData, type WaiverSignR
 import type { RequestContext } from '../../core/context.js';
 import { templateDocument, type WaiversService } from '../../areas/waivers/waivers.js';
 import type { createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
+import { createAnnouncementUnsubscribeService } from '../../areas/announcements/unsubscribe.js';
 
 export interface LinkPageOptions {
   scope?: typeof forHousehold;
@@ -18,8 +19,10 @@ export function linkPrincipal(context: RequestContext) {
 }
 export function createLinkPageService(options: LinkPageOptions) {
   const scope = options.scope ?? forHousehold;
+  const announcements = createAnnouncementUnsubscribeService({ scope });
   async function read(context: RequestContext): Promise<PortalSignedLinkData> {
     const p = linkPrincipal(context);
+    if (p.link.purpose === 'unsubscribe') return { purpose: 'unsubscribe', ...await announcements.read(p.gymId, p.linkId, context.clock) };
     try {
       return await scope({ kind: 'signed_link', gymId: p.gymId, linkId: p.linkId, now: context.clock.now() }, async q => {
         if (p.link.purpose === 'pay_invoice') {
@@ -55,6 +58,11 @@ export function createLinkPageService(options: LinkPageOptions) {
   }
   return {
     read,
+    async announcementPreference(context: RequestContext, optedOut: boolean) {
+      const p = linkPrincipal(context);
+      if (p.link.purpose !== 'unsubscribe') throw new AppError('not_found', 'Link not found');
+      return { purpose: 'unsubscribe' as const, ...await announcements.set(p.gymId, p.linkId, optedOut, context.clock) };
+    },
     async document(context: RequestContext, templateId: string) {
       const data = await read(context), p = linkPrincipal(context);
       if (!('templates' in data) || !data.templates.some(template => template.id === templateId)) throw new AppError('not_found', 'Document not found');
@@ -75,12 +83,12 @@ export function createLinkPageService(options: LinkPageOptions) {
     },
     async checkout(context: RequestContext) {
       const data = await read(context), p = linkPrincipal(context);
-      if (data.purpose === 'sign_waiver') throw new AppError('not_found', 'Link not found');
+      if (data.purpose === 'sign_waiver' || data.purpose === 'unsubscribe') throw new AppError('not_found', 'Link not found');
       return options.checkout.start(p.gymId, p.linkId);
     },
     async complete(context: RequestContext, sessionId: string | null) {
       const data = await read(context), p = linkPrincipal(context);
-      if (data.purpose === 'sign_waiver') throw new AppError('not_found', 'Link not found');
+      if (data.purpose === 'sign_waiver' || data.purpose === 'unsubscribe') throw new AppError('not_found', 'Link not found');
       return options.checkout.complete(p.gymId, p.linkId, sessionId);
     },
   };
