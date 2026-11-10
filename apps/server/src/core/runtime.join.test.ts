@@ -125,4 +125,21 @@ it('joins, pays through Checkout and activates only from the webhook, then sends
   const welcome = await app.request(origin + '/join/return', { headers: { host: 'gym.example.test', cookie: cashCookie } });
   expect(welcome.status).toBe(200);
   expect(welcome.headers.get('refresh')).toBeNull();
+
+  // An abandoned admission is removed by the runtime's nightly cleanup job, with its uploaded signature image: the
+  // runtime passes its uploads to the join service, so the cleanup can reach the store.
+  const idle = { name: 'Drew Idle', email: 'drew@example.invalid' }, drifter = { firstName: 'Drew', lastName: 'Idle', dateOfBirth: '1985-05-06' };
+  const unfinished = await post('/join/signatures', { planId: plan.id, contact: idle, honeypot: '', members: [{ member: drifter,
+    signatures: [{ templateId: template.id, templateVersion: template.version, pngBase64: demoSignaturePng().toString('base64'), signer: { kind: 'self', name: 'Drew Idle' } }] }] });
+  expect(unfinished.status, await unfinished.clone().text()).toBe(200);
+  const imageKey = ((await unfinished.json()).data as Record<string, string>[][])[0]![0]!.signatureImageKey!;
+  const uploads = await runtime.uploadsFor(gymId);
+  expect((await uploads.head(imageKey))?.deletedAt).toBeUndefined();
+  const later = new Date(clock.now().getTime() + 3 * 86_400_000);
+  vi.spyOn(clock, 'now').mockReturnValue(later);
+  await handlers.get('public.join.cleanup')!({}, { gymId, clock, timezone: 'UTC', jobId: uuidv7(), attempt: 1 });
+  expect((await uploads.head(imageKey))?.deletedAt).toBeDefined();
+  expect(await db.forGym(gymId, tx => tx.select().from(households).where(eq(households.email, idle.email)))).toEqual([]);
+  // The members who finished their joins are untouched.
+  expect((await joined(cash.email)).people.map(p => p.status)).toEqual(['active']);
 });

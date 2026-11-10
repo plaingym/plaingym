@@ -342,7 +342,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // (receipts, dunning, membership activation, staff notices) run as jobs. Before the worker starts.
   const checkout = createSignedLinkCheckout({ paymentsFor: requirePayments, originFor: gymOrigin, clock });
   // Join keeps its own membership service: the runtime's assignment callback would invoice sign-up fees separately.
-  const join = configureJoin({ clock, waivers, checkout, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)),
+  const join = configureJoin({ clock, waivers, checkout, uploadsFor: uploads.forGym, paymentsConfigured: async gymId => Boolean(await paymentsFor(gymId)),
     invitations: portalInvitations, accounts, ...(demo ? { testCardHint: demo.joinTestCardHint } : {}),
     key: new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym public join v1', 32)) });
   demo?.service.setJoinReadiness(join);
