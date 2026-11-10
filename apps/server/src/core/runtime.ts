@@ -70,6 +70,7 @@ import { createMemberPhotoJobs } from '../areas/members/members.jobs.js';
 import { createSmtpResolver } from '../areas/settings/smtp.js';
 import { configureSignedLinkDelivery } from '../areas/links/service.js';
 import { configureCampaigns, createCampaignsService } from '../areas/links/campaigns.js';
+import { configureCancellationNotice, createCancellationNotice } from '../areas/announcements/cancellation.js';
 import { configureAnnouncements, createAnnouncementsService } from '../areas/announcements/send.js';
 import { registerBackupJobs } from '../areas/health/backups.jobs.js';
 import { PostgresMaintenance } from '../areas/health/backups.database.js';
@@ -330,6 +331,10 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
       if (!email) throw new AppError('forbidden', 'Announcement sender has no login email');
       return email;
     } }));
+  // Cancelling a session with the notice option queues one job that emails its booked and waitlisted members.
+  configureCancellationNotice(createCancellationNotice({ jobs: queue, clock, origin: gymOrigin, demoMode: Boolean(demo),
+    mailer: async gymId => demo ? demo.emailFor(gymId) : smtpMailer(smtp!)(gymId),
+    ...(demo ? { demoEmailFor: demo.emailFor } : {}) }));
   const inbox = webhookInbox(paymentsFor, queue);
   configureWebhookInboxRoutes(inbox);
   configureWebhookInboxJobs(inbox);

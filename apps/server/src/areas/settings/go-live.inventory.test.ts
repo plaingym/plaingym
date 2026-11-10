@@ -15,6 +15,7 @@ const boundaries = {
   'areas/billing/customers.ts': 'customer creation is preparatory, allowed while billing is paused',
   'areas/billing/transitions/notifications.ts': 'memberEmailsEnabled at recipient selection and immediately before sending; staff notices are exempt',
   'areas/billing/alerts/index.ts': 'memberEmailsEnabled: card expiry; owner disputes are exempt',
+  'areas/announcements/cancellation.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery; an off switch skips the rest',
   'areas/announcements/send.delivery.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery; an off switch skips the rest',
   'areas/announcements/send.ts': 'preview and send refuse while memberEmailsEnabled is off; the sender-only test copy is a staff notice and is exempt',
   'areas/links/service.delivery.ts': 'memberEmailsEnabled reloaded from persisted settings immediately before delivery',
@@ -51,6 +52,7 @@ const emailPaths = [
   ['staff/security mail and owner disputes', 'infra/email/member.test.ts', 'keeps staff/security mail available'],
   ['public intake notices with staff-only runtime recipients', 'public/pages/pages.test.ts', 'keeps new, existing and enrolled emails indistinguishable without editing existing households'],
   ['announcement preview, send and mid-batch switch-off', 'areas/announcements/send.test.ts', 'skips the remaining recipients when the switch turns off mid-batch'],
+  ['class-cancellation notice recheck of the switch', 'areas/announcements/cancellation.test.ts', 'rechecks address groups and the go-live switch after mailer preparation'],
   ['runtime public intake staff recipients', 'core/runtime.public-pages.test.ts', 'sends public intake notices only to owner/admin staff even with member emails disabled'],
 ] as const;
 

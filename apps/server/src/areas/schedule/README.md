@@ -53,9 +53,9 @@ note, and waits for fresh counts before sending. Coach visibility compares the b
 `staffProfileId` with the session's `coachId`; API authorization is independent.
 
 The existing area route/job barrels load `schedule.routes.ts` and
-`schedule.jobs.ts`. Notification delivery requires the announcements area's
-`configureCancellationNotice` runtime setup (see its README); ordinary cancellation
-does not. The admin calendar
+`schedule.jobs.ts`. Notification delivery uses the announcements area's
+cancellation notice, which the runtime configures (see its README); ordinary
+cancellation does not need it. The admin calendar
 renders enabled, permitted `sessionPanels` contributions without importing
 their components directly. A panel can publish booking counts for the session
 dialog's summary (`lib/session-summary.tsx`); the dialog shows them beside the

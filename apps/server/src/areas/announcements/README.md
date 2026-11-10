@@ -96,11 +96,12 @@ retry. Accepted, unknown and definitely rejected attempts are not resent by this
 notice; a setup failure before reservation can be retried. A send outcome writes
 an audit without the address or message content.
 
-Runtime composition must call
+`core/runtime.ts` calls
 `configureCancellationNotice(createCancellationNotice({ jobs, mailer, origin, ... }))`.
 `mailer` resolves each gym's SMTP configuration, and `origin` supplies its canonical
 HTTPS origin. The area's job barrel already registers the handler. Demo composition
 passes `demoMode: true` and `demoEmailFor` from the demo runtime: the production
-mailer is never called, and a missing demo outbox fails closed. Until configured,
-requesting notification fails with 503 and rolls back the cancellation. Tests may
-inject the same service through `createScheduleService({ cancellation })`.
+mailer is never called, and a missing demo outbox fails closed. Without that setup
+(a bare service in a test), requesting notification fails with 503 and rolls back the
+cancellation. Tests may inject the same service through
+`createScheduleService({ cancellation })`.
