@@ -56,14 +56,15 @@ an empty audience, the announcement becomes sent; failed/skipped counts still
 describe its outcomes. Every decision and completion is audited without message
 content, addresses, or tokens.
 
-Runtime composition calls `configureAnnouncements(createAnnouncementsService(...))`
+`core/runtime.ts` calls `configureAnnouncements(createAnnouncementsService(...))`
 with the job queue, `createSmtpResolver`, a gym mailer, canonical HTTPS gym origin,
-and a trusted authentication lookup `senderEmail(gymId, userId)`. The lookup must
-return that user's login address, never a member address or a request field. Demo
+and a trusted authentication lookup `senderEmail(gymId, userId)` (the account
+service's `userEmail`). The lookup returns that staff user's login address, never a
+member address or a request field. Demo
 composition sets `demoMode: true` and passes `demoEmailFor` from the demo runtime:
 neither SMTP resolution nor the production mailer is called. Missing demo outbox
-wiring fails closed. History is readable before delivery is configured; sending
-and the registered job fail explicitly until configured.
+wiring fails closed. Until `configureAnnouncements` runs (a test app without the
+runtime), the routes answer 503.
 
 The unsubscribe service and public signed-link pages retain the independent,
 one-member announcement preference. They do not change the member's global email
