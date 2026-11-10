@@ -224,12 +224,14 @@ test('portal, signed-link, join and drop-in surfaces show and sign the PDF while
       const visitor = readers[surface], lastName = 'Pdf' + randomUUID().replaceAll('-', '');
       const member = { firstName: 'Visitor', lastName, dateOfBirth: '1990-01-01' }, contact = { name: 'Visitor ' + lastName, email: `${lastName.toLowerCase()}@example.invalid` };
       const templates = (await visitor.json<{ data: Template[] }>('/api/public/waivers')).data;
-      const signatures = templates.map(row => ({ templateId: row.id, templateVersion: row.version, pngBase64 }));
+      const signer = { kind: 'self', name: contact.name };
+      // Join's admission names each signer up front; drop-in's names them when it submits.
+      const signatures = templates.map(row => ({ templateId: row.id, templateVersion: row.version, pngBase64, ...(surface === 'join' ? { signer } : {}) }));
       const common = { contact, honeypot: '' };
       const admission = await visitor.json<{ data: Admitted[] | Admitted[][] }>(`/${surface}/signatures`, 'POST', surface === 'join'
         ? { ...common, planId: gym.planId, members: [{ member, signatures }] } : { ...common, member, signatures });
       const images = (surface === 'join' ? admission.data[0] : admission.data) as Admitted[];
-      const waivers = images.map(value => ({ ...value, signer: { kind: 'self', name: contact.name }, consent: true }));
+      const waivers = images.map(value => ({ ...value, signer, consent: true }));
       await visitor.json(`/api/public/${surface}`, 'POST', surface === 'join'
         ? { ...common, planId: gym.planId, members: [{ member, waivers }] } : { ...common, member, waivers });
       const people = (await owner.json<{ data: Person[] }>('/api/members?search=' + lastName)).data;
