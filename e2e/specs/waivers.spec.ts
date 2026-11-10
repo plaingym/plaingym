@@ -63,7 +63,9 @@ async function signedS3Copy(href: string) {
 async function original(client: Client, path: string, checkBytes = true) {
   const issued = await client.json<{ data: { url: string; expiresAt: string } }>(path);
   const remaining = Date.parse(issued.data.expiresAt) - Date.now();
-  expect(remaining).toBeGreaterThan(240_000); expect(remaining).toBeLessThanOrEqual(301_000);
+  // The server's clock (in Docker) can run a second or so ahead of the test host's, so
+  // allow 5 s of skew above the 300 s lifetime.
+  expect(remaining).toBeGreaterThan(240_000); expect(remaining).toBeLessThanOrEqual(305_000);
   // Several authorized surfaces can issue the same document. Download once here;
   // the browser previews below also consume the real per-client download budget.
   if (!checkBytes) return issued.data.url;
