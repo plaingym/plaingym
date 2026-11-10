@@ -11,6 +11,7 @@ export interface EmailLayoutProps {
   /** Keys live in the calling feature's locale namespace. */
   readonly footerKey: string;
   readonly footerValues?: TranslationValues;
+  readonly footerHref?: string;
   readonly previewKey?: string;
   readonly previewValues?: TranslationValues;
   readonly language?: string;
@@ -22,6 +23,7 @@ export function EmailLayout(props: EmailLayoutProps) {
     createElement(EmailHeader, { gymName: props.gymName }),
     props.children,
     createElement(EmailFooter, { t: props.t, messageKey: props.footerKey,
+      ...(props.footerHref ? { href: props.footerHref } : {}),
       ...(props.footerValues ? { values: props.footerValues } : {}) }));
   const container = createElement('table', {
     role: 'presentation', width: '100%', cellPadding: 0, cellSpacing: 0,

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { asc, eq, ilike, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { announcementOptOuts, memberRanks, members, programs, type Transaction } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import type { AnnouncementAudience } from '@plaingym/shared/contracts';
+import { addressEquals } from './audience.sql.js';
 
 export const normalizeAddress = (address: string) => address.trim().toLowerCase();
 export type SkipReason = 'anonymized' | 'missing_email' | 'opt_out' | 'undeliverable' | 'ineligible';
@@ -14,17 +15,16 @@ export async function readAudience(tx: Transaction, audience: AnnouncementAudien
     if (existing.length !== new Set(audience.programIds).size) throw new AppError('not_found', 'Program not found');
   }
   const [current] = currentMemberId ? await tx.select({ email: members.email }).from(members).where(eq(members.id, currentMemberId)).for('update') : [];
-  // ILIKE supplies a conservative substring set; the normalized comparison below decides exact address equality.
-  // This avoids loading every member of a large gym for every recipient, while retaining surrounding whitespace.
-  const pattern = current?.email ? '%' + normalizeAddress(current.email).replace(/[\\%_]/g, '\\$&') + '%' : undefined;
+  const address = current?.email ? normalizeAddress(current.email) : undefined;
   const rows = await tx.select({ id: members.id, email: members.email, status: members.status,
     anonymizedAt: members.anonymizedAt, emailOptOut: members.emailOptOut, emailDeliverable: members.emailDeliverable,
     announcementOptOut: announcementOptOuts.id }).from(members)
     .leftJoin(announcementOptOuts, eq(announcementOptOuts.memberId, members.id))
-    .where(currentMemberId ? or(eq(members.id, currentMemberId), pattern ? ilike(members.email, pattern) : undefined) : undefined)
+    .where(currentMemberId ? or(eq(members.id, currentMemberId), address ? addressEquals(address) : undefined) : undefined)
     .orderBy(asc(members.id));
-  const ranked = audience.programIds.length ? new Set((await tx.select({ id: memberRanks.memberId }).from(memberRanks)
-    .where(inArray(memberRanks.programId, audience.programIds))).map(row => row.id)) : undefined;
+  const ranked = audience.programIds.length ? new Set(rows.length ? (await tx.select({ id: memberRanks.memberId }).from(memberRanks)
+    .where(and(inArray(memberRanks.programId, audience.programIds), inArray(memberRanks.memberId, rows.map(row => row.id)))))
+    .map(row => row.id) : []) : undefined;
   const blocked = new Map<string, 'opt_out' | 'undeliverable'>();
   for (const row of rows) if (row.email) {
     const address = normalizeAddress(row.email);

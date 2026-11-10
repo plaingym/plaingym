@@ -135,7 +135,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
     })),
   ];
   const oneClick = contracts.oneClickUnsubscribe;
-  result.push(publicRoute(route({ ...oneClick, middleware: unsubscribeLimit,
+  result.push(publicRoute(route({ ...oneClick, middleware: rateLimit({ sharedKey: 'links.unsubscribe.oneClick', perGym: true, limit: 10_000 }),
     request: { params: oneClick.params, query: empty }, responses: json(oneClick.response) }, async c => {
     const ctx = c.get('context'), config = options();
     const resolved = await config.links.resolve(ctx.gym.gymId, c.req.valid('param').token);

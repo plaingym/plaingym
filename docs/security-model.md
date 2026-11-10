@@ -79,6 +79,9 @@ pages.
   untouched. This link grants no household, billing or waiver access and is
   excluded from staff link lists, resends and revocation. Preference writes lock
   and recheck the link and member, with their audit in the same transaction.
+  The cookie-less one-click route has a separate 10,000/minute per-gym budget;
+  the page button/API keeps 30/minute per gym/client. The app's general flood
+  protection still applies to both.
 * **Kiosk.** A kiosk authenticates with a revocable device token (256 random bits,
   stored as a SHA-256 hash, checked on every request) that reaches only the
   check-in endpoints, never a staff session. Settings shows the token once, as a

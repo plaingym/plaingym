@@ -19,6 +19,20 @@ import { configureLinkPages } from './links.routes.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 const api = '/api/links/unsubscribe', oneClickBody = 'List-Unsubscribe=One-Click';
+it('opts out 31 different members from one provider address without consuming the page budget', async () => {
+  const f = await fixture(), ids: string[] = [];
+  for (let i = 0; i < 31; i++) {
+    const member = await factory('members', f.gymId, { householdId: f.member.householdId });
+    ids.push(member.id);
+    const token = await db.forGym(f.gymId, tx => issueUnsubscribeLink(tx, f.gymId, member.id, f.clock.now()));
+    expect((await f.click(oneClickBody, token)).status).toBe(200);
+  }
+  const rows = await db.forGym(f.gymId, tx => tx.select().from(announcementOptOuts));
+  expect(rows.map(row => row.memberId).sort()).toEqual(ids.sort());
+  for (let i = 0; i < 30; i++) expect((await f.request('POST', { optedOut: true })).status).toBe(200);
+  expect((await f.request('POST', { optedOut: true })).status).toBe(429);
+  expect((await f.click()).status).toBe(200);
+});
 async function fixture() {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-11-09T12:00:00Z');
   await factory('gyms', gymId); await factory('gyms', otherGym);
@@ -34,7 +48,7 @@ async function fixture() {
     waivers: createWaiversService({ scope: db.forGym, clock, uploadsFor: async () => uploads }),
     checkout: createSignedLinkCheckout({ scope: db.forGym, clock, paymentsFor: async () => payments, originFor: async () => origin }) });
   const app = (resolvedGym = gymId, principal: Principal = { kind: 'anonymous' }) => createApp({ clock, skipSetup: true,
-    authorize, origin, contributions: areaContributions, rateLimit: { limit: 10000 },
+    authorize, origin, contributions: areaContributions, rateLimit: { peerAddress: () => '203.0.113.25' },
     resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: resolvedGym, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
     session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); } });
   const server = app();
@@ -151,7 +165,7 @@ it('requires the unsubscribe purpose and refuses staff, household and device cre
   for (const purpose of ['pay-invoice', 'update-card', 'sign-waiver', 'onboarding'])
     expect((await f.server.request(origin + '/api/links/' + purpose, { headers: { authorization: 'Bearer ' + f.token } })).status).toBe(403);
   const limited = await fixture();
-  for (let i = 0; i < 30; i++) expect((await (i % 2 ? limited.click() : limited.request('POST', { optedOut: true }))).status).toBe(200);
-  expect((await limited.click()).status).toBe(429);
+  for (let i = 0; i < 30; i++) expect((await limited.request('POST', { optedOut: true })).status).toBe(200);
+  expect((await limited.click()).status).toBe(200);
   expect((await limited.request('POST', { optedOut: false })).status).toBe(429);
 });

@@ -32,6 +32,7 @@ export const emailDeliveries = pgTable('email_deliveries', {
   commandDigest: text('command_digest'), commandResult: jsonb('command_result'),
   updatedAt: instant('updated_at').notNull(),
 }, (t) => [...scoped('email_deliveries', t), unique('email_deliveries_key_key').on(t.gymId, t.key),
+  index('email_deliveries_command_idx').on(t.gymId, t.commandDigest),
   choice('email_deliveries_state_check', t.state, ['sending', 'accepted', 'unknown', 'not_accepted']),
   check('email_deliveries_key_check', sql`char_length(${t.key}) between 1 and 300`),
   check('email_deliveries_attempts_check', sql`${t.attempts} > 0`)]).enableRLS();

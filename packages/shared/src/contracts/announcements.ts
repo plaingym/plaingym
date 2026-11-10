@@ -12,7 +12,7 @@ export const announcementDraftSchema = z.strictObject({
   body: z.string().trim().min(1).max(10000),
   audience: announcementAudienceSchema.default({ statuses: ['active', 'trial', 'frozen'], programIds: [] }),
 });
-/** Keep this ID across retries and double clicks; choose a fresh one for another announcement. */
+/** Gym-scoped idempotency generation, separate from the server-generated announcement ID. Keep across retries. */
 export const sendAnnouncementSchema = announcementDraftSchema.extend({ sendGeneration: idSchema, confirm: z.literal(true) });
 export const announcementSchema = z.strictObject({
   id: idSchema, createdBy: idSchema, subject: z.string(), body: z.string(), audience: announcementAudienceSchema,
@@ -23,6 +23,7 @@ export const announcementSchema = z.strictObject({
 const permission = { kind: 'staff', capability: 'announcements.send' } as const;
 const response = z.strictObject({ data: announcementSchema });
 export const announcementsContracts = {
+  // Preview and a new send refuse with reason disabled, no_smtp or no_origin (canonical HTTPS origin required).
   preview: { method: 'post', path: '/api/announcements/preview', permission, body: announcementDraftSchema,
     response: z.strictObject({ data: z.strictObject({ recipientCount: z.int().nonnegative() }) }) },
   test: { method: 'post', path: '/api/announcements/test', permission, body: announcementDraftSchema,

@@ -41,10 +41,14 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
   const settled = (row: { state: string; updatedAt: Date }): EmailDeliveryState =>
     row.state === 'sending' && row.updatedAt.getTime() <= clock.now().getTime() - emailInFlightMs ? 'unknown' : row.state as EmailDeliveryState;
-  async function state(gymId: string, key: string): Promise<EmailDeliveryState | undefined> {
+  async function state(gymId: string, key: string): Promise<EmailDeliveryState | undefined>;
+  async function state(tx: Transaction, gymId: string, key: string): Promise<EmailDeliveryState | undefined>;
+  async function state(txOrGym: Transaction | string, gymOrKey: string, transactionKey?: string): Promise<EmailDeliveryState | undefined> {
+    if (typeof txOrGym === 'string') return scope(txOrGym, tx => state(tx, txOrGym, gymOrKey));
+    const tx = txOrGym, gymId = gymOrKey, key = transactionKey!;
     validKey(key);
-    const [row] = await scope(gymId, tx => tx.select({ state: emailDeliveries.state, updatedAt: emailDeliveries.updatedAt })
-      .from(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId), eq(emailDeliveries.key, key))));
+    const [row] = await tx.select({ state: emailDeliveries.state, updatedAt: emailDeliveries.updatedAt })
+      .from(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId), eq(emailDeliveries.key, key)));
     return row && settled(row);
   }
   async function claim(tx: Transaction, gymId: string, key: string, digest?: string) {

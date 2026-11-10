@@ -5,11 +5,10 @@ import { forHousehold, HouseholdAccessError, members, signedLinks, writeAudit, t
 import { AppError, type Clock } from '@plaingym/shared';
 
 /** Mint inside the send reservation transaction; only the caller receives the plaintext token. */
-export async function issueUnsubscribeLink(tx: Transaction, gymId: string, memberId: string, now: Date): Promise<string> {
+export async function issueUnsubscribeLink(tx: Transaction, gymId: string, memberId: string, now: Date, token = randomBytes(32).toString('base64url')): Promise<string> {
   const [member] = await tx.select({ id: members.id, householdId: members.householdId }).from(members)
     .where(and(eq(members.gymId, gymId), eq(members.id, memberId), isNull(members.anonymizedAt))).for('update');
   if (!member) throw new AppError('not_found', 'Member not found');
-  const token = randomBytes(32).toString('base64url');
   const [link] = await tx.insert(signedLinks).values({ gymId, memberId: member.id, householdId: member.householdId,
     purpose: 'unsubscribe', tokenHash: createHash('sha256').update(token).digest('hex'), createdBy: null,
     createdAt: now, expiresAt: new Date(now.getTime() + 90 * 86400_000) }).returning({ id: signedLinks.id });

@@ -16,13 +16,17 @@ characters), and optional `audience` with `statuses` and `programIds`. Statuses
 default to active, trial and frozen. An empty program list means every program;
 otherwise a member must hold a rank in one of the selected programs. Foreign or
 missing program IDs return 404. Preview and confirmation return `conflict` with
-`error.details.reason: ['disabled']` or `['no_smtp']` when member email is off or
-SMTP is unconfigured. Test mail bypasses the member switch, carries a test marker
+`error.details.reason: ['disabled']`, `['no_smtp']`, or `['no_origin']` when member
+email is off, SMTP is unconfigured, or the gym has no canonical HTTPS origin.
+Test mail bypasses the member switch, carries a test marker
 and an inert unsubscribe line, and accepts no caller-supplied recipient.
 
 Confirmation also requires `confirm: true` and a UUID `sendGeneration`. Keep that
 generation across double clicks and network retries; use a new one for another
-announcement. It becomes the announcement ID. A replay returns the same row;
+announcement. It is stored as `send_generation`, unique within its gym, separately
+from the app-generated UUIDv7 announcement ID. Existing announcements retain their
+ID as their generation when upgraded. A replay returns the same row even if the
+switch, SMTP or origin has since become unavailable;
 reuse with different content, audience or sender conflicts. The announcement,
 recipient rows (inserted in chunks of 100), audit, and idempotent job commit in one
 transaction. The job uses the batch lane and its existing per-gym concurrency cap.
@@ -42,10 +46,16 @@ serializes reservations across workers. Each reservation has an identifier-only
 destination. Comparing these durable digests prevents duplicates when addresses
 converge, including after an earlier recipient changes their address. The digest
 is not a readable address. Reservation and `issueUnsubscribeLink` commit together.
-The worker checks eligibility again and sends through `MemberEmail` outside the
-transaction, with the recipient's own HTTPS unsubscribe URL in the HTML, plain
-text and `listUnsubscribe` transport field. HTML escapes text and only links HTTP
-and HTTPS URLs. Each message identifies the gym.
+The worker renders before reserving, using a fresh random unsubscribe token that
+only becomes usable when the reservation commits. It reads eligibility once per
+recipient, after rendering, including all members at the exact normalized address
+and ranks only for those loaded members. The digest lookup uses the
+`(gym_id, command_digest)` index. It then sends through `MemberEmail` outside the
+transaction, which rechecks the switch, current member address and global flags.
+The recipient's own HTTPS unsubscribe URL appears in the HTML, plain text and
+`listUnsubscribe` transport field. The shared React Email layout identifies the
+gym and supplies the linked footer (inert for test copies); text is escaped and
+only HTTP(S) body URLs become links.
 
 A live reservation defers to a job retry; after the email module's ten-minute
 in-flight window it counts as failed/unknown. An accepted reservation repairs the
@@ -55,6 +65,10 @@ skips unreserved recipients as disabled. Once every recipient is decided, includ
 an empty audience, the announcement becomes sent; failed/skipped counts still
 describe its outcomes. Every decision and completion is audited without message
 content, addresses, or tokens.
+
+Database checks keep `sent` paired with a completion timestamp and require reasons
+only for failed/skipped recipients. The expansion migration normalizes unchecked
+legacy pairs before applying those checks, preserving recipients and message content.
 
 `core/runtime.ts` calls `configureAnnouncements(createAnnouncementsService(...))`
 with the job queue, `createSmtpResolver`, a gym mailer, canonical HTTPS gym origin,

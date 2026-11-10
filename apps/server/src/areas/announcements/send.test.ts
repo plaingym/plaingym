@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { announcementOptOuts, announcementRecipients, auditEvents, emailOutbox, members, signedLinks, uuidv7 } from '@plaingym/db';
+import { announcementOptOuts, announcementRecipients, auditEvents, emailOutbox, memberRanks, members, signedLinks, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, errorResponse, type StaffRole } from '@plaingym/shared';
@@ -25,9 +25,33 @@ import { createAnnouncementRoutes } from './send.routes.js';
 import { announcementDeliveryKey } from './send.delivery.js';
 import { announcementSendJob, configureAnnouncements, createAnnouncementsService } from './send.js';
 import { issueUnsubscribeLink } from './unsubscribe.js';
+import * as template from '../../emails/announcements/send.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 const draft = announcementDraftSchema.parse({ subject: 'Closed Monday', body: 'See you Tuesday.\n\nhttps://example.test/classes' });
+it('isolates generations from primary keys and from other gyms', async () => {
+  const a = await fixture(), b = await fixture(), first = await a.send();
+  const second = await b.service.send(b.actor, { ...b.input(), sendGeneration: first.id });
+  expect(second.id).not.toBe(first.id); expect(second.id[14]).toBe('7');
+  expect(await b.service.send(b.actor, { ...b.input(), sendGeneration: first.id })).toEqual(second);
+  const shared = a.input();
+  const [one, two] = await Promise.all([a.service.send(a.actor, shared), b.service.send(b.actor, shared)]);
+  expect(one.id).not.toBe(two.id);
+});
+it('replays a queued generation even after the switch, SMTP and origin become unavailable', async () => {
+  const f = await fixture(), input = f.input(), queued = await f.service.send(f.actor, input);
+  await f.emailSwitch(false); f.options.smtp.configured.mockResolvedValue(false);
+  const service = createAnnouncementsService({ ...f.options, origin: async () => { throw new Error('No hostname'); } });
+  expect(await service.send(f.actor, input)).toEqual(queued);
+  expect(f.jobs.jobs).toHaveLength(1);
+  await expect(service.send(f.actor, { ...input, body: 'Different' })).rejects.toMatchObject({ code: 'conflict' });
+});
+it.each(['http://localhost:3000', '', 'https://gym.example/path', 'https://user:pass@gym.example'])('refuses preview and new sends without a canonical HTTPS origin: %s', async origin => {
+  const f = await fixture(), service = createAnnouncementsService({ ...f.options, origin: async () => origin });
+  for (const action of [() => service.preview(f.gymId, draft), () => service.send(f.actor, f.input())])
+    await expect(action()).rejects.toMatchObject({ code: 'conflict', details: { reason: ['no_origin'] } });
+  expect(f.jobs.jobs).toHaveLength(0);
+});
 async function fixture(role: StaffRole = 'owner') {
   const gymId = uuidv7(), clock = new TestClock('2026-11-09T12:00:00Z');
   await factory('gyms', gymId, { memberEmailsEnabled: true });
@@ -121,6 +145,29 @@ it('skips opt-outs after confirmation and rechecks after mail preparation', asyn
   });
   await f.run(row.id); expect(f.email.messages).toHaveLength(0);
   expect(await f.service.get(f.gymId, row.id)).toMatchObject({ status: 'sent', skipped: 2 });
+});
+it.each(['announcement', 'global', 'program', 'status', 'erasure'] as const)('rechecks %s changes made while rendering, before reserving or sending', async change => {
+  const f = await fixture(), member = await f.member({ email: 'shared@example.test' });
+  const sibling = await f.member({ email: ' SHARED@example.test ', status: 'cancelled' });
+  const system = await factory('rankSystems', f.gymId), rank = await factory('ranks', f.gymId, { rankSystemId: system.id });
+  const program = await factory('programs', f.gymId, { rankSystemId: system.id });
+  const promotion = await factory('memberRanks', f.gymId, { memberId: member.id, programId: program.id, rankId: rank.id, rankSystemId: system.id });
+  const row = await f.service.send(f.actor, { ...f.input(), audience: { statuses: ['active'], programIds: [program.id] } });
+  const render = template.renderAnnouncement;
+  const spy = vi.spyOn(template, 'renderAnnouncement').mockImplementationOnce(async input => {
+    const result = await render(input);
+    await db.forGym(f.gymId, async tx => {
+      if (change === 'announcement') await tx.insert(announcementOptOuts).values({ gymId: f.gymId, memberId: sibling.id });
+      else if (change === 'global') await tx.update(members).set({ emailOptOut: true }).where(eq(members.id, sibling.id));
+      else if (change === 'program') await tx.delete(memberRanks).where(eq(memberRanks.id, promotion.id));
+      else await tx.update(members).set(change === 'status' ? { status: 'cancelled' } : { anonymizedAt: f.clock.now() }).where(eq(members.id, member.id));
+    });
+    return result;
+  });
+  try { await f.run(row.id); } finally { spy.mockRestore(); }
+  expect(f.email.messages).toHaveLength(0);
+  expect(await db.forGym(f.gymId, tx => tx.select().from(signedLinks))).toHaveLength(0);
+  expect(await f.service.get(f.gymId, row.id)).toMatchObject({ skipped: 1, sent: 0, status: 'sent' });
 });
 it('reserves nothing when mail preparation fails, so the job retry still sends', async () => {
   const f = await fixture(); await f.member(); await f.member();
@@ -263,6 +310,7 @@ it('inserts and decides multiple chunks and paginates the history', async () => 
   const row = await f.send(); await f.run(row.id);
   expect(f.email.messages).toHaveLength(105);
   expect(await f.service.get(f.gymId, row.id)).toMatchObject({ recipientCount: 105, status: 'sent', sent: 105 });
+  f.clock.advance(1);
   const next = await f.send();
   expect(await f.service.list(f.gymId, { limit: 1 })).toMatchObject({ data: [{ id: next.id }], pagination: { total: 2, limit: 1, offset: 0 } });
   expect(await f.service.list(f.gymId, { limit: 1, offset: 1 })).toMatchObject({ data: [{ id: row.id }] });

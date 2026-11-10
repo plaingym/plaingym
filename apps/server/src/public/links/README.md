@@ -27,17 +27,21 @@ credential. Neither request can choose a different member or household.
 For mail clients, a cookie-less `POST /l/<token>` accepts only the RFC 8058 body:
 exactly `List-Unsubscribe=One-Click` as `application/x-www-form-urlencoded` (an
 optional UTF-8 charset is accepted), or `multipart/form-data` with that one field
-and value and nothing else. It shares a 30-request per gym/IP/minute
-budget with the preference button and returns the same 404 for unknown, expired,
+and value and nothing else. Its separate route budget is 10,000 requests per gym
+per minute, shared across provider addresses; the preference button/API keeps its
+30-request per gym/client/minute budget. The app's general flood limit also applies.
+It returns the same 404 for unknown, expired,
 revoked, used, wrong-purpose and other gyms' tokens. Cookie-bearing requests
 retain the normal same-origin CSRF check. Repeated opt-outs are no-ops. The
 separate announcement preference never changes `members.email_opt_out`.
 
 `areas/announcements/unsubscribe.ts` exports `issueUnsubscribeLink(tx, gymId,
-memberId, now)`: call it inside a send reservation transaction and use its token
+memberId, now, token?)`: call it inside a send reservation transaction and use its token
 for the message's link and one-click header URL. It stores only the token digest,
 expires in 90 days and stays reusable, including after subscribing again. Staff
 link lists, lookups, sends and revokes exclude this purpose.
+An announcement may supply a cryptographically random 32-byte base64url token to
+render before reservation; the helper generates one when omitted.
 
 Add `?tablet=1` for a front-desk tablet:
 large controls, a clear-screen action, and a two-minute inactivity reset. The

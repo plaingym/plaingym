@@ -70,7 +70,19 @@ and separate from the member's transactional-email flag. Announcement history an
 are gym export datasets; recipient rows are install-local delivery run state, excluded from
 exports like `email_deliveries`. The migration also widens the signed-link database checks
 for `unsubscribe`: a member in the link's household is required and an invoice is forbidden.
-The application purpose union and link handlers still accept only their existing purposes.
+The application purpose union and public preference handlers support this purpose;
+staff link lists and send actions exclude it.
+
+Migration `0025_announcement_scale.sql` adds a required `send_generation` to announcements,
+backfilled from each existing ID and unique per gym. New IDs are generated separately by
+the app. The generation is install-local send state, excluded from announcement CSV history.
+It indexes `email_deliveries (gym_id, command_digest)` and
+`announcement_recipients (gym_id, member_id)`, and checks lifecycle pairs: sent announcements
+have `completed_at`; sending announcements do not. Failed/skipped recipients require a
+reason; pending/sent recipients do not have one. Before adding the checks, it normalizes
+legacy pairs: missing sent completion times use `created_at`, sending completion times are
+cleared, missing failed/skipped reasons become `unknown`/`ineligible`, and pending/sent
+reasons are cleared. Message content, recipients and outcome states are preserved.
 
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 

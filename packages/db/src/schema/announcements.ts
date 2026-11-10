@@ -7,6 +7,7 @@ import { members } from './members.js';
 
 export const announcements = pgTable('announcements', {
   ...base(),
+  sendGeneration: uuid('send_generation').notNull(),
   createdBy: uuid('created_by').notNull().references(() => authUser.id),
   subject: text('subject').notNull(),
   body: text('body').notNull(),
@@ -16,6 +17,8 @@ export const announcements = pgTable('announcements', {
   completedAt: instant('completed_at'),
 }, (t) => [
   ...scoped('announcements', t),
+  unique('announcements_generation_key').on(t.gymId, t.sendGeneration),
+  check('announcements_completion_check', sql`(${t.status} = 'sent') = (${t.completedAt} is not null)`),
   check('announcements_subject_check', sql`char_length(${t.subject}) between 1 and 150`),
   check('announcements_body_check', sql`char_length(${t.body}) between 1 and 10000`),
   check('announcements_audience_check', sql`jsonb_typeof(${t.audience}) = 'object'
@@ -39,6 +42,8 @@ export const announcementRecipients = pgTable('announcement_recipients', {
   ref('announcement_recipients_member_fk', t.gymId, t.memberId, members),
   unique('announcement_recipients_member_key').on(t.gymId, t.announcementId, t.memberId),
   index('announcement_recipients_scan_idx').on(t.gymId, t.announcementId, t.state, t.id),
+  index('announcement_recipients_member_idx').on(t.gymId, t.memberId),
+  check('announcement_recipients_outcome_check', sql`(${t.state} in ('failed', 'skipped')) = (${t.reason} is not null)`),
   choice('announcement_recipients_state_check', t.state, ['pending', 'sent', 'failed', 'skipped']),
   choice('announcement_recipients_reason_check', t.reason, [
     'opt_out', 'undeliverable', 'disabled', 'anonymized', 'ineligible', 'missing_email',

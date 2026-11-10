@@ -12,11 +12,17 @@ export function EmailHeader({ gymName }: { readonly gymName: string }) {
   return createElement('p', { style: { fontSize: '20px', fontWeight: 700, color: '#111827' } }, gymName);
 }
 
-export function EmailFooter(props: TranslatedText) {
+export function EmailFooter(props: TranslatedText & { readonly href?: string }) {
+  if (props.href) {
+    const url = new URL(props.href);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password)
+      throw new Error('Email footer requires an HTTP(S) URL');
+  }
   return createElement('div', null,
     createElement('hr', { style: { border: 0, borderTop: '1px solid #e5e7eb', margin: '24px 0' } }),
     createElement('p', { style: { color: '#4b5563', fontSize: '12px', lineHeight: '18px' } },
-      props.t(props.messageKey, props.values)));
+      props.href ? createElement('a', { href: props.href, style: { display: 'inline-block', padding: '13px 0', minHeight: '18px' } },
+        props.t(props.messageKey, props.values)) : props.t(props.messageKey, props.values)));
 }
 
 export function EmailHeading(props: TranslatedText) {

@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { logInfo } from '../../core/log.js';
-import { DeliveryError, type Email, type EmailMessage, type EmailResult } from './index.js';
+import { DeliveryError, listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
 
 export type SuppressionReason = Extract<EmailResult, { status: 'suppressed' }>['reason'];
 export interface EmailSuppression {
@@ -31,6 +31,7 @@ export class MemberEmail implements Email {
 
   async sendEmail(message: EmailMessage): Promise<EmailResult> {
     assertNoTransaction('email.sendEmail');
+    listUnsubscribeUrl(message.listUnsubscribe);
     let reason: SuppressionReason | undefined;
     try { reason = await this.#check(message); }
     catch (error) {

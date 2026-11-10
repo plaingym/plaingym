@@ -6,5 +6,6 @@
   "unsubscribe": "Unsubscribe from announcements",
   "disabled": "Enable member email in Go live before sending announcements.",
   "noSmtp": "Configure email in Settings before sending announcements.",
+  "noOrigin": "Configure a canonical HTTPS address for this gym before sending announcements.",
   "failed": "The test announcement could not be sent."
 }

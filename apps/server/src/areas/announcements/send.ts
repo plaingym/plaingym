@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, inArray } from 'drizzle-orm';
-import { announcementRecipients, announcements, forGym, staffRoles, writeAudit, type Transaction } from '@plaingym/db';
+import { announcementRecipients, announcements, forGym, staffRoles, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { announcementDraftSchema, sendAnnouncementSchema, type AnnouncementDraft, type SendAnnouncement } from '@plaingym/shared/contracts';
 import { z } from 'zod';
@@ -29,28 +29,36 @@ export interface AnnouncementsOptions {
   demoEmailFor?(gymId: string): Email;
 }
 const t = createTranslator({ 'announcements/send': messages });
-const refuse = (reason: 'disabled' | 'no_smtp'): never => {
-  throw new AppError('conflict', t(reason === 'disabled' ? 'announcements/send:disabled' : 'announcements/send:noSmtp'), { reason: [reason] });
+const refuse = (reason: 'disabled' | 'no_smtp' | 'no_origin'): never => {
+  const key = { disabled: 'disabled', no_smtp: 'noSmtp', no_origin: 'noOrigin' }[reason];
+  throw new AppError('conflict', t(`announcements/send:${key}`), { reason: [reason] });
 };
 export function createAnnouncementsService(options: AnnouncementsOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;
   const settings = createGymSettingsAccessor({ scope }), gymSettings = createSettingsService({ scope });
   const demo = options.demoMode ?? process.env.DEMO_MODE === 'true';
+  async function canonicalOrigin(gymId: string) {
+    try {
+      const origin = new URL(await options.origin(gymId));
+      if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
+        return refuse('no_origin');
+      return origin.origin;
+    } catch { return refuse('no_origin'); }
+  }
   async function available(gymId: string) {
     const gym = await settings.get(gymId);
     if (!gym.memberEmailsEnabled) refuse('disabled');
     if (!demo && !await options.smtp.configured(gymId)) refuse('no_smtp');
+    await canonicalOrigin(gymId);
     if (demo && !options.demoEmailFor) throw new AppError('unavailable', 'Announcement demo outbox is not configured');
     return gym;
   }
   async function mail(gymId: string) {
-    const origin = new URL(await options.origin(gymId));
-    if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash)
-      throw new AppError('unavailable', 'Announcements require a canonical HTTPS origin');
+    const origin = await canonicalOrigin(gymId);
     const details = await gymSettings.get(gymId);
     if (demo && !options.demoEmailFor) throw new AppError('unavailable', 'Announcement demo outbox is not configured');
     const email = demo ? options.demoEmailFor!(gymId) : await options.mailer(gymId);
-    return { email, origin: origin.origin, gymName: details.name };
+    return { email, origin, gymName: details.name };
   }
   async function manager(tx: Transaction, actor: AnnouncementActor) {
     const [role] = await tx.select({ id: staffRoles.id }).from(staffRoles)
@@ -76,29 +84,40 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
       await scope(actor.gymId, tx => writeAudit(tx, { gymId: actor.gymId, actorKind: 'user', actorUserId: actor.userId,
         action: 'announcement.test_requested', targetType: 'user', targetId: actor.userId, occurredAt: clock.now() }));
       try {
-        const result = await prepared.email.sendEmail({ to: address, ...renderAnnouncement({ ...draft, gymName: prepared.gymName, t }) });
+        const result = await prepared.email.sendEmail({ to: address, ...await renderAnnouncement({ ...draft, gymName: prepared.gymName, t }) });
         if (result.status !== 'sent') throw new Error('Suppressed');
       } catch { throw new AppError('unavailable', t('announcements/send:failed')); }
       return { sent: true as const };
     },
     async send(actor: AnnouncementActor, input: SendAnnouncement) {
       const draft = sendAnnouncementSchema.parse(input);
+      const generation = draft.sendGeneration.toLowerCase();
+      async function replay(tx: Transaction) {
+        const [previous] = await tx.select().from(announcements).where(and(eq(announcements.gymId, actor.gymId), eq(announcements.sendGeneration, generation)));
+        if (!previous) return;
+        if (previous.createdBy !== actor.userId || previous.subject !== draft.subject || previous.body !== draft.body
+          || JSON.stringify(previous.audience.statuses) !== JSON.stringify(draft.audience.statuses)
+          || JSON.stringify(previous.audience.programIds) !== JSON.stringify(draft.audience.programIds))
+          throw new AppError('conflict', 'This send generation belongs to another announcement');
+        return previous.id;
+      }
+      const previousId = await scope(actor.gymId, async tx => { await manager(tx, actor); return replay(tx); });
+      if (previousId) return history.get(actor.gymId, previousId);
       const gym = await available(actor.gymId);
-      const id = draft.sendGeneration.toLowerCase();
-      await withJobTransaction(scope, actor.gymId, async transaction => {
+      const id = await withJobTransaction(scope, actor.gymId, async transaction => {
         const { tx } = transaction;
         await manager(tx, actor);
+        const previous = await replay(tx);
+        if (previous) return previous;
         if (!(await readGymSettings(tx, actor.gymId)).memberEmailsEnabled) refuse('disabled');
-        const [row] = await tx.insert(announcements).values({ id, gymId: actor.gymId, createdBy: actor.userId,
+        const id = uuidv7(clock.now().getTime());
+        const [row] = await tx.insert(announcements).values({ id, sendGeneration: generation, gymId: actor.gymId, createdBy: actor.userId,
           subject: draft.subject, body: draft.body, audience: draft.audience, createdAt: clock.now() })
-          .onConflictDoNothing().returning();
+          .onConflictDoNothing({ target: [announcements.gymId, announcements.sendGeneration] }).returning();
         if (!row) {
-          const [previous] = await tx.select().from(announcements).where(eq(announcements.id, id));
-          if (!previous || previous.createdBy !== actor.userId || previous.subject !== draft.subject || previous.body !== draft.body
-            || JSON.stringify(previous.audience.statuses) !== JSON.stringify(draft.audience.statuses)
-            || JSON.stringify(previous.audience.programIds) !== JSON.stringify(draft.audience.programIds))
-            throw new AppError('conflict', 'This send generation belongs to another announcement');
-          return;
+          const previous = await replay(tx);
+          if (!previous) throw new AppError('conflict', 'Announcement generation disappeared');
+          return previous;
         }
         const { recipients } = await readAudience(tx, draft.audience);
         for (let offset = 0; offset < recipients.length; offset += 100) await tx.insert(announcementRecipients)
@@ -110,6 +129,7 @@ export function createAnnouncementsService(options: AnnouncementsOptions) {
         await options.jobs.enqueue(announcementSendJob, { announcementId: id }, {
           gymId: actor.gymId, timezone: gym.timezone, idempotencyKey: id, maxAttempts: 12,
         }, transaction);
+        return id;
       });
       return history.get(actor.gymId, id);
     },

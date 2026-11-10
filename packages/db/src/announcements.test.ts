@@ -66,6 +66,7 @@ describe('announcement constraints', () => {
   it.each([
     { subject: '' }, { subject: 'a'.repeat(151) }, { body: '' }, { body: 'b'.repeat(10001) },
     { recipientCount: -1 }, { status: 'draft' },
+    { status: 'sent', completedAt: null }, { status: 'sending', completedAt: new Date() },
     { audience: {} }, { audience: { statuses: null, programIds: [] } },
     { audience: { statuses: [], programIds: 'all' } },
   ])('rejects invalid announcement fields (%#)', async (overrides) => {
@@ -73,8 +74,20 @@ describe('announcement constraints', () => {
       .rejects.toMatchObject({ cause: { code: '23514' } });
   });
 
-  it.each(['pending', 'sent', 'failed', 'skipped'])('accepts recipient state %s with a nullable reason', async state => {
-    await factory('announcementRecipients', gymA, { state, reason: null });
+  it.each(['pending', 'sent', 'failed', 'skipped'])('accepts recipient state %s with its matching reason', async state => {
+    await factory('announcementRecipients', gymA, { state, reason: ['failed', 'skipped'].includes(state) ? 'unknown' : null });
+  });
+
+  it.each(['pending', 'sent', 'failed', 'skipped'])('rejects recipient state %s with a mismatched reason', async state => {
+    await expect(factory('announcementRecipients', gymA, { state, reason: ['failed', 'skipped'].includes(state) ? null : 'unknown' }))
+      .rejects.toMatchObject({ cause: { code: '23514' } });
+  });
+
+  it('uniquely scopes generations to the gym', async () => {
+    const sendGeneration = uuidv7();
+    await factory('announcements', gymA, { sendGeneration });
+    await factory('announcements', gymB, { sendGeneration });
+    await expect(factory('announcements', gymA, { sendGeneration })).rejects.toMatchObject({ cause: { code: '23505' } });
   });
 
   it.each(['opt_out', 'undeliverable', 'disabled', 'anonymized', 'ineligible', 'missing_email',

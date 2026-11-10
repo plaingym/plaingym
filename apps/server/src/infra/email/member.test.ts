@@ -41,6 +41,16 @@ beforeAll(async () => {
 afterAll(async () => { smtp?.close(); await capture?.close(); });
 
 describe('member-targeted suppression', () => {
+  it('rejects malformed listUnsubscribe before reading settings or an opted-out member', async () => {
+    await database.forGym(gymA, tx => tx.update(members).set({ emailOptOut: true }).where(eq(members.id, memberA)));
+    const get = vi.spyOn(settings, 'get'), scope = vi.fn(), delivered = new FakeEmail();
+    const bound = new MemberEmail({ gymId: gymA, memberId: memberA, settings, email: delivered,
+      forGym: (gymId, fn) => { scope(); return database.forGym(gymId, fn); } });
+    await expect(bound.sendEmail({ ...message, listUnsubscribe: 'http://unsafe.example/l/token' }))
+      .rejects.toMatchObject({ acceptance: 'not_accepted' });
+    expect(get).not.toHaveBeenCalled(); expect(scope).not.toHaveBeenCalled(); expect(delivered.messages).toEqual([]);
+    get.mockRestore();
+  });
   it('passes listUnsubscribe unchanged to the underlying transport', async () => {
     setEnabled(gymA, true);
     await database.forGym(gymA, tx => tx.update(members).set({ emailOptOut: false, emailDeliverable: true })

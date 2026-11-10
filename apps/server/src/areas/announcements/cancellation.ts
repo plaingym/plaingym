@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { asc, eq, ilike, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { classSessions, emailDeliveries, forGym, members, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { idSchema } from '@plaingym/shared/contracts';
@@ -10,6 +10,7 @@ import { commandDigest, emailInFlightMs } from '../../infra/email/deliveries.js'
 import type { Jobs, JobTransaction } from '../../infra/jobs/index.js';
 import { createGymSettingsAccessor, createSettingsService } from '../settings/settings.js';
 import { renderCancellationNotice } from '../../emails/announcements/cancellation.js';
+import { addressEquals } from './audience.sql.js';
 
 export const cancellationNoticeJob = 'announcements.cancellation';
 // Stored payloads tolerate additional keys when a release rolls back.
@@ -37,11 +38,9 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
   async function group(tx: Transaction, notice: Notice, address: string) {
     // Inspect the whole address, including members outside this session. A global email preference or an
     // undeliverable address blocks it; announcement-only preferences never affect booking notices.
-    const pattern = '%' + address.replace(/[\\%_]/g, '\\$&') + '%';
-    const rows = (await tx.select({ id: members.id, email: members.email, firstName: members.firstName, lastName: members.lastName,
+    const rows = await tx.select({ id: members.id, email: members.email, firstName: members.firstName, lastName: members.lastName,
       anonymizedAt: members.anonymizedAt, optOut: members.emailOptOut, deliverable: members.emailDeliverable })
-      .from(members).where(ilike(members.email, pattern)).orderBy(asc(members.id)))
-      .filter(row => row.email && normalize(row.email) === address);
+      .from(members).where(addressEquals(address)).orderBy(asc(members.id));
     if (rows.some(row => row.optOut || !row.deliverable)) return [];
     const ids = new Set(notice.memberIds);
     return rows.filter(row => ids.has(row.id) && !row.anonymizedAt);
@@ -56,7 +55,7 @@ export function createCancellationNotice(options: CancellationNoticeOptions) {
       const key = noticeKey(notice.sessionId, current[0]!.id), digest = commandDigest([notice.sessionId, address]);
       // Both stable member keys and destination digests survive retries and address changes/convergence.
       const previous = await tx.select().from(emailDeliveries)
-        .where(or(eq(emailDeliveries.key, key), eq(emailDeliveries.commandDigest, digest)));
+        .where(and(eq(emailDeliveries.gymId, gymId), or(eq(emailDeliveries.key, key), eq(emailDeliveries.commandDigest, digest))));
       if (previous.some(row => row.state === 'sending' && row.updatedAt.getTime() > clock.now().getTime() - emailInFlightMs))
         throw new AppError('conflict', 'Cancellation notice is in flight');
       if (previous.length) return;

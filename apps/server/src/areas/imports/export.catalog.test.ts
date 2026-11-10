@@ -69,6 +69,8 @@ describe('export schema coverage and secret exclusions', () => {
       payment_attempts: ['error'],
       audit_events: ['before', 'after'],
       email_outbox: ['subject', 'html', 'text'],
+      // A client's send idempotency generation is install-local delivery state, not portable announcement history.
+      announcements: ['send_generation'],
     };
     for (const name of Object.keys(exportCatalog) as (keyof typeof exportCatalog)[]) {
       const dataset = exportCatalog[name], omitted = excluded[name] ?? [];
