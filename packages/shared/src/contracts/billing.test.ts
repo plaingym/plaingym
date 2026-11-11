@@ -45,7 +45,8 @@ const membership: Membership = {
   id: ids.other, createdAt: now, householdId: ids.household, memberId: ids.member,
   planId: ids.plan, ...price, interval: 'monthly', status: 'active', nextDueOn: '2026-11-21',
   startsOn: '2026-10-21', trialEndsOn: null, frozenAt: null, resumesOn: null,
-  cancelledAt: null, commitmentEndsOn: '2027-10-21', revision: 1,
+  cancelledAt: null, commitmentEndsOn: '2027-10-21', scheduledPlanId: null, scheduledAmountCents: null,
+  scheduledInterval: null, scheduledOn: null, revision: 1,
 };
 const invoice: Invoice = {
   id: ids.invoice, createdAt: now, householdId: ids.household, ...price, kind: 'cycle',
@@ -142,6 +143,14 @@ describe('revisions and membership lifecycle requests', () => {
       expect(membershipResponseSchema.parse({ data: { ...membership, status } }).data.commitmentEndsOn).toBe('2027-10-21');
     }
     expect(membershipStatusSchema.safeParse('expired').success).toBe(false);
+    const scheduled = { scheduledPlanId: ids.plan, scheduledAmountCents: 8000, scheduledInterval: 'annual', scheduledOn: '2026-11-21' };
+    expect(membershipResponseSchema.parse({ data: { ...membership, ...scheduled } }).data).toMatchObject(scheduled);
+    expect(membershipResponseSchema.safeParse({ data: { ...membership, ...scheduled, scheduledInterval: 'weekly' } }).success).toBe(false);
+    expect(membershipResponseSchema.safeParse({ data: { ...membership, scheduledAmountCents: -1 } }).success).toBe(false);
+    expect(membershipResponseSchema.safeParse({ data: { ...membership, scheduledOn: undefined } }).success).toBe(false);
+    // The override reason stays out of the contract.
+    expect(membershipResponseSchema.safeParse({ data: { ...membership, switchOverrideReason: 'Reason' } }).success).toBe(false);
+    expect(updateMembershipRequestSchema.safeParse({ revision: 1, scheduledPlanId: ids.plan }).success).toBe(false);
     expect(updateMembershipRequestSchema.safeParse({ revision: 1, commitmentEndsOn: null }).success).toBe(false);
     expect(updateMembershipRequestSchema.safeParse({ revision: 1, status: 'active' }).success).toBe(false);
   });

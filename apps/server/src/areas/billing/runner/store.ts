@@ -9,6 +9,7 @@ import { addDays } from '@plaingym/shared/time';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 import type { GymSettings } from '../../../core/interfaces/gym-settings.js';
 import type { MembershipOptions } from '../memberships.js';
+import { applyScheduledSwitch } from '../memberships.plan-change.js';
 import { stripeTestClearedAction } from '../customers.js';
 import { calculateCycleInvoice, calculateFirstPeriod, calculateOneOffInvoice, type CalculatedInvoice,
   type PricedMembership } from '../invoicing/index.js';
@@ -55,9 +56,8 @@ async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Pr
   const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths,
     inclusive: taxRates.inclusive }).from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId))
     .where(eq(planTaxRates.planId, row.planId));
-  const { gymId: _gymId, anniversaryOn, scheduledPlanId: _plan, scheduledAmountCents: _amount, scheduledInterval: _interval,
-    scheduledOn: _on, switchOverrideReason: _reason, ...fields } = row;
-  void [_gymId, _plan, _amount, _interval, _on, _reason];
+  const { gymId: _gymId, anniversaryOn, switchOverrideReason: _reason, ...fields } = row;
+  void [_gymId, _reason];
   return { membership: membershipSchema.parse({ ...fields, createdAt: row.createdAt.toISOString(),
     frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null }),
     description: plan.name, taxRates: taxes, ...(anniversaryOn === null ? {} : { annualAnchorOn: anniversaryOn }) };
@@ -75,8 +75,11 @@ export async function generateCycle(tx: Transaction, gym: GymSettings, clock: Cl
   if (!dueOn) return false;
   const previous = (await tx.select().from(invoices).where(and(eq(invoices.householdId, householdId),
     eq(invoices.kind, 'cycle'), eq(invoices.dueOn, dueOn))))[0];
+  // A scheduled plan switch applies at the first cycle billed on or after its date, before that cycle is priced.
+  const current = due.filter(row => row.nextDueOn === dueOn);
+  for (const [index, row] of current.entries()) current[index] = await applyScheduledSwitch(tx, row, clock);
   const result = calculateCycleInvoice({ ...pricing(home, gym.currency), dueOn,
-    memberships: await Promise.all(due.filter(row => row.nextDueOn === dueOn).map(row => priced(tx, row))) });
+    memberships: await Promise.all(current.map(row => priced(tx, row))) });
   if (!result.nextDueDates.length) return false;
   if (result.invoice) {
     const calculated = previous ? { ...result.invoice, kind: 'one_off' as const, periodStartsOn: null, periodEndsOn: null } : result.invoice;

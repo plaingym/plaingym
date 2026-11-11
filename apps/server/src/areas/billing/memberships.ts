@@ -13,11 +13,13 @@ import { gymSettingsAccessor } from '../settings/settings.js';
 import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
+import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, recordedSwitch, sameSwitchRequest, scheduledSwitch,
+  switchCancelledAction, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
+  type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 
 type Row = typeof memberships.$inferSelect;
-// The scheduled switch and its override reason stay out of the Membership contract.
-const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, scheduledPlanId: _plan, scheduledAmountCents: _amount,
-  scheduledInterval: _interval, scheduledOn: _on, switchOverrideReason: _reason, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
+// The override reason stays out of the Membership contract (erasure clears it; no response or audit carries it).
+const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const conflict = (message: string): never => { throw new AppError('conflict', message); };
@@ -126,6 +128,17 @@ export function createMembershipService(options: MembershipOptions = {}) {
       return result;
     });
   }
+  /** Locks the household, then the membership: the order the cycle build takes them in. */
+  async function lockForSwitch(tx: Transaction, membershipId: string) {
+    const found = catalogMissing((await tx.select({ householdId: memberships.householdId }).from(memberships).where(eq(memberships.id, membershipId)))[0]);
+    catalogMissing((await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update'))[0]);
+    return getRow(tx, membershipId);
+  }
+  async function saveSwitch(tx: Transaction, before: Row, changes: Partial<typeof memberships.$inferInsert>) {
+    const guard = revisionGuard(memberships.revision, before.revision);
+    return assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
+      .where(and(eq(memberships.id, before.id), guard.matches)).returning());
+  }
   async function edit(context: MutationContext, request: MembershipEdit, action: string,
     change: (tx: Transaction, before: Row) => Promise<Partial<typeof memberships.$inferInsert>>) {
     c.idSchema.parse(request.membershipId); c.revisionSchema.parse(request.revision);
@@ -195,7 +208,52 @@ export function createMembershipService(options: MembershipOptions = {}) {
     cancel(context: MutationContext, request: MembershipEdit) {
       return edit(context, request, 'cancelled', async (_tx, before) => {
         if (before.status === 'cancelled') conflict('Membership is already cancelled');
-        return { status: 'cancelled', cancelledAt: clock.now(), resumesOn: null };
+        return { status: 'cancelled', cancelledAt: clock.now(), resumesOn: null, ...clearedSwitch(before) };
+      });
+    },
+    /**
+     * Schedules a switch to another plan on the membership's next billing date; the cycle build applies it. A request ID
+     * already recorded for this membership replays its result (before the revision check, so a retry after a lost
+     * response replays), and with other parameters conflicts. A new switch replaces a scheduled one.
+     */
+    async switchPlan(context: MutationContext, input: SwitchPlanRequest): Promise<c.Membership> {
+      const parsed = switchPlanRequestSchema.safeParse(input);
+      if (!parsed.success) throw new AppError('invalid_request', 'Invalid plan switch request');
+      const request = parsed.data;
+      const recorded: RecordedSwitchRequest = { requestId: request.requestId, planId: request.planId, timing: request.timing,
+        override: request.override !== undefined };
+      const gym = await settings.get(context.gymId);
+      return scope(context.gymId, async tx => {
+        const before = await lockForSwitch(tx, request.membershipId);
+        const replay = await recordedSwitch(tx, before.id, request.requestId);
+        if (replay) {
+          if (!sameSwitchRequest(replay.request, recorded)) conflict('Request ID reused with different parameters');
+          return replay.membership;
+        }
+        if (before.revision !== request.revision) conflict('The record changed; reload before saving');
+        const plan = catalogMissing((await tx.select().from(plans).where(eq(plans.id, request.planId)).for('share'))[0]);
+        const member = catalogMissing((await tx.select({ anonymizedAt: members.anonymizedAt }).from(members).where(eq(members.id, before.memberId)))[0]);
+        const { overrideUsed } = checkSwitch(before, member, plan, request, localDate(clock.now(), gym.timezone));
+        // Only a reason the commitment needed is kept.
+        const reason = overrideUsed ? request.override?.reason ?? null : null;
+        const after = present(await saveSwitch(tx, before, scheduledSwitch(before, plan, reason)));
+        const audit: SwitchScheduledAudit = { request: recorded, overrideUsed, membership: after };
+        await catalogAudit(tx, context, clock, switchScheduledAction, 'membership', before.id, present(before), audit);
+        return after;
+      });
+    },
+    /** Cancels a switch that hasn't applied yet, with its override reason. */
+    async cancelScheduledSwitch(context: MutationContext, input: CancelScheduledSwitchRequest): Promise<c.Membership> {
+      const parsed = cancelScheduledSwitchRequestSchema.safeParse(input);
+      if (!parsed.success) throw new AppError('invalid_request', 'Invalid request');
+      const request = parsed.data;
+      return scope(context.gymId, async tx => {
+        const before = await lockForSwitch(tx, request.membershipId);
+        if (before.revision !== request.revision) conflict('The record changed; reload before saving');
+        if (before.scheduledPlanId === null) throw new AppError('conflict', 'No plan switch is scheduled', { reason: ['none_scheduled'] });
+        const after = present(await saveSwitch(tx, before, clearedSwitch(before)));
+        await catalogAudit(tx, context, clock, switchCancelledAction, 'membership', before.id, present(before), after);
+        return after;
       });
     },
     update(context: MutationContext, request: UpdateMembership): Promise<c.Membership> {
@@ -208,7 +266,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (changes.nextDueOn && changes.nextDueOn < before.startsOn) conflict('Billing cannot start before membership starts');
         const interval = changes.interval ?? plan?.interval ?? before.interval;
         const anniversaryOn = editedAnniversary(before, interval, changes.nextDueOn);
-        return { ...(plan ? { planId: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval } : {}),
+        // Changing the plan or interval directly replaces a switch that hasn't applied yet.
+        return { ...(plan || changes.interval ? clearedSwitch(before) : {}), ...(plan ?{ planId: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval } : {}),
           ...(changes.price ?? {}), ...(changes.interval ? { interval: changes.interval } : {}),
           ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}), anniversaryOn };
       });

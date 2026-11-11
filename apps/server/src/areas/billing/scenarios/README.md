@@ -16,6 +16,7 @@ Time comes from `TestClock`; there are no sleeps or increased test timeouts.
 | File | Coverage |
 | --- | --- |
 | `class-packs.test.ts` | Sell a three-credit pack, collect a saved card through real transitions and effects with the synthetic Stripe transport, check in by kiosk and staff, then fully refund only the unused credit; a membership holder spends none |
+| `plan-switch.test.ts` | Schedule a switch to a taxed plan after a paid cycle; the next daily run (run twice) bills and collects the new price and its tax once, with the new plan on the line, and the revenue report keeps the earlier cycle under the old plan |
 | `calendar-pricing.test.ts` | Persisted catalog and lifecycle into pure invoice calculations: month ends, leap years, local trial expiry, DST proration, family and annual dates, freeze/resume/cancel, discounts, tax and isolation |
 | `payment-provider.test.ts` | Provider contract: idempotent create/confirm, decline and SCA normalization, lost responses, payment/setup Checkout, saved methods, refunds and signed events |
 | `transitions.test.ts` | PostgreSQL transitions and durable effects: receipt/activation once, dunning, paid finality, older attempts, cash/check and duplicate-card refunds, pending/failed/partial/full refunds, cancelled intents never resurrected |

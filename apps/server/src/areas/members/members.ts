@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
   invoices, paymentMethods, classBookings, classSessions, classCreditEntries, staffProfiles, leads, leadContacts, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -112,7 +112,8 @@ export function createMembersService(options: MembersOptions = {}) {
         const erasedLeads = await tx.update(leads).set({ lostReason: null })
           .where(eq(leads.memberId, id)).returning({ id: leads.id });
         for (const lead of erasedLeads) await tx.delete(leadContacts).where(eq(leadContacts.leadId, lead.id));
-        await tx.update(memberships).set({ switchOverrideReason: null }).where(eq(memberships.memberId, id));
+        await tx.update(memberships).set({ switchOverrideReason: null })
+          .where(and(eq(memberships.memberId, id), isNotNull(memberships.switchOverrideReason)));
         // Only upcoming places are freed; bookings for sessions that have started stay as history.
         const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
           .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
@@ -134,7 +135,9 @@ export function createMembersService(options: MembersOptions = {}) {
         const open = await tx.select({ id: memberships.id, revision: memberships.revision }).from(memberships)
           .where(and(eq(memberships.memberId, id), ne(memberships.status, 'cancelled'))).for('update');
         for (const membership of open) {
-          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, revision: membership.revision + 1 })
+          // Like a staff cancel, it drops any plan switch that hasn't applied yet.
+          await tx.update(memberships).set({ status: 'cancelled', cancelledAt: now, resumesOn: null, scheduledPlanId: null,
+            scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, revision: membership.revision + 1 })
             .where(eq(memberships.id, membership.id));
           await audit(tx, context, 'billing.membership.cancelled', 'membership', membership.id);
         }

@@ -17,7 +17,8 @@ and dates stay), clears its lead's lost reason and deletes its lead contact rows
 (the lead row stays for aggregate history), clears the reasons on its class credit adjustments (the credit ledger rows stay), clears the commitment override reason on its memberships, deletes the member's signed waivers and their signature images,
 removes tag and member-login links, revokes
 member-specific signed links, cancels the member's memberships (in the same
-transaction, so an erased member is never billed again), and clears the household
+transaction, so an erased member is never billed again; any plan switch scheduled
+on them is dropped), and clears the household
 PIN. When the household
 has no remaining identifiable members, its contact details and remaining portal
 and signed-link access are also removed. Other household members remain intact.

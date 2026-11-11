@@ -63,8 +63,7 @@ function missing(): never { throw new AppError('not_found', 'Join not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Online joining is not available'); }
 function invalid(message: string): never { throw new AppError('invalid_request', message); }
 function changed(): never { throw new AppError('conflict', 'Review the current membership and waivers before submitting'); }
-const snapshot = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, scheduledPlanId: _plan, scheduledAmountCents: _amount,
-  scheduledInterval: _interval, scheduledOn: _on, switchOverrideReason: _reason, ...row }: typeof memberships.$inferSelect) =>
+const snapshot = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideReason: _reason, ...row }: typeof memberships.$inferSelect) =>
   c.membershipSchema.parse({ ...row,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const plan = (row: typeof plans.$inferSelect, plusTax: boolean) => c.publicPlanSchema.parse({ id: row.id, name: row.name, amountCents: row.amountCents,

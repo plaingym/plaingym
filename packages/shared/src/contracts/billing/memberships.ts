@@ -26,6 +26,12 @@ export const membershipSchema = z.strictObject({
   cancelledAt: instantSchema.nullable(),
   // Assigned from the original plan; changing plans preserves this date.
   commitmentEndsOn: dateSchema.nullable(),
+  // A scheduled plan switch (read-only): all four set or all null. The plan's price and interval are quoted when it is
+  // scheduled, and it applies at the first cycle billed on or after `scheduledOn`.
+  scheduledPlanId: idSchema.nullable(),
+  scheduledAmountCents: amountCentsSchema.nonnegative().nullable(),
+  scheduledInterval: billingIntervalSchema.nullable(),
+  scheduledOn: dateSchema.nullable(),
   revision: revisionSchema,
 });
 export const membershipResponseSchema = z.strictObject({ data: membershipSchema });

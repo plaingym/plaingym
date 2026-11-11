@@ -6,7 +6,8 @@ import { householdBillingDate } from './calendar.js';
 const row = (overrides: Partial<Membership>): Membership => ({ id: '019a0af0-9c00-7000-8000-000000000001', createdAt: '2028-01-01T00:00:00Z',
   memberId: '019a0af0-9c00-7000-8000-000000000002', householdId: '019a0af0-9c00-7000-8000-000000000003', planId: '019a0af0-9c00-7000-8000-000000000004',
   status: 'active', currency: 'CAD', amountCents: 100, interval: 'monthly', startsOn: '2028-01-01', nextDueOn: '2028-01-31', trialEndsOn: null,
-  frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: null, revision: 1, ...overrides });
+  frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: null, scheduledPlanId: null, scheduledAmountCents: null,
+  scheduledInterval: null, scheduledOn: null, revision: 1, ...overrides });
 
 describe('household billing date', () => {
   it('starts a new or fully cancelled household on its join date', () => {

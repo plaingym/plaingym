@@ -117,8 +117,9 @@ On `memberships`, `scheduled_plan_id` (a composite foreign key to the gym's
 `plans`), `scheduled_amount_cents` (≥ 0), `scheduled_interval` (`monthly` or
 `annual`) and `scheduled_on` hold a scheduled plan switch and are all null or all
 set; `switch_override_reason` (1–500 characters when set) holds the reason of the
-latest commitment override and is cleared by member erasure. Nothing sets these
-yet. On `invoice_line_items`, `plan_id` (a composite foreign key to `plans`) is
+latest commitment override and is cleared by member erasure. The scheduled plan
+switch in the membership lifecycle sets them
+(`apps/server/src/areas/billing/memberships.README.md`). On `invoice_line_items`, `plan_id` (a composite foreign key to `plans`) is
 the plan a `membership` or `signup_fee` line was billed under and must be null on
 every other kind. Existing lines keep a null plan; no backfill is performed.
 

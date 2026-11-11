@@ -24,7 +24,10 @@ async function fixture(customerId: string | null) {
   const person = await factory('members', gymId, { householdId: home.id, firstName: 'Original' });
   const lead = await factory('leads', gymId, { memberId: person.id, stage: 'lost', lostAt: clock.now(), lostReason: 'Private reason' });
   await factory('leadContacts', gymId, { leadId: lead.id, occurredAt: clock.now(), channel: 'call', note: 'Private note', createdBy: userId });
-  const membership = await factory('memberships', gymId, { householdId: home.id, memberId: person.id, switchOverrideReason: 'Private override' });
+  const plan = await factory('plans', gymId);
+  const membership = await factory('memberships', gymId, { householdId: home.id, memberId: person.id, planId: plan.id,
+    switchOverrideReason: 'Private override', scheduledPlanId: plan.id, scheduledAmountCents: 8000, scheduledInterval: 'monthly',
+    scheduledOn: '2026-12-01' });
   return { home, person, lead, membership };
 }
 function app(queue: Pick<Jobs, 'enqueue'>, scope: typeof forGym = database.forGym) {
@@ -74,8 +77,8 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
       .toBe('Original private reason');
     expect((await database.forGym(gymId, tx => tx.select().from(leads).where(eq(leads.id, lead.id))))[0]!.lostReason).toBe('Private reason');
     expect(await database.forGym(gymId, tx => tx.select().from(leadContacts).where(eq(leadContacts.leadId, lead.id)))).toHaveLength(1);
-    expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]!
-      .switchOverrideReason).toBe('Private override');
+    expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]!)
+      .toMatchObject({ switchOverrideReason: 'Private override', scheduledPlanId: membership.planId, scheduledOn: '2026-12-01' });
     expect(await redactions(customerId)).toEqual([]);
     if (q instanceof FakeJobs) expect(q.jobs).toEqual([]);
     expect(server.redactCustomer).not.toHaveBeenCalled();
@@ -110,6 +113,9 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
       .where(eq(memberships.id, id))))[0]!.switchOverrideReason;
     expect(await overrideReason(membership.id)).toBeNull();
     expect(await overrideReason(otherMembership.id)).toBe('Another member override');
+    // The erasure's cancel drops the switch that hadn't applied yet.
+    expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]).toMatchObject({
+      status: 'cancelled', scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null });
     if (q instanceof FakeJobs) expect(q.jobs[0]).toMatchObject({ name: redactCustomerJob, payload: { customerId },
       options: { idempotencyKey: `redact:${customerId}`, maxAttempts: 12, timezone: 'UTC' }, runAt: new Date(clock.now().getTime() + 60_000) });
     else expect((await redactions(customerId))[0]).toMatchObject({ name: redactCustomerJob, maxAttempts: 12,

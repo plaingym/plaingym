@@ -28,6 +28,17 @@ onto an already-issued period gets a separate one-off for that period with
 existing cycle, including paid and void invoices, stays unchanged. An audit links
 the held invoice to the conflicting cycle and records the period.
 
+Before pricing each membership due in a cycle, generation passes the locked row
+to `applyScheduledSwitch` (`../memberships.plan-change.ts`) and prices the row it
+returns. An active membership whose scheduled switch is dated on or before its due
+date takes the switch's plan, quoted price and interval in the same transaction,
+so the cycle bills the new plan's price and taxes and its line records the new
+plan. A frozen membership's skipped cycles leave the switch in place; the first
+cycle billed after the resume applies it. Missed days catch up cycle by cycle, so
+a cycle before the switch date still bills the old plan. The household lock makes
+a second or concurrent run that day find the cycle already built, so a switch
+applies once.
+
 Cycle and assignment invoices over seven days overdue are held with `needsReview`
 on the next daily run, including first-period proration and sign-up fees. Staff
 confirmation uses the staff invoice `release-hold` action (owners/admins). The

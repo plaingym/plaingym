@@ -21,7 +21,8 @@ const settings: GymSettings = { id: id(1), name: 'Gym', slug: 'gym', currency: '
 const member: Member = { id: id(4), createdAt, householdId: id(5), firstName: 'Ada', lastName: 'Student', email: null, phone: null, photoKey: null, dateOfBirth: null,
   status: 'active', emergencyContacts: [], emailOptOut: false, emailDeliverable: true, anonymizedAt: null, revision: 1 };
 const membership: Membership = { id: id(6), createdAt, memberId: member.id, householdId: member.householdId, planId: plan.id, status: 'active', currency: 'CAD', amountCents: 9999,
-  interval: 'monthly', startsOn: '2026-10-01', nextDueOn: '2026-10-31', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: '2027-04-01', revision: 2 };
+  interval: 'monthly', startsOn: '2026-10-01', nextDueOn: '2026-10-31', trialEndsOn: null, frozenAt: null, resumesOn: null, cancelledAt: null, commitmentEndsOn: '2027-04-01',
+  scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, revision: 2 };
 function client() {
   return { plans: vi.fn(async () => [plan]), taxes: vi.fn(async () => [tax]), charges: vi.fn(async (): Promise<ChargeType[]> => []), settings: vi.fn(async () => settings), member: vi.fn(async () => member), householdBilling: vi.fn(async () => ({ id: member.householdId, billingDay: 31, familyDiscountBasisPoints: 0, revision: 1 })),
     memberships: vi.fn(async () => [membership]), call: vi.fn(async () => ({ data: plan })) as unknown as BillingClient['call'] } satisfies BillingClient;
