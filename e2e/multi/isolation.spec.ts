@@ -235,8 +235,9 @@ test('no route answers a gym\'s credentials with another gym\'s data, in either 
       if (response.status !== 200) unread.push(`${routeKey(route)} ${response.status}`);
     }
     // Only what a fresh gym lacks answers its own owner with 404: a photo nobody uploaded, and a signed waiver for the household login's own
-    // (self-signed) waivers, which the fixture's guardian-signed one isn't.
-    expect(unread.filter((line) => !/\/photo |^GET \/api\/portal\/waivers\/\{signatureId\}\/pdf /.test(line)), `${gym.slug}'s own reads`).toEqual([]);
+    // (self-signed) waivers, which the fixture's guardian-signed one isn't, and a lead's record for the fixture's student, who is an
+    // active member and so not a lead (a lead's list, edits and cross-gym refusals are tested with the leads area).
+    expect(unread.filter((line) => !/\/photo |^GET \/api\/portal\/waivers\/\{signatureId\}\/pdf |^GET \/api\/leads\/\{memberId\} /.test(line)), `${gym.slug}'s own reads`).toEqual([]);
     for (const [path, status] of [[`/api/members/${gym.student.id}`, 200], [`/api/households/${gym.householdId}`, 200], [`/api/schedule/sessions/${gym.sessionId}`, 200],
       [`/api/billing/payments`, 200], [`/api/billing/refunds`, 200], [`/api/billing/memberships/${gym.membershipId}`, 200]] as const)
       expect((await gym.owner.request(path)).status, `${gym.slug} ${path}`).toBe(status);
