@@ -70,7 +70,7 @@ module is off) and sign in.
 | **Schedule** | Everyone | One week of classes at a time. **Book**, or **Join the waitlist** once the booking window opens; **Cancel booking** or **Leave the waitlist** until the cutoff. A payer can book for each household member. |
 | **Check-in** | Everyone | A QR code for the kiosk camera, per member. **Replace this code** if it was shared or a device was lost; the old code stops working at once. |
 | **Progress** | Everyone | Current rank and what's next in each program, promotion history and attendance. |
-| **Billing** | Payers | Invoices; **pay** an open one or **update the card** on Stripe's hosted page; receipts for paid invoices. |
+| **Billing** | Everyone (invoices: payers) | A **Class credits** card shows how many classes are left and when the soonest credits expire, for each household member who holds credits (a payer sees every such member; other adults see only their own, or "No class credits"; read-only, and nothing is sold here). Payers also get invoices, **pay** an open one or **update the card** on Stripe's hosted page, and receipts for paid invoices. |
 | **Waivers** | Everyone | Documents waiting to be signed and signed copies as PDFs. A payer signs for children as their guardian. |
 | **Household** | Payers (members read-only) | Contact details, and each person's profile and memberships. |
 
