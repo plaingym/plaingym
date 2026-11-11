@@ -80,8 +80,8 @@ export interface GymFixture {
   /** The gym's class: created through `createClass`, so its start is clear of local midnight at any hour. */
   session: ClassSession; sessionId: string; sessionName: string; bookingId: string;
   invoiceId: string; signatureId: string; deviceId: string; kioskToken: string; planId: string; templateId: string; tagId: string;
-  /** Billing: a second invoice paid at the desk, that payment and its refund, a charge type, a tax rate and a membership. */
-  paidInvoiceId: string; paymentId: string; refundId: string; chargeTypeId: string; taxRateId: string; membershipId: string;
+  /** Billing: a second invoice paid at the desk, that payment and its refund, a charge type, a class pack, a tax rate and a membership. */
+  paidInvoiceId: string; paymentId: string; refundId: string; chargeTypeId: string; classPackId: string; taxRateId: string; membershipId: string;
   /** A card saved through hosted Checkout and the signed setup webhook. */
   paymentMethodId: string;
   /** A signed link, and a campaign that sent one. */
@@ -206,7 +206,8 @@ export async function createGym(gym: (typeof gyms)[number], afterWrite: (step: '
   const taxes = await step('taxes', async () => {
     const taxRate = (await write<{ data: RecordId }>(owner, 'billing-tax-rates', '/api/billing/tax-rates', 'POST', { name: gym.name + ' sales tax', rateMillionths: 50_000, inclusive: false })).data;
     const chargeType = (await write<{ data: RecordId }>(owner, 'billing-charge-types', '/api/billing/charge-types', 'POST', { name: gym.name + ' drop-in', amountCents: 2000, currency: 'USD', taxRateIds: [taxRate.id] })).data;
-    return { taxRateId: taxRate.id, chargeTypeId: chargeType.id };
+    const classPack = (await write<{ data: RecordId }>(owner, 'billing-class-packs', '/api/billing/class-packs', 'POST', { name: gym.name + ' ten-class card', amountCents: 15_000, currency: 'USD', credits: 10, expiryDays: 365, active: true, taxRateIds: [taxRate.id] })).data;
+    return { taxRateId: taxRate.id, chargeTypeId: chargeType.id, classPackId: classPack.id };
   });
   const membershipId = await step('membership', async () => {
     // A household with no live membership bills from its join date, so the first due date is the start date: a week out, so no
