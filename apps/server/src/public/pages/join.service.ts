@@ -15,6 +15,7 @@ import { addsTaxOnTop } from '../../areas/billing/invoicing/adds-tax-on-top.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { needsGuardian, validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import { createMembershipService } from '../../areas/billing/memberships.js';
+import { recordLeadIntake } from '../../areas/leads/intake.js';
 import { calculateCycleInvoice, calculateOneOffInvoice } from '../../areas/billing/invoicing/index.js';
 import { issue, system } from '../../areas/billing/runner/store.js';
 import type { CheckoutReturn, createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
@@ -390,6 +391,8 @@ export function createJoinService(options: JoinOptions) {
         const [home] = await tx.select({ id: households.id }).from(households).where(eq(households.id, found.householdId)).for('update');
         if (!home || await marked(tx, 'public.join.cleanup.started', home.id)) missing();
         if (!await marked(tx, 'public.join.submitting', home.id)) await audit(tx, gymId, 'public.join.submitting', 'household', home.id);
+        const now = clock.now();
+        for (const memberId of found.memberIds) await recordLeadIntake(tx, { gymId, memberId, source: 'join', now });
       });
       for (const [i, m] of input.members.entries()) for (const acceptance of m.waivers)
         await options.waivers.sign(system(gymId), { ...acceptance, memberId: found.memberIds[i]! }, { timezone, ipAddress });

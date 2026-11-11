@@ -133,6 +133,7 @@ keeps these tables in step with it.
 | `tags.manage` | yes | yes | | yes |
 | `links.send` | yes | yes | | yes |
 | `announcements.send` | yes | yes | | |
+| `leads.manage` | yes | yes | | yes |
 | `payments.record` | yes | yes | | yes |
 | `payments.custom` | yes | yes | | |
 | `billing.read` | yes | yes | | yes |
@@ -145,6 +146,13 @@ keeps these tables in step with it.
 | `schedule.manage` | yes | yes | yes | |
 | `promotions.manage` | yes | yes | yes | |
 | `kiosk_devices.manage` | yes | yes | | |
+
+`leads.manage` grants owners, admins and front desk access to lead details and
+contact history. Coaches cannot access leads or contact notes. Lead rows and
+contacts have forced gym RLS and composite references; intake records its source
+and a source-only audit in the same transaction. Leads are never automatically
+deleted or erased. Join intake records leads on submission, so unsubmitted
+admissions can still be removed by admission cleanup.
 
 `integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
 **Settings → Email, payments and backups** after it, whose responses and audits

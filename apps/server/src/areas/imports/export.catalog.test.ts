@@ -11,6 +11,26 @@ import { exportCatalog } from './export.catalog.js';
 const root = new URL('../../../../../', import.meta.url);
 const database = useTestDatabase(), factory = createFactories(database);
 describe('export schema coverage and secret exclusions', () => {
+  it('exports lead details and contact history only from the requested gym and cutoff', async () => {
+    const gymA = uuidv7(), gymB = uuidv7(), now = new Date('2026-11-10T12:00:00Z');
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    const lead = await factory('leads', gymA, { source: 'phone', stage: 'lost', lostAt: now, lostReason: 'No time',
+      nextFollowUpOn: '2026-11-15', lastContactedAt: now, trialAttendedAt: now, wonAt: now });
+    const contact = await factory('leadContacts', gymA, { leadId: lead.id, occurredAt: now, channel: 'call', note: 'Call next week' });
+    await factory('leadContacts', gymB);
+    const cutoff = new Date('2099-01-01T00:00:00Z');
+    expect(await exportCatalog.leads.page(database.forGym, gymA, cutoff)).toEqual([{
+      id: lead.id, gym_id: gymA, created_at: lead.createdAt, member_id: lead.memberId, source: 'phone', stage: 'lost',
+      lost_reason: 'No time', next_follow_up_on: '2026-11-15', last_contacted_at: now, trial_attended_at: now,
+      won_at: now, lost_at: now, revision: 1,
+    }]);
+    expect(await exportCatalog.lead_contacts.page(database.forGym, gymA, cutoff)).toEqual([{
+      id: contact.id, gym_id: gymA, created_at: contact.createdAt, lead_id: lead.id, occurred_at: now,
+      channel: 'call', note: 'Call next week', created_by: contact.createdBy,
+    }]);
+    for (const name of ['leads', 'lead_contacts'] as const)
+      expect(await exportCatalog[name].page(database.forGym, gymA, new Date(0))).toEqual([]);
+  });
   it('exports announcement history and member consent only for the requested gym', async () => {
     const gymA = uuidv7(), gymB = uuidv7();
     await factory('gyms', gymA); await factory('gyms', gymB);

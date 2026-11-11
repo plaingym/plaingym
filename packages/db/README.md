@@ -84,6 +84,17 @@ legacy pairs: missing sent completion times use `created_at`, sending completion
 cleared, missing failed/skipped reasons become `unknown`/`ineligible`, and pending/sent
 reasons are cleared. Message content, recipients and outcome states are preserved.
 
+Migration `0026_leads.sql` adds two empty gym-owned tables, `leads` and
+`lead_contacts`, without changing existing rows. Leads are unique per gym/member
+with nullable source, default stage `new`, revision, follow-up date and lifecycle
+timestamps. Checks constrain sources and stages, require the corresponding
+timestamp for `won` and `lost`, and bound lost reasons to 500 characters.
+Contacts reference a lead in the same gym, record their staff author and channel,
+and limit notes to 2,000 characters. Both have forced gym RLS; member and lead
+references use `NO ACTION`. Stage and open follow-up indexes support lead reads;
+contact history is indexed by gym, lead and occurrence time. Both are exported.
+No backfill or automatic lead deletion is performed.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -333,6 +344,8 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | announcements | Gym announcement content, audience and delivery summary |
 | announcement_recipients | Per-member announcement delivery run state, without copied addresses or bodies |
 | announcement_opt_outs | Per-member consent to announcement email |
+| leads | One lead per member, with source, stage, follow-up and lifecycle history |
+| lead_contacts | Staff contact history for a lead |
 
 Amounts are integers in the currency's minor units (cents for USD, whole yen for
 JPY; `@plaingym/shared/money`), with a currency. Each gym has one billing currency:

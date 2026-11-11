@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, gt, lte } from 'drizzle-orm';
 import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
-import { forGym, staffRoles, staffProfiles, households, members, householdUsers, memberTags, memberTagLinks, installedPacks, rankSystems, programs, ranks, memberRanks, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, attendances, classBookings, taxRates, plans, planTaxRates, chargeTypes, chargeTypeTaxRates, memberships, invoices, invoiceSequences, invoiceLineItems, paymentMethods, paymentAttempts, payments, refunds, waiverTemplates, waiverSignatures, kioskDevices, linkCampaigns, signedLinks, auditEvents, emailOutbox, announcements, announcementOptOuts } from '@plaingym/db';
+import { forGym, staffRoles, staffProfiles, households, members, householdUsers, memberTags, memberTagLinks, installedPacks, rankSystems, programs, ranks, memberRanks, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, attendances, classBookings, taxRates, plans, planTaxRates, chargeTypes, chargeTypeTaxRates, memberships, invoices, invoiceSequences, invoiceLineItems, paymentMethods, paymentAttempts, payments, refunds, waiverTemplates, waiverSignatures, kioskDevices, linkCampaigns, signedLinks, auditEvents, emailOutbox, announcements, announcementOptOuts, leads, leadContacts } from '@plaingym/db';
 import type { ExportDataset } from '@plaingym/shared/contracts';
 type ExportTable = PgTable & { id: AnyPgColumn; gymId: AnyPgColumn; createdAt: AnyPgColumn };
 function dataset(table: ExportTable, columns: Record<string, AnyPgColumn>) {
@@ -11,6 +11,8 @@ function dataset(table: ExportTable, columns: Record<string, AnyPgColumn>) {
 }
 /** Explicit safe projections: new schema columns require review before they can leave the server. */
 export const exportCatalog = {
+  leads: dataset(leads, { id: leads.id, gym_id: leads.gymId, created_at: leads.createdAt, member_id: leads.memberId, source: leads.source, stage: leads.stage, lost_reason: leads.lostReason, next_follow_up_on: leads.nextFollowUpOn, last_contacted_at: leads.lastContactedAt, trial_attended_at: leads.trialAttendedAt, won_at: leads.wonAt, lost_at: leads.lostAt, revision: leads.revision }),
+  lead_contacts: dataset(leadContacts, { id: leadContacts.id, gym_id: leadContacts.gymId, created_at: leadContacts.createdAt, lead_id: leadContacts.leadId, occurred_at: leadContacts.occurredAt, channel: leadContacts.channel, note: leadContacts.note, created_by: leadContacts.createdBy }),
   announcements: dataset(announcements, { id: announcements.id, gym_id: announcements.gymId, created_at: announcements.createdAt, created_by: announcements.createdBy, subject: announcements.subject, body: announcements.body, audience: announcements.audience, recipient_count: announcements.recipientCount, status: announcements.status, completed_at: announcements.completedAt }),
   announcement_opt_outs: dataset(announcementOptOuts, { id: announcementOptOuts.id, gym_id: announcementOptOuts.gymId, created_at: announcementOptOuts.createdAt, member_id: announcementOptOuts.memberId }),
   staff_roles: dataset(staffRoles, { id: staffRoles.id, gym_id: staffRoles.gymId, created_at: staffRoles.createdAt, user_id: staffRoles.userId, role: staffRoles.role, revision: staffRoles.revision }),

@@ -16,6 +16,11 @@ const job = { id, uploadId: id, mapper: 'people', dryRun: true, status: 'succeed
   processedRows: 5000, committedRows: 0, errorCount: 0, createdAt: now, completedAt: now };
 
 describe('import and export contracts', () => {
+  it('includes lead details and contact history in exports', () => {
+    expect(exportDatasets).toEqual(expect.arrayContaining(['leads', 'lead_contacts']));
+    expect(exportDatasetSchema.parse('leads')).toBe('leads');
+    expect(exportDatasetSchema.parse('lead_contacts')).toBe('lead_contacts');
+  });
   it('accepts multipart CSV files within the upload size limit', () => {
     expect(uploadCsvRequestSchema.safeParse({ file: new File(['name\nA\n'], 'members.csv', { type: 'text/csv' }) }).success).toBe(true);
     expect(uploadCsvRequestSchema.safeParse({ file: new File([], 'empty.csv') }).success).toBe(false);

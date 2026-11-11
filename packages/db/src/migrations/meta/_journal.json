@@ -176,6 +176,13 @@
       "when": 1794334277524,
       "tag": "0025_announcement_scale",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794353353844,
+      "tag": "0026_leads",
+      "breakpoints": true
     }
   ]
 }

@@ -63,6 +63,8 @@ const defaults = {
   announcements: () => ({ sendGeneration: uuidv7(), subject: 'Gym update', body: 'Welcome to class.', audience: { statuses: ['active'], programIds: [] } }),
   announcementRecipients: () => ({ updatedAt: date }),
   announcementOptOuts: () => ({}),
+  leads: () => ({}),
+  leadContacts: () => ({ occurredAt: date, channel: 'call' }),
   importRuns: () => ({ input: { uploadId: uuidv7(), mapper: 'people', mapping: [{ sourceColumn: 'Name', targetField: 'firstName' }],
     duplicatePolicy: 'error', dryRun: false }, actor: { kind: 'system' }, timezone: 'UTC', dryRun: false, totalRows: 1, updatedAt: date }),
   importChunks: () => ({ position: 0, rowCount: 1 }),

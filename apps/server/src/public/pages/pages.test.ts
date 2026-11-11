@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import '@hono/zod-openapi';
-import { auditEvents, members, households, waiverSignatures, waiverTemplates, invoices, uuidv7 } from '@plaingym/db';
+import { auditEvents, members, households, waiverSignatures, waiverTemplates, invoices, leads, uuidv7 } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -62,7 +62,7 @@ async function fixture(demo = false) {
     return { ...input, waivers: images.data.map(image => ({ ...image, signer: { kind: 'self' as const, name: 'New Visitor' }, consent: true as const })) };
   }
   const rows = () => db.forGym(gymId, async tx => ({ members: await tx.select().from(members), homes: await tx.select().from(households),
-    signatures: await tx.select().from(waiverSignatures), audits: await tx.select().from(auditEvents), invoices: await tx.select().from(invoices) }));
+    signatures: await tx.select().from(waiverSignatures), audits: await tx.select().from(auditEvents), invoices: await tx.select().from(invoices), leads: await tx.select().from(leads) }));
   return { gymId, otherGym, clock, existing, existingHome, sibling, template, secondTemplate, foreignTemplate, waivers, uploads, notices, service, app, server, post, admission, admit, rows };
 }
 
@@ -110,6 +110,10 @@ describe('core public pages through the production registrations', () => {
     expect(rows.homes.find(h => h.id === f.existingHome.id)).toMatchObject({ name: 'Existing household', revision: 1 });
     expect(f.notices).toHaveLength(2); expect(f.notices.every(n => n.gymId === f.gymId && n.kind === 'trial')).toBe(true);
     expect(rows.audits.filter(a => a.action === 'public.trial.received')).toHaveLength(2);
+    expect(rows.leads).toHaveLength(2);
+    expect(rows.leads.every(l => l.source === 'trial_form' && l.stage === 'new' && l.createdAt.getTime() === f.clock.now().getTime())).toBe(true);
+    expect(rows.leads.map(l => l.memberId).sort()).toEqual(rows.members.filter(m => m.status === 'prospect').map(m => m.id).sort());
+    expect(rows.audits.filter(a => a.action === 'lead.created')).toHaveLength(2);
     expect(JSON.stringify(rows.audits)).not.toContain('existing@example.invalid');
   });
   it('rejects bots on JSON, admission and native forms before writing or sending mail', async () => {
@@ -152,6 +156,9 @@ describe('core public pages through the production registrations', () => {
       expect(await (await f.server.request(origin + '/drop-in')).text()).toContain('Open the document');
     }
     const input = await f.admit();
+    const admittedLeads = (await f.rows()).leads;
+    expect(admittedLeads).toHaveLength(1);
+    expect(admittedLeads[0]).toMatchObject({ memberId: input.waivers[0]!.signatureImageKey.split('/')[2], source: 'drop_in', stage: 'new' });
     expect((await f.rows()).members.find(m => m.id === input.waivers[0]!.signatureImageKey.split('/')[2])!.status).toBe('prospect');
     const response = await f.post('/api/public/drop-in', input); expect(response.status).toBe(200);
     expect(publicSubmissionResponseSchema.parse(await response.json())).toEqual({ data: { status: 'received' } });
@@ -159,6 +166,8 @@ describe('core public pages through the production registrations', () => {
     const rows = await f.rows(); expect(rows.members.filter(m => m.status === 'visitor')).toHaveLength(1); expect(rows.signatures).toHaveLength(2); expect(rows.invoices).toHaveLength(0);
     expect(readSnapshot(rows.signatures[0]!.snapshot, rows.signatures[0]!.snapshotHash).member.firstName).toBe('New');
     expect(f.notices).toHaveLength(1); expect(rows.audits.filter(a => a.action === 'public.drop_in.received')).toHaveLength(1);
+    expect(rows.leads).toEqual(admittedLeads);
+    expect(rows.audits.filter(a => a.action === 'lead.created')).toHaveLength(1);
   });
   it('responds identically to new and enrolled drop-ins and does not touch the enrolled member or sibling', async () => {
     const f = await fixture(), fresh = await f.admit(), existing = await f.admit(body('existing@example.invalid'));

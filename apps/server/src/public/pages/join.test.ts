@@ -6,7 +6,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import '@hono/zod-openapi';
 import { asc, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- The test turns a gym's billing switch off in real PostgreSQL.
-import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, members, memberships, paymentMethods, plans, signedLinks,
+import { auditEvents, gyms, households, householdUsers, invoiceLineItems, invoices, leads, members, memberships, paymentMethods, plans, signedLinks,
   waiverSignatures, waiverTemplates, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -138,13 +138,46 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
   const rows = () => db.forGym(gymId, async tx => ({ homes: await tx.select().from(households).orderBy(asc(households.createdAt)),
     members: await tx.select().from(members), memberships: await tx.select().from(memberships), invoices: await tx.select().from(invoices),
     lines: await tx.select().from(invoiceLineItems), signatures: await tx.select().from(waiverSignatures), links: await tx.select().from(signedLinks),
-    logins: await tx.select().from(householdUsers), methods: await tx.select().from(paymentMethods), audits: await tx.select().from(auditEvents) }));
+    logins: await tx.select().from(householdUsers), methods: await tx.select().from(paymentMethods), audits: await tx.select().from(auditEvents), leads: await tx.select().from(leads) }));
   const joined = async () => (await rows()).homes.filter(h => h.id !== existingHome.id);
   return { gymId, otherGym, clock, plan, annual, trial, free, retired, foreignPlan, templates, foreignTemplate, existingHome, existing, provider, paymentsFor,
     uploads, uploadsFor, paymentsConfigured, waivers, checkout, invitations, accounts, settings, lifecycle, join, jobs, transitions, sent, mail, afterCheckout, afterInvoicePaid, webhook, drain,
     app, server, get, post, admit, body, submit, pay, rows, joined };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+describe('join lead intake', () => {
+  it('keeps one lead and audit per member when submission fails after marking and is retried', async () => {
+    const f = await fixture(), people = [adult(), child()], email = 'retry-leads@example.invalid';
+    const images = await f.admit(people, email, f.plan.id), body = f.body(people, images, email, f.plan.id);
+    vi.spyOn(f.waivers, 'sign').mockRejectedValueOnce(new Error('signing interrupted'));
+    await expect(f.join.join(f.gymId, body, timezone, '127.0.0.1')).rejects.toThrow('signing interrupted');
+    const interrupted = await f.rows();
+    expect(interrupted.leads).toHaveLength(2);
+    expect(interrupted.audits.filter(a => a.action === 'lead.created')).toHaveLength(2);
+    await f.join.join(f.gymId, body, timezone, '127.0.0.1');
+    const retried = await f.rows();
+    expect(retried.leads).toEqual(interrupted.leads);
+    expect(retried.audits.filter(a => a.action === 'lead.created')).toEqual(interrupted.audits.filter(a => a.action === 'lead.created'));
+  });
+  it('records both members on submission, keeps admission lead-free, and replays without another row or audit', async () => {
+    const f = await fixture(), people = [adult(), child()], email = 'leads@example.invalid';
+    const images = await f.admit(people, email, f.plan.id);
+    expect((await f.rows()).leads).toEqual([]);
+    expect((await f.rows()).audits.filter(a => a.action === 'lead.created')).toEqual([]);
+    const body = f.body(people, images, email, f.plan.id);
+    expect((await f.post('/api/public/join', body)).status).toBe(200);
+    const submitted = await f.rows(), home = submitted.homes.find(h => h.email === email)!;
+    expect(submitted.leads).toHaveLength(2);
+    expect(submitted.leads.map(l => l.memberId).sort()).toEqual(submitted.members.filter(m => m.householdId === home.id).map(m => m.id).sort());
+    for (const lead of submitted.leads) expect(lead).toMatchObject({ source: 'join', stage: 'new', revision: 1, createdAt: f.clock.now() });
+    expect(submitted.audits.filter(a => a.action === 'lead.created')).toHaveLength(2);
+    expect((await f.post('/api/public/join', body)).status).toBe(200);
+    const replay = await f.rows();
+    expect(replay.leads).toEqual(submitted.leads);
+    expect(replay.audits.filter(a => a.action === 'lead.created')).toEqual(submitted.audits.filter(a => a.action === 'lead.created'));
+  });
+});
 describe('trial and zero-value joining', () => {
   it.each(['trial', 'free'] as const)('supports native multipart joining for a %s plan', async kind => {
     const f = await fixture(), form = nativeForm(f, f[kind].id, `${kind}-native@example.invalid`);

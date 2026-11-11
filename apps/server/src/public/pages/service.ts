@@ -9,6 +9,7 @@ import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
 import { readGymSettings } from '../../areas/settings/settings.js';
+import { recordLeadIntake } from '../../areas/leads/intake.js';
 import { signedLinkWaiversComplete, type WaiversService } from '../../areas/waivers/waivers.js';
 import { validateSignatureImage } from '../../areas/waivers/snapshot.js';
 import type { Uploads } from '../../infra/storage/index.js';
@@ -62,7 +63,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     await writeAudit(tx, { gymId, actorKind: 'system', action, targetType: 'member', targetId: id, occurredAt: clock.now() });
   }
   /** Public callers never select an existing household, even when the address matches. */
-  async function intake(gymId: string, input: c.PublicTrialRequest, action: string) {
+  async function intake(gymId: string, input: c.PublicTrialRequest, action: string, source: 'trial_form' | 'drop_in') {
     return scope(gymId, async tx => {
       const now = clock.now(), householdId = uuidv7(now.getTime()), id = uuidv7(now.getTime());
       await tx.insert(households).values({ id: householdId, gymId, name: input.contact.name, email: input.contact.email,
@@ -70,6 +71,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       await tx.insert(members).values({ id, gymId, householdId, ...input.member, email: input.contact.email, status: 'prospect', createdAt: now });
       await writeAudit(tx, { gymId, actorKind: 'system', action: 'household.created', targetType: 'household', targetId: householdId, occurredAt: now });
       await audit(tx, gymId, action, id);
+      await recordLeadIntake(tx, { gymId, memberId: id, source, now });
       return id;
     });
   }
@@ -113,7 +115,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
     },
     async trial(gymId: string, body: unknown, timezone: string, requestId?: string) {
       const input = c.publicTrialRequestSchema.parse(body); applicant(input, timezone);
-      const id = await intake(gymId, input, 'public.trial.received');
+      const id = await intake(gymId, input, 'public.trial.received', 'trial_form');
       await notifyStaff(gymId, { kind: 'trial', memberId: id }, requestId);
       return received();
     },
@@ -122,7 +124,7 @@ export function createPublicPagesService(options: PublicPagesOptions) {
       await current(gymId, input.signatures);
       const images = input.signatures.map(s => Buffer.from(s.pngBase64, 'base64'));
       images.forEach(validateSignatureImage);
-      const id = await intake(gymId, input, 'public.drop_in.admitted');
+      const id = await intake(gymId, input, 'public.drop_in.admitted', 'drop_in');
       const data = [];
       for (const [i, accepted] of input.signatures.entries()) {
         const image = await options.waivers.uploadSignature(mutation(gymId), id, images[i]!);

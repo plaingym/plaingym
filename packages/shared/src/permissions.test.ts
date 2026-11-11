@@ -35,6 +35,7 @@ const rows: readonly [StaffPermission, readonly StaffRole[]][] = [
   ...(
     [
       'members.manage',
+      'leads.manage',
       'households.manage',
       'tags.manage',
       'links.send',

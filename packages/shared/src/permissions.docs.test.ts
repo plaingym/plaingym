@@ -20,6 +20,10 @@ function table(heading: string): Record<string, boolean[]> {
 }
 
 describe('docs/security-model.md', () => {
+  it('restricts leads and contact notes to owners, admins and front desk', () => {
+    expect(table('Staff capabilities')['leads.manage']).toEqual([true, true, false, true]);
+    expect(page).toContain('Coaches cannot access leads or contact notes');
+  });
   it('restricts announcement composition and history to owners and admins', () => {
     expect(table('Staff capabilities')['announcements.send']).toEqual([true, true, false, false]);
   });
