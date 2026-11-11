@@ -186,9 +186,10 @@ if grep -q '@ROOT@' "$SYSTEMD_UNIT_DIR"/*; then echo 'A unit kept its placeholde
 [ "$(stat -c %a "$SYSTEMD_UNIT_DIR/plaingym-update.timer")" = 644 ]
 [ "$(grep -n '^systemctl daemon-reload' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^systemctl enable --now plaingym-update.timer' "$CALLS" | cut -d: -f1)" ]
 grep -q 'Patch releases install automatically each night' "$temporary/output"
-# This source has no release signing key; update.sh --patch then skips each night until one is installed.
-[ ! -e "$root/release-signing.pem" ]
-hashes() { sha256sum "$root/.env" "$root/compose.yaml" "$root/Caddyfile" "$root/update.sh"; }
+# The source's release signing key goes beside update.sh, readable by all; a re-run leaves it alone.
+cmp "$source_dir/release-signing.pem" "$root/release-signing.pem"
+[ "$(stat -c %a "$root/release-signing.pem")" = 644 ]
+hashes() { sha256sum "$root/.env" "$root/compose.yaml" "$root/Caddyfile" "$root/update.sh" "$root/release-signing.pem"; }
 before=$(hashes)
 
 : > "$CALLS"

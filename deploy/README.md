@@ -562,8 +562,8 @@ pushes `ghcr.io/OWNER/app:vX.Y.Z-amd64` and `-arm64`, then the multi-arch
 `ghcr.io/OWNER/app:vX.Y.Z` over exactly those two. It signs the release manifest
 with the `RELEASE_SIGNING_KEY` secret of the `release` environment, after
 checking it against `release-signing.pem`, and creates the GitHub release with
-both files. No release has been published yet, and the repository has no
-`release-signing.pem`: until it does, automatic patch updates skip each night.
+both files. The public key is `deploy/release-signing.pem`, and the installer
+copies it into the install directory. No release has been published yet.
 
 Every other run (a push that changes the workflow or `release/`, or a manual
 run) is a dry run with its Git build-metadata version: the images go to a registry on
