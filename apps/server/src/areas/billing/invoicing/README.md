@@ -18,7 +18,8 @@ membership and charge currencies must match it. Lines are projections of the sha
 `InvoiceLineItem` contract without persistence IDs. No dependency was added.
 
 Each membership line records its membership's plan in `planId`: cycle lines, the
-off-day stub and the prorated first period. A signup-fee charge passes its plan as
+off-day stub and the prorated first period; a plan change's proration line
+records the plan switched to. A signup-fee charge passes its plan as
 `planId` and its line records it; the runner's assignment invoices and the join
 flow do this. Charge, discount and tax lines always have a null `planId`, and a
 charge that passes one is refused. The revenue report groups a line by this plan,
@@ -54,6 +55,26 @@ payment calculated; the caller coordinates activation through the lifecycle.
 An assignment starting before the preceding interval is rejected, not silently
 charged for more than a full period. New households pay a full period through
 their onboarding flow rather than this existing-household proration function.
+
+`calculatePlanChange` (`plan-change.ts`) quotes an upgrade that takes effect now:
+the new plan's price minus the membership's current amount (a custom price
+counts as the current price), for the days left in the current period. That
+period is the monthly or annual interval immediately before `nextDueOn`, as for
+a first period, except that a monthly due date off the household's billing day
+(left by a changed billing day) closes a full month on its own day. The days left
+run from the later of `changeOn` and `startsOn` to `nextDueOn`. The difference is
+quoted like a first period of the new plan: `difference × days left / period
+days`, rounded once to the currency's step, then the household discount, then the
+new plan's taxes. The result is a `one_off` invoice due on `changeOn`, with one
+`membership` line that records the membership and the **new** plan, then its
+discount and tax lines, and the period with its billed and total days beside it.
+There is no invoice (and zero billed days) when the new price isn't higher, the
+change is on or after the due date, the rounded proration is zero, or the
+membership is in a trial, frozen or cancelled. A plan with another billing
+interval is refused with a `RangeError` (an interval change is never prorated),
+as is a change dated before the current period. `changeOn` is the gym-local date
+from `localDate(clock.now(), timezone)`; days are calendar days, so DST never
+changes them. Nothing calls it yet.
 
 `calculateOneOffInvoice` handles sign-up fees and other standalone charges without
 a family discount. Quantities are extended before tax rounding; output amounts
@@ -120,7 +141,8 @@ invoice transitions, and all external charging occurs after commit. The charge
 runner owns catch-up review, billing-enabled checks, and issue/payment state.
 
 No runtime mounting is needed for these pure functions. Consumers import this
-directory's `index.ts`; existing empty route/job registrations remain unchanged.
+directory's `index.ts`; `pricing.ts` holds the validation, calendar and pricing
+internals the calculators share. Existing empty route/job registrations remain unchanged.
 The local calendar adapter uses the shared time module's validated calendar dates
 and `addDays` operations. TODO: move anchored month/year stepping and calendar-day
 differences into that module.
