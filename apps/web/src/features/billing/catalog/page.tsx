@@ -13,6 +13,7 @@ import { cn } from '../../../lib/utils.js';
 import { billingClient, type BillingClient } from './api.js';
 import { ArchiveConfirmation, CatalogEditor, type CatalogKind, type CatalogRecord } from './editor.js';
 import { money, saveError, say, text } from './format.js';
+import { PackCatalog } from '../packs/catalog.js';
 
 type Archive = { rate: TaxRate; input: Record<string, unknown>; usage: TaxRateUsage };
 const carries = (record: Plan | ChargeType, rate: string) => record.taxRateIds.includes(rate);
@@ -120,5 +121,5 @@ export function CatalogPage() {
   const bootstrap = useBootstrap();
   if (bootstrap.isPending) return <p role="status">{text('loading')}</p>;
   if (!bootstrap.data?.session || !canStaff(bootstrap.data.session.roles, 'plans.manage')) return <Alert>{text('noAccess')}</Alert>;
-  return <CatalogWorkspace key={bootstrap.data.gym.id} gymId={bootstrap.data.gym.id}/>;
+  return <div className={cn('min-w-0 space-y-5', userNames)} key={bootstrap.data.gym.id}><CatalogWorkspace gymId={bootstrap.data.gym.id}/><PackCatalog gymId={bootstrap.data.gym.id}/></div>;
 }
