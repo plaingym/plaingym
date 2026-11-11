@@ -246,6 +246,14 @@ excludes medical notes, check-in hashes and household PIN hashes and includes th
 revision. Emergency contacts are included for logged-in household users only.
 The caller supplies `userId` and `gymId` from authenticated request context.
 
+`classCredits(now)` returns only visible members with a positive usable balance:
+member ID, first and last name, balance and soonest expiry. It sums each lot's
+remainder after every movement, excluding exhausted lots and lots expiring at or
+before the injected clock's `now`. A null soonest expiry means all usable lots
+are permanent. The aggregation uses one SQL snapshot and returns no ledger rows,
+sales, invoices or money. Payers see their current household members and adult
+non-payers see only their linked member. Signed links cannot use this read.
+
 The portal reads a household's history as pages and single lookups: `bookingPage`,
 `booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `rankHistory`,
 `membershipPage`, `signaturePage`, `signature`, `signedTemplates` and `invoicePage` filter,

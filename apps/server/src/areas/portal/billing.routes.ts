@@ -24,7 +24,7 @@ export function configurePortalBilling(options: { checkout: PortalCheckout; rece
 
 export function createPortalBillingRoutes(service: PortalBillingService = createPortalBillingService({
   checkout: () => runtime().checkout, uploadsFor: () => runtime().uploadsFor }), receipts: () => Receipts = () => runtime().receipts) {
-  const { invoices, invoice, receipt, payInvoice, paymentMethods, updateCard } = contracts;
+  const { classCredits, invoices, invoice, receipt, payInvoice, paymentMethods, updateCard } = contracts;
   function redirect(c: Context<RequestEnvironment>, started: PortalCheckoutStart) {
     const now = c.get('context').clock.now().getTime(), expires = Date.parse(started.expiresAt);
     setCookie(c, receiptCookie, receipts().seal({ token: started.token, gymId: c.get('context').gym.gymId, linkId: started.linkId,
@@ -33,6 +33,10 @@ export function createPortalBillingRoutes(service: PortalBillingService = create
     return c.json({ data: { url: started.session.url, expiresAt: started.expiresAt } }, 200);
   }
   return [
+    route({ ...classCredits, responses: ok('Usable class credits by visible member', classCredits.response) }, async c => {
+      c.header('Cache-Control', 'no-store');
+      return c.json({ data: await service.classCredits(portalIdentity(c.get('context'))) }, 200);
+    }),
     route({ ...invoices, request: { query: invoices.query }, responses: ok('Household invoices', invoices.response) }, async c => {
       c.header('Cache-Control', 'no-store');
       return c.json(await service.list(portalIdentity(c.get('context')), c.req.valid('query')), 200);

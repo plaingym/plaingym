@@ -7,7 +7,14 @@ before creating a pay link or Checkout; amounts are never silently rounded.
 An open zero invoice shows a settlement note without a payment action or manual
 instructions; it settles on its due date and Checkout is refused before minting a link.
 
-`/portal/billing` (payers) lists invoices with their lines, starts Stripe Checkout
+`/portal/billing` shows read-only class credit balances for members with usable
+credits. Payers see each member of their household; an adult non-payer sees only
+their own balance. Each card shows the total classes left and the soonest expiry
+in the gym's timezone. Expired and used-up lots do not count. A payer's page
+leaves the card out when nobody visible has credits; an adult non-payer's page
+says they have none. The portal sells no class packs.
+
+For payers, the same page lists invoices with their lines, starts Stripe Checkout
 to pay an open or past-due invoice or to update the card, and prepares receipt
 downloads for paid invoices. The page never collects card details.
 
@@ -23,7 +30,8 @@ Each page reads the open household once, with `usePortalScope` (or `usePortalMem
 which also loads the members a login may act for), and builds every query key from its
 key, which includes the open household, so one household's cached pages can't be reached
 from another's. Pages that need the login's role share one context query
-(`usePortalContext`). Every portal answer names the household the server read it for;
+(`usePortalContext`); billing uses the open household's role from the shell's
+household list to show its payer sections. Every portal answer names the household the server read it for;
 `PortalScope.own` passes on only an answer for the page's own household. An answer for
 another one (the session moved on, say because another tab switched) is never stored or
 shown: the page shows loading while the household lists are read again, after which

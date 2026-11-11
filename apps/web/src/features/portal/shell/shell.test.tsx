@@ -56,11 +56,11 @@ const gate = (): Gate => {
  * With `hold`, every bootstrap load after the first waits for its own gate (in `bootstrapGates`, in order); with `holdHouseholds`,
  * so does every household list load after the first. `release()` settles every gate, now and later.
  */
-function portal(initial: string | null, { path = '/portal', hold = false, holdHouseholds = false, holdInvoices = false }:
-  { path?: string; hold?: boolean; holdHouseholds?: boolean; holdInvoices?: boolean } = {}) {
+function portal(initial: string | null, { path = '/portal', hold = false, holdHouseholds = false, holdCredits = false }:
+  { path?: string; hold?: boolean; holdHouseholds?: boolean; holdCredits?: boolean } = {}) {
   vi.stubGlobal('scrollTo', vi.fn());
   let current = initial, released = false;
-  const bootstrapGates: Gate[] = [], householdGates: Gate[] = [], invoiceGates: Gate[] = [];
+  const bootstrapGates: Gate[] = [], householdGates: Gate[] = [], creditGates: Gate[] = [];
   const households = [{ householdId: ids.first, name: 'Alder household', role: 'payer' }, { householdId: ids.second, name: 'Birch household', role: 'member' }];
   let householdLoads = 0;
   // With `lagLists`, the household lists keep naming that household whatever the server has open (a lagging read).
@@ -74,11 +74,12 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
       return answer;
     }
     // A portal page: it answers for the household the server has open when the request arrives, numbered 11 or 22 by household.
-    if (path.startsWith('/api/portal/invoices?')) {
-      const number = current === ids.first ? 11 : 22, answer = { data: [{ id: ids.invoice, number, kind: 'one_off', status: 'past_due', dueOn: '2026-10-20', amountCents: 2500, currency: 'USD', paidAt: null }], pagination: { limit: 20, offset: 0, total: 1 }, householdId: current };
-      if (holdInvoices && !released) { const held = gate(); invoiceGates.push(held); await held.wait; }
+    if (path === '/api/portal/credits') {
+      const balance = current === ids.first ? 11 : 22, answer = { data: [{ memberId: ids.member, firstName: 'Alex', lastName: 'Example', balance, soonestExpiry: null }], householdId: current };
+      if (holdCredits && !released) { const held = gate(); creditGates.push(held); await held.wait; }
       return Response.json(answer);
     }
+    if (path.startsWith('/api/portal/invoices?')) return Response.json({ data: [], pagination: { limit: 20, offset: 0, total: 0 }, householdId: current });
     if (path === '/api/portal/payment-methods') return Response.json({ data: [], householdId: current });
     if (path === '/api/portal/household') return Response.json({ data: { id: current, name: 'Household', email: null, phone: null, address: {}, billingDay: 1, revision: 1 }, householdId: current });
     if (path.startsWith('/api/portal/members?')) return Response.json({ data: [], pagination: { limit: 100, offset: 0, total: 0 }, householdId: current });
@@ -103,8 +104,8 @@ function portal(initial: string | null, { path = '/portal', hold = false, holdHo
   // What the server does on its own, such as falling back to another household when a link is revoked.
   const serverOpens = (householdId: string | null) => { current = householdId; };
   const lagLists = (householdId: string | null) => { lagging = householdId; };
-  const release = () => { released = true; for (const held of [...bootstrapGates, ...householdGates, ...invoiceGates]) held.settle(); };
-  return { fetcher, selections, router, release, serverOpens, lagLists, bootstrapGates, householdGates, invoiceGates, cache, server: () => current };
+  const release = () => { released = true; for (const held of [...bootstrapGates, ...householdGates, ...creditGates]) held.settle(); };
+  return { fetcher, selections, router, release, serverOpens, lagLists, bootstrapGates, householdGates, creditGates, cache, server: () => current };
 }
 const identity = () => screen.getByTestId('signed-in-identity').textContent;
 it.each(['dismiss', 'navigate', 'switch', 'lists'] as const)('explains a move discovered by a read and clears the notice on %s', async action => {
@@ -315,37 +316,37 @@ it('discards only the previous household\'s entries on a switch, and refetches n
 // answers. B: the bootstrap refetch answers. P: the page load for the new household answers. Only H comes first among H, B and P.
 it.each(['AHBP', 'AHPB', 'HABP', 'HAPB', 'HBAP', 'HBPA', 'HPAB', 'HPBA'])('shows nothing of the previous household once the server opened another on its own, whatever the answering order (%s)', async order => {
   // The billing page is a real portal page: its key comes from `usePortalScope`, and it answers for the household open when asked.
-  const f = portal(ids.first, { path: '/portal/billing', hold: true, holdHouseholds: true, holdInvoices: true });
-  await waitFor(() => expect(f.invoiceGates).toHaveLength(1)); f.invoiceGates[0]!.settle();
-  await waitFor(() => expect(bodyText()).toContain('Invoice #11'));
+  const f = portal(ids.first, { path: '/portal/billing', hold: true, holdHouseholds: true, holdCredits: true });
+  await waitFor(() => expect(f.creditGates).toHaveLength(1)); f.creditGates[0]!.settle();
+  await waitFor(() => expect(bodyText()).toContain('11 classes left'));
   await waitFor(() => expect(identity()).toBe('Test User · Account holder'));
   const page = watchPage();
   try {
     // A load for the previous household is in flight when the server opens the other one and the lists are read again.
-    void f.cache.refetchQueries({ queryKey: [...household(ids.first), 'billing', 'invoices'] }); await waitFor(() => expect(f.invoiceGates).toHaveLength(2));
+    void f.cache.refetchQueries({ queryKey: [...household(ids.first), 'billing', 'credits'] }); await waitFor(() => expect(f.creditGates).toHaveLength(2));
     f.serverOpens(ids.second);
     act(() => { focusManager.setFocused(false); focusManager.setFocused(true); });
     await waitFor(() => expect(f.householdGates.length).toBeGreaterThan(0));
     let noticed = -1;
     for (const event of order) {
-      if (event === 'A') f.invoiceGates[1]!.settle();
+      if (event === 'A') f.creditGates[1]!.settle();
       if (event === 'H') {
         // Every state from the moment the lists answer counts, including the renders before anything has been asked for.
         noticed = page.seen.length;
         for (const held of f.householdGates) held.settle();
         // The page asks again under the new household's key, and the name is asked for.
-        await waitFor(() => expect(f.invoiceGates).toHaveLength(3)); await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
+        await waitFor(() => expect(f.creditGates).toHaveLength(3)); await waitFor(() => expect(f.bootstrapGates).toHaveLength(1));
       }
       if (event === 'B') f.bootstrapGates[0]!.settle();
-      if (event === 'P') f.invoiceGates[2]!.settle();
+      if (event === 'P') f.creditGates[2]!.settle();
       await act(async () => { await Promise.resolve(); });
-      if (noticed >= 0) expect(bodyText()).not.toContain('Invoice #11');
+      if (noticed >= 0) expect(bodyText()).not.toContain('11 classes left');
     }
     await waitFor(() => expect(identity()).toBe('Noa Second · Member'));
-    await waitFor(() => expect(bodyText()).toContain('Invoice #22'));
+    await waitFor(() => expect(bodyText()).toContain('22 classes left'));
     // Nothing of the previous household was shown after the change: not by the page, and not as its name beside the new scope.
     const after = page.seen.slice(noticed);
-    expect(after.some(text => text.includes('Invoice #11'))).toBe(false);
+    expect(after.some(text => text.includes('11 classes left'))).toBe(false);
     expect(after.some(text => text.includes('Test User · Member'))).toBe(false);
     expect(f.cache.getQueryCache().findAll({ queryKey: household(ids.first) })).toEqual([]);
   } finally { page.stop(); }

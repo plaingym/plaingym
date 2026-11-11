@@ -19,6 +19,18 @@ const line = { id, kind: 'membership', description: 'Training', amountCents: 100
 const card = { id, brand: 'visa', last4: '4242', expiryMonth: 12, expiryYear: 2030, isDefault: true };
 
 describe('portal access and safe projections', () => {
+  it('exposes only a positive class balance and expiry per visible member, to payers and adult members', () => {
+    const contract = portalContracts.classCredits;
+    expect(contract.permission).toEqual({ kind: 'member', capability: 'profile.read' });
+    const row = { memberId: id, firstName: 'Alex', lastName: 'Example', balance: 3, soonestExpiry: '2026-11-12T05:00:00Z' };
+    const answer = { data: [row], householdId: id };
+    expect(contract.response.parse(answer)).toEqual(answer);
+    expect(contract.response.parse({ ...answer, data: [{ ...row, soonestExpiry: null }] }).data[0]!.soonestExpiry).toBeNull();
+    expect(contract.response.parse({ data: [], householdId: id }).data).toEqual([]);
+    for (const balance of [0, -1, 1.5]) expect(contract.response.safeParse({ ...answer, data: [{ ...row, balance }] }).success).toBe(false);
+    for (const field of ['entries', 'invoices', 'amountCents', 'saleId', 'reason'])
+      expect(contract.response.safeParse({ ...answer, data: [{ ...row, [field]: 'private' }] }).success, field).toBe(false);
+  });
   it('limits announcement preferences to the named member and forbids resource selectors', () => {
     const data = { purpose: 'unsubscribe', member: { firstName: 'Alex', lastName: 'Example' }, optedOut: false };
     expect(portalSignedLinkDataSchema.parse(data)).toEqual(data);

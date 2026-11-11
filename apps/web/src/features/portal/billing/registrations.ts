@@ -7,7 +7,7 @@ export const registration: WebRegistration = {
     {
       id: 'portalNav.billing',
       labelKey: 'portal/billing:title',
-      permission: { kind: 'member', capability: 'billing.manage' },
+      permission: { kind: 'member', capability: 'profile.read' },
       enabled: true,
       href: '/portal/billing',
       order: 40,
@@ -17,7 +17,7 @@ export const registration: WebRegistration = {
     {
       id: 'portalPages.billing',
       labelKey: 'portal/billing:title',
-      permission: { kind: 'member', capability: 'billing.manage' },
+      permission: { kind: 'member', capability: 'profile.read' },
       enabled: true,
       component: PortalBilling,
     },

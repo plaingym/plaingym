@@ -52,6 +52,7 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor, hous
       if (response.ok) current = (await response.clone().json()).data.current;
       return response;
     }
+    if (path === '/api/portal/credits') return Response.json({ data: [], householdId: answeredFor ?? current });
     // The role comes from the open household; the page's own reads are what a test may answer for another one.
     if (path === '/api/portal/context' && context) return Response.json({ data: context, householdId: current });
     const result = handle(path, init);
@@ -215,7 +216,7 @@ describe('portal billing page', () => {
   it('never shows an answer for another household than the open one, and reads the household lists again', async () => {
     const view = mount(<PortalBillingPage navigate={vi.fn()} />, handle, { answeredFor: id(99) });
     await waitFor(() => expect(view.calls('GET', '/api/portal/households').length).toBeGreaterThan(0));
-    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(3));
     expect(screen.queryByText('Invoice #7')).toBeNull();
     expect(screen.queryByText(/•••• 4242/)).toBeNull();
     expect(view.stored()).toEqual([]);

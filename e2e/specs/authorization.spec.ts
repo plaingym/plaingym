@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
 import { test, expect, Client, gymOrigin, gymTimezone, showWeek, missingId, demoClient, type Operation, type Role } from '../support.js';
+import { claimPortal, outboxIds, outboxLink } from '../portal.js';
+import { accessibleLayout } from '../responsive.js';
 
 interface Entry { method: string; path: string; permission: Operation['permission']; additionalPermissions?: Operation['permission'][] }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
@@ -23,6 +25,7 @@ const matrix: Record<string, Role[]> = {
   'go_live.manage': managers, 'integrations.manage': ['owner'], 'portal_access.manage': desk,
 };
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$)|settings\/integrations(?:\/|$))/.test(path)
+  || path === '/api/portal/credits'
   || path === '/api/announcements' || path.startsWith('/api/announcements/')
   || path === '/api/health/auto-update'
   || path.startsWith('/api/reports/')
@@ -343,6 +346,70 @@ for (const width of [360, 1280]) test('pack-only tax archive confirms its affect
   await panel.getByRole('button', { name: 'Remove and archive — items: 2', exact: true }).click();
   await expect(panel).toHaveCount(0);
   expect((await owner.json<{ data: { taxRateIds: string[] } }>('/api/billing/class-packs/' + pack.id)).data.taxRateIds).toEqual([]);
+});
+
+for (const width of [360, 1280]) test('portal class credits respect payer and adult scope at ' + width + 'px', async ({ sandboxes, page, context }, info) => {
+  test.setTimeout(180_000);
+  const sandbox = sandboxes[0]!, owner = await demoClient(sandbox, 'owner');
+  const suffix = crypto.randomUUID(), payerEmail = `credit-payer-${suffix}@example.test`, adultEmail = `credit-adult-${suffix}@example.test`;
+  const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Credit household ' + width, email: payerEmail })).data;
+  const create = async (firstName: string) => (await owner.json<{ data: { id: string } }>('/api/members', 'POST',
+    { householdId: home.id, firstName, lastName: 'Credit reader', dateOfBirth: '1990-01-01', status: 'active' })).data;
+  const adult = await create('Alex'), sibling = await create('Kim');
+  const pack = (await owner.json<{ data: { id: string } }>('/api/billing/class-packs', 'POST',
+    { name: 'Portal classes ' + width, currency: 'USD', amountCents: 0, credits: 10, expiryDays: 30 })).data;
+  await owner.json('/api/billing/packs/' + pack.id + '/sell', 'POST', { memberId: adult.id, dueOn: '2026-11-11' });
+  for (const [memberId, credits] of [[adult.id, 2], [sibling.id, 3]] as const)
+    await owner.json('/api/billing/credits/adjust', 'POST', { memberId, credits, reason: 'Class count', adjustmentId: crypto.randomUUID() });
+  // Payment effects run in the durable worker after the zero invoice settles.
+  await expect.poll(async () => (await owner.json<{ data: { balance: number } }>('/api/billing/members/' + adult.id + '/credits')).data.balance,
+    { timeout: 30_000 }).toBe(12);
+  const login = async (scope: 'payer' | 'member', email: string, memberId?: string) => {
+    const invitation = await owner.json<{ data: { invitationUrl: string } }>(`/api/households/${home.id}/portal-invitations`, 'POST',
+      { email, delivery: 'print', scope, ...(memberId ? { memberId } : {}) });
+    const before = await outboxIds(owner);
+    await new Client(sandbox.origin).json('/api/portal/invitations/accept', 'POST', { token: new URL(invitation.data.invitationUrl).hash.slice(1) });
+    return claimPortal(sandbox.origin, await outboxLink(owner, email, /^\/api\/auth\//, before));
+  };
+  const payer = await login('payer', payerEmail), member = await login('member', adultEmail, adult.id);
+  type Balance = { memberId: string; firstName: string; lastName: string; balance: number; soonestExpiry: string | null };
+  const payerRead = await payer.json<{ data: Balance[]; householdId: string }>('/api/portal/credits');
+  expect(payerRead.householdId).toBe(home.id);
+  expect(payerRead.data.map(row => [row.memberId, row.balance])).toEqual([[adult.id, 12], [sibling.id, 3]]);
+  expect(payerRead.data[0]!.soonestExpiry).not.toBeNull();
+  const own = await member.json<{ data: Balance[] }>('/api/portal/credits');
+  expect(own.data).toEqual([payerRead.data[0]]);
+  expect(Object.keys(own.data[0]!).sort()).toEqual(['balance', 'firstName', 'lastName', 'memberId', 'soonestExpiry']);
+  expect((await member.request('/api/portal/invoices')).status).toBe(404);
+  const foreign = new Client(sandboxes[1]!.origin); foreign.cookie = member.cookie;
+  expect([403, 404]).toContain((await foreign.request('/api/portal/credits')).status);
+  const student = await demoClient(sandbox, 'student');
+  const other = await student.json<{ data: Balance[] }>('/api/portal/credits');
+  expect(other.data.some(row => [adult.id, sibling.id].includes(row.memberId))).toBe(false);
+  await page.setViewportSize({ width, height: 900 });
+  await payer.browser(context);
+  await page.goto(sandbox.origin + '/portal/billing');
+  await expect(page.getByText('12 classes left', { exact: true })).toBeVisible();
+  await expect(page.getByText('3 classes left', { exact: true })).toBeVisible();
+  const bootstrap = await payer.json<{ data: { gym: { timezone: string } } }>('/api/auth/bootstrap');
+  const date = await page.evaluate(({ expiry, timezone }) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: timezone }).format(new Date(expiry)),
+    { expiry: own.data[0]!.soonestExpiry!, timezone: bootstrap.data.gym.timezone });
+  await expect(page.getByText('Expires on ' + date, { exact: true })).toBeVisible();
+  await accessibleLayout(page, info, 'payer-credits-' + width);
+  await page.screenshot({ path: info.outputPath('payer-credits-' + width + '.png'), fullPage: true });
+  await context.clearCookies(); await member.browser(context);
+  await page.goto(sandbox.origin + '/portal/billing');
+  await expect(page.getByText('12 classes left', { exact: true })).toBeVisible();
+  await expect(page.getByText('Kim Credit reader', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Invoices', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Saved cards', exact: true })).toHaveCount(0);
+  await accessibleLayout(page, info, 'adult-credits-' + width);
+  await page.screenshot({ path: info.outputPath('adult-credits-' + width + '.png'), fullPage: true });
+  await owner.json('/api/billing/credits/adjust', 'POST', { memberId: adult.id, credits: -12, reason: 'Classes used', adjustmentId: crypto.randomUUID() });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Billing', exact: true })).toBeVisible();
+  await expect.poll(async () => (await member.json<{ data: Balance[] }>('/api/portal/credits')).data.length).toBe(0);
+  await expect(page.getByRole('heading', { name: 'Class credits', exact: true })).toHaveCount(0);
 });
 
 test('a payer household login reaches every portal route', async ({ sandboxes }) => {

@@ -77,6 +77,11 @@ export const portalMembershipSchema = z.strictObject({
   trialEndsOn: dateSchema.nullable(), commitmentEndsOn: dateSchema.nullable(), revision: revisionSchema,
 });
 export const portalMembershipListResponseSchema = listResponseSchema(portalMembershipSchema);
+export const portalClassCreditSchema = z.strictObject({
+  memberId: idSchema, firstName: z.string().min(1), lastName: z.string().min(1),
+  balance: z.int().positive(), soonestExpiry: instantSchema.nullable(),
+});
+export const portalClassCreditsResponseSchema = z.strictObject({ data: z.array(portalClassCreditSchema) });
 export const portalAttendanceSchema = z.strictObject({
   id: idSchema, memberId: idSchema, sessionId: idSchema.nullable(), programId: idSchema.nullable(),
   occurredAt: instantSchema, source: attendanceSourceSchema, kind: classKindSchema,
@@ -198,6 +203,7 @@ export const portalContracts = {
   progress: { method: 'get', path: '/api/portal/members/{memberId}/progress', permission: { kind: 'member', capability: 'progress.read' }, params: portalMemberParamsSchema, response: portalAnswerSchema(portalMemberProgressResponseSchema) },
   checkinCode: { method: 'get', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, response: portalAnswerSchema(portalCheckinCodeStateResponseSchema) },
   regenerateCheckin: { method: 'post', path: '/api/portal/members/{memberId}/checkin-code', permission: { kind: 'member', capability: 'checkin.manage' }, params: portalMemberParamsSchema, body: portalRegenerateCheckinRequestSchema, response: portalAnswerSchema(portalCheckinCodeResponseSchema) },
+  classCredits: { method: 'get', path: '/api/portal/credits', permission: { kind: 'member', capability: 'profile.read' }, response: portalAnswerSchema(portalClassCreditsResponseSchema) },
   invoices: { method: 'get', path: '/api/portal/invoices', permission: { kind: 'member', capability: 'billing.manage' }, query: portalInvoiceListQuerySchema, response: portalAnswerSchema(portalInvoiceListResponseSchema) },
   invoice: { method: 'get', path: '/api/portal/invoices/{invoiceId}', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalAnswerSchema(portalInvoiceResponseSchema) },
   receipt: { method: 'get', path: '/api/portal/invoices/{invoiceId}/receipt', permission: { kind: 'member', capability: 'billing.manage' }, params: portalInvoiceParamsSchema, response: portalAnswerSchema(portalReceiptResponseSchema) },

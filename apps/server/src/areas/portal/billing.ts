@@ -3,7 +3,7 @@ import { forHousehold, uuidv7 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import { cardChargeIssue } from '@plaingym/shared/money';
 import {
-  portalInvoiceDetailSchema, portalInvoiceListQuerySchema, portalInvoiceSchema, portalPaymentMethodsResponseSchema,
+  portalClassCreditsResponseSchema, portalInvoiceDetailSchema, portalInvoiceListQuerySchema, portalInvoiceSchema, portalPaymentMethodsResponseSchema,
   type PortalInvoice, type PortalInvoiceDetail,
 } from '@plaingym/shared/contracts';
 import type { MemberHouseholdContext, PortalIdentity } from '../../core/interfaces/member-household.js';
@@ -47,7 +47,7 @@ export function createPortalBillingService(options: PortalBillingOptions) {
   const t = options.t ?? createTranslator({ 'portal/billing': messages });
   const gymName = options.gymName ?? (async (gymId: string) => (await createSettingsService({ clock }).get(gymId)).name);
   const read = householdReader(scope);
-  /** Only the payer reaches billing: the role check here, and the household grant again in every query. */
+  /** Invoices, cards and payment actions require the payer, with the household grant checked again in every query. */
   const payer = (identity: PortalIdentity) => households.requirePayer(identity, 'billing.manage');
   const invoice = (row: InvoiceRow): PortalInvoice => portalInvoiceSchema.parse({ id: row.id, number: row.number, kind: row.kind, status: row.status,
     dueOn: row.dueOn, amountCents: row.amountCents, currency: row.currency, paidAt: row.paidAt?.toISOString() ?? null });
@@ -80,6 +80,12 @@ export function createPortalBillingService(options: PortalBillingOptions) {
     return { ...started, linkId: created.link.id, token: created.token };
   }
   return {
+    async classCredits(identity: PortalIdentity) {
+      // Erased members keep their lots, but like every portal member read they're hidden.
+      const visible = new Set((await households.resolve(identity)).visibleMemberIds);
+      const rows = (await read(identity, queries => queries.classCredits(clock.now()))).filter(row => visible.has(row.memberId));
+      return portalClassCreditsResponseSchema.shape.data.parse(rows.map(row => ({ ...row, soonestExpiry: row.soonestExpiry?.toISOString() ?? null })));
+    },
     async list(identity: PortalIdentity, input: unknown) {
       const query = portalInvoiceListQuerySchema.parse(input);
       await payer(identity);

@@ -12,7 +12,7 @@ import { Page, PageHeader, PageSection } from '../../../components/ui/page.js';
 import { Badge, StackedItem, StackedList } from '../../../components/ui/table.js';
 import { EmptyState, ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { money } from '../../billing/catalog/format.js';
-import { unavailable, usePortalScope, type PortalScope } from '../household/api.js';
+import { portalHouseholdsOptions, unavailable, usePortalLogin, usePortalScope, type PortalScope } from '../household/api.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('portal/billing:' + key, values);
 const payable = new Set(['open', 'past_due']), receipted = new Set(['paid', 'partially_refunded', 'refunded']);
@@ -25,9 +25,12 @@ export function leave(url: string) { location.assign(url); }
 
 export function PortalBillingPage({ navigate = leave }: { navigate?: (url: string) => void }) {
   const bootstrap = useBootstrap(), scope = usePortalScope(), { ready, own } = scope, gym = bootstrap.data?.gym;
+  const households = useQuery(portalHouseholdsOptions(usePortalLogin(), false));
+  const payer = households.data?.households.find(row => row.householdId === scope.key[4])?.role === 'payer';
   const [offset, setOffset] = useState(0), [open, setOpen] = useState<string | null>(null), [receipt, setReceipt] = useState<string | null>(null);
-  const invoices = useQuery({ queryKey: [...scope.key, 'billing', 'invoices', offset], enabled: ready, queryFn: async () => own(await scope.call(contracts.invoices, undefined, {}, { limit: pageSize, offset })) });
-  const cards = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready, queryFn: async () => own(await scope.call(contracts.paymentMethods)).data });
+  const credits = useQuery({ queryKey: [...scope.key, 'billing', 'credits'], enabled: ready, queryFn: async () => own(await scope.call(contracts.classCredits)).data });
+  const invoices = useQuery({ queryKey: [...scope.key, 'billing', 'invoices', offset], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.invoices, undefined, {}, { limit: pageSize, offset })) });
+  const cards = useQuery({ queryKey: [...scope.key, 'billing', 'cards'], enabled: ready && payer, queryFn: async () => own(await scope.call(contracts.paymentMethods)).data });
   const checkout = useMutation({ mutationFn: async (invoiceId: string | null) => {
     // A Checkout started for another household than this page's is never followed.
     const started = own(invoiceId ? await scope.call(contracts.payInvoice, undefined, { invoiceId }) : await scope.call(contracts.updateCard));
@@ -41,7 +44,19 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
   const instant = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }).format(new Date(value));
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
   return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
-    <PageHeader title={text('title')} description={text('description')} />
+    <PageHeader title={text('title')} description={text(payer ? 'description' : 'creditsDescription')} />
+    {/* Payers see the card only when someone holds credits; for adult members it is the whole page. */}
+    {(!payer || credits.isError || !!credits.data?.length) && <PageSection title={text('credits')}>
+      {credits.isPending && <LoadingState />}
+      {credits.isError && <ErrorState onRetry={() => void credits.refetch()} />}
+      {credits.data?.length === 0 && <EmptyState title={text('noCredits')} />}
+      {!!credits.data?.length && <StackedList>{credits.data.map(row => <StackedItem key={row.memberId} className="gap-1">
+        <p className="min-w-0 break-words font-semibold">{row.firstName} {row.lastName}</p>
+        <p>{text(row.balance === 1 ? 'classLeft' : 'classesLeft', { count: row.balance })}</p>
+        {row.soonestExpiry && <p className="text-sm text-muted-foreground">{text('creditsExpiry', { date: instant(row.soonestExpiry) })}</p>}
+      </StackedItem>)}</StackedList>}
+    </PageSection>}
+    {payer && <>
     {failure && <Alert role="alert">{text(unavailable(failure) ? unavailableKey : 'failed')}</Alert>}
     {checkout.isPending && <Alert role="status">{text('redirecting')}</Alert>}
     {receipt && <Alert role="status">{text('receiptReady')} <a className="inline-flex min-h-11 items-center font-medium underline" href={receipt} target="_blank" rel="noreferrer">{text('openReceipt')}</a></Alert>}
@@ -85,6 +100,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
         {card.isDefault && <Badge tone="success">{text('default')}</Badge>}
       </StackedItem>)}</StackedList>}
     </PageSection>
+    </>}
   </Page></PortalRecovery>;
 }
 /** The routed page and portal registration. */

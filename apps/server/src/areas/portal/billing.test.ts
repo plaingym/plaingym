@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { invoices, paymentMethods, signedLinks, uuidv7 } from '@plaingym/db';
+import { householdUsers, invoices, members, paymentMethods, signedLinks, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the default app-role pools for the production registrations; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -26,6 +26,7 @@ import { createWebhookInbox } from '../billing/webhooks/inbox.js';
 import { createWebhookInboxRoutes } from '../billing/webhooks/inbox.routes.js';
 import { composeBillingWebhooks } from '../billing/webhooks/handlers/composition.js';
 import { createMemberHouseholdContext } from '../members/household-users.context.js';
+import { usableLots } from '../billing/packs/index.js';
 import { createPortalBillingService } from './billing.js';
 import { configurePortalBilling, createPortalBillingRoutes } from './billing.routes.js';
 import { adultPrincipal, answerFor, bothHouseholds, otherPayerPrincipal, outsidePrincipals, payerPrincipal, portalApp, portalFixture, send } from './household.fixture.js';
@@ -81,6 +82,48 @@ const routes = (invoiceId: string) => [['GET', '/api/portal/invoices'], ['GET', 
 const portalLinks = (f: Fixture) => db.forGym(f.gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.createdBy, f.payerUser.id)));
 
 describe('portal billing routes', () => {
+  it('reads payer and adult class balances through the production registrations, agreeing with usableLots', async () => {
+    const f = await fixture(), expiry = new Date('2099-11-12T05:00:00Z');
+    const lot = await factory('classCreditEntries', f.gymId, { memberId: f.adult.id, credits: 8, expiresAt: expiry });
+    await factory('classCreditEntries', f.gymId, { memberId: f.adult.id, lotId: lot.id, credits: -3 });
+    const spent = await factory('classCreditEntries', f.gymId, { memberId: f.adult.id, credits: 2 });
+    await factory('classCreditEntries', f.gymId, { memberId: f.adult.id, lotId: spent.id, credits: -2 });
+    await factory('classCreditEntries', f.gymId, { memberId: f.adult.id, credits: 99, expiresAt: f.clock.now() });
+    await factory('classCreditEntries', f.gymId, { memberId: f.child.id, credits: 3 });
+    await factory('classCreditEntries', f.gymId, { memberId: f.outsider.id, credits: 77 });
+    const path = '/api/portal/credits';
+    const response = await f.app(payerPrincipal(f), true).request(path);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    const payer = await json(response, contracts.classCredits.response);
+    expect(payer.householdId).toBe(f.household.id);
+    expect(payer.data.map(row => row.memberId)).toEqual([f.adult.id, f.child.id]);
+    const adult = await json(await f.app(adultPrincipal(f)).request(path), contracts.classCredits.response);
+    expect(adult.data).toEqual([{ memberId: f.adult.id, firstName: 'Alex', lastName: 'Rivera', balance: 5, soonestExpiry: expiry.toISOString() }]);
+    const lots = await db.forGym(f.gymId, tx => usableLots(tx, f.adult.id, f.clock.now()));
+    expect(adult.data[0]!.balance).toBe(lots.reduce((total, lot) => total + lot.remaining, 0));
+    expect(adult.data[0]!.soonestExpiry).toBe(lots[0]!.expiresAt!.toISOString());
+    expect((await json(await f.app(otherPayerPrincipal(f)).request(path), contracts.classCredits.response)).data.map(row => row.memberId)).toEqual([f.outsider.id]);
+  });
+  it('hides an erased member whose credit lots remain', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.adult.id, credits: 4 });
+    await factory('classCreditEntries', f.gymId, { memberId: f.child.id, credits: 3 });
+    await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, f.child.id)));
+    const payer = await json(await f.app(payerPrincipal(f)).request('/api/portal/credits'), contracts.classCredits.response);
+    expect(payer.data.map(row => row.memberId)).toEqual([f.adult.id]);
+  });
+  it('denies forged household and gym claims, revoked grants, and non-member principals on the credit read', async () => {
+    const f = await fixture(), other = await fixture(), path = '/api/portal/credits';
+    await factory('classCreditEntries', f.gymId, { memberId: f.child.id, credits: 2 });
+    expect((await json(await f.app(adultPrincipal(f)).request(path), contracts.classCredits.response)).data).toEqual([]);
+    const payer = payerPrincipal(f);
+    if (payer.kind !== 'member') throw new Error('Expected member');
+    for (const principal of [...outsidePrincipals(f), { ...payer, scope: { ...payer.scope, householdId: f.otherHousehold.id } },
+      { ...payer, scope: { ...payer.scope, gymId: other.gymId } }])
+      expect([403, 404]).toContain((await f.app(principal).request(path)).status);
+    await db.forGym(f.gymId, tx => tx.delete(householdUsers).where(eq(householdUsers.userId, f.payerUser.id)));
+    expect([403, 404]).toContain((await f.app(payer).request(path)).status);
+  });
   it('rejects stale card and invoice Checkout without creating links, calling Stripe or replacing the receipt cookie', async () => {
     const f = await fixture(), principals = await bothHouseholds(factory, f), server = f.app(principals.other);
     const checkout = vi.spyOn(f.fake, 'createCheckout');

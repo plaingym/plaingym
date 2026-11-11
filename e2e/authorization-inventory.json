@@ -48,6 +48,7 @@
   {"method": "GET", "path": "/api/portal/household", "permission": {"kind": "member", "capability": "household.read"}},
   {"method": "PATCH", "path": "/api/portal/household", "permission": {"kind": "member", "capability": "household.manage"}},
   {"method": "GET", "path": "/api/portal/members/{memberId}/memberships", "permission": {"kind": "member", "capability": "profile.read"}},
+  {"method": "GET", "path": "/api/portal/credits", "permission": {"kind": "member", "capability": "profile.read"}},
   {"method": "GET", "path": "/api/portal/invoices", "permission": {"kind": "member", "capability": "billing.manage"}},
   {"method": "GET", "path": "/api/portal/invoices/{invoiceId}", "permission": {"kind": "member", "capability": "billing.manage"}},
   {"method": "GET", "path": "/api/portal/invoices/{invoiceId}/receipt", "permission": {"kind": "member", "capability": "billing.manage"}},

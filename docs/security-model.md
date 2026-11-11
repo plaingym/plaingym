@@ -62,6 +62,9 @@ pages.
 * **Payer and member.** Within a household, the payer sees the household's
   members, invoices and payment methods; an adult member who isn't the payer sees
   only their own records.
+  `GET /api/portal/credits` requires `profile.read` and returns usable class
+  balances and soonest expiries for that same member scope, without ledger rows
+  or payment details. Signed links have no credit grant.
 * **Portal writes.** The page sends its expected household in `X-Portal-Household`.
   Member authorization rejects a missing or mismatched household with 409 before
   any handler runs, including Checkout and booking changes. The header never

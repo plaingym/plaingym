@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
-import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, min, ne, or, sql, type SQL } from 'drizzle-orm';
+import { alias, type AnyPgColumn, type PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import { writeAudit } from './audit.js';
 import {
   attendances, classBookings, classSessionPrograms, classSessionTags, householdUsers, households, invoiceLineItems, invoices,
-  announcementOptOuts, memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
+  announcementOptOuts, classCreditEntries, memberRanks, members, memberships, paymentMethods, signedLinks, waiverSignatures, waiverTemplates,
 } from './schema/index.js';
 
 /** User identity or a verified link ID comes from request context. now is supplied by the request clock. */
@@ -267,6 +267,25 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       return tx.select({ id: memberRanks.id, memberId: memberRanks.memberId, programId: memberRanks.programId, rankId: memberRanks.rankId,
         rankSystemId: memberRanks.rankSystemId, subRank: memberRanks.subRank, promotedAt: memberRanks.promotedAt, createdAt: memberRanks.createdAt })
         .from(memberRanks).where(and(eq(memberRanks.gymId, grant.gymId), inArray(memberRanks.memberId, memberIds), eq(memberRanks.memberId, memberId)));
+    },
+    /** Only logged-in users' visible members; no ledger, sale or invoice fields leave this read. */
+    classCredits: async (now: Date) => {
+      requireAccess(scope.kind === 'user' && grant.memberActivity);
+      const movements = alias(classCreditEntries, 'credit_movements');
+      const remaining = sql<number>`${classCreditEntries.credits} + coalesce(sum(${movements.credits}), 0)`.mapWith(Number);
+      // One statement sees each lot and all of its movements in the same snapshot, even during a draw or expiry.
+      const lots = tx.select({
+        memberId: members.id, firstName: members.firstName, lastName: members.lastName,
+        expiresAt: classCreditEntries.expiresAt, remaining: remaining.as('remaining'),
+      }).from(classCreditEntries).innerJoin(members, and(eq(members.id, classCreditEntries.memberId), eq(members.gymId, classCreditEntries.gymId)))
+        .leftJoin(movements, and(eq(movements.gymId, grant.gymId), eq(movements.memberId, members.id), eq(movements.lotId, classCreditEntries.id)))
+        .where(and(memberPredicate, eq(classCreditEntries.gymId, grant.gymId), isNull(classCreditEntries.lotId),
+          or(isNull(classCreditEntries.expiresAt), gt(classCreditEntries.expiresAt, now))))
+        .groupBy(members.id, members.firstName, members.lastName, classCreditEntries.id, classCreditEntries.credits, classCreditEntries.expiresAt)
+        .having(gt(remaining, 0)).as('usable_credit_lots');
+      return tx.select({ memberId: lots.memberId, firstName: lots.firstName, lastName: lots.lastName,
+        balance: sql<number>`sum(${lots.remaining})`.mapWith(Number), soonestExpiry: min(lots.expiresAt),
+      }).from(lots).groupBy(lots.memberId, lots.firstName, lots.lastName).orderBy(lots.lastName, lots.firstName, lots.memberId);
     },
     memberships: async () => {
       requireAccess(grant.memberActivity);
