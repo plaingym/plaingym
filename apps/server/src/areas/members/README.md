@@ -13,7 +13,8 @@ the status to `cancelled` instead. It keeps member, household, invoice and atten
 identifiers. It
 clears the member's contact details, birth date, emergency contacts, medical
 notes, photo and check-in hash, clears the notes on its promotion history (ranks
-and dates stay), deletes the member's signed waivers and their signature images,
+and dates stay), clears its lead's lost reason and deletes its lead contact rows
+(the lead row stays for aggregate history), deletes the member's signed waivers and their signature images,
 removes tag and member-login links, revokes
 member-specific signed links, cancels the member's memberships (in the same
 transaction, so an erased member is never billed again), and clears the household

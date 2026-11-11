@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# Lead intake
+# Leads
 
 `recordLeadIntake(tx, { gymId, memberId, source, now })` creates the member's
 one-to-one lead and a `lead.created` system audit containing only its source.
@@ -18,6 +18,48 @@ and revision. `lead_contacts` holds the staff contact history. Both tables have
 forced gym RLS and composite gym references and are included in gym exports.
 `leads.manage` is granted to owners, admins and front desk, excluding coaches.
 No job deletes or erases leads, and migration does not backfill existing members.
+
+## Staff list and edits
+
+All five routes below require `leads.manage` and return `Cache-Control: no-store`:
+
+* `GET /api/leads` lists identifiable members with a lead row, plus prospects and
+  trial members without a row. Row-less leads show stage `new`, null source and
+  revision 0. Items contain member and household IDs, name, email, phone, member
+  status, source, stage, follow-up date, last contact time and member creation time.
+* `GET /api/leads/{memberId}` reads the same fields plus the lost reason. A missing,
+  erased, foreign-gym or ordinary non-lead member returns 404.
+* `PATCH /api/leads/{memberId}` accepts `revision` and one or more of `source`
+  (nullable), `stage` and `nextFollowUpOn` (nullable gym-local date).
+* `POST /api/leads/{memberId}/lost` accepts `revision` and a trimmed reason of
+  1–500 characters. It keeps the lead and records its lost time.
+* `POST /api/leads/{memberId}/reopen` accepts `revision`, moves a lost lead to
+  `contacted`, and clears the reason and lost time.
+
+The list accepts repeatable `stage`, `includeLost=true|false`, a known `source`
+or `source=unknown`, `due=true|false`, literal case-insensitive name `search`,
+`limit` (default 50, maximum 100) and `offset` (default 0). With no explicit stage,
+lost leads are hidden unless `includeLost=true`; an explicit stage takes precedence.
+Due means an open stage with follow-up on or before today in the gym's timezone;
+won and lost leads never count as due. Results sort by last name, first name and
+member ID. `counts` contains all six stage totals for the same filters, before
+paging; `pagination.total` is their sum. The list performs two query-builder
+statements in one gym scope, regardless of page size or cohort size.
+
+Staff can set `new`, `contacted`, `trial_booked` and `trial_attended`; manually
+recording attendance preserves or sets the first trial-attended time. Only
+automatic membership activation sets `won`, and only the lost route sets `lost`.
+A won lead cannot change stage or be marked lost. A lost lead must be reopened
+before a manual stage change. Source and follow-up remain editable on either.
+Invalid stage transitions and stale revisions return 409. A row-less lead's first
+edit inserts revision 1; competing inserts also return 409. Edits lock against
+member erasure and use the existing revision guard on persisted rows.
+
+Mutations write `lead.updated`, `lead.lost` or `lead.reopened` in the same
+transaction, with stage, source, follow-up and revision only; lost reasons are
+never copied into audits. Member erasure removes contact rows and clears the
+lost reason while retaining the lead for aggregate history. Erased members do
+not appear in the staff list or read.
 
 ## Automatic stages
 

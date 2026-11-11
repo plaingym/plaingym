@@ -158,6 +158,12 @@ activation advances a lead's stage in its own transaction (a prospect or trial
 member without a lead gains one with no source); its `lead.stage_changed` audit
 holds only the stage and revision. `GET /api/leads/funnel` returns only counts
 per source, never member details, with `Cache-Control: no-store`.
+The staff list, read, edit, lost and reopen routes also require `leads.manage`
+and disable caching. They exclude erased members; first edits of row-less
+prospects and trial members use revision 0, and all edits compare revisions.
+Won stages come only from membership activation. Lost leads remain stored,
+hidden by the default list filter, and can be reopened to `contacted`.
+Lost reasons are never copied into audits.
 
 `reports.read` allows owners, admins and coaches to read `GET /api/reports/attendance`.
 `GET /api/reports/members` additionally requires `billing.read`, so only owners
@@ -402,7 +408,8 @@ Old versions and documents referenced by signatures remain retained after retire
   restore on a new server can decrypt the stored secrets.
 * **Erasure.** Staff with `members.anonymize` can erase a member's personal data
   on request: contact details, birth date, emergency contacts, medical notes,
-  photo, signed waivers and signature images, logins and links. Invoices and
+  photo, signed waivers and signature images, lead contacts and lost reasons,
+  logins and links. The lead row remains for aggregate counts. Invoices and
   attendance keep their IDs for the books. Erasing a household's last member also
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,

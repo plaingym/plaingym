@@ -1,8 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { leadFunnelQuerySchema, leadFunnelResponseSchema, leadsContracts, leadSourceSchema, leadStageSchema } from './leads.js';
+import { leadFunnelQuerySchema, leadFunnelResponseSchema, leadsContracts, leadSourceSchema, leadStageSchema,
+  leadListQuerySchema, updateLeadRequestSchema, loseLeadRequestSchema, reopenLeadRequestSchema } from './leads.js';
 
 describe('lead contracts', () => {
+  it('declares all five staff lead operations', () => {
+    for (const name of ['list', 'read', 'edit', 'lost', 'reopen'] as const)
+      expect(leadsContracts[name].permission).toEqual({ kind: 'staff', capability: 'leads.manage' });
+  });
+  it('parses query defaults, repeatable stages and explicit booleans', () => {
+    expect(leadListQuerySchema.parse({})).toEqual({ limit: 50, offset: 0, includeLost: false, due: false });
+    expect(leadListQuerySchema.parse({ stage: ['new', 'lost'], source: 'unknown', includeLost: 'true', due: 'false', limit: '2' }))
+      .toMatchObject({ stage: ['new', 'lost'], source: 'unknown', includeLost: true, due: false, limit: 2 });
+  });
+  it.each([{ due: 'yes' }, { includeLost: '0' }, { stage: [] }, { source: 'bad' }, { limit: '1e2' }, { offset: '-1' }, { extra: true }])('rejects invalid list filters: %j', input => {
+    expect(leadListQuerySchema.safeParse(input).success).toBe(false);
+  });
+  it('accepts revision zero only for leads and validates edits, reasons and dates', () => {
+    expect(updateLeadRequestSchema.safeParse({ revision: 0, source: null, nextFollowUpOn: null }).success).toBe(true);
+    expect(reopenLeadRequestSchema.safeParse({ revision: 0 }).success).toBe(true);
+    for (const input of [{ revision: -1, source: 'phone' }, { revision: 0 },
+      { revision: 1, nextFollowUpOn: '2026-02-30' }, { revision: 1, nextFollowUpOn: '0000-01-01' }])
+      expect(updateLeadRequestSchema.safeParse(input).success).toBe(false);
+    for (const reason of ['', '  ', 'x'.repeat(501)]) expect(loseLeadRequestSchema.safeParse({ revision: 1, reason }).success).toBe(false);
+    expect(loseLeadRequestSchema.parse({ revision: 0, reason: ' x ' }).reason).toBe('x');
+  });
   it('declares the funnel permission and the complete source and stage sets', () => {
     expect(leadsContracts.funnel).toMatchObject({ method: 'get', path: '/api/leads/funnel',
       permission: { kind: 'staff', capability: 'leads.manage' } });

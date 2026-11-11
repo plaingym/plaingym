@@ -29,7 +29,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
   || path.startsWith('/api/billing/packs/')
   || path === '/api/billing/credits/adjust' || /^\/api\/billing\/members\/[^/]+\/credits$/.test(path)
-  || path.startsWith('/api/leads/')
+  || path === '/api/leads' || path.startsWith('/api/leads/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
@@ -113,6 +113,39 @@ test('lead funnel allows owners, admins and front desk, and denies coaches', asy
     expect(response.body).toMatchObject({ data: { from: '2026-01-01', to: '2026-12-31', sources: expect.any(Array) } });
   }
   expect((await install.clients.coach.request(path)).status).toBe(403);
+});
+
+test('lead edits, loss, reopening and erasure work through the production routes', async ({ install }) => {
+  const owner = install.clients.owner;
+  for (const role of ['owner', 'admin', 'front_desk'] as const) {
+    const client = install.clients[role];
+    const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Lead payer ' + role })).data;
+    const member = (await owner.json<{ data: { id: string; revision: number } }>('/api/members', 'POST', {
+      householdId: home.id, firstName: 'Lead' + role, lastName: 'Lifecycle', status: 'prospect',
+    })).data;
+    const path = '/api/leads/' + member.id;
+    expect((await client.json<{ data: { revision: number } }>(path)).data.revision).toBe(0);
+    for (const [method, suffix, body] of [
+      ['GET', '', undefined], ['PATCH', '', { revision: 0, source: 'phone' }],
+      ['POST', '/lost', { revision: 0, reason: 'Private' }], ['POST', '/reopen', { revision: 0 }],
+    ] as const) expect((await install.clients.coach.request(path + suffix, method, body)).status).toBe(403);
+    const edited = await client.json<{ data: { revision: number; stage: string } }>(path, 'PATCH', {
+      revision: 0, source: 'phone', stage: 'trial_booked', nextFollowUpOn: '2026-11-10',
+    });
+    expect(edited.data).toMatchObject({ revision: 1, stage: 'trial_booked' });
+    expect((await client.request(path, 'PATCH', { revision: 0, stage: 'contacted' })).status).toBe(409);
+    expect((await client.request(path, 'PATCH', { revision: 1, stage: 'won' })).status).toBe(409);
+    expect((await client.request(path + '/lost', 'POST', { revision: 1, reason: 'Private reason' })).status).toBe(200);
+    const query = '?search=Lead' + role;
+    expect((await client.json<{ data: unknown[] }>('/api/leads' + query)).data).toEqual([]);
+    const listed = await client.json<{ data: { memberId: string }[]; counts: { lost: number } }>('/api/leads' + query + '&includeLost=true');
+    expect(listed.data.map(row => row.memberId)).toEqual([member.id]); expect(listed.counts.lost).toBe(1);
+    const reopened = await client.json<{ data: { stage: string; lostReason: string | null } }>(path + '/reopen', 'POST', { revision: 2 });
+    expect(reopened.data).toMatchObject({ stage: 'contacted', lostReason: null });
+    expect((await owner.request('/api/members/' + member.id + '/anonymize', 'POST', { revision: member.revision })).status).toBe(200);
+    expect((await client.request(path)).status).toBe(404);
+    expect((await client.json<{ data: unknown[] }>('/api/leads' + query + '&includeLost=true')).data).toEqual([]);
+  }
 });
 
 test('members reports require reports and billing access with monthly answers', async ({ install }) => {
