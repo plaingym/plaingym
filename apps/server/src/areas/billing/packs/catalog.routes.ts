@@ -2,7 +2,7 @@
 import * as c from '@plaingym/shared/contracts';
 import { billingMutation, billingRoute } from '../catalog.routes.js';
 import { createPackCatalogService, type PackCatalogService } from './catalog.js';
-import { createPackSalesRoutes } from './sales.routes.js';
+import { createPackSalesRoutes } from './sales.handlers.js';
 
 export function createPackCatalogRoutes(service?: PackCatalogService) {
   const fallback = service ?? createPackCatalogService(), read = () => fallback;

@@ -16,7 +16,7 @@ import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createInvoiceTransitions } from '../transitions/index.js';
 import { effectCreated } from '../transitions/store.js';
 import { createPackSalesService } from './sales.js';
-import { configurePackSales, createPackSalesRoutes } from './sales.routes.js';
+import { configurePackSales, createPackSalesRoutes } from './sales.handlers.js';
 
 const db = useTestDatabase(), factory = createFactories(db), clock = new TestClock('2026-11-10T12:00:00Z');
 async function fixture() {

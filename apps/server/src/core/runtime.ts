@@ -120,7 +120,7 @@ import { createMembershipService } from '../areas/billing/memberships.js';
 import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createPaymentService } from '../areas/billing/payments.js';
 import { configurePayments } from '../areas/billing/payments.routes.js';
-import { configurePackSales } from '../areas/billing/packs/sales.routes.js';
+import { configurePackSales } from '../areas/billing/packs/sales.handlers.js';
 import { createPackSalesService } from '../areas/billing/packs/sales.js';
 import { configurePaymentDelivery, createLapsedRefundJobs } from '../areas/billing/payments.jobs.js';
 import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob } from '../areas/billing/alerts/index.js';
