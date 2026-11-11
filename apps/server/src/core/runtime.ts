@@ -39,6 +39,7 @@ import { createStaffInvitationService, smtpMailer } from '../areas/staff/profile
 import { configureDashboard } from '../areas/dashboard/dashboard.routes.js';
 import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js';
 import { createSkippedCollectionsProvider } from '../areas/dashboard/billing.js';
+import { createFollowUpsDueProvider } from '../areas/dashboard/leads.js';
 import { configureImportStep } from '../areas/setup/import-step.js';
 import { createSetupRoutes } from '../areas/setup/setup.routes.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
@@ -384,7 +385,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock; its
   // skipped-collections entry needs the payment service, so it is configured here.
   configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
-    createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings, payments })]);
+    createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings, payments }),
+    createFollowUpsDueProvider({ settings })]);
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
   // Portal billing seals its Checkout return into the signed-link receipt cookie, so both share one key.
   const receiptKey = new Uint8Array(hkdfSync('sha256', key, new Uint8Array(0), 'plaingym signed-link receipts v1', 32));
