@@ -409,7 +409,7 @@ for (const width of [360, 1280]) test('portal class credits respect payer and ad
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Billing', exact: true })).toBeVisible();
   await expect.poll(async () => (await member.json<{ data: Balance[] }>('/api/portal/credits')).data.length).toBe(0);
-  await expect(page.getByRole('heading', { name: 'Class credits', exact: true })).toHaveCount(0);
+  await expect(page.getByText('No class credits', { exact: true })).toBeVisible();
 });
 
 test('a payer household login reaches every portal route', async ({ sandboxes }) => {
