@@ -11,6 +11,8 @@ export function defaultRange(timezone: string, now = new Date()): ReportRangeQue
   const month = Number(to.slice(0, 4)) * 12 + Number(to.slice(5)) - 1 - 11;
   return { from: `${Math.floor(month / 12).toString().padStart(4, '0')}-${(month % 12 + 1).toString().padStart(2, '0')}`, to };
 }
+/** A churn ratio as a percentage with two decimals; the same text on screen and in the CSV file. */
+const churnPercent = new Intl.NumberFormat('en-US', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const periodColumns = () => [text('start'), text('end'), text('periodStatus')];
 const period = (bucket: ReportBucket, today: string) => [bucket.startDate, bucket.endDate,
   text(bucket.startDate > today ? 'upcoming' : bucket.endDate > today ? 'inProgress' : bucket.partial ? 'partial' : 'complete')];
@@ -19,7 +21,7 @@ export function membersTable(data: MembersReportResponse['data'], now = new Date
   return { columns: [...periodColumns(), ...['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd', 'churn'].map(key => text(key))],
     rows: data.buckets.map(bucket => [...period(bucket, today), ...[bucket.activeAtStart, bucket.new, bucket.imported, bucket.cancelled,
       bucket.netChange, bucket.activeAtEnd, bucket.frozenAtEnd].map(String), bucket.churn
-      ? `${(bucket.churn.numerator / bucket.churn.denominator * 100).toFixed(2)}%` : text('notAvailable')]) };
+      ? churnPercent.format(bucket.churn.numerator / bucket.churn.denominator) : text('notAvailable')]) };
 }
 export const allPrograms = 'all';
 export const unassignedProgram = 'unassigned';
