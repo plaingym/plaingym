@@ -179,7 +179,12 @@ source of truth; Stripe is the processor. In outline:
   [class pack catalog](../apps/server/src/areas/billing/packs/README.md) manages
   revision-checked pack prices and tax links. Staff sell packs as one-off invoices;
   zero-total sales settle immediately, payment grants credits and a full refund
-  reverses unused credits.
+  reverses unused credits. Live check-ins spend one credit under the member lock
+  unless an active or trial membership covers the visit; imports never spend.
+  All staff may undo a live attendance through `attendance.manage`, deleting the
+  visit and returning any spent credit to its original lot in one audited
+  transaction. The kiosk refuses an exhausted pack holder with a neutral
+  front-desk message; staff may still record the visit without a credit.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

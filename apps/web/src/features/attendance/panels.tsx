@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useEffect, useId, useState, type FormEvent } from 'react';
-import type { AttendanceTotals, Member } from '@plaingym/shared/contracts';
+import type { Attendance, AttendanceTotals, Member } from '@plaingym/shared/contracts';
 import type { ExtensionViewProps } from '../../lib/registries.js';
 import { t } from '../../lib/i18n.js';
 import { Alert } from '../../components/ui/alert.js';
 import { Button } from '../../components/ui/button.js';
+import { Dialog, useDialogOperation } from '../../components/ui/dialog.js';
 import { Input } from '../../components/ui/input.js';
 import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
@@ -22,14 +23,16 @@ function Roster({ sessionId }: { sessionId: string }) {
   const [search, setSearch] = useState(''), [query, setQuery] = useState('');
   const [offset, setOffset] = useState(0), [reload, setReload] = useState(0);
   const [roster, setRoster] = useState<{ data: Member[]; total: number } | null>(null);
-  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [checked, setChecked] = useState<Map<string, Attendance>>(new Map());
+  const [undoing, setUndoing] = useState<{ attendance: Attendance; name: string } | null>(null);
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(false);
+  useDialogOperation(saving);
   useEffect(() => {
     let active = true;
     setLoading(true); setError(false); setRoster(null);
     void Promise.all([attendanceClient.members(query, offset), attendanceClient.checkedIn(sessionId)])
       .then(([members, attendance]) => {
-        if (active) { setRoster(members); setChecked(new Set(attendance.map((row) => row.memberId))); }
+        if (active) { setRoster(members); setChecked(new Map(attendance.map((row) => [row.memberId, row]))); }
       }).catch(() => { if (active) setError(true); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -38,9 +41,21 @@ function Roster({ sessionId }: { sessionId: string }) {
     if (saving || checked.has(memberId)) return;
     setSaving(true); setError(false);
     try {
-      await attendanceClient.record({ memberId, sessionId, programId: null });
-      setChecked((previous) => new Set([...previous, memberId]));
+      const attendance = await attendanceClient.record({ memberId, sessionId, programId: null });
+      setChecked((previous) => new Map(previous).set(memberId, attendance));
       notifyChanged();
+    } catch { setError(true); }
+    finally { setSaving(false); }
+  }
+  // A dismissed undo leaves no error behind on the roster.
+  function closeUndo() { setUndoing(null); setError(false); }
+  async function undo() {
+    if (saving || !undoing) return;
+    setSaving(true); setError(false);
+    try {
+      await attendanceClient.undo(undoing.attendance.id);
+      setChecked(previous => { const next = new Map(previous); next.delete(undoing.attendance.memberId); return next; });
+      setUndoing(null); notifyChanged();
     } catch { setError(true); }
     finally { setSaving(false); }
   }
@@ -58,15 +73,19 @@ function Roster({ sessionId }: { sessionId: string }) {
       <Button type="submit" disabled={busy}>{text('searchButton')}</Button>
       <Button type="button" variant="outline" disabled={busy} onClick={() => setReload((value) => value + 1)}>{text('refresh')}</Button>
     </form>
-    {error && <Alert>{text('error')}</Alert>}
+    {error && !undoing && <Alert>{text('error')}</Alert>}
     {loading && <LoadingState label={text('loading')}/>}
     {roster && roster.data.length > 0 && <ul className="divide-y divide-border rounded-xl border border-border">{roster.data.map((member) => {
-      const name = `${member.firstName} ${member.lastName}`, done = checked.has(member.id);
-      return <li key={member.id} className="flex items-center justify-between gap-3 px-4 py-2">
-        <span className="min-w-0 font-medium">{name}</span>
+      const name = `${member.firstName} ${member.lastName}`, attendance = checked.get(member.id), done = !!attendance;
+      return <li key={member.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
+        <span className="min-w-0 break-words font-medium">{name}</span>
+        <div className="flex flex-wrap items-center gap-2">
         <Button variant={done ? 'secondary' : 'default'} className={done ? 'shrink-0 bg-success/10 text-success disabled:opacity-100' : 'shrink-0'} disabled={busy || done} onClick={() => void checkIn(member.id)}
           aria-label={text(done ? 'checkedNamed' : 'checkInNamed', { name })}>
           {done && <span aria-hidden="true">✓</span>}{text(done ? 'checked' : 'checkIn')}</Button>
+        {attendance && attendance.source !== 'import' && <Button variant="outline" disabled={busy} onClick={() => { setError(false); setUndoing({ attendance, name }); }}
+          aria-label={text('undoNamed', { name })}>{text('undo')}</Button>}
+        </div>
       </li>;
     })}</ul>}
     {roster?.data.length === 0 && <EmptyState title={text('noMembers')} description={query ? text('noMembersHelp') : undefined}/>}
@@ -74,6 +93,14 @@ function Roster({ sessionId }: { sessionId: string }) {
       <Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button>
       <Button variant="outline" disabled={busy || offset + 50 >= roster.total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button>
     </div>}
+    {undoing && <Dialog title={text('undoTitle')} description={text('undoHelp', { name: undoing.name })}
+      closeLabel={text('closeUndo')} onClose={closeUndo} dismissible={!saving}>
+      {error && <Alert>{text('error')}</Alert>}
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button variant="outline" disabled={saving} onClick={closeUndo}>{text('cancelUndo')}</Button>
+        <Button disabled={saving} onClick={() => void undo()}>{text('confirmUndo')}</Button>
+      </div>
+    </Dialog>}
   </section>;
 }
 

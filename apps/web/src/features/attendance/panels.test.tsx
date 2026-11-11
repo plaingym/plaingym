@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import { AttendanceRosterPanel, MemberAttendancePanel } from './panels.js';
 import { registration } from './registrations.js';
 import { SessionCountsProvider } from '../../lib/session-summary.js';
-const client = vi.hoisted(() => ({ members: vi.fn(), checkedIn: vi.fn(), record: vi.fn(), totals: vi.fn(), labels: vi.fn() }));
+const client = vi.hoisted(() => ({ members: vi.fn(), checkedIn: vi.fn(), record: vi.fn(), undo: vi.fn(), totals: vi.fn(), labels: vi.fn() }));
 vi.mock('./client.js', () => ({ attendanceClient: client }));
 const memberId = '00000000-0000-7000-8000-000000000001';
 const sessionId = '00000000-0000-7000-8000-000000000002';
@@ -16,12 +16,46 @@ beforeEach(() => {
   for (const mock of Object.values(client)) mock.mockReset();
   client.members.mockResolvedValue({ data: [{ id: memberId, firstName: 'River', lastName: 'Lee' }], total: 1 });
   client.checkedIn.mockResolvedValue([]);
-  client.record.mockResolvedValue({ id: 'visit', memberId });
+  client.record.mockResolvedValue({ id: 'visit', memberId, source: 'coach' });
+  client.undo.mockResolvedValue({ id: 'visit', memberId, source: 'coach' });
   client.totals.mockResolvedValue({ memberId, total: 3, classes: 2, openMat: 1, byProgram: [{ programId, count: 3 }], byTag: [{ tagId, count: 2 }] });
   client.labels.mockResolvedValue({ programs: [{ id: programId, name: 'Fundamentals', active: true }], tags: [{ id: tagId, name: 'Practice' }] });
 });
 afterEach(cleanup);
 describe('registered attendance panels', () => {
+  it('confirms an undo, removes the checked state, and refreshes session counts', async () => {
+    client.checkedIn.mockResolvedValue([{ id: 'visit', memberId, source: 'kiosk' }]);
+    const notify = vi.fn(), user = userEvent.setup();
+    render(<SessionCountsProvider publish={vi.fn()} notify={notify}><AttendanceRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    await user.click(await screen.findByRole('button', { name: 'Undo check-in for River Lee' }));
+    expect(client.undo).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Keep check-in' }));
+    expect(client.undo).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Undo check-in for River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    expect(client.undo).toHaveBeenCalledWith('visit'); expect(notify).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('keeps a failed undo retryable and never offers undo for imported visits', async () => {
+    client.checkedIn.mockResolvedValue([{ id: 'visit', memberId, source: 'coach' }]);
+    client.undo.mockRejectedValueOnce(new Error('private database detail'));
+    const user = userEvent.setup(), view = render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await user.click(await screen.findByRole('button', { name: 'Undo check-in for River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+    await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
+    expect(screen.getByRole('button', { name: 'River Lee is checked in' })).toBeDefined();
+    expect(document.body.textContent).not.toContain('private database detail');
+    await user.click(screen.getByRole('button', { name: 'Keep check-in' }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Undo check-in for River Lee' }));
+    await user.click(screen.getByRole('button', { name: 'Undo check-in' }));
+    await screen.findByRole('button', { name: 'Check in River Lee' });
+    view.unmount(); client.checkedIn.mockResolvedValue([{ id: 'import', memberId, source: 'import' }]);
+    render(<AttendanceRosterPanel sessionId={sessionId}/>);
+    await screen.findByRole('button', { name: 'River Lee is checked in' });
+    expect(screen.queryByRole('button', { name: 'Undo check-in for River Lee' })).toBeNull();
+  });
   it('enables the staff member tab and session panel, and safely ignores missing extension IDs', () => {
     expect(registration.memberTabs?.[0]).toMatchObject({ enabled: true, component: MemberAttendancePanel,
       permission: { kind: 'staff', capability: 'attendance.manage' } });

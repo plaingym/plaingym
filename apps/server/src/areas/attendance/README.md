@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Attendance
 
-`createAttendanceService({ scope, householdScope, clock })` exposes append-only recording,
+`createAttendanceService({ scope, householdScope, clock })` exposes recording and staff undo,
 staff history and totals, and the frozen `AttendanceQueries` implementation. The default
 scopes are `forGym` and `forHousehold`. `createAttendanceQueries(options)` exports just
 the read interface for promotion criteria and other consumers.
@@ -12,6 +12,26 @@ sessions reject new check-ins; existing attendance remains readable. Imports may
 a trusted source key, which is unique within the gym. HTTP forms always record `coach`
 as the source. Kiosk callers pass a device audit actor and `kiosk` source directly to
 the service after device authorization.
+
+Every live check-in (kiosk/PIN, QR, or staff; class or open mat) locks the member
+before drawing one class credit, earliest expiry first. An `active` or `trial`
+membership covers the visit without spending credits; a frozen membership does
+not. Imports never spend. Session replays return before drawing, and a partial
+unique ledger index allows one use per attendance. Staff can record a visit with
+no usable credits; `attendance.recorded.after.creditSpent` states whether a live
+visit spent a credit. A kiosk pack holder with no usable credits and no active
+membership is refused atomically, with only `see_front_desk` reaching the shared
+screen. A member who has never held credits checks in as before.
+
+POST `/api/attendance/{id}/undo` requires `attendance.manage` (all staff roles).
+It locks the member then the attendance row, deletes a live `coach` or `kiosk`
+visit, and appends a `reverse` entry returning any spent credit to its original
+lot. The lot keeps its expiry. `attendance.undone` audits the full deleted row
+in the same transaction. A repeated or cross-gym undo is 404; an import is 409
+and cannot be undone. Attendance is therefore no longer append-only for live
+visits; the credit ledger remains append-only. Undo does not rewind lead stages.
+The session roster offers a confirmed Undo action on live checked-in rows and
+refreshes session counts after success; imported rows have no Undo action.
 
 After a new non-import visit and its audit are inserted, the same transaction
 advances an eligible lead to `trial_attended`, preserving its first attendance

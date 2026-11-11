@@ -12,6 +12,14 @@ const occurredAt = '2026-10-21T12:00:00Z';
 const attendance = { id, memberId: id, sessionId: null, programId: null, occurredAt, createdAt: occurredAt, source: 'import', kind: 'class' };
 
 describe('attendance contracts', () => {
+  it('defines a staff undo with a strict attendance ID and the deleted attendance response', () => {
+    const undo = attendanceContracts.undo;
+    expect(undo).toMatchObject({ method: 'post', path: '/api/attendance/{id}/undo', permission: { capability: 'attendance.manage' } });
+    expect(undo.params.parse({ id })).toEqual({ id });
+    expect(undo.params.safeParse({ id: 'invalid' }).success).toBe(false);
+    expect(undo.params.safeParse({ id, memberId: id }).success).toBe(false);
+    expect(undo.response.parse({ data: attendance })).toEqual({ data: attendance });
+  });
   it('accepts imported and open-mat history without a session or program', () => {
     for (const source of ['kiosk', 'coach', 'import']) expect(attendanceSchema.parse({ ...attendance, source }).sessionId).toBeNull();
     expect(recordAttendanceRequestSchema.parse({ memberId: id, sessionId: null, programId: null }))

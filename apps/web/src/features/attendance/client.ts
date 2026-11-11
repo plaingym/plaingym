@@ -50,4 +50,12 @@ export const attendanceClient = {
     if (!result.ok) throw new Error('Attendance request failed');
     return parseResponse(attendanceContracts.record.response, await result.json()).data;
   },
+  async undo(id: string) {
+    const contract = attendanceContracts.undo;
+    const params = contract.params.parse({ id });
+    const result = await fetch(contract.path.replace('{id}', params.id), { method: 'POST', credentials: 'same-origin', redirect: 'error',
+      headers: { Accept: 'application/json' } });
+    if (!result.ok) throw new Error('Attendance request failed');
+    return parseResponse(contract.response, await result.json()).data;
+  },
 };

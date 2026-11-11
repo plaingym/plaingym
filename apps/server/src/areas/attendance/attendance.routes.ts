@@ -11,11 +11,14 @@ function staff(context: RequestContext) {
   return { gymId: context.gym.gymId, actor: { kind: 'user' as const, userId: context.principal.userId } };
 }
 export function createAttendanceRoutes(service = createAttendanceService()) {
-  const { record, list, totals } = attendanceContracts;
+  const { record, undo, list, totals } = attendanceContracts;
   return [
     route({ ...record, request: { body: { required: true, content: { 'application/json': { schema: record.body } } } },
       responses: { 200: { description: 'Recorded attendance', content: { 'application/json': { schema: record.response } } } },
     }, async (c) => c.json({ data: await service.record(staff(c.get('context')), c.req.valid('json')) }, 200)),
+    route({ ...undo, request: { params: undo.params },
+      responses: { 200: { description: 'Undone attendance', content: { 'application/json': { schema: undo.response } } } },
+    }, async (c) => c.json({ data: await service.undo(staff(c.get('context')), c.req.valid('param').id) }, 200)),
     route({ ...list, request: { query: list.query },
       responses: { 200: { description: 'Attendance history', content: { 'application/json': { schema: list.response } } } },
     }, async (c) => c.json(await service.list(staff(c.get('context')).gymId, c.req.valid('query')), 200)),

@@ -39,9 +39,10 @@ export const attendanceTotalsSchema = z.strictObject({
   byTag: z.array(z.strictObject({ tagId: idSchema, count: z.int().nonnegative() })),
 });
 export const attendanceTotalsResponseSchema = z.strictObject({ data: attendanceTotalsSchema });
-/** Attendance is append-only; duplicate member/session or import-source keys return the original record. */
+/** Duplicate member/session or import-source keys return the original record. Staff may undo live visits. */
 export const attendanceContracts = {
   record: { method: 'post', path: '/api/attendance', permission: manageAttendance, body: recordAttendanceRequestSchema, response: attendanceResponseSchema },
+  undo: { method: 'post', path: '/api/attendance/{id}/undo', permission: manageAttendance, params: z.strictObject({ id: idSchema }), response: attendanceResponseSchema },
   list: { method: 'get', path: '/api/attendance', permission: manageAttendance, query: attendanceListQuerySchema, response: attendanceListResponseSchema },
   totals: { method: 'get', path: '/api/attendance/totals', permission: manageAttendance, query: attendanceTotalsQuerySchema, response: attendanceTotalsResponseSchema },
 } as const satisfies Record<string, EndpointContract>;

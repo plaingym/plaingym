@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { eq } from 'drizzle-orm';
-import { attendances, auditEvents, classSessions, householdUsers, uuidv7 } from '@plaingym/db';
+import { attendances, auditEvents, classCreditEntries, classSessions, householdUsers, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { AppError, errorResponse, staffRoles, type StaffRole } from '@plaingym/shared';
@@ -16,6 +16,8 @@ import { authorize } from '../staff/auth.permissions.js';
 import { createAttendanceService } from './attendance.js';
 import { createAttendanceRoutes } from './attendance.routes.js';
 import { createSettingsService } from '../settings/settings.js';
+import { usableLots } from '../billing/packs/ledger.js';
+import { createKioskCheckinHelpers } from '../kiosk/checkin.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
 const clock = new TestClock('2026-10-22T12:00:00Z');
@@ -60,6 +62,120 @@ async function snapshot(gymId: string) {
   return database.forGym(gymId, async (tx) => ({ rows: await tx.select().from(attendances), audits: await tx.select().from(auditEvents) }));
 }
 
+const ledger = (gymId: string) => database.forGym(gymId, tx => tx.select().from(classCreditEntries));
+const balance = (f: Fixture) => database.forGym(f.gymId, async tx =>
+  (await usableLots(tx, f.member.id, clock.now())).reduce((sum, lot) => sum + lot.remaining, 0));
+const undo = (server: ReturnType<typeof app>, id: string) => server.request(`/api/attendance/${id}/undo`, { method: 'POST' });
+
+describe('attendance credits and undo with PostgreSQL', () => {
+  it('serializes two kiosk visits with one credit: one spends and the refusal rolls back its attendance and audit', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const device = await factory('kioskDevices', f.gymId);
+    const helpers = createKioskCheckinHelpers({ scope: database.forGym, clock });
+    const identity = { id: f.member.id, firstName: 'River', lastInitial: 'L', photoUrl: null };
+    const results = await Promise.all([f.session.id, null].map(sessionId => helpers.record(f.gymId, device.id, identity, sessionId)));
+    expect(results.map(result => result.status).sort()).toEqual(['checked_in', 'see_front_desk']);
+    expect(results.find(result => result.status === 'see_front_desk')).toEqual({ status: 'see_front_desk' });
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toHaveLength(1);
+    expect((await snapshot(f.gymId)).rows).toHaveLength(1);
+    expect((await snapshot(f.gymId)).audits.filter(row => row.action === 'attendance.recorded')).toHaveLength(1);
+    expect(await balance(f)).toBe(0);
+  });
+  it('deduplicates concurrent session retries before drawing the last credit', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const results = await Promise.all(Array.from({ length: 5 }, () => service.record(f.context, f.input, { source: 'kiosk' })));
+    expect(new Set(results.map(row => row.id)).size).toBe(1);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toMatchObject([{ attendanceId: results[0]!.id, credits: -1 }]);
+    expect(await service.record(f.context, f.input, { source: 'kiosk' })).toEqual(results[0]);
+  });
+  it('records two concurrent staff visits with one credit while spending exactly once', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const rows = await Promise.all([f.session.id, null].map(sessionId => service.record(f.context, { ...f.input, sessionId })));
+    expect(new Set(rows.map(row => row.id)).size).toBe(2);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toHaveLength(1);
+    expect((await snapshot(f.gymId)).audits.filter(row => row.action === 'attendance.recorded').map(row =>
+      (row.after as { creditSpent: boolean }).creditSpent).sort()).toEqual([false, true]);
+  });
+  it.each(['active', 'trial', 'frozen'] as const)('%s membership determines whether a live check-in spends', async status => {
+    const f = await fixture(), plan = await factory('plans', f.gymId);
+    await factory('memberships', f.gymId, { memberId: f.member.id, householdId: f.member.householdId, planId: plan.id, status });
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    await service.record(f.context, f.input);
+    expect(await balance(f)).toBe(status === 'frozen' ? 0 : 1);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toHaveLength(status === 'frozen' ? 1 : 0);
+  });
+  it('draws the soonest-expiring lot for open mat and never draws for imports', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const first = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: new Date('2026-10-23T00:00:00Z') });
+    await service.record(f.context, f.input, { source: 'import', sourceKey: 'pack-import' });
+    expect(await balance(f)).toBe(2);
+    const row = await service.record(f.context, { ...f.input, sessionId: null }, { source: 'kiosk' });
+    expect(row.kind).toBe('open_mat');
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toMatchObject([{ attendanceId: row.id, lotId: first.id }]);
+  });
+  it('records staff check-ins without credits and explicitly audits no spend; kiosk pack holders are refused', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: clock.now() });
+    await expect(service.record(f.context, f.input, { source: 'kiosk' })).rejects.toMatchObject({ code: 'conflict' });
+    const row = await service.record(f.context, f.input);
+    expect((await snapshot(f.gymId)).audits.find(row => row.action === 'attendance.recorded')?.after).toMatchObject({ id: row.id, creditSpent: false });
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'use')).toHaveLength(0);
+    const visitor = await service.record(f.context, { ...f.input, memberId: f.sibling.id }, { source: 'kiosk' });
+    expect(visitor.memberId).toBe(f.sibling.id);
+  });
+  it('undo restores the same lot, audits the full deleted row, and permits a new visit with a different ID', async () => {
+    const f = await fixture();
+    const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const visit = await service.record(f.context, f.input, { source: 'kiosk' });
+    const raw = (await snapshot(f.gymId)).rows[0]!;
+    const response = await undo(app(f), visit.id);
+    expect(response.status).toBe(200); expect(await response.json()).toEqual({ data: visit });
+    expect(await balance(f)).toBe(1);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'reverse')).toMatchObject([{ credits: 1, lotId: lot.id, attendanceId: visit.id }]);
+    expect((await snapshot(f.gymId)).audits.find(row => row.action === 'attendance.undone')?.before).toEqual(JSON.parse(JSON.stringify(raw)));
+    expect((await undo(app(f), visit.id)).status).toBe(404);
+    const again = await service.record(f.context, f.input);
+    expect(again.id).not.toBe(visit.id); expect(await balance(f)).toBe(0);
+  });
+  it('concurrent undo returns once and reports 404 once without a second reversal', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const visit = await service.record(f.context, f.input);
+    const responses = await Promise.all([undo(app(f), visit.id), undo(app(f), visit.id)]);
+    expect(responses.map(row => row.status).sort()).toEqual([200, 404]);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'reverse')).toHaveLength(1);
+    expect((await snapshot(f.gymId)).audits.filter(row => row.action === 'attendance.undone')).toHaveLength(1);
+  });
+  it('cannot undo imports or another gym, allows each staff role, and rejects nonstaff', async () => {
+    const f = await fixture(), foreign = await fixture();
+    const visit = await service.record(foreign.context, foreign.input);
+    expect((await undo(app(f), visit.id)).status).toBe(404);
+    const imported = await service.record(f.context, f.input, { source: 'import', sourceKey: 'immutable' });
+    expect((await undo(app(f), imported.id)).status).toBe(409);
+    for (const role of staffRoles) {
+      const row = await service.record(f.context, { ...f.input, sessionId: null });
+      expect((await undo(app(f, { kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [role] }), row.id)).status).toBe(200);
+    }
+    for (const principal of [{ kind: 'anonymous' } as const, { kind: 'staff', gymId: f.gymId, userId: f.user.id, roles: [] } as const])
+      expect([401, 403]).toContain((await undo(app(f, principal), imported.id)).status);
+  });
+  it('rolls back spending and undo when the corresponding audit fails', async () => {
+    const f = await fixture();
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const invalid = { ...f.context, actor: { kind: 'user' as const, userId: uuidv7() } };
+    await expect(service.record(invalid, f.input)).rejects.toThrow();
+    expect(await balance(f)).toBe(1); expect((await snapshot(f.gymId)).rows).toHaveLength(0);
+    const row = await service.record(f.context, f.input);
+    await expect(service.undo(invalid, row.id)).rejects.toThrow();
+    expect(await balance(f)).toBe(0); expect((await snapshot(f.gymId)).rows).toHaveLength(1);
+    expect((await ledger(f.gymId)).filter(row => row.kind === 'reverse')).toHaveLength(0);
+  });
+});
+
 describe('attendance service with PostgreSQL', () => {
   it('serializes concurrent check-ins, returns the original, and audits exactly one mutation', async () => {
     const f = await fixture();
@@ -71,7 +187,7 @@ describe('attendance service with PostgreSQL', () => {
     expect(data.rows).toHaveLength(1); expect(attendanceAudits).toHaveLength(1);
     expect(data.audits.filter(row => row.action === 'lead.stage_changed')).toHaveLength(1);
     expect(attendanceAudits[0]).toMatchObject({ actorKind: 'user', actorUserId: f.user.id, action: 'attendance.recorded',
-      targetId: results[0]!.id, after: results[0], occurredAt: clock.now(), createdAt: clock.now() });
+      targetId: results[0]!.id, after: { ...results[0], creditSpent: false }, occurredAt: clock.now(), createdAt: clock.now() });
     expect(results[0]!.id).toMatch(/^[0-9a-f-]{14}7[0-9a-f]{3}-[89ab]/);
     expect(results[0]).not.toHaveProperty('sourceKey'); expect(results[0]).not.toHaveProperty('gymId');
   });
@@ -253,6 +369,7 @@ describe('attendance HTTP authorization and tenant isolation', () => {
       expect((await post(server, f.input)).status).toBe(status);
       expect((await server.request('/api/attendance')).status).toBe(status);
       expect((await server.request('/api/attendance/totals?memberId=' + f.member.id)).status).toBe(status);
+      expect((await undo(server, uuidv7())).status).toBe(status);
     }
     expect(await snapshot(f.gymId)).toEqual({ rows: [], audits: [] });
   });

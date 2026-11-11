@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, desc, eq, gte, inArray, lt, or } from 'drizzle-orm';
 import {
-  attendances, classSessions, classSessionPrograms, classSessionTags, classTags,
+  attendances, classCreditEntries, classSessions, classSessionPrograms, classSessionTags, classTags,
   forGym, forHousehold, HouseholdAccessError, members, programs, uuidv7, writeAudit, type HouseholdAttendanceFilter, type Transaction,
 } from '@plaingym/db';
-import { AppError, type Clock } from '@plaingym/shared';
+import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import {
   attendanceListQuerySchema, attendanceSchema, attendanceSourceSchema, attendanceTotalsQuerySchema, classKindSchema,
   idSchema, instantSchema, paginationSchema, recordAttendanceRequestSchema,
@@ -16,6 +16,10 @@ import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../..
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { advanceLeadOnCheckIn } from '../leads/stages.js';
+import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits } from '../billing/packs/ledger.js';
+import messages from '../../../../../locales/en/attendance/attendance.json' with { type: 'json' };
+
+const t = createTranslator({ 'attendance/attendance': messages });
 
 type Row = typeof attendances.$inferSelect;
 type Filter = { readonly [K in keyof AttendanceFilter]?: AttendanceFilter[K] | undefined }
@@ -196,13 +200,47 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
             throw new AppError('conflict', 'Attendance source key already used');
           return present(existing);
         }
+        let creditSpent = false;
+        // A member who has never held credits has nothing to draw: one indexed probe skips the rest.
+        if (origin.source !== 'import' && await isPackHolder(tx, value.memberId) && !await hasActiveMembership(tx, value.memberId)) {
+          const draw = await drawCredits(tx, { gymId, memberId: value.memberId, credits: 1, now,
+            kind: 'use', attendanceId: inserted.id });
+          creditSpent = draw.outcome === 'drawn';
+          if (!creditSpent && origin.source === 'kiosk')
+            throw new AppError('conflict', t('attendance/attendance:creditAssistance'));
+        }
         const data = present(inserted);
         await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, actorKind: context.actor.kind,
           ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
           ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
-          action: 'attendance.recorded', targetType: 'attendance', targetId: inserted.id, after: data });
+          action: 'attendance.recorded', targetType: 'attendance', targetId: inserted.id,
+          after: origin.source === 'import' ? data : { ...data, creditSpent } });
         if (origin.source !== 'import') await advanceLeadOnCheckIn(tx, { gymId, memberId: value.memberId, actor: context.actor, now });
         return data;
+      });
+    },
+    async undo(context: AttendanceMutation, id: string) {
+      idSchema.parse(id);
+      return scope(context.gymId, async (tx) => {
+        const gymId = context.gymId, now = clock.now();
+        const where = and(eq(attendances.gymId, gymId), eq(attendances.id, id));
+        const [candidate] = await tx.select({ memberId: attendances.memberId }).from(attendances).where(where);
+        if (!candidate) missing();
+        // Match the record/ledger lock order. Re-read after the member lock for concurrent undos.
+        await lockMemberCredits(tx, candidate.memberId);
+        const [row] = await tx.select().from(attendances).where(where).for('update');
+        if (!row) missing();
+        if (row.source === 'import') throw new AppError('conflict', t('attendance/attendance:importUndoBlocked'));
+        await tx.delete(attendances).where(where);
+        const [use] = await tx.select().from(classCreditEntries).where(and(
+          eq(classCreditEntries.gymId, gymId), eq(classCreditEntries.attendanceId, id), eq(classCreditEntries.kind, 'use')));
+        if (use) await tx.insert(classCreditEntries).values({ id: uuidv7(now.getTime()), gymId,
+          memberId: row.memberId, kind: 'reverse', credits: 1, lotId: use.lotId, attendanceId: id, createdAt: now });
+        await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, actorKind: context.actor.kind,
+          ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
+          ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
+          action: 'attendance.undone', targetType: 'attendance', targetId: id, before: row });
+        return present(row);
       });
     },
     list(gymId: string, input: AttendanceListQuery) {

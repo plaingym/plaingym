@@ -6,6 +6,17 @@ const entry = (n: number) => ({ id: id(n), memberId: id(1), sessionId: id(2), pr
   source: 'coach', kind: 'class', occurredAt: '2026-10-22T12:00:00Z', createdAt: '2026-10-22T12:00:00Z' });
 afterEach(() => vi.unstubAllGlobals());
 describe('attendance HTTP client', () => {
+  it('validates the undo ID, posts with the session, and validates the deleted attendance', async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json({ data: entry(10) }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await attendanceClient.undo(id(10))).toEqual(entry(10));
+    expect(fetcher).toHaveBeenCalledWith(`/api/attendance/${id(10)}/undo`, expect.objectContaining({ method: 'POST', credentials: 'same-origin', redirect: 'error' }));
+    await expect(attendanceClient.undo('invalid')).rejects.toThrow(); expect(fetcher).toHaveBeenCalledTimes(1);
+    fetcher.mockResolvedValueOnce(Response.json({ error: 'private detail' }, { status: 404 }));
+    await expect(attendanceClient.undo(id(10))).rejects.toThrow('Attendance request failed');
+    fetcher.mockResolvedValueOnce(Response.json({ data: { id: id(10) } }));
+    await expect(attendanceClient.undo(id(10))).rejects.toThrow();
+  });
   it('loads every roster attendance page with the session filter and validates responses', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(Response.json({ data: Array.from({ length: 100 }, (_, i) => entry(i + 10)),
       pagination: { limit: 100, offset: 0, total: 101 } }))

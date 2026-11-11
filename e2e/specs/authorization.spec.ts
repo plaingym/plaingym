@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { readFile } from 'node:fs/promises';
-import { test, expect, Client, gymOrigin, missingId, demoClient, type Operation, type Role } from '../support.js';
+import { test, expect, Client, gymOrigin, gymTimezone, showWeek, missingId, demoClient, type Operation, type Role } from '../support.js';
 
 interface Entry { method: string; path: string; permission: Operation['permission']; additionalPermissions?: Operation['permission'][] }
 const inventory: Entry[] = JSON.parse(await readFile(new URL('../authorization-inventory.json', import.meta.url), 'utf8'));
@@ -209,6 +209,59 @@ test('a household login cannot reach staff routes', async ({ sandboxes }) => {
 
 // The demo has no Stripe account, so starting card setup is unavailable there; nothing else may answer 503.
 const stripeCheckout = new Set(['POST /api/portal/payment-methods/checkout']);
+
+for (const width of [360, 1280]) test('coach undoes a credit check-in from the session roster at ' + width + 'px', async ({ install, sandboxes, page, context }, info) => {
+  const owner = install.clients.owner, coach = install.clients.coach, name = 'Undo visit ' + width;
+  const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name })).data;
+  const member = (await owner.json<{ data: { id: string } }>('/api/members', 'POST',
+    { firstName: 'Undo' + width, lastName: 'Credit', householdId: home.id })).data;
+  await owner.json('/api/billing/credits/adjust', 'POST', { memberId: member.id, credits: 1,
+    reason: 'Roster undo check', adjustmentId: crypto.randomUUID() });
+  const began = Date.now() - 5 * 60_000;
+  const session = (await owner.json<{ data: { id: string } }>('/api/schedule/sessions', 'POST', {
+    name, startsAt: new Date(began).toISOString(), endsAt: new Date(began + 60 * 60_000).toISOString(),
+    coachId: null, capacity: null, notes: null, kind: 'class', programIds: [install.program.id], tagIds: [],
+  })).data;
+  const visit = (await coach.json<{ data: { id: string } }>('/api/attendance', 'POST',
+    { memberId: member.id, sessionId: session.id, programId: null })).data;
+  const read = '/api/billing/members/' + member.id + '/credits', undo = '/api/attendance/' + visit.id + '/undo';
+  expect((await owner.json<{ data: { balance: number } }>(read)).data.balance).toBe(0);
+  expect((await new Client(gymOrigin).request(undo, 'POST')).status).toBe(401);
+  expect((await install.device.request(undo, 'POST')).status).toBe(404);
+  const foreign = await demoClient(sandboxes[0], 'owner');
+  expect((await foreign.request(undo, 'POST')).status).toBe(404);
+  await coach.browser(context); await page.setViewportSize({ width, height: 900 });
+  await page.goto(gymOrigin + '/admin/schedule');
+  await showWeek(page, await gymTimezone(owner), began);
+  await page.getByRole('button', { name: new RegExp(name) }).click();
+  const roster = page.getByRole('region', { name: 'Coach check-in roster', exact: true });
+  await roster.getByLabel('Member name').fill('Undo' + width);
+  await roster.getByRole('button', { name: 'Search members', exact: true }).click();
+  const action = roster.getByRole('button', { name: 'Undo check-in for Undo' + width + ' Credit', exact: true });
+  await expect(action).toBeVisible();
+  await action.scrollIntoViewIfNeeded();
+  const target = await action.boundingBox(); expect(target!.height).toBeGreaterThanOrEqual(44); expect(target!.width).toBeGreaterThanOrEqual(44);
+  expect(target!.y).toBeGreaterThanOrEqual(0); expect(target!.y + target!.height).toBeLessThanOrEqual(900);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath('undo-roster-' + width + '.png'), fullPage: true });
+  await action.click();
+  const confirm = page.getByRole('dialog', { name: 'Undo check-in', exact: true });
+  await expect(confirm).toContainText('Any class credit spent on it returns to its original pack.');
+  const submit = confirm.getByRole('button', { name: 'Undo check-in', exact: true });
+  const button = await submit.boundingBox(); expect(button!.height).toBeGreaterThanOrEqual(44); expect(button!.width).toBeGreaterThanOrEqual(44);
+  expect(button!.x).toBeGreaterThanOrEqual(0); expect(button!.x + button!.width).toBeLessThanOrEqual(width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath('undo-confirm-' + width + '.png'), fullPage: true });
+  await submit.click();
+  await expect(roster.getByRole('button', { name: 'Check in Undo' + width + ' Credit', exact: true })).toBeEnabled();
+  expect((await owner.json<{ data: { balance: number } }>(read)).data.balance).toBe(1);
+  expect((await coach.request(undo, 'POST')).status).toBe(404);
+  await page.reload(); await showWeek(page, await gymTimezone(owner), began);
+  await page.getByRole('button', { name: new RegExp(name) }).click();
+  await roster.getByLabel('Member name').fill('Undo' + width);
+  await roster.getByRole('button', { name: 'Search members', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Check in Undo' + width + ' Credit', exact: true })).toBeEnabled();
+});
 test('front desk reads and adjusts credits with replay protection; coaches and foreign gyms are refused', async ({ install, sandboxes }) => {
   const owner = install.clients.owner, desk = install.clients.front_desk;
   const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Credit adjustment payer' })).data;
