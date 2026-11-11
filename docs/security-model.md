@@ -167,6 +167,12 @@ prospects and trial members use revision 0, and all edits compare revisions.
 Won stages come only from membership activation. Lost leads remain stored,
 hidden by the default list filter, and can be reopened to `contacted`.
 Lost reasons are never copied into audits.
+The contact log routes (`GET` and `POST /api/leads/{memberId}/contacts`) require
+`leads.manage` and disable caching too. A logged contact records the signed-in
+staff user; its `lead.contacted` audit holds the channel, stage, follow-up and
+revision, never the note. An erased member's contacts are deleted and their
+routes return 404. The dashboard's "Follow-ups due" tile also needs
+`leads.manage`, so a coach's dashboard runs none of its reads.
 
 `reports.read` allows owners, admins and coaches to read `GET /api/reports/attendance`.
 `GET /api/reports/members` additionally requires `billing.read`, so only owners

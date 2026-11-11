@@ -21,6 +21,11 @@ const lead = (n, stage, extra = {}) => ({ memberId: id(n), householdId: id(100 +
   createdAt: '2026-11-01T12:00:00.000Z', revision: n, ...extra });
 const leads = [lead(1, 'new'), lead(2, 'new', { source: 'walk_in' }), lead(3, 'contacted', { nextFollowUpOn: '2026-11-15' }),
   lead(4, 'trial_booked'), lead(5, 'trial_attended'), lead(6, 'lost', { source: null })];
+const contacts = [
+  { id: id(201), occurredAt: '2026-11-03T15:00:00.000Z', channel: 'in_person', note: 'Came by after class. ' + 'Wantstotryeveryprogram'.repeat(6),
+    createdBy: id(998), createdByName: 'Staff ' + long },
+  { id: id(202), occurredAt: '2026-11-02T15:00:00.000Z', channel: 'call', note: null, createdBy: id(997), createdByName: null },
+];
 let server, browser;
 try {
   await mkdir(output, { recursive: true });
@@ -43,6 +48,13 @@ try {
         const rows = leads.filter(row => row.stage === query.get('stage'));
         return route.fulfill({ json: { data: rows, pagination: { limit: 25, offset: 0, total: rows.length },
           counts: { new: 0, contacted: 0, trial_booked: 0, trial_attended: 0, won: 0, lost: 0 } } });
+      }
+      const contactsPath = /^\/api\/leads\/([^/]+)\/contacts$/.exec(path), leadPath = /^\/api\/leads\/([^/]+)$/.exec(path);
+      if (contactsPath) return route.fulfill({ json: { data: contacts, pagination: { limit: 20, offset: 0, total: contacts.length + 5 } } });
+      if (leadPath) {
+        const row = leads.find(item => item.memberId === leadPath[1]);
+        return row ? route.fulfill({ json: { data: { ...row, email: 'lead@example.test', phone: '+1 555 0100',
+          lastContactedAt: '2026-11-03T15:00:00.000Z', lostReason: row.stage === 'lost' ? 'Moved away' : null } } }) : route.fulfill({ status: 404 });
       }
       if (path === '/api/schedule/sessions') return route.fulfill({ json: { data: [], pagination: { limit: 100, offset: 0, total: 0 } } });
       return route.fulfill({ status: 404 });
@@ -70,6 +82,20 @@ try {
     await page.getByRole('button', { name: /^Book a trial class for Lead No2$/ }).click();
     await page.getByRole('dialog').getByText('No upcoming bookable classes on this date.').waitFor();
     await check('book-dialog');
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
+    await page.getByRole('button', { name: /^Log a contact with Lead No2$/ }).click();
+    await page.getByRole('dialog').getByLabel('How you reached them').waitFor();
+    await check('contact-dialog');
+    await page.goto(url + '?view=lead&memberId=' + id(1));
+    await page.getByRole('heading', { name: 'Contact log' }).waitFor();
+    await page.getByText(contacts[0].note).waitFor();
+    await check('lead');
+    await page.goto(url + '?view=lead&memberId=' + id(6));
+    await page.getByText('Moved away').waitFor();
+    await check('lead-lost');
+    await page.goto(url + '?view=tile&items=20');
+    await page.getByRole('heading', { name: 'Follow-ups due' }).waitFor();
+    await check('tile');
     await context.close();
   }
   console.log('Leads screens pass at 360 px and 1280 px.');

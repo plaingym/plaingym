@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { leadFunnelQuerySchema, leadFunnelResponseSchema, leadsContracts, leadSourceSchema, leadStageSchema,
-  leadListQuerySchema, updateLeadRequestSchema, loseLeadRequestSchema, reopenLeadRequestSchema } from './leads.js';
+  leadListQuerySchema, updateLeadRequestSchema, loseLeadRequestSchema, reopenLeadRequestSchema,
+  createLeadContactRequestSchema, leadContactChannelSchema, leadContactListQuerySchema } from './leads.js';
 
 describe('lead contracts', () => {
-  it('declares all five staff lead operations', () => {
-    for (const name of ['list', 'read', 'edit', 'lost', 'reopen'] as const)
+  it('declares every staff lead operation with leads.manage', () => {
+    for (const name of ['list', 'read', 'edit', 'lost', 'reopen', 'contacts', 'logContact'] as const)
       expect(leadsContracts[name].permission).toEqual({ kind: 'staff', capability: 'leads.manage' });
   });
   it('parses query defaults, repeatable stages and explicit booleans', () => {
@@ -49,5 +50,23 @@ describe('lead contracts', () => {
     expect(leadFunnelResponseSchema.safeParse({ data }).success).toBe(true);
     data.sources[0]!.won = -1;
     expect(leadFunnelResponseSchema.safeParse({ data }).success).toBe(false);
+  });
+  it('declares the contact routes and the database channel set', () => {
+    expect(leadsContracts.contacts).toMatchObject({ method: 'get', path: '/api/leads/{memberId}/contacts' });
+    expect(leadsContracts.logContact).toMatchObject({ method: 'post', path: '/api/leads/{memberId}/contacts' });
+    expect(leadContactChannelSchema.options).toEqual(['call', 'text', 'email', 'in_person', 'other']);
+    expect(leadContactListQuerySchema.parse({})).toEqual({ limit: 50, offset: 0 });
+    expect(leadContactListQuerySchema.safeParse({ limit: '101' }).success).toBe(false);
+  });
+  it('validates a logged contact: channel, a trimmed note of up to 2,000 code points and an optional follow-up', () => {
+    expect(createLeadContactRequestSchema.parse({ revision: 0, channel: 'call', note: '  Left a message  ', nextFollowUpOn: '2026-03-10' }))
+      .toEqual({ revision: 0, channel: 'call', note: 'Left a message', nextFollowUpOn: '2026-03-10' });
+    expect(createLeadContactRequestSchema.safeParse({ revision: 1, channel: 'in_person', note: null, nextFollowUpOn: null }).success).toBe(true);
+    // The database counts code points, so 2,000 emoji fit although they are 4,000 UTF-16 units.
+    expect(createLeadContactRequestSchema.safeParse({ revision: 1, channel: 'text', note: '😀'.repeat(2000) }).success).toBe(true);
+    for (const input of [{ revision: 1, channel: 'fax' }, { revision: -1, channel: 'call' }, { channel: 'call' },
+      { revision: 1, channel: 'call', note: 'x'.repeat(2001) }, { revision: 1, channel: 'call', nextFollowUpOn: '2026-02-30' },
+      { revision: 1, channel: 'call', nextFollowUpOn: '0000-01-01' }, { revision: 1, channel: 'call', extra: true }])
+      expect(createLeadContactRequestSchema.safeParse(input).success).toBe(false);
   });
 });

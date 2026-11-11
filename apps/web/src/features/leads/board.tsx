@@ -10,6 +10,7 @@ import { userNames } from '../../components/ui/page.js';
 import { LoadingState } from '../../components/ui/states.js';
 import type { Lead, LeadClient } from './api.js';
 import { BookDialog, LostDialog, changedOutcome, leadName, type Outcome } from './dialogs.js';
+import { ContactDialog } from './contacts.js';
 import { text } from './text.js';
 
 /** The stages staff can set by hand; won and lost have their own paths. */
@@ -55,8 +56,25 @@ export function StageColumn({ stage, filters, version, client, timezone, onDone 
   </section>;
 }
 
-function LeadCard({ lead, client, timezone, onDone }: { lead: Lead; client: LeadClient; timezone: string; onDone(outcome: Outcome): void }) {
-  const [busy, setBusy] = useState(false), [dialog, setDialog] = useState<'book' | 'lost' | null>(null);
+interface ActionProps { lead: Lead; client: LeadClient; timezone: string; onDone(outcome: Outcome): void }
+function LeadCard(props: ActionProps) {
+  const { lead } = props, name = leadName(lead);
+  return <article className="min-w-0 space-y-3 rounded-lg border border-border bg-background p-3">
+    <div className="min-w-0">
+      <h3 className={'font-medium ' + userNames}>
+        <a className="inline-flex min-h-11 items-center underline underline-offset-4" href={leadHref(lead.memberId)}>{name}</a>
+      </h3>
+      <p className="text-sm text-muted-foreground">{text('source.' + (lead.source ?? 'unknown'))} · {text('status.' + lead.status)}</p>
+      <p className="text-sm text-muted-foreground">{lead.nextFollowUpOn ? text('followUpOn', { date: lead.nextFollowUpOn }) : text('noFollowUp')}</p>
+    </div>
+    <LeadActions {...props} />
+  </article>;
+}
+export const leadHref = (memberId: string) => '/admin/leads/' + encodeURIComponent(memberId);
+
+/** The lead's quick actions, on the board and on the lead page; `logContact` adds the log-a-contact dialog. */
+export function LeadActions({ lead, client, timezone, onDone, logContact = true }: ActionProps & { logContact?: boolean }) {
+  const [busy, setBusy] = useState(false), [dialog, setDialog] = useState<'book' | 'lost' | 'contact' | null>(null);
   const name = leadName(lead), lost = lead.stage === 'lost';
   async function run(action: () => Promise<unknown>, message: string) {
     setBusy(true);
@@ -74,23 +92,21 @@ function LeadCard({ lead, client, timezone, onDone }: { lead: Lead; client: Lead
     const value = input.value;
     if (value !== saved) void run(() => client.edit(lead, { nextFollowUpOn: value || null }), text('saved'));
   }
-  return <article className="min-w-0 space-y-3 rounded-lg border border-border bg-background p-3">
-    <div className="min-w-0">
-      <h3 className={'font-medium ' + userNames}>{name}</h3>
-      <p className="text-sm text-muted-foreground">{text('source.' + (lead.source ?? 'unknown'))} · {text('status.' + lead.status)}</p>
-      <p className="text-sm text-muted-foreground">{lead.nextFollowUpOn ? text('followUpOn', { date: lead.nextFollowUpOn }) : text('noFollowUp')}</p>
-    </div>
+  // A won lead keeps its stage; only its follow-up date and the contact log stay open to staff.
+  const won = lead.stage === 'won';
+  return <div className="min-w-0 space-y-3">
     {!lost && <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-1">
-      <Select aria-label={text('stageFor', { name })} value={lead.stage} disabled={busy}
+      {!won && <Select aria-label={text('stageFor', { name })} value={lead.stage} disabled={busy}
         onChange={event => void run(() => client.edit(lead, { stage: event.target.value as (typeof openStages)[number] }), text('saved'))}>
         {openStages.map(stage => <option key={stage} value={stage}>{text('stage.' + stage)}</option>)}
         {!(openStages as readonly string[]).includes(lead.stage) && <option value={lead.stage} disabled>{text('stage.' + lead.stage)}</option>}
-      </Select>
+      </Select>}
       <Input type="date" aria-label={text('followUpFor', { name })} value={followUp} disabled={busy}
         onChange={event => setFollowUp(event.target.value)} onBlur={event => saveFollowUp(event.currentTarget)} />
     </div>}
     <div className="flex flex-wrap gap-2">
-      {lost ? <Button variant="outline" disabled={busy} aria-label={text('reopenFor', { name })} onClick={() => void run(() => client.reopen(lead), text('reopened'))}>{text('reopen')}</Button> : <>
+      {logContact && <Button variant="outline" disabled={busy} aria-label={text('logContactFor', { name })} onClick={() => setDialog('contact')}>{text('logContact')}</Button>}
+      {lost ? <Button variant="outline" disabled={busy} aria-label={text('reopenFor', { name })} onClick={() => void run(() => client.reopen(lead), text('reopened'))}>{text('reopen')}</Button> : !won && <>
         <Button variant="outline" disabled={busy} aria-label={text('bookFor', { name })} onClick={() => setDialog('book')}>{text('book')}</Button>
         <Button asChild variant="outline"><a aria-label={text('convertFor', { name })} href={'/admin/members/' + encodeURIComponent(lead.memberId) + '#memberTabs.membership'}>{text('convert')}</a></Button>
         <Button variant="outline" disabled={busy} aria-label={text('lostFor', { name })} onClick={() => setDialog('lost')}>{text('lost')}</Button>
@@ -98,5 +114,6 @@ function LeadCard({ lead, client, timezone, onDone }: { lead: Lead; client: Lead
     </div>
     {dialog === 'book' && <BookDialog lead={lead} client={client} timezone={timezone} onClose={() => setDialog(null)} onDone={finished} />}
     {dialog === 'lost' && <LostDialog lead={lead} client={client} onClose={() => setDialog(null)} onDone={finished} />}
-  </article>;
+    {dialog === 'contact' && <ContactDialog lead={lead} client={client} onClose={() => setDialog(null)} onDone={finished} />}
+  </div>;
 }

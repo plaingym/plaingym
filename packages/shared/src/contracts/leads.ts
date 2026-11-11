@@ -56,6 +56,18 @@ export const leadFunnelSourceSchema = z.strictObject({
 export const leadFunnelResponseSchema = z.strictObject({ data: z.strictObject({
   from: dateSchema, to: dateSchema, timezone: z.string(), sources: z.array(leadFunnelSourceSchema),
 }) });
+export const leadContactChannelSchema = z.enum(['call', 'text', 'email', 'in_person', 'other']);
+/** Counted in code points, as the database counts it; a blank note is stored as none. */
+const contactNoteSchema = z.string().trim().refine(value => [...value].length <= 2000, 'Note is too long');
+export const leadContactSchema = z.strictObject({
+  id: idSchema, occurredAt: instantSchema, channel: leadContactChannelSchema, note: z.string().nullable(),
+  createdBy: idSchema, createdByName: z.string().nullable(),
+});
+export const leadContactListQuerySchema = paginationSchema;
+export const leadContactListResponseSchema = z.strictObject({ data: z.array(leadContactSchema), pagination: paginationMetaSchema });
+export const createLeadContactRequestSchema = z.strictObject({ revision: leadRevisionSchema, channel: leadContactChannelSchema,
+  note: contactNoteSchema.nullable().optional(), nextFollowUpOn: followUpDateSchema.nullable().optional() });
+export const leadContactResponseSchema = z.strictObject({ data: z.strictObject({ lead: leadDetailSchema, contact: leadContactSchema }) });
 export const leadsContracts = {
   funnel: { method: 'get', path: '/api/leads/funnel', permission: { kind: 'staff', capability: 'leads.manage' },
     query: leadFunnelQuerySchema, response: leadFunnelResponseSchema },
@@ -67,6 +79,10 @@ export const leadsContracts = {
     body: loseLeadRequestSchema, response: leadResponseSchema },
   reopen: { method: 'post', path: '/api/leads/{memberId}/reopen', permission: manage, params: leadParamsSchema,
     body: reopenLeadRequestSchema, response: leadResponseSchema },
+  contacts: { method: 'get', path: '/api/leads/{memberId}/contacts', permission: manage, params: leadParamsSchema,
+    query: leadContactListQuerySchema, response: leadContactListResponseSchema },
+  logContact: { method: 'post', path: '/api/leads/{memberId}/contacts', permission: manage, params: leadParamsSchema,
+    body: createLeadContactRequestSchema, response: leadContactResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type LeadSource = z.infer<typeof leadSourceSchema>;
@@ -77,3 +93,7 @@ export type LeadListQuery = z.input<typeof leadListQuerySchema>;
 export type UpdateLeadRequest = z.infer<typeof updateLeadRequestSchema>;
 export type LoseLeadRequest = z.infer<typeof loseLeadRequestSchema>;
 export type ReopenLeadRequest = z.infer<typeof reopenLeadRequestSchema>;
+export type LeadContactChannel = z.infer<typeof leadContactChannelSchema>;
+export type LeadContact = z.infer<typeof leadContactSchema>;
+export type LeadContactListQuery = z.input<typeof leadContactListQuerySchema>;
+export type CreateLeadContactRequest = z.infer<typeof createLeadContactRequestSchema>;

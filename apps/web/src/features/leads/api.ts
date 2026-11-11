@@ -20,6 +20,16 @@ export const leadClient = {
   async lost(lead: Lead, reason: string) {
     return (await memberRequest(c.leadResponseSchema, `/api/leads/${lead.memberId}/lost`, 'POST', c.loseLeadRequestSchema.parse({ reason, revision: lead.revision }))).data;
   },
+  async read(memberId: string, signal?: AbortSignal) {
+    return (await memberRequest(c.leadResponseSchema, `/api/leads/${encodeURIComponent(memberId)}`, 'GET', undefined, signal)).data;
+  },
+  async contacts(memberId: string, input: c.LeadContactListQuery, signal?: AbortSignal) {
+    const query = c.leadContactListQuerySchema.parse(input);
+    return memberRequest(c.leadContactListResponseSchema, `/api/leads/${encodeURIComponent(memberId)}/contacts?limit=${query.limit}&offset=${query.offset}`, 'GET', undefined, signal);
+  },
+  async logContact(lead: Lead, input: Omit<c.CreateLeadContactRequest, 'revision'>) {
+    return (await memberRequest(c.leadContactResponseSchema, `/api/leads/${lead.memberId}/contacts`, 'POST', c.createLeadContactRequestSchema.parse({ ...input, revision: lead.revision }))).data;
+  },
   async reopen(lead: Lead) {
     return (await memberRequest(c.leadResponseSchema, `/api/leads/${lead.memberId}/reopen`, 'POST', c.reopenLeadRequestSchema.parse({ revision: lead.revision }))).data;
   },

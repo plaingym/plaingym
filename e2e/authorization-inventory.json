@@ -17,6 +17,8 @@
   {"method": "PATCH", "path": "/api/leads/{memberId}", "permission": {"kind": "staff", "capability": "leads.manage"}},
   {"method": "POST", "path": "/api/leads/{memberId}/lost", "permission": {"kind": "staff", "capability": "leads.manage"}},
   {"method": "POST", "path": "/api/leads/{memberId}/reopen", "permission": {"kind": "staff", "capability": "leads.manage"}},
+  {"method": "GET", "path": "/api/leads/{memberId}/contacts", "permission": {"kind": "staff", "capability": "leads.manage"}},
+  {"method": "POST", "path": "/api/leads/{memberId}/contacts", "permission": {"kind": "staff", "capability": "leads.manage"}},
   {"method": "GET", "path": "/api/reports/members", "permission": {"kind": "staff", "capability": "reports.read"}, "additionalPermissions": [{"kind": "staff", "capability": "billing.read"}]},
   {"method": "POST", "path": "/api/announcements/preview", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/test", "permission": {"kind": "staff", "capability": "announcements.send"}},

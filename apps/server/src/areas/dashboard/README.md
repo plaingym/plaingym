@@ -14,6 +14,8 @@ and validates both the provider schema and the surface contract. Providers may
 return `null` to omit an empty alert; zero-valued summary metrics remain visible.
 A provider error fails the request; no internal error text is rendered by the page.
 The billing endpoint and panel use the same registry (see `billing.README.md`).
+`leads.ts` provides the `leads.follow-ups-due` extension widget for staff with
+`leads.manage` (see `areas/leads/README.md`).
 
 Mat widgets use area services and a grouped last-seen read. Active membership means member status
 `active`. Not-seen includes active members whose last visit (class or open mat) was

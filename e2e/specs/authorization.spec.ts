@@ -151,6 +151,28 @@ test('lead edits, loss, reopening and erasure work through the production routes
   }
 });
 
+test('lead contacts are logged and read by owners, admins and front desk, refused to coaches, and gone after erasure', async ({ install }) => {
+  const owner = install.clients.owner;
+  for (const role of ['owner', 'admin', 'front_desk'] as const) {
+    const client = install.clients[role];
+    const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Contact payer ' + role })).data;
+    const member = (await owner.json<{ data: { id: string; revision: number } }>('/api/members', 'POST', {
+      householdId: home.id, firstName: 'Contact' + role, lastName: 'Log', status: 'prospect',
+    })).data;
+    const path = '/api/leads/' + member.id + '/contacts';
+    expect((await install.clients.coach.request(path)).status).toBe(403);
+    expect((await install.clients.coach.request(path, 'POST', { revision: 0, channel: 'call' })).status).toBe(403);
+    const logged = await client.json<{ data: { lead: { stage: string; revision: number; nextFollowUpOn: string | null }; contact: { id: string; note: string } } }>(
+      path, 'POST', { revision: 0, channel: 'call', note: 'Private contact note', nextFollowUpOn: '2026-11-12' });
+    expect(logged.data.lead).toMatchObject({ stage: 'contacted', revision: 1, nextFollowUpOn: '2026-11-12' });
+    expect((await client.request(path, 'POST', { revision: 0, channel: 'text' })).status).toBe(409);
+    const listed = await client.json<{ data: { id: string; note: string }[]; pagination: { total: number } }>(path);
+    expect(listed.data.map(row => row.id)).toEqual([logged.data.contact.id]); expect(listed.pagination.total).toBe(1);
+    expect((await owner.request('/api/members/' + member.id + '/anonymize', 'POST', { revision: member.revision })).status).toBe(200);
+    expect((await client.request(path)).status).toBe(404);
+  }
+});
+
 test('members reports require reports and billing access with monthly answers', async ({ install }) => {
   const path = '/api/reports/members?from=2026-01&to=2026-01';
   for (const role of all) {

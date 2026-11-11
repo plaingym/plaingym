@@ -7,13 +7,13 @@ import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 
-const memberFields = { memberId: members.id, householdId: members.householdId, firstName: members.firstName,
+export const memberFields = { memberId: members.id, householdId: members.householdId, firstName: members.firstName,
   lastName: members.lastName, email: members.email, phone: members.phone, status: members.status, createdAt: members.createdAt };
-type Person = { [K in keyof typeof memberFields]: (typeof members.$inferSelect)[K extends 'memberId' ? 'id' : K] };
-type Lead = typeof leads.$inferSelect;
-const eligible = and(isNull(members.anonymizedAt), or(isNotNull(leads.id), inArray(members.status, ['prospect', 'trial'])));
-const join = and(eq(leads.gymId, members.gymId), eq(leads.memberId, members.id));
-function detail(person: Person, lead: Lead | null | undefined) {
+export type Person = { [K in keyof typeof memberFields]: (typeof members.$inferSelect)[K extends 'memberId' ? 'id' : K] };
+export type Lead = typeof leads.$inferSelect;
+export const eligible = and(isNull(members.anonymizedAt), or(isNotNull(leads.id), inArray(members.status, ['prospect', 'trial'])));
+export const join = and(eq(leads.gymId, members.gymId), eq(leads.memberId, members.id));
+export function detail(person: Person, lead: Lead | null | undefined) {
   return c.leadDetailSchema.parse({ ...person, source: lead?.source ?? null, stage: lead?.stage ?? 'new',
     revision: lead?.revision ?? 0, nextFollowUpOn: lead?.nextFollowUpOn ?? null,
     lastContactedAt: lead?.lastContactedAt?.toISOString() ?? null, createdAt: person.createdAt.toISOString(),

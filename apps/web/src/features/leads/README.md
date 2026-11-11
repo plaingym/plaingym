@@ -13,8 +13,12 @@ on wide screens. Lost leads stay hidden until **Show lost** adds a Lost
 section. The source filter and **Follow-up due** (due today or earlier in the
 gym's time zone, open leads only) apply to every section.
 
-Each lead shows its name, source, member status and next follow-up, with:
+Each lead shows its name (a link to its lead page), source, member status and
+next follow-up, with:
 
+* **Log contact**: a dialog with the channel, an optional note and an optional
+  next follow-up date (empty keeps the current one); a new lead becomes
+  contacted, and the lists reload;
 * a stage select for the hand-settable stages, saved at once, and a follow-up
   date field, saved when it loses focus (a partly typed date keeps the saved
   one);
@@ -32,11 +36,31 @@ Each lead shows its name, source, member status and next follow-up, with:
 Every write sends the lead's revision. A 409 reloads the lists and says the lead
 changed; any other failure shows a message and reloads nothing.
 
+## Lead page
+
+`/admin/leads/<memberId>` (`lead.tsx`) has the same `leads.manage` gate. It
+shows the lead's details (email and phone as links, member status, source,
+follow-up, last contact and added times in the gym's zone, and a lost lead's
+reason), a link to the member profile, the same quick actions as the board
+(a won lead keeps only its follow-up date), and the contact log: a form to log
+one (as the dialog, then the log reloads and the page shows the new stage) and
+the contacts newest first, 20 at a time with "Show more", each with its channel,
+time, who logged it and the note. A missing, erased or non-lead member shows a
+"not found" notice with a link back to the list.
+
+## Follow-ups due tile
+
+`features/dashboard/leads.widgets.tsx` renders the dashboard's
+`leads.follow-ups-due` widget for staff with `leads.manage`: the count, up to 20
+due leads linking to their lead pages, "Showing N of M" when there are more, and
+a link to the leads list. With nothing due the dashboard shows no tile.
+
 `api.ts` validates requests and responses with the shared lead contracts and
 reuses the booking client. Strings live in `locales/en/leads/screens.json`.
 
 `node apps/web/src/features/leads/mobile-check.mjs` builds a standalone fixture of
 the page with mocked API responses and checks it at 360 px and 1280 px: no
 horizontal page scroll, 44 px touch targets, axe (WCAG 2 A/AA) on the board, with
-lost leads shown, and in both dialogs. It needs the `e2e` dependencies
+lost leads shown, in the lost, booking and log-contact dialogs, on an open and a
+lost lead page, and on the follow-ups due tile with 20 leads. It needs the `e2e` dependencies
 (`pnpm install --ignore-workspace` in `e2e/`) and uses `E2E_LOOPBACK` as its host.

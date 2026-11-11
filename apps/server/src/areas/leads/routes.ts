@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { RouteRegistration } from '../../core/registry.js';
+import { routes as contactRoutes } from './contacts.routes.js';
 import { routes as funnelRoutes } from './funnel.routes.js';
 import { routes as listRoutes } from './list.routes.js';
 
-export const routes: readonly RouteRegistration[] = [...funnelRoutes, ...listRoutes];
+export const routes: readonly RouteRegistration[] = [...funnelRoutes, ...listRoutes, ...contactRoutes];

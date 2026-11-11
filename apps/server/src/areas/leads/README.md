@@ -61,6 +61,43 @@ never copied into audits. Member erasure removes contact rows and clears the
 lost reason while retaining the lead for aggregate history. Erased members do
 not appear in the staff list or read.
 
+## Contact log
+
+Both contact routes require `leads.manage` and return `Cache-Control: no-store`,
+and reach the same leads as `GET /api/leads/{memberId}` (others are 404):
+
+* `POST /api/leads/{memberId}/contacts` accepts the lead's `revision`, a `channel`
+  (`call`, `text`, `email`, `in_person` or `other`), an optional trimmed `note`
+  of up to 2,000 characters (counted in code points, as the database does; blank
+  is stored as none) and an optional `nextFollowUpOn` (a gym-local date, or null
+  to clear it). It records the contact now with the signed-in staff user, sets
+  `last_contacted_at`, moves a `new` lead to `contacted` (later stages, won and
+  lost keep theirs), sets the follow-up when one is sent and bumps the revision.
+  A prospect or trial member without a lead row gains one at revision 1, as a
+  first edit does. A stale revision or a racing first insert returns 409 and
+  writes nothing. It returns the updated lead and the contact. The request body
+  may be up to 32 KiB, room for a 2,000-character note even when a client
+  escapes every non-ASCII character as `\uXXXX`.
+* `GET /api/leads/{memberId}/contacts` lists contacts newest first with `limit`
+  (default 50, maximum 100), `offset` and a total. Each has its time, channel,
+  note, the staff user's ID and their staff profile's display name (null without
+  a profile). A lead without a row has none.
+
+The contact, the lead change and a `lead.contacted` audit commit together. The
+audit holds the stage, follow-up and revision before and after, the channel and
+the contact ID, never the note. The member is locked before the lead, as edits
+do, so erasure waits; erasure then deletes the contacts and both routes return 404.
+
+## Follow-ups due tile
+
+`createFollowUpsDueProvider({ settings })` in `areas/dashboard/leads.ts` is the
+dashboard extension widget `leads.follow-ups-due` (kind `count`, permission
+`leads.manage`). It counts open leads (not won or lost, member not erased) whose
+follow-up date is on or before today in the gym's timezone, and lists the
+soonest 20 (then by name), each linking to `/admin/leads/<memberId>`. With none
+due it returns null and the dashboard omits it. After reading the gym's timezone
+from the settings, it counts and lists in one statement.
+
 ## Automatic stages
 
 `advanceLeadOnCheckIn` runs after a new non-import attendance and its audit are

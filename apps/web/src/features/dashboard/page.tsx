@@ -12,6 +12,7 @@ import { Page, PageHeader } from '../../components/ui/page.js';
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui/states.js';
 import { DashboardWidgets } from './widgets.js';
 import { BillingDashboardPanel, billingWidgetViews } from './billing.widgets.js';
+import { leadsWidgetViews } from './leads.widgets.js';
 
 const label = (key: string) => t('dashboard/dashboard:' + key);
 function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly StaffRole[] }) {
@@ -25,7 +26,7 @@ function DashboardPanel({ gymId, roles }: { gymId: string; roles: readonly Staff
       actions={<Button variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>{label('refresh')}</Button>}/>
     {query.isPending ? <LoadingState label={label('loading')}/> : query.isError ? <ErrorState message={label('loadFailed')} onRetry={() => void query.refetch()}/>
       : query.data.widgets.length === 0 ? <EmptyState title={label('empty')} description={label('emptyHelp')}/>
-      : <DashboardWidgets widgets={query.data.widgets} roles={roles} views={billingWidgetViews}/>}
+      : <DashboardWidgets widgets={query.data.widgets} roles={roles} views={[...billingWidgetViews, ...leadsWidgetViews]}/>}
     {canStaff(roles, 'billing.read') && <BillingDashboardPanel gymId={gymId} roles={roles}/>}
   </Page>;
 }
