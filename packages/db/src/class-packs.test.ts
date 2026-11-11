@@ -28,7 +28,7 @@ describe('class pack storage boundaries', () => {
   it('declares forced RLS on all four tables and applies reason-only updates idempotently', async () => {
     await applySecurity(maintenance.sql);
     await applySecurity(maintenance.sql);
-    expect(await assertCatalog(db.app.sql)).toEqual({ tableCount: 64, tenantTableCount: 52 });
+    expect(await assertCatalog(db.app.sql)).toEqual({ tableCount: 66, tenantTableCount: 54 });
   });
   it.each([
     ['classPacks', classPacks], ['classPackTaxRates', classPackTaxRates],
@@ -64,7 +64,7 @@ describe('class pack storage boundaries', () => {
     await maintenance.sql`grant update (credits) on class_credit_entries to app`;
     await expect(assertCatalog(db.app.sql)).rejects.toThrow('class_credit_entries.credits: unexpected UPDATE');
     await applySecurity(maintenance.sql);
-    await expect(assertCatalog(db.app.sql)).resolves.toHaveProperty('tableCount', 64);
+    await expect(assertCatalog(db.app.sql)).resolves.toHaveProperty('tableCount', 66);
   });
   it('rejects foreign gyms on every relationship and foreign members on ledger lots and sales', async () => {
     const foreign = await lot(gymB), own = await lot();
