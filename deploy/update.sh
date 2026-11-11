@@ -279,12 +279,14 @@ prune_patch_images() {
   # Every entry still on the rollback stack stays, even beyond the immediately previous image.
   protected=$(awk -F '\t' "$history_stack"'END { for(i=1;i<=n;i++) print image[i] }' "$ROOT/version-history.tsv") || return 0
   while read -r prune_ref prune_id prune_version; do
-    valid_image "$prune_ref" && valid_version "$prune_version" || continue
+    valid_image "$prune_ref" || continue
+    valid_version "$prune_version" || continue
     printf '%s\n' "$prune_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || continue
     version_at_least "$from_version" "$prune_version" || continue
     [ "$prune_version" != "$from_version" ] || continue
     printf '%s\n' "$protected" | grep -qxF "$prune_id" && continue
-    [ "$prune_id" != "$previous_id" ] && [ "$prune_id" != "$target_id" ] || continue
+    [ "$prune_id" != "$previous_id" ] || continue
+    [ "$prune_id" != "$target_id" ] || continue
     [ "$(docker image inspect "$prune_ref" --format '{{.Id}}' 2>/dev/null)" = "$prune_id" ] || continue
     # Never force deletion of images in use; bound removal so maintenance cannot hold the update lock forever.
     timeout -k 5 30 docker image rm "$prune_ref" >/dev/null 2>&1 || true
