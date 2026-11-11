@@ -224,7 +224,7 @@ the database ([self-hosting.md](self-hosting.md#updates)).
 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
-| `RELEASE_REPOSITORY` | `plaingym/plaingym` | The GitHub repository whose releases the updater checks, as `owner/name`. Unset or empty means the default; a value that is not `owner/name` stops the banner from reading releases (the updater skips its night). A fork that publishes its own releases sets it and replaces `release-signing.pem` in the install directory with its own public key. |
+| `RELEASE_REPOSITORY` | `plaingym/plaingym` | The GitHub repository whose releases the updater checks, as `owner/name`. Unset or empty means the default; a value that is not `owner/name` (a segment made only of dots is not valid either) raises a warning and the banner, saying patches can't install (the updater skips its night). A fork that publishes its own releases sets it and replaces `release-signing.pem` in the install directory with its own public key. |
 
 ## Development only
 

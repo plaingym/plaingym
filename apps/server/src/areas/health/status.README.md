@@ -45,7 +45,7 @@ no check has run for `staleAfterHours` (`auto-update.ts`), or the last attempt s
 one for an older version than the newest release doesn't, since tonight's check tries the newest. The message carries the
 advice: update by hand for the switch and a stopped timer; never install by hand a release the updater refused on purpose
 (signature, digest, manifest, or a database change); otherwise the reason's own advice. The banner shows that message. Multi-gym mode, `UPDATE_CHECK=off`, a build whose version is not `X.Y.Z` or is `0.0.0` (a development
-build), and a `RELEASE_REPOSITORY` that is not `owner/name` are `not_configured`. `configureUpdateRoutes({ env })`
+build), are `not_configured`. A `RELEASE_REPOSITORY` that is not `owner/name` (or has a dots-only segment) answers `warning` with the banner, saying patches can't install. An install that has never reported a check is stale 50 hours after it was first seen (stored once, on the first read). A transient skip (`release_list_unavailable`, `manifest_unavailable`, `pull_failed`, `snapshot_failed`, `check_failed`) raises the banner only after two in a row. When an attempt targets a newer release than the cached one, the message names the attempt's target. The update tile and the banner read the auto-update state once per request. `configureUpdateRoutes({ env })`
 (`updates.routes.ts`) gives the route the runtime's environment, as `configureHealthStatus` does the tile.
 Running version uses non-empty `APP_VERSION` and `APP_REVISION`, falling back to
 the identity embedded at build time (computed from the checkout for tsx

@@ -286,8 +286,10 @@ out, owners and admins see an "Update available" banner with a link to the chang
 and the Health page's **Available update** tile shows the running and latest versions.
 A newer patch release raises no banner while the nightly update is expected to install
 it. It does raise the banner when that update won't happen: automatic updates are
-off, no nightly check has run for two days since the last one (the timer stopped), or the
-last check for that release skipped, rolled back or failed. The banner and the tile say
+off, no nightly check has run for two days since the last one (the timer stopped; an install
+that has never reported a check counts from the day the app first saw it), or the last check
+for that release was refused, rolled back or failed. A skip for a passing cause, such as GitHub
+or the registry being unreachable, raises the banner only when two checks in a row skipped. The banner and the tile say
 why. With automatic updates off or the timer stopped, turn them on or fix the timer, or
 install the release by hand, as below. When the updater refused the release on purpose
 (its signature, image or database changes), don't install it by hand: wait for a fixed

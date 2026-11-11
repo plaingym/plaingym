@@ -423,7 +423,8 @@ scanned for known vulnerabilities each week (`deploy/README.md`).
 
 Automatic patch updates run on the host, as root, from a systemd timer, never in
 the app: the app only answers whether they are on and records their results,
-through `gym-app auto-update` in its own container. The updater installs only an
+through `gym-app auto-update` in its own container. After recording a rolled-back or failed
+attempt, the app emails the owners once through the gym's SMTP settings; it still holds no Docker socket. The updater installs only an
 image named by a release manifest signed with the project's Ed25519 key
 (`release-signing.pem` in the install directory), pulls it by digest and checks
 the digest and version it got, and refuses a patch whose migrations differ from
