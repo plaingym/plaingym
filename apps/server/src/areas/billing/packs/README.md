@@ -50,9 +50,10 @@ Staff collect positive-total invoices through existing saved-card, pay-link or
 manual-payment actions.
 
 The service accepts a `transitions` option; `configurePackSales(service)` selects
-the service used by the mounted routes. The runtime can supply its publishing
-transitions to enqueue the zero-sale effect immediately. The default transitions
-persist the same effect for the hourly sweep.
+the service used by the mounted routes. The runtime passes its publishing
+transitions, so a zero-total sale enqueues its credit effect immediately; the
+default transitions (used when nothing is configured) persist the same effect
+for the hourly sweep.
 
 `createPackCredits` is called directly by invoice effects. The paid/zero-settlement
 effect grants the sale before `afterInvoicePaid`, including a zero-total sale's

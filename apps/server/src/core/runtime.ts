@@ -120,6 +120,8 @@ import { createMembershipService } from '../areas/billing/memberships.js';
 import { configureMemberships } from '../areas/billing/memberships.routes.js';
 import { createPaymentService } from '../areas/billing/payments.js';
 import { configurePayments } from '../areas/billing/payments.routes.js';
+import { configurePackSales } from '../areas/billing/packs/sales.routes.js';
+import { createPackSalesService } from '../areas/billing/packs/sales.js';
 import { configurePaymentDelivery, createLapsedRefundJobs } from '../areas/billing/payments.jobs.js';
 import { createBillingAlerts, createDisputeAlertProvider, sendAlertJob } from '../areas/billing/alerts/index.js';
 import { configureBillingAlerts } from '../areas/billing/alerts/alerts.jobs.js';
@@ -376,6 +378,8 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   const payments = createPaymentService({ settings, clock, jobs: queue, paymentsFor,
     transitions: billing.transitions, runner, detachCard });
   configurePayments(payments);
+  // A zero-total pack sale settles at once through the publishing transitions, so its credits are granted without waiting for the hourly sweep.
+  configurePackSales(createPackSalesService({ clock, settings, transitions: billing.transitions }));
   configureBillingDashboard({ settings, memberships, payments });
   // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock; its
   // skipped-collections entry needs the payment service, so it is configured here.
