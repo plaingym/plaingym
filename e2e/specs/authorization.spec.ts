@@ -28,6 +28,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path.startsWith('/api/reports/')
   || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
   || path.startsWith('/api/billing/packs/')
+  || path === '/api/billing/credits/adjust' || /^\/api\/billing\/members\/[^/]+\/credits$/.test(path)
   || path.startsWith('/api/leads/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
@@ -175,6 +176,33 @@ test('a household login cannot reach staff routes', async ({ sandboxes }) => {
 
 // The demo has no Stripe account, so starting card setup is unavailable there; nothing else may answer 503.
 const stripeCheckout = new Set(['POST /api/portal/payment-methods/checkout']);
+test('front desk reads and adjusts credits with replay protection; coaches and foreign gyms are refused', async ({ install, sandboxes }) => {
+  const owner = install.clients.owner, desk = install.clients.front_desk;
+  const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Credit adjustment payer' })).data;
+  const member = (await owner.json<{ data: { id: string } }>('/api/members', 'POST',
+    { firstName: 'Credit', lastName: 'Holder', householdId: home.id })).data;
+  const read = '/api/billing/members/' + member.id + '/credits', write = '/api/billing/credits/adjust';
+  const body = { memberId: member.id, credits: 2, reason: 'Staff corrected count', adjustmentId: crypto.randomUUID() };
+  expect((await install.clients.coach.request(read)).status).toBe(403);
+  expect((await install.clients.coach.request(write, 'POST', body)).status).toBe(403);
+  const first = await desk.json<{ data: { balance: number; entries: { id: string }[] } }>(write, 'POST', body);
+  expect(first.data.balance).toBe(2);
+  expect(await desk.json(write, 'POST', body)).toEqual(first);
+  const balance = await desk.json<{ data: { balance: number; entries: unknown[] } }>(read);
+  expect(balance.data.balance).toBe(2);
+  expect(balance.data.entries).toHaveLength(1);
+  expect((await desk.request(write, 'POST', { ...body, reason: '', adjustmentId: crypto.randomUUID() })).status).toBe(400);
+  const low = await desk.request(write, 'POST', { ...body, credits: -3, adjustmentId: crypto.randomUUID() });
+  expect(low.status).toBe(409);
+  expect(JSON.parse(low.text)).toMatchObject({ error: { details: { reason: ['insufficient_credits'] } } });
+  const foreign = await demoClient(sandboxes[0], 'owner');
+  expect((await foreign.request(read)).status).toBe(404);
+  expect((await foreign.request(write, 'POST', body)).status).toBe(404);
+  const foreignMembers = await foreign.json<{ data: { id: string }[] }>('/api/members');
+  expect((await desk.request(write, 'POST', { ...body, memberId: foreignMembers.data[0]!.id, adjustmentId: crypto.randomUUID() })).status).toBe(404);
+  expect((await desk.request('/api/billing/members/' + foreignMembers.data[0]!.id + '/credits')).status).toBe(404);
+});
+
 test('front desk reads and sells a pack for the member household; coach and foreign members are refused', async ({ install, sandboxes }) => {
   const owner = install.clients.owner, desk = install.clients.front_desk;
   const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Pack sale payer' })).data;

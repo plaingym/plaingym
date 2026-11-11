@@ -7,5 +7,7 @@
   "inactive": "Class pack is inactive",
   "taxNotFound": "Tax rate not found",
   "taxInactive": "Tax rate is inactive",
-  "currencyMismatch": "Currency does not match the gym"
+  "currencyMismatch": "Currency does not match the gym",
+  "insufficientCredits": "The member does not have enough usable credits",
+  "adjustmentReused": "This adjustment ID has already been used for a different adjustment"
 }

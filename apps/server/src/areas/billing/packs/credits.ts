@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, eq, or } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, classPackSales, forGym, members, uuidv7 } from '@plaingym/db';
+import { auditEvents, classCreditEntries, classPackSales, forGym, uuidv7 } from '@plaingym/db';
 import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
-import { notFound } from '../../../core/interfaces/common.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { CatalogOptions } from '../catalog.js';
 import { audit, lockInvoice } from '../transitions/store.js';
+import { lockMemberCredits } from './ledger.js';
 
 /** Invoice first, member second: every credit mutation serializes with the member's other ledger writes. */
 export function createPackCredits(options: CatalogOptions = {}) {
@@ -20,7 +20,7 @@ export function createPackCredits(options: CatalogOptions = {}) {
         if (!['paid', 'partially_refunded'].includes(invoice.status)) return;
         const sale = (await tx.select().from(classPackSales).where(eq(classPackSales.invoiceId, invoice.id)))[0];
         if (!sale) return;
-        if (!(await tx.select({ id: members.id }).from(members).where(eq(members.id, sale.memberId)).for('update'))[0]) notFound();
+        await lockMemberCredits(tx, sale.memberId);
         // A failed full refund can reopen a paid invoice. It must not resurrect a skipped grant either.
         const refundHistory = await tx.select({ after: auditEvents.after }).from(auditEvents).where(and(
           eq(auditEvents.targetId, invoice.id), eq(auditEvents.action, 'billing.invoice.refunded')));
@@ -39,7 +39,7 @@ export function createPackCredits(options: CatalogOptions = {}) {
         await lockInvoice(tx, invoiceId);
         const sale = (await tx.select().from(classPackSales).where(eq(classPackSales.invoiceId, invoiceId)))[0];
         if (!sale) return;
-        if (!(await tx.select({ id: members.id }).from(members).where(eq(members.id, sale.memberId)).for('update'))[0]) notFound();
+        await lockMemberCredits(tx, sale.memberId);
         const grant = (await tx.select().from(classCreditEntries).where(and(eq(classCreditEntries.memberId, sale.memberId),
           eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'grant'))))[0];
         if (!grant) return;

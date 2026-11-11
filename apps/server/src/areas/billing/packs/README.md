@@ -73,3 +73,70 @@ refund returns the invoice to paid. Credits follow the member after a household 
 the invoice and sale keep the original payer. Unique grant/reversal indexes and
 transactional `billing.credits.granted` / `billing.credits.reversed` audits make
 effect replays and crashes before completion safe.
+
+## Balance, draws and adjustments
+
+`packs/index.ts` exports the helpers used inside a caller's existing gym
+transaction. They never open a nested transaction or call external services:
+
+* `lockMemberCredits(tx, memberId)` locks the member row `FOR UPDATE` and returns
+  it, or throws 404. Every credit writer takes this lock before reading the ledger.
+  Callers that also lock an invoice or household take those locks before the member.
+* `usableLots(tx, memberId, now)` returns positive remainders in draw order:
+  earliest expiry, then oldest creation time, then ID; never-expiring lots come
+  last. A lot is unusable at its exact expiry instant, without waiting for a job.
+  Each result includes the opening entry's fields and `remaining`.
+* `drawCredits(tx, input)` requires the member lock. Input contains `gymId`,
+  `memberId`, positive `credits`, `now`, and either `kind: 'use'` with an
+  `attendanceId` (exactly one credit), or `kind: 'adjust'` with `adjustmentId`,
+  `reason` and nullable `createdBy`. It inserts one negative entry per drawn lot
+  in draw order and returns `{ outcome: 'drawn', entries }`. If insufficient, it
+  returns `{ outcome: 'insufficient_credits', balance }` and writes nothing.
+  The caller owns command replay detection and the audit in the same transaction.
+* `hasActiveMembership(tx, memberId)` counts `active` and `trial` memberships;
+  `pending`, `frozen` and `cancelled` do not count.
+* `isPackHolder(tx, memberId)` checks for any ledger entry, including exhausted
+  or expired balances and staff adjustments.
+
+`createCreditLedgerService` implements GET
+`/api/billing/members/{memberId}/credits` (`billing.read`) and POST
+`/api/billing/credits/adjust` (`payments.record`). Both allow owner, admin and
+front desk and return `Cache-Control: no-store`; coaches receive 403 and foreign
+members receive 404. These routes mount through the existing pack route export
+and use the default gym scope and clock, with injectable options for tests.
+
+Reads lock the member to return a consistent balance, positive lot remainders
+(including expired remainders, with their expiry), and a page of entries ordered
+by creation time and ID, newest first. `limit` defaults to 50 (maximum 100) and
+`offset` to zero; pagination includes the total entry count. The usable balance
+excludes expired lots. Grant, draw, refund and expiry entries carry the sale's
+invoice number through their sale or lot; manual lots have no invoice number.
+
+Adjustment input is `{ memberId, credits, reason, adjustmentId }`: a nonzero
+integer from -100 to 100, a trimmed 1–500-character reason and a client-generated
+UUID. Reuse that UUID when retrying the same command. Under the member lock, a
+retry returns its existing entries without another write or audit. Entries in
+the adjustment response have stable ID order; its balance is the current balance.
+Reusing a recorded UUID with a different member, count or reason returns 409
+with `error.details.reason: ['adjustment_id_reused']`. Positive adjustments open
+never-expiring lots; negative adjustments use `drawCredits` and return 409 with
+`error.details.reason: ['insufficient_credits']` when the balance is too low.
+Erased members cannot be adjusted.
+
+`billing.credits.adjusted` audits record actor, time, command, signed credits and
+entry IDs, including `reasonEntryId` references to the reason on each ledger row.
+Free text is kept only on those redactable rows, so erasure clears the member's
+adjustment reasons in its transaction while retaining the ledger and audit.
+
+## Daily expiry
+
+`createCreditExpiryJobs` registers `billing.credits.expire` through the billing
+jobs barrel. The existing per-gym scheduler runs it at 00:07 in each gym's
+timezone, including across DST changes, in the gym's batch lane so its other
+jobs don't wait behind it. It uses the job context's clock and
+needs no additional runtime configuration. `createCreditExpiryService().expire(gymId)`
+scans candidate members in bounded pages and takes a separate short transaction
+and member lock for each. It inserts an `expire` row for each expired lot's
+remaining credits and a `billing.credits.expired` system audit. The unique
+one-expire-per-lot index makes replays safe. A returned credit retains its lot's
+expiry and stays unusable even if that lot already has its single expiry entry.

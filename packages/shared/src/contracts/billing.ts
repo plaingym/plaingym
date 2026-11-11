@@ -2,7 +2,8 @@
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { idSchema } from './common.js';
-import { sellClassPackRequestSchema } from './billing/packs.js';
+import { sellClassPackRequestSchema, adjustClassCreditsRequestSchema, adjustClassCreditsResponseSchema,
+  classCreditLedgerQuerySchema, classCreditLedgerResponseSchema } from './billing/packs.js';
 import {
   createClassPackRequestSchema, updateClassPackRequestSchema, classPackResponseSchema, classPackListResponseSchema,
   billingCatalogListQuerySchema, billingTaxRateListQuerySchema,
@@ -39,6 +40,7 @@ export const billingTaxRateParamsSchema = z.strictObject({ taxRateId: idSchema }
 export const billingPlanParamsSchema = z.strictObject({ planId: idSchema });
 export const billingChargeTypeParamsSchema = z.strictObject({ chargeTypeId: idSchema });
 export const billingClassPackParamsSchema = z.strictObject({ packId: idSchema });
+export const billingCreditMemberParamsSchema = z.strictObject({ memberId: idSchema });
 export const billingMembershipParamsSchema = z.strictObject({ membershipId: idSchema });
 export const billingInvoiceParamsSchema = z.strictObject({ invoiceId: idSchema });
 export const billingHouseholdParamsSchema = z.strictObject({ householdId: idSchema });
@@ -62,6 +64,10 @@ const collect = { kind: 'staff', capability: 'payments.record' } as const;
  * area contracts; these endpoints all require the named staff capability.
  */
 export const billingContracts = {
+  adjustClassCredits: { method: 'post', path: '/api/billing/credits/adjust', permission: collect,
+    body: adjustClassCreditsRequestSchema, response: adjustClassCreditsResponseSchema, successStatus: 200 },
+  getClassCreditLedger: { method: 'get', path: '/api/billing/members/{memberId}/credits', permission: read,
+    params: billingCreditMemberParamsSchema, query: classCreditLedgerQuerySchema, response: classCreditLedgerResponseSchema, successStatus: 200 },
   sellClassPack: { method: 'post', path: '/api/billing/packs/{packId}/sell', permission: collect,
     params: billingClassPackParamsSchema, body: sellClassPackRequestSchema, response: invoiceResponseSchema, successStatus: 201 },
   listClassPacks: { method: 'get', path: '/api/billing/class-packs', permission: read,

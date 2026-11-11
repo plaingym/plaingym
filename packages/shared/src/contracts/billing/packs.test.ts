@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { canStaff } from '../../permissions.js';
 import { parseMinorUnits, formatMinorUnits } from '../../money.js';
-import { billingContracts, classPackResponseSchema, createClassPackRequestSchema, updateClassPackRequestSchema, sellClassPackRequestSchema } from '../billing.js';
+import { billingContracts, classPackResponseSchema, createClassPackRequestSchema, updateClassPackRequestSchema,
+  sellClassPackRequestSchema, adjustClassCreditsRequestSchema, classCreditLedgerQuerySchema } from '../billing.js';
 
 const input = { name: 'Ten classes', amountCents: 10000, currency: 'CAD', credits: 10 };
 describe('pack catalog contracts', () => {
@@ -47,5 +48,23 @@ describe('pack catalog contracts', () => {
       { invoiceId: request.memberId }, { amountCents: 0 }, { credits: 100 }])
       expect(sellClassPackRequestSchema.safeParse({ ...request, ...extra }).success).toBe(false);
     expect(billingContracts.sellClassPack.permission).toEqual({ kind: 'staff', capability: 'payments.record' });
+  });
+  it('validates credit adjustments, trims the reason and accepts exactly the bounded signed integers', () => {
+    const request = { memberId: '019a08bf-1234-7000-8000-000000000001', adjustmentId: '019a08bf-1234-7000-8000-000000000002',
+      credits: 1, reason: '  Corrected count  ' };
+    expect(adjustClassCreditsRequestSchema.parse(request).reason).toBe('Corrected count');
+    for (const credits of [-100, -1, 1, 100])
+      expect(adjustClassCreditsRequestSchema.safeParse({ ...request, credits }).success).toBe(true);
+    for (const change of [{ reason: undefined }, { reason: '' }, { reason: '  ' }, { reason: 'a'.repeat(501) },
+      { credits: 0 }, { credits: 101 }, { credits: -101 }, { credits: 1.5 }, { credits: '1' },
+      { memberId: 'invalid' }, { adjustmentId: 'invalid' }, { expiresAt: null }, { gymId: request.memberId }])
+      expect(adjustClassCreditsRequestSchema.safeParse({ ...request, ...change }).success).toBe(false);
+    expect(classCreditLedgerQuerySchema.parse({ limit: '2', offset: '1' })).toEqual({ limit: 2, offset: 1 });
+    expect(classCreditLedgerQuerySchema.safeParse({ limit: '101' }).success).toBe(false);
+    for (const [name, capability] of [['adjustClassCredits', 'payments.record'], ['getClassCreditLedger', 'billing.read']] as const) {
+      expect(billingContracts[name].permission).toEqual({ kind: 'staff', capability });
+      for (const role of ['owner', 'admin', 'front_desk', 'coach'] as const)
+        expect(canStaff([role], capability)).toBe(role !== 'coach');
+    }
   });
 });

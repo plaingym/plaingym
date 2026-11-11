@@ -3,6 +3,7 @@ import * as c from '@plaingym/shared/contracts';
 import { billingMutation, billingRoute } from '../catalog.routes.js';
 import { createPackCatalogService, type PackCatalogService } from './catalog.js';
 import { createPackSalesRoutes } from './sales.handlers.js';
+import { createCreditLedgerRoutes } from './ledger.handlers.js';
 
 export function createPackCatalogRoutes(service?: PackCatalogService) {
   const fallback = service ?? createPackCatalogService(), read = () => fallback;
@@ -15,4 +16,4 @@ export function createPackCatalogRoutes(service?: PackCatalogService) {
       ({ data: await read().update(billingMutation(ctx), p.packId!, c.updateClassPackRequestSchema.parse(b)) })),
   ];
 }
-export const routes = [...createPackCatalogRoutes(), ...createPackSalesRoutes()];
+export const routes = [...createPackCatalogRoutes(), ...createPackSalesRoutes(), ...createCreditLedgerRoutes()];

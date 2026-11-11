@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { classCreditEntries, classPackSales, forGym, invoices, uuidv7, type Transaction } from '@plaingym/db';
+import { AppError, createTranslator } from '@plaingym/shared';
+import * as c from '@plaingym/shared/contracts';
+import { clock as defaultClock } from '../../../core/clock.js';
+import { notFound, type MutationContext } from '../../../core/interfaces/common.js';
+import type { CatalogOptions } from '../catalog.js';
+import { audit } from '../transitions/store.js';
+import { drawCredits, lockMemberCredits, remainingLots, type CreditEntry } from './ledger.js';
+import messages from '../../../../../../locales/en/billing/packs.json' with { type: 'json' };
+
+const t = createTranslator({ 'billing/packs': messages });
+const entry = (row: CreditEntry, invoiceNumber: number | null) => ({
+  id: row.id, memberId: row.memberId, kind: row.kind, credits: row.credits, lotId: row.lotId,
+  saleId: row.saleId, attendanceId: row.attendanceId, expiresAt: row.expiresAt?.toISOString() ?? null,
+  reason: row.reason, adjustmentId: row.adjustmentId, createdBy: row.createdBy,
+  createdAt: row.createdAt.toISOString(), invoiceNumber,
+});
+
+export function createCreditLedgerService(options: CatalogOptions = {}) {
+  const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  async function balance(tx: Transaction, memberId: string, now: Date) {
+    return (await remainingLots(tx, memberId)).reduce((total, lot) =>
+      total + (lot.expiresAt === null || lot.expiresAt > now ? lot.remaining : 0), 0);
+  }
+  return {
+    async adjust(context: MutationContext, input: unknown) {
+      const request = c.adjustClassCreditsRequestSchema.parse(input);
+      return scope(context.gymId, async tx => {
+        const member = await lockMemberCredits(tx, request.memberId);
+        if (member.anonymizedAt) notFound();
+        const now = clock.now();
+        let entries = await tx.select().from(classCreditEntries).where(and(eq(classCreditEntries.kind, 'adjust'), eq(classCreditEntries.adjustmentId, request.adjustmentId)))
+          .orderBy(asc(classCreditEntries.createdAt), asc(classCreditEntries.id));
+        if (entries.length) {
+          if (entries.some(row => row.memberId !== request.memberId || row.reason !== request.reason)
+            || entries.reduce((total, row) => total + row.credits, 0) !== request.credits)
+            throw new AppError('conflict', t('billing/packs:adjustmentReused'), { reason: ['adjustment_id_reused'] });
+        } else {
+          if (request.credits > 0) entries = await tx.insert(classCreditEntries).values({
+            id: uuidv7(), gymId: context.gymId, memberId: request.memberId, kind: 'adjust',
+            credits: request.credits, reason: request.reason, adjustmentId: request.adjustmentId,
+            createdBy: context.actor.kind === 'user' ? context.actor.userId : null, createdAt: now,
+          }).returning();
+          else {
+            const result = await drawCredits(tx, { gymId: context.gymId, memberId: request.memberId,
+              credits: -request.credits, now, kind: 'adjust', adjustmentId: request.adjustmentId, reason: request.reason,
+              createdBy: context.actor.kind === 'user' ? context.actor.userId : null });
+            if (result.outcome === 'insufficient_credits')
+              throw new AppError('conflict', t('billing/packs:insufficientCredits'), { reason: ['insufficient_credits'] });
+            entries = result.entries;
+          }
+          // Free text lives only on redactable ledger rows; the audit references those rows and their reason field.
+          await audit(tx, context, clock, 'billing.credits.adjusted', 'member', request.memberId,
+            { adjustmentId: request.adjustmentId, credits: request.credits,
+              entries: entries.map(row => ({ id: row.id, lotId: row.lotId, credits: row.credits, reasonEntryId: row.id })) });
+        }
+        entries.sort((a, b) => a.id.localeCompare(b.id));
+        return { data: { adjustmentId: request.adjustmentId, balance: await balance(tx, request.memberId, now),
+          entries: entries.map(row => entry(row, null)) } };
+      });
+    },
+    async read(gymId: string, memberId: string, input: unknown) {
+      const query = c.classCreditLedgerQuerySchema.parse(input);
+      return scope(gymId, async tx => {
+        // The same lock gives balance, lots and the page one consistent view of all credit writers.
+        await lockMemberCredits(tx, memberId);
+        const now = clock.now(), lots = await remainingLots(tx, memberId);
+        const sales = await tx.select({ id: classPackSales.id, number: invoices.number }).from(classPackSales)
+          .innerJoin(invoices, and(eq(invoices.gymId, classPackSales.gymId), eq(invoices.id, classPackSales.invoiceId)))
+          .where(eq(classPackSales.memberId, memberId));
+        const numbers = new Map(sales.map(row => [row.id, row.number]));
+        const where = eq(classCreditEntries.memberId, memberId);
+        const total = await tx.$count(classCreditEntries, where);
+        const rows = await tx.select().from(classCreditEntries).where(where)
+          .orderBy(desc(classCreditEntries.createdAt), desc(classCreditEntries.id)).limit(query.limit).offset(query.offset);
+        // Draws and expiry rows inherit the sale's invoice through the lot, even without their own saleId.
+        const openings = await tx.select({ id: classCreditEntries.id, saleId: classCreditEntries.saleId })
+          .from(classCreditEntries).where(and(where, isNull(classCreditEntries.lotId)));
+        const saleByEntry = new Map(openings.map(row => [row.id, row.saleId]));
+        const numberFor = (row: CreditEntry) => numbers.get(row.saleId ?? saleByEntry.get(row.lotId ?? '') ?? '') ?? null;
+        return { data: { memberId, balance: lots.reduce((total, lot) =>
+          total + (lot.expiresAt === null || lot.expiresAt > now ? lot.remaining : 0), 0),
+        lots: lots.map(lot => ({ id: lot.id, remaining: lot.remaining, expiresAt: lot.expiresAt?.toISOString() ?? null,
+          createdAt: lot.createdAt.toISOString(), saleId: lot.saleId, invoiceNumber: numberFor(lot) })),
+        entries: rows.map(row => entry(row, numberFor(row))) }, pagination: { ...query, total } };
+      });
+    },
+  };
+}
+export type CreditLedgerService = ReturnType<typeof createCreditLedgerService>;

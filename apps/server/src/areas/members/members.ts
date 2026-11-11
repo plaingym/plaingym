@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gt, ilike, inArray, isNull, ne, or } from 'drizzle-orm';
 import { forGym, members, memberRanks, memberships, households, householdUsers, memberTags, memberTagLinks, signedLinks, waiverSignatures,
-  invoices, paymentMethods, classBookings, classSessions, staffProfiles, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
+  invoices, paymentMethods, classBookings, classSessions, classCreditEntries, staffProfiles, databaseCode, revisionGuard, assertRevised, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
@@ -106,6 +106,8 @@ export function createMembersService(options: MembersOptions = {}) {
           checkinCodeHash: null, anonymizedAt: now, revision: guard.next })
           .where(and(eq(members.id, id), guard.matches, isNull(members.anonymizedAt))).returning(memberFields));
         await tx.delete(memberTagLinks).where(eq(memberTagLinks.memberId, id));
+        await tx.update(classCreditEntries).set({ reason: '' })
+          .where(and(eq(classCreditEntries.memberId, id), eq(classCreditEntries.kind, 'adjust')));
         // Only upcoming places are freed; bookings for sessions that have started stay as history.
         const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
           .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
