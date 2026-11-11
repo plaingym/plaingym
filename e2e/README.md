@@ -17,7 +17,7 @@ pnpm --dir e2e check-types
 pnpm --dir e2e test
 ```
 
-CI runs this suite in the **End-to-end** workflow on every integration branch, nightly,
+CI runs this suite in the **End-to-end** workflow on every task and integration branch, nightly,
 and on demand, keeping `coverage/` (the report, and traces of failed tests) as an artifact for
 seven days. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
 installs only the browser (`playwright install chromium`), skipping the `apt-get` step of

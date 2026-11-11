@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: CI
-# Pushes to main, integration and release branches, and pull requests.
+# Pushes to main, task, integration and release branches, and pull requests.
 # Markdown-only changes run the docs tests in Repo compliance; they skip this full build and test suite.
 on:
   push:
-    branches: [main, 'integration/**', 'release/**']
+    branches: [main, 'task/**', 'integration/**', 'release/**']
     paths-ignore: ['**/*.md']
   pull_request:
     paths-ignore: ['**/*.md']

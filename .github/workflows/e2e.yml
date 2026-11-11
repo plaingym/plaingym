@@ -6,7 +6,7 @@ name: End-to-end
 # A push that changes Markdown files only skips it; the nightly run still covers main.
 on:
   push:
-    branches: [main, 'integration/**']
+    branches: [main, 'task/**', 'integration/**']
     paths-ignore: ['**/*.md']
   schedule:
     - cron: '17 6 * * *'
