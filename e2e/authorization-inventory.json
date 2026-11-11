@@ -8,6 +8,7 @@
   {"method": "POST", "path": "/api/billing/class-packs", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "PATCH", "path": "/api/billing/class-packs/{packId}", "permission": {"kind": "staff", "capability": "plans.manage"}},
   {"method": "GET", "path": "/api/leads/funnel", "permission": {"kind": "staff", "capability": "leads.manage"}},
+  {"method": "GET", "path": "/api/reports/members", "permission": {"kind": "staff", "capability": "reports.read"}, "additionalPermissions": [{"kind": "staff", "capability": "billing.read"}]},
   {"method": "POST", "path": "/api/announcements/preview", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/test", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/send", "permission": {"kind": "staff", "capability": "announcements.send"}},

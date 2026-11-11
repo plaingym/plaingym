@@ -35,3 +35,48 @@ with localized client text. Empty buckets have no program rows and zero totals.
 A multi-program visit can appear in several program rows, while overall totals
 count each check-in and each member once. Program names and all attendance reads
 stay inside the gym's forced RLS context.
+
+## Members
+
+`GET /api/reports/members?from=2026-01&to=2026-11` returns monthly member
+activity. It requires both `reports.read` and `billing.read` (owners and admins)
+and sends `Cache-Control: no-store`. The inclusive range has the same 24-month
+limit and gym-local month boundaries as attendance; there is no granularity option.
+
+Each bucket has `activeAtStart`, `new`, `imported`, `cancelled`, `netChange`,
+`activeAtEnd`, `frozenAtEnd`, and `churn`. Churn is an integer `numerator`
+(cancelled) and positive `denominator` (active at start), or null when the
+denominator is zero. Clients format the percentage.
+
+Activity starts at the first active assignment, activation or membership import
+audit event, regardless of a backdated `starts_on`. Pending and trial memberships
+do not count until activation. Cancellation uses `memberships.cancelled_at`,
+including member erasure; erased members remain in historical counts. Freezes
+remain active, and freeze/resume events determine frozen intervals. An active or
+frozen row without activation evidence falls back to `starts_on` at local midnight
+only when its audit history does not identify an unconverted pending/trial
+membership. A frozen trial has never become active and does not count;
+a cancelled row without activation evidence never counted. A freeze from
+`active` that comes before any activation shows the row was already active, so
+it also uses the `starts_on` fallback (cancelled or not), and its later resume
+is not counted as new. Directly seeded frozen
+rows use `frozen_at` (or their start when absent).
+
+The service unions each member's overlapping or touching memberships before
+counting entries and exits. Cancelling one overlapping membership is not churn.
+Leaving and returning counts a cancellation and a new entry, including within
+one month. An activity interval starting with an import enters `imported` instead
+of `new`; an overlapping addition never adds another member. A member with any
+live frozen membership counts once in `frozenAtEnd`.
+
+Snapshots are immediately before local midnight at the boundary: an activation
+exactly on the first enters that month's `new` or `imported`; a cancellation
+exactly on the first is in that month's `cancelled`. This preserves
+`activeAtStart + new + imported - cancelled = activeAtEnd` and continuity
+between adjacent months. Current-month buckets cover the full calendar month.
+
+`members.query.ts` joins memberships to the four lifecycle audit actions in one
+statement in one `forGym` call, using the gym/action/target audit index. This keeps
+the membership rows and their history in the same database snapshot. The
+TypeScript service reconstructs live and frozen intervals without a history table.
+The existing reports route barrel mounts it; no extra runtime wiring is needed.

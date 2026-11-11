@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { dateSchema, idSchema, instantSchema } from './common.js';
 import type { EndpointContract } from './definition.js';
+import { membersReportCountsSchema } from './reports/members.js';
 
 export const reportMonthSchema = z.string().regex(/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/);
 const monthIndex = (month: string) => Number(month.slice(0, 4)) * 12 + Number(month.slice(5));
@@ -22,13 +23,24 @@ export const attendanceReportResponseSchema = z.strictObject({ data: z.strictObj
     totals: z.strictObject(counts),
   })),
 }) });
+export const membersReportQuerySchema = reportRangeQuerySchema;
+export const membersReportResponseSchema = z.strictObject({ data: z.strictObject({
+  from: reportMonthSchema, to: reportMonthSchema, timezone: z.string(),
+  buckets: z.array(reportBucketSchema.extend(membersReportCountsSchema.shape)),
+}) });
 export const reportsContracts = {
   attendance: { method: 'get', path: '/api/reports/attendance',
     permission: { kind: 'staff', capability: 'reports.read' },
     query: attendanceReportQuerySchema, response: attendanceReportResponseSchema },
+  members: { method: 'get', path: '/api/reports/members',
+    permission: { kind: 'staff', capability: 'reports.read' },
+    additionalPermissions: [{ kind: 'staff', capability: 'billing.read' }],
+    query: membersReportQuerySchema, response: membersReportResponseSchema },
 } as const satisfies Record<string, EndpointContract>;
 
 export type ReportRangeQuery = z.infer<typeof reportRangeQuerySchema>;
 export type ReportBucket = z.infer<typeof reportBucketSchema>;
 export type AttendanceReportQuery = z.infer<typeof attendanceReportQuerySchema>;
 export type AttendanceReportResponse = z.infer<typeof attendanceReportResponseSchema>;
+export type MembersReportQuery = z.infer<typeof membersReportQuerySchema>;
+export type MembersReportResponse = z.infer<typeof membersReportResponseSchema>;

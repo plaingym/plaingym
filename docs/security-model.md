@@ -160,6 +160,8 @@ holds only the stage and revision. `GET /api/leads/funnel` returns only counts
 per source, never member details, with `Cache-Control: no-store`.
 
 `reports.read` allows owners, admins and coaches to read `GET /api/reports/attendance`.
+`GET /api/reports/members` additionally requires `billing.read`, so only owners
+and admins can read member activity and churn.
 Front desk staff and member sessions cannot read reports. Reports read only the
 resolved gym's rows through `forGym` and forced RLS, including program names;
 responses carry `Cache-Control: no-store`.

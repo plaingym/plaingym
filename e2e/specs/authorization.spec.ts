@@ -114,6 +114,19 @@ test('lead funnel allows owners, admins and front desk, and denies coaches', asy
   expect((await install.clients.coach.request(path)).status).toBe(403);
 });
 
+test('members reports require reports and billing access with monthly answers', async ({ install }) => {
+  const path = '/api/reports/members?from=2026-01&to=2026-01';
+  for (const role of all) {
+    const response = await install.clients[role].request(path);
+    expect(response.status, role).toBe(managers.includes(role) ? 200 : 403);
+    if (managers.includes(role)) {
+      const { data } = JSON.parse(response.text);
+      expect(data.buckets).toHaveLength(1);
+      for (const b of data.buckets) expect(b.activeAtStart + b.new + b.imported - b.cancelled).toBe(b.activeAtEnd);
+    }
+  }
+});
+
 test('automatic updates are owner-only and unavailable on multi-gym installs', async ({ install, sandboxes }) => {
   const path = '/api/health/auto-update';
   const read = await install.clients.owner.json<{ data: { available: boolean; enabled: boolean; revision: number } }>(path);
