@@ -409,7 +409,8 @@ Old versions and documents referenced by signatures remain retained after retire
 * **Erasure.** Staff with `members.anonymize` can erase a member's personal data
   on request: contact details, birth date, emergency contacts, medical notes,
   photo, signed waivers and signature images, lead contacts and lost reasons,
-  logins and links. The lead row remains for aggregate counts. Invoices and
+  logins and links, and the reasons on class credit adjustments. The lead row
+  and the credit ledger rows remain for aggregate counts and the books. Invoices and
   attendance keep their IDs for the books. Erasing a household's last member also
   revokes its cards, clears each card's billing name, email, phone and address at
   Stripe before detaching it, and clears the Stripe Customer's name, email, phone,
