@@ -49,7 +49,7 @@ export async function targetOf(gym: Context): Promise<Target> {
     rankId: gym.rankId, staffRoleId: roles.at(-1)?.id ?? missingId, userId: roles.at(-1)?.userId ?? missingId, staffProfileId: profiles[0]?.id ?? missingId,
     templateId: gym.templateId, planId: gym.planId, householdUserId: householdUsers[0]?.id ?? missingId, invitationId: invitations[0]?.id ?? missingId,
     chargeTypeId: gym.chargeTypeId, packId: gym.classPackId, taxRateId: gym.taxRateId, membershipId: gym.membershipId, paymentId: gym.paymentId, refundId: gym.refundId,
-    paymentMethodId: gym.paymentMethodId, linkId: gym.linkId, campaignId: gym.campaignId, announcementId: gym.announcementId, scheduleTemplateId: gym.scheduleTemplateId, classTagId: gym.classTagId,
+    paymentMethodId: gym.paymentMethodId, linkId: gym.linkId, campaignId: gym.campaignId, announcementId: gym.announcementId, attendanceId: gym.attendanceId, scheduleTemplateId: gym.scheduleTemplateId, classTagId: gym.classTagId,
     exportId: gym.exportId, importId: gym.importId, uploadId: gym.uploadId, paidInvoiceId: gym.paidInvoiceId };
   // Every kind of record exists in the gym's fixtures: an ID nothing holds would make a refusal prove nothing.
   for (const [name, id] of Object.entries(ids)) expect(id, `${gym.slug} fixture holds a ${name}`).toBeTruthy();
@@ -64,7 +64,7 @@ export function idFor(route: Route, name: string, target: Target) {
   // A receipt exists for a paid invoice only.
   if (name === 'invoiceId' && route.path.endsWith('/receipt')) return ids.paidInvoiceId ?? missingId;
   if (name !== 'id') return ids[name] ?? missingId;
-  const kinds: [RegExp, string][] = [[/^\/api\/(portal\/)?bookings(\/|$)|\/bookings\/\{id\}/, 'bookingId'], [/^\/api\/programs/, 'programId'], [/^\/api\/rank-systems/, 'rankSystemId'],
+  const kinds: [RegExp, string][] = [[/^\/api\/(portal\/)?bookings(\/|$)|\/bookings\/\{id\}/, 'bookingId'], [/^\/api\/attendance/, 'attendanceId'],[/^\/api\/programs/, 'programId'], [/^\/api\/rank-systems/, 'rankSystemId'],
     [/^\/api\/ranks/, 'rankId'], [/^\/api\/schedule\/sessions/, 'sessionId'], [/^\/api\/schedule\/templates/, 'scheduleTemplateId'], [/^\/api\/schedule\/tags/, 'classTagId'],
     [/^\/api\/kiosk\/devices/, 'deviceId'], [/^\/api\/exports/, 'exportId'], [/^\/api\/imports/, 'importId']];
   const kind = kinds.find(([pattern]) => pattern.test(route.path));

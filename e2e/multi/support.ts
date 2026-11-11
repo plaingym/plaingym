@@ -87,7 +87,7 @@ export interface GymFixture {
   /** A signed link, and a campaign that sent one. */
   linkId: string; campaignId: string;
   /** An announcement the owner sent. */
-  announcementId: string;
+  announcementId: string; attendanceId: string;
   /** A weekly schedule template, a class tag, a data export, and an import run (dry run) with its CSV upload. */
   scheduleTemplateId: string; classTagId: string; exportId: string; importId: string; uploadId: string;
 }
@@ -279,7 +279,9 @@ export async function createGym(gym: (typeof gyms)[number], afterWrite: (step: '
       mapping: [{ sourceColumn: 'First', targetField: 'firstName' }, { sourceColumn: 'Last', targetField: 'lastName' }] })).data;
     const announcement = (await write<{ data: RecordId }>(owner, 'announcements', '/api/announcements/send', 'POST', { subject: gym.name + ' notice', body: 'Placed announcement.',
       sendGeneration: randomUUID(), confirm: true })).data;
-    return { announcementId: announcement.id, campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id };
+    // A staff-recorded open-mat visit (the student's membership covers it, so no credit moves), so undoing one is aimed at a real record too.
+    const attendance = (await write<{ data: RecordId }>(owner, 'attendance', '/api/attendance', 'POST', { memberId: student.id, sessionId: null, programId: ranks.program.id })).data;
+    return { announcementId: announcement.id, attendanceId: attendance.id, campaignId: campaign.id, linkId: link.id, scheduleTemplateId: scheduleTemplate.id, classTagId: classTag.id, exportId: exported.id, importId: imported.id, uploadId: upload.id };
   });
 
   return { slug: gym.slug, name: gym.name, origin: gym.origin, gymId: opened.gymId, ownerEmail: gym.ownerEmail, coachEmail, stripeKey,
