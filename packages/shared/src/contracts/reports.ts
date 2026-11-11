@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { dateSchema, idSchema, instantSchema } from './common.js';
 import type { EndpointContract } from './definition.js';
 import { membersReportCountsSchema } from './reports/members.js';
+import { createRevenueReportResponseSchema } from './reports/revenue.js';
+export * from './reports/revenue.js';
 
 export const reportMonthSchema = z.string().regex(/^(?!0000)\d{4}-(0[1-9]|1[0-2])$/);
 const monthIndex = (month: string) => Number(month.slice(0, 4)) * 12 + Number(month.slice(5));
@@ -28,7 +30,12 @@ export const membersReportResponseSchema = z.strictObject({ data: z.strictObject
   from: reportMonthSchema, to: reportMonthSchema, timezone: z.string(),
   buckets: z.array(reportBucketSchema.extend(membersReportCountsSchema.shape)),
 }) });
+export const revenueReportResponseSchema = createRevenueReportResponseSchema(reportRangeQuerySchema, reportBucketSchema);
 export const reportsContracts = {
+  revenue: { method: 'get', path: '/api/reports/revenue',
+    permission: { kind: 'staff', capability: 'reports.read' },
+    additionalPermissions: [{ kind: 'staff', capability: 'billing.read' }],
+    query: reportRangeQuerySchema, response: revenueReportResponseSchema },
   attendance: { method: 'get', path: '/api/reports/attendance',
     permission: { kind: 'staff', capability: 'reports.read' },
     query: attendanceReportQuerySchema, response: attendanceReportResponseSchema },

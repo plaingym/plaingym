@@ -146,6 +146,22 @@ test('automatic updates are owner-only and unavailable on multi-gym installs', a
   expect([401, 403]).toContain((await other.request(path, 'PUT', { enabled: false, revision: multi.data.revision })).status);
 });
 
+test('revenue report is mounted and restricted to owners and admins', async ({ install, sandboxes }) => {
+  const path = '/api/reports/revenue?from=2026-01&to=2026-01';
+  for (const role of all) {
+    const response = await install.clients[role].request(path);
+    expect(response.status, role).toBe(managers.includes(role) ? 200 : 403);
+    if (managers.includes(role)) {
+      expect(JSON.parse(response.text).data).toMatchObject({ from: '2026-01', to: '2026-01', currencies: expect.any(Array) });
+    }
+  }
+  const owner = await demoClient(sandboxes[0], 'owner');
+  expect((await owner.request(path)).status).toBe(200);
+  const foreign = new Client(sandboxes[1].origin);
+  foreign.cookie = owner.cookie;
+  expect([401, 403]).toContain((await foreign.request(path)).status);
+});
+
 test('a household login cannot reach staff routes', async ({ sandboxes }) => {
   const member = await demoClient(sandboxes[0], 'student');
   for (const entry of inventory.filter((item) => item.permission.kind === 'staff' && item.path !== '/api/setup/finish')) {

@@ -80,3 +80,53 @@ statement in one `forGym` call, using the gym/action/target audit index. This ke
 the membership rows and their history in the same database snapshot. The
 TypeScript service reconstructs live and frozen intervals without a history table.
 The existing reports route barrel mounts it; no extra runtime wiring is needed.
+
+## Revenue
+
+`GET /api/reports/revenue?from=2026-01&to=2026-11` requires both
+`reports.read` and `billing.read` (owners and admins). The same inclusive,
+at-most-24-month range and current-local-month limit apply. Responses carry
+`Cache-Control: no-store` and contain separate `currencies`, each with monthly
+`buckets`, `groups`, and `totals`; there is no combined currency total. A currency
+with activity has every requested month, including zero months. With no activity,
+`currencies` is empty. Amounts are integer minor units, including whole yen.
+The route also requires an owner or admin role before validation: combining coach
+and front desk capabilities does not grant revenue access.
+
+Payments count in the gym-local month of `paid_at`, across card, cash, check and
+other methods. Only `succeeded` refunds count, in the local month of `resolved_at`;
+their invoice and payment can predate the report. A later refund reduces its own
+month, leaving the earlier payment month unchanged. Pending, failed and canceled
+refunds and disputes do not reduce revenue. No invoice means no revenue, including
+a frozen month without an invoice.
+
+Payment amounts up to the invoice amount are allocated proportionally to its
+signed line amounts using largest remainder, with ties broken by line ID.
+Discounts remain negative. Excess over the invoice amount is **Unapplied**.
+Current billing transitions require an exact invoice amount; the report also
+handles excess receipts already present in storage.
+Billing transitions mark unaccepted duplicate card receipts with
+`accepted: false` in the payment audit event: their entire received amount is
+Unapplied until a successful refund reverses it. Older payments without that
+explicit marker are treated as accepted, matching billing transitions. An empty
+or zero-amount invoice also leaves its receipt Unapplied. Refunds are allocated
+over their own payment's allocated parts, including discounts and Unapplied,
+with the same exact integer rule. Each refund is allocated independently.
+
+`plan` groups membership lines by the membership's **current** plan; `signup_fee`
+is a separate group for that plan. A plan change moves earlier membership and
+signup-fee revenue too because invoice lines store no plan ID. `charge_type`
+groups typed charges; `other` covers untyped charges. `discount`, each `tax`, and
+`unapplied` are separate groups. Archived plans, charge types and taxes retain
+their current names. Built-in groups have null IDs/names for client localization;
+tax lines without a tax ID retain their description. Tax allocations are shown
+apart: monthly `netBeforeTax + netTax = net`. Every group's `payments - refunds =
+net`, including signed discount refunds; groups add exactly to monthly totals.
+
+`revenue.allocation.ts` uses BigInt products and signed floor/remainder arithmetic
+internally, returning safe integer minor units. `createRevenueReportService`
+reuses the shared local-month boundaries. `revenue.query.ts` performs four
+statements in one short `forGym` call: received payments, resolved refunds with
+their payments, touched invoice lines joined to current catalog names, and
+payment acceptance audit markers. No statement is added per invoice or month.
+The report only reads billing data and requires no extra runtime configuration.

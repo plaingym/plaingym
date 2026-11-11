@@ -3,7 +3,7 @@
 
 An AGPL-3.0-only gym application with members and households, ranks and promotions,
 class scheduling and kiosk attendance, imports and exports, waivers, signed links
-and campaigns, attendance and member activity reports, Stripe billing, and encrypted backups.
+and campaigns, attendance and member activity reports, revenue reports by plan, Stripe billing, and encrypted backups.
 To run it for a gym, see [the self-hosting guide](docs/self-hosting.md); the
 [documentation index](docs/README.md) lists the rest, including the
 [architecture](docs/architecture.md) and the [security model](docs/security-model.md).

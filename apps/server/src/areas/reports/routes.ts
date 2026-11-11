@@ -2,5 +2,6 @@
 import type { RouteRegistration } from '../../core/registry.js';
 import { routes as attendanceRoutes } from './attendance.routes.js';
 import { routes as membersRoutes } from './members.routes.js';
+import { routes as revenueRoutes } from './revenue.routes.js';
 
-export const routes: readonly RouteRegistration[] = [...attendanceRoutes, ...membersRoutes];
+export const routes: readonly RouteRegistration[] = [...attendanceRoutes, ...membersRoutes, ...revenueRoutes];

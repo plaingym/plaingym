@@ -164,7 +164,11 @@ per source, never member details, with `Cache-Control: no-store`.
 and admins can read member activity and churn.
 Front desk staff and member sessions cannot read reports. Reports read only the
 resolved gym's rows through `forGym` and forced RLS, including program names;
-responses carry `Cache-Control: no-store`.
+responses carry `Cache-Control: no-store`. `GET /api/reports/revenue` additionally
+requires `billing.read` and an owner or admin role before validation. Combining
+coach and front desk roles cannot grant revenue access. Its
+payments, refunds, invoice lines, payment audit markers and current catalog names
+are read in one `forGym` transaction, with no billing writes.
 
 `integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
 **Settings → Email, payments and backups** after it, whose responses and audits
