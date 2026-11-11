@@ -301,7 +301,9 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
     expect(state.audits.filter(row => row.action === 'billing.refund.recorded')).toHaveLength(3);
     expect(state.audits.filter(row => row.action === 'billing.invoice.refunded')).toHaveLength(2);
     expect(state.audits.filter(row => row.action === paymentRecorded)).toHaveLength(origin === 'card success' ? 1 : 0);
-    expectWork(state, origin === 'card success' ? ['receipt', 'activate_memberships'] : []);
+    expectWork(state, origin === 'card success' ? ['receipt', 'activate_memberships', 'reverse_credits'] : ['reverse_credits']);
+    expect(await f.drain()).toBe(origin === 'card success' ? 3 : 1);
+    expectWork(await f.read(), origin === 'card success' ? ['receipt', 'activate_memberships', 'reverse_credits'] : ['reverse_credits'], true);
   });
 
   it.each(['card success', 'restored payment'] as const)('a failed refund leaves the invoice paid and releases its reservation: %s', async origin => {
@@ -324,6 +326,6 @@ describe('billing scenarios: PostgreSQL invoice transitions and published effect
     expect(state.payments).toHaveLength(1);
     expect(state.audits.filter(row => row.action === 'billing.refund.recorded')).toHaveLength(3);
     expect(state.audits.filter(row => row.action === paymentRecorded)).toHaveLength(origin === 'card success' ? 1 : 0);
-    expectWork(state, origin === 'card success' ? ['receipt', 'activate_memberships'] : []);
+    expectWork(state, origin === 'card success' ? ['receipt', 'activate_memberships', 'reverse_credits'] : ['reverse_credits']);
   });
 });

@@ -177,13 +177,16 @@ source of truth; Stripe is the processor. In outline:
 * **Catalog and memberships** (`areas/billing/catalog.README.md`,
   `memberships.README.md`): plans, charge types, tax rates, memberships; the
   [class pack catalog](../apps/server/src/areas/billing/packs/README.md) manages
-  revision-checked pack prices and tax links.
+  revision-checked pack prices and tax links. Staff sell packs as one-off invoices;
+  zero-total sales settle immediately, payment grants credits and a full refund
+  reverses unused credits.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's
   schedule, and reconciles uncertain attempts with Stripe by ID.
 * **Transitions** (`areas/billing/transitions/`): the only code that changes invoice
-  state, forward only; its effects (receipts, dunning, membership activation)
+  state; its effects (receipts, dunning, membership activation, class credit grants
+  and full-refund reversals)
   run as jobs.
 * **Webhook inbox** (`areas/billing/webhooks/`): verify the signature, store the
   event once, process it in a job.

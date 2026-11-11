@@ -83,10 +83,19 @@ Activation uses MembershipLifecycle after committing a payment or zero-value set
 pending/trial memberships on membership line items, and skips active, frozen and
 cancelled memberships; a sign-up fee alone does not end a trial. Revision checks
 protect concurrent membership edits. Replaying a partially completed activation
-does not activate a membership twice. The optional `afterInvoicePaid(gymId, invoiceId)`
+does not activate a membership twice. The effect then calls the packs grant directly,
+which grants a paid or partially refunded pack sale once, including zero settlements.
+The optional `afterInvoicePaid(gymId, invoiceId)`
 then runs for every paid or zero-settled invoice, however it was paid; it must be
 idempotent, since the effect runs it again until it completes, and a throw retries the
 effect job.
+
+A refund that changes the invoice to `refunded` queues `reverse_credits` in its
+transaction. It reverses only unused credits from that sale's lot. Partial refunds
+queue no reversal. Both credit operations lock invoice then member and audit with
+the ledger write. A reversal still runs if the refund later fails and reopens the
+invoice; that failure never restores credits. A delayed grant after a full refund
+is suppressed. See [class packs](../packs/README.md) for expiry and replay rules.
 
 Cycle failures enqueue dunning and one schedule per invoice. The first failure
 reads the gym's billing retry days (default `[3, 7]`) and saves them with

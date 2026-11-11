@@ -11,6 +11,7 @@ const desk: Role[] = ['owner', 'admin', 'front_desk'];
 const coaches: Role[] = ['owner', 'admin', 'coach'];
 const matrix: Record<string, Role[]> = {
   'plans.manage': managers,
+  'payments.record': desk,
   'announcements.send': managers,
   'reports.read': coaches,
   'members.read': all, 'members.manage': desk, 'members.anonymize': managers,
@@ -25,6 +26,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path === '/api/health/auto-update'
   || path.startsWith('/api/reports/')
   || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
+  || path.startsWith('/api/billing/packs/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
@@ -132,6 +134,28 @@ test('a household login cannot reach staff routes', async ({ sandboxes }) => {
 
 // The demo has no Stripe account, so starting card setup is unavailable there; nothing else may answer 503.
 const stripeCheckout = new Set(['POST /api/portal/payment-methods/checkout']);
+test('front desk reads and sells a pack for the member household; coach and foreign members are refused', async ({ install, sandboxes }) => {
+  const owner = install.clients.owner, desk = install.clients.front_desk;
+  const home = (await owner.json<{ data: { id: string } }>('/api/households', 'POST', { name: 'Pack sale payer' })).data;
+  const member = (await owner.json<{ data: { id: string } }>('/api/members', 'POST',
+    { firstName: 'Pack', lastName: 'Buyer', householdId: home.id })).data;
+  const pack = (await owner.json<{ data: { id: string; revision: number } }>('/api/billing/class-packs', 'POST',
+    { name: 'Sale test classes', currency: 'USD', amountCents: 10000, credits: 10 })).data;
+  expect((await desk.request('/api/billing/class-packs')).status).toBe(200);
+  expect((await desk.request('/api/billing/class-packs/' + pack.id)).status).toBe(200);
+  const path = '/api/billing/packs/' + pack.id + '/sell', body = { memberId: member.id, dueOn: '2026-11-10' };
+  expect((await install.clients.coach.request(path, 'POST', body)).status).toBe(403);
+  const invoice = (await desk.json<{ data: { householdId: string; amountCents: number; status: string } }>(path, 'POST', body)).data;
+  expect(invoice).toMatchObject({ householdId: home.id, amountCents: 10000, status: 'open' });
+  expect((await desk.request(path, 'POST', { ...body, householdId: missingId })).status).toBe(400);
+  const foreign = await demoClient(sandboxes[0], 'owner');
+  const members = await foreign.json<{ data: { id: string }[] }>('/api/members');
+  expect((await desk.request(path, 'POST', { ...body, memberId: members.data[0]!.id })).status).toBe(404);
+  expect((await foreign.request(path, 'POST', { ...body, memberId: members.data[0]!.id })).status).toBe(404);
+  await owner.json('/api/billing/class-packs/' + pack.id, 'PATCH', { revision: pack.revision, active: false });
+  expect((await desk.request(path, 'POST', body)).status).toBe(409);
+});
+
 for (const width of [360, 1280]) test('pack-only tax archive confirms its affected packs at ' + width + 'px', async ({ install, page, context }, info) => {
   const owner = install.clients.owner, name = 'Pack tax ' + width;
   const tax = (await owner.json<{ data: { id: string } }>('/api/billing/tax-rates', 'POST',

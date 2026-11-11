@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { canStaff } from '../../permissions.js';
 import { parseMinorUnits, formatMinorUnits } from '../../money.js';
-import { billingContracts, classPackResponseSchema, createClassPackRequestSchema, updateClassPackRequestSchema } from '../billing.js';
+import { billingContracts, classPackResponseSchema, createClassPackRequestSchema, updateClassPackRequestSchema, sellClassPackRequestSchema } from '../billing.js';
 
 const input = { name: 'Ten classes', amountCents: 10000, currency: 'CAD', credits: 10 };
 describe('pack catalog contracts', () => {
@@ -31,12 +31,21 @@ describe('pack catalog contracts', () => {
     for (const [currency, amountCents] of [['KWD', 1251], ['ISK', 501]] as const)
       expect(createClassPackRequestSchema.safeParse({ ...input, currency, amountCents }).success).toBe(false);
   });
-  it('requires plans.manage for every pack route', () => {
+  it('allows front desk to read packs and reserves editing for owners and admins', () => {
     for (const name of ['listClassPacks', 'getClassPack', 'createClassPack', 'updateClassPack'] as const) {
       const permission = billingContracts[name].permission;
-      expect(permission).toEqual({ kind: 'staff', capability: 'plans.manage' });
+      const read = name === 'listClassPacks' || name === 'getClassPack';
+      expect(permission).toEqual({ kind: 'staff', capability: read ? 'billing.read' : 'plans.manage' });
       for (const role of ['owner', 'admin', 'coach', 'front_desk'] as const)
-        expect(canStaff([role], permission.capability)).toBe(role === 'owner' || role === 'admin');
+        expect(canStaff([role], permission.capability)).toBe(role === 'owner' || role === 'admin' || read && role === 'front_desk');
     }
+  });
+  it('allows staff collection roles to sell, derives the payer, and validates real due dates', () => {
+    const request = { memberId: '019a08bf-1234-7000-8000-000000000001', dueOn: '2028-02-29' };
+    expect(sellClassPackRequestSchema.parse(request)).toEqual(request);
+    for (const extra of [{ dueOn: '2026-02-29' }, { memberId: 'invalid' }, { householdId: request.memberId },
+      { invoiceId: request.memberId }, { amountCents: 0 }, { credits: 100 }])
+      expect(sellClassPackRequestSchema.safeParse({ ...request, ...extra }).success).toBe(false);
+    expect(billingContracts.sellClassPack.permission).toEqual({ kind: 'staff', capability: 'payments.record' });
   });
 });

@@ -88,7 +88,7 @@ export interface InvoiceAttemptFixture {
 export type InvoiceEffect = {
   readonly gymId: Id;
   readonly invoiceId: Id;
-  readonly kind: 'receipt' | 'activate_memberships' | 'dunning' | 'refund_duplicate' | 'staff_notice';
+  readonly kind: 'receipt' | 'activate_memberships' | 'reverse_credits' | 'dunning' | 'refund_duplicate' | 'staff_notice';
   readonly paymentId?: Id;
 };
 interface StoredPayment extends Money { invoiceId: Id; id: Id; accepted: boolean; fingerprint: string; }
@@ -272,6 +272,7 @@ export class FakeInvoiceTransitions implements InvoiceTransitions {
       .reduce((sum, [, { request: other }]) => sum + other.amountCents, 0);
     const next: InvoiceSnapshot = { ...invoice,
       status: refunded === 0 ? 'paid' : refunded >= invoice.amountCents ? 'refunded' : 'partially_refunded' };
+    if (next.status === 'refunded' && invoice.status !== 'refunded') this.#effect(context.gymId, invoice.id, 'reverse_credits');
     this.#invoices.set(scopedKey(context.gymId, invoice.id), next);
     return this.#result('applied', next);
   }

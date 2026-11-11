@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { idSchema } from './common.js';
+import { sellClassPackRequestSchema } from './billing/packs.js';
 import {
   createClassPackRequestSchema, updateClassPackRequestSchema, classPackResponseSchema, classPackListResponseSchema,
   billingCatalogListQuerySchema, billingTaxRateListQuerySchema,
@@ -28,6 +29,7 @@ import {
 } from './billing/payments.js';
 
 export * from './billing/catalog.js';
+export * from './billing/packs.js';
 export * from './billing/memberships.js';
 export * from './billing/invoices.js';
 export * from './billing/payments.js';
@@ -60,9 +62,11 @@ const collect = { kind: 'staff', capability: 'payments.record' } as const;
  * area contracts; these endpoints all require the named staff capability.
  */
 export const billingContracts = {
-  listClassPacks: { method: 'get', path: '/api/billing/class-packs', permission: catalog,
+  sellClassPack: { method: 'post', path: '/api/billing/packs/{packId}/sell', permission: collect,
+    params: billingClassPackParamsSchema, body: sellClassPackRequestSchema, response: invoiceResponseSchema, successStatus: 201 },
+  listClassPacks: { method: 'get', path: '/api/billing/class-packs', permission: read,
     query: billingCatalogListQuerySchema, response: classPackListResponseSchema, successStatus: 200 },
-  getClassPack: { method: 'get', path: '/api/billing/class-packs/{packId}', permission: catalog,
+  getClassPack: { method: 'get', path: '/api/billing/class-packs/{packId}', permission: read,
     params: billingClassPackParamsSchema, response: classPackResponseSchema, successStatus: 200 },
   createClassPack: { method: 'post', path: '/api/billing/class-packs', permission: catalog,
     body: createClassPackRequestSchema, response: classPackResponseSchema, successStatus: 201 },

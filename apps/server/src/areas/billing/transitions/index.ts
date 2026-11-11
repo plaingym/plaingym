@@ -211,6 +211,7 @@ export function createInvoiceTransitions(options: TransitionOptions = {}): Invoi
           await tx.update(invoices).set({ status: next.status }).where(eq(invoices.id, invoice.id));
           await audit(tx, context, clock, reversed ? 'billing.invoice.refund_reversed' : 'billing.invoice.refunded', 'invoice',
             invoice.id, snapshot(next), snapshot(invoice));
+          if (next.status === 'refunded') await effect(tx, context, clock, { kind: 'reverse_credits', invoiceId: invoice.id });
         }
         return result('applied', next);
       });

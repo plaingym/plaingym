@@ -12,6 +12,7 @@ import type { Jobs, JobContext } from '../../../infra/jobs/index.js';
 import type { Payments, Refund } from '../../../infra/payments/index.js';
 import type { TransitionNotifications } from './notifications.js';
 import { retryAt } from '../runner/eligibility.js';
+import { createPackCredits } from '../packs/credits.js';
 import { pastRefundWindow, settleLapsed } from '../payments.mutations.js';
 import { abandonedAttempt, audit, effectCompleted, effectCreated, effectPublished, lockInvoice, recorded, snapshot, terminal,
   type TransitionEffect } from './store.js';
@@ -38,6 +39,7 @@ export interface TransitionEffectOptions {
 }
 export function createTransitionEffects(options: TransitionEffectOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
+  const credits = createPackCredits({ scope, clock, settings: options.settings });
   const system = (gymId: string) => ({ gymId, actor: { kind: 'system' as const } });
   async function publish(gymId: string) {
     const gym = await options.settings.get(gymId);
@@ -99,7 +101,10 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         if (membership.status === 'pending' || membership.status === 'trial')
           await options.memberships.activate(system(gymId), { membershipId, revision: membership.revision });
       }
+      await credits.grant(gymId, invoice.id);
       await options.afterInvoicePaid?.(gymId, invoice.id);
+    } else if (work.kind === 'reverse_credits') {
+      await credits.reverse(gymId, invoice.id);
     } else if (work.kind === 'dunning') {
       if (invoice.kind === 'cycle' && !terminal(invoice) && attempt?.id === latestAttempt?.id)
         await options.notifications.dunning({ ...data, actionRequired: attempt?.status === 'requires_action' });

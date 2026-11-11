@@ -46,7 +46,7 @@ describe('pack catalog routes', () => {
   for (const operation of operations) {
     for (const role of ['owner', 'admin', 'coach', 'front_desk'] as const) it(operation + ' enforces ' + role, async () => {
       const f = await fixture(), response = await request(server(f, staff(f, role)), operation, f);
-      const allowed = role === 'owner' || role === 'admin';
+      const allowed = role === 'owner' || role === 'admin' || role === 'front_desk' && ['listClassPacks', 'getClassPack'].includes(operation);
       expect(response.status, await response.clone().text()).toBe(allowed ? billingContracts[operation].successStatus : 403);
       if (allowed) {
         const awaitJson = await response.json();

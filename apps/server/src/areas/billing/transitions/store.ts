@@ -12,7 +12,7 @@ export const effectCompleted = 'billing.transition.effect.completed';
 export const paymentRecorded = 'billing.payment.recorded';
 export type InvoiceRow = typeof invoices.$inferSelect;
 export interface TransitionEffect {
-  kind: 'receipt' | 'activate_memberships' | 'dunning' | 'retry' | 'refund_duplicate' | 'staff_notice';
+  kind: 'receipt' | 'activate_memberships' | 'reverse_credits' | 'dunning' | 'retry' | 'refund_duplicate' | 'staff_notice';
   invoiceId: string;
   paymentId?: string;
   attemptId?: string;

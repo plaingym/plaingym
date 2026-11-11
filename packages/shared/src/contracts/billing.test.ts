@@ -284,7 +284,7 @@ describe('billing endpoint permissions', () => {
     }
   });
   const managerOnly = new Set([
-    'listClassPacks', 'getClassPack', 'createClassPack', 'updateClassPack',
+    'createClassPack', 'updateClassPack',
     'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'createChargeType', 'updateChargeType',
     'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership',
     'cancelMembership', 'createRefund', 'releaseInvoiceHold',

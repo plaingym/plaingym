@@ -48,7 +48,11 @@ export function invoiceTransitionsContract(name: string, create: () => Promise<I
       const second: RefundTransition = { ...first, refundId: randomUUID(), processorId: 're_contract_2', amountCents: amountCents - part };
       const status = async (request: RefundTransition) => (await h.transitions.refund(h.context, request)).invoice.status;
       expect(await status(first)).toBe('partially_refunded');
+      expect(count((await h.read()).effects, 'reverse_credits')).toBe(0);
       expect(await status(second)).toBe('refunded');
+      expect(count((await h.read()).effects, 'reverse_credits')).toBe(1);
+      await status(second);
+      expect(count((await h.read()).effects, 'reverse_credits')).toBe(1);
       expect(count((await h.read()).effects, 'staff_notice')).toBe(0);
       expect(await status({ ...second, status: 'failed' })).toBe('partially_refunded');
       expect(count((await h.read()).effects, 'staff_notice')).toBe(1);
