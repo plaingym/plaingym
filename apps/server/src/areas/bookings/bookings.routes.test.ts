@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { householdUsers, uuidv7 } from '@plaingym/db';
+import { auditEvents, classBookings, classCreditEntries, householdUsers, uuidv7 } from '@plaingym/db';
 // eslint-disable-next-line no-restricted-imports -- Initialize the real registrations' app-role pools in the isolated composition test; no raw queries.
 import { initializeDatabase, closeDatabase } from '@plaingym/db/client';
 import { useTestDatabase } from '@plaingym/db/testing/database';
@@ -62,6 +62,89 @@ function app(f: Fixture, principal: Principal, fake = false, production = false)
 const post = (server: ReturnType<typeof app>, path: string, body?: unknown) => server.request(path, { method: 'POST',
   headers: { 'content-type': 'application/json', origin: 'http://localhost', ...portalTestHeaders(server) }, body: JSON.stringify(body ?? {}) });
 const book = (f: Fixture, memberId = f.member.id) => service.book(f.actor, { memberId, sessionId: f.session.id, allowWaitlist: true });
+
+describe('portal class-credit eligibility', () => {
+  it.each(['self', 'household'] as const)('refuses a new %s booking, then allows it after a grant without reserving credits', async target => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    const member = target === 'self' ? f.member : f.sibling;
+    const path = target === 'self' ? '/api/portal/bookings' : `/api/portal/members/${member.id}/bookings`;
+    await factory('classCreditEntries', f.gymId, { memberId: member.id, credits: 1, expiresAt: clock.now() });
+    // Household credits do not cover another member.
+    await factory('classCreditEntries', f.gymId, { memberId: target === 'self' ? f.sibling.id : f.member.id, credits: 10 });
+    const before = await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries));
+    const denied = await post(server, path, { sessionId: f.session.id });
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toMatchObject({ error: { code: 'conflict',
+      message: 'You need an unexpired class credit or an active membership to book or join the waitlist. Please contact the front desk.' } });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents))).toHaveLength(0);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries))).toEqual(before);
+    const grant = await factory('classCreditEntries', f.gymId, { memberId: member.id, credits: 1 });
+    const first = await post(server, path, { sessionId: f.session.id });
+    expect(first.status).toBe(200);
+    expect((await first.json()).data.status).toBe('booked');
+    const other = await factory('classSessions', f.gymId, { capacity: 1, startsAt: f.session.startsAt, endsAt: f.session.endsAt });
+    expect((await post(server, path, { sessionId: other.id })).status).toBe(200);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries))).toHaveLength(before.length + 1);
+    // Replaying a successful booking still works after the member's balance runs out.
+    await factory('classCreditEntries', f.gymId, { memberId: member.id, lotId: grant.id, credits: -1 });
+    expect((await post(server, path, { sessionId: f.session.id })).status).toBe(200);
+  });
+
+  it('applies the same check before a waitlist insert', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    for (let n = 0; n < 5; n++) await book(f, (await factory('members', f.gymId)).id);
+    const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, credits: -1 });
+    const input = { sessionId: f.session.id, allowWaitlist: true };
+    expect((await post(server, '/api/portal/bookings', input)).status).toBe(409);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(5);
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const response = await post(server, '/api/portal/bookings', input);
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ status: 'waitlisted', queueRank: 1 });
+  });
+
+  it.each(['active', 'trial', 'frozen', 'cancelled', 'pending'] as const)('uses %s membership eligibility for a pack holder', async status => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
+    await factory('memberships', f.gymId, { memberId: f.member.id, householdId: f.member.householdId, status });
+    expect((await post(server, '/api/portal/bookings', { sessionId: f.session.id })).status).toBe(status === 'active' || status === 'trial' ? 200 : 409);
+  });
+
+  it('accepts an unexpired credit even when it expires before class starts', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1, expiresAt: new Date(clock.now().getTime() + 1) });
+    expect((await post(server, '/api/portal/bookings', { sessionId: f.session.id })).status).toBe(200);
+  });
+
+  it('keeps never-held members eligible in both portal booking paths without memberships', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    expect((await post(server, '/api/portal/bookings', { sessionId: f.session.id })).status).toBe(200);
+    expect((await post(server, `/api/portal/members/${f.sibling.id}/bookings`, { sessionId: f.session.id })).status).toBe(200);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classCreditEntries))).toEqual([]);
+  });
+
+  it('leaves staff bookings and waitlisting unchecked for an expired pack', async () => {
+    const f = await fixture(), server = app(f, staffPrincipal(f));
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
+    for (let n = 0; n < 5; n++) await book(f, (await factory('members', f.gymId)).id);
+    const response = await post(server, '/api/bookings', { memberId: f.member.id, sessionId: f.session.id, allowWaitlist: true });
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ status: 'waitlisted', bookedByKind: 'staff' });
+  });
+
+  it('checks household and gym access before returning any credit conflict', async () => {
+    const f = await fixture(), foreign = await fixture(), server = app(f, memberPrincipal(f));
+    for (const [gymId, member] of [[f.gymId, f.outsider], [foreign.gymId, foreign.member]] as const) {
+      await factory('classCreditEntries', gymId, { memberId: member.id, expiresAt: clock.now() });
+      expect((await post(server, `/api/portal/members/${member.id}/bookings`, { sessionId: f.session.id })).status).toBe(404);
+    }
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
+    expect((await post(app(f, memberPrincipal(f, true)), `/api/portal/members/${f.member.id}/bookings`, { sessionId: f.session.id })).status).toBe(404);
+    expect(await db.forGym(f.gymId, tx => tx.select().from(classBookings))).toHaveLength(0);
+  });
+});
 
 describe('booking route permissions and production composition', () => {
   it('promotes the waiting member after erasure commits through the member route', async () => {

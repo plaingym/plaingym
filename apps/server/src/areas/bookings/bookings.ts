@@ -9,6 +9,7 @@ import { notFound, type MutationContext } from '../../core/interfaces/common.js'
 import type { PortalIdentity } from '../../core/interfaces/member-household.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
+import { hasActiveMembership, isPackHolder, usableLots } from '../billing/packs/index.js';
 import { activeBookings, assertBookable, assertCancellable, bookingAudit, bookingConflict, openPlaces, reconcileSessionBookings,
   type BookingRow } from './bookings.rules.js';
 
@@ -68,6 +69,8 @@ export function createBookingService(options: BookingOptions = {}) {
         const existing = active.find(row => row.memberId === value.memberId);
         if (existing) return bookingView(tx, existing);
         assertBookable(session, gym, clock.now());
+        if (context.portal && await isPackHolder(tx, value.memberId) && !await hasActiveMembership(tx, value.memberId)
+          && !(await usableLots(tx, value.memberId, clock.now())).length) bookingConflict('noCredits');
         const waiting = active.filter(row => row.status === 'waitlisted');
         // A newcomer never jumps an existing queue while its promotion job is pending.
         const waitlisted = openPlaces(session.capacity!, active) === 0;

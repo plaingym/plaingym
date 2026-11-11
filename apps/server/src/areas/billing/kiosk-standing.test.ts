@@ -2,12 +2,16 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { attendances, invoices, uuidv7 } from '@plaingym/db';
+import type { Principal } from '../../core/context.js';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { createApp } from '../../core/app.js';
 import { TestClock } from '../../core/clock.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { hashHouseholdPin } from '../members/pin.js';
+import { createCheckinCodeService } from '../members/checkin-code.js';
+import { createQrCheckin } from '../kiosk/qr.js';
+import { createQrCheckinRoutes } from '../kiosk/qr.routes.js';
 import { createKioskCheckin } from '../kiosk/standing/checkin.js';
 import { createKioskCheckinRoutes } from '../kiosk/standing/standing.routes.js';
 import { createBillingStanding } from './kiosk-standing.js';
@@ -110,5 +114,76 @@ describe('past-due kiosk standing', () => {
       await database.forGym(f.gymId, tx => tx.update(invoices).set(update).where(eq(invoices.id, f.invoice.id)));
       expect(await standing.check({ gymId: f.gymId, memberId: f.member.id, clock })).toEqual({ status: 'ok' });
     }
+  });
+});
+
+describe('class-credit kiosk standing', () => {
+  async function routes(f: Awaited<ReturnType<typeof fixture>>, mode: 'qr' | 'name-pin') {
+    const device = await factory('kioskDevices', f.gymId), user = await factory('authUser', f.gymId);
+    const codes = createCheckinCodeService({ scope: database.forGym, clock, gymKey: async () => secret });
+    const { code } = await codes.regenerate({ gymId: f.gymId, actor: { kind: 'user', userId: user.id } }, f.member.id, { revision: f.member.revision });
+    const checkin = createKioskCheckin({ scope: database.forGym, clock, pinSecret: async () => secret });
+    const qr = createQrCheckin({ scope: database.forGym, clock, codes });
+    const app = (principal: Principal) => createApp({ clock, authorize, skipSetup: true,
+      resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() } }); await next(); },
+      session: async (c, next) => { c.set('context', { ...c.get('context'), principal }); await next(); },
+      contributions: { routes: [...createKioskCheckinRoutes(checkin), ...createQrCheckinRoutes(qr)] },
+    });
+    const deviceApp = app({ kind: 'kiosk', gymId: f.gymId, deviceId: device.id });
+    return {
+      checkin: () => deviceApp.request(mode === 'qr' ? '/api/kiosk/checkin/qr' : '/api/kiosk/checkin', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(mode === 'qr' ? { code, sessionId: null }
+          : { name: 'Alex River', pin: '2468', checkins: [{ memberId: f.member.id, sessionId: null }] }),
+      }),
+      standing: (principal: Principal = { kind: 'staff', gymId: f.gymId, userId: user.id, roles: ['front_desk'] }, memberId = f.member.id) =>
+        app(principal).request(`/api/kiosk/standing/${memberId}`),
+    };
+  }
+
+  for (const mode of ['qr', 'name-pin'] as const) {
+    it.each(['expired', 'exhausted'] as const)(`${mode} gives a neutral refusal for an %s pack, with a staff-only reason`, async kind => {
+      const f = await fixture({ invoice: { status: 'paid' } });
+      const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1,
+        expiresAt: kind === 'expired' ? clock.now() : null });
+      if (kind === 'exhausted') await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, credits: -1 });
+      // Another member's usable credits, even in the same household, cannot cover this member.
+      await factory('classCreditEntries', f.gymId, { memberId: f.sibling.id, credits: 10 });
+      const server = await routes(f, mode), response = await server.checkin();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data: mode === 'qr' ? { status: 'see_front_desk' } : [{ status: 'see_front_desk' }] });
+      expect(await database.forGym(f.gymId, tx => tx.select().from(attendances))).toHaveLength(0);
+      const staff = await server.standing();
+      expect(staff.status).toBe(200);
+      expect(await staff.json()).toEqual({ data: { memberId: f.member.id, status: 'front_desk', reasons: ['no_credits'] } });
+      expect((await server.standing({ kind: 'kiosk', gymId: f.gymId, deviceId: uuidv7() })).status).toBe(403);
+      const foreign = await fixture({ invoice: { status: 'paid' } });
+      expect((await server.standing(undefined, foreign.member.id)).status).toBe(404);
+      await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+      const allowed = await server.checkin();
+      expect(allowed.status).toBe(200);
+      const data = (await allowed.json()).data;
+      expect(mode === 'qr' ? data.status : data[0].status).toBe('checked_in');
+    });
+
+    it.each(['credit', 'active', 'trial', 'never-held'] as const)(`${mode} allows %s eligibility`, async eligibility => {
+      const f = await fixture({ invoice: { status: 'paid' } });
+      if (eligibility !== 'never-held') await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1,
+        expiresAt: eligibility === 'credit' ? new Date(clock.now().getTime() + 1) : clock.now() });
+      if (eligibility === 'active' || eligibility === 'trial')
+        await factory('memberships', f.gymId, { memberId: f.member.id, householdId: f.member.householdId, status: eligibility });
+      const server = await routes(f, mode), response = await server.checkin();
+      expect(response.status).toBe(200);
+      const data = (await response.json()).data;
+      expect(mode === 'qr' ? data.status : data[0].status).toBe('checked_in');
+      expect(await database.forGym(f.gymId, tx => tx.select().from(attendances))).toHaveLength(1);
+    });
+  }
+
+  it.each(['frozen', 'cancelled', 'pending'] as const)('does not let a %s membership cover an expired pack', async status => {
+    const f = await fixture({ invoice: { status: 'paid' } });
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, expiresAt: clock.now() });
+    await factory('memberships', f.gymId, { memberId: f.member.id, householdId: f.member.householdId, status });
+    expect(await standing.check({ gymId: f.gymId, memberId: f.member.id, clock })).toEqual({ status: 'front_desk', reasonCode: 'no_credits' });
   });
 });

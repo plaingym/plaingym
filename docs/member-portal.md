@@ -79,6 +79,14 @@ app* option.
 
 ## How booking works
 
+* A member who has held class credits needs an unexpired credit or an active or
+  trial membership to book or join a waitlist in the portal. If neither is
+  available, the portal refuses the booking; contact the front desk. Booking does not
+  reserve or spend a credit. Staff can still book on the member's behalf.
+  Members who have never held credits keep the existing booking rules.
+* At the kiosk, a member who has held credits and has neither a usable credit nor
+  an active or trial membership sees the neutral front-desk message. The kiosk
+  shows no credit balance or reason; staff can inspect the standing reason.
 * Booking a full class puts the member on the **waitlist** at a numbered position.
   A new booking never jumps the waitlist.
 * When a place opens (a cancellation, or you raise the capacity), waitlisted members

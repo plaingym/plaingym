@@ -9,6 +9,14 @@ user who created the booking. An adult non-payer can only book for themself;
 a payer uses the household-member paths for other members, or when their login
 has no member profile of its own.
 
+For a new portal booking or waitlist entry, a member with any class-credit
+ledger entry needs a usable, unexpired credit or an active membership (`active`
+or `trial`). The booking transaction uses the pack ledger helpers after checking
+the portal's member access and before inserting anything. A refusal is a
+translated conflict. Members who have never held credits and staff-created
+bookings keep their existing rules. Booking does not reserve or spend a credit;
+replaying an existing booking still returns that booking.
+
 Every booking change locks its session with `FOR UPDATE`, recounts active
 bookings and writes/audits in the same short transaction. A booking also locks
 the member first, matching erasure's lock order. Repeating a booking or
