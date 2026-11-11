@@ -330,6 +330,41 @@ describe('prorated first periods', () => {
   });
 });
 
+describe('the plan recorded on each line', () => {
+  const plans = (result: CalculatedInvoice) => result.lineItems.map((line) => [line.kind, line.planId]);
+  it('records each membership plan on its cycle line, and on none of the discount or tax lines', () => {
+    const result = invoice(cycle({ familyDiscountBasisPoints: 1_000, memberships: [
+      priced({}, [tax(50_000)]), priced({ id: id(11), memberId: id(21), planId: id(31) }, [tax(130_000, true, 51)]),
+    ] }));
+    expect(plans(result)).toEqual([
+      ['membership', id(30)], ['discount', null], ['tax', null],
+      ['membership', id(31)], ['discount', null], ['tax', null],
+    ]);
+    checkContract(result);
+  });
+  it('records the plan on an off-day cycle stub and a prorated first period', () => {
+    const stub = calculateCycleInvoice(cycle({ billingDay: 15, dueOn: '2026-03-10', memberships: [priced({ nextDueOn: '2026-03-10' })] })).invoice!;
+    expect(plans(stub)).toEqual([['membership', id(30)]]);
+    const firstPeriod = calculateFirstPeriod(first({ familyDiscountBasisPoints: 1_000 })).invoice!;
+    expect(plans(firstPeriod)).toEqual([['membership', id(30)], ['discount', null]]);
+    checkContract(stub); checkContract(firstPeriod);
+  });
+  it('records a signup fee plan and never a plan on a charge', () => {
+    const result = calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
+      { kind: 'signup_fee', description: 'Sign-up', amountCents: 2000, currency: 'CAD', membershipId: id(10), planId: id(30), taxRates: [tax(50_000)] },
+      { kind: 'charge', chargeTypeId: id(40), description: 'Drop-in', amountCents: 1000, currency: 'CAD', taxRates: [] },
+    ] });
+    expect(plans(result)).toEqual([['signup_fee', id(30)], ['tax', null], ['charge', null]]);
+    checkContract(result);
+    expect(() => calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
+      { kind: 'charge', description: 'Drop-in', amountCents: 1000, currency: 'CAD', planId: id(30), taxRates: [] },
+    ] })).toThrow(RangeError);
+    expect(() => calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [
+      { kind: 'signup_fee', description: 'Sign-up', amountCents: 1000, currency: 'CAD', planId: 'not-an-id', taxRates: [] },
+    ] })).toThrow();
+  });
+});
+
 describe('one-off charges', () => {
   it.each(['charge', 'signup_fee'] as const)('calculates a separate %s invoice', (kind) => {
     const result = calculateOneOffInvoice({ householdId, currency: 'CAD', dueOn: '2026-03-16', charges: [

@@ -63,7 +63,9 @@ function missing(): never { throw new AppError('not_found', 'Join not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Online joining is not available'); }
 function invalid(message: string): never { throw new AppError('invalid_request', message); }
 function changed(): never { throw new AppError('conflict', 'Review the current membership and waivers before submitting'); }
-const snapshot = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, ...row }: typeof memberships.$inferSelect) => c.membershipSchema.parse({ ...row,
+const snapshot = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, scheduledPlanId: _plan, scheduledAmountCents: _amount,
+  scheduledInterval: _interval, scheduledOn: _on, switchOverrideReason: _reason, ...row }: typeof memberships.$inferSelect) =>
+  c.membershipSchema.parse({ ...row,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const plan = (row: typeof plans.$inferSelect, plusTax: boolean) => c.publicPlanSchema.parse({ id: row.id, name: row.name, amountCents: row.amountCents,
   currency: row.currency, interval: row.interval, plusTax, signupFeeCents: row.signupFeeCents, trialDays: row.trialDays,
@@ -194,7 +196,7 @@ export function createJoinService(options: JoinOptions) {
           description: row.name, taxRates: taxes, ...(r.anniversaryOn === null ? {} : { annualAnchorOn: r.anniversaryOn }) })) });
       if (cycle && !cycle.invoice) changed();
       const fees = row.signupFeeCents > 0 ? calculateOneOffInvoice({ householdId: home.id, currency, dueOn: today, charges: rows.map(r => ({
-        kind: 'signup_fee' as const, description: t('billing/runner:signupFee', { plan: row.name }), membershipId: r.id,
+        kind: 'signup_fee' as const, description: t('billing/runner:signupFee', { plan: row.name }), membershipId: r.id, planId: r.planId,
         amountCents: row.signupFeeCents, currency, taxRates: taxes })) }) : null;
       // A trial owes only its sign-up fee now; its first full period is due when the trial ends.
       // Trial invoices have no membership lines: the generic paid-invoice effect would activate trials early.

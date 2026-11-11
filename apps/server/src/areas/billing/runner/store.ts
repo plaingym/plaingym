@@ -55,8 +55,9 @@ async function priced(tx: Transaction, row: typeof memberships.$inferSelect): Pr
   const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths,
     inclusive: taxRates.inclusive }).from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId))
     .where(eq(planTaxRates.planId, row.planId));
-  const { gymId: _gymId, anniversaryOn, ...fields } = row;
-  void _gymId;
+  const { gymId: _gymId, anniversaryOn, scheduledPlanId: _plan, scheduledAmountCents: _amount, scheduledInterval: _interval,
+    scheduledOn: _on, switchOverrideReason: _reason, ...fields } = row;
+  void [_gymId, _plan, _amount, _interval, _on, _reason];
   return { membership: membershipSchema.parse({ ...fields, createdAt: row.createdAt.toISOString(),
     frozenAt: row.frozenAt?.toISOString() ?? null, cancelledAt: row.cancelledAt?.toISOString() ?? null }),
     description: plan.name, taxRates: taxes, ...(anniversaryOn === null ? {} : { annualAnchorOn: anniversaryOn }) };
@@ -103,6 +104,7 @@ export function assignmentInvoices(clock: Clock): NonNullable<MembershipOptions[
     if (billing.signupFeeCents > 0) await issue(tx, context, clock, calculateOneOffInvoice({
       householdId: home.id, currency: membership.currency, dueOn: membership.startsOn,
       charges: [{ kind: 'signup_fee', description: t('billing/runner:signupFee', { plan: plan.name }),
-        membershipId: membership.id, amountCents: billing.signupFeeCents, currency: membership.currency, taxRates: billing.taxes }] }));
+        membershipId: membership.id, planId: membership.planId, amountCents: billing.signupFeeCents, currency: membership.currency,
+        taxRates: billing.taxes }] }));
   };
 }

@@ -53,13 +53,24 @@ export const invoiceLineItemSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...lineFields,
     kind: z.literal('tax'),
+    planId: z.null(),
     taxRateId: idSchema.nullable(),
     taxRateMillionths: taxRateMillionthsSchema,
     taxInclusive: z.boolean(),
   }),
+  // planId is the plan the line was billed under; lines written before it was recorded have none.
   z.strictObject({
     ...lineFields,
-    kind: z.enum(['membership', 'signup_fee', 'charge', 'discount']),
+    kind: z.enum(['membership', 'signup_fee']),
+    planId: idSchema.nullable(),
+    taxRateId: z.null(),
+    taxRateMillionths: z.null(),
+    taxInclusive: z.null(),
+  }),
+  z.strictObject({
+    ...lineFields,
+    kind: z.enum(['charge', 'discount']),
+    planId: z.null(),
     taxRateId: z.null(),
     taxRateMillionths: z.null(),
     taxInclusive: z.null(),

@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { and, eq } from 'drizzle-orm';
 // eslint-disable-next-line database/system-tables -- Inspect durable queue rows to prove erasure and redaction commit or roll back together.
-import { auditEvents, classCreditEntries, households, members, leads, leadContacts, jobs as jobRows, uuidv7, type forGym } from '@plaingym/db';
+import { auditEvents, classCreditEntries, households, members, memberships, leads, leadContacts, jobs as jobRows, uuidv7, type forGym } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../core/clock.js';
@@ -24,7 +24,8 @@ async function fixture(customerId: string | null) {
   const person = await factory('members', gymId, { householdId: home.id, firstName: 'Original' });
   const lead = await factory('leads', gymId, { memberId: person.id, stage: 'lost', lostAt: clock.now(), lostReason: 'Private reason' });
   await factory('leadContacts', gymId, { leadId: lead.id, occurredAt: clock.now(), channel: 'call', note: 'Private note', createdBy: userId });
-  return { home, person, lead };
+  const membership = await factory('memberships', gymId, { householdId: home.id, memberId: person.id, switchOverrideReason: 'Private override' });
+  return { home, person, lead, membership };
 }
 function app(queue: Pick<Jobs, 'enqueue'>, scope: typeof forGym = database.forGym) {
   const server = new OpenAPIHono<RequestEnvironment>(), redactCustomer = vi.fn(async () => undefined);
@@ -48,7 +49,7 @@ async function redactions(customerId: string) {
 describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
   function queue() { return kind === 'fake' ? new FakeJobs(clock) : new PostgresJobs({ database, clock }); }
   it('rolls back erasure, audit and job after their writes but before commit', async () => {
-    const customerId = 'cus_rollback_' + uuidv7().replaceAll('-', ''), { home, person, lead } = await fixture(customerId);
+    const customerId = 'cus_rollback_' + uuidv7().replaceAll('-', ''), { home, person, lead, membership } = await fixture(customerId);
     const credit = await factory('classCreditEntries', gymId, { memberId: person.id, reason: 'Original private reason' });
     const q = queue();
     const scope: typeof forGym = (gym, fn) => database.forGym(gym, async tx => {
@@ -73,12 +74,15 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
       .toBe('Original private reason');
     expect((await database.forGym(gymId, tx => tx.select().from(leads).where(eq(leads.id, lead.id))))[0]!.lostReason).toBe('Private reason');
     expect(await database.forGym(gymId, tx => tx.select().from(leadContacts).where(eq(leadContacts.leadId, lead.id)))).toHaveLength(1);
+    expect((await database.forGym(gymId, tx => tx.select().from(memberships).where(eq(memberships.id, membership.id))))[0]!
+      .switchOverrideReason).toBe('Private override');
     expect(await redactions(customerId)).toEqual([]);
     if (q instanceof FakeJobs) expect(q.jobs).toEqual([]);
     expect(server.redactCustomer).not.toHaveBeenCalled();
   });
   it('commits the erased member and its redaction job before calling the provider', async () => {
-    const customerId = 'cus_commit_' + uuidv7().replaceAll('-', ''), { home, person, lead } = await fixture(customerId);
+    const customerId = 'cus_commit_' + uuidv7().replaceAll('-', ''), { home, person, lead, membership } = await fixture(customerId);
+    const otherMembership = await factory('memberships', gymId, { switchOverrideReason: 'Another member override' });
     const credit = await factory('classCreditEntries', gymId, { memberId: person.id, reason: 'Private adjustment detail' });
     const draw = await factory('classCreditEntries', gymId, { memberId: person.id, credits: -1,
       lotId: credit.id, reason: 'Private negative detail' });
@@ -102,6 +106,10 @@ describe.each(['fake', 'postgres'] as const)('%s atomic erasure', kind => {
       .toBe('Another member detail');
     expect((await database.forGym(gymId, tx => tx.select().from(leads).where(eq(leads.id, lead.id))))[0]).toMatchObject({ stage: 'lost', lostReason: null });
     expect(await database.forGym(gymId, tx => tx.select().from(leadContacts).where(eq(leadContacts.leadId, lead.id)))).toEqual([]);
+    const overrideReason = async (id: string) => (await database.forGym(gymId, tx => tx.select().from(memberships)
+      .where(eq(memberships.id, id))))[0]!.switchOverrideReason;
+    expect(await overrideReason(membership.id)).toBeNull();
+    expect(await overrideReason(otherMembership.id)).toBe('Another member override');
     if (q instanceof FakeJobs) expect(q.jobs[0]).toMatchObject({ name: redactCustomerJob, payload: { customerId },
       options: { idempotencyKey: `redact:${customerId}`, maxAttempts: 12, timezone: 'UTC' }, runAt: new Date(clock.now().getTime() + 60_000) });
     else expect((await redactions(customerId))[0]).toMatchObject({ name: redactCustomerJob, maxAttempts: 12,

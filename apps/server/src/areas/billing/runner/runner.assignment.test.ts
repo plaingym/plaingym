@@ -86,6 +86,19 @@ describe('assignment collection and review holds', () => {
     expect(rows.attempts).toHaveLength(0);
     expect(create).not.toHaveBeenCalled();
   });
+  it('records the plan on cycle, first-period and sign-up fee lines, and on no other line', async () => {
+    const f = await fixture();
+    expect((await f.runner.daily(f.gymId)).errors).toEqual([]);
+    const { membership } = await assign(f);
+    const { lines } = await f.read();
+    const planned = lines.filter(line => line.planId !== null)
+      .map(line => [line.kind, line.membershipId, line.planId]).sort((a, b) => String(a).localeCompare(String(b)));
+    expect(planned).toEqual([
+      ['membership', f.membership.id, f.plan.id], ['membership', membership.id, membership.planId],
+      ['signup_fee', membership.id, membership.planId],
+    ].sort((a, b) => String(a).localeCompare(String(b))));
+    expect(lines.filter(line => line.planId === null).every(line => line.kind !== 'membership' && line.kind !== 'signup_fee')).toBe(true);
+  });
   it('collects assignment proration and sign-up fees after commit, without collecting another household', async () => {
     const f = await fixture();
     const create = vi.spyOn(f.provider, 'createCharge');

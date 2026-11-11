@@ -26,7 +26,7 @@ const settings: GymSettings = { id: gymId, name: 'Gym', slug: 'gym', currency: '
 const desk = { record: true, refund: false, links: true }, admin = { ...desk, refund: true };
 function transport(initial: Partial<InvoiceDetail> = {}) {
   const detail: InvoiceDetail = { invoice, lineItems: [{ id: id(7), createdAt, householdId: home, invoiceId: invoice.id, kind: 'charge', description: 'Drop-in',
-    membershipId: null, chargeTypeId: null, amountCents: 2500, currency: 'USD', quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null }], payments: [], refunds: [], ...initial };
+    membershipId: null, chargeTypeId: null, planId: null, amountCents: 2500, currency: 'USD', quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null }], payments: [], refunds: [], ...initial };
   const page = (data: unknown[], total = data.length) => ({ data, pagination: { limit: 25, offset: 0, total } });
   const fetcher = vi.fn(async (path: string | URL | Request, options?: RequestInit) => {
     const url = new URL(String(path), 'http://gym.test'), method = options?.method ?? 'GET';

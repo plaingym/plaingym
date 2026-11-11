@@ -93,6 +93,27 @@ describe('export schema coverage and secret exclusions', () => {
       expect.objectContaining({ id: card.id, processor_created_at: processorCreatedAt }),
     ]);
   });
+  it('exports the scheduled plan switch, the override reason and each line plan only for the requested gym', async () => {
+    const gymA = uuidv7(), gymB = uuidv7();
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    const plan = await factory('plans', gymA);
+    const membership = await factory('memberships', gymA, { scheduledPlanId: plan.id, scheduledAmountCents: 9000,
+      scheduledInterval: 'annual', scheduledOn: '2026-12-01', switchOverrideReason: 'Moving away' });
+    const line = await factory('invoiceLineItems', gymA, { kind: 'membership', planId: plan.id });
+    const plain = await factory('invoiceLineItems', gymA);
+    await factory('memberships', gymB); await factory('invoiceLineItems', gymB, { kind: 'membership', planId: (await factory('plans', gymB)).id });
+    const cutoff = new Date('2099-01-01T00:00:00Z');
+    expect(await exportCatalog.memberships.page(database.forGym, gymA, cutoff)).toEqual([expect.objectContaining({
+      id: membership.id, scheduled_plan_id: plan.id, scheduled_amount_cents: 9000, scheduled_interval: 'annual',
+      scheduled_on: '2026-12-01', switch_override_reason: 'Moving away',
+    })]);
+    const lines = await exportCatalog.invoice_line_items.page(database.forGym, gymA, cutoff);
+    expect(lines).toHaveLength(2);
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: line.id, kind: 'membership', plan_id: plan.id }),
+      expect.objectContaining({ id: plain.id, kind: 'charge', plan_id: null }),
+    ]));
+  });
   it('accounts for every schema column with an explicit safe projection or exclusion', () => {
     const excluded: Partial<Record<keyof typeof exportCatalog, readonly string[]>> = {
       households: ['pin_hash'],

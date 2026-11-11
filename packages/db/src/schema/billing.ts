@@ -46,16 +46,27 @@ export const memberships = pgTable('memberships', {
   anniversaryOn: date('anniversary_on'),
   frozenAt: instant('frozen_at'), resumesOn: date('resumes_on'), cancelledAt: instant('cancelled_at'),
   // Recorded, never enforced; kept when the plan changes.
-  commitmentEndsOn: date('commitment_ends_on'), ...revision(),
+  commitmentEndsOn: date('commitment_ends_on'),
+  // A scheduled plan switch: all four set or all null. The amount and interval are quoted when the
+  // switch is scheduled, so a later price change on the plan doesn't alter it.
+  scheduledPlanId: uuid('scheduled_plan_id'), scheduledAmountCents: integer('scheduled_amount_cents'),
+  scheduledInterval: text('scheduled_interval'), scheduledOn: date('scheduled_on'),
+  // The reason given for the latest commitment override; member erasure clears it.
+  switchOverrideReason: text('switch_override_reason'), ...revision(),
 }, (t) => [...scoped('memberships', t), ref('memberships_household_fk', t.gymId, t.householdId, households),
   foreignKey({ name: 'memberships_member_fk', columns: [t.gymId, t.householdId, t.memberId], foreignColumns: [members.gymId, members.householdId, members.id] }),
-  ref('memberships_plan_fk', t.gymId, t.planId, plans), gymCurrency('memberships_currency_fk', t),
+  ref('memberships_plan_fk', t.gymId, t.planId, plans), ref('memberships_scheduled_plan_fk', t.gymId, t.scheduledPlanId, plans),
+  gymCurrency('memberships_currency_fk', t),
   unique('memberships_gym_household_id_key').on(t.gymId, t.householdId, t.id),
   index('memberships_due_idx').on(t.gymId, t.status, t.nextDueOn),
   index('memberships_member_idx').on(t.gymId, t.memberId),
   choice('memberships_status_check', t.status, ['pending', 'trial', 'active', 'frozen', 'cancelled']),
   choice('memberships_interval_check', t.interval, ['monthly', 'annual']),
   currencyCheck('memberships_currency_check', t.currency), check('memberships_amount_check', sql`${t.amountCents} >= 0`),
+  check('memberships_scheduled_check', sql`(${t.scheduledPlanId} is null and ${t.scheduledAmountCents} is null and ${t.scheduledInterval} is null and ${t.scheduledOn} is null)
+    or (${t.scheduledPlanId} is not null and ${t.scheduledAmountCents} is not null and ${t.scheduledAmountCents} >= 0
+      and ${t.scheduledInterval} in ('monthly', 'annual') and ${t.scheduledOn} is not null)`),
+  check('memberships_switch_override_reason_check', sql`${t.switchOverrideReason} is null or char_length(${t.switchOverrideReason}) between 1 and 500`),
   revisionCheck('memberships_revision_check', t.revision)]).enableRLS();
 /** number is the per-gym display number, allocated by allocateInvoiceNumber when the invoice is issued; drafts have none. */
 export const invoices = pgTable('invoices', {
@@ -91,11 +102,16 @@ export const invoiceLineItems = pgTable('invoice_line_items', {
   kind: text('kind').notNull(), description: text('description').notNull(),
   amountCents: integer('amount_cents').notNull(), currency: text('currency').notNull(), quantity: integer('quantity').notNull().default(1),
   taxRateMillionths: integer('tax_rate_millionths'), taxInclusive: boolean('tax_inclusive'),
+  // The plan a membership or signup-fee line was billed under, recorded when the line is written; null on
+  // other kinds and on lines written before it was recorded.
+  planId: uuid('plan_id'),
 }, (t) => [...scoped('invoice_line_items', t),
   foreignKey({ name: 'invoice_line_items_invoice_fk', columns: [t.gymId, t.householdId, t.invoiceId, t.currency],
     foreignColumns: [invoices.gymId, invoices.householdId, invoices.id, invoices.currency] }),
   foreignKey({ name: 'invoice_line_items_membership_fk', columns: [t.gymId, t.householdId, t.membershipId], foreignColumns: [memberships.gymId, memberships.householdId, memberships.id] }),
   ref('invoice_line_items_charge_type_fk', t.gymId, t.chargeTypeId, chargeTypes), ref('invoice_line_items_tax_fk', t.gymId, t.taxRateId, taxRates),
+  ref('invoice_line_items_plan_fk', t.gymId, t.planId, plans),
+  check('invoice_line_items_plan_check', sql`${t.planId} is null or ${t.kind} in ('membership', 'signup_fee')`),
   index('invoice_line_items_invoice_idx').on(t.gymId, t.invoiceId),
   choice('invoice_line_items_kind_check', t.kind, ['membership', 'signup_fee', 'charge', 'discount', 'tax']),
   check('invoice_line_items_tax_check', sql`(${t.kind} = 'tax' and ${t.taxRateMillionths} is not null and ${t.taxRateMillionths} between 0 and 1000000 and ${t.taxInclusive} is not null)

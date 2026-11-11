@@ -113,9 +113,11 @@ or zero-amount invoice also leaves its receipt Unapplied. Refunds are allocated
 over their own payment's allocated parts, including discounts and Unapplied,
 with the same exact integer rule. Each refund is allocated independently.
 
-`plan` groups membership lines by the membership's **current** plan; `signup_fee`
-is a separate group for that plan. A plan change moves earlier membership and
-signup-fee revenue too because invoice lines store no plan ID. `charge_type`
+`plan` groups membership lines by the plan each line recorded when it was billed
+(`invoice_line_items.plan_id`); `signup_fee` is a separate group for that plan.
+A plan change on the membership leaves those lines where they are. Lines written
+before migration `0029` recorded no plan, so they fall back to the membership's
+**current** plan, and a plan change still moves them. `charge_type`
 groups typed charges; `other` covers untyped charges. `discount`, each `tax`, and
 `unapplied` are separate groups. Archived plans, charge types and taxes retain
 their current names. Built-in groups have null IDs/names for client localization;

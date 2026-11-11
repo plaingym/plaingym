@@ -55,7 +55,7 @@ const invoice: Invoice = {
 const line: InvoiceLineItem = {
   id: ids.other, createdAt: now, householdId: ids.household, invoiceId: ids.invoice,
   membershipId: membership.id, chargeTypeId: null, description: 'Monthly', ...price,
-  kind: 'membership', quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null,
+  kind: 'membership', planId: ids.plan, quantity: 1, taxRateId: null, taxRateMillionths: null, taxInclusive: null,
 };
 const payment: Payment = {
   id: ids.payment, createdAt: now, invoiceId: ids.invoice, ...price, method: 'cash', reference: null, paidAt: now,
@@ -174,14 +174,14 @@ describe('invoices and tax snapshots', () => {
     expect(invoiceSchema.parse({ ...invoice, status: 'processing' }).status).toBe('processing');
   });
   it('requires rate snapshots on tax lines and prohibits them on ordinary lines', () => {
-    const tax = { ...line, kind: 'tax', description: 'QST', taxRateId: ids.tax,
+    const tax = { ...line, kind: 'tax', planId: null, description: 'QST', taxRateId: ids.tax,
       taxRateMillionths: 99_750, taxInclusive: false, amountCents: 998 };
     expect(invoiceLineItemSchema.parse(tax)).toEqual(tax);
     for (const changes of [
       { taxRateMillionths: null }, { taxInclusive: null }, { taxRateMillionths: 1_000_001 },
-      { kind: 'membership' }, { quantity: 0 },
+      { kind: 'membership' }, { quantity: 0 }, { planId: ids.plan },
     ]) expect(invoiceLineItemSchema.safeParse({ ...tax, ...changes }).success).toBe(false);
-    expect(invoiceLineItemSchema.parse({ ...line, kind: 'discount', amountCents: -500 }).amountCents).toBe(-500);
+    expect(invoiceLineItemSchema.parse({ ...line, kind: 'discount', planId: null, amountCents: -500 }).amountCents).toBe(-500);
     expect(invoiceLineItemSchema.safeParse({ ...line, taxRateId: ids.tax }).success).toBe(false);
   });
   it('rejects a detail containing another invoice, household, currency, or unrelated refund', () => {

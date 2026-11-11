@@ -65,6 +65,8 @@ export interface OneOffCharge {
   readonly quantity?: number;
   readonly membershipId?: Id;
   readonly chargeTypeId?: Id;
+  /** The plan a signup fee belongs to, recorded on its line; a charge has none. */
+  readonly planId?: Id;
   readonly taxRates: readonly AppliedTaxRate[];
 }
 export interface OneOffInvoiceInput {
@@ -81,6 +83,8 @@ interface Price {
   readonly currency: Currency;
   readonly membershipId: Id | null;
   readonly chargeTypeId: Id | null;
+  /** Recorded on membership and signup-fee lines only. */
+  readonly planId: Id | null;
   readonly taxRates: readonly AppliedTaxRate[];
 }
 
@@ -116,7 +120,7 @@ function calendar(input: HouseholdPricing, item: PricedMembership) {
 }
 function membershipPrice(item: PricedMembership, amountCents = item.membership.amountCents): Price {
   return { kind: 'membership', description: item.description, amountCents, currency: item.membership.currency,
-    quantity: 1, membershipId: item.membership.id, chargeTypeId: null, taxRates: item.taxRates };
+    quantity: 1, membershipId: item.membership.id, chargeTypeId: null, planId: item.membership.planId, taxRates: item.taxRates };
 }
 /** The currency's charge step: every amount the engine rounds lands on it, so a card charge in ISK or KWD is never refused. */
 function step(currency: Currency): bigint { return BigInt(minorUnitStep(currency)); }
@@ -200,7 +204,9 @@ export function calculateOneOffInvoice(input: OneOffInvoiceInput): CalculatedInv
   if (!input.charges.length) throw new RangeError('An invoice needs a charge');
   const prices = input.charges.map((charge): Price => {
     if (charge.kind !== 'charge' && charge.kind !== 'signup_fee') throw new RangeError('Invalid one-off charge kind');
-    return { ...charge, quantity: charge.quantity ?? 1, membershipId: charge.membershipId ?? null, chargeTypeId: charge.chargeTypeId ?? null };
+    if (charge.kind === 'charge' && charge.planId !== undefined) throw new RangeError('Only a signup fee records a plan');
+    return { ...charge, quantity: charge.quantity ?? 1, membershipId: charge.membershipId ?? null,
+      chargeTypeId: charge.chargeTypeId ?? null, planId: charge.planId ?? null };
   });
   return { householdId: input.householdId, kind: 'one_off', dueOn: input.dueOn, periodStartsOn: null, periodEndsOn: null,
     ...calculatePrices(input.currency, prices, 0, '') };
@@ -215,6 +221,7 @@ function calculatePrices(currency: Currency, prices: readonly Price[], discountB
     if (!Number.isInteger(price.quantity) || price.quantity < 1 || price.quantity > 2_147_483_647) throw new RangeError('Invalid quantity');
     if (price.membershipId !== null) idSchema.parse(price.membershipId);
     if (price.chargeTypeId !== null) idSchema.parse(price.chargeTypeId);
+    if (price.planId !== null) idSchema.parse(price.planId);
     const ids = new Set<Id>();
     for (const tax of price.taxRates) {
       idSchema.parse(tax.id); description(tax.name);
@@ -246,10 +253,12 @@ function calculatePrices(currency: Currency, prices: readonly Price[], discountB
     const net = (value: bigint) => roundRatio(value * 1_000_000n, 1_000_000n + includedRate, unit);
     const beforeDiscount = net(amount);
     const taxable = net(discounted);
-    const fields = { currency, membershipId: price.membershipId, chargeTypeId: price.chargeTypeId, quantity: 1 };
-    // Amounts are extended totals; unit-price multiplication has already happened.
-    lineItems.push({ ...fields, kind: price.kind, description: price.description, amountCents: checkedCents(beforeDiscount),
-      taxRateId: null, taxRateMillionths: null, taxInclusive: null });
+    const fields = { currency, membershipId: price.membershipId, chargeTypeId: price.chargeTypeId, quantity: 1, planId: null };
+    // Amounts are extended totals; unit-price multiplication has already happened. Only the priced line
+    // itself records a plan; its discount and tax lines never do.
+    const priced = { ...fields, description: price.description, amountCents: checkedCents(beforeDiscount),
+      taxRateId: null, taxRateMillionths: null, taxInclusive: null };
+    lineItems.push(price.kind === 'charge' ? { ...priced, kind: price.kind } : { ...priced, kind: price.kind, planId: price.planId });
     if (beforeDiscount !== taxable) lineItems.push({ ...fields, kind: 'discount', description: discountDescription,
       amountCents: -checkedCents(beforeDiscount - taxable), taxRateId: null, taxRateMillionths: null, taxInclusive: null });
     const inclusiveAmounts = allocate(discounted - taxable, included.map((tax) => BigInt(tax.rateMillionths)), unit);

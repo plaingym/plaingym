@@ -112,6 +112,16 @@ Migration `0028_report_time_indexes.sql` adds only three B-tree indexes:
 reading the rest of a gym's history. No rows, columns, policies or grants change.
 The report area's README records the full-gym measurements and plan comparisons.
 
+Migration `0029_plan_switch_schema.sql` adds six nullable columns and no rows.
+On `memberships`, `scheduled_plan_id` (a composite foreign key to the gym's
+`plans`), `scheduled_amount_cents` (≥ 0), `scheduled_interval` (`monthly` or
+`annual`) and `scheduled_on` hold a scheduled plan switch and are all null or all
+set; `switch_override_reason` (1–500 characters when set) holds the reason of the
+latest commitment override and is cleared by member erasure. Nothing sets these
+yet. On `invoice_line_items`, `plan_id` (a composite foreign key to `plans`) is
+the plan a `membership` or `signup_fee` line was billed under and must be null on
+every other kind. Existing lines keep a null plan; no backfill is performed.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

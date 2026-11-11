@@ -17,6 +17,13 @@ Inputs are not mutated. All outputs use integer minor units and the supplied gym
 membership and charge currencies must match it. Lines are projections of the shared
 `InvoiceLineItem` contract without persistence IDs. No dependency was added.
 
+Each membership line records its membership's plan in `planId`: cycle lines, the
+off-day stub and the prorated first period. A signup-fee charge passes its plan as
+`planId` and its line records it; the runner's assignment invoices and the join
+flow do this. Charge, discount and tax lines always have a null `planId`, and a
+charge that passes one is refused. The revenue report groups a line by this plan,
+so a later plan change on the membership doesn't move revenue already billed.
+
 ## Calendar
 
 Callers turn the injected clock's instant into the gym's date with

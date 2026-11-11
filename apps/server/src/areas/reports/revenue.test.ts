@@ -131,7 +131,7 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     expect(result.map(row => [row.currency, row.buckets[1]!.totals.payments])).toEqual([['JPY', 7], ['USD', 101]]);
     expect(result).toHaveLength(2);
   });
-  it('uses the membership current plan for earlier revenue', async () => {
+  it('uses the membership current plan for an earlier line that recorded no plan', async () => {
     const f = await fixture();
     const bill = await invoice(f, [{ kind: 'membership', membershipId: f.membership.id, amountCents: 100 }]);
     await payment(f, bill.id, 100, '2026-03-04T12:00:00Z');
@@ -139,6 +139,25 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     await database.forGym(f.gymId, tx => tx.update(memberships).set({ planId: plan.id }).where(eq(memberships.id, f.membership.id)));
     expect((await service.get(f, query)).data.currencies[0]!.buckets[1]!.groups)
       .toEqual([{ kind: 'plan', id: plan.id, name: 'New plan', ...amounts(100) }]);
+  });
+  it('keeps a line under the plan it recorded after the membership changes plan, beside an older line with none', async () => {
+    const f = await fixture();
+    const recorded = await invoice(f, [
+      { kind: 'membership', membershipId: f.membership.id, planId: f.plan.id, amountCents: 100 },
+      { kind: 'signup_fee', membershipId: f.membership.id, planId: f.plan.id, amountCents: 30 },
+    ]);
+    await payment(f, recorded.id, 130, '2026-03-04T12:00:00Z');
+    const older = await invoice(f, [{ kind: 'membership', membershipId: f.membership.id, amountCents: 50 }]);
+    await payment(f, older.id, 50, '2026-03-05T12:00:00Z');
+    const plan = await factory('plans', f.gymId, { name: 'New plan' });
+    await database.forGym(f.gymId, tx => tx.update(memberships).set({ planId: plan.id }).where(eq(memberships.id, f.membership.id)));
+    const groups = (await service.get(f, query)).data.currencies[0]!.buckets[1]!.groups;
+    expect(groups).toHaveLength(3);
+    expect(groups).toEqual(expect.arrayContaining([
+      { kind: 'plan', id: f.plan.id, name: 'Monthly', ...amounts(100) },
+      { kind: 'signup_fee', id: f.plan.id, name: 'Monthly', ...amounts(30) },
+      { kind: 'plan', id: plan.id, name: 'New plan', ...amounts(50) },
+    ]));
   });
   it('allocates an odd partial yen receipt and later refund over the payment parts, with inclusive tax apart', async () => {
     const f = await fixture('JPY');

@@ -15,7 +15,9 @@ import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
 
 type Row = typeof memberships.$inferSelect;
-const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
+// The scheduled switch and its override reason stay out of the Membership contract.
+const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, scheduledPlanId: _plan, scheduledAmountCents: _amount,
+  scheduledInterval: _interval, scheduledOn: _on, switchOverrideReason: _reason, ...row }: Row): c.Membership => c.membershipSchema.parse({ ...row,
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const conflict = (message: string): never => { throw new AppError('conflict', message); };

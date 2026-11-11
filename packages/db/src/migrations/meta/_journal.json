@@ -197,6 +197,13 @@
       "when": 1794374227328,
       "tag": "0028_report_time_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794431770535,
+      "tag": "0029_plan_switch_schema",
+      "breakpoints": true
     }
   ]
 }

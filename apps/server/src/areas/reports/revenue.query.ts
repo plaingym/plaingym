@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import { auditEvents, chargeTypes, invoiceLineItems, invoices, memberships, payments, plans, refunds, taxRates, type Transaction } from '@plaingym/db';
 
 /** Four bounded statements, regardless of month, payment or line count; all names remain under RLS. */
@@ -16,7 +16,9 @@ export async function readRevenue(tx: Transaction, gymId: string, startsAt: Date
   const lines = await tx.select({ line: invoiceLineItems, planId: plans.id, planName: plans.name,
     chargeName: chargeTypes.name, taxName: taxRates.name }).from(invoiceLineItems)
     .leftJoin(memberships, and(eq(memberships.gymId, invoiceLineItems.gymId), eq(memberships.id, invoiceLineItems.membershipId)))
-    .leftJoin(plans, and(eq(plans.gymId, memberships.gymId), eq(plans.id, memberships.planId)))
+    // A line groups under the plan it recorded when billed; a line from before plans were recorded, under its membership's current plan.
+    .leftJoin(plans, and(eq(plans.gymId, invoiceLineItems.gymId), or(eq(plans.id, invoiceLineItems.planId),
+      and(isNull(invoiceLineItems.planId), eq(plans.id, memberships.planId)))))
     .leftJoin(chargeTypes, and(eq(chargeTypes.gymId, invoiceLineItems.gymId), eq(chargeTypes.id, invoiceLineItems.chargeTypeId)))
     .leftJoin(taxRates, and(eq(taxRates.gymId, invoiceLineItems.gymId), eq(taxRates.id, invoiceLineItems.taxRateId)))
     .where(and(eq(invoiceLineItems.gymId, gymId), inArray(invoiceLineItems.invoiceId, invoiceIds)));

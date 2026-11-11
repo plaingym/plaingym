@@ -172,6 +172,10 @@ describe('join lead intake', () => {
     expect(submitted.leads.map(l => l.memberId).sort()).toEqual(submitted.members.filter(m => m.householdId === home.id).map(m => m.id).sort());
     for (const lead of submitted.leads) expect(lead).toMatchObject({ source: 'join', stage: 'new', revision: 1, createdAt: f.clock.now() });
     expect(submitted.audits.filter(a => a.action === 'lead.created')).toHaveLength(2);
+    const homeInvoices = new Set(submitted.invoices.filter(i => i.householdId === home.id).map(i => i.id));
+    const homeLines = submitted.lines.filter(l => homeInvoices.has(l.invoiceId));
+    expect(homeLines.filter(l => l.kind === 'membership')).toHaveLength(2);
+    for (const line of homeLines) expect(line.planId).toBe(line.kind === 'membership' || line.kind === 'signup_fee' ? f.plan.id : null);
     expect((await f.post('/api/public/join', body)).status).toBe(200);
     const replay = await f.rows();
     expect(replay.leads).toEqual(submitted.leads);
@@ -251,7 +255,8 @@ describe('trial and zero-value joining', () => {
     const state = await f.rows();
     expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial', nextDueOn: '2026-11-05' });
     expect(state.members.find(m => m.householdId === home!.id)).toMatchObject({ status: 'trial' });
-    expect(state.lines.filter(l => l.invoiceId === state.invoices.find(i => i.householdId === home!.id)!.id).map(l => l.kind)).toEqual(['signup_fee']);
+    expect(state.lines.filter(l => l.invoiceId === state.invoices.find(i => i.householdId === home!.id)!.id).map(l => [l.kind, l.planId]))
+      .toEqual([['signup_fee', plan.id]]);
     f.clock.set('2026-11-05T18:00:00Z');
     expect(await f.lifecycle.processDates(f.gymId, timezone)).toBe(1);
     const runner = createChargeRunner({ scope: db.forGym, clock: f.clock, transitions: f.transitions, settings: f.settings, jobs: f.jobs, payments: f.paymentsFor });

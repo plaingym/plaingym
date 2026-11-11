@@ -112,6 +112,7 @@ export function createMembersService(options: MembersOptions = {}) {
         const erasedLeads = await tx.update(leads).set({ lostReason: null })
           .where(eq(leads.memberId, id)).returning({ id: leads.id });
         for (const lead of erasedLeads) await tx.delete(leadContacts).where(eq(leadContacts.leadId, lead.id));
+        await tx.update(memberships).set({ switchOverrideReason: null }).where(eq(memberships.memberId, id));
         // Only upcoming places are freed; bookings for sessions that have started stay as history.
         const sessions = await tx.selectDistinct({ id: classBookings.sessionId }).from(classBookings)
           .innerJoin(classSessions, and(eq(classSessions.gymId, classBookings.gymId), eq(classSessions.id, classBookings.sessionId)))
