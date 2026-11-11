@@ -67,8 +67,10 @@ describe('attendance service with PostgreSQL', () => {
     for (const result of results) expect(result).toEqual(results[0]);
     expect(results[0]).toMatchObject({ occurredAt: clock.now().toISOString(), createdAt: clock.now().toISOString(), source: 'coach' });
     const data = await snapshot(f.gymId);
-    expect(data.rows).toHaveLength(1); expect(data.audits).toHaveLength(1);
-    expect(data.audits[0]).toMatchObject({ actorKind: 'user', actorUserId: f.user.id, action: 'attendance.recorded',
+    const attendanceAudits = data.audits.filter(row => row.action === 'attendance.recorded');
+    expect(data.rows).toHaveLength(1); expect(attendanceAudits).toHaveLength(1);
+    expect(data.audits.filter(row => row.action === 'lead.stage_changed')).toHaveLength(1);
+    expect(attendanceAudits[0]).toMatchObject({ actorKind: 'user', actorUserId: f.user.id, action: 'attendance.recorded',
       targetId: results[0]!.id, after: results[0], occurredAt: clock.now(), createdAt: clock.now() });
     expect(results[0]!.id).toMatch(/^[0-9a-f-]{14}7[0-9a-f]{3}-[89ab]/);
     expect(results[0]).not.toHaveProperty('sourceKey'); expect(results[0]).not.toHaveProperty('gymId');
@@ -85,7 +87,9 @@ describe('attendance service with PostgreSQL', () => {
     await expect(service.record(f.context, { ...input, memberId: f.sibling.id }, { source: 'import', sourceKey: 'legacy:visit:1' }))
       .rejects.toMatchObject({ code: 'conflict' });
     expect((await snapshot(f.gymId)).rows).toHaveLength(3);
-    expect((await snapshot(f.gymId)).audits).toHaveLength(3);
+    const audits = (await snapshot(f.gymId)).audits;
+    expect(audits.filter(row => row.action === 'attendance.recorded')).toHaveLength(3);
+    expect(audits.filter(row => row.action === 'lead.stage_changed')).toHaveLength(1);
   });
   it('records open mat as visits that count as classes only when the gym opts in', async () => {
     const f = await fixture();

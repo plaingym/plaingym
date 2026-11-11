@@ -1,6 +1,18 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Annual billing anniversary
 
+## Lead conversion
+
+Activating a pending or trial membership marks its member's lead `won` in the
+same transaction, including activations from a paid invoice's effect. An
+assignment that starts active does the same. This includes previously lost
+leads, increments the lead revision and audits the caller's actor once. A
+prospect or trial member without lead details gains a null-source lead; other
+members without a lead gain none. Repeated effects, trial assignments and frozen
+resumes leave lead stages unchanged. Direct membership imports change no stage.
+
+## Anniversary dates
+
 Annual assignments store their resolved first `next_due_on` in
 `memberships.anniversary_on`, after trial and household alignment. It can differ
 from `starts_on`, including an explicitly supplied renewal date. Monthly

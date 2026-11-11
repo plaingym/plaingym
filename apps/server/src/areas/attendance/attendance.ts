@@ -15,6 +15,7 @@ import { clock as defaultClock } from '../../core/clock.js';
 import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../../core/interfaces/attendance.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
+import { advanceLeadOnCheckIn } from '../leads/stages.js';
 
 type Row = typeof attendances.$inferSelect;
 type Filter = { readonly [K in keyof AttendanceFilter]?: AttendanceFilter[K] | undefined }
@@ -200,6 +201,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
           ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
           ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
           action: 'attendance.recorded', targetType: 'attendance', targetId: inserted.id, after: data });
+        if (origin.source !== 'import') await advanceLeadOnCheckIn(tx, { gymId, memberId: value.memberId, actor: context.actor, now });
         return data;
       });
     },

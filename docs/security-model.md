@@ -153,7 +153,11 @@ contact history. Coaches cannot access leads or contact notes. Lead rows and
 contacts have forced gym RLS and composite references; intake records its source
 and a source-only audit in the same transaction. Leads are never automatically
 deleted or erased. Join intake records leads on submission, so unsubmitted
-admissions can still be removed by admission cleanup.
+admissions can still be removed by admission cleanup. A check-in or a membership
+activation advances a lead's stage in its own transaction (a prospect or trial
+member without a lead gains one with no source); its `lead.stage_changed` audit
+holds only the stage and revision. `GET /api/leads/funnel` returns only counts
+per source, never member details, with `Cache-Control: no-store`.
 
 `reports.read` allows owners, admins and coaches to read `GET /api/reports/attendance`.
 Front desk staff and member sessions cannot read reports. Reports read only the

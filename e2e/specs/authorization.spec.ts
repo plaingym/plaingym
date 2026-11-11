@@ -14,6 +14,7 @@ const matrix: Record<string, Role[]> = {
   'payments.record': desk,
   'announcements.send': managers,
   'reports.read': coaches,
+  'leads.manage': desk,
   'members.read': all, 'members.manage': desk, 'members.anonymize': managers,
   'medical.read': coaches, 'households.manage': desk, 'billing.read': desk, 'tags.manage': desk,
   'staff.manage': managers, 'settings.manage': managers, 'promotions.manage': coaches,
@@ -27,6 +28,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path.startsWith('/api/reports/')
   || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
   || path.startsWith('/api/billing/packs/')
+  || path.startsWith('/api/leads/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
@@ -100,6 +102,16 @@ test('every route enforces all staff roles, anonymous access and device boundari
     else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
+});
+
+test('lead funnel allows owners, admins and front desk, and denies coaches', async ({ install }) => {
+  const path = '/api/leads/funnel?from=2026-01-01&to=2026-12-31';
+  for (const role of ['owner', 'admin', 'front_desk'] as const) {
+    const response = await install.clients[role].request(path);
+    expect(response.status, response.text).toBe(200);
+    expect(response.body).toMatchObject({ data: { from: '2026-01-01', to: '2026-12-31', sources: expect.any(Array) } });
+  }
+  expect((await install.clients.coach.request(path)).status).toBe(403);
 });
 
 test('automatic updates are owner-only and unavailable on multi-gym installs', async ({ install, sandboxes }) => {

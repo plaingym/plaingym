@@ -20,6 +20,7 @@ export * from './setup.js';
 export * from './ranks.js';
 export * from './dashboard.js';
 export * from './reports.js';
+export * from './leads.js';
 export * from './health.js';
 export * from './imports.js';
 export * from './settings.js';

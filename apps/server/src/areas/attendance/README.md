@@ -13,6 +13,12 @@ a trusted source key, which is unique within the gym. HTTP forms always record `
 as the source. Kiosk callers pass a device audit actor and `kiosk` source directly to
 the service after device authorization.
 
+After a new non-import visit and its audit are inserted, the same transaction
+advances an eligible lead to `trial_attended`, preserving its first attendance
+time and auditing the caller's actor. Repeated visits leave an already advanced
+lead unchanged; won and lost leads keep their stages. A prospect or trial member
+without a lead gains a null-source lead; other members without one gain none.
+
 Each attendance stores a kind, `class` or `open_mat`, fixed when it is recorded: a
 session check-in copies the session's kind, and a kiosk or coach visit without a
 session is open mat. Imports without a session default to `class` and may pass

@@ -10,6 +10,7 @@ import type { MembershipLifecycle, AssignMembership, MembershipEdit, UpdateMembe
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { gymSettingsAccessor } from '../settings/settings.js';
+import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
 
@@ -119,6 +120,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const result = present(row);
       await catalogAudit(tx, context, clock, 'billing.membership.assigned', 'membership', row.id, undefined, { request, membership: result, billing });
       await options.onAssigned?.(tx, context, result, billing);
+      if (status === 'active') await markLeadWon(tx, { ...context, memberId: member.id, now: clock.now() });
       return result;
     });
   }
@@ -171,6 +173,7 @@ export function createMembershipService(options: MembershipOptions = {}) {
           const owedFrom = before.resumesOn !== null && before.resumesOn < today ? before.resumesOn : today;
           while (due < owedFrom) due = advanceDue(due, before.interval as c.BillingInterval, anchor, anniversaryOn);
         }
+        if (before.status === 'pending' || before.status === 'trial') await markLeadWon(tx, { ...context, memberId: before.memberId, now: clock.now() });
         return { status: 'active', nextDueOn: due, anniversaryOn, frozenAt: null, resumesOn: null };
       });
     },

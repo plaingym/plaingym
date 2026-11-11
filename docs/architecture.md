@@ -45,7 +45,7 @@ maintenance credentials (`deploy/README.md`, "Which process holds the maintenanc
 | Path | What it holds |
 | :--- | :--- |
 | `apps/server/src/core/` | Server composition: the app factory, tenant resolution, CSRF, CSP, rate limits, the route and job registries, and `runtime.ts`, which wires every area to real infrastructure. |
-| `apps/server/src/areas/` | One folder per feature area: `members`, `staff`, `ranks`, `schedule`, `bookings`, `attendance`, `kiosk`, `portal`, `imports`, `billing`, `waivers`, `links`, `announcements`, `dashboard`, `reports`, `health`, `settings`, `setup`, `public`. Each exports its routes and jobs. |
+| `apps/server/src/areas/` | One folder per feature area: `members`, `staff`, `ranks`, `schedule`, `bookings`, `attendance`, `kiosk`, `portal`, `imports`, `billing`, `waivers`, `links`, `announcements`, `dashboard`, `reports`, `leads`, `health`, `settings`, `setup`, `public`. Each exports its routes and jobs. |
 | `apps/server/src/infra/` | The only code that talks to outside systems: `auth` (Better Auth), `jobs` (the PostgreSQL queue), `email` (SMTP), `payments` (Stripe), `storage` (local disk and S3), `pdf`, `age` (backup encryption). |
 | `apps/server/src/public/` | Server-rendered public pages (`/join`, `/trial`, `/drop-in`) and signed-link pages (`/l/*`). |
 | `apps/server/src/modules/` | Optional feature modules a gym can switch off; today the public website. |
