@@ -373,6 +373,21 @@ take yet (it is down or restoring) waits in `auto-update.result` and is sent
 first on the next run; `auto-update.state` holds the timezone and the night of
 the last check.
 
+When SMTP is configured, `record` sends each owner one notice for a rolled-back
+or failed attempt, through the gym's SMTP settings (or the install fallback).
+Durable delivery reservations prevent a repeated report from resending an
+accepted or uncertain email. A definite non-send may be retried with the pending
+report. The health tile keeps stale errors visible and formats the last check in
+the gym's timezone. A never-run install becomes stale 50 hours after its first
+health read; transient skips raise the update banner after two consecutive
+attempts. An invalid `RELEASE_REPOSITORY` raises a warning that patches cannot
+install; use `owner/name`, with neither segment consisting only of dots.
+
+If `release-signing.pem` is missing, re-run `install.sh` from the current
+deployment files with `--image` set to the running image, or copy
+`release-signing.pem` into the install directory. The installer refuses a
+different image on an existing installation.
+
 Each night, in order, the updater:
 
 1. skips when the switch is off, a restore is in progress, backups aren't set up,
@@ -393,7 +408,11 @@ Each night, in order, the updater:
    starts the new image, runs the health check, waits a minute, and checks again
    that the same container is healthy and never restarted;
 6. pins the new image in `.env`, or on any failure starts the previous image by
-   image ID and reports the rollback.
+   image ID and reports the rollback;
+7. after success, prunes images in `auto-update-images.tsv` that this install's
+   updater pulled and that are older than the previous version. The current and
+   previous images and every image still reachable through the version-history
+   rollback stack stay. No global image prune runs, and other images are untouched.
 
 A run that is stopped (the unit's 90-minute limit, a shutdown) restarts the
 previous image before it exits. One killed outright leaves `.auto-update.inflight`,
@@ -534,7 +553,9 @@ The **Release** workflow (`.github/workflows/release.yml`) runs on a pushed
 on `main` for `vX.Y.0` and on `release/X.Y` for a patch. `release/check-tag.sh`
 requires the tag to match the root package version and refuses a patch whose `packages/db/src/migrations` (journal
 included) differs from the latest earlier `vX.Y` tag: installs apply patches on
-their own and roll one back by starting the previous image. The workflow then
+their own and roll one back by starting the previous image. CI also runs this
+migration comparison on pushes to `release/**`, against the latest tag for that
+branch's minor version, so a new migration fails before tagging. The workflow then
 builds the image natively on amd64 and arm64 without the build cache, labelled
 with the version and commit, runs the smoke test on each, and `release/publish.sh`
 pushes `ghcr.io/OWNER/app:vX.Y.Z-amd64` and `-arm64`, then the multi-arch

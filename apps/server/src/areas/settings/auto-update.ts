@@ -27,6 +27,28 @@ async function readGym(tx: Transaction, gymId: string, lock: boolean) {
 export function createAutoUpdateSettings(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   return {
+    /** Install observation is independent of the owner's switch revision. */
+    async firstSeen(gymId: string): Promise<string> {
+      const recorded = (settings: unknown) => {
+        const value = (settings as Record<string, unknown> | null)?.automaticUpdatesFirstSeen;
+        return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+      };
+      // Once it is stored, a read takes no row lock: health and banner reads never wait on, or hold up, a settings save.
+      const seen = recorded((await scope(gymId, tx => readGym(tx, gymId, false))).settings);
+      if (seen) return seen;
+      return scope(gymId, async (tx) => {
+        const row = await readGym(tx, gymId, true);
+        const settings = row.settings as Record<string, unknown>;
+        const previous = recorded(settings);
+        if (previous) return previous;
+        const now = clock.now(), firstSeen = now.toISOString();
+        await tx.update(gyms).set({ settings: { ...settings, automaticUpdatesFirstSeen: firstSeen }, updatedAt: now })
+          .where(eq(gyms.id, gymId));
+        await writeAudit(tx, { gymId, actorKind: 'system', action: 'settings.automatic_updates.first_seen',
+          targetType: 'gym', targetId: gymId, after: { firstSeen }, occurredAt: now });
+        return firstSeen;
+      });
+    },
     async get(gymId: string): Promise<AutoUpdateSetting> {
       const row = await scope(gymId, tx => readGym(tx, gymId, false));
       return { ...stored(row.settings), timezone: row.timezone };

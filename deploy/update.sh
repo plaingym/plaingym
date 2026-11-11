@@ -220,9 +220,9 @@ settle() { # TARGET
 # and is sent first on the next run.
 from_version=-
 to_version=-
-value_of() { # FILE KEY
+value_of() { # FILE KEY; nothing when the file doesn't exist yet
   [ -f "$1" ] || return 0
-  awk -v key="$2" 'index($0, key "=") == 1 { value = substr($0, length(key) + 2) } END { print value }' "$1"
+  read_env "$2" "$1"
 }
 state_set() { # KEY VALUE
   { [ ! -f "$STATE" ] || awk -v key="$1" 'index($0, key "=") != 1' "$STATE"; printf '%s=%s\n' "$1" "$2"; } > "$STATE.next"
@@ -257,7 +257,7 @@ patch_finish() { # From the exit handler, once a swap started.
   # The pinned image may not be running after a failed rollback: keep the marker, so the next run starts it again.
   [ "$outcome" = rollback_failed ] || rm -f "$INFLIGHT"
   case "$stage:$outcome:$interrupted" in
-    finished:*) report updated - ;;
+    finished:*) prune_patch_images || true; report updated - ;;
     *:rollback_failed:*) report failed rollback_failed ;;
     # Stopped before the new version started, even by a signal: nothing was installed.
     snapshot:*) report skipped snapshot_failed ;;
@@ -268,6 +268,28 @@ patch_finish() { # From the exit handler, once a swap started.
   esac
 }
 image_version() { installed_version "$1" || true; }
+remember_patch_image() { # Only images this updater actually pulled can be removed later.
+  pulled_id=$(docker image inspect "$target" --format '{{.Id}}') || return 0
+  printf '%s\n' "$pulled_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 0
+  printf '%s\t%s\t%s\n' "$image:$tag@$digest" "$pulled_id" "$tag" >> "$ROOT/auto-update-images.tsv" \
+    || echo 'Could not record the pulled image for later cleanup.' >&2
+}
+prune_patch_images() {
+  [ -f "$ROOT/auto-update-images.tsv" ] && [ -f "$ROOT/version-history.tsv" ] || return 0
+  # Every entry still on the rollback stack stays, even beyond the immediately previous image.
+  protected=$(awk -F '\t' "$history_stack"'END { for(i=1;i<=n;i++) print image[i] }' "$ROOT/version-history.tsv") || return 0
+  while read -r prune_ref prune_id prune_version; do
+    valid_image "$prune_ref" && valid_version "$prune_version" || continue
+    printf '%s\n' "$prune_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || continue
+    version_at_least "$from_version" "$prune_version" || continue
+    [ "$prune_version" != "$from_version" ] || continue
+    printf '%s\n' "$protected" | grep -qxF "$prune_id" && continue
+    [ "$prune_id" != "$previous_id" ] && [ "$prune_id" != "$target_id" ] || continue
+    [ "$(docker image inspect "$prune_ref" --format '{{.Id}}' 2>/dev/null)" = "$prune_id" ] || continue
+    # Never force deletion of images in use; bound removal so maintenance cannot hold the update lock forever.
+    timeout -k 5 30 docker image rm "$prune_ref" >/dev/null 2>&1 || true
+  done < "$ROOT/auto-update-images.tsv"
+}
 migrations_of() { # IMAGE: a digest of the migrations the image applies when it starts
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$1" \
     -c 'cd /app/migrations && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum' | awk '{ print $1 }'
@@ -346,7 +368,7 @@ if [ "$patch" = false ]; then
   if valid_version "$to_version"; then
     work=$(mktemp -d)
     repository=$(read_env RELEASE_REPOSITORY); [ -n "$repository" ] || repository=plaingym/plaingym
-    printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || fail 'Invalid release repository.'
+    valid_repository "$repository" || fail 'Invalid release repository.'
     [ -f "$ROOT/release-signing.pem" ] || fail 'Install the release signing public key before updating a release.'
     download "https://github.com/$repository/releases/download/$to_version/release-manifest.txt" "$work/manifest"
     download "https://github.com/$repository/releases/download/$to_version/release-manifest.txt.sig" "$work/manifest.sig"
@@ -386,8 +408,8 @@ if [ -f "$INFLIGHT" ]; then
   # Still failing: keep the marker and try again on the next run.
   if ! compose up -d --no-deps --wait --wait-timeout 90 app; then finish failed rollback_failed 1; fi
   rm -f "$INFLIGHT"
-  if [ "$to_version" != - ] && [ "$(image_version "$current")" = "$to_version" ]; then finish updated -; fi
   if [ "$from_version" = - ] || [ "$to_version" = - ]; then exit 1; fi
+  if [ "$(image_version "$current")" = "$to_version" ]; then finish updated -; fi
   finish rolled_back interrupted 1
 fi
 
@@ -417,7 +439,7 @@ if valid_version "$version"; then from_version=$version; fi
 
 repository=$(read_env RELEASE_REPOSITORY)
 [ -n "$repository" ] || repository=plaingym/plaingym
-printf '%s\n' "$repository" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || finish skipped release_list_unavailable 1
+valid_repository "$repository" || finish skipped release_list_unavailable 1
 download "https://api.github.com/repos/$repository/releases?per_page=100" "$work/releases.json" 5000000 \
   || finish skipped release_list_unavailable 1
 # Only tag names are read from the list; the signed manifest below is what is trusted.
@@ -442,6 +464,7 @@ valid_image "$target" || finish skipped manifest_invalid 1
 
 # Pull while the app runs, and check what arrived before anything stops.
 APP_IMAGE="$target" compose pull app || finish skipped pull_failed 1
+remember_patch_image
 if ! docker image inspect "$target" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -qxF "$image@$digest" \
   || [ "$(image_version "$target")" != "$tag" ]; then finish skipped digest_mismatch 1; fi
 # Patch releases never change the database: the release workflow refuses them, and so does this check.

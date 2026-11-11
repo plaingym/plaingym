@@ -20,6 +20,7 @@ const matrix: Record<string, Role[]> = {
 };
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$)|settings\/integrations(?:\/|$))/.test(path)
   || path === '/api/announcements' || path.startsWith('/api/announcements/')
+  || path === '/api/health/auto-update'
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
@@ -93,6 +94,25 @@ test('every route enforces all staff roles, anonymous access and device boundari
     else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
+});
+
+test('automatic updates are owner-only and unavailable on multi-gym installs', async ({ install, sandboxes }) => {
+  const path = '/api/health/auto-update';
+  const read = await install.clients.owner.json<{ data: { available: boolean; enabled: boolean; revision: number } }>(path);
+  expect(read.data.available).toBe(true);
+  expect((await install.clients.owner.request(path, 'PUT', { enabled: read.data.enabled, revision: read.data.revision })).status).toBe(200);
+  for (const role of ['admin', 'coach', 'front_desk'] as const) {
+    expect((await install.clients[role].request(path)).status).toBe(403);
+    expect((await install.clients[role].request(path, 'PUT', { enabled: false, revision: read.data.revision })).status).toBe(403);
+  }
+  const owner = await demoClient(sandboxes[0], 'owner');
+  const multi = await owner.json<{ data: { available: boolean; revision: number } }>(path);
+  expect(multi.data.available).toBe(false);
+  expect((await owner.request(path, 'PUT', { enabled: false, revision: multi.data.revision })).status).toBe(409);
+  const other = new Client(sandboxes[1].origin);
+  other.cookie = owner.cookie;
+  expect([401, 403]).toContain((await other.request(path)).status);
+  expect([401, 403]).toContain((await other.request(path, 'PUT', { enabled: false, revision: multi.data.revision })).status);
 });
 
 test('a household login cannot reach staff routes', async ({ sandboxes }) => {

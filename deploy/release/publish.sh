@@ -52,7 +52,7 @@ printf '%s\n' "$revision" | grep -Eq '^[a-f0-9]{40}$' || fail 'Use --revision wi
 for path in "$migrations" "$key" "$public"; do [ -e "$path" ] || fail "Missing --migrations, --key or --public-key: $path"; done
 if [ -z "$out" ] || [ -z "$archives" ]; then fail 'Give --out and at least one --archive.'; fi
 image="$registry/$name"
-printf '%s\n' "$image" | grep -Eq '^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9][a-z0-9._-]*)+$' || fail "Invalid image name: $image"
+valid_image_name "$image" || fail "Invalid image name: $image"
 mkdir -p "$out"
 label() { docker image inspect "$1" --format "{{index .Config.Labels \"org.opencontainers.image.$2\"}}"; }
 

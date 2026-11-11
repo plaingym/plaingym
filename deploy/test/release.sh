@@ -13,17 +13,25 @@ source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 temporary=$(mktemp -d)
 run_id="release-test-$$-$(date +%s)"
 registry_name=
+registry=
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ] && [ -f "$temporary/output" ]; then echo '--- last output:' >&2; cat "$temporary/output" >&2; fi
   if [ -n "$registry_name" ]; then
-    docker rm -f -v "$registry_name" >/dev/null 2>&1 || true
-    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E "^(localhost:[0-9]+/release-test/app|$run_id)" | xargs -r docker image rm -f >/dev/null 2>&1 || true
+    timeout -k 5 120 docker rm -f -v "$registry_name" >/dev/null 2>&1 || echo "Cleanup incomplete: $registry_name" >&2
+    docker image ls --format '{{.Repository}}:{{.Tag}}' | while read -r cleanup_image; do
+      case "$cleanup_image" in "$registry/release-test/app:"*|"$run_id:"*)
+        timeout -k 5 120 docker image rm -f "$cleanup_image" >/dev/null 2>&1 || echo "Cleanup incomplete: $cleanup_image" >&2 ;;
+      esac
+    done
   fi
   rm -rf -- "$temporary"
 }
 trap cleanup EXIT
 check_tag="$source_dir/release/check-tag.sh"
+# Exercise the exact release-branch workflow commands in the scratch repository below.
+sed -n '/# release-migrations-start/,/# release-migrations-end/p' "$source_dir/../.github/workflows/ci.yml" | sed 's/^          //' > "$temporary/check-branch.sh"
+test -s "$temporary/check-branch.sh"
 expect_refusal() { # MESSAGE ARGS...
   message=$1; shift
   if sh "$check_tag" "$@" > "$temporary/output" 2>&1; then echo "Accepted: $*" >&2; exit 1; fi
@@ -50,10 +58,15 @@ set_version 1.2.1
 git commit -q -am 'fix: one'
 fixed=$(git rev-parse HEAD)
 [ "$(sh "$check_tag" v1.2.1 "$fixed")" = v1.2.0 ]
+GITHUB_REF_NAME=release/1.2 sh "$temporary/check-branch.sh"
 # A fix that adds a migration, or changes only the journal, is not a patch release.
 printf 'alter table a add b int;\n' > packages/db/src/migrations/0001_second.sql
 git add -A; git commit -q -m 'fix: migration'
 expect_refusal 'migrations differ from v1.2.0' v1.2.1
+if GITHUB_REF_NAME=release/1.2 sh "$temporary/check-branch.sh" > "$temporary/branch-output" 2>&1; then
+  echo 'Release branch accepted a migration.' >&2; exit 1
+fi
+grep -q 0001_second.sql "$temporary/branch-output"
 git reset -q --hard "$fixed"
 printf '{"entries":[0,1]}\n' > packages/db/src/migrations/meta/_journal.json
 git commit -q -am 'fix: journal'
@@ -127,6 +140,9 @@ manifest_check "$manifest" v1.2.3
 [ "$(manifest_value "$manifest" rollback_floor)" = v1.1.0 ]
 [ "$(manifest_value "$manifest" image)" = "$registry/release-test/app" ]
 digest=$(manifest_value "$manifest" digest)
+# The exact canonical reference the updater records can be removed without a global prune.
+docker pull "$registry/release-test/app:v1.2.3@$digest" > "$temporary/pull-output" 2>&1
+timeout -k 5 30 docker image rm "$registry/release-test/app:v1.2.3@$digest" > "$temporary/remove-output" 2>&1
 for arch in amd64 arm64; do
   manifest_value "$manifest" "digest.linux/$arch" | grep -Eq '^sha256:[a-f0-9]{64}$'
   grep -q "\"architecture\": \"$arch\"" "$temporary/release/index.json"

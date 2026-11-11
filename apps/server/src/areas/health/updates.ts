@@ -3,8 +3,9 @@ import { runningVersion } from './version.js';
 import { createTranslator, type Clock, type Translator } from '@plaingym/shared';
 import messages from '../../../../../locales/en/health/updates.json' with { type: 'json' };
 import type { UpdateAvailableHealthDetails } from '@plaingym/shared/contracts';
-import { createAutoUpdateStateReader, patchHoldReason, type AutoUpdateState } from './auto-update.js';
+import { requestAutoUpdateState, autoUpdateMessage, patchHoldReason, type AutoUpdateState } from './auto-update.js';
 import { healthProvider } from './status.js';
+import type { StaffProviderContext } from '../../core/interfaces/extensions.js';
 
 const translate = createTranslator({ 'health/updates': messages });
 const message = (key: string, values?: Parameters<Translator>[1]) => translate('health/updates:' + key, values);
@@ -23,7 +24,7 @@ const maxBodyBytes = 256 * 1024;
 /** The repository named by `RELEASE_REPOSITORY` (unset or empty means the default), or null when it isn't `owner/name`. */
 export function releaseRepository(env: NodeJS.ProcessEnv): string | null {
   const value = (env.RELEASE_REPOSITORY ?? '').trim() || defaultRepository;
-  return repositoryPattern.test(value) ? value : null;
+  return repositoryPattern.test(value) && value.split('/').every(part => !/^\.+$/.test(part)) ? value : null;
 }
 
 export interface Semver { major: number; minor: number; patch: number }
@@ -129,6 +130,7 @@ export function sharedReleaseCheck(repository = defaultRepository): ReleaseCheck
 }
 
 export interface UpdateProviderOptions {
+  state?: (context: StaffProviderContext) => Promise<AutoUpdateState>;
   env?: NodeJS.ProcessEnv;
   check?: ReleaseCheck;
   /** The gym's automatic-update switch and last attempt; by default read from the database. */
@@ -143,8 +145,6 @@ export function updateCheckEnabled(env: NodeJS.ProcessEnv): boolean {
 }
 export function createUpdateAvailableProvider(options: UpdateProviderOptions = {}) {
   const env = options.env ?? process.env;
-  let reader: ReturnType<typeof createAutoUpdateStateReader> | undefined;
-  const automatic = options.automatic ?? ((gymId, clock) => (reader ??= createAutoUpdateStateReader())(gymId, clock));
   return healthProvider('update_available', async (context) => {
     const now = context.clock.now();
     const empty = (status: 'not_configured' | 'unavailable', key: string, at: string | null = null) =>
@@ -153,21 +153,27 @@ export function createUpdateAvailableProvider(options: UpdateProviderOptions = {
     const running = runningVersion(env).version.trim(), current = parseVersion(running);
     if (!current || isDevelopmentBuild(current)) return empty('not_configured', 'notRelease');
     const repository = releaseRepository(env);
-    if (!repository) return empty('not_configured', 'badRepository');
+    if (!repository) return { id: 'update_available' as const, status: 'warning' as const, checkedAt: now.toISOString(),
+      message: autoUpdateMessage('hold.badRepository'), details: { currentVersion: `${current.major}.${current.minor}.${current.patch}`, latestVersion: 'unknown', available: true, releaseUrl: null } };
     const check = options.check ?? sharedReleaseCheck(repository);
-    const latest = await check.latest(now);
+    let latest = await check.latest(now);
     if (!latest) {
       // Both answers are `unavailable`. Only the first request still running has no check time, which is what the banner waits on:
       // after a failure the check retries by itself each hour, and nothing needs asking sooner.
       const failedAt = check.failedAt?.() ?? null;
       return failedAt ? empty('unavailable', 'unreadable', failedAt.toISOString()) : empty('unavailable', 'unreachable');
     }
+    const state = await (options.state ? options.state(context) : options.automatic ? options.automatic(context.gymId, context.clock) : requestAutoUpdateState(context)).catch(() => null);
+    const target = state?.attempt?.toVersion ? parseVersion(state.attempt.toVersion) : null;
+    if (target && compareVersions(target, parseVersion(latest.version)!) > 0) {
+      const version = `${target.major}.${target.minor}.${target.patch}`;
+      latest = { ...latest, version, url: `https://github.com/${repository}/releases/tag/v${version}` };
+    }
     const newest = parseVersion(latest.version)!, kind = updateKind(current, newest), ahead = compareVersions(current, newest) > 0;
     // A newer patch installs itself, unless the owner turned that off or the nightly updater isn't getting it done.
     // Not knowing (the database didn't answer) keeps the quiet answer.
     const isOlder = (version: string) => { const target = parseVersion(version); return target !== null && compareVersions(target, newest) < 0; };
-    const held = kind === 'patch'
-      ? await automatic(context.gymId, context.clock).then((state) => patchHoldReason(state, now, isOlder), () => null) : null;
+    const held = kind === 'patch' && state ? patchHoldReason(state, now, isOlder) : null;
     const details: UpdateAvailableHealthDetails = { currentVersion: `${current.major}.${current.minor}.${current.patch}`,
       latestVersion: latest.version, available: kind === 'minor' || kind === 'major' || held !== null, releaseUrl: latest.url };
     const values = { current: details.currentVersion, latest: latest.version, why: held ?? '' };

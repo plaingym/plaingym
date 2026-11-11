@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { uuidv7 } from '@plaingym/db';
+import { eq } from 'drizzle-orm';
+import { auditEvents, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { healthTileSchema } from '@plaingym/shared/contracts';
@@ -8,11 +9,12 @@ import { TestClock } from '../../core/clock.js';
 import { createAutoUpdateSettings } from '../settings/auto-update.js';
 import messages from '../../../../../locales/en/health/auto-update.json' with { type: 'json' };
 import {
-  autoUpdateAttemptSchema, autoUpdateReasons, createAutoUpdateAttempts, createAutoUpdateHealthProvider, createAutoUpdateStateReader, classifyAttempt, patchHoldReason,
+  autoUpdateAttemptAction, autoUpdateAttemptSchema, autoUpdateReasons, createAutoUpdateAttempts, createAutoUpdateHealthProvider, createAutoUpdateStateReader, createRequestAutoUpdateStateReader, classifyAttempt, patchHoldReason,
   type AutoUpdateAttempt, type AutoUpdateState,
 } from './auto-update.js';
 import { createAutoUpdateCommand } from './auto-update.cli.js';
 import { createHealthService } from './status.js';
+import { createUpdateAvailableProvider } from './updates.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
 async function fixture() {
@@ -26,7 +28,7 @@ async function fixture() {
   const turn = async (enabled: boolean) => settings.update({ gymId, actor: { kind: 'user', userId: user.id } },
     { enabled, revision: (await settings.get(gymId)).revision });
   const io = () => { const out: string[] = [], err: string[] = []; return { out, err, io: { stdout: (line: string) => out.push(line), stderr: (line: string) => err.push(line) } }; };
-  const command = (options: Parameters<typeof createAutoUpdateCommand>[0] = {}) => createAutoUpdateCommand({ env: { TENANCY: 'single' }, clock, scope: db.forGym,
+  const command = (options: Parameters<typeof createAutoUpdateCommand>[0] = {}) => createAutoUpdateCommand({ env: { TENANCY: 'single', APP_ENCRYPTION_KEY: '07'.repeat(32) }, clock, scope: db.forGym,
     resolveGymId: async () => gymId, settings, backups: async () => true, restoring: async () => false, hasGym: async () => true, ...options });
   return { gymId, clock, settings, attempts, tile, turn, io, command };
 }
@@ -65,11 +67,11 @@ describe('automatic update attempts', () => {
 describe('why a newer patch would not install', () => {
   it('reads the switch and the latest attempt from the database, one gym at a time', async () => {
     const f = await fixture(), other = await fixture(), read = createAutoUpdateStateReader({ scope: db.forGym, settings: f.settings });
-    expect(await read(f.gymId, f.clock)).toEqual({ enabled: true, attempt: null });
+    expect(await read(f.gymId, f.clock)).toMatchObject({ enabled: true, attempt: null, previousAttempt: null, firstSeen: f.clock.now().toISOString(), timezone: 'Australia/Sydney' });
     await f.attempts.record(f.gymId, attempt({ result: 'skipped', reason: 'backups_not_configured' }));
     await f.turn(false);
     expect(await read(f.gymId, f.clock)).toMatchObject({ enabled: false, attempt: { result: 'skipped', reason: 'backups_not_configured' } });
-    expect((await createAutoUpdateStateReader({ scope: db.forGym })(other.gymId, other.clock))).toEqual({ enabled: true, attempt: null });
+    expect((await createAutoUpdateStateReader({ scope: db.forGym })(other.gymId, other.clock))).toMatchObject({ enabled: true, attempt: null });
   });
   it('names a reason only when the nightly update is held back', () => {
     const now = new Date('2026-11-04T10:00:00Z'), recent = attempt({ attemptedAt: at('2026-11-04T04:00:00Z') });
@@ -107,6 +109,54 @@ describe('why a newer patch would not install', () => {
   });
 });
 describe('automatic updates tile', () => {
+  it.each(['rollback_failed', 'signature_invalid', 'digest_mismatch', 'manifest_invalid', 'migration_in_patch'] as const)('retains stale errors and formats the last time in the gym zone: %s', async reason => {
+    const f = await fixture();
+    await f.attempts.record(f.gymId, attempt({ result: reason === 'rollback_failed' ? 'failed' : 'skipped', reason, toVersion: 'v1.2.4' }));
+    const original = await f.tile();
+    f.clock.advance(51 * 3_600_000);
+    const stale = await f.tile();
+    expect(stale.status).toBe('error');
+    expect(stale.message).toContain(original.message);
+    expect(stale.message).toContain('Nov 4, 2026, 3:05 AM');
+    expect(stale.message).not.toContain('2026-11-03T');
+  });
+  it('warns about a missing timer only after the first-seen grace period', async () => {
+    const f = await fixture();
+    expect((await f.tile()).status).toBe('not_configured');
+    f.clock.advance(51 * 3_600_000);
+    expect(await f.tile()).toMatchObject({ status: 'warning', message: expect.stringContaining('first seen more than two days ago') });
+    const state = await createAutoUpdateStateReader({ scope: db.forGym })(f.gymId, f.clock);
+    expect(patchHoldReason(state, f.clock.now(), () => false)).toContain('update by hand');
+  });
+  it('waits for two distinct consecutive transient skips, resetting after a good check', async () => {
+    const f = await fixture(), read = createAutoUpdateStateReader({ scope: db.forGym });
+    const skipped = attempt({ result: 'skipped', reason: 'pull_failed', toVersion: 'v1.2.5' });
+    await f.attempts.record(f.gymId, skipped);
+    await f.attempts.record(f.gymId, skipped);
+    expect(patchHoldReason(await read(f.gymId, f.clock), f.clock.now(), () => false)).toBeNull();
+    f.clock.advance(3_600_000);
+    await f.attempts.record(f.gymId, { ...skipped, attemptedAt: f.clock.now().toISOString(), reason: 'snapshot_failed' });
+    expect(patchHoldReason(await read(f.gymId, f.clock), f.clock.now(), () => false)).toContain('backup before the update failed');
+    f.clock.advance(3_600_000);
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString() }));
+    f.clock.advance(3_600_000);
+    await f.attempts.record(f.gymId, { ...skipped, attemptedAt: f.clock.now().toISOString() });
+    expect(patchHoldReason(await read(f.gymId, f.clock), f.clock.now(), () => false)).toBeNull();
+  });
+  it('shares one state read between the two tiles and reads again on another request', async () => {
+    const f = await fixture();
+    let reads = 0;
+    const state = createRequestAutoUpdateStateReader(async () => { reads++; return { enabled: true, attempt: null }; });
+    const automatic = createAutoUpdateHealthProvider({ state, tenancy: 'single' });
+    // The production defaults share requestAutoUpdateState; injection lets this check count reads.
+    const update = createUpdateAvailableProvider({ env: { APP_VERSION: '1.2.3' },
+      check: { latest: async () => ({ version: '1.2.4', url: 'https://github.com/plaingym/plaingym/releases/tag/v1.2.4', checkedAt: f.clock.now() }) }, state });
+    const service = createHealthService([automatic, update]);
+    await service.get({ gymId: f.gymId, clock: f.clock, roles: ['owner'] });
+    expect(reads).toBe(1);
+    await service.get({ gymId: f.gymId, clock: f.clock, roles: ['owner'] });
+    expect(reads).toBe(2);
+  });
   it('reads not set up before the first nightly check, and off when the owner turned it off', async () => {
     const f = await fixture();
     expect(await f.tile()).toMatchObject({ status: 'not_configured', message: expect.stringContaining('No nightly update check has run yet'),
@@ -200,6 +250,20 @@ describe('gym-app auto-update', () => {
     expect(await f.attempts.latest(f.gymId)).toEqual({ attemptedAt: '2026-11-03T16:05:00Z', result: 'rolled_back', reason: 'startup_failed',
       fromVersion: 'v1.2.3', toVersion: 'v1.2.4' });
     expect(await f.tile()).toMatchObject({ status: 'warning', details: { result: 'rolled_back' } });
+  });
+  it('records a replayed report once while its owner notice is retried', async () => {
+    const f = await fixture(), notices: string[] = [];
+    const notify = async (_gymId: string, recorded: AutoUpdateAttempt) => {
+      notices.push(recorded.attemptedAt);
+      if (notices.length === 1) throw new Error('SMTP refused the notice');
+    };
+    const args = ['record', '--at', '2026-11-03T16:05:00Z', '--result', 'failed', '--reason', 'rollback_failed', '--from', 'v1.2.3', '--to', 'v1.2.4'];
+    expect(await f.command({ notify }).run(args, f.io().io)).toBe(1);
+    f.clock.advance(3_600_000);
+    expect(await f.command({ notify }).run(args, f.io().io)).toBe(0);
+    expect(notices).toHaveLength(2);
+    const rows = await db.forGym(f.gymId, tx => tx.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.action, autoUpdateAttemptAction)));
+    expect(rows).toHaveLength(1);
   });
   it('refuses malformed input, an install serving several gyms, and reports failures without a stack', async () => {
     const f = await fixture();

@@ -8,7 +8,8 @@ import { restoreStagingDirectory } from '../../core/maintenance-credentials.js';
 import { parseEncryptionKey } from '../../core/secrets.js';
 import { listGyms, singleGymId, tenancyMode } from '../../core/tenancy.js';
 import { createAutoUpdateSettings, type AutoUpdateSettings } from '../settings/auto-update.js';
-import { autoUpdateAttemptSchema, createAutoUpdateAttempts } from './auto-update.js';
+import { autoUpdateAttemptSchema, createAutoUpdateAttempts, type AutoUpdateAttempt } from './auto-update.js';
+import { createAutoUpdateNotices } from './auto-update.notices.js';
 import { backupsConfigured } from './restore.config.js';
 import { RestoreGate } from './restore.gate.js';
 
@@ -24,6 +25,7 @@ export interface AutoUpdateCommandOptions {
   restoring?: () => Promise<boolean>;
   /** Whether the setup wizard has created the install's gym yet. */
   hasGym?: () => Promise<boolean>;
+  notify?: (gymId: string, attempt: AutoUpdateAttempt) => Promise<void>;
 }
 const usage = 'Usage: gym-app auto-update check | gym-app auto-update record --at INSTANT --result RESULT [--reason REASON] [--from VERSION] [--to VERSION]';
 const flags = { '--at': 'attemptedAt', '--result': 'result', '--reason': 'reason', '--from': 'fromVersion', '--to': 'toVersion' } as const;
@@ -67,8 +69,11 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
         const attempt = autoUpdateAttemptSchema.safeParse(input);
         if (!attempt.success) { io.stderr('Invalid attempt: ' + attempt.error.issues.map((issue) => issue.path.join('.') || issue.message).join(', ')); return 2; }
         if (await restoring()) { io.stderr('A restore is in progress; nothing was recorded'); return 1; }
+        const gymId = await resolveGymId();
         await createAutoUpdateAttempts({ ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock })
-          .record(await resolveGymId(), attempt.data);
+          .record(gymId, attempt.data);
+        // A definite non-send leaves the host's pending report for retry. Uncertain/accepted sends never resend.
+        await (options.notify ?? createAutoUpdateNotices({ env, ...options.scope ? { scope: options.scope } : {}, clock: options.clock ?? defaultClock }))(gymId, attempt.data);
         io.stdout('Recorded.');
         return 0;
       }

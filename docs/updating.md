@@ -21,7 +21,10 @@ up by hand with Docker Compose has no timer until you add it
 ([install.md](install.md#route-3-docker-compose-by-hand)).
 
 The Health page's **Automatic updates** tile shows the last night's result: up to
-date, updated, rolled back, or skipped and why. To run the check at once, for
+date, updated, rolled back, or skipped and why. A stale error keeps its cause and
+adds the time of the last check in the gym's timezone. With SMTP configured, each
+owner receives one notice per rolled-back or failed attempt; replaying a report
+does not send the same notice again. To run the check at once, for
 example after setting up backups:
 
 ```sh
@@ -31,7 +34,7 @@ sudo /opt/plaingym/update.sh --patch --now
 | The tile says | What to do |
 | :--- | :--- |
 | Backups aren't set up | Set them up in **Settings → Email, payments and backups**; the next night's check installs the release. |
-| The server has no release signing key | Copy `release-signing.pem` from the current deployment files into `/opt/plaingym`. |
+| The server has no release signing key | Re-run `install.sh` from the current deployment files with `--image` set to the running image, or copy `release-signing.pem` into the install directory (normally `/opt/plaingym`). |
 | The list of releases, the manifest or the image couldn't be downloaded, or the backup before the update failed | Nothing was changed; the next nightly check tries again. Check the server's network, or the bucket under **Settings → Email, payments and backups**. |
 | The signature didn't verify, the image doesn't match the manifest, or the patch changes the database | Nothing was installed, on purpose. Update by hand once a fixed release is out. |
 | Version X was rolled back | The new version didn't start or failed its health check, and the previous one runs again. Read `sudo docker compose logs app` in `/opt/plaingym`. |
@@ -40,13 +43,26 @@ sudo /opt/plaingym/update.sh --patch --now
 
 A newer patch release raises no banner while the nightly update is expected to install
 it. When it won't (automatic updates are off, no nightly check has run for two days, or
-the last check for that release skipped, rolled back or failed), the banner appears and
+the last check for that release was held, rolled back or failed), the banner appears and
 says why. If automatic updates are off or the timer has stopped, turn them on or fix the
 timer, or install the release by hand as below. If the check was refused on purpose (the
 signature, the image or the database row in the table above), don't install that release
 by hand: update by hand once a fixed release is out. For any other reason, do what it
 says. A failed check for an older patch raises nothing once a newer one is out, because
 the next nightly check tries the newest.
+
+A transient download, pull, backup or app-check failure raises the banner only
+after two consecutive skipped attempts. A new install gets 50 hours from its
+first health check before a missing nightly timer raises the banner, including
+on a hand-installed Compose deployment. An invalid `RELEASE_REPOSITORY` also
+raises a warning: patches cannot install until it is a valid `owner/name` and
+the app is restarted. Neither path segment may consist only of dots.
+
+After a successful automatic update, the updater removes older images from its
+own pull record only when they are older than the previous version and no longer
+in the rollback history's active stack. It keeps the current and previous images
+and every image that `--rollback` can still reach. It never runs a global image
+prune; images pulled by other tools are left alone.
 
 ## Minor and major releases: by hand
 

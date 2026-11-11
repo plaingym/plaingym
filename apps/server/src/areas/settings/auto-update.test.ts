@@ -16,10 +16,30 @@ async function fixture(settings: Record<string, unknown> = {}) {
   const service = createAutoUpdateSettings({ scope: db.forGym, clock });
   const row = async () => (await db.forGym(gymId, tx => tx.select({ settings: gyms.settings, revision: gyms.revision }).from(gyms).where(eq(gyms.id, gymId))))[0]!;
   const context = { gymId, actor: { kind: 'user' as const, userId: user.id } };
-  return { gymId, user, service, row, context };
+  return { gymId, user, service, row, context, clock };
 }
 
 describe('automatic update setting', () => {
+  it('persists the first observation once across concurrent readers and switch updates without moving revisions', async () => {
+    const f = await fixture({ setup: { completed: true } }), revision = (await f.row()).revision;
+    const seen = f.clock.now().toISOString();
+    expect(await Promise.all([f.service.firstSeen(f.gymId), f.service.firstSeen(f.gymId)])).toEqual([seen, seen]);
+    f.clock.advance(86_400_000);
+    expect(await createAutoUpdateSettings({ scope: db.forGym, clock: f.clock }).firstSeen(f.gymId)).toBe(seen);
+    expect(await f.service.get(f.gymId)).toMatchObject({ revision: 1 });
+    await f.service.update(f.context, { enabled: false, revision: 1 });
+    expect((await f.row()).settings).toEqual({ setup: { completed: true }, automaticUpdatesFirstSeen: seen, automaticUpdates: { enabled: false, revision: 2 } });
+    expect((await f.row()).revision).toBe(revision);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'settings.automatic_updates.first_seen')));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorKind: 'system', after: { firstSeen: seen }, occurredAt: new Date(seen) });
+    const other = await fixture();
+    other.clock.advance(10_000);
+    expect(await other.service.firstSeen(other.gymId)).toBe(other.clock.now().toISOString());
+    expect(await f.service.firstSeen(f.gymId)).toBe(seen);
+    const asOther = ((_gymId: string, fn: Parameters<typeof db.forGym>[1]) => db.forGym(other.gymId, fn)) as typeof db.forGym;
+    await expect(createAutoUpdateSettings({ scope: asOther, clock: f.clock }).firstSeen(f.gymId)).rejects.toMatchObject({ code: 'not_found' });
+  });
   it('is on by default and reports the gym timezone the updater uses for its nightly window', async () => {
     const f = await fixture();
     expect(await f.service.get(f.gymId)).toEqual({ enabled: true, revision: 1, timezone: 'America/Denver' });

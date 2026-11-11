@@ -9,6 +9,7 @@ const source = (file: string) => readFileSync(resolve(root, 'apps/server/src', f
 
 /** Each production boundary is deliberately classified. New outbound call sites require review. */
 const boundaries = {
+  'areas/health/auto-update.notices.ts': 'staff-only owner update notices are exempt from memberEmailsEnabled; gym SMTP and durable per-attempt delivery reservations',
   'areas/bookings/bookings.delivery.ts': 'memberEmailsEnabled and recipient preferences reloaded by MemberEmail immediately before gym SMTP delivery',
   'areas/billing/runner/index.ts': 'billingEnabled: before reservation, create and confirm',
   'areas/billing/signed-link-checkout.ts': 'billingEnabled before payment preparation and delivery; setup is allowed while paused',
@@ -45,6 +46,7 @@ const chargePaths = [
   ['cash/check accounting and refunds, no new card charges', 'areas/billing/transitions/transitions.test.ts', 'records manual payments idempotently'],
 ] as const;
 const emailPaths = [
+  ['owner automatic-update notices', 'areas/health/auto-update.notices.test.ts', 'emails each owner once per attempt'],
   ['member-targeted mail', 'infra/email/member.test.ts', 'reloads changed switches'],
   ['receipt/resend and dunning/SCA messages', 'areas/billing/transitions/transitions.test.ts', 'suppresses disabled/opted-out payer email'],
   ['signed pay, card, waiver and onboarding links', 'areas/links/service.test.ts', 'memberEmailsEnabled: false'],

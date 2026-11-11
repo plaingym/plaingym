@@ -37,7 +37,7 @@ case "$*" in
   *' exec -T app gym-app auto-update record '*)
     [ "${FAIL_AT:-}" != record ] || exit 1
     printf '%s\n' "$*" | sed 's/.* auto-update record //' >> "$RECORDS" ;;
-  "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1; case "$3" in *@sha256:*) echo "$DIGEST" ;; *) echo "$PREVIOUS_ID" ;; esac ;;
+  "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1; case "$3" in *:v1.2.1@*) echo "sha256:$(printf 'b%.0s' $(seq 64))" ;; *:v1.2.2@*) echo "sha256:$(printf 'e%.0s' $(seq 64))" ;; *@sha256:*) echo "$DIGEST" ;; *) echo "$PREVIOUS_ID" ;; esac ;;
   'image inspect '*'org.opencontainers.image.version'*)
     case "$3" in *@sha256:*) echo "${TARGET_LABEL:-v1.2.5}" ;; *) echo "${CURRENT_LABEL:-v1.2.3}" ;; esac ;;
   'image inspect '*RepoDigests*) echo "${REPO_DIGEST:-ghcr.io/example/app@$DIGEST}"; echo 'ghcr.io/example/app@sha256:0000000000000000000000000000000000000000000000000000000000000000' ;;
@@ -137,6 +137,28 @@ grep -qx timezone=America/Denver "$case_dir/auto-update.state"
 grep -qx night=2026-11-03 "$case_dir/auto-update.state"
 no_secret
 
+# Only earlier images actually pulled by this install may be pruned. Rollback history wins over age.
+make_install pruning
+old_id="sha256:$(printf 'b%.0s' $(seq 64))"
+retained_id="sha256:$(printf 'e%.0s' $(seq 64))"
+printf 'ghcr.io/example/app:v1.2.1@%s\t%s\tv1.2.1\n' "$old_id" "$old_id" > "$case_dir/auto-update-images.tsv"
+printf 'ghcr.io/example/app:v1.2.2@%s\t%s\tv1.2.2\n' "$retained_id" "$retained_id" >> "$case_dir/auto-update-images.tsv"
+printf '2026-11-01T00:00:00Z\tv1.2.2\t%s\tinstall\tv1.2.0\t-\n' "$retained_id" > "$case_dir/version-history.tsv"
+printf '2026-11-02T00:00:00Z\tv1.2.3\t%s\tupdate\tv1.2.0\t-\n' "$PREVIOUS_ID" >> "$case_dir/version-history.tsv"
+expect_status 0 --patch --now
+called "image rm ghcr.io/example/app:v1.2.1@$old_id"
+[ "$(grep -c 'image rm ' "$CALLS")" -eq 1 ]
+never "image rm ghcr.io/example/app:v1.2.2"
+never 'image prune'
+never 'image rm other/'
+grep -q "ghcr.io/example/app:v1.2.5@$digest" "$case_dir/auto-update-images.tsv"
+
+make_install dot-repository
+printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=../..\n' > "$case_dir/.env"
+expect_status 1 --patch --now
+recorded '--result skipped --reason release_list_unavailable --from v1.2.3'
+never 'curl '
+
 # Nothing newer in this minor: up to date, nothing pulled.
 make_install current
 printf '[{"tag_name": "v1.3.0"}, {"tag_name": "v1.2.3"}]\n' > "$FIXTURES/releases.json"
@@ -224,6 +246,13 @@ pinned ghcr.io/example/app:v1.2.3
 grep 'up -d ' "$CALLS" | tail -n 1 | grep -q "IMAGE=$PREVIOUS_ID"
 never "up -d .* IMAGE=$target"
 [ ! -e "$case_dir/.auto-update.inflight" ]
+
+# A damaged marker cannot report an updated result without a valid source version.
+make_install interrupted-damaged
+printf '%s\n' '- v1.2.5' > "$case_dir/.auto-update.inflight"
+expect_status 1 CURRENT_LABEL=v1.2.5 --patch
+[ ! -s "$RECORDS" ]
+never 'auto-update record'
 # Stopped during the snapshot: the new version never ran, so it reads as skipped, not rolled back.
 make_install snapshot-signal
 expect_status 130 FAIL_AT=snapshot_signal --patch --now

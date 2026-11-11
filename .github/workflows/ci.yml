@@ -1,16 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 name: CI
-# Pushes to main and pull requests; a pull request's branch isn't also checked as a push.
+# Pushes to main, integration and release branches, and pull requests.
 # Markdown-only changes run the docs tests in Repo compliance; they skip this full build and test suite.
 on:
   push:
-    branches: [main, 'integration/**']
+    branches: [main, 'integration/**', 'release/**']
     paths-ignore: ['**/*.md']
   pull_request:
     paths-ignore: ['**/*.md']
 permissions:
   contents: read
 jobs:
+  release-migrations:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: Refuse database changes on a release branch
+        shell: sh
+        run: |
+          # release-migrations-start (also exercised in deploy/test/release.sh)
+          set -eu
+          minor=${GITHUB_REF_NAME#release/}
+          printf '%s\n' "$minor" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          previous=$(git tag --list "v$minor.*" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          [ -n "$previous" ] || { echo 'No release to compare migrations with.' >&2; exit 1; }
+          # The same migration comparison as deploy/release/check-tag.sh, before any tag is made.
+          git diff --exit-code "$previous" HEAD -- packages/db/src/migrations
+          # release-migrations-end
   reuse:
     # main only receives fast-forwards of integration branches whose CI passed, so the same commit has
     # already been checked: reuse that run's result instead of repeating it. Any lookup failure checks again.

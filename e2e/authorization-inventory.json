@@ -1,4 +1,6 @@
 [
+  {"method": "GET", "path": "/api/health/auto-update", "permission": {"kind": "staff", "capability": "integrations.manage"}},
+  {"method": "PUT", "path": "/api/health/auto-update", "permission": {"kind": "staff", "capability": "integrations.manage"}},
   {"method": "POST", "path": "/api/announcements/preview", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/test", "permission": {"kind": "staff", "capability": "announcements.send"}},
   {"method": "POST", "path": "/api/announcements/send", "permission": {"kind": "staff", "capability": "announcements.send"}},

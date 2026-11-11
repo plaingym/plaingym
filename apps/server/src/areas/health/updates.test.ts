@@ -205,6 +205,22 @@ describe('update_available tile', () => {
     expect(result.message).toContain('UPDATE_CHECK=off');
   });
   describe('a newer patch', () => {
+    it('names and links the attempt target when it is ahead of the cached release', async () => {
+      const result = await tile({}, check('1.2.4'), nightly({ attempt: attempt({ result: 'rolled_back', reason: 'health_check_failed', toVersion: 'v1.2.5' }) }));
+      expect(result).toMatchObject({ status: 'warning', details: { latestVersion: '1.2.5', releaseUrl: 'https://github.com/plaingym/plaingym/releases/tag/v1.2.5' } });
+      expect(result.message).toContain('1.2.5');
+      expect(result.message).not.toContain('1.2.4');
+    });
+    it('announces a patch for an old install that has never reported a check', async () => {
+      expect(await tile({}, check('1.2.5'), nightly({ attempt: null, firstSeen: new Date(clock.now().getTime() - 51 * hour).toISOString() })))
+        .toMatchObject({ status: 'warning', details: { available: true }, message: expect.stringContaining('first seen more than two days ago') });
+    });
+    it.each(['release_list_unavailable', 'manifest_unavailable', 'pull_failed', 'snapshot_failed', 'check_failed'] as const)('waits for two consecutive transient skips: %s', async reason => {
+      const skipped = attempt({ result: 'skipped', reason, toVersion: 'v1.2.5' });
+      expect(await tile({}, check('1.2.5'), nightly({ attempt: skipped }))).toMatchObject({ details: { available: false } });
+      expect(await tile({}, check('1.2.5'), nightly({ attempt: skipped, previousAttempt: { ...skipped, attemptedAt: '2026-11-02T12:00:00Z' } })))
+        .toMatchObject({ details: { available: true } });
+    });
     const patch = check('1.2.5');
     const stale = new Date(clock.now().getTime() - (staleAfterHours + 1) * hour).toISOString();
     it.each([
@@ -254,7 +270,7 @@ describe('update_available tile', () => {
     });
     it('still holds the release the last attempt was about, and one it cannot compare', async () => {
       for (const toVersion of ['v1.2.5', '1.2.5', '0.0.0-dev', null])
-        expect(await tile({}, patch, nightly({ attempt: attempt({ result: 'skipped', reason: 'pull_failed', toVersion }) })), String(toVersion))
+        expect(await tile({}, patch, nightly({ attempt: attempt({ result: 'skipped', reason: 'no_signing_key', toVersion }) })), String(toVersion))
           .toMatchObject({ status: 'warning', details: { available: true } });
     });
     it('holds a newer patch back for the switch and the timer however old the last attempt was about', async () => {
@@ -274,10 +290,10 @@ describe('update_available tile', () => {
     it('stays quiet when the setting and attempt cannot be read', async () => {
       expect(await tile({}, patch, new Error('database down'))).toMatchObject({ status: 'healthy', details: { available: false } });
     });
-    it('is never asked about for a release that is not a patch', async () => {
+    it('checks for a newer attempt target even when the cache does not name a patch', async () => {
       for (const version of ['1.3.0', '1.2.0', '1.1.0']) {
         const { automatic } = await probe({}, check(version), nightly({ enabled: false }));
-        expect(automatic, version).not.toHaveBeenCalled();
+        expect(automatic, version).toHaveBeenCalledTimes(1);
       }
       expect(await tile({}, check('1.3.0'), nightly({ enabled: false }))).toMatchObject({
         message: 'Version 1.3.0 is available. This install runs 1.2.0. Run the updater on the server to install it.' });
@@ -306,9 +322,10 @@ describe('update_available tile', () => {
       const { fetcher } = await readFrom({ RELEASE_REPOSITORY: '  ' }, 'plaingym/plaingym');
       expect(firstUrl(fetcher)).toBe(releasesApiUrl);
     });
-    it.each(['example', 'a/b/c', 'https://github.com/example/app', 'exa mple/app'])('is not read when %s is not owner/name', async (value) => {
+    it.each(['example', 'a/b/c', 'https://github.com/example/app', 'exa mple/app', '../..', './repo', 'owner/...'])('warns and raises the banner when %s is not owner/name', async (value) => {
       const { fetcher, first } = await readFrom({ RELEASE_REPOSITORY: value }, 'plaingym/plaingym');
-      expect(first).toMatchObject({ status: 'not_configured', details: null });
+      expect(first).toMatchObject({ status: 'warning', details: { available: true, releaseUrl: null }, message: expect.stringContaining('Patch releases cannot install') });
+      expect(releaseRepository({ RELEASE_REPOSITORY: value })).toBeNull();
       expect(fetcher).not.toHaveBeenCalled();
     });
   });
