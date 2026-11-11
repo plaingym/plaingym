@@ -67,6 +67,7 @@ export const attendances = pgTable('attendances', {
   unique('attendances_session_member_key').on(t.gymId, t.sessionId, t.memberId),
   unique('attendances_source_key').on(t.gymId, t.sourceKey),
   index('attendances_member_time_idx').on(t.gymId, t.memberId, t.occurredAt),
+  index('attendances_gym_occurred_at_idx').on(t.gymId, t.occurredAt),
   choice('attendances_source_check', t.source, ['kiosk', 'coach', 'import']),
   choice('attendances_kind_check', t.kind, ['class', 'open_mat'])]).enableRLS();
 export const classBookings = pgTable('class_bookings', {

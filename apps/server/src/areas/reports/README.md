@@ -130,3 +130,66 @@ statements in one short `forGym` call: received payments, resolved refunds with
 their payments, touched invoice lines joined to current catalog names, and
 payment acceptance audit markers. No statement is added per invoice or month.
 The report only reads billing data and requires no extra runtime configuration.
+
+## Timing and indexes
+
+`timing.test.ts` loads two synthetic gyms through app-role bulk inserts. Each has
+300 households and members, 300 memberships, 3,450 cycle invoices and payments,
+6,900 invoice lines, 165 refunds, 3,870 audit events and 44,490 check-ins across
+155 classes in 2025. The fixture includes imports, cancellations, a June freeze
+with a July resume, and December freezes. It schedules about three visits a week
+per active, unfrozen member. The gyms use USD and JPY respectively: the schema
+enforces one billing currency per gym.
+
+Each report runs over December alone, all twelve months of 2025, and January
+2024 through December 2025 (24 months, including an empty preceding year), with
+the equally sized second gym present. Tests assert 1 attendance, 1 members and
+4 revenue statements, plus BEGIN, gym context and COMMIT, and a generous **15 s**
+bound per service call. They compare each 24-month result before and after adding
+the second gym and check the underlying readers' rows, IDs and known totals.
+Every measured query and EXPLAIN uses the app role and forced RLS.
+
+One warm-cache workstation run on PostgreSQL 18.6 and Node 24.22.1 measured these
+whole-service times in milliseconds, before and after migration `0028`:
+
+| Report | Months | Before | After |
+| --- | ---: | ---: | ---: |
+| Attendance | 1 | 11.43 | 14.45 |
+| Attendance | 12 | 92.58 | 114.14 |
+| Attendance | 24 | 118.75 | 162.43 |
+| Members | 1 | 7.18 | 15.24 |
+| Members | 12 | 7.40 | 20.32 |
+| Members | 24 | 7.52 | 9.83 |
+| Revenue | 1 | 20.95 | 20.26 |
+| Revenue | 12 | 109.13 | 197.13 |
+| Revenue | 24 | 140.64 | 182.86 |
+
+These are individual observations on a shared machine, not performance targets.
+Timing includes validation, bucket generation, transaction, query transfer and
+aggregation; connection initialization, fixture construction, warming and EXPLAIN
+replays are outside the timer. Broad ranges need every fixture row for that gym;
+the planner keeps their existing scans, so the time indexes do not promise to
+speed up full-history reports. Members needs the complete lifecycle history and
+gets no new index.
+
+The extra one-month probe justifies the three new `(gym_id, time)` B-tree indexes:
+
+- Attendance's old `(gym_id, member_id, occurred_at)` bitmap index scan touches
+  755 shared buffers for 3,360 visits. `attendances_gym_occurred_at_idx` touches 4;
+  its heap scan touches 66 buffers instead of 817.
+- Payments previously select all 3,450 gym receipts, then filter out 3,210.
+  `payments_gym_paid_at_idx` selects 240 directly; heap buffers fall from 54 to 7.
+- Refunds previously scan 330 rows across both gyms and filter out 315.
+  `refunds_gym_resolved_at_idx` selects 15 directly; heap buffers fall from 6 to 2.
+
+The migration adds only those indexes. It changes no columns, rows or RLS rules.
+The upgrade test starts at the secured, populated `0027` schema and verifies the
+index definitions, existing rows and isolation after migration.
+
+Run `pnpm exec vitest run apps/server/src/areas/reports/timing.test.ts` to repeat.
+Set `REPORT_TIMING_ARTIFACT` to a writable file path to retain full captured
+`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` plans and timings. For a baseline run,
+also set `REPORT_TIMING_WITHOUT_TIME_INDEXES=1`: it removes only these three
+indexes from this test file's disposable clone, leaving the migrated template
+unchanged. Unset it for the indexed comparison. Plan replays use the original
+driver SQL and bind parameters in a fresh transaction scoped to the same gym.

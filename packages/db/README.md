@@ -106,6 +106,12 @@ The ledger's only app-updatable column is `reason`; app cannot delete its rows.
 An adjustment reason is required; app may later clear it to the empty string.
 All four tables are included in gym exports. This migration issues no credits.
 
+Migration `0028_report_time_indexes.sql` adds only three B-tree indexes:
+`attendances (gym_id, occurred_at)`, `payments (gym_id, paid_at)` and
+`refunds (gym_id, resolved_at)`. They support bounded report date ranges without
+reading the rest of a gym's history. No rows, columns, policies or grants change.
+The report area's README records the full-gym measurements and plan comparisons.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

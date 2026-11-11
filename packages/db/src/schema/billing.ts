@@ -141,6 +141,7 @@ export const payments = pgTable('payments', {
   unique('payments_intent_key').on(t.gymId, t.paymentIntentId),
   unique('payments_charge_key').on(t.gymId, t.chargeId),
   index('payments_invoice_idx').on(t.gymId, t.invoiceId),
+  index('payments_gym_paid_at_idx').on(t.gymId, t.paidAt),
   choice('payments_method_check', t.method, ['card', 'cash', 'check', 'other']),
   currencyCheck('payments_currency_check', t.currency), check('payments_amount_check', sql`${t.amountCents} > 0`)]).enableRLS();
 export const refunds = pgTable('refunds', {
@@ -153,6 +154,7 @@ export const refunds = pgTable('refunds', {
   foreignKey({ name: 'refunds_payment_fk', columns: [t.gymId, t.paymentId, t.currency], foreignColumns: [payments.gymId, payments.id, payments.currency] }),
   unique('refunds_processor_key').on(t.gymId, t.processorId),
   index('refunds_payment_idx').on(t.gymId, t.paymentId),
+  index('refunds_gym_resolved_at_idx').on(t.gymId, t.resolvedAt),
   choice('refunds_status_check', t.status, ['pending', 'succeeded', 'failed', 'canceled']),
   currencyCheck('refunds_currency_check', t.currency), check('refunds_amount_check', sql`${t.amountCents} > 0`)]).enableRLS();
 
