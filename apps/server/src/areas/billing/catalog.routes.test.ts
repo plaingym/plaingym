@@ -120,7 +120,7 @@ describe('all billing catalog and membership routes', () => {
     const archived = await request(app, 'updateTaxRate', f, { revision: 1, active: false, detach: true });
     expect(archived.status).toBe(200);
     expect((await archived.json()).data).toMatchObject({ active: false, revision: 2 });
-    expect((await (await request(app, 'getTaxRateUsage', f)).json()).data).toEqual({ chargeTypes: [], plans: [], memberships: 0 });
+    expect((await (await request(app, 'getTaxRateUsage', f)).json()).data).toEqual({ chargeTypes: [], packs: [], plans: [], memberships: 0 });
   });
   it('maps stale catalog and membership revisions to 409 and uses private responses', async () => {
     const f = await fixture(), app = server(f, staff(f, 'owner'));

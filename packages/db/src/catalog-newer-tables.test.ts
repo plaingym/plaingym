@@ -39,15 +39,15 @@ describe('a table this image does not declare', () => {
       create policy newer_delete on newer for delete to app using (${system});`],
   ])('is accepted as %s', async (_name, statements) => {
     await maintenance.sql.unsafe(statements);
-    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 63, tenantTableCount: expect.any(Number) });
+    await expect(assertCatalog(database.app.sql)).resolves.toEqual({ tableCount: 67, tenantTableCount: expect.any(Number) });
   });
 
   it('counts as a tenant table only with the gym policy', async () => {
     await maintenance.sql.unsafe(safeGymTable);
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 63, tenantTableCount: 51 });
+    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 67, tenantTableCount: 55 });
     await maintenance.sql.unsafe(`drop table newer; create table newer (id uuid primary key); ${forced}
       create policy newer_system on newer to app using (${system}) with check (${system});`);
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 63, tenantTableCount: 50 });
+    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 67, tenantTableCount: 54 });
   });
 
   it.each([
@@ -114,7 +114,7 @@ it('starts this image on a database a newer release migrated: its migrations sta
   await maintenance.sql`insert into drizzle.__drizzle_migrations (hash, created_at) values ('newer-release', ${Number(latest?.at) + 1000})`;
   try {
     await expect(migrateDatabase(database.maintenanceUrl)).resolves.toBeUndefined();
-    await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 63 });
+    await expect(assertCatalog(database.app.sql)).resolves.toMatchObject({ tableCount: 67 });
     expect(await maintenance.sql`select 1 from drizzle.__drizzle_migrations where hash = 'newer-release'`).toHaveLength(1);
   } finally { await maintenance.sql`delete from drizzle.__drizzle_migrations where hash = 'newer-release'`; }
 });

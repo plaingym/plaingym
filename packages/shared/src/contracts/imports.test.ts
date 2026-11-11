@@ -21,6 +21,12 @@ describe('import and export contracts', () => {
     expect(exportDatasetSchema.parse('leads')).toBe('leads');
     expect(exportDatasetSchema.parse('lead_contacts')).toBe('lead_contacts');
   });
+  it('includes the complete pack catalog, sale snapshots and member credit ledger in every export', () => {
+    for (const name of ['class_packs', 'class_pack_tax_rates', 'class_pack_sales', 'class_credit_entries']) {
+      expect(exportDatasets).toContain(name);
+      expect(exportDatasetSchema.parse(name)).toBe(name);
+    }
+  });
   it('accepts multipart CSV files within the upload size limit', () => {
     expect(uploadCsvRequestSchema.safeParse({ file: new File(['name\nA\n'], 'members.csv', { type: 'text/csv' }) }).success).toBe(true);
     expect(uploadCsvRequestSchema.safeParse({ file: new File([], 'empty.csv') }).success).toBe(false);

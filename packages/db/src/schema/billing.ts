@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, date, foreignKey, index, integer, pgTable, text, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { base, choice, currencyCheck, gymCurrency, instant, ref, revision, revisionCheck, scoped } from './common.js';
 import { households, members } from './members.js';
+import { authUser } from './auth.js';
 /** rate_millionths is the rate in millionths of the taxable amount: 99_750 = 9.975%. */
 export const taxRates = pgTable('tax_rates', {
   ...base(), name: text('name').notNull(), rateMillionths: integer('rate_millionths').notNull(),
@@ -154,3 +155,71 @@ export const refunds = pgTable('refunds', {
   index('refunds_payment_idx').on(t.gymId, t.paymentId),
   choice('refunds_status_check', t.status, ['pending', 'succeeded', 'failed', 'canceled']),
   currencyCheck('refunds_currency_check', t.currency), check('refunds_amount_check', sql`${t.amountCents} > 0`)]).enableRLS();
+
+export const classPacks = pgTable('class_packs', {
+  ...base(), name: text('name').notNull(), amountCents: integer('amount_cents').notNull(),
+  currency: text('currency').notNull(), credits: integer('credits').notNull(), expiryDays: integer('expiry_days'),
+  active: boolean('active').notNull().default(true), ...revision(),
+}, (t) => [...scoped('class_packs', t), gymCurrency('class_packs_currency_fk', t),
+  currencyCheck('class_packs_currency_check', t.currency), check('class_packs_amount_check', sql`${t.amountCents} >= 0`),
+  check('class_packs_credits_check', sql`${t.credits} between 1 and 100`),
+  check('class_packs_expiry_check', sql`${t.expiryDays} is null or ${t.expiryDays} between 1 and 3650`),
+  revisionCheck('class_packs_revision_check', t.revision)]).enableRLS();
+export const classPackTaxRates = pgTable('class_pack_tax_rates', {
+  ...base(), packId: uuid('pack_id').notNull(), taxRateId: uuid('tax_rate_id').notNull(),
+}, (t) => [...scoped('class_pack_tax_rates', t), ref('class_pack_tax_rates_pack_fk', t.gymId, t.packId, classPacks),
+  ref('class_pack_tax_rates_tax_fk', t.gymId, t.taxRateId, taxRates),
+  unique('class_pack_tax_rates_pair_key').on(t.gymId, t.packId, t.taxRateId)]).enableRLS();
+/** The invoice keeps its original payer; credits follow the member through household moves. */
+export const classPackSales = pgTable('class_pack_sales', {
+  ...base(), invoiceId: uuid('invoice_id').notNull(), householdId: uuid('household_id').notNull(),
+  memberId: uuid('member_id').notNull(), packId: uuid('pack_id').notNull(),
+  credits: integer('credits').notNull(), expiryDays: integer('expiry_days'),
+}, (t) => [...scoped('class_pack_sales', t),
+  foreignKey({ name: 'class_pack_sales_invoice_fk', columns: [t.gymId, t.householdId, t.invoiceId],
+    foreignColumns: [invoices.gymId, invoices.householdId, invoices.id] }),
+  ref('class_pack_sales_household_fk', t.gymId, t.householdId, households),
+  ref('class_pack_sales_member_fk', t.gymId, t.memberId, members), ref('class_pack_sales_pack_fk', t.gymId, t.packId, classPacks),
+  unique('class_pack_sales_invoice_key').on(t.gymId, t.invoiceId),
+  unique('class_pack_sales_member_id_key').on(t.gymId, t.memberId, t.id),
+  check('class_pack_sales_credits_check', sql`${t.credits} between 1 and 100`),
+  check('class_pack_sales_expiry_check', sql`${t.expiryDays} is null or ${t.expiryDays} between 1 and 3650`),
+]).enableRLS();
+/** Only reason may be redacted; grants and spends are never edited or deleted by app. */
+export const classCreditEntries = pgTable('class_credit_entries', {
+  ...base(), memberId: uuid('member_id').notNull(), kind: text('kind').notNull(), credits: integer('credits').notNull(),
+  lotId: uuid('lot_id'), saleId: uuid('sale_id'),
+  // Undo deletes attendance, but its ID must remain available for idempotency.
+  attendanceId: uuid('attendance_id'), expiresAt: instant('expires_at'), reason: text('reason'),
+  adjustmentId: uuid('adjustment_id'), createdBy: uuid('created_by').references(() => authUser.id),
+}, (t) => [...scoped('class_credit_entries', t), ref('class_credit_entries_member_fk', t.gymId, t.memberId, members),
+  unique('class_credit_entries_member_id_key').on(t.gymId, t.memberId, t.id),
+  foreignKey({ name: 'class_credit_entries_lot_fk', columns: [t.gymId, t.memberId, t.lotId],
+    foreignColumns: [t.gymId, t.memberId, t.id] }),
+  foreignKey({ name: 'class_credit_entries_sale_fk', columns: [t.gymId, t.memberId, t.saleId],
+    foreignColumns: [classPackSales.gymId, classPackSales.memberId, classPackSales.id] }),
+  choice('class_credit_entries_kind_check', t.kind, ['grant', 'use', 'expire', 'reverse', 'adjust']),
+  check('class_credit_entries_sign_check', sql`${t.credits} <> 0 and
+    (${t.kind} <> 'grant' or ${t.credits} > 0) and (${t.kind} <> 'use' or ${t.credits} = -1) and
+    (${t.kind} <> 'expire' or ${t.credits} < 0) and
+    (${t.kind} <> 'reverse' or (${t.saleId} is not null and ${t.credits} < 0) or (${t.attendanceId} is not null and ${t.credits} = 1))`),
+  check('class_credit_entries_lot_check', sql`(${t.lotId} is null) = (${t.kind} = 'grant' or (${t.kind} = 'adjust' and ${t.credits} > 0))`),
+  check('class_credit_entries_expiry_check', sql`${t.expiresAt} is null or ${t.lotId} is null`),
+  check('class_credit_entries_source_check', sql`
+    (${t.kind} = 'grant' and ${t.saleId} is not null and ${t.attendanceId} is null) or
+    (${t.kind} = 'use' and ${t.attendanceId} is not null and ${t.saleId} is null) or
+    (${t.kind} = 'reverse' and ((${t.saleId} is not null) <> (${t.attendanceId} is not null))) or
+    (${t.kind} in ('expire', 'adjust') and ${t.saleId} is null and ${t.attendanceId} is null)`),
+  check('class_credit_entries_adjustment_check', sql`
+    (${t.kind} = 'adjust' and ${t.adjustmentId} is not null and ${t.reason} is not null and char_length(${t.reason}) <= 500) or
+    (${t.kind} <> 'adjust' and ${t.adjustmentId} is null and ${t.reason} is null)`),
+  uniqueIndex('class_credit_entries_grant_sale_key').on(t.gymId, t.saleId).where(sql`${t.kind} = 'grant'`),
+  uniqueIndex('class_credit_entries_reverse_sale_key').on(t.gymId, t.saleId).where(sql`${t.kind} = 'reverse' and ${t.saleId} is not null`),
+  uniqueIndex('class_credit_entries_use_attendance_key').on(t.gymId, t.attendanceId).where(sql`${t.kind} = 'use'`),
+  uniqueIndex('class_credit_entries_reverse_attendance_key').on(t.gymId, t.attendanceId).where(sql`${t.kind} = 'reverse' and ${t.attendanceId} is not null`),
+  uniqueIndex('class_credit_entries_expire_lot_key').on(t.gymId, t.lotId).where(sql`${t.kind} = 'expire'`),
+  uniqueIndex('class_credit_entries_adjust_lot_key').on(t.gymId, t.adjustmentId, t.lotId).where(sql`${t.kind} = 'adjust' and ${t.lotId} is not null`),
+  uniqueIndex('class_credit_entries_adjust_open_key').on(t.gymId, t.adjustmentId).where(sql`${t.kind} = 'adjust' and ${t.lotId} is null`),
+  index('class_credit_entries_member_idx').on(t.gymId, t.memberId, t.createdAt),
+  index('class_credit_entries_expiry_idx').on(t.gymId, t.expiresAt).where(sql`${t.lotId} is null`),
+]).enableRLS();

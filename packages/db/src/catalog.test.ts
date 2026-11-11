@@ -23,12 +23,12 @@ it('creates independent template clones with restricted app connections', async 
     await first('households', gym);
     expect(await database.forGym(gym, (tx) => tx.select().from(households))).toHaveLength(1);
     expect(await other.forGym(gym, (tx) => tx.select().from(households))).toEqual([]);
-    expect(await assertCatalog(other.app.sql)).toEqual({ tableCount: 62, tenantTableCount: 50 });
+    expect(await assertCatalog(other.app.sql)).toEqual({ tableCount: 66, tenantTableCount: 54 });
   } finally { await other.cleanup(); }
 });
 it('serializes concurrent migration runners and keeps security setup idempotent', async () => {
   await Promise.all([migrateDatabase(database.maintenanceUrl), migrateDatabase(database.maintenanceUrl)]);
-  expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 62, tenantTableCount: 50 });
+  expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 66, tenantTableCount: 54 });
 });
 it('detects policy, FORCE, unregistered table and privilege drift', async () => {
   const maintenance = openConnection(database.maintenanceUrl, 1);

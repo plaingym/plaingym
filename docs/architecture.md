@@ -175,7 +175,9 @@ Billing uses the gym's own Stripe account. The local `invoices` table is the
 source of truth; Stripe is the processor. In outline:
 
 * **Catalog and memberships** (`areas/billing/catalog.README.md`,
-  `memberships.README.md`): plans, charge types, tax rates, memberships.
+  `memberships.README.md`): plans, charge types, tax rates, memberships; the
+  [class pack catalog](../apps/server/src/areas/billing/packs/README.md) manages
+  revision-checked pack prices and tax links.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

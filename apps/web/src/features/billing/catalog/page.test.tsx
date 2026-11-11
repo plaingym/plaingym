@@ -221,7 +221,7 @@ describe('catalog and member billing screens', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Charge types' }));
     expect(await screen.findByText('Nothing here yet')).toBeTruthy();
   });
-  const usage: TaxRateUsage = { chargeTypes: [{ id: id(7), name: 'Drop-in', active: true }],
+  const usage: TaxRateUsage = { packs: [], chargeTypes: [{ id: id(7), name: 'Drop-in', active: true }],
     plans: [{ id: plan.id, name: 'Unlimited', active: true, memberships: 3 }, { id: id(8), name: 'Retired plan', active: false, memberships: 0 }], memberships: 3 };
   function answering(api: ReturnType<typeof client>, found: TaxRateUsage) {
     vi.mocked(api.call).mockImplementation((async (name: string) => name === 'getTaxRateUsage' ? { data: found } : { data: tax }) as unknown as BillingClient['call']);
@@ -260,10 +260,23 @@ describe('catalog and member billing screens', () => {
     expect(api.call).not.toHaveBeenCalledWith('updateTaxRate', expect.anything(), expect.anything());
   });
   it('archives a tax rate nothing carries without asking', async () => {
-    const api = client(); answering(api, { chargeTypes: [], plans: [], memberships: 0 }); await archiveFromEditor(api);
+    const api = client(); answering(api, { chargeTypes: [], packs: [], plans: [], memberships: 0 }); await archiveFromEditor(api);
     await waitFor(() => expect(api.call).toHaveBeenCalledWith('updateTaxRate', expect.objectContaining({ revision: 1, active: false }), { taxRateId: tax.id }));
     expect(vi.mocked(api.call).mock.calls.find(call => call[0] === 'updateTaxRate')?.[1]).not.toHaveProperty('detach');
     expect(screen.queryByRole('region')).toBeNull();
+  });
+  it('counts and names packs before confirming a pack-only tax detach', async () => {
+    const api = client(); answering(api, { chargeTypes: [], plans: [], memberships: 0,
+      packs: [{ id: id(9), name: 'Ten classes', active: true }, { id: id(10), name: 'Retired pack', active: false }] });
+    await archiveFromEditor(api);
+    const panel = await screen.findByRole('region', { name: 'Archive Sales tax?' });
+    expect(within(panel).getByRole('heading', { name: 'Class packs' })).toBeTruthy();
+    expect(within(panel).getByText('These catalog items still carry this tax rate. Archiving it removes it from all of them.')).toBeTruthy();
+    expect(within(panel).getByText('Ten classes')).toBeTruthy();
+    expect(within(panel).getByText('Retired pack (Inactive)')).toBeTruthy();
+    expect(api.call).not.toHaveBeenCalledWith('updateTaxRate', expect.anything(), expect.anything());
+    fireEvent.click(within(panel).getByRole('button', { name: 'Remove and archive — items: 2' }));
+    await waitFor(() => expect(api.call).toHaveBeenCalledWith('updateTaxRate', expect.objectContaining({ active: false, detach: true }), { taxRateId: tax.id }));
   });
   it('closes the confirmation and reloads when the rate changed before confirming', async () => {
     const api = client(); answering(api, usage); await archiveFromEditor(api);
@@ -287,7 +300,7 @@ describe('catalog and member billing screens', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
   });
   it('shows the confirmation when something attached the rate after the check', async () => {
-    const api = client(); let found: TaxRateUsage = { chargeTypes: [], plans: [], memberships: 0 };
+    const api = client(); let found: TaxRateUsage = { chargeTypes: [], packs: [], plans: [], memberships: 0 };
     vi.mocked(api.call).mockImplementation((async (name: string) => {
       if (name === 'getTaxRateUsage') return { data: found };
       found = usage; throw new ApiError(409, 'conflict', ['tax_rate_attached']);
@@ -297,7 +310,7 @@ describe('catalog and member billing screens', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
   it.each([{ reason: [] }, { reason: ['tax_rate_inactive'] }])('keeps a stale or unrelated conflict out of the archive panel (reason: $reason)', async ({ reason }) => {
-    const api = client(); let found: TaxRateUsage = { chargeTypes: [], plans: [], memberships: 0 };
+    const api = client(); let found: TaxRateUsage = { chargeTypes: [], packs: [], plans: [], memberships: 0 };
     vi.mocked(api.call).mockImplementation((async (name: string) => {
       if (name === 'getTaxRateUsage') return { data: found };
       found = usage; throw new ApiError(409, 'conflict', reason);
@@ -310,7 +323,7 @@ describe('catalog and member billing screens', () => {
     expect(screen.getByLabelText('Name').matches(':disabled')).toBe(false);
   });
   it('uses label-and-number counts for one affected item and membership', async () => {
-    const api = client(); answering(api, { chargeTypes: [], plans: [{ id: plan.id, name: 'Unlimited', active: true, memberships: 1 }], memberships: 1 });
+    const api = client(); answering(api, { chargeTypes: [], packs: [], plans: [{ id: plan.id, name: 'Unlimited', active: true, memberships: 1 }], memberships: 1 });
     await archiveFromEditor(api);
     const panel = await screen.findByRole('region', { name: 'Archive Sales tax?' });
     expect(within(panel).getByRole('button', { name: 'Remove and archive — items: 1' })).toBeTruthy();

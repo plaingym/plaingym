@@ -31,6 +31,20 @@ describe('export schema coverage and secret exclusions', () => {
     for (const name of ['leads', 'lead_contacts'] as const)
       expect(await exportCatalog[name].page(database.forGym, gymA, new Date(0))).toEqual([]);
   });
+  it('exports all four pack datasets and member credit history only for the requested gym', async () => {
+    const gymA = uuidv7(), gymB = uuidv7();
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    for (const [table, name] of [['classPacks', 'class_packs'], ['classPackTaxRates', 'class_pack_tax_rates'],
+      ['classPackSales', 'class_pack_sales'], ['classCreditEntries', 'class_credit_entries']] as const) {
+      const own = await factory(table, gymA), foreign = await factory(table, gymB);
+      const rows = await exportCatalog[name].page(database.forGym, gymA, new Date('2099-01-01T00:00:00Z'));
+      expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ id: own.id, gym_id: gymA })]));
+      expect(rows.some(row => row.id === foreign.id || row.gym_id !== gymA)).toBe(false);
+      expect(await exportCatalog[name].page(database.forGym, gymA, new Date(0))).toEqual([]);
+    }
+    const [entry] = await exportCatalog.class_credit_entries.page(database.forGym, gymA, new Date('2099-01-01T00:00:00Z'));
+    expect(entry).toMatchObject({ kind: 'adjust', credits: 10, reason: 'Test adjustment', member_id: expect.any(String), adjustment_id: expect.any(String) });
+  });
   it('exports announcement history and member consent only for the requested gym', async () => {
     const gymA = uuidv7(), gymB = uuidv7();
     await factory('gyms', gymA); await factory('gyms', gymB);

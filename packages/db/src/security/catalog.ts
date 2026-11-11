@@ -3,7 +3,7 @@ import { getTableName } from 'drizzle-orm';
 import type { Sql } from '../client.js';
 import * as schema from '../schema/index.js';
 import { systemTables } from '../../system-tables.mjs';
-import { appendOnlyTables, deletableAppendOnlyTables, mutableAttemptColumns } from './apply.js';
+import { appendOnlyTables, deletableAppendOnlyTables, mutableAttemptColumns, mutableCreditColumns } from './apply.js';
 const expectedTables = Object.values(schema).map(getTableName).sort();
 const normalize = (expression: string) => expression.toLowerCase().replaceAll('::text', '').replace(/[()\s]/g, '');
 const gymPredicate = (column: string) => `${column} = nullif(current_setting('app.gym_id', true), '')::uuid`;
@@ -113,7 +113,8 @@ export async function assertCatalog(sql: Sql) {
         from pg_attribute a where a.attrelid = ${table.oid} and a.attnum > 0 and not a.attisdropped
       `;
       for (const column of columns) {
-        const expected = attempt && (mutableAttemptColumns as readonly string[]).includes(column.attname);
+        const expected = (attempt && (mutableAttemptColumns as readonly string[]).includes(column.attname)) ||
+          (name === 'class_credit_entries' && (mutableCreditColumns as readonly string[]).includes(column.attname));
         if (column.can_update !== expected) failures.push(name + '.' + column.attname + ': unexpected UPDATE');
       }
     }

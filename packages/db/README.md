@@ -95,6 +95,17 @@ references use `NO ACTION`. Stage and open follow-up indexes support lead reads;
 contact history is indexed by gym, lead and occurrence time. Both are exported.
 No backfill or automatic lead deletion is performed.
 
+Migration `0027_class_packs.sql` adds four empty gym-owned tables: `class_packs`,
+`class_pack_tax_rates`, `class_pack_sales` and `class_credit_entries`. Packs have
+1–100 credits and optional expiry of 1–3,650 days. Sales snapshot these terms,
+keep the invoice's household, and reference the member without household so a
+household move does not rewrite purchase history. Ledger lots and sales must
+belong to the same gym and member. Partial unique indexes deduplicate grants,
+uses, reversals, expiry and adjustments, including lot-opening adjustments.
+The ledger's only app-updatable column is `reason`; app cannot delete its rows.
+An adjustment reason is required; app may later clear it to the empty string.
+All four tables are included in gym exports. This migration issues no credits.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver
@@ -159,7 +170,8 @@ older one would then take a different lock.
 
 The security step never restores table-wide DML grants. It removes table and column
 UPDATE permissions on immutable records, then grants only the five mutable outcome
-columns on payment attempts. Audit events allow INSERT and SELECT only. Waiver
+columns on payment attempts and `reason` alone on class credit entries. Credit
+entries cannot be deleted by app. Audit events allow INSERT and SELECT only. Waiver
 signatures also allow DELETE, used only when a member's personal data is erased on
 request; they are never updated. Gym deletion still cascades these rows through the
 gym foreign key, because PostgreSQL runs cascades as the table owner (`maintenance`).
@@ -323,6 +335,10 @@ clock and cryptographic randomness. UUIDs are not a total ordering within a mill
 | plan_tax_rates | Tax rates applied to a plan |
 | charge_types | Named one-off charges |
 | charge_type_tax_rates | Tax rates applied to a charge type |
+| class_packs | Revision-checked class pack prices, credit counts and optional expiry |
+| class_pack_tax_rates | Tax rates applied to a class pack |
+| class_pack_sales | Invoice, payer and member with snapshotted credit count and expiry |
+| class_credit_entries | Per-member append-only credit lots and movements; reason can be redacted |
 | memberships | Member plan assignments, lifecycle dates and next billing date |
 | invoices | Household billing records, display numbers, cycle periods and payment state |
 | invoice_sequences | Per-gym invoice number allocation |

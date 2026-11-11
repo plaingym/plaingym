@@ -2,7 +2,8 @@
 import type { Sql } from '../client.js';
 /** Restricted columns remain immutable for app, even through raw SQL. */
 export const mutableAttemptColumns = ['payment_intent_id', 'status', 'decline_code', 'error', 'resolved_at'] as const;
-export const appendOnlyTables = ['audit_events', 'waiver_signatures'] as const;
+export const appendOnlyTables = ['audit_events', 'waiver_signatures', 'class_credit_entries'] as const;
+export const mutableCreditColumns = ['reason'] as const;
 /** Append-only rows the app may still delete: a signed waiver is never edited, but it is deleted
  * (and audited) when a member's personal data is erased on request. */
 export const deletableAppendOnlyTables = ['waiver_signatures'] as const;
@@ -13,14 +14,19 @@ export async function applySecurity(sql: Sql) {
       select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
       where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity
     `;
+    // Historical upgrade fixtures run this step before the ledger migration exists.
+    // The current-schema catalog check still requires the table at application startup.
+    const hasCreditEntries = tables.some(table => table.relname === 'class_credit_entries');
+    const immutableTables = appendOnlyTables.filter(table => table !== 'class_credit_entries' || hasCreditEntries);
     for (const table of tables) await tx`alter table public.${tx(table.relname)} force row level security`;
-    for (const table of appendOnlyTables) await tx`revoke update, delete on table public.${tx(table)} from app`;
+    for (const table of immutableTables) await tx`revoke update, delete on table public.${tx(table)} from app`;
     for (const table of deletableAppendOnlyTables) await tx`grant delete on table public.${tx(table)} to app`;
     await tx`revoke update, delete on table public.payment_attempts from app`;
-    for (const table of [...appendOnlyTables, 'payment_attempts']) {
+    for (const table of [...immutableTables, 'payment_attempts']) {
       const columns = await tx`select column_name from information_schema.columns where table_schema = 'public' and table_name = ${table}`;
       await tx`revoke update (${tx(columns.map((column) => column.column_name))}) on public.${tx(table)} from app`;
     }
     await tx`grant update (${tx([...mutableAttemptColumns])}) on public.payment_attempts to app`;
+    if (hasCreditEntries) await tx`grant update (${tx([...mutableCreditColumns])}) on public.class_credit_entries to app`;
   });
 }

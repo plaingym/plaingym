@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { EndpointContract } from './definition.js';
 import { idSchema } from './common.js';
 import {
+  createClassPackRequestSchema, updateClassPackRequestSchema, classPackResponseSchema, classPackListResponseSchema,
   billingCatalogListQuerySchema, billingTaxRateListQuerySchema,
   chargeTypeListResponseSchema, chargeTypeResponseSchema,
   createChargeTypeRequestSchema, createPlanRequestSchema, createTaxRateRequestSchema,
@@ -35,6 +36,7 @@ export * from './billing/overview.js';
 export const billingTaxRateParamsSchema = z.strictObject({ taxRateId: idSchema });
 export const billingPlanParamsSchema = z.strictObject({ planId: idSchema });
 export const billingChargeTypeParamsSchema = z.strictObject({ chargeTypeId: idSchema });
+export const billingClassPackParamsSchema = z.strictObject({ packId: idSchema });
 export const billingMembershipParamsSchema = z.strictObject({ membershipId: idSchema });
 export const billingInvoiceParamsSchema = z.strictObject({ invoiceId: idSchema });
 export const billingHouseholdParamsSchema = z.strictObject({ householdId: idSchema });
@@ -58,6 +60,14 @@ const collect = { kind: 'staff', capability: 'payments.record' } as const;
  * area contracts; these endpoints all require the named staff capability.
  */
 export const billingContracts = {
+  listClassPacks: { method: 'get', path: '/api/billing/class-packs', permission: catalog,
+    query: billingCatalogListQuerySchema, response: classPackListResponseSchema, successStatus: 200 },
+  getClassPack: { method: 'get', path: '/api/billing/class-packs/{packId}', permission: catalog,
+    params: billingClassPackParamsSchema, response: classPackResponseSchema, successStatus: 200 },
+  createClassPack: { method: 'post', path: '/api/billing/class-packs', permission: catalog,
+    body: createClassPackRequestSchema, response: classPackResponseSchema, successStatus: 201 },
+  updateClassPack: { method: 'patch', path: '/api/billing/class-packs/{packId}', permission: catalog,
+    params: billingClassPackParamsSchema, body: updateClassPackRequestSchema, response: classPackResponseSchema, successStatus: 200 },
   releaseInvoiceHold: releaseInvoiceHoldContract,
   listTaxRates: { method: 'get', path: '/api/billing/tax-rates', permission: read,
     query: billingTaxRateListQuerySchema, response: taxRateListResponseSchema, successStatus: 200 },
@@ -66,12 +76,12 @@ export const billingContracts = {
   createTaxRate: { method: 'post', path: '/api/billing/tax-rates', permission: taxes,
     body: createTaxRateRequestSchema, response: taxRateResponseSchema, successStatus: 201 },
   getTaxRateUsage: { method: 'get', path: '/api/billing/tax-rates/{taxRateId}/usage', permission: read,
-    description: 'Lists the charge types and plans the tax rate is attached to, with the number of memberships '
+    description: 'Lists the charge types, class packs and plans the tax rate is attached to, with the number of memberships '
       + '(not cancelled) on each plan, so archiving it can say what changes.',
     params: billingTaxRateParamsSchema, response: taxRateUsageResponseSchema, successStatus: 200 },
   updateTaxRate: { method: 'patch', path: '/api/billing/tax-rates/{taxRateId}', permission: taxes,
-    description: 'Updates a tax rate. Archiving an active rate (`active: false`) while charge types or plans carry it is a 409 '
-      + 'listing them (`details.chargeTypes`, `details.plans`, `details.memberships`), unless `detach: true` removes it '
+    description: 'Updates a tax rate. Archiving an active rate (`active: false`) while charge types, class packs or plans carry it is a 409 '
+      + 'listing them (`details.chargeTypes`, `details.packs`, `details.plans`, `details.memberships`), unless `detach: true` removes it '
       + 'from every one of them and archives it in one audited step.',
     params: billingTaxRateParamsSchema, body: updateTaxRateRequestSchema, response: taxRateResponseSchema, successStatus: 200 },
   listPlans: { method: 'get', path: '/api/billing/plans', permission: read,

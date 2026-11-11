@@ -179,11 +179,11 @@ describe('billing catalog against PostgreSQL', () => {
   it('lists what carries a rate, counting memberships that are not cancelled', async () => {
     const f = await attachedFixture();
     expect(await f.service.getTaxRateUsage(f.gymId, f.tax.id)).toEqual({
-      chargeTypes: [{ id: f.drop.id, name: 'Drop-in', active: true }],
+      chargeTypes: [{ id: f.drop.id, name: 'Drop-in', active: true }], packs: [],
       plans: [{ id: f.annual.id, name: 'Annual', active: true, memberships: 1 }, { id: f.monthly.id, name: 'Monthly', active: true, memberships: 4 }],
       memberships: 5 });
     const unused = await f.service.createTaxRate(f.context, { name: 'Unused', rateMillionths: 10_000, inclusive: true });
-    expect(await f.service.getTaxRateUsage(f.gymId, unused.id)).toEqual({ chargeTypes: [], plans: [], memberships: 0 });
+    expect(await f.service.getTaxRateUsage(f.gymId, unused.id)).toEqual({ chargeTypes: [], packs: [], plans: [], memberships: 0 });
     await expect(f.service.getTaxRateUsage(f.gymId, uuidv7())).rejects.toMatchObject({ code: 'not_found' });
   });
   it('refuses to archive an attached rate without confirmation, listing what carries it', async () => {
@@ -209,7 +209,7 @@ describe('billing catalog against PostgreSQL', () => {
     const events = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.tax.id)));
     expect(events.map(event => event.action).sort()).toEqual(['billing.tax_rate.archived', 'billing.tax_rate.created']);
     const audit = events.find(event => event.action === 'billing.tax_rate.archived')!;
-    const usage = { chargeTypes: [{ id: f.drop.id, name: 'Drop-in', active: true }],
+    const usage = { chargeTypes: [{ id: f.drop.id, name: 'Drop-in', active: true }], packs: [],
       plans: [{ id: f.annual.id, name: 'Annual', active: true, memberships: 1 }, { id: f.monthly.id, name: 'Monthly', active: true, memberships: 4 }], memberships: 5 };
     expect(audit.before).toMatchObject({ active: true, revision: 1, attachedTo: usage });
     expect(audit.after).toMatchObject({ active: false, revision: 2, detachedFrom: usage });

@@ -10,6 +10,7 @@ const managers: Role[] = ['owner', 'admin'];
 const desk: Role[] = ['owner', 'admin', 'front_desk'];
 const coaches: Role[] = ['owner', 'admin', 'coach'];
 const matrix: Record<string, Role[]> = {
+  'plans.manage': managers,
   'announcements.send': managers,
   'reports.read': coaches,
   'members.read': all, 'members.manage': desk, 'members.anonymize': managers,
@@ -23,6 +24,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path === '/api/announcements' || path.startsWith('/api/announcements/')
   || path === '/api/health/auto-update'
   || path.startsWith('/api/reports/')
+  || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)
@@ -130,6 +132,40 @@ test('a household login cannot reach staff routes', async ({ sandboxes }) => {
 
 // The demo has no Stripe account, so starting card setup is unavailable there; nothing else may answer 503.
 const stripeCheckout = new Set(['POST /api/portal/payment-methods/checkout']);
+for (const width of [360, 1280]) test('pack-only tax archive confirms its affected packs at ' + width + 'px', async ({ install, page, context }, info) => {
+  const owner = install.clients.owner, name = 'Pack tax ' + width;
+  const tax = (await owner.json<{ data: { id: string } }>('/api/billing/tax-rates', 'POST',
+    { name, rateMillionths: 50000, inclusive: false })).data;
+  const pack = (await owner.json<{ data: { id: string; revision: number } }>('/api/billing/class-packs', 'POST',
+    { name: 'Ten classes ' + width, currency: 'USD', amountCents: 10000, credits: 10, taxRateIds: [tax.id] })).data;
+  const archivedName = 'Archived classes ' + width;
+  await owner.json('/api/billing/class-packs', 'POST',
+    { name: archivedName, currency: 'USD', amountCents: 10000, credits: 10, active: false, taxRateIds: [tax.id] });
+  expect((await install.clients.coach.request('/api/billing/class-packs/' + pack.id)).status).toBe(403);
+  expect((await install.clients.admin.request('/api/billing/class-packs/' + pack.id)).status).toBe(200);
+  const stale = await owner.request('/api/billing/class-packs/' + pack.id, 'PATCH', { revision: pack.revision + 1, active: false });
+  expect(stale.status).toBe(409);
+  await owner.browser(context);
+  await page.setViewportSize({ width, height: 900 });
+  await page.goto(gymOrigin + '/admin/billing/plans');
+  await page.getByRole('button', { name: 'Tax rates', exact: true }).click();
+  await page.getByRole('button', { name: 'Edit ' + name, exact: true }).click();
+  await page.getByLabel('Active', { exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Archive ' + name + '?' });
+  await expect(panel.getByRole('heading', { name: 'Class packs' })).toBeVisible();
+  await expect(panel.getByText('These catalog items still carry this tax rate. Archiving it removes it from all of them.')).toBeVisible();
+  await expect(panel.getByText('Ten classes ' + width, { exact: true })).toBeVisible();
+  await expect(panel.getByText(archivedName + ' (Inactive)', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const screenshot = info.outputPath('pack-tax-' + width + '.png');
+  await page.screenshot({ path: screenshot, fullPage: true });
+  await info.attach('pack-tax-' + width, { path: screenshot, contentType: 'image/png' });
+  await panel.getByRole('button', { name: 'Remove and archive — items: 2', exact: true }).click();
+  await expect(panel).toHaveCount(0);
+  expect((await owner.json<{ data: { taxRateIds: string[] } }>('/api/billing/class-packs/' + pack.id)).data.taxRateIds).toEqual([]);
+});
+
 test('a payer household login reaches every portal route', async ({ sandboxes }) => {
   // The demo student is its household's payer, so payer-only routes must answer too.
   const member = await demoClient(sandboxes[0], 'student');

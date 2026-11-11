@@ -108,7 +108,7 @@ describe('billing catalog', () => {
     }
   });
   it('describes what carries a tax rate with membership counts', () => {
-    const usage = { chargeTypes: [{ id: ids.other, name: 'Drop-in', active: true }],
+    const usage = { chargeTypes: [{ id: ids.other, name: 'Drop-in', active: true }], packs: [],
       plans: [{ id: ids.plan, name: 'Monthly', active: false, memberships: 4 }], memberships: 4 };
     expect(taxRateUsageResponseSchema.parse({ data: usage }).data).toEqual(usage);
     for (const changes of [{ memberships: -1 }, { memberships: 1.5 }, { extra: true }]) {
@@ -284,6 +284,7 @@ describe('billing endpoint permissions', () => {
     }
   });
   const managerOnly = new Set([
+    'listClassPacks', 'getClassPack', 'createClassPack', 'updateClassPack',
     'createTaxRate', 'updateTaxRate', 'createPlan', 'updatePlan', 'createChargeType', 'updateChargeType',
     'assignMembership', 'updateMembership', 'activateMembership', 'freezeMembership', 'resumeMembership',
     'cancelMembership', 'createRefund', 'releaseInvoiceHold',

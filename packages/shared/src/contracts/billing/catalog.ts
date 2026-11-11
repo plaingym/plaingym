@@ -66,11 +66,12 @@ export const taxRateResponseSchema = z.strictObject({ data: taxRateSchema });
 export const taxRateListResponseSchema = listResponseSchema(taxRateSchema);
 const countSchema = z.int32().nonnegative();
 const usageItemSchema = z.strictObject({ id: idSchema, name: nameSchema, active: z.boolean() });
-// Every charge type and plan the rate is attached to. A plan's memberships
+// Every charge type, class pack and plan the rate is attached to. A plan's memberships
 // count when they are not cancelled: their next cycle invoices apply the
 // plan's rates as they are then.
 export const taxRateUsageSchema = z.strictObject({
   chargeTypes: z.array(usageItemSchema),
+  packs: z.array(usageItemSchema),
   plans: z.array(usageItemSchema.extend({ memberships: countSchema })),
   memberships: countSchema,
 });
@@ -157,3 +158,20 @@ export type ChargeType = z.infer<typeof chargeTypeSchema>;
 export type CreateChargeTypeRequest = z.input<typeof createChargeTypeRequestSchema>;
 export type UpdateChargeTypeRequest = z.input<typeof updateChargeTypeRequestSchema>;
 export type BillingCatalogListQuery = z.infer<typeof billingCatalogListQuerySchema>;
+
+const classPackFieldsSchema = z.strictObject({
+  name: nameSchema, ...priceFields, credits: z.int32().min(1).max(100),
+  expiryDays: z.int32().min(1).max(3650).nullable(), active: z.boolean(), taxRateIds: taxRateIdsSchema,
+});
+export const createClassPackRequestSchema = classPackFieldsSchema.extend({
+  expiryDays: classPackFieldsSchema.shape.expiryDays.default(null),
+  active: z.boolean().default(true), taxRateIds: taxRateIdsSchema.default([]),
+}).superRefine(chargePrices);
+export const updateClassPackRequestSchema = classPackFieldsSchema.partial().extend({ revision: revisionSchema })
+  .refine(value => Object.keys(value).some(key => key !== 'revision'), 'Supply a change.').superRefine(chargePrices);
+export const classPackSchema = classPackFieldsSchema.extend({ id: idSchema, createdAt: instantSchema, revision: revisionSchema });
+export const classPackResponseSchema = z.strictObject({ data: classPackSchema });
+export const classPackListResponseSchema = listResponseSchema(classPackSchema);
+export type ClassPack = z.infer<typeof classPackSchema>;
+export type CreateClassPackRequest = z.input<typeof createClassPackRequestSchema>;
+export type UpdateClassPackRequest = z.input<typeof updateClassPackRequestSchema>;

@@ -31,10 +31,10 @@ export function CatalogWorkspace({ gymId, client = billingClient }: { gymId: str
     setBusy(true); setMessage('');
     try { await work(); } catch (error) { setMessage(saveError(error)); } finally { setBusy(false); }
   }
-  /** Archiving a rate that charge types or plans carry first shows them and asks to remove it from all of them. */
+  /** Archiving a rate that charge types, class packs or plans carry first shows them and asks to remove it from all of them. */
   async function needsDetach(rate: TaxRate, input: Record<string, unknown>) {
     const { data: usage } = await client.call('getTaxRateUsage', undefined, { taxRateId: rate.id });
-    if (!usage.chargeTypes.length && !usage.plans.length) return false;
+    if (!usage.chargeTypes.length && !usage.plans.length && !usage.packs.length) return false;
     setArchive({ rate, input, usage }); return true;
   }
   const save = (input: Record<string, unknown>) => run(async () => {

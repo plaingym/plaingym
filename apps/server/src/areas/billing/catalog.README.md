@@ -10,14 +10,16 @@ A price, sign-up fee or membership price override must be a whole step of its cu
 nothing finer. The request schemas refuse one that names its currency; an update that changes an
 amount alone is checked against the stored currency. Unchanged amounts are left alone.
 
-A tax rate is never archived while charge types or plans carry it. Archiving
+Class pack catalog services and routes are described in [packs/README.md](packs/README.md).
+
+A tax rate is never archived while charge types, class packs or plans carry it. Archiving
 (`active: false`) an active rate that something carries is a conflict whose
-details list the charge types, the plans and the memberships (not cancelled) on
+details list the charge types, the packs, the plans and the memberships (not cancelled) on
 those plans; GET /api/billing/tax-rates/{taxRateId}/usage returns the same list.
 With `detach: true` one transaction removes every link and archives the rate,
 with one `billing.tax_rate.archived` audit naming each item. Plans' next cycle
 invoices then drop the rate. The plan and charge type revisions don't change; a
-plan or charge type edit locks the rates it names before reading its own links,
+plan, pack or charge type edit locks the rates it names before reading its own links,
 so an edit that waited on a detach can't attach the archived rate again.
 Rates archived and attached before this rule keep their links and stay editable
 as they are: plans still apply the rate, one-off invoices for such a charge type

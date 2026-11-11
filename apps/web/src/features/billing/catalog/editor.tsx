@@ -5,17 +5,20 @@ import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
 import { Label } from '../../../components/ui/label.js';
 import { Alert } from '../../../components/ui/alert.js';
+import { t } from '../../../lib/i18n.js';
 import { amountInputStep, decimalUnits, minorUnitsToInput, parseMinorUnits, say, selectClass, text } from './format.js';
 
 /** Confirms removing a tax rate from everything that carries it, archiving it if active. */
 export function ArchiveConfirmation({ rate, usage, busy, confirm, cancel }: {
   rate: TaxRate; usage: TaxRateUsage; busy: boolean; confirm: () => Promise<void>; cancel: () => void;
 }) {
-  const items = usage.chargeTypes.length + usage.plans.length;
+  const items = usage.chargeTypes.length + usage.plans.length + usage.packs.length;
   const status = (active: boolean) => active ? '' : ' (' + text('inactive') + ')';
   return <section aria-labelledby="archive-tax-title" className="min-w-0 space-y-3 rounded-lg border border-destructive p-4">
     <h2 id="archive-tax-title" className="text-lg font-semibold">{say(rate.active ? 'archiveTitle' : 'detachTitle', { name: rate.name })}</h2>
-    <p>{text(rate.active ? 'archiveHelp' : 'detachHelp')}</p>
+    <p>{usage.packs.length ? t('billing/packs:' + (rate.active ? 'archiveHelp' : 'detachHelp')) : text(rate.active ? 'archiveHelp' : 'detachHelp')}</p>
+    {usage.packs.length > 0 && <div><h3 className="font-medium">{t('billing/packs:title')}</h3>
+      <ul className="list-disc pl-5">{usage.packs.map(item => <li key={item.id}>{item.name}{status(item.active)}</li>)}</ul></div>}
     {usage.chargeTypes.length > 0 && <div><h3 className="font-medium">{text('charges')}</h3>
       <ul className="list-disc pl-5">{usage.chargeTypes.map(item => <li key={item.id}>{item.name}{status(item.active)}</li>)}</ul></div>}
     {usage.plans.length > 0 && <div><h3 className="font-medium">{text('plans')}</h3>
