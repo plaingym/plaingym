@@ -80,7 +80,7 @@ try {
   assert.throws(() => compose(['exec', '-T', 'app', 'touch', '/app/should-fail']));
   compose(['exec', '-T', 'app', '/app/deploy/database.sh', 'migrate']);
   const tableCount = Number(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'").trim());
-  const expectedTables = 62;
+  const expectedTables = 66;
   // Newer migrations may add tables while the previous image still runs on that schema.
   if (process.env.SMOKE_MIGRATE_IMAGE) assert.ok(tableCount >= expectedTables, `Expected at least ${expectedTables} public tables, got ${tableCount}`);
   else assert.equal(tableCount, expectedTables);
