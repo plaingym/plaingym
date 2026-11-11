@@ -134,6 +134,7 @@ keeps these tables in step with it.
 | `links.send` | yes | yes | | yes |
 | `announcements.send` | yes | yes | | |
 | `leads.manage` | yes | yes | | yes |
+| `reports.read` | yes | yes | yes | |
 | `payments.record` | yes | yes | | yes |
 | `payments.custom` | yes | yes | | |
 | `billing.read` | yes | yes | | yes |
@@ -153,6 +154,11 @@ contacts have forced gym RLS and composite references; intake records its source
 and a source-only audit in the same transaction. Leads are never automatically
 deleted or erased. Join intake records leads on submission, so unsubmitted
 admissions can still be removed by admission cleanup.
+
+`reports.read` allows owners, admins and coaches to read `GET /api/reports/attendance`.
+Front desk staff and member sessions cannot read reports. Reports read only the
+resolved gym's rows through `forGym` and forced RLS, including program names;
+responses carry `Cache-Control: no-store`.
 
 `integrations.manage` covers Stripe, SMTP and backups: the setup wizard, and
 **Settings → Email, payments and backups** after it, whose responses and audits

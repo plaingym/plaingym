@@ -41,6 +41,13 @@ HTML preview. Install contracts carry their response media types and redirect
 status in `responses`. Rank JSON configuration and CSV upload fields carry OpenAPI
 metadata on their shared Zod schemas, retaining their runtime validation.
 
+`reportsContracts.attendance` declares the attendance report for `reports.read`
+(owners, admins and coaches). `reportRangeQuerySchema` accepts inclusive month
+ranges up to 24 months; the service checks the current gym-local month using its
+clock. Report buckets expose local start dates and exclusive end dates alongside
+their instant boundaries. Counts stay numeric; a null program ID and name means
+an unassigned visit.
+
 ## Registration
 
 The [server registry](../../apps/server/src/core/registry.ts) exports

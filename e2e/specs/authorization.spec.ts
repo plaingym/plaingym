@@ -11,6 +11,7 @@ const desk: Role[] = ['owner', 'admin', 'front_desk'];
 const coaches: Role[] = ['owner', 'admin', 'coach'];
 const matrix: Record<string, Role[]> = {
   'announcements.send': managers,
+  'reports.read': coaches,
   'members.read': all, 'members.manage': desk, 'members.anonymize': managers,
   'medical.read': coaches, 'households.manage': desk, 'billing.read': desk, 'tags.manage': desk,
   'staff.manage': managers, 'settings.manage': managers, 'promotions.manage': coaches,
@@ -21,6 +22,7 @@ const matrix: Record<string, Role[]> = {
 const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings(?:\/|$)|schedule(?:\/|$)|members(?:$|\/[^/]+$|\/[^/]+\/(?:bookings|memberships|checkin-code|progress|attendance)(?:\/|$))|invoices(?:\/|$)|payment-methods(?:\/|$)|waivers(?:\/|$)|household(?:\/|$)|context$|households(?:\/current)?$|claims\/complete$|invitations\/accept$)|links\/(?:pay-invoice|update-card|sign-waiver|onboarding)(?:\/|$)|members(?:\/|$)|households(?:\/|$)|member-tags(?:\/|$)|staff\/(profiles|roles|invitations|users)|programs(?:\/|$)|rank-systems(?:\/|$)|ranks(?:\/|$)|promotions(?:\/|$)|content-packs(?:\/|$)|schedule(?:\/|$)|attendance(?:\/|$)|imports(?:\/|$)|exports(?:\/|$)|kiosk(?:\/|$)|settings\/integrations(?:\/|$))/.test(path)
   || path === '/api/announcements' || path.startsWith('/api/announcements/')
   || path === '/api/health/auto-update'
+  || path.startsWith('/api/reports/')
   || ['/api/links/unsubscribe', '/api/waivers/template-documents', '/api/waivers/templates/{templateId}/document', '/api/waivers/template-document',
     '/api/portal/waiver-templates/{templateId}/document', '/api/public/waivers/{templateId}/document', '/l/{token}/documents/{templateId}',
     '/api/dashboard', '/api/health/charge-failures', '/api/health/charge-failures/dismiss', '/api/settings/go-live', '/api/setup/finish', '/staff-invitation'].includes(path)

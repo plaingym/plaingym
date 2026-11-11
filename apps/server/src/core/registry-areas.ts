@@ -33,6 +33,8 @@ import { routes as announcementRoutes } from '../areas/announcements/routes.js';
 import { jobs as announcementJobs } from '../areas/announcements/jobs.js';
 import { routes as dashboardRoutes } from '../areas/dashboard/routes.js';
 import { jobs as dashboardJobs } from '../areas/dashboard/jobs.js';
+import { routes as reportsRoutes } from '../areas/reports/routes.js';
+import { jobs as reportsJobs } from '../areas/reports/jobs.js';
 import { routes as healthRoutes } from '../areas/health/routes.js';
 import { jobs as healthJobs } from '../areas/health/jobs.js';
 import { routes as setupRoutes } from '../areas/setup/routes.js';
@@ -115,6 +117,7 @@ export const areaContributions = {
     ...linksRoutes,
     ...announcementRoutes,
     ...dashboardRoutes,
+    ...reportsRoutes,
     ...healthRoutes,
     ...setupRoutes,
     ...publicRoutes,
@@ -136,6 +139,7 @@ export const areaContributions = {
     ...linksJobs,
     ...announcementJobs,
     ...dashboardJobs,
+    ...reportsJobs,
     ...healthJobs,
     ...setupJobs,
     ...publicJobs,

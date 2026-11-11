@@ -47,7 +47,7 @@ const rows: readonly [StaffPermission, readonly StaffRole[]][] = [
     permission,
     ['owner', 'admin', 'front_desk'],
   ]),
-  ...(['medical.read', 'schedule.manage', 'promotions.manage'] as const).map(
+  ...(['medical.read', 'schedule.manage', 'promotions.manage', 'reports.read'] as const).map(
     (permission): [StaffPermission, StaffRole[]] => [permission, ['owner', 'admin', 'coach']],
   ),
   ...(

@@ -24,6 +24,11 @@ describe('docs/security-model.md', () => {
     expect(table('Staff capabilities')['leads.manage']).toEqual([true, true, false, true]);
     expect(page).toContain('Coaches cannot access leads or contact notes');
   });
+  it('restricts reports to owners, admins and coaches', () => {
+    expect(table('Staff capabilities')['reports.read']).toEqual([true, true, true, false]);
+    expect(page).toContain('`GET /api/reports/attendance`');
+    expect(page).toContain('`Cache-Control: no-store`');
+  });
   it('restricts announcement composition and history to owners and admins', () => {
     expect(table('Staff capabilities')['announcements.send']).toEqual([true, true, false, false]);
   });
