@@ -38,9 +38,9 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
       await code.refetch();
     } finally { locked.current = false; setBusy(false); }
   }
-  if (!members.data) return members.isPending || scope.moving ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
+  if (!members.data) return members.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const active = code.data?.code;
-  return <PortalRecovery moving={scope.moving}><Page className="max-w-xl">
+  return <Page className="max-w-xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setError(''); setConfirming(false); choose(id); }} />
     {code.isPending ? <LoadingState label={text('loading')} />
@@ -58,7 +58,7 @@ export function PortalCheckinPage({ client = portalClient }: { client?: PortalCl
         <div className="flex flex-col gap-3 sm:flex-row"><Button disabled={busy} onClick={() => void regenerate()}>{text(busy ? 'saving' : 'confirm')}</Button>
           <Button variant="outline" disabled={busy} onClick={() => setConfirming(false)}>{text('keep')}</Button></div></div>
     </Dialog>}
-  </Page></PortalRecovery>;
+  </PortalRecovery></Page>;
 }
 /** The registered portal page, with the production client. */
 export function PortalCheckinView() { return <PortalCheckinPage />; }

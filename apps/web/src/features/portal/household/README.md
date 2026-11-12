@@ -39,12 +39,13 @@ every key is the other household's. Writes and member-ID reads send `X-Portal-Ho
 page key. A household conflict (409 with that response header) starts the same
 recovery; a revision conflict stays with the form. Portal 404s refresh the lists in the background without hiding the page,
 including when a revoked link leaves several households to choose from. Recovery
-shares in-flight reads for the request's list version, sampled when the request starts. A later 404 always reads again after recovery settles. If
+keeps a page's first context or act-for members read loading until those lists settle, without hiding cached content.
+Recovery shares in-flight reads for the request's list version, sampled when the request starts. A later 404 always reads again after recovery settles. If
 a joined read predates the move or does not name the household returned by the
 conflict, recovery reads again. A second mismatch fails rather than looping.
 During a confirmed mismatch, the six portal pages hide their content without collapsing the page or unmounting forms
-or dialogs. Open dialogs temporarily close so the shell remains usable, then reopen with focus and scroll restored if recovery fails.
-Typed drafts and drawn signatures remain. Every read shows its own failure, except those a page keeps showing from its cache (the context, the act-for members and the household details): when a refetch of one fails, `PortalRecovery` shows an inline failure whose retry reads only those again. After
+or dialogs. Dialogs close themselves during recovery (including ones mounted while it is running), then reopen with their own focus and scroll restored if recovery fails. Recovery never rewinds window or page scrolling.
+Typed drafts and drawn signatures remain. Every read shows its own failure, except those a page keeps showing from its cache (the context, the act-for members and the household details): when a refetch of one fails, `PortalRecovery` shows a sticky failure inside the page's width and inside an open dialog. Its retry reads only those again. After
 a move the shell resets the page and asks the person to review the household and
 any unfinished work. The notice clears on dismissal, navigation, or a deliberate
 household switch; late answers from that switch do not show it again.

@@ -50,7 +50,7 @@ describe('staff booking panels', () => {
     expect(screen.queryByText('Loading bookings…')).toBeNull();
     await act(async () => { reject(new Error('still offline')); });
     expect(screen.getByText('River Lee')).toBeDefined();
-    expect(publish).toHaveBeenLastCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1, stale: true });
+    await waitFor(() => expect(publish).toHaveBeenLastCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1, stale: true }));
   });
   it('keeps the previous page and enabled form when a quiet step back fails', async () => {
     const counts = { booked: 51, waitlisted: 0, checkedIn: 0 };
@@ -71,6 +71,34 @@ describe('staff booking panels', () => {
     await act(async () => { reject(new Error('offline')); });
     expect(screen.getByText('River Lee')).toBeDefined();
     expect(publish).toHaveBeenLastCalledWith({ ...counts, stale: true });
+    expect((screen.getByRole('button', { name: 'Previous page' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Next page' }) as HTMLButtonElement).disabled).toBe(true);
+    client.roster.mockResolvedValue({ data: [{ displayName: 'First page', booking, attendance: null }], pagination: { total: 50 }, counts: { ...counts, booked: 50 } });
+    await user.click(screen.getByRole('button', { name: 'Previous page' }));
+    await screen.findByText('First page');
+    expect(client.roster).toHaveBeenLastCalledWith(sessionId, 0);
+    expect(screen.queryByText('River Lee')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Previous page' })).toBeNull();
+  });
+  it('shows loading again when the pager retries a page that failed to load', async () => {
+    const counts = { booked: 51, waitlisted: 0, checkedIn: 0 };
+    client.roster.mockResolvedValue({ data: [{ displayName: 'River Lee', booking, attendance: null }], pagination: { total: 51 }, counts });
+    const user = userEvent.setup();
+    render(<SessionCountsProvider publish={vi.fn()} changed={0}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
+    await screen.findByText('River Lee');
+    client.roster.mockRejectedValueOnce(new Error('offline'));
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    await screen.findByRole('alert');
+    expect(screen.queryByText('River Lee')).toBeNull();
+    let resolve!: (value: unknown) => void;
+    client.roster.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    expect(client.roster).toHaveBeenLastCalledWith(sessionId, 50);
+    expect(screen.getByText('Loading bookings…')).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { resolve({ data: [{ displayName: 'Second page', booking, attendance: null }], pagination: { total: 51 }, counts }); });
+    await screen.findByText('Second page');
+    expect((screen.getByRole('button', { name: 'Previous page' }) as HTMLButtonElement).disabled).toBe(false);
   });
   it('coalesces visibility and focus events on a single tab return', async () => {
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
@@ -133,7 +161,7 @@ describe('staff booking panels', () => {
     expect(screen.getByText('River Lee')).toBeDefined();
     expect(screen.getByText('These bookings and counts may be out of date. Refresh to try again.')).toBeDefined();
     expect(screen.getByTestId('roster-counts').textContent).toBe('Booked 1 · 0 waitlisted · 1 checked in');
-    expect(publish).toHaveBeenLastCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1, stale: true });
+    await waitFor(() => expect(publish).toHaveBeenLastCalledWith({ booked: 1, waitlisted: 0, checkedIn: 1, stale: true }));
     view.rerender(<SessionCountsProvider publish={publish} changed={3}><BookingRosterPanel sessionId={sessionId}/></SessionCountsProvider>);
     await screen.findByText('No bookings or check-ins yet');
     expect(screen.queryByRole('alert')).toBeNull();

@@ -57,7 +57,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
   const timeLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' });
   const whenLabel = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
   const names = new Map(members.data?.map(row => [row.id, row.name]));
-  if (!context.data || !members.data) return context.isPending || members.isPending || scope.moving ? <LoadingState />
+  if (!context.data || !members.data) return context.isPending || members.isPending || scope.moving || scope.refreshing ? <LoadingState />
     : <ErrorState message={text('error')} onRetry={() => { void context.refetch(); void members.refetch(); }} />;
   const days = new Map<string, PortalScheduleSession[]>();
   for (const session of schedule.data ?? []) {
@@ -65,7 +65,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
     days.set(day, [...days.get(day) ?? [], session]);
   }
   const current = now();
-  return <PortalRecovery moving={scope.moving}><Page>
+  return <Page><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={id => { setMessage(undefined); choose(id); }} />
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -116,7 +116,7 @@ export function PortalSchedulePage({ client = portalClient, now = () => new Date
               </li>;
             })}</ul>
           </PageSection>)}
-  </Page></PortalRecovery>;
+  </PortalRecovery></Page>;
 }
 /** The registered portal page, with the production client. */
 export function PortalScheduleView() { return <PortalSchedulePage />; }

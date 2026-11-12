@@ -26,7 +26,7 @@ type Person = { id: string; firstName: string; lastName: string; dateOfBirth: st
 export function PortalWaivers() {
   // The open household is read once; everything below is keyed by it and checks each answer was for it.
   const scope = usePortalScope(), context = usePortalContext(scope);
-  if (!context.data) return context.isPending || scope.moving ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
+  if (!context.data) return context.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
   return <PortalWaiversPage context={context.data} scope={scope} />;
 }
 function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
@@ -44,7 +44,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
   const name = (memberId: string) => { const person = people.data?.find(row => row.id === memberId); return person ? `${person.firstName} ${person.lastName}` : ''; };
   const date = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }), today = gymToday(gym.timezone);
   const failed = people.isError || pending.isError || signed.isError;
-  return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text(payer ? 'descriptionPayer' : 'description')} />
     {(people.isPending || pending.isPending || signed.isPending) && <LoadingState />}
     {failed && <ErrorState onRetry={() => { void people.refetch(); void pending.refetch(); void signed.refetch(); }} />}
@@ -78,7 +78,7 @@ function PortalWaiversPage({ context, scope }: { context: PortalContext; scope: 
     {signing && <SignWaiver key={signing.template.id + signing.member.id} template={signing.template} member={signing.member} endpoints={endpoints} scope={scope}
       minor={needsGuardian(signing.member.dateOfBirth, today)} close={() => setSigning(null)}
       saved={async () => { await cache.invalidateQueries({ queryKey: [...scope.key, 'waivers', context.role] }); setSigning(null); }} />}
-  </Page></PortalRecovery>;
+  </PortalRecovery></Page>;
 }
 /** Draw or type a signature; the server validates the template version, guardian rule and image, and stores one immutable snapshot. */
 export function SignWaiver({ template, member, minor, endpoints, scope, close, saved }: { template: WaiverTemplate; member: Person; minor: boolean;

@@ -70,6 +70,21 @@ function mount(element: ReactNode, handle: Handler, { context, answeredFor, hous
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
+it.each(['household', 'waivers', 'schedule', 'checkin', 'progress'] as const)('keeps the first %s read loading while a 404 refreshes household lists', async name => {
+  let release!: (response: Response) => void;
+  const elements = { household: <PortalHousehold />, waivers: <PortalWaivers />, schedule: <PortalSchedulePage />, checkin: <PortalCheckinPage />, progress: <PortalProgressPage /> };
+  const view = mount(elements[name], () => new Response(null, { status: 404 }), {
+    ...(name === 'household' || name === 'waivers' ? {} : { context: payer }),
+    householdLists: () => new Promise(resolve => { release = resolve; }),
+  });
+  await waitFor(() => expect(view.calls('GET', '/api/portal/households')).toHaveLength(1));
+  expect(screen.getByRole('status').textContent).toContain('Loading');
+  expect(screen.queryByRole('alert')).toBeNull();
+  await act(async () => { release(new Response(null, { status: 503 })); });
+  expect(await screen.findByRole('alert')).toBeDefined();
+  expect(view.calls('GET', '/api/portal/households')).toHaveLength(1);
+});
+
 it.each(['schedule', 'checkin', 'progress'] as const)('shows loading, not a failure, while a %s read recovers, and keeps the page if recovery fails', async name => {
   let release!: (response: Response) => void, moved = false;
   const element = name === 'schedule' ? <PortalSchedulePage now={() => new Date('2026-10-29T16:00:00Z')} /> : name === 'checkin' ? <PortalCheckinPage /> : <PortalProgressPage />;
@@ -367,6 +382,30 @@ describe('portal waivers page', () => {
 });
 
 describe('portal household page', () => {
+  it('shows a cached read failure inside the page width and the open editor, without rewinding shell scrolling', async () => {
+    let down = false;
+    const view = mount(<PortalHousehold />, path => {
+      if (path === '/api/portal/household') return down ? new Response(null, { status: 503 }) : { data: household };
+      if (path.startsWith('/api/portal/members?')) return page(people);
+      return undefined;
+    }, { context: payer });
+    const user = userEvent.setup();
+    await user.click((await screen.findAllByRole('button', { name: 'Edit details' }))[0]!);
+    const dialog = screen.getByRole('dialog');
+    await user.type(within(dialog).getByLabelText('First name'), ' draft');
+    down = true;
+    await act(async () => { await view.cache.invalidateQueries({ queryKey: [...portalHouseholdKey(portalLoginKey(ids.gym, ids.user), ids.household), 'household', 'details'], exact: true }); });
+    expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeDefined();
+    const pageAlert = screen.getAllByRole('alert').find(element => !dialog.contains(element))!;
+    expect(pageAlert.closest('.max-w-3xl')).not.toBeNull();
+    expect(pageAlert.parentElement!.className).toContain('sticky');
+    expect(within(dialog).getByRole('alert').parentElement!.className).toContain('sticky');
+    down = false;
+    await user.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(within(dialog).queryByRole('alert')).toBeNull());
+    expect((within(dialog).getByLabelText('First name') as HTMLInputElement).value).toBe('Pat draft');
+    expect(window.scrollTo).not.toHaveBeenCalled();
+  });
   it('keeps the household draft when a background read fails and its recovery fails too', async () => {
     let release!: (response: Response) => void, moved = false;
     const user = userEvent.setup();

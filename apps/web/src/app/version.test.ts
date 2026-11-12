@@ -7,7 +7,7 @@ describe('the shared navigation version check', () => {
   const navigation = { preload: false, location: { href: '/portal/schedule?day=2026-11-07#classes' } };
   let checkOnNavigation: typeof import('./version.js').checkOnNavigation;
   beforeEach(async () => { vi.resetModules(); ({ checkOnNavigation } = await import('./version.js')); });
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   function fixture(remote: typeof built) {
     const values = new Map<string, string>();
     return { built, destination: navigation.location.href, request: vi.fn(async () => Response.json(remote)) as unknown as typeof fetch,
@@ -45,8 +45,35 @@ describe('the shared navigation version check', () => {
     expect(performance.now() - started).toBeLessThan(2500);
     expect(f.request).toHaveBeenCalledOnce();
     expect(f.reload).not.toHaveBeenCalled();
+    f.request = vi.fn(async () => Response.json(built));
     await checkOnNavigation(navigation, f);
     expect(f.request).toHaveBeenCalledOnce();
+  });
+  it.each(['network', 'http', 'malformed'] as const)('retries a failed %s check on the next navigation', async failure => {
+    const f = { ...fixture(built), development: false };
+    const request = vi.fn().mockResolvedValue(Response.json(built));
+    if (failure === 'network') request.mockRejectedValueOnce(new TypeError('offline'));
+    else request.mockResolvedValueOnce(failure === 'http' ? new Response(null, { status: 503 }) : Response.json({}));
+    f.request = request;
+    await checkOnNavigation(navigation, f);
+    await checkOnNavigation(navigation, f);
+    expect(request).toHaveBeenCalledTimes(2);
+    await checkOnNavigation(navigation, f);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+  it.each(['/portal/schedule#classes', '/portal/schedule', '/portal/schedule?day=tomorrow', '/admin'])('loads the destination with the default reload: %s', async destination => {
+    const location = { href: 'https://gym.example.test/portal/schedule', hash: '', assign: vi.fn(), reload: vi.fn() };
+    vi.stubGlobal('window', { location });
+    const f = fixture({ ...built, version: '1.4.0' });
+    await followServerVersion({ built: f.built, request: f.request, storage: f.storage, destination });
+    if (destination === '/portal/schedule#classes' || destination === '/portal/schedule') {
+      expect(location.hash).toBe(destination.includes('#') ? '#classes' : '');
+      expect(location.reload).toHaveBeenCalledOnce();
+      expect(location.assign).not.toHaveBeenCalled();
+    } else {
+      expect(location.assign).toHaveBeenCalledExactlyOnceWith(destination);
+      expect(location.reload).not.toHaveBeenCalled();
+    }
   });
   it('keeps the page when the running version and commit match', async () => {
     const f = fixture(built); await followServerVersion(f); expect(f.reload).not.toHaveBeenCalled();

@@ -19,7 +19,9 @@ pnpm --dir e2e test
 
 CI runs this suite in the **End-to-end** workflow on every task and integration branch, nightly,
 and on demand, keeping `coverage/` (the report, and traces of failed tests) as an artifact for
-seven days. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
+seven days. The suite includes portal recovery fixtures at 360 px and 1280 px that
+check notices in the page and editor, preserved drafts, and the shell's availability
+during recovery. The hosted Ubuntu runner already has Chromium's system libraries, so the workflow
 installs only the browser (`playwright install chromium`), skipping the `apt-get` step of
 `--with-deps`, which can stall for many minutes on a slow package mirror. On Windows use
 `pnpm.cmd` if PowerShell blocks unsigned command shims. Set `E2E_BROWSER_CHANNEL=msedge` to

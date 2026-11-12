@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type ReactN
 import { useQueryClient, type Query } from '@tanstack/react-query';
 import { Button } from '../../../components/ui/button.js';
 import { Alert } from '../../../components/ui/alert.js';
+import { DialogRecoveryContext } from '../../../components/ui/dialog.js';
 import { ErrorState, LoadingState } from '../../../components/ui/states.js';
 import { t } from '../../../lib/i18n.js';
 import { clearPortalRecoveryNotice, usePortalHouseholdKey, usePortalLogin, usePortalRecoveryNotice } from './api.js';
@@ -14,40 +15,34 @@ function refetchFailed(query: Query) {
     && query.isActive() && query.state.data !== undefined && query.state.status === 'error';
 }
 
-/** Preserve layout and drafts while releasing a modal's top-layer block during recovery. */
+/** Lives inside Page, retaining layout and drafts while dialogs release their own top-layer block. */
 export function PortalRecovery({ moving, children }: { moving: boolean; children: ReactNode }) {
   const content = useRef<HTMLDivElement>(null);
-  // A submitting button can become disabled (and lose browser focus) before its answer starts recovery.
   const lastFocused = useRef<HTMLElement | null>(null);
-  const restore = useRef<(() => void) | undefined>(undefined);
+  const restore = useRef<HTMLElement | null>(null);
   const cache = useQueryClient(), key = usePortalHouseholdKey();
-  const failed = useSyncExternalStore(useCallback(notify => cache.getQueryCache().subscribe(notify), [cache]),
-    () => cache.getQueryCache().findAll({ queryKey: key }).some(refetchFailed));
+  const failed = useSyncExternalStore(useCallback(notify => cache.getQueryCache().subscribe(event => {
+    if (key.every((part, index) => event.query.queryKey[index] === part)) notify();
+  }), [cache, key]), () => cache.getQueryCache().findAll({ queryKey: key }).some(refetchFailed));
   useLayoutEffect(() => {
-    // Restore only when this page survives recovery, never while unmounting after a move or navigation.
-    if (!moving) { restore.current?.(); restore.current = undefined; return; }
-    const root = content.current;
-    if (!root || restore.current) return;
-    const focused = document.activeElement instanceof HTMLElement && root.contains(document.activeElement) ? document.activeElement
-      : document.activeElement === document.body ? lastFocused.current : null;
-    const scroll = { x: window.scrollX, y: window.scrollY };
-    const positions = [...root.querySelectorAll<HTMLElement>('*')].filter(element => element.scrollTop || element.scrollLeft)
-      .map(element => ({ element, top: element.scrollTop, left: element.scrollLeft }));
-    const dialogs = [...root.querySelectorAll<HTMLDialogElement>('dialog[open]')];
-    dialogs.forEach(dialog => { if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open'); });
-    root.style.visibility = 'hidden'; root.inert = true;
-    restore.current = () => {
-      root.style.visibility = ''; root.inert = false;
-      if (!root.isConnected) return;
-      dialogs.forEach(dialog => { if (dialog.isConnected) { if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', ''); } });
-      focused?.focus({ preventScroll: true });
-      positions.forEach(({ element, top, left }) => { element.scrollTop = top; element.scrollLeft = left; });
-      window.scrollTo(scroll.x, scroll.y);
-    };
+    if (moving) {
+      // A submitting button may already have lost focus. Dialogs preserve their own focus and scroll.
+      const focused = document.activeElement instanceof HTMLElement && content.current?.contains(document.activeElement)
+        ? document.activeElement : document.activeElement === document.body ? lastFocused.current : null;
+      restore.current = focused?.closest('dialog') ? null : focused;
+    } else {
+      if (restore.current?.isConnected) restore.current.focus({ preventScroll: true });
+      restore.current = null;
+    }
   }, [moving]);
-  // The hidden page keeps its height and the window its scroll, so the loading state sticks to the viewport without moving the page.
-  return <>{moving && <div className="sticky top-4 h-0"><LoadingState /></div>}
-    <div ref={content} onFocusCapture={event => { lastFocused.current = event.target; }}>{!moving && failed && <ErrorState className="mb-6" onRetry={() => void cache.invalidateQueries({ queryKey: key, predicate: refetchFailed })} />}{children}</div></>;
+  const notice = !moving && failed ? <ErrorState onRetry={() => void cache.invalidateQueries({ queryKey: key, predicate: refetchFailed })} /> : undefined;
+  return <DialogRecoveryContext.Provider value={{ suspended: moving, notice }}><div>
+    {moving && <div className="sticky top-4 z-10 h-0"><LoadingState /></div>}
+    <div ref={content} className="space-y-6" style={moving ? { visibility: 'hidden' } : undefined} inert={moving}
+      onFocusCapture={event => { lastFocused.current = event.target; }}>
+      {notice && <div className="sticky top-4 z-10 bg-background">{notice}</div>}{children}
+    </div>
+  </div></DialogRecoveryContext.Provider>;
 }
 
 /** Lives outside the household subtree so a recovered page (or the household picker) keeps the explanation. */

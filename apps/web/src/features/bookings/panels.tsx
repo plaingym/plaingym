@@ -26,6 +26,8 @@ export function MemberBookingsPanel({ memberId }: ExtensionViewProps) { return m
 function Bookings({ memberId, sessionId }: ExtensionViewProps) {
   const bootstrap = useBootstrap(), timezone = bootstrap.data?.gym?.timezone;
   const [reload, setReload] = useState(0), [offset, setOffset] = useState(0);
+  // A quiet step back may fail. Keep the pager with the rows until its replacement arrives.
+  const [shownOffset, setShownOffset] = useState(0);
   const [rows, setRows] = useState<{ key: string; name: string; booking: ClassBooking | null; checked?: boolean }[]>([]);
   const [total, setTotal] = useState(0), [counts, setCounts] = useState<BookingSessionCounts | null>(null), [loading, setLoading] = useState(true), [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState(''), [loadError, setLoadError] = useState(''), [notice, setNotice] = useState('');
@@ -69,7 +71,7 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
         setOffset(Math.max(0, Math.floor((value.total - 1) / 50) * 50));
         return;
       }
-      setLoadError(''); setRows(value.rows); setTotal(value.total); setCounts(value.counts);
+      setLoadError(''); setRows(value.rows); setTotal(value.total); setCounts(value.counts); setShownOffset(offset);
     } })
       .catch(error => { if (active) { setLoadError(errorText(error)); if (!quiet) setCounts(null); } }).finally(() => { if (active) { setLoading(false); setRefreshing(false); } });
     return () => { active = false; };
@@ -99,8 +101,8 @@ function Bookings({ memberId, sessionId }: ExtensionViewProps) {
         {row.checked !== undefined && <p className="text-sm text-muted-foreground">{text(row.checked ? 'checkedIn' : 'notCheckedIn')}</p>}</div>
       {row.booking && row.booking.status !== 'cancelled' && <Button variant="outline" className="shrink-0" disabled={busy} aria-label={text('cancelNamed', { name: row.name })} onClick={() => void cancel(row.booking!.id)}>{text('cancel')}</Button>}
     </li>)}</ul>
-    {(offset > 0 || total > 50) && <div className="flex justify-between gap-2"><Button variant="outline" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{text('previous')}</Button>
-      <Button variant="outline" disabled={busy || offset + 50 >= total} onClick={() => setOffset(offset + 50)}>{text('next')}</Button></div>}
+    {(shownOffset > 0 || total > 50) && <div className="flex justify-between gap-2"><Button variant="outline" disabled={busy || shownOffset === 0} onClick={() => { fullLoad.current = true; setOffset(Math.max(0, shownOffset - 50)); setReload(value => value + 1); }}>{text('previous')}</Button>
+      <Button variant="outline" disabled={busy || shownOffset + 50 >= total} onClick={() => { fullLoad.current = true; setOffset(shownOffset + 50); setReload(value => value + 1); }}>{text('next')}</Button></div>}
     {timezone && <BookingForm {...(memberId ? { memberId } : {})} {...(sessionId ? { sessionId } : {})} timezone={timezone} disabled={busy}
       onSaved={booking => { setNotice(booking.status === 'waitlisted' ? text('waitlistSaved', { rank: booking.queueRank! }) : text('bookingSaved')); fullLoad.current = true; setOffset(0); setReload(value => value + 1); }}/ >}
   </section>;

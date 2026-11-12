@@ -43,7 +43,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
   const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value + 'T00:00:00Z'));
   const instant = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: gym.timezone }).format(new Date(value));
   const failure = checkout.error ?? download.error, unavailableKey = checkout.error ? 'unavailable' : 'receiptUnavailable';
-  return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text(payer ? 'description' : 'creditsDescription')} />
     {/* Payers see the card only when someone holds credits; for adult members it is the whole page. */}
     {(!payer || credits.isError || !!credits.data?.length) && <PageSection title={text('credits')}>
@@ -101,7 +101,7 @@ export function PortalBillingPage({ navigate = leave }: { navigate?: (url: strin
       </StackedItem>)}</StackedList>}
     </PageSection>
     </>}
-  </Page></PortalRecovery>;
+  </PortalRecovery></Page>;
 }
 /** The routed page and portal registration. */
 export function PortalBilling() { return <PortalBillingPage />; }

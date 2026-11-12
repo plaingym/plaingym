@@ -34,10 +34,10 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
     getNextPageParam: last => last.pagination.offset + last.data.length < last.pagination.total ? last.pagination.offset + last.data.length : undefined });
   const date = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium' });
   const dateTime = new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' });
-  if (!members.data) return members.isPending || scope.moving ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
+  if (!members.data) return members.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState message={text('error')} onRetry={() => void members.refetch()} />;
   const data = progress.data, programName = (id: string | null) => data?.programs.find(item => item.id === id)?.name;
   const visits = attendance.data?.pages.flatMap(page => page.data) ?? [];
-  return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text('title')} description={text('description')} />
     <MemberPicker label={text('member')} members={members.data} value={memberId} onChange={choose} />
     {progress.isPending ? <LoadingState label={text('loading')} />
@@ -80,7 +80,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
                 <span className="text-muted-foreground">{dateTime.format(new Date(visit.occurredAt))}</span></li>)}</ul>
               {attendance.hasNextPage && <Button variant="outline" disabled={attendance.isFetchingNextPage} onClick={() => void attendance.fetchNextPage()}>{text('more')}</Button>}</>}
     </PageSection>
-  </Page></PortalRecovery>;
+  </PortalRecovery></Page>;
 }
 /** The registered portal page, with the production client. */
 export function PortalProgressView() { return <PortalProgressPage />; }

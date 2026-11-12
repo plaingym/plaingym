@@ -3,9 +3,35 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useRef } from 'react';
-import { Dialog, useDialogOperation, useDialogSaved } from './dialog.js';
+import { Dialog, DialogRecoveryContext, useDialogOperation, useDialogSaved } from './dialog.js';
 
 afterEach(cleanup);
+it('owns suspension, preserving only dialog scroll and focus, and keeps a new dialog closed until recovery ends', () => {
+  const opener = document.createElement('button'); document.body.append(opener); opener.focus();
+  const tree = (suspended: boolean, second = false) => <DialogRecoveryContext.Provider value={{ suspended }}>
+    <Dialog title="Editor" closeLabel="Close" onClose={vi.fn()}><input aria-label="Draft" /></Dialog>
+    {second && <Dialog title="Second" closeLabel="Close" onClose={vi.fn()}>Second body</Dialog>}
+  </DialogRecoveryContext.Provider>;
+  const view = render(tree(false));
+  const dialog = screen.getByRole('dialog'), body = dialog.querySelector<HTMLElement>('[data-dialog-body]')!, input = screen.getByLabelText('Draft');
+  input.focus(); body.scrollTop = 123; fireEvent.change(input, { target: { value: 'Unfinished' } });
+  view.rerender(tree(true));
+  expect(dialog.hasAttribute('open')).toBe(false);
+  body.scrollTop = 0;
+  view.rerender(tree(true, true));
+  expect(view.container.querySelectorAll('dialog[open]')).toHaveLength(0);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  view.rerender(tree(false, true));
+  expect(view.container.querySelectorAll('dialog[open]')).toHaveLength(2);
+  expect(body.scrollTop).toBe(123);
+  expect((input as HTMLInputElement).value).toBe('Unfinished');
+  view.rerender(tree(false));
+  input.focus();
+  view.rerender(tree(true));
+  view.rerender(tree(false));
+  expect(document.activeElement).toBe(input);
+  view.unmount(); expect(document.activeElement).toBe(opener); opener.remove();
+});
 it('has one scroll container: the dialog clips and its column shrinks inside it', () => {
   render(<Dialog title="Session" closeLabel="Close" onClose={vi.fn()}><p>Body</p></Dialog>);
   const dialog = screen.getByRole('dialog'), column = dialog.firstElementChild!, body = screen.getByText('Body').parentElement!;

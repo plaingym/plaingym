@@ -9,6 +9,8 @@ Vite embeds the Git version and commit. The root route checks `/healthz` before
 navigation in admin, portal and kiosk; a different server identity reloads the page.
 A second mismatch stops navigation rather than repeatedly reloading stale assets.
 A link's preload doesn't run the check, and `pnpm dev` turns it off.
+Successful checks are shared for a minute; a failed or timed-out check can retry
+on the next navigation. A fragment-only destination also reloads the bundle.
 The portal worker keeps no offline page or API cache. Settings → Updates displays
 the same identity. See [versioning](../../docs/versioning.md).
 

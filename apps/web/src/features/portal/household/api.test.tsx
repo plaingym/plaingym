@@ -61,7 +61,9 @@ describe('portal write household preconditions', () => {
     const missing = () => Promise.reject(new ApiError(404, 'not_found'));
     await act(async () => { await expect(f.result.current.run(missing)).rejects.toBeInstanceOf(ApiError); });
     expect(f.result.current.moving).toBe(false);
+    await waitFor(() => expect(f.result.current.refreshing).toBe(true));
     await f.settle(home);
+    await waitFor(() => expect(f.result.current.refreshing).toBe(false));
     await act(async () => { rejectLate(new ApiError(404, 'not_found')); await late; });
     expect(f.fetcher.mock.calls.filter(([path]) => path === '/api/portal/households')).toHaveLength(2);
     expect(f.result.current.moving).toBe(false);

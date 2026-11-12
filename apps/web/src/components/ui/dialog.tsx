@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createContext, useContext, useEffect, useId, useRef, useState, type Dispatch, type SetStateAction, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useId, useRef, useState, type Dispatch, type SetStateAction, type ReactNode } from 'react';
 import { t } from '../../lib/i18n.js';
 import { cn } from '../../lib/utils.js';
 import { Button } from './button.js';
 import { CloseIcon } from './icons.js';
 const OperationContext = createContext<Dispatch<SetStateAction<number>> | undefined>(undefined);
 const DraftContext = createContext<((form?: HTMLFormElement) => void) | undefined>(undefined);
+/** Temporarily release modal focus containment while the containing page recovers. */
+export const DialogRecoveryContext = createContext<{ suspended: boolean; notice?: ReactNode }>({ suspended: false });
 export function useDialogSaved() {
   const saved = useContext(DraftContext);
   return (form?: HTMLFormElement) => saved?.(form);
@@ -19,6 +21,9 @@ export function useDialogOperation(busy: boolean) {
 export function Dialog({ title, description, closeLabel, onClose, size = 'default', className, children, dismissible = true, unsavedChanges = false }:
   { title: ReactNode; description?: ReactNode; closeLabel: string; onClose: () => void; size?: 'default' | 'wide'; className?: string; children: ReactNode; dismissible?: boolean; unsavedChanges?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null), titleId = useId(), descriptionId = useId();
+  const { suspended, notice } = useContext(DialogRecoveryContext);
+  const lastFocused = useRef<HTMLElement | null>(null);
+  const resume = useRef<{ focused: HTMLElement | null; positions: { element: HTMLElement; top: number; left: number }[] } | undefined>(undefined);
   const [busy, setBusy] = useState(0), [confirm, setConfirm] = useState(false);
   const dirty = useRef(new Set<HTMLElement>());
   function saved(form?: HTMLFormElement) {
@@ -39,17 +44,34 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
     const bounds = ref.current!.getBoundingClientRect();
     return x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom;
   }
-  useEffect(() => {
+  useLayoutEffect(() => {
     const dialog = ref.current, previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (dialog && !dialog.hasAttribute('open')) {
-      if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
-    }
     return () => {
       if (dialog?.hasAttribute('open')) { if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open'); }
-      if (previous?.isConnected) previous.focus();
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
     };
   }, []);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (suspended) {
+      if (dialog.hasAttribute('open')) {
+        resume.current = { focused: document.activeElement instanceof HTMLElement && dialog.contains(document.activeElement) ? document.activeElement : lastFocused.current,
+          positions: [dialog, ...dialog.querySelectorAll<HTMLElement>('*')].filter(element => element.scrollTop || element.scrollLeft)
+            .map(element => ({ element, top: element.scrollTop, left: element.scrollLeft })) };
+        if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open');
+      }
+      return;
+    }
+    if (!dialog.hasAttribute('open')) {
+      if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
+      resume.current?.focused?.focus({ preventScroll: true });
+      resume.current?.positions.forEach(({ element, top, left }) => { element.scrollTop = top; element.scrollLeft = left; });
+      resume.current = undefined;
+    }
+  }, [suspended]);
   return <dialog ref={ref} aria-labelledby={titleId} {...(description ? { 'aria-describedby': descriptionId } : {})}
+    onFocusCapture={event => { lastFocused.current = event.target; }}
     onCancel={(event) => { event.preventDefault(); if (confirm) { setConfirm(false); dismissOrigin.current?.focus(); } else requestClose(); }}
     onPointerDown={event => { startedOutside.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onClick={event => { if (event.target === event.currentTarget && startedOutside.current && outside(event.clientX, event.clientY)) requestClose(); startedOutside.current = false; }}
@@ -66,6 +88,7 @@ export function Dialog({ title, description, closeLabel, onClose, size = 'defaul
         <Button variant="ghost" size="icon" aria-label={closeLabel} disabled={!dismissible || busy > 0} onClick={requestClose}><CloseIcon /></Button>
       </div>
       <div data-dialog-body className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
+        {notice && <div className="sticky top-0 z-10 mb-4 bg-background">{notice}</div>}
         {confirm && <div role="alert" className="mb-4 space-y-3 rounded-lg border border-border bg-muted p-4">
           <p>{t('shell/shell:discardHelp')}</p><div className="flex flex-wrap gap-2">
             <Button ref={keep} disabled={!dismissible || busy > 0} onClick={() => { setConfirm(false); dismissOrigin.current?.focus(); }}>{t('shell/shell:keepEditing')}</Button>

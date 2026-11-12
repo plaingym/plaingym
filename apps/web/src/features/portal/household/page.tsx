@@ -22,7 +22,7 @@ const date = (value: string) => new Intl.DateTimeFormat(undefined, { dateStyle: 
 /** Reads the open household once; everything below is keyed by it and checks each answer was for it. */
 export function PortalHousehold() {
   const scope = usePortalScope(), context = usePortalContext(scope);
-  if (!context.data) return context.isPending || scope.moving ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
+  if (!context.data) return context.isPending || scope.moving || scope.refreshing ? <LoadingState /> : <ErrorState onRetry={() => void context.refetch()} />;
   return <PortalHouseholdPage context={context.data} scope={scope} />;
 }
 function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope: PortalScope }) {
@@ -34,7 +34,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
     : [own(await scope.call(contracts.profile, undefined, { memberId: context.memberId! })).data] });
   const timezone = bootstrap.data?.gym.timezone ?? 'UTC', today = gymToday(timezone);
   const editable = (member: PortalMember) => payer && (member.id === context.memberId || knownMinor(member.dateOfBirth, today));
-  return <PortalRecovery moving={scope.moving}><Page className="max-w-3xl">
+  return <Page className="max-w-3xl"><PortalRecovery moving={scope.moving}>
     <PageHeader title={text(payer ? 'title' : 'profileTitle')} description={text(payer ? 'description' : 'profileDescription')} />
     {/* A failed refetch keeps its data, so the form and its draft stay. */}
     {payer && (household.data ? <HouseholdForm key={household.data.revision} household={household.data} scope={scope} saved={saved} setSaved={setSaved} />
@@ -61,7 +61,7 @@ function PortalHouseholdPage({ context, scope }: { context: PortalContext; scope
       <p className="text-sm text-muted-foreground">{text(payer ? 'adultNote' : 'memberNote')}</p>
     </PageSection>
     {editing && <EditMember key={editing.id} member={editing} scope={scope} close={() => setEditing(null)} />}
-  </Page></PortalRecovery>;
+  </PortalRecovery></Page>;
 }
 /** Memberships are shown for reference; the gym makes every membership change. */
 function Memberships({ memberId, scope }: { memberId: string; scope: PortalScope }) {
