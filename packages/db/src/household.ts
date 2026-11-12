@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, min, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, min, ne, or, sql, type SQL } from 'drizzle-orm';
 import { alias, type AnyPgColumn, type PgTable } from 'drizzle-orm/pg-core';
 import type { Transaction } from './client.js';
 import { writeAudit } from './audit.js';
@@ -41,13 +41,38 @@ export class HouseholdAccessError extends Error {
 }
 /** One page of a household list: the rows it shows and the total of the whole list. */
 export interface HouseholdPage { readonly limit: number; readonly offset: number }
-export interface HouseholdAttendanceFilter {
+/** The attendance filters the gym's and a household's reads share. */
+export interface AttendanceRowFilter {
   memberId?: string | undefined; programId?: string | undefined; tagId?: string | undefined;
   /** Inclusive lower bound, exclusive upper bound. */
   since?: Date | undefined; until?: Date | undefined;
   kind?: string | undefined;
   /** Leaves out open-mat visits. */
   classesOnly?: boolean | undefined;
+}
+export type HouseholdAttendanceFilter = AttendanceRowFilter;
+/**
+ * One gym's attendance rows matching these filters. The gym's lists and totals and a household's reads both use it,
+ * so their totals agree; each caller adds its own scope (a household adds its visible members).
+ * Only session metadata is read for the program and tag filters, never other attendance rows.
+ */
+export function attendanceFilterPredicate(tx: Transaction, gymId: string, filter: AttendanceRowFilter) {
+  return and(
+    eq(attendances.gymId, gymId),
+    filter.memberId ? eq(attendances.memberId, filter.memberId) : undefined,
+    filter.kind ? eq(attendances.kind, filter.kind) : undefined,
+    filter.classesOnly ? eq(attendances.kind, 'class') : undefined,
+    filter.since ? gte(attendances.occurredAt, filter.since) : undefined,
+    filter.until ? lt(attendances.occurredAt, filter.until) : undefined,
+    filter.programId ? or(eq(attendances.programId, filter.programId), inArray(attendances.sessionId,
+      tx.select({ id: classSessionPrograms.sessionId }).from(classSessionPrograms).where(and(
+        eq(classSessionPrograms.gymId, gymId), eq(classSessionPrograms.programId, filter.programId),
+      )))) : undefined,
+    filter.tagId ? inArray(attendances.sessionId,
+      tx.select({ id: classSessionTags.sessionId }).from(classSessionTags).where(and(
+        eq(classSessionTags.gymId, gymId), eq(classSessionTags.tagId, filter.tagId),
+      ))) : undefined,
+  );
 }
 
 function requireAccess(allowed: boolean, code: HouseholdDenialCode = 'household_access_denied'): asserts allowed {
@@ -135,27 +160,14 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
     signedAt: waiverSignatures.signedAt,
   };
   const bookingPredicate = (...rest: (SQL | undefined)[]) => and(eq(classBookings.gymId, grant.gymId), inArray(classBookings.memberId, memberIds), ...rest);
-  const attendancePredicate = (filter: HouseholdAttendanceFilter) => and(
-    eq(attendances.gymId, grant.gymId), inArray(attendances.memberId, memberIds),
-    filter.memberId ? eq(attendances.memberId, filter.memberId) : undefined,
-    filter.kind ? eq(attendances.kind, filter.kind) : undefined,
-    filter.classesOnly ? eq(attendances.kind, 'class') : undefined,
-    filter.since ? gte(attendances.occurredAt, filter.since) : undefined,
-    filter.until ? lt(attendances.occurredAt, filter.until) : undefined,
-    // Only session metadata is read for these two filters, never another household's rows.
-    filter.programId ? or(eq(attendances.programId, filter.programId), inArray(attendances.sessionId,
-      tx.select({ id: classSessionPrograms.sessionId }).from(classSessionPrograms).where(and(
-        eq(classSessionPrograms.gymId, grant.gymId), eq(classSessionPrograms.programId, filter.programId),
-      )))) : undefined,
-    filter.tagId ? inArray(attendances.sessionId,
-      tx.select({ id: classSessionTags.sessionId }).from(classSessionTags).where(and(
-        eq(classSessionTags.gymId, grant.gymId), eq(classSessionTags.tagId, filter.tagId),
-      ))) : undefined,
+  const attendancePredicate = (filter: AttendanceRowFilter) => and(
+    attendanceFilterPredicate(tx, grant.gymId, filter), inArray(attendances.memberId, memberIds),
   );
   const membershipPredicate = (memberId: string) => and(eq(memberships.gymId, grant.gymId),
     inArray(memberships.memberId, memberIds), eq(memberships.memberId, memberId));
-  const signaturePredicate = (requested: readonly string[]) => and(eq(waiverSignatures.gymId, grant.gymId),
-    inArray(waiverSignatures.memberId, memberIds), inArray(waiverSignatures.memberId, [...requested]));
+  const signaturePredicate = (requested: readonly string[], templateIds?: readonly string[]) => and(eq(waiverSignatures.gymId, grant.gymId),
+    inArray(waiverSignatures.memberId, memberIds), inArray(waiverSignatures.memberId, [...requested]),
+    templateIds ? inArray(waiverSignatures.templateId, [...templateIds]) : undefined);
   async function announcementMember(lock: boolean, now: () => Date) {
     requireAccess(scope.kind === 'signed_link' && grant.announcementMemberId !== null);
     // Lock the member before the link, as member erasure does (it revokes the member's links last), so the two can't deadlock.
@@ -177,8 +189,7 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
   const optOutPredicate = () => and(eq(announcementOptOuts.gymId, grant.gymId),
     eq(announcementOptOuts.memberId, grant.announcementMemberId!));
   // No raw transaction, arbitrary predicate or unscoped relation loader escapes this API.
-  // The portal reads history through the bounded pages and lookups. `bookings`, `attendance`, `ranks`, `memberships`
-  // and `invoices` remain for tests, and `waivers` also for signed-link pages.
+  // History is read only through bounded pages and lookups, never whole collections.
   return {
     announcementPreference: async () => {
       requireAccess(scope.kind === 'signed_link');
@@ -212,10 +223,6 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
         address: households.address, billingDay: households.billingDay, revision: households.revision,
       }).from(households).where(and(eq(households.gymId, grant.gymId), eq(households.id, grant.householdId)));
     },
-    bookings: async () => {
-      requireAccess(grant.memberActivity);
-      return tx.select().from(classBookings).where(bookingPredicate());
-    },
     /** One member's bookings, newest first. */
     bookingPage: async (filter: { memberId: string; sessionId?: string | undefined; status?: string | undefined }, page: HouseholdPage) => {
       requireAccess(grant.memberActivity);
@@ -240,10 +247,6 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
         inArray(classBookings.memberId, [...requested]), ne(classBookings.status, 'cancelled')))
         .orderBy(asc(classBookings.createdAt), asc(classBookings.id));
     },
-    attendance: async () => {
-      requireAccess(grant.memberActivity);
-      return tx.select().from(attendances).where(and(eq(attendances.gymId, grant.gymId), inArray(attendances.memberId, memberIds)));
-    },
     /** Newest first, then ID ascending, like the gym's attendance list. */
     attendancePage: async (filter: HouseholdAttendanceFilter, page: HouseholdPage) => {
       requireAccess(grant.memberActivity);
@@ -257,9 +260,19 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       requireAccess(grant.memberActivity);
       return countRows(tx, attendances, attendancePredicate(filter));
     },
-    ranks: async () => {
+    /**
+     * The programs one member has any attendance in, through the attendance's program or its session's programs,
+     * as the program filter counts them. At most one row per program of the gym.
+     */
+    attendedPrograms: async (memberId: string) => {
       requireAccess(grant.memberActivity);
-      return tx.select().from(memberRanks).where(and(eq(memberRanks.gymId, grant.gymId), inArray(memberRanks.memberId, memberIds)));
+      const own = and(eq(attendances.gymId, grant.gymId), inArray(attendances.memberId, memberIds), eq(attendances.memberId, memberId));
+      const direct = await tx.selectDistinct({ programId: attendances.programId }).from(attendances)
+        .where(and(own, isNotNull(attendances.programId)));
+      const linked = await tx.selectDistinct({ programId: classSessionPrograms.programId }).from(attendances)
+        .innerJoin(classSessionPrograms, and(eq(classSessionPrograms.gymId, grant.gymId), eq(classSessionPrograms.sessionId, attendances.sessionId)))
+        .where(own);
+      return [...new Set([...direct, ...linked].map(row => row.programId!))];
     },
     /** One member's promotions. Promotion notes and the promoting coach are never selected. */
     rankHistory: async (memberId: string) => {
@@ -287,10 +300,6 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
         balance: sql<number>`sum(${lots.remaining})`.mapWith(Number), soonestExpiry: min(lots.expiresAt),
       }).from(lots).groupBy(lots.memberId, lots.firstName, lots.lastName).orderBy(lots.lastName, lots.firstName, lots.memberId);
     },
-    memberships: async () => {
-      requireAccess(grant.memberActivity);
-      return tx.select().from(memberships).where(and(eq(memberships.gymId, grant.gymId), inArray(memberships.memberId, memberIds)));
-    },
     /** One member's memberships, latest start first. Amounts and billing state are not selected. */
     membershipPage: async (memberId: string, page: HouseholdPage) => {
       requireAccess(grant.memberActivity);
@@ -301,15 +310,11 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
         .from(memberships).where(where).orderBy(desc(memberships.startsOn), desc(memberships.id)).limit(page.limit).offset(page.offset);
       return { rows, total: await countRows(tx, memberships, where) };
     },
-    waivers: async () => {
+    /** These members' signatures, newest first; given template IDs, only signatures of those templates. */
+    signaturePage: async (requested: readonly string[], page: HouseholdPage, templateIds?: readonly string[]) => {
       requireAccess(grant.members.kind !== 'none');
-      return tx.select(waiverFields).from(waiverSignatures).where(and(eq(waiverSignatures.gymId, grant.gymId), inArray(waiverSignatures.memberId, memberIds)));
-    },
-    /** These members' signatures, newest first. */
-    signaturePage: async (requested: readonly string[], page: HouseholdPage) => {
-      requireAccess(grant.members.kind !== 'none');
-      if (!requested.length) return { rows: [], total: 0 };
-      const where = signaturePredicate(requested);
+      if (!requested.length || templateIds?.length === 0) return { rows: [], total: 0 };
+      const where = signaturePredicate(requested, templateIds);
       const rows = await tx.select(waiverFields).from(waiverSignatures).where(where)
         .orderBy(desc(waiverSignatures.signedAt), desc(waiverSignatures.id)).limit(page.limit).offset(page.offset);
       return { rows, total: await countRows(tx, waiverSignatures, where) };
@@ -333,10 +338,6 @@ export async function householdQueries(tx: Transaction, scope: HouseholdScope) {
       const latest = tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
         .where(eq(waiverTemplates.gymId, grant.gymId)).orderBy(waiverTemplates.name, desc(waiverTemplates.version)).as('latest');
       return tx.select().from(latest).where(isNull(latest.retiredAt));
-    },
-    invoices: async () => {
-      requireAccess(grant.invoices.kind !== 'none', 'payer_access_required');
-      return tx.select().from(invoices).where(invoicePredicate);
     },
     /** Issued invoices, latest due date first; drafts are never listed. */
     invoicePage: async (filter: { status?: string | undefined }, page: HouseholdPage) => {

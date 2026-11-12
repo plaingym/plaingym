@@ -17,10 +17,17 @@ export function linkPrincipal(context: RequestContext) {
   if (p.kind !== 'signed_link' || p.gymId !== context.gym.gymId) throw new AppError('not_found', 'Link not found');
   return p;
 }
+/** The most signatures one answer returns; one household's signatures of the current templates fit well within it. */
+const signatureLimit = 100;
 export function createLinkPageService(options: LinkPageOptions) {
   const scope = options.scope ?? forHousehold;
   const announcements = createAnnouncementUnsubscribeService({ scope });
-  async function read(context: RequestContext): Promise<PortalSignedLinkData> {
+  /**
+   * The link's answer. `signatures` are the link's members' signatures of the current templates, newest first and at
+   * most `signatureLimit`; the checks before an action leave them out (`withSignatures` false), since they need only
+   * the members and templates.
+   */
+  async function load(context: RequestContext, withSignatures: boolean): Promise<PortalSignedLinkData> {
     const p = linkPrincipal(context);
     if (p.link.purpose === 'unsubscribe') return { purpose: 'unsubscribe', ...await announcements.read(p.gymId, p.linkId, context.clock) };
     try {
@@ -40,7 +47,8 @@ export function createLinkPageService(options: LinkPageOptions) {
         if (p.link.purpose === 'sign_waiver' && people.length !== 1) throw new AppError('not_found', 'Member not found');
         const members = people.map(m => ({ id: m.id, firstName: m.firstName, lastName: m.lastName, dateOfBirth: m.dateOfBirth, revision: m.revision }));
         const templates = (await q.waiverTemplates()).map(t => ({ id: t.id, name: t.name, body: t.body, ...templateDocument(t), kind: t.kind, version: t.version, retiredAt: null, createdAt: t.createdAt.toISOString() }));
-        const signatures = (await q.waivers()).map(s => ({ ...s, signedAt: s.signedAt.toISOString() }));
+        const signatures = withSignatures ? (await q.signaturePage(members.map(m => m.id), { limit: signatureLimit, offset: 0 },
+          templates.map(t => t.id))).rows.map(s => ({ ...s, signedAt: s.signedAt.toISOString() })) : [];
         return portalSignedLinkDataSchema.parse(p.link.purpose === 'sign_waiver'
           ? { purpose: p.link.purpose, member: members[0], templates, signatures }
           : { purpose: p.link.purpose, members, templates, signatures, paymentMethods: await q.paymentMethods() });
@@ -50,8 +58,9 @@ export function createLinkPageService(options: LinkPageOptions) {
       throw error;
     }
   }
+  const read = (context: RequestContext) => load(context, true);
   async function member(context: RequestContext, memberId?: string) {
-    const data = await read(context);
+    const data = await load(context, false);
     if (data.purpose === 'sign_waiver' && (!memberId || memberId === data.member.id)) return data.member.id;
     if (data.purpose === 'onboarding' && data.members.some(m => m.id === memberId)) return memberId!;
     throw new AppError('not_found', 'Member not found');
@@ -64,12 +73,12 @@ export function createLinkPageService(options: LinkPageOptions) {
       return { purpose: 'unsubscribe' as const, ...await announcements.set(p.gymId, p.linkId, optedOut, context.clock) };
     },
     async document(context: RequestContext, templateId: string) {
-      const data = await read(context), p = linkPrincipal(context);
+      const data = await load(context, false), p = linkPrincipal(context);
       if (!('templates' in data) || !data.templates.some(template => template.id === templateId)) throw new AppError('not_found', 'Document not found');
       return options.waivers.document(p.gymId, templateId, true);
     },
     async completeWaiverOnOpen(context: RequestContext) {
-      const data = await read(context), p = linkPrincipal(context);
+      const data = await load(context, false), p = linkPrincipal(context);
       if (data.purpose !== 'sign_waiver') return false;
       return options.waivers.completeSignedLink(p.gymId, p.linkId, data.member.id);
     },
@@ -82,12 +91,12 @@ export function createLinkPageService(options: LinkPageOptions) {
       return options.waivers.signSignedLink(p.gymId, p.linkId, { ...input, memberId: id }, { timezone: context.gym.timezone, ipAddress: context.clientIp ?? 'unknown' });
     },
     async checkout(context: RequestContext) {
-      const data = await read(context), p = linkPrincipal(context);
+      const data = await load(context, false), p = linkPrincipal(context);
       if (data.purpose === 'sign_waiver' || data.purpose === 'unsubscribe') throw new AppError('not_found', 'Link not found');
       return options.checkout.start(p.gymId, p.linkId);
     },
     async complete(context: RequestContext, sessionId: string | null) {
-      const data = await read(context), p = linkPrincipal(context);
+      const data = await load(context, false), p = linkPrincipal(context);
       if (data.purpose === 'sign_waiver' || data.purpose === 'unsubscribe') throw new AppError('not_found', 'Link not found');
       return options.checkout.complete(p.gymId, p.linkId, sessionId);
     },

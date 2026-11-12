@@ -106,13 +106,13 @@ describe('refunds, disputes and access through composed billing services', () =>
     const pay = await f.links.create(f.context, { purpose: 'pay_invoice', householdId: otherHome.id, invoiceId: otherInvoice.id,
       expiresAt: '2028-04-01T00:00:00Z' });
     await db.forHousehold({ kind: 'signed_link', gymId: f.gymId, linkId: pay.link.id, now: f.clock.now() }, async scope => {
-      expect((await scope.invoices()).map(row => row.id)).toEqual([otherInvoice.id]);
+      expect((await scope.invoice(otherInvoice.id)).map(row => row.id)).toEqual([otherInvoice.id]);
       expect(await scope.invoice(invoice.id)).toEqual([]);
     });
     // Purpose check: an update-card link grants no invoice access, even for its own household.
     const link = await f.links.create(f.context, { purpose: 'update_card', householdId: otherHome.id, expiresAt: '2028-04-01T00:00:00Z' });
     await expect(db.forHousehold({ kind: 'signed_link', gymId: f.gymId, linkId: link.link.id, now: f.clock.now() },
-      scope => scope.invoices())).rejects.toThrow('Payer access required');
+      scope => scope.invoice(otherInvoice.id))).rejects.toThrow('Payer access required');
     expect((await f.read()).payments).toHaveLength(1); expect((await f.read()).refunds).toEqual([]);
   });
 });

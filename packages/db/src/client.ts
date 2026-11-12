@@ -5,7 +5,7 @@ import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import { runInTransaction, assertNoTransaction } from '@plaingym/shared/transaction';
 import { advisoryLockNamespace, advisoryLocks } from './locks.js';
-import { householdQueries, type HouseholdScope } from './household.js';
+import { HouseholdAccessError, householdQueries, type HouseholdScope } from './household.js';
 export type Sql = ReturnType<typeof postgres>;
 export type Database = PostgresJsDatabase;
 export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
@@ -58,9 +58,9 @@ export function scopedDatabase(db: Database) {
       validateUuid(scope.userId);
     } else if (scope.kind === 'signed_link') {
       validateUuid(scope.linkId);
-      if (!(scope.now instanceof Date) || !Number.isFinite(scope.now.getTime())) throw new Error('Household access denied');
+      if (!(scope.now instanceof Date) || !Number.isFinite(scope.now.getTime())) throw new HouseholdAccessError('household_access_denied');
     } else {
-      throw new Error('Household access denied');
+      throw new HouseholdAccessError('household_access_denied');
     }
     return forGym(scope.gymId, async (tx) => fn(await householdQueries(tx, scope)));
   }

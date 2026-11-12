@@ -69,25 +69,57 @@ describe('portal progress', () => {
     expect(top.criteria).toEqual([]);
     expect(top.ranks.map(rank => rank.id)).toEqual([r.third.id]);
   });
-  it('lists active programs with ranks the member holds none in, after ranked ones, offering the first rank', async () => {
+  it('lists only programs the member holds a rank in or has attended, ranked ones first', async () => {
     const f = await portalFixture(factory), r = await ranked(f);
-    const system = await factory('rankSystems', f.gymId), first = await factory('ranks', f.gymId, { rankSystemId: system.id, name: 'Beginner', position: 0, color: '#00ff00' });
+    const system = await factory('rankSystems', f.gymId), first = await factory('ranks', f.gymId, { rankSystemId: system.id, name: 'Beginner', position: 0, color: '#00ff00',
+      criteria: [{ providerId: 'classes-since-promotion', config: { target: 2 } }] });
     await factory('ranks', f.gymId, { rankSystemId: system.id, name: 'Later', position: 1 });
     // Named to sort before a ranked program: having no rank decides the place, not the name.
     const unranked = await factory('programs', f.gymId, { name: 'Aikido', rankSystemId: system.id });
-    await factory('programs', f.gymId, { name: 'Closed', rankSystemId: system.id, active: false });
-    await factory('programs', f.gymId, { name: 'No ranks', rankSystemId: (await factory('rankSystems', f.gymId)).id });
+    const closed = await factory('programs', f.gymId, { name: 'Closed', rankSystemId: system.id, active: false });
+    const noRanks = await factory('programs', f.gymId, { name: 'No ranks', rankSystemId: (await factory('rankSystems', f.gymId)).id });
+    await factory('programs', f.gymId, { name: 'Never attended', rankSystemId: system.id });
+    // Two classes since the child joined: one through the attendance's program, one through its session's program.
+    await factory('attendances', f.gymId, { memberId: f.child.id, programId: unranked.id, occurredAt: new Date('2026-03-01T18:00:00Z') });
+    const session = await factory('classSessions', f.gymId);
+    await factory('classSessionPrograms', f.gymId, { sessionId: session.id, programId: unranked.id });
+    await factory('attendances', f.gymId, { memberId: f.child.id, sessionId: session.id, occurredAt: new Date('2026-03-02T18:00:00Z') });
+    // An inactive program and a rank system without ranks offer nothing, though attended.
+    for (const program of [closed, noRanks])
+      await factory('attendances', f.gymId, { memberId: f.child.id, programId: program.id, occurredAt: new Date('2026-03-03T18:00:00Z') });
     const child = (await progress(f, f.principal('payer'), f.child.id)).data;
     expect(child.programs.map(program => [program.name, program.current?.rankId ?? null])).toEqual([['Grappling', r.first.id], ['Retired', r.first.id], ['Aikido', null]]);
     expect(child.programs[2]).toEqual({ id: unranked.id, name: 'Aikido', current: null, next: { rankId: first.id, subRank: 0 } });
     expect(child.ranks).toContainEqual({ id: first.id, name: 'Beginner', color: '#00ff00', subRanks: [] });
-    // Without any rank, every active program is a no-rank one, and the history stays empty.
-    const none = (await progress(f, f.principal('adult'), f.grown.id)).data;
-    expect(none.programs).toEqual([{ id: unranked.id, name: 'Aikido', current: null, next: { rankId: first.id, subRank: 0 } },
-      { id: r.program.id, name: 'Grappling', current: null, next: { rankId: r.first.id, subRank: 0 } }]);
-    expect(none.ranks.map(rank => rank.id).sort()).toEqual([first.id, r.first.id].sort());
-    expect(none.history).toEqual([]);
-    expect(none.criteria).toEqual([]);
+    // Without any rank or attendance, nothing shows.
+    expect((await progress(f, f.principal('adult'), f.grown.id)).data).toEqual({ history: [], programs: [], ranks: [], criteria: [] });
+    // One class through a session's program shows that program with its first rank.
+    const grappling = await factory('classSessions', f.gymId);
+    await factory('classSessionPrograms', f.gymId, { sessionId: grappling.id, programId: r.program.id });
+    await factory('attendances', f.gymId, { memberId: f.grown.id, sessionId: grappling.id, occurredAt: new Date('2026-05-01T18:00:00Z') });
+    const grown = (await progress(f, f.principal('adult'), f.grown.id)).data;
+    expect(grown.programs).toEqual([{ id: r.program.id, name: 'Grappling', current: null, next: { rankId: r.first.id, subRank: 0 } }]);
+    expect(grown.ranks.map(rank => rank.id)).toEqual([r.first.id]);
+    expect(grown.history).toEqual([]);
+    expect(grown.criteria).toEqual([]);
+  });
+  it("evaluates a first rank's criteria from when the member joined, as the staff eligibility screen does", async () => {
+    const f = await portalFixture(factory);
+    const system = await factory('rankSystems', f.gymId), program = await factory('programs', f.gymId, { name: 'Striking', rankSystemId: system.id });
+    const first = await factory('ranks', f.gymId, { rankSystemId: system.id, name: 'Beginner', position: 0,
+      criteria: [{ providerId: 'classes-since-promotion', config: { target: 2 } }] });
+    // Before joining, an open-mat visit and a class after now count for nothing; two classes since joining meet the target.
+    for (const [occurredAt, kind] of [['2025-12-31T18:00:00Z', 'class'], ['2026-03-01T18:00:00Z', 'open_mat'], ['2026-03-02T18:00:00Z', 'class'],
+      ['2026-03-03T18:00:00Z', 'class'], ['2026-11-01T18:00:00Z', 'class']] as const)
+      await factory('attendances', f.gymId, { memberId: f.child.id, programId: program.id, occurredAt: new Date(occurredAt), kind });
+    const { data } = await progress(f, f.principal('payer'), f.child.id);
+    expect(data.programs).toEqual([{ id: program.id, name: 'Striking', current: null, next: { rankId: first.id, subRank: 0 } }]);
+    expect(data.criteria).toEqual([{ programId: program.id, rankId: first.id, criterionId: 'classes-since-promotion', labelKey: 'ranks/ranks:classes',
+      current: 2, required: 2, eligible: true }]);
+    const staff = (await services.ranks.eligibility(f.gymId, { programId: program.id, rankId: first.id, limit: 100 })).data.find(row => row.memberId === f.child.id)!;
+    expect(staff).toMatchObject({ eligible: true, subRank: 0 });
+    expect(staff.criteria.map(item => [item.providerId, item.current, item.target, item.met]))
+      .toEqual(data.criteria.map(item => [item.criterionId, item.current, item.required, item.eligible]));
   });
   it('breaks a same-time tie by rank order, so history, current rank, next step and the staff list agree', async () => {
     const f = await portalFixture(factory), r = await ranked(f);

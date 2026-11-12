@@ -342,20 +342,28 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
         : { data: results, pagination: { limit: query.limit, offset: query.offset, total: candidates.length } };
     },
     /**
-     * One member's next step in each program they hold a rank in, using the same ordering and criteria as eligibility.
-     * The caller supplies the history and birth date from its own scope (the portal reads them through forHousehold);
-     * this reads only the referenced programs and ranks, and criteria count attendance in the caller's scope.
+     * One member's next step in each program they hold a rank in or have attended, using the same ordering and
+     * criteria as eligibility. An attended program they hold no rank in is shown only while it is active and its rank
+     * system has ranks, after the ranked ones, offering the first rank with its criteria counted from when the member joined.
+     * The caller supplies the member, history and attended programs from its own scope (the portal reads them through
+     * forHousehold); this reads only those programs and their ranks, and criteria count attendance in the caller's scope.
      */
-    async memberProgress<T extends PromotionHistoryEntry>(gymId: string, input: { memberId: string; dateOfBirth: string | null; history: readonly T[]; attendanceScope: AttendanceScope },
+    async memberProgress<T extends PromotionHistoryEntry>(gymId: string, input: { memberId: string; dateOfBirth: string | null; createdAt: Date;
+      history: readonly T[]; attendedProgramIds: readonly string[]; attendanceScope: AttendanceScope },
       enabledModules: ReadonlySet<string> = new Set()) {
       const now = clock.now(), all = input.history.filter((row) => row.memberId === input.memberId);
-      const history = all.filter((row) => row.promotedAt <= now), programIds = [...new Set(history.map((row) => row.programId))];
-      if (!all.length) return { history: [], programs: [], ranks: [], criteria: [] };
+      const history = all.filter((row) => row.promotedAt <= now), held = new Set(history.map((row) => row.programId));
+      const programIds = [...new Set([...held, ...input.attendedProgramIds])];
+      if (!all.length && !programIds.length) return { history: [], programs: [], ranks: [], criteria: [] };
       const { timezone } = await settings.get(gymId);
       const snapshot = await scope(gymId, async (tx) => {
-        const programRows = programIds.length
-          ? await tx.select().from(programs).where(inArray(programs.id, programIds)).orderBy(asc(programs.name), asc(programs.id)) : [];
-        const systemIds = programRows.flatMap((program) => program.rankSystemId ? [program.rankSystemId] : []);
+        // An attended program without a rank in it is offered only while it is active and has a rank system.
+        // Programs with a rank come first, then the others, each in name order.
+        const programRows = programIds.length ? (await tx.select().from(programs).where(inArray(programs.id, programIds))
+          .orderBy(asc(programs.name), asc(programs.id))).filter((program) => held.has(program.id) || (program.active && program.rankSystemId))
+          .sort((a, b) => Number(!held.has(a.id)) - Number(!held.has(b.id))) : [];
+        const systemIds = [...new Set(programRows.flatMap((program) => program.rankSystemId ? [program.rankSystemId] : []))];
+        // One read covers every shown system's ranks, the first ranks of unranked programs included.
         const rankRows = await tx.select().from(ranks).where(or(inArray(ranks.id, [...new Set(all.map((row) => row.rankId))]),
           systemIds.length ? inArray(ranks.rankSystemId, systemIds) : undefined));
         return { programRows, rankRows: rankRows.map((row) => rankSchema.parse(present(row))) };
@@ -365,18 +373,23 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
       const referenced = new Set<string>(all.map((row) => row.rankId)), result = [], evaluatedCriteria = [];
       for (const program of snapshot.programRows) {
         const own = history.filter((row) => row.programId === program.id);
-        const latest = own.map(order).sort(promotionOrder)[0]!;
+        const latest = own.length ? own.map(order).sort(promotionOrder)[0]! : undefined;
+        const systemRanks = snapshot.rankRows.filter((rank) => rank.rankSystemId === program.rankSystemId);
         // Inactive programs and programs without a rank system offer no promotion, as in eligibility.
-        const target = program.active && program.rankSystemId
-          ? nextPromotion(latest, snapshot.rankRows.filter((rank) => rank.rankSystemId === program.rankSystemId)) : null;
-        result.push({ id: program.id, name: program.name, current: { rankId: latest.rankId, subRank: latest.subRank },
+        // Without a rank, the first rank comes next, as eligibility offers it to a member with no history.
+        const target = !program.active || !program.rankSystemId ? null
+          : latest ? nextPromotion(latest, systemRanks)
+          : [...systemRanks].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)).map((rank) => ({ rank, subRank: 0 }))[0] ?? null;
+        // A program the member holds no rank in, whose system has no ranks yet, has nothing to show.
+        if (!latest && !target) continue;
+        result.push({ id: program.id, name: program.name, current: latest ? { rankId: latest.rankId, subRank: latest.subRank } : null,
           next: target ? { rankId: target.rank.id, subRank: target.subRank } : null });
         if (!target) continue;
         referenced.add(target.rank.id);
         // Providers can call other services. Never evaluate them inside the snapshot transaction.
         const evaluated = await criteria.evaluate({ attendanceScope: input.attendanceScope, gymId, memberId: input.memberId,
-          programId: program.id, rankId: target.rank.id, promotedAt: latest.promotedAt.toISOString(), dateOfBirth: input.dateOfBirth,
-          timezone, clock: { now: () => new Date(now) } }, target.rank.criteria, enabledModules);
+          programId: program.id, rankId: target.rank.id, promotedAt: (latest?.promotedAt ?? input.createdAt).toISOString(),
+          dateOfBirth: input.dateOfBirth, timezone, clock: { now: () => new Date(now) } }, target.rank.criteria, enabledModules);
         evaluatedCriteria.push(...evaluated.map((item) => ({ programId: program.id, rankId: target.rank.id, criterionId: item.providerId,
           labelKey: item.labelKey, current: item.current, required: item.target, eligible: item.met })));
       }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Every bounded portal read against the whole-collection read it replaced, on a household of 1,000 bookings and 500 invoices.
+// Every bounded portal read against a direct query of the whole collection, on a household of 1,000 bookings and 500 invoices.
 import '@hono/zod-openapi';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { attendances, classBookings, classSessionPrograms, classSessions, classSessionTags, invoices, memberRanks,
+import { eq, inArray } from 'drizzle-orm';
+import { attendances, classBookings, classSessionPrograms, classSessions, classSessionTags, invoices, memberRanks, memberships,
   uuidv7, waiverSignatures } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -118,18 +119,28 @@ const ids = (answer: { data: { id: string }[]; pagination: { total: number } }) 
 const idsOf = (answer: { rows: { id: string }[]; total: number }) => ({ rows: answer.rows.map(row => row.id), total: answer.total });
 const grant = (identity: PortalIdentity) => ({ kind: 'user' as const, ...identity });
 type Fixture = typeof large;
-type Oracle = { new: (s: ReturnType<typeof services>, f: Fixture) => Promise<unknown>; old: (scope: HouseholdScope, f: Fixture) => Promise<unknown> };
+type Oracle = { new: (s: ReturnType<typeof services>, f: Fixture) => Promise<unknown>; old: (f: Fixture) => Promise<unknown> };
+/** Direct test queries in gym scope: every row of the fixture's household, before any filter. */
+const members = (f: Fixture) => [f.payer.id, f.child.id, f.adult.id];
+const all = {
+  bookings: (f: Fixture) => db.forGym(gymId, tx => tx.select().from(classBookings).where(inArray(classBookings.memberId, members(f)))),
+  invoices: (f: Fixture) => db.forGym(gymId, tx => tx.select().from(invoices).where(eq(invoices.householdId, f.identity.householdId))),
+  attendance: (f: Fixture) => db.forGym(gymId, tx => tx.select().from(attendances).where(inArray(attendances.memberId, members(f)))),
+  ranks: (f: Fixture) => db.forGym(gymId, tx => tx.select().from(memberRanks).where(inArray(memberRanks.memberId, members(f)))),
+  memberships: (f: Fixture) => db.forGym(gymId, tx => tx.select().from(memberships).where(inArray(memberships.memberId, members(f)))),
+  waivers: (f: Fixture) => db.forGym(gymId, tx => tx.select().from(waiverSignatures).where(inArray(waiverSignatures.memberId, members(f)))),
+};
 
-const bookingsOracle = (filter: { sessionId?: string; status?: string }, query: typeof page) => async (scope: HouseholdScope, f: Fixture) =>
-  idsOf(paged((await scope(grant(f.identity), q => q.bookings())).filter(row => row.memberId === f.child.id
+const bookingsOracle = (filter: { sessionId?: string; status?: string }, query: typeof page) => async (f: Fixture) =>
+  idsOf(paged((await all.bookings(f)).filter(row => row.memberId === f.child.id
     && (!filter.sessionId || row.sessionId === filter.sessionId) && (!filter.status || row.status === filter.status))
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id)), query));
-const invoicesOracle = (status: string | undefined, query: typeof page) => async (scope: HouseholdScope, f: Fixture) =>
-  idsOf(paged((await scope(grant(f.identity), q => q.invoices())).filter(row => row.status !== 'draft' && (!status || row.status === status))
+const invoicesOracle = (status: string | undefined, query: typeof page) => async (f: Fixture) =>
+  idsOf(paged((await all.invoices(f)).filter(row => row.status !== 'draft' && (!status || row.status === status))
     .sort((a, b) => b.dueOn.localeCompare(a.dueOn) || (b.number ?? 0) - (a.number ?? 0) || b.id.localeCompare(a.id)), query));
 /** The old household branch: every row of the household, then the session links, then the filters in memory. */
-const attendanceRows = async (scope: HouseholdScope, f: Fixture, filter: { programId?: string; tagId?: string; since?: string; classesOnly?: boolean }) => {
-  const rows = await scope(grant(f.identity), q => q.attendance());
+const attendanceRows = async (f: Fixture, filter: { programId?: string; tagId?: string; since?: string; classesOnly?: boolean }) => {
+  const rows = await all.attendance(f);
   const links = await db.forGym(gymId, async tx => ({ programs: await tx.select().from(classSessionPrograms), tags: await tx.select().from(classSessionTags) }));
   return rows.filter(row => row.memberId === f.child.id
     && (!filter.since || row.occurredAt.getTime() >= Date.parse(filter.since)) && (!filter.classesOnly || row.kind === 'class')
@@ -137,13 +148,13 @@ const attendanceRows = async (scope: HouseholdScope, f: Fixture, filter: { progr
     && (!filter.tagId || links.tags.some(link => link.sessionId === row.sessionId && link.tagId === filter.tagId)))
     .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime() || a.id.localeCompare(b.id));
 };
-const signedOracle = (memberIds: (f: Fixture) => string[]) => async (scope: HouseholdScope, f: Fixture) => {
+const signedOracle = (memberIds: (f: Fixture) => string[]) => async (f: Fixture) => {
   const visible = memberIds(f);
-  return idsOf(paged((await scope(grant(f.identity), q => q.waivers())).filter(row => visible.includes(row.memberId))
+  return idsOf(paged((await all.waivers(f)).filter(row => visible.includes(row.memberId))
     .sort((a, b) => b.signedAt.getTime() - a.signedAt.getTime() || b.id.localeCompare(a.id)), page));
 };
-const pendingOracle = async (scope: HouseholdScope, f: Fixture) => {
-  const { current, signatures } = await scope(grant(f.identity), async q => ({ current: await q.waiverTemplates(), signatures: await q.waivers() }));
+const pendingOracle = async (f: Fixture) => {
+  const current = await db.forHousehold(grant(f.identity), q => q.waiverTemplates()), signatures = await all.waivers(f);
   current.sort((a, b) => a.name.localeCompare(b.name));
   return [f.child.id].flatMap(memberId => current.filter(template => !signatures.some(row => row.memberId === memberId && row.templateId === template.id))
     .map(template => [memberId, template.id]));
@@ -157,16 +168,16 @@ const reads: Record<string, Oracle> = {
   'schedule places': {
     new: async (s, f) => (await s.schedule.sessions(f.identity, { from: '2026-01-01T00:00:00.000Z', to: '2026-12-31T00:00:00.000Z', limit: 100, offset: 0 }))
       .data.flatMap(session => session.bookings.map(row => row.id)).sort(),
-    old: async (scope, f) => {
+    old: async f => {
       const sessions = await db.forGym(gymId, tx => tx.select({ id: classSessions.id, startsAt: classSessions.startsAt }).from(classSessions));
-      const rows = await scope(grant(f.identity), q => q.bookings());
+      const rows = await all.bookings(f);
       // The page of 100 sessions the schedule shows: the gym's earliest, in start order.
       const shown = new Set(sessions.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime() || a.id.localeCompare(b.id)).slice(0, 100).map(row => row.id));
       return rows.filter(row => shown.has(row.sessionId) && row.status !== 'cancelled').map(row => row.id).sort();
     } },
   'memberships': {
     new: async (s, f) => ids(await s.household.memberships(f.identity, f.child.id, { limit: 3, offset: 2 })),
-    old: async (scope, f) => idsOf(paged((await scope(grant(f.identity), q => q.memberships())).filter(row => row.memberId === f.child.id)
+    old: async f => idsOf(paged((await all.memberships(f)).filter(row => row.memberId === f.child.id)
       .sort((a, b) => b.startsOn.localeCompare(a.startsOn) || b.id.localeCompare(a.id)), { limit: 3, offset: 2 })) },
   'invoices': { new: async (s, f) => ids(await s.billing.list(f.identity, page)), old: invoicesOracle(undefined, page) },
   'invoices by status': { new: async (s, f) => ids(await s.billing.list(f.identity, { ...page, status: 'paid' })), old: invoicesOracle('paid', page) },
@@ -177,30 +188,30 @@ const reads: Record<string, Oracle> = {
     old: pendingOracle },
   'rank history': {
     new: async (s, f) => (await s.progress.progress(f.identity, f.child.id)).history.map(row => row.id),
-    old: async (scope, f) => (await scope(grant(f.identity), q => q.ranks())).filter(row => row.memberId === f.child.id)
+    old: async f => (await all.ranks(f)).filter(row => row.memberId === f.child.id)
       .sort((a, b) => b.promotedAt.getTime() - a.promotedAt.getTime() || b.subRank - a.subRank).map(row => row.id) },
   'attendance': {
     new: async (s, f) => ids(await s.progress.attendance(f.identity, f.child.id, page)),
-    old: async (scope, f) => idsOf(paged(await attendanceRows(scope, f, {}), page)) },
+    old: async f => idsOf(paged(await attendanceRows(f, {}), page)) },
   'attendance by program': {
     new: async (s, f) => ids(await s.progress.attendance(f.identity, f.child.id, { ...page, programId: program })),
-    old: async (scope, f) => idsOf(paged(await attendanceRows(scope, f, { programId: program }), page)) },
+    old: async f => idsOf(paged(await attendanceRows(f, { programId: program }), page)) },
   'attendance by class tag': {
     new: async (s, f) => ids(await s.progress.attendance(f.identity, f.child.id, { ...page, tagId: tag })),
-    old: async (scope, f) => idsOf(paged(await attendanceRows(scope, f, { tagId: tag }), page)) },
+    old: async f => idsOf(paged(await attendanceRows(f, { tagId: tag }), page)) },
   'attendance since': {
     new: async (s, f) => ids(await s.progress.attendance(f.identity, f.child.id, { ...page, since: '2026-01-01T02:00:00.000Z' })),
-    old: async (scope, f) => idsOf(paged(await attendanceRows(scope, f, { since: '2026-01-01T02:00:00.000Z' }), page)) },
+    old: async f => idsOf(paged(await attendanceRows(f, { since: '2026-01-01T02:00:00.000Z' }), page)) },
   'rank attendance count': {
     new: (s, f) => s.attendance.countSince({ kind: 'household', identity: f.identity },
       { memberId: f.child.id, programId: program, classesOnly: true, since: '2026-01-01T00:00:00.000Z' }),
-    old: async (scope, f) => (await attendanceRows(scope, f, { programId: program, classesOnly: true, since: '2026-01-01T00:00:00.000Z' })).length },
+    old: async f => (await attendanceRows(f, { programId: program, classesOnly: true, since: '2026-01-01T00:00:00.000Z' })).length },
 };
 
 describe('bounded portal reads', () => {
   it.each(Object.keys(reads))('%s returns the rows of the whole-collection read, in its order', async name => {
     const read = reads[name]!;
-    for (const f of [large, small]) expect(await read.new(services(db.forHousehold), f)).toEqual(await read.old(db.forHousehold, f));
+    for (const f of [large, small]) expect(await read.new(services(db.forHousehold), f)).toEqual(await read.old(f));
   });
 
   it('counts open mat as classes only when the gym does', async () => {
@@ -208,8 +219,21 @@ describe('bounded portal reads', () => {
     const count = (openMatCountsAsClass: boolean) => createAttendanceQueries({ scope: db.forGym, householdScope: db.forHousehold, clock,
       settings: { ...stored, get: async id => ({ ...await stored.get(id), openMatCountsAsClass }) } })
       .countSince({ kind: 'household', identity: f.identity }, { memberId: f.child.id, classesOnly: true, since: '2026-01-01T00:00:00.000Z' });
-    expect(await count(false)).toBe((await attendanceRows(db.forHousehold, f, { classesOnly: true })).length);
-    expect(await count(true)).toBe((await attendanceRows(db.forHousehold, f, {})).length);
+    expect(await count(false)).toBe((await attendanceRows(f, { classesOnly: true })).length);
+    expect(await count(true)).toBe((await attendanceRows(f, {})).length);
+  });
+
+  it('counts the same attendance in household and gym scope, filter by filter', async () => {
+    const queries = services(db.forHousehold).attendance, since = '2026-01-01T00:00:00.000Z';
+    const filters: { programId?: string; tagId?: string; classesOnly?: boolean; since?: string; until?: string }[] = [{}, { programId: program },
+      { programId: ranked }, { tagId: tag }, { classesOnly: true }, { since: '2026-01-01T02:00:00.000Z' },
+      { programId: program, tagId: tag, classesOnly: true, until: '2026-01-02T00:00:00.000Z' }];
+    for (const f of [large, small]) for (const filter of filters) {
+      const query = { memberId: f.child.id, since, ...filter };
+      const household = await queries.countSince({ kind: 'household', identity: f.identity }, query);
+      expect(household).toBe(await queries.countSince({ kind: 'gym', gymId }, query));
+      expect(household).toBe((await attendanceRows(f, query)).filter(row => !query.until || row.occurredAt.getTime() < Date.parse(query.until)).length);
+    }
   });
 
   it.each(Object.keys(reads))('%s keeps its query count and rows read as the history grows tenfold', async name => {
@@ -238,7 +262,7 @@ describe('bounded portal reads', () => {
     await expect(s.attendance.countSince({ kind: 'household', identity: stranger }, { memberId: f.child.id, since: '2026-01-01T00:00:00.000Z' })).rejects.toEqual(missing);
     await expect(s.waivers.pending(stranger, 'household', { limit: 20, offset: 0, memberId: f.child.id })).rejects.toEqual(missing);
     await expect(s.waivers.signed(stranger, 'household', { limit: 20, offset: 0, memberId: f.child.id })).rejects.toEqual(missing);
-    const [foreign] = await db.forHousehold(grant(f.identity), q => q.waivers());
+    const [foreign] = await all.waivers(f);
     await expect(s.waivers.pdf(stranger, 'household', foreign!.id)).rejects.toEqual(missing);
     const own = (await s.billing.list(f.identity, { limit: 100, offset: 0 })).data.map(row => row.id);
     expect((await s.billing.list(stranger, { limit: 100, offset: 0 })).data.map(row => row.id).filter(id => own.includes(id))).toEqual([]);

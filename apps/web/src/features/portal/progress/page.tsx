@@ -59,7 +59,7 @@ export function PortalProgressPage({ client = portalClient }: { client?: PortalC
                       <span className="break-words">{text('next', { rank: rankLabel(data.ranks, program.next.rankId, program.next.subRank) })}</span>
                       {ready && <Badge tone="success">{text('ready')}</Badge>}</p>
                     {criteria.length ? <Criteria name={program.name} criteria={criteria.map(item => ({ labelKey: item.labelKey, current: item.current, target: item.required }))} />
-                      : program.current ? <p className="text-sm text-muted-foreground">{text('coachDecides')}</p> : null}
+                      : <p className="text-sm text-muted-foreground">{text('coachDecides')}</p>}
                   </div> : <p className="text-sm text-muted-foreground">{text('noNext')}</p>}
                 </li>;
               })}</ul>}

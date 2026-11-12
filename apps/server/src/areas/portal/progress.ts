@@ -22,38 +22,20 @@ export function createPortalProgressService(options: PortalProgressOptions) {
   const households = options.households ?? createMemberHouseholdContext(), scope = options.householdScope ?? forHousehold;
   const fallback = createAttendanceQueries();
   const read = householdReader(scope);
-  /**
-   * Active programs with ranks the member holds none in, offering the program's first rank. They come after ranked
-   * programs, in the ranks service's name order.
-   * TODO(CCR): evaluate this first rank's criteria from the member's createdAt, in RanksService.memberProgress.
-   */
-  async function unranked(ranks: RanksService, gymId: string, held: ReadonlySet<string>) {
-    const programs = (await ranks.listPrograms(gymId, { active: 'true', limit: 100 })).data
-      .filter(program => program.rankSystemId && !held.has(program.id));
-    const first = new Map<string, Awaited<ReturnType<RanksService['listRanks']>>['data'][number] | undefined>();
-    for (const rankSystemId of new Set(programs.map(program => program.rankSystemId!)))
-      first.set(rankSystemId, (await ranks.listRanks(gymId, { rankSystemId, limit: 1 })).data[0]);
-    return programs.flatMap(program => {
-      const rank = first.get(program.rankSystemId!);
-      return rank ? [{ program: { id: program.id, name: program.name, current: null, next: { rankId: rank.id, subRank: 0 } }, rank }] : [];
-    });
-  }
   return {
+    /** Programs the member holds a rank in or has attended, ranked ones first; see RanksService.memberProgress. */
     async progress(identity: PortalIdentity, memberId: string, enabledModules: ReadonlySet<string> = new Set()): Promise<PortalMemberProgress> {
       await households.requireMember(identity, memberId, 'progress.read');
       const ranks = options.ranks() ?? (() => { throw new AppError('unavailable', 'Ranks are not configured'); })();
-      const { member, history } = await read(identity, async queries => ({
+      const { member, history, attendedProgramIds } = await read(identity, async queries => ({
         member: (await queries.member(memberId))[0], history: await queries.rankHistory(memberId),
+        attendedProgramIds: await queries.attendedPrograms(memberId),
       }));
       if (!member) notFound();
-      const progress = await ranks.memberProgress(identity.gymId, { memberId, dateOfBirth: member.dateOfBirth, history,
-        attendanceScope: { kind: 'household', identity } }, enabledModules);
-      const others = await unranked(ranks, identity.gymId, new Set(progress.programs.map(program => program.id)));
-      const shown = new Set(progress.ranks.map(rank => rank.id)), firstRanks = new Map(others.map(({ rank }) => [rank.id, rank]));
+      const progress = await ranks.memberProgress(identity.gymId, { memberId, dateOfBirth: member.dateOfBirth, createdAt: member.createdAt,
+        history, attendedProgramIds, attendanceScope: { kind: 'household', identity } }, enabledModules);
       // The ranks service returns the history in the order that chose each program's current rank.
-      return portalMemberProgressResponseSchema.parse({ data: { ...progress, programs: [...progress.programs, ...others.map(({ program }) => program)],
-        ranks: [...progress.ranks, ...[...firstRanks.values()].filter(rank => !shown.has(rank.id))
-          .map(({ id, name, color, subRanks }) => ({ id, name, color, subRanks }))],
+      return portalMemberProgressResponseSchema.parse({ data: { ...progress,
         history: progress.history.map(row => portalRankHistorySchema.parse({
           id: row.id, memberId: row.memberId, programId: row.programId, rankId: row.rankId, rankSystemId: row.rankSystemId,
           subRank: row.subRank, promotedAt: row.promotedAt.toISOString() })) } }).data;

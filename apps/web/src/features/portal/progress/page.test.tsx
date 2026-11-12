@@ -60,13 +60,23 @@ describe('portal progress', () => {
     await screen.findByText('No rank yet in this program.');
     expect(screen.getByText('Next: Second')).toBeDefined();
   });
-  it('shows a program with no rank yet after ranked ones, and promises nothing about its first rank', async () => {
+  it('shows a program with no rank yet after ranked ones; without criteria, the coach decides its first rank too', async () => {
     const unranked = { id: 'p2', name: 'Striking', current: null, next: { rankId: 'r2', subRank: 0 } };
     client.progress.mockResolvedValue(answer({ ...progress, programs: [...progress.programs, unranked], criteria: [] }));
     page();
     await screen.findByText('No rank yet in this program.');
     expect(screen.getAllByRole('heading', { level: 3 }).map(item => item.textContent)).toEqual(['Grappling', 'Striking']);
-    expect(screen.getAllByText('Your coach decides when you are ready.')).toHaveLength(1);
+    expect(screen.getAllByText('Your coach decides when you are ready.')).toHaveLength(2);
+  });
+  it("shows a first rank's criteria bars and marks them met for a program with no rank yet", async () => {
+    const unranked = { id: 'p2', name: 'Striking', current: null, next: { rankId: second, subRank: 0 } };
+    client.progress.mockResolvedValue(answer({ ...progress, programs: [unranked],
+      criteria: [{ ...progress.criteria[0]!, programId: 'p2', current: 2, eligible: true }] }));
+    page();
+    await screen.findByText('No rank yet in this program.');
+    expect(screen.getByText('Requirements met')).toBeDefined();
+    expect(screen.getByText('2 / 2')).toBeDefined();
+    expect(screen.queryByText('Your coach decides when you are ready.')).toBeNull();
   });
   it('marks the top rank', async () => {
     client.progress.mockResolvedValue(answer({ ...progress, programs: [{ ...progress.programs[0], next: null }], criteria: [] }));

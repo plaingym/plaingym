@@ -23,6 +23,8 @@ import { createSignedLinksRoutes } from './service.routes.js';
 import type { PreparedSignedLinkDelivery } from './service.delivery.js';
 
 const database = useTestDatabase(), factory = createFactories(database);
+type HouseholdReads = Parameters<Parameters<typeof database.forHousehold>[1]>[0];
+const firstPage = { limit: 100, offset: 0 };
 const clock = new TestClock('2026-10-22T12:00:00Z');
 const service = createSignedLinksService({ scope: database.forGym, clock });
 const gymA = uuidv7(), gymB = uuidv7();
@@ -224,41 +226,45 @@ describe('resolved principals and real household authorization', () => {
   it('pay_invoice reaches only the bound invoice, including against sibling invoices in the same household', async () => {
     const link = await active('pay_invoice'), scope = householdScope(link);
     expect(link.link).toEqual({ purpose: 'pay_invoice', invoiceId: invoiceA });
-    expect((await database.forHousehold(scope, (q) => q.invoices())).map((row) => row.id)).toEqual([invoiceA]);
+    expect((await database.forHousehold(scope, (q) => q.invoice(invoiceA))).map((row) => row.id)).toEqual([invoiceA]);
     for (const id of [invoiceSibling, invoiceOther, invoiceB]) expect(await database.forHousehold(scope, (q) => q.invoice(id))).toEqual([]);
-    for (const query of ['members', 'paymentMethods', 'household', 'waiverTemplates', 'attendance'] as const)
-      await expect(database.forHousehold(scope, async (q): Promise<unknown> => q[query]())).rejects.toThrow();
+    for (const query of [(q: HouseholdReads) => q.members(), (q: HouseholdReads) => q.paymentMethods(), (q: HouseholdReads) => q.household(),
+      (q: HouseholdReads) => q.waiverTemplates(), (q: HouseholdReads) => q.attendanceCount({})])
+      await expect(database.forHousehold(scope, async (q): Promise<unknown> => query(q))).rejects.toThrow();
   });
   it('sign_waiver reaches only the bound member and never cards, household profile, or invoices', async () => {
     const link = await active('sign_waiver'), scope = householdScope(link);
     expect(link.link).toEqual({ purpose: 'sign_waiver', memberId: memberA });
     expect((await database.forHousehold(scope, (q) => q.members())).map((row) => row.id)).toEqual([memberA]);
     for (const id of [siblingA, memberOther, memberB]) expect(await database.forHousehold(scope, (q) => q.member(id))).toEqual([]);
-    for (const query of ['invoices', 'paymentMethods', 'household', 'ranks'] as const)
-      await expect(database.forHousehold(scope, async (q): Promise<unknown> => q[query]())).rejects.toThrow();
+    for (const query of [(q: HouseholdReads) => q.invoicePage({}, firstPage), (q: HouseholdReads) => q.paymentMethods(),
+      (q: HouseholdReads) => q.household(), (q: HouseholdReads) => q.rankHistory(memberA)])
+      await expect(database.forHousehold(scope, async (q): Promise<unknown> => query(q))).rejects.toThrow();
   });
   it('update_card reaches only masked cards in its household', async () => {
     const scope = householdScope(await active('update_card'));
     const cards = await database.forHousehold(scope, (q) => q.paymentMethods());
     expect(cards).toHaveLength(1);
     expect(JSON.stringify(cards)).not.toContain('private_processor_identifier');
-    for (const query of ['members', 'invoices', 'household', 'waiverTemplates'] as const)
-      await expect(database.forHousehold(scope, async (q): Promise<unknown> => q[query]())).rejects.toThrow();
+    for (const query of [(q: HouseholdReads) => q.members(), (q: HouseholdReads) => q.invoicePage({}, firstPage),
+      (q: HouseholdReads) => q.household(), (q: HouseholdReads) => q.waiverTemplates()])
+      await expect(database.forHousehold(scope, async (q): Promise<unknown> => query(q))).rejects.toThrow();
   });
   it('onboarding reaches household members and cards while denying invoices and profiles', async () => {
     const scope = householdScope(await active('onboarding'));
     expect((await database.forHousehold(scope, (q) => q.members())).map((row) => row.id).sort()).toEqual([memberA, siblingA].sort());
     for (const id of [memberOther, memberB]) expect(await database.forHousehold(scope, (q) => q.member(id))).toEqual([]);
     expect(await database.forHousehold(scope, (q) => q.paymentMethods())).toHaveLength(1);
-    for (const query of ['invoices', 'household', 'bookings'] as const)
-      await expect(database.forHousehold(scope, async (q): Promise<unknown> => q[query]())).rejects.toThrow();
+    for (const query of [(q: HouseholdReads) => q.invoicePage({}, firstPage), (q: HouseholdReads) => q.household(),
+      (q: HouseholdReads) => q.bookingPage({ memberId: memberA }, firstPage)])
+      await expect(database.forHousehold(scope, async (q): Promise<unknown> => query(q))).rejects.toThrow();
   });
   it('reloads database authorization even if a caller fabricates display metadata', async () => {
     const link = await active('pay_invoice');
     const forged = { ...link, householdId: householdOther, link: { purpose: 'onboarding' as const } };
     expect(await database.forHousehold(householdScope(forged), (q) => q.invoice(invoiceOther))).toEqual([]);
     await expect(database.forHousehold(householdScope(forged), (q) => q.members())).rejects.toThrow();
-    await expect(database.forHousehold({ ...householdScope(link), gymId: gymB }, (q) => q.invoices())).rejects.toThrow();
+    await expect(database.forHousehold({ ...householdScope(link), gymId: gymB }, (q) => q.invoicePage({}, firstPage))).rejects.toThrow();
   });
 });
 

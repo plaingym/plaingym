@@ -7,7 +7,7 @@
   "error": "We couldn't load progress. Please try again.",
   "ranks": "Ranks",
   "noRanks": "No ranks yet",
-  "noRanksHelp": "Ranks appear here after a coach records a promotion.",
+  "noRanksHelp": "A program with ranks shows here once a class in it is attended or a coach records a promotion.",
   "current": "Current: {rank}",
   "noCurrent": "No rank yet in this program.",
   "next": "Next: {rank}",

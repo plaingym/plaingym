@@ -35,7 +35,10 @@ after locking the member row, then sorts it.
 from its own scope. It returns each program's current rank, the next step and the
 history from that same ordering, so they can't disagree, and evaluates the next step's
 criteria in the caller's attendance scope. Inactive programs and the top rank have no
-next step. It covers the programs the member already holds a rank in.
+next step. It covers the programs the member holds a rank in, then the programs the caller
+says they attended (`attendedProgramIds`) that are active and have ranks: for those the
+next step is the first rank, with its criteria counted from the member's `createdAt`, as
+eligibility counts them for a member with no history.
 
 Every promotion locks its member and checks the current history in the same
 transaction as the history row and audit. Bulk requests preflight gym references

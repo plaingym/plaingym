@@ -43,14 +43,18 @@ the routes answer 503 after authorization.
 ## Progress and attendance
 
 `GET /api/portal/members/{memberId}/progress` returns the member's promotion
-history, and for each program they hold a rank in, its current rank, next step and
+history, and for each program they hold a rank in or have attended (through the
+attendance's program or its class's programs), its current rank, next step and
 criterion progress. These come from the ranks service (`memberProgress`),
 which uses the same rank-system ordering (`progression.ts`) and criterion providers
 as staff eligibility; attendance-based criteria count in the household's scope. The
 current rank, the next step and the history order come from one ordering, so equal
 promotion times can't make them disagree. `next` is `null` at the top rank and in
-inactive programs. Active programs with ranks the member holds none in follow the ranked
-ones, with `current: null`, `next` at the program's first rank and no criterion progress.
+inactive programs. Attended programs the member holds no rank in follow the ranked ones
+while they are active and their rank system has ranks, with `current: null`, `next` at
+the program's first rank, and that rank's criteria counted from when the member joined,
+as staff eligibility counts them. Programs the member neither holds a rank in nor
+attended are not listed.
 The reference `programs` and `ranks` carry only names, colors and sub-rank names
 the gym stored. Promotion notes, the promoting coach and criterion configuration
 are never returned.

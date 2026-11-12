@@ -77,7 +77,7 @@ describe('signed-link household grants', () => {
         expect((await queries.members()).map((row) => row.id).sort()).toEqual(memberIds.sort());
         // Emergency contacts are for logged-in household users, never signed links.
         expect((await queries.members()).every((row) => !('emergencyContacts' in row))).toBe(true);
-        const waivers = await queries.waivers();
+        const waivers = (await queries.signaturePage([...memberIds, data.outsider.id, data.foreignMember.id], { limit: 10, offset: 0 })).rows;
         expect(waivers.map((row) => row.memberId).sort()).toEqual(memberIds.sort());
         expect(waivers.every((row) => !("ipAddress" in row))).toBe(true);
         expect(await queries.member(data.outsider.id)).toEqual([]);
@@ -87,11 +87,10 @@ describe('signed-link household grants', () => {
         expect((await queries.waiverTemplates()).map((row) => row.id).sort())
           .toEqual([data.currentTemplate.id, data.agreement.id].sort());
       } else {
-        for (const query of [queries.members, queries.waivers, queries.waiverTemplates,
+        for (const query of [queries.members, () => queries.signaturePage([data.member.id], { limit: 10, offset: 0 }), queries.waiverTemplates,
           () => queries.member(data.member.id)]) await expect(query()).rejects.toThrow('access denied');
       }
       if (purpose === 'pay_invoice') {
-        expect((await queries.invoices()).map((row) => row.id)).toEqual([data.invoice.id]);
         expect(await queries.invoice(data.invoice.id)).toHaveLength(1);
         expect(await queries.invoiceLines(data.invoice.id)).toHaveLength(1);
         for (const invoice of [data.otherInvoice, data.outsiderInvoice, data.foreignInvoice]) {
@@ -99,7 +98,7 @@ describe('signed-link household grants', () => {
           expect(await queries.invoiceLines(invoice.id)).toEqual([]);
         }
       } else {
-        for (const query of [queries.invoices, () => queries.invoice(data.invoice.id),
+        for (const query of [() => queries.invoicePage({}, { limit: 10, offset: 0 }), () => queries.invoice(data.invoice.id),
           () => queries.invoiceLines(data.invoice.id)]) await expect(query()).rejects.toThrow('Payer access required');
       }
       if (purpose === 'update_card' || purpose === 'onboarding') {
@@ -110,7 +109,8 @@ describe('signed-link household grants', () => {
         await expect(queries.paymentMethods()).rejects.toThrow('Payer access required');
       }
       await expect(queries.household()).rejects.toThrow('Payer access required');
-      for (const query of [queries.bookings, queries.attendance, queries.ranks, queries.memberships]) {
+      for (const query of [() => queries.bookingPage({ memberId: data.member.id }, { limit: 10, offset: 0 }), () => queries.attendanceCount({}),
+        () => queries.rankHistory(data.member.id), () => queries.membershipPage(data.member.id, { limit: 10, offset: 0 }), () => queries.attendedPrograms(data.member.id)]) {
         await expect(query()).rejects.toThrow('access denied');
       }
       expect(queries).not.toHaveProperty('execute');
@@ -125,7 +125,7 @@ describe('signed-link household grants', () => {
       householdId: data.otherHousehold.id, invoiceId: data.outsiderInvoice.id, memberId: data.outsider.id,
     };
     await database.forHousehold(scope, async (queries) => {
-      expect((await queries.invoices()).map((row) => row.id)).toEqual([data.invoice.id]);
+      expect((await queries.invoice(data.invoice.id)).map((row) => row.id)).toEqual([data.invoice.id]);
       expect(await queries.invoice(data.outsiderInvoice.id)).toEqual([]);
     });
   });

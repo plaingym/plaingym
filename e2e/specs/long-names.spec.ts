@@ -159,9 +159,11 @@ test('portal progress shows a program with no rank yet, at 360 px and on desktop
   test.setTimeout(180_000);
   const { sandbox, owner } = await sandboxOwner(sandboxes), name = unbreakable('Noranks'), email = `norank-${randomBytes(4).toString('hex')}@example.invalid`;
   const first = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data.find((program) => program.rankSystemId)!;
-  await owner.json('/api/programs', 'POST', { name, rankSystemId: first.rankSystemId, active: true });
+  const created = (await owner.json<{ data: RecordId }>('/api/programs', 'POST', { name, rankSystemId: first.rankSystemId, active: true })).data;
   const home = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'No-rank household', email })).data;
-  await owner.json('/api/members', 'POST', { householdId: home.id, firstName: 'Pat', lastName: 'Payer', email, status: 'active' });
+  const payer = (await owner.json<{ data: RecordId }>('/api/members', 'POST', { householdId: home.id, firstName: 'Pat', lastName: 'Payer', email, status: 'active' })).data;
+  // A program shows only once the member holds a rank in it or has attended it.
+  await owner.json('/api/attendance', 'POST', { memberId: payer.id, sessionId: null, programId: created.id });
   await portalLogin(page, sandbox, owner, home.id, email);
   await page.goto(sandbox.origin + '/portal/progress');
   const program = page.getByRole('listitem').filter({ has: page.getByRole('heading', { name, exact: true }) });

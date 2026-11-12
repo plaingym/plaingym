@@ -274,14 +274,22 @@ sales, invoices or money. Payers see their current household members and adult
 non-payers see only their linked member. Signed links cannot use this read.
 
 The portal reads a household's history as pages and single lookups: `bookingPage`,
-`booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `rankHistory`,
-`membershipPage`, `signaturePage`, `signature`, `signedTemplates` and `invoicePage` filter,
-order and project in SQL, inside the same grant, and a page answers `{ rows, total }`. An ID
-outside the grant finds nothing. `members()` and `waiverTemplates()` stay whole: they are as
-long as the household and the gym's current documents, not its history. The whole-history
-reads (`bookings()`, `attendance()`, `ranks()`, `memberships()`, `invoices()`) have no
-production caller and stay for the comparison tests; `waivers()` also serves signed-link
-pages.
+`booking`, `sessionBookings`, `attendancePage`, `attendanceCount`, `attendedPrograms`,
+`rankHistory`, `membershipPage`, `signaturePage`, `signature`, `signedTemplates` and
+`invoicePage` filter, order and project in SQL, inside the same grant, and a page answers
+`{ rows, total }`. An ID outside the grant finds nothing. `members()` and `waiverTemplates()`
+stay whole: they are as long as the household and the gym's current documents, not its
+history. No read returns a household's whole history. `signaturePage` takes optional
+template IDs, which signed-link pages pass to read only the current templates' signatures.
+
+Household attendance reads filter through `attendanceFilterPredicate(tx, gymId, filter)`,
+the same builder the gym's attendance lists and totals use, and add the grant's visible
+members; household and gym counts for the same member and filters therefore agree.
+`attendedPrograms(memberId)` lists the programs one member attended, through the
+attendance's program or its class's programs, as the program filter counts them.
+
+`forHousehold` refuses a malformed request clock or an unknown scope kind with
+`HouseholdAccessError('household_access_denied')`, like any other denial.
 
 Signed-link pages call `forHousehold({ kind: 'signed_link', gymId, linkId, now }, fn)`.
 The link ID must come from a verified token's request context; a submitted link ID
@@ -294,8 +302,8 @@ and resource claims cannot widen access.
 | --- | --- |
 | `pay_invoice` | The linked invoice and its lines |
 | `update_card` | Masked household payment methods |
-| `sign_waiver` | The linked member, that member's signed waivers, and current gym templates |
-| `onboarding` | Household members, their signed waivers, current gym templates, and masked payment methods |
+| `sign_waiver` | The linked member, that member's signatures (paged, optionally by template), and current gym templates |
+| `onboarding` | Household members, their signatures (paged, optionally by template), current gym templates, and masked payment methods |
 | `unsubscribe` | Only `announcementPreference()` and `setAnnouncementOptOut(optedOut, now)` for the stored member |
 
 The announcement preference exposes only the member's name and opt-out state.

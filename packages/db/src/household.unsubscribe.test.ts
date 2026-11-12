@@ -22,13 +22,14 @@ async function fixture() {
 }
 
 it('grants only the stored member’s announcement preference and preserves siblings, other households and other gyms', async () => {
-  const f = await fixture();
+  const f = await fixture(), page = { limit: 10, offset: 0 };
   for (const person of [f.sibling, f.outsider, f.foreign]) await factory('announcementOptOuts', person.gymId, { memberId: person.id });
   await db.forHousehold(f.scope, async q => {
     expect(await q.announcementPreference()).toEqual({ member: { firstName: f.member.firstName, lastName: f.member.lastName }, optedOut: false });
     for (const read of [q.members, () => q.member(f.member.id), () => q.member(f.sibling.id), () => q.member(f.outsider.id),
-      () => q.member(f.foreign.id), q.household, q.invoices, q.paymentMethods, q.waivers, q.waiverTemplates,
-      q.bookings, q.attendance, q.ranks, q.memberships]) await expect(read()).rejects.toThrow();
+      () => q.member(f.foreign.id), q.household, () => q.invoicePage({}, page), q.paymentMethods, () => q.signaturePage([f.member.id], page), q.waiverTemplates,
+      () => q.bookingPage({ memberId: f.member.id }, page), () => q.attendanceCount({}), () => q.rankHistory(f.member.id),
+      () => q.membershipPage(f.member.id, page), () => q.attendedPrograms(f.member.id)]) await expect(read()).rejects.toThrow();
     expect(q).not.toHaveProperty('execute');
     expect(q).not.toHaveProperty('transaction');
   });

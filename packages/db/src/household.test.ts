@@ -3,7 +3,7 @@ import { beforeAll, expect, it } from 'vitest';
 import { uuidv7 } from './id.js';
 import { createFactories } from './testing/factories.js';
 import { useTestDatabase } from './testing/database.js';
-import { HouseholdAccessError } from './household.js';
+import { HouseholdAccessError, type HouseholdScope } from './household.js';
 const database = useTestDatabase();
 const factory = createFactories(database);
 const gym = uuidv7(), otherGym = uuidv7();
@@ -30,6 +30,12 @@ it('scopes every household query and restricts the adult non-payer to their own 
     await factory('memberRanks', gym, { memberId: person.id });
     await factory('memberships', gym, { memberId: person.id, householdId: person.householdId });
   }
+  const page = { limit: 50, offset: 0 };
+  /** How many bookings, signatures, attendances, promotions and memberships of this member the scope reaches. */
+  const activity = async (queries: Parameters<Parameters<typeof database.forHousehold>[1]>[0], memberId: string) => [
+    (await queries.bookingPage({ memberId }, page)).total, (await queries.signaturePage([memberId], page)).total,
+    await queries.attendanceCount({ memberId }), (await queries.rankHistory(memberId)).length, (await queries.membershipPage(memberId, page)).total,
+  ];
   await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: payer.id }, async (queries) => {
     expect((await queries.members()).map((row) => row.id).sort()).toEqual([member.id, child.id].sort());
     expect(await queries.member(outsider.id)).toEqual([]);
@@ -39,7 +45,7 @@ it('scopes every household query and restricts the adult non-payer to their own 
     expect(detail).toHaveProperty('emergencyContacts');
     expect(detail).not.toHaveProperty('medicalNotes');
     expect(detail).not.toHaveProperty('checkinCodeHash');
-    expect((await queries.invoices()).map((row) => row.id)).toEqual([ownInvoice.id]);
+    expect((await queries.invoice(ownInvoice.id)).map((row) => row.id)).toEqual([ownInvoice.id]);
     expect(await queries.invoice(otherInvoice.id)).toEqual([]);
     expect(await queries.invoiceLines(otherInvoice.id)).toEqual([]);
     expect(await queries.invoiceLines(ownInvoice.id)).toHaveLength(1);
@@ -47,15 +53,21 @@ it('scopes every household query and restricts the adult non-payer to their own 
     // Payers edit household details with compare-and-set, so the read carries the revision; PIN hash stays staff-only.
     const [profile] = await queries.household();
     expect(profile).toEqual({ id: first.id, name: first.name, email: null, phone: null, address: {}, billingDay: 1, revision: 1 });
-    for (const query of [queries.bookings, queries.waivers, queries.attendance, queries.ranks, queries.memberships]) expect(await query()).toHaveLength(2);
+    for (const person of [member, child]) expect(await activity(queries, person.id)).toEqual([1, 1, 1, 1, 1]);
+    expect(await activity(queries, outsider.id)).toEqual([0, 0, 0, 0, 0]);
+    expect(await queries.attendanceCount({})).toBe(2);
     expect(queries).not.toHaveProperty('execute');
+    // No whole-history read is left on the API.
+    for (const name of ['bookings', 'attendance', 'ranks', 'memberships', 'invoices', 'waivers']) expect(queries).not.toHaveProperty(name);
   });
   await database.forHousehold({ kind: 'user', gymId: gym, householdId: first.id, userId: adult.id }, async (queries) => {
     expect((await queries.members()).map((row) => row.id)).toEqual([member.id]);
     expect((await queries.members())[0]).toHaveProperty('emergencyContacts');
     expect(await queries.member(child.id)).toEqual([]);
-    for (const query of [queries.bookings, queries.waivers, queries.attendance, queries.ranks, queries.memberships]) expect(await query()).toHaveLength(1);
-    for (const query of [queries.invoices, queries.paymentMethods, queries.household]) await expect(query()).rejects.toThrow('Payer');
+    expect(await activity(queries, member.id)).toEqual([1, 1, 1, 1, 1]);
+    for (const person of [child, outsider]) expect(await activity(queries, person.id)).toEqual([0, 0, 0, 0, 0]);
+    expect(await queries.attendanceCount({})).toBe(1);
+    for (const query of [() => queries.invoice(ownInvoice.id), queries.paymentMethods, queries.household]) await expect(query()).rejects.toThrow('Payer');
   });
   await expect(database.forHousehold({ kind: 'user', gymId: gym, householdId: second.id, userId: payer.id }, async () => undefined)).rejects.toThrow('access denied');
   await expect(database.forHousehold({ kind: 'user', gymId: otherGym, householdId: first.id, userId: payer.id }, async () => undefined)).rejects.toThrow('access denied');
@@ -91,6 +103,7 @@ it('keeps every bounded read inside the grant, whatever IDs the caller names', a
     expect(await queries.sessionBookings([row.session], [memberId])).toEqual([]);
     expect(await queries.attendancePage({ memberId }, page)).toEqual(none);
     expect(await queries.attendanceCount({ memberId })).toBe(0);
+    expect(await queries.attendedPrograms(memberId)).toEqual([]);
     expect(await queries.rankHistory(memberId)).toEqual([]);
     expect(await queries.membershipPage(memberId, page)).toEqual(none);
     expect(await queries.signaturePage([memberId], page)).toEqual(none);
@@ -133,12 +146,20 @@ it('refuses with a typed code at the grant and at each query', async () => {
   const denied = database.forHousehold({ kind: 'user', gymId: gym, householdId: home.id, userId: payer.id }, async () => undefined);
   await expect(denied).rejects.toBeInstanceOf(HouseholdAccessError);
   await expect(denied).rejects.toMatchObject({ code: 'household_access_denied' });
+  // The boundary's own checks refuse with the same code, so every mapper answers them as it answers a denial (404).
+  for (const scope of [{ kind: 'signed_link', gymId: gym, linkId: uuidv7(), now: new Date(Number.NaN) },
+    { kind: 'signed_link', gymId: gym, linkId: uuidv7(), now: '2026-01-01T00:00:00Z' }, { kind: 'staff', gymId: gym }]) {
+    const refused = database.forHousehold(scope as unknown as HouseholdScope, async () => undefined);
+    await expect(refused).rejects.toBeInstanceOf(HouseholdAccessError);
+    await expect(refused).rejects.toMatchObject({ code: 'household_access_denied' });
+  }
   const link = await factory('signedLinks', gym, { householdId: home.id, purpose: 'update_card', expiresAt: new Date('2030-01-01Z') });
   await database.forHousehold({ kind: 'signed_link', gymId: gym, linkId: link.id, now: new Date('2026-01-01Z') }, async (queries) => {
     const page = { limit: 10, offset: 0 };
     for (const read of [() => queries.bookingPage({ memberId: member.id }, page), () => queries.booking(link.id, member.id), () => queries.sessionBookings([link.id], [member.id]),
       () => queries.attendancePage({}, page), () => queries.attendanceCount({}), () => queries.rankHistory(member.id), () => queries.membershipPage(member.id, page),
-      () => queries.signaturePage([member.id], page), () => queries.signature(link.id, [member.id]), () => queries.signedTemplates([member.id], [link.id])])
+      () => queries.signaturePage([member.id], page), () => queries.signature(link.id, [member.id]), () => queries.signedTemplates([member.id], [link.id]),
+      () => queries.attendedPrograms(member.id)])
       await expect(read()).rejects.toMatchObject({ code: 'household_access_denied' });
     await expect(queries.invoicePage({}, page)).rejects.toMatchObject({ code: 'payer_access_required' });
   });

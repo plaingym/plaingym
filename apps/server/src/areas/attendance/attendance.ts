@@ -2,7 +2,8 @@
 import { and, asc, count, desc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import {
   attendances, classSessions, classSessionPrograms, classSessionTags, classTags,
-  forGym, forHousehold, HouseholdAccessError, members, programs, uuidv7, writeAudit, type HouseholdAttendanceFilter, type Transaction,
+  attendanceFilterPredicate, forGym, forHousehold, HouseholdAccessError, members, programs, uuidv7, writeAudit,
+  type AttendanceRowFilter, type HouseholdAttendanceFilter, type Transaction,
 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import {
@@ -53,23 +54,15 @@ function validateFilter(filter: Filter) {
   if (filter.since && filter.until && Date.parse(filter.until) < Date.parse(filter.since))
     throw new AppError('invalid_request', 'Attendance range ends before it starts');
 }
+/** The filters gym and household reads share, so a household's totals match the gym's for the same members. */
+function rowFilter(filter: Filter): AttendanceRowFilter {
+  return { memberId: filter.memberId, programId: filter.programId, tagId: filter.tagId, kind: filter.kind, classesOnly: filter.excludeOpenMat,
+    since: filter.since ? new Date(filter.since) : undefined, until: filter.until ? new Date(filter.until) : undefined };
+}
 function predicate(tx: Transaction, gymId: string, filter: Filter) {
-  return and(eq(attendances.gymId, gymId),
-    filter.memberId ? eq(attendances.memberId, filter.memberId) : undefined,
+  return and(attendanceFilterPredicate(tx, gymId, rowFilter(filter)),
     filter.sessionId ? eq(attendances.sessionId, filter.sessionId) : undefined,
     filter.source ? eq(attendances.source, filter.source) : undefined,
-    filter.kind ? eq(attendances.kind, filter.kind) : undefined,
-    filter.excludeOpenMat ? eq(attendances.kind, 'class') : undefined,
-    filter.since ? gte(attendances.occurredAt, new Date(filter.since)) : undefined,
-    filter.until ? lt(attendances.occurredAt, new Date(filter.until)) : undefined,
-    filter.programId ? or(eq(attendances.programId, filter.programId), inArray(attendances.sessionId,
-      tx.select({ id: classSessionPrograms.sessionId }).from(classSessionPrograms).where(and(
-        eq(classSessionPrograms.gymId, gymId), eq(classSessionPrograms.programId, filter.programId),
-      )))) : undefined,
-    filter.tagId ? inArray(attendances.sessionId,
-      tx.select({ id: classSessionTags.sessionId }).from(classSessionTags).where(and(
-        eq(classSessionTags.gymId, gymId), eq(classSessionTags.tagId, filter.tagId),
-      ))) : undefined,
   );
 }
 async function requireReferences(tx: Transaction, gymId: string, filter: Filter) {
@@ -121,8 +114,7 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
     validateFilter(filter);
     return householdScope({ kind: 'user', ...identity }, async (queries) => {
       if (filter.memberId && !(await queries.member(filter.memberId))[0]) missing();
-      return fn(queries, { memberId: filter.memberId, programId: filter.programId, tagId: filter.tagId, kind: filter.kind, classesOnly: filter.excludeOpenMat,
-        since: filter.since ? new Date(filter.since) : undefined, until: filter.until ? new Date(filter.until) : undefined });
+      return fn(queries, rowFilter(filter));
     }).catch((error: unknown) => {
       if (error instanceof HouseholdAccessError && error.code === 'household_access_denied') missing();
       throw error;

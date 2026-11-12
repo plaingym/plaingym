@@ -25,8 +25,9 @@ import { FakeUploads } from '../../infra/storage/index.js';
 import { demoUploads } from '../../demo/uploads.js';
 import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureLinkPages } from './links.routes.js';
+import { createLinkPageService } from './service.js';
 import { cachedLinkAsset } from './assets.js';
-import type { Principal } from '../../core/context.js';
+import type { Principal, RequestContext } from '../../core/context.js';
 import { createPortalInvitationService } from '../../areas/members/household-users.invitations.js';
 import { authConfig } from '../../infra/auth/config.js';
 import { createMemberHouseholdContext } from '../../areas/members/household-users.context.js';
@@ -233,6 +234,33 @@ describe('signed-link pages through production registrations', () => {
     const page = await f.app().request('/l/' + f.link.token + '?tablet=1');
     expect(page.status).toBe(200); expect(await page.text()).toContain('parent or guardian must sign');
     expect(page.headers.get('referrer-policy')).toBe('no-referrer'); expect(page.headers.get('cache-control')).toContain('no-store');
+  });
+  it('answers with only the current templates\' signatures and reads no signatures for the checks before an action', async () => {
+    const f = await fixture('onboarding');
+    // Version 2 replaces the template the member signed; another household's signature of it stays out.
+    await factory('waiverSignatures', f.gymId, { memberId: f.member.id, templateId: f.template.id });
+    const current = await factory('waiverTemplates', f.gymId, { name: 'Participation', version: 2, body: 'Read these newer terms.' });
+    const signed = await factory('waiverSignatures', f.gymId, { memberId: f.sibling.id, templateId: current.id });
+    await factory('waiverSignatures', f.gymId, { memberId: f.other.id, templateId: current.id });
+    const response = await f.request(); expect(response.status).toBe(200);
+    const data = contracts.onboarding.response.parse(await response.json()).data;
+    expect(data.templates.map(template => template.id)).toEqual([current.id]);
+    expect(data.signatures.map(signature => signature.id)).toEqual([signed.id]);
+    // Every household read the page service makes, with its arguments.
+    const calls: { name: string; args: unknown[] }[] = [];
+    const scope: typeof db.forHousehold = (grant, fn) => db.forHousehold(grant, queries => fn(new Proxy(queries, { get(target, key) {
+      const method = target[key as keyof typeof target] as (...args: unknown[]) => Promise<unknown>;
+      return (...args: unknown[]) => { calls.push({ name: String(key), args }); return method(...args); };
+    } })));
+    const pages = createLinkPageService({ scope, waivers: f.waivers, checkout: f.checkout });
+    const context = { gym: { gymId: f.gymId, timezone: 'UTC', enabledModules: new Set() }, clock: f.clock,
+      principal: { kind: 'signed_link', gymId: f.gymId, linkId: f.link.link.id, link: { purpose: 'onboarding' } } } as unknown as RequestContext;
+    await pages.read(context);
+    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'signaturePage', 'paymentMethods']);
+    expect(calls[2]!.args[2]).toEqual([current.id]);
+    calls.length = 0;
+    await expect(pages.document(context, uuidv7())).rejects.toMatchObject({ code: 'not_found' });
+    expect(calls.map(call => call.name)).toEqual(['members', 'waiverTemplates', 'paymentMethods']);
   });
   for (const state of ['used', 'revoked', 'expired'] as const) it(`${state} links cannot read or write; used pages are friendly and private`, async () => {
     const f = await fixture('sign_waiver');

@@ -63,6 +63,9 @@ projections exclude contacts, medical data and unrelated invoices or members;
 requests cannot add resource selectors. A used credential displays only the
 friendly completion page; used, revoked and expired credentials cannot call the
 APIs. Pages and responses use `no-store`, no-referrer and noindex headers.
+A waiver or onboarding answer's `signatures` are the link's members' signatures of
+the current templates only, newest first and at most 100; the checks before an
+upload, signature, document or Checkout read the members and templates without them.
 
 Waiver uploads and signatures call the additive `uploadSignedLink` and
 `signSignedLink` methods on the waiver service. Each of that service's short

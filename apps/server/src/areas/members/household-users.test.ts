@@ -123,20 +123,24 @@ describe('household login routes', () => {
     expect((await db.forGym(gym, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.adult.id)))).at(-1)?.action).toBe('household_user.revoked');
   });
   it('keeps members, invoices, waivers and bookings inside forHousehold, including adult-only data', async () => {
-    const f = await fixture();
+    const f = await fixture(), page = { limit: 100, offset: 0 };
     const ownInvoice = await factory('invoices', gym, { householdId: f.household.id }), otherInvoice = await factory('invoices', gym, { householdId: f.otherHousehold.id });
     const ownBooking = await factory('classBookings', gym, { memberId: f.member.id }), siblingBooking = await factory('classBookings', gym, { memberId: f.sibling.id });
     await factory('classBookings', gym, { memberId: f.foreign.id });
     await factory('waiverSignatures', gym, { memberId: f.member.id }); await factory('waiverSignatures', gym, { memberId: f.foreign.id });
     await db.forHousehold({ kind: 'user', ...f.payer }, async q => {
       expect(await q.member(f.foreign.id)).toEqual([]); expect(await q.invoice(otherInvoice.id)).toEqual([]);
-      expect((await q.invoices()).map(row => row.id)).toContain(ownInvoice.id);
-      expect((await q.bookings()).map(row => row.id).sort()).toEqual([ownBooking.id, siblingBooking.id].sort());
-      expect((await q.waivers()).every(row => row.memberId === f.member.id)).toBe(true);
+      expect((await q.invoice(ownInvoice.id)).map(row => row.id)).toEqual([ownInvoice.id]);
+      expect((await q.bookingPage({ memberId: f.member.id }, page)).rows.map(row => row.id)).toEqual([ownBooking.id]);
+      expect((await q.bookingPage({ memberId: f.sibling.id }, page)).rows.map(row => row.id)).toEqual([siblingBooking.id]);
+      expect(await q.bookingPage({ memberId: f.foreign.id }, page)).toEqual({ rows: [], total: 0 });
+      expect((await q.signaturePage([f.member.id, f.foreign.id], page)).rows.map(row => row.memberId)).toEqual([f.member.id]);
     });
     await db.forHousehold({ kind: 'user', ...f.adult }, async q => {
       expect((await q.members()).map(row => row.id)).toEqual([f.member.id]); expect(await q.member(f.sibling.id)).toEqual([]);
-      expect((await q.bookings()).map(row => row.id)).toEqual([ownBooking.id]); await expect(q.invoices()).rejects.toThrow('Payer access required');
+      expect((await q.bookingPage({ memberId: f.member.id }, page)).rows.map(row => row.id)).toEqual([ownBooking.id]);
+      expect(await q.bookingPage({ memberId: f.sibling.id }, page)).toEqual({ rows: [], total: 0 });
+      await expect(q.invoice(ownInvoice.id)).rejects.toThrow('Payer access required');
     });
   });
 });
