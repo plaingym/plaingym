@@ -101,7 +101,10 @@ process high-water RSS on 2026-10-25:
 | Bundle | Latin | 128.2 | 165.3 |
 | Bundle | Mixed | 149.6 | 191.1 |
 
-The test enforces <300 MiB RSS for the shipped esbuild bundle; source runs
+The test enforces <300 MiB RSS for the shipped esbuild bundle, run with the
+runtime image's allocator defaults (`MALLOC_MMAP_THRESHOLD_=131072`,
+`MALLOC_ARENA_MAX=2`) and V8 flags (`PLAINGYM_NODE_FLAGS`), all read from
+`deploy/Dockerfile`; source runs
 record RSS without a cap because `tsx` compiles in-process. All runs retain the
 256 MiB V8 old-space cap and assert <256 MiB heap. It asserts that Latin and
 Cyrillic never load CJK or Arabic. These are isolated-renderer measurements, not

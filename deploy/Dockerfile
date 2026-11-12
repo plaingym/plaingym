@@ -33,6 +33,10 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 NODE_OPTIONS=--max-old-space-size
 # Keep large freed buffers out of glibc's heap: otherwise it raises its mmap threshold after the first large free.
 # These allocator defaults apply to every process in the app image.
 ENV MALLOC_MMAP_THRESHOLD_=131072 MALLOC_ARENA_MAX=2
+# V8 flags for every node process the image's scripts start. They are not in NODE_OPTIONS, which compose overrides and
+# which installs keep from their own compose.yaml. A smaller young generation collects sooner, which keeps the waiver
+# PDF renderer's peak well under its test cap. The waiver memory test reads this line; docs/configuration.md lists it.
+ENV PLAINGYM_NODE_FLAGS=--max-semi-space-size=4
 WORKDIR /app
 COPY --from=build /build/apps/server/dist/ ./
 COPY --from=build /build/apps/web/dist/ ./public/

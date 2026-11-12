@@ -192,11 +192,14 @@ restart; people then sign in another way.
 | `SCHEMA_RELEASE` | unset on a new install | Release that raised the recorded rollback floor, shown when older code is refused. |
 | `SCHEMA_SNAPSHOT` | unset on a new install | Pre-upgrade snapshot from before the recorded compatibility boundary, shown with restore instructions. |
 | `NODE_OPTIONS` | `--max-old-space-size=256` | Node's options; the default caps the JavaScript heap at 256 MiB. |
+| `PLAINGYM_NODE_FLAGS` | `--max-semi-space-size=4` | Set by the image, not in `.env`: V8 flags its start scripts pass to `node`, whatever `NODE_OPTIONS` says (see below). |
 
 The image also sets two defaults read internally by **glibc**, for every app process including backups:
 `MALLOC_MMAP_THRESHOLD_=131072` keeps large freed buffers from being retained in the heap after glibc
 would otherwise raise its mmap threshold, and `MALLOC_ARENA_MAX=2` limits allocation arenas.
-Container and V8 memory limits are unchanged. See the [memory check](../deploy/test/memory/README.md)
+The image's start scripts pass `PLAINGYM_NODE_FLAGS` to `node` (the server, `gym-app`, and the startup and
+migration steps), so installs with an older `compose.yaml` get it too. A smaller young generation is collected sooner, which keeps the waiver PDF renderer's
+peak memory well under its 300 MiB test bound. Container and V8 old-space limits are unchanged. See the [memory check](../deploy/test/memory/README.md)
 for the measured effect.
 
 ## Compose and Caddy

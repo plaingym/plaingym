@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { spawnSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { getDocument, OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -78,18 +79,33 @@ describe('immutable waiver rendering', () => {
     expect(needsGuardian('2008-10-24', now, 'UTC')).toBe(false);
     expect(needsGuardian(null, now, 'UTC')).toBe(true);
   });
+  it("passes the image's V8 flags to every node command its start scripts run", () => {
+    const dir = new URL('../../../../../deploy/container/', import.meta.url);
+    const scripts = readdirSync(dir).filter(name => name.endsWith('.sh'));
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const name of scripts) for (const line of readFileSync(new URL(name, dir), 'utf8').split('\n')) {
+      if (line.trim().startsWith('#')) continue;
+      expect(/(?:^\s*|; |exec )node (?!\$\{PLAINGYM_NODE_FLAGS)/.test(line), `${name}: ${line.trim()}`).toBe(false);
+    }
+  });
   it('bounds cold/repeated Latin and mixed source/bundle memory and loads only the required faces', () => {
-    const options = { cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8' as const, timeout: 120_000, windowsHide: true };
+    // Run the bundle as the runtime image runs every app process: the allocator defaults and V8 flags come from deploy/Dockerfile.
+    // Without the semi-space flag a major garbage collection in the ten repeats adds about 80 MiB to the peak on some runs.
+    const dockerfile = readFileSync(new URL('../../../../../deploy/Dockerfile', import.meta.url), 'utf8');
+    const image = (name: string) => { const line = new RegExp(`^ENV (?:.* )?${name}=(\\S+)`, 'm').exec(dockerfile); expect(line, `${name} in deploy/Dockerfile`).not.toBeNull(); return line![1]!; };
+    const nodeFlags = image('PLAINGYM_NODE_FLAGS').split(' ');
+    const env = { ...process.env, MALLOC_MMAP_THRESHOLD_: image('MALLOC_MMAP_THRESHOLD_'), MALLOC_ARENA_MAX: image('MALLOC_ARENA_MAX') };
+    const options = { cwd: fileURLToPath(new URL('../../../', import.meta.url)), encoding: 'utf8' as const, timeout: 120_000, windowsHide: true, env };
     const build = spawnSync(process.execPath, ['src/areas/waivers/pdf-bundle.mjs'], options);
     expect(build.status, build.stderr + build.stdout).toBe(0);
     for (const bundle of [false, true]) for (const mode of ['latin', 'mixed', ...(bundle ? [] : ['cyrillic'])]) {
-      const run = spawnSync(process.execPath, ['--max-old-space-size=256', ...(bundle
+      const run = spawnSync(process.execPath, ['--max-old-space-size=256', ...nodeFlags, ...(bundle
         ? ['../../coverage/waivers/pdf-bundle/server.mjs'] : ['--import', 'tsx', 'src/areas/waivers/pdf-benchmark.ts']), mode], options);
       expect(run.status, run.stderr + run.stdout).toBe(0);
       const records = run.stdout.trim().split('\n').map(line => JSON.parse(line) as { run: string; rssMiB: number; heapMiB: number; pages: number; fonts: string[] });
       expect(records.map(r => r.run)).toEqual(['cold', 'repeated']);
       for (const record of records) {
-        expect(record.pages).toBe(20); if (bundle) expect(record.rssMiB).toBeLessThan(300); expect(record.heapMiB).toBeLessThan(256);
+        expect(record.pages).toBe(20); if (bundle) expect(record.rssMiB, `${mode} ${record.run}: ${JSON.stringify(record)}`).toBeLessThan(300); expect(record.heapMiB).toBeLessThan(256);
         expect(record.fonts).toEqual(mode === 'mixed' ? ['NotoSans-Regular.ttf', 'NotoSansCJKsc-Regular.ttf', 'NotoSansArabic-Regular.ttf'] : ['NotoSans-Regular.ttf']);
       }
       console.info('Waiver memory:', bundle ? 'bundle' : 'source', mode, records);

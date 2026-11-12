@@ -35,7 +35,8 @@ END $check$;
 SQL
     PGUSER=app PGPASSWORD="${APP_PASSWORD:?required}" psql -X -v ON_ERROR_STOP=1 -q -c 'SELECT 1' >/dev/null
     ;;
-  migrate) maintenance; exec node /app/maintenance.mjs migrate ;;
+  # shellcheck disable=SC2086 # PLAINGYM_NODE_FLAGS is a space-separated option list (deploy/Dockerfile)
+  migrate) maintenance; exec node ${PLAINGYM_NODE_FLAGS:-} /app/maintenance.mjs migrate ;;
   # Multi-gym mode's one-shot step: the app container never holds the maintenance role there, so this
   # runs the same checks and migrations to completion before the app starts (deploy/README.md).
   prepare)

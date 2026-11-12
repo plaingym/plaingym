@@ -23,7 +23,9 @@ The runtime image sets `MALLOC_MMAP_THRESHOLD_=131072` and `MALLOC_ARENA_MAX=2` 
 processes**, including backup subprocesses. The fixed mmap threshold prevents glibc from raising it
 after freeing a large allocation and then retaining later large freed buffers in its heap; the arena
 limit bounds allocator arenas. These defaults affect ordinary traffic as well as PDF work, so both
-images in a PDF comparison must use them. The container and V8 limits stay unchanged.
+images in a PDF comparison must use them. The image's start scripts also pass `PLAINGYM_NODE_FLAGS`
+(`--max-semi-space-size=4`) to `node`, so the young generation is collected sooner. The container and V8
+old-space limits stay unchanged.
 
 `run.mjs` needs Docker with Compose v2.24 or later and cgroup v2. Options: `--mode capped|uncapped|both`,
 `--image TAG` (skip the build; `MEMORY_IMAGE` works too), `--out DIR` (default `deploy/test/memory/out`,
