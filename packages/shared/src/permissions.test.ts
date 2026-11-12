@@ -30,6 +30,7 @@ const rows: readonly [StaffPermission, readonly StaffRole[]][] = [
       'kiosk_devices.manage',
       'payments.custom',
       'announcements.send',
+      'reports.revenue',
     ] as const
   ).map((permission): [StaffPermission, StaffRole[]] => [permission, ['owner', 'admin']]),
   ...(
@@ -80,6 +81,7 @@ describe('staff permissions', () => {
   it('combines explicitly assigned roles', () => {
     expect(canStaff(['coach', 'front_desk'], 'medical.read')).toBe(true);
     expect(canStaff(['coach', 'front_desk'], 'refunds.create')).toBe(false);
+    expect(canStaff(['coach', 'front_desk'], 'reports.revenue')).toBe(false);
   });
 });
 const memberRows: readonly [MemberPermission, readonly MemberRole[]][] = [

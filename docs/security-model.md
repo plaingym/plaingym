@@ -139,6 +139,7 @@ keeps these tables in step with it.
 | `announcements.send` | yes | yes | | |
 | `leads.manage` | yes | yes | | yes |
 | `reports.read` | yes | yes | yes | |
+| `reports.revenue` | yes | yes | | |
 | `payments.record` | yes | yes | | yes |
 | `payments.custom` | yes | yes | | |
 | `billing.read` | yes | yes | | yes |
@@ -177,11 +178,11 @@ routes return 404. The dashboard's "Follow-ups due" tile also needs
 
 `reports.read` allows owners, admins and coaches to read `GET /api/reports/attendance`.
 `GET /api/reports/members` additionally requires `billing.read`, so only owners
-and admins can read member activity and churn.
-Front desk staff and member sessions cannot read reports. Reports read only the
+and admins, or staff assigned both coach and front desk roles, can read member activity and churn.
+Front desk staff alone and member sessions cannot read reports. Reports read only the
 resolved gym's rows through `forGym` and forced RLS, including program names;
-responses carry `Cache-Control: no-store`. `GET /api/reports/revenue` additionally
-requires `billing.read` and an owner or admin role before validation. Combining
+responses carry `Cache-Control: no-store`. `GET /api/reports/revenue`
+requires `reports.revenue` (owners and admins) before validation. Combining
 coach and front desk roles cannot grant revenue access. Its
 payments, refunds, invoice lines, payment audit markers and current catalog names
 are read in one `forGym` transaction, with no billing writes.

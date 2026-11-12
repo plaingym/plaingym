@@ -24,6 +24,8 @@ describe('reports contracts', () => {
     expect(attendanceReportQuerySchema.parse({ ...range, granularity: 'week' }).granularity).toBe('week');
     expect(reportsContracts.attendance).toMatchObject({ method: 'get', path: '/api/reports/attendance',
       permission: { kind: 'staff', capability: 'reports.read' } });
+    expect(reportsContracts.revenue).toMatchObject({ method: 'get', path: '/api/reports/revenue',
+      permission: { kind: 'staff', capability: 'reports.revenue' } });
     expect(attendanceReportResponseSchema.safeParse({ data: { ...range, granularity: 'month', timezone: 'UTC', buckets: [] } }).success).toBe(true);
   });
 });

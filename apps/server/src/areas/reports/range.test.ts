@@ -5,6 +5,19 @@ import { reportBuckets } from './range.js';
 
 const context = { gymId: 'unused', timezone: 'America/New_York', clock: new TestClock('2026-11-15T12:00:00Z') };
 describe('report calendar buckets', () => {
+  it.each(['month', 'week'] as const)('marks only the current %s in progress with exclusive ends', granularity => {
+    const local = { ...context, clock: new TestClock('2026-11-01T04:30:00Z') };
+    const buckets = reportBuckets({ from: '2026-11', to: '2026-11' }, local, granularity);
+    expect(buckets.filter(bucket => bucket.inProgress)).toHaveLength(1);
+    expect(buckets.find(bucket => bucket.inProgress)).toMatchObject({ startDate: '2026-11-01', partial: granularity === 'week' });
+    expect(buckets.filter(bucket => bucket.startDate < '2026-11-01' || bucket.startDate > '2026-11-01')
+      .every(bucket => !bucket.inProgress)).toBe(true);
+    expect(reportBuckets({ from: '2026-10', to: '2026-10' }, local, granularity).every(bucket => !bucket.inProgress)).toBe(true);
+    const atEnd = reportBuckets({ from: '2026-11', to: '2026-11' }, {
+      ...local, clock: new TestClock(granularity === 'week' ? '2026-11-02T05:00:00Z' : '2026-12-01T05:00:00Z'),
+    }, granularity);
+    expect(atEnd[0]!.inProgress).toBe(false);
+  });
   it('steps monthly through both DST changes and a year boundary', () => {
     const buckets = reportBuckets({ from: '2025-12', to: '2026-11' }, context);
     expect(buckets).toHaveLength(12);

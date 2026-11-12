@@ -72,7 +72,7 @@ try {
     const bytes = await readFile(await download.path());
     expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     expect(bytes.toString('utf8')).toContain('"\'@Plan ');
-    expect(bytes.toString('utf8')).toContain('"\'-10.00"');
+    expect(bytes.toString('utf8')).toContain('"-10.00"');
     for (const state of ['error', 'empty']) {
       mode = state; await page.reload();
       for (const name of ['Attendance', 'Members', 'Revenue']) {

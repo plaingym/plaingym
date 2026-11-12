@@ -13,7 +13,8 @@ const midnight = (date: string, timezone: string) => zonedInstant(date, '00:00',
 export function reportBuckets(input: ReportRangeQuery, context: ReportContext, granularity: 'week' | 'month' = 'month'): ReportBucket[] {
   const query = reportRangeQuerySchema.safeParse(input);
   if (!query.success) throw new AppError('invalid_request', 'Invalid report month range');
-  if (query.data.to > localDate(context.clock.now(), context.timezone).slice(0, 7))
+  const now = context.clock.now();
+  if (query.data.to > localDate(now, context.timezone).slice(0, 7))
     throw new AppError('invalid_request', 'Report range ends after the current local month');
   const from = query.data.from + '-01', end = nextMonth(query.data.to + '-01');
   const buckets: ReportBucket[] = [];
@@ -22,8 +23,10 @@ export function reportBuckets(input: ReportRangeQuery, context: ReportContext, g
     const naturalStart = granularity === 'week' ? addDays(cursor, -((weekday(cursor) + 6) % 7)) : cursor;
     const naturalEnd = granularity === 'week' ? addDays(naturalStart, 7) : nextMonth(cursor);
     const finish = naturalEnd < end ? naturalEnd : end;
-    buckets.push({ startDate: cursor, endDate: finish, startsAt: midnight(cursor, context.timezone),
-      endsAt: midnight(finish, context.timezone), partial: cursor !== naturalStart || finish !== naturalEnd });
+    const startsAt = midnight(cursor, context.timezone), endsAt = midnight(finish, context.timezone);
+    buckets.push({ startDate: cursor, endDate: finish, startsAt, endsAt,
+      partial: cursor !== naturalStart || finish !== naturalEnd,
+      inProgress: new Date(startsAt) <= now && now < new Date(endsAt) });
     cursor = finish;
   }
   return buckets;

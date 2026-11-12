@@ -16,6 +16,7 @@ const matrix: Record<string, Role[]> = {
   'payments.record': desk,
   'announcements.send': managers,
   'reports.read': coaches,
+  'reports.revenue': managers,
   'leads.manage': desk,
   'members.read': all, 'members.manage': desk, 'members.anonymize': managers,
   'medical.read': coaches, 'households.manage': desk, 'billing.read': desk, 'tags.manage': desk,
@@ -206,7 +207,7 @@ test('automatic updates are owner-only and unavailable on multi-gym installs', a
   expect([401, 403]).toContain((await other.request(path, 'PUT', { enabled: false, revision: multi.data.revision })).status);
 });
 
-test('revenue report is mounted and restricted to owners and admins', async ({ install, sandboxes }) => {
+test('revenue report is mounted and restricted by reports.revenue', async ({ install, sandboxes }) => {
   const path = '/api/reports/revenue?from=2026-01&to=2026-01';
   for (const role of all) {
     const response = await install.clients[role].request(path);
@@ -220,6 +221,32 @@ test('revenue report is mounted and restricted to owners and admins', async ({ i
   const foreign = new Client(sandboxes[1].origin);
   foreign.cookie = owner.cookie;
   expect([401, 403]).toContain((await foreign.request(path)).status);
+});
+
+for (const width of [360, 1280]) test('report tabs retain their program and recent queries at ' + width, async ({ page, sandboxes }, info) => {
+  const sandbox = sandboxes[0], owner = await demoClient(sandbox, 'owner');
+  await owner.browser(page.context());
+  await page.setViewportSize({ width, height: 900 });
+  const requests: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/reports/')) requests.push(new URL(request.url()).pathname);
+  });
+  await page.goto(sandbox.origin + '/admin/reports');
+  await page.getByRole('table').waitFor();
+  const program = page.getByLabel('Program', { exact: true });
+  const selected = await program.locator('option').nth(1).getAttribute('value');
+  expect(selected).toBeTruthy();
+  await program.selectOption(selected!);
+  for (const name of ['Members', 'Revenue', 'Attendance']) {
+    await page.getByRole('tab', { name, exact: true }).click();
+    await page.getByRole('table').first().waitFor();
+    await accessibleLayout(page, info, 'reports-' + name.toLowerCase() + '-' + width);
+    const path = info.outputPath('reports-' + name.toLowerCase() + '-' + width + '.png');
+    await page.screenshot({ path, fullPage: true });
+    await info.attach(name + '-' + width, { path, contentType: 'image/png' });
+  }
+  await expect(program).toHaveValue(selected!);
+  expect(requests.filter(path => path.endsWith('/attendance'))).toHaveLength(1);
 });
 
 test('a household login cannot reach staff routes', async ({ sandboxes }) => {

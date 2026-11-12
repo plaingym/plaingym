@@ -3,7 +3,7 @@
 
 `GET /api/reports/attendance?from=2026-01&to=2026-11&granularity=month`
 returns attendance grouped by program and calendar period. `reports.read` grants
-access to owners, admins and coaches; front desk staff and members cannot read
+access to owners, admins and coaches; front desk staff alone and members cannot read
 reports. Responses carry `Cache-Control: no-store`.
 
 `reportsContracts` in `@plaingym/shared/contracts` holds the route and response
@@ -13,6 +13,9 @@ current local month using the request clock. It returns monthly buckets by defau
 or Monday-based weeks, with exclusive end dates and instants. The first and last
 weeks are clipped to the requested months and marked `partial` when clipped.
 Monthly buckets cover whole local months, including the current month.
+Every bucket carries `inProgress`, true only when the request clock is at or
+after its start and before its exclusive end. Future weeks are false. This flag
+is independent of `partial`, so a clipped current week can carry both.
 
 All boundaries are local midnights converted by `@plaingym/shared/time` with
 `gap: 'shift'`. Weeks across daylight-saving changes can have 167 or 169 hours.
@@ -40,7 +43,8 @@ stay inside the gym's forced RLS context.
 ## Members
 
 `GET /api/reports/members?from=2026-01&to=2026-11` returns monthly member
-activity. It requires both `reports.read` and `billing.read` (owners and admins)
+activity. It requires both `reports.read` and `billing.read` (owners and admins,
+or staff assigned both coach and front desk roles)
 and sends `Cache-Control: no-store`. The inclusive range has the same 24-month
 limit and gym-local month boundaries as attendance; there is no granularity option.
 
@@ -89,15 +93,15 @@ The existing reports route barrel mounts it; no extra runtime wiring is needed.
 
 ## Revenue
 
-`GET /api/reports/revenue?from=2026-01&to=2026-11` requires both
-`reports.read` and `billing.read` (owners and admins). The same inclusive,
+`GET /api/reports/revenue?from=2026-01&to=2026-11` requires
+`reports.revenue` (owners and admins). The same inclusive,
 at-most-24-month range and current-local-month limit apply. Responses carry
 `Cache-Control: no-store` and contain separate `currencies`, each with monthly
 `buckets`, `groups`, and `totals`; there is no combined currency total. A currency
 with activity has every requested month, including zero months. With no activity,
 `currencies` is empty. Amounts are integer minor units, including whole yen.
-The route also requires an owner or admin role before validation: combining coach
-and front desk capabilities does not grant revenue access.
+The route enforces that capability before validation: combining coach and front
+desk capabilities does not grant revenue access.
 
 Payments count in the gym-local month of `paid_at`, across card, cash, check and
 other methods. Refunds count in the local month they succeeded; their invoice

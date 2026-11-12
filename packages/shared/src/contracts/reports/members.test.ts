@@ -13,7 +13,7 @@ describe('members report contract', () => {
   });
   it('requires integer counts and a positive churn denominator or null', () => {
     const bucket = { startDate: '2026-03-01', endDate: '2026-04-01', startsAt: '2026-03-01T05:00:00Z',
-      endsAt: '2026-04-01T04:00:00Z', partial: false, activeAtStart: 3, new: 0, imported: 0, cancelled: 1,
+      endsAt: '2026-04-01T04:00:00Z', partial: false, inProgress: false, activeAtStart: 3, new: 0, imported: 0, cancelled: 1,
       netChange: -1, activeAtEnd: 2, frozenAtEnd: 1, churn: { numerator: 1, denominator: 3 } };
     const response = (changes = {}) => ({ data: { from: '2026-03', to: '2026-03', timezone: 'America/New_York', buckets: [{ ...bucket, ...changes }] } });
     expect(membersReportResponseSchema.safeParse(response()).success).toBe(true);

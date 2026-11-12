@@ -12,13 +12,14 @@ import { Label } from '../../components/ui/label.js';
 import { Select } from '../../components/ui/select.js';
 import { LoadingState, ErrorState } from '../../components/ui/states.js';
 import { reportClient, type ReportClient } from './api.js';
-import { defaultRange, text } from './data.js';
+import { allPrograms, defaultRange, text } from './data.js';
 import { AttendanceReport, MembersReport, RevenueReport } from './views.js';
 
 export type ReportName = 'attendance' | 'members' | 'revenue';
 export function allowedReports(roles: readonly StaffRole[]): ReportName[] {
   if (!canStaff(roles, 'reports.read')) return [];
-  return roles.some(role => role === 'owner' || role === 'admin') ? ['attendance', 'members', 'revenue'] : ['attendance'];
+  return ['attendance', ...(canStaff(roles, 'billing.read') ? ['members' as const] : []),
+    ...(canStaff(roles, 'reports.revenue') ? ['revenue' as const] : [])];
 }
 interface WorkspaceProps { gymId: string; userId: string; timezone: string; roles: readonly StaffRole[]; client?: ReportClient }
 export function ReportsWorkspace(props: WorkspaceProps) {
@@ -31,6 +32,7 @@ function ReportsContent({ gymId, userId, timezone, client = reportClient, report
   const [from, setFrom] = useState(range.from), [to, setTo] = useState(range.to);
   const [invalid, setInvalid] = useState(false), [selected, setSelected] = useState<ReportName>('attendance');
   const [granularity, setGranularity] = useState<'week' | 'month'>('month');
+  const [program, setProgram] = useState(allPrograms);
   const currentMonth = localDate(new Date(), timezone).slice(0, 7);
   const view = { gymId, userId, range, client };
   function tabKey(event: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -46,7 +48,7 @@ function ReportsContent({ gymId, userId, timezone, client = reportClient, report
       event.preventDefault();
       const parsed = reportRangeQuerySchema.safeParse({ from, to });
       if (!parsed.success || to > currentMonth) { setInvalid(true); return; }
-      setInvalid(false); setRange(parsed.data);
+      setInvalid(false); setRange(parsed.data); setProgram(allPrograms);
     }}>
       <div className="grid min-w-0 grid-cols-1 items-end gap-3 sm:grid-cols-3">
         <div className="min-w-0 space-y-2"><Label htmlFor="report-from">{text('from')}</Label>
@@ -69,11 +71,11 @@ function ReportsContent({ gymId, userId, timezone, client = reportClient, report
       <p className="text-sm text-muted-foreground">{text('shownRange', { from: range.from, to: range.to })}</p>
       {selected === 'attendance' && <>
         <div className="space-y-2 sm:max-w-sm"><Label htmlFor="report-granularity">{text('granularity')}</Label>
-          <Select id="report-granularity" value={granularity} onChange={event => setGranularity(event.target.value as 'week' | 'month')}>
+          <Select id="report-granularity" value={granularity} onChange={event => { setGranularity(event.target.value as 'week' | 'month'); setProgram(allPrograms); }}>
             <option value="month">{text('month')}</option><option value="week">{text('week')}</option>
           </Select>
         </div>
-        <AttendanceReport key={range.from + range.to + granularity} {...view} granularity={granularity} />
+        <AttendanceReport {...view} granularity={granularity} selected={program} onSelect={setProgram} />
       </>}
       {selected === 'members' && <MembersReport {...view} />}
       {selected === 'revenue' && <RevenueReport {...view} />}

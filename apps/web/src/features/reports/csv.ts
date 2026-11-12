@@ -3,7 +3,11 @@ import type { ReportTable } from './data.js';
 
 /** Quote every field, retain embedded newlines and neutralize spreadsheet formula prefixes. */
 export function reportCsv(table: ReportTable): string {
-  const cell = (value: string) => '"' + (/^[=+\-@\t\r]/.test(value) ? "'" + value : value).replaceAll('"', '""') + '"';
+  const cell = (value: string) => {
+    // Plain numbers can't run as formulas, so negative amounts stay numeric.
+    const numeric = /^-?\d+(\.\d+)?$/.test(value);
+    return '"' + (/^[=+\-@\t\r]/.test(value) && !numeric ? "'" + value : value).replaceAll('"', '""') + '"';
+  };
   return '\uFEFF' + [table.columns, ...table.rows].map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
 }
 export function downloadCsv(table: ReportTable, filename: string) {

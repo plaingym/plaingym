@@ -13,9 +13,10 @@ export const reportRangeQuerySchema = z.strictObject({ from: reportMonthSchema, 
   .refine(value => value.from <= value.to, 'Range ends before it starts')
   .refine(value => monthIndex(value.to) - monthIndex(value.from) < 24, 'Range exceeds 24 months');
 export const attendanceReportQuerySchema = reportRangeQuerySchema.safeExtend({ granularity: z.enum(['week', 'month']) });
-/** endDate and endsAt are exclusive; dates and week starts belong to the gym's timezone. */
+/** endDate and endsAt are exclusive; inProgress uses the request clock, independently of clipped partial weeks. */
 export const reportBucketSchema = z.strictObject({
   startDate: dateSchema, endDate: dateSchema, startsAt: instantSchema, endsAt: instantSchema, partial: z.boolean(),
+  inProgress: z.boolean(),
 });
 const counts = { checkIns: z.int().nonnegative(), uniqueMembers: z.int().nonnegative() };
 export const attendanceReportResponseSchema = z.strictObject({ data: z.strictObject({
@@ -33,8 +34,7 @@ export const membersReportResponseSchema = z.strictObject({ data: z.strictObject
 export const revenueReportResponseSchema = createRevenueReportResponseSchema(reportRangeQuerySchema, reportBucketSchema);
 export const reportsContracts = {
   revenue: { method: 'get', path: '/api/reports/revenue',
-    permission: { kind: 'staff', capability: 'reports.read' },
-    additionalPermissions: [{ kind: 'staff', capability: 'billing.read' }],
+    permission: { kind: 'staff', capability: 'reports.revenue' },
     query: reportRangeQuerySchema, response: revenueReportResponseSchema },
   attendance: { method: 'get', path: '/api/reports/attendance',
     permission: { kind: 'staff', capability: 'reports.read' },

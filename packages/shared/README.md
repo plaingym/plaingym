@@ -42,11 +42,13 @@ status in `responses`. Rank JSON configuration and CSV upload fields carry OpenA
 metadata on their shared Zod schemas, retaining their runtime validation.
 
 `reportsContracts.attendance` declares the attendance report for `reports.read`
-(owners, admins and coaches). `reportRangeQuerySchema` accepts inclusive month
-ranges up to 24 months; the service checks the current gym-local month using its
-clock. Report buckets expose local start dates and exclusive end dates alongside
-their instant boundaries. Counts stay numeric; a null program ID and name means
-an unassigned visit.
+(owners, admins and coaches), and `reportsContracts.revenue` declares the
+revenue report for `reports.revenue` (owners and admins). `reportRangeQuerySchema`
+accepts inclusive month ranges up to 24 months; the service checks the current
+gym-local month using its clock. Report buckets expose local start dates and
+exclusive end dates alongside their instant boundaries, `partial` for a clipped
+week and `inProgress` when the request clock falls inside the bucket. Counts stay
+numeric; a null program ID and name means an unassigned visit.
 
 ## Registration
 

@@ -2,16 +2,22 @@
 # Reports
 
 `/admin/reports` registers through `reports.read`. Owners and admins see
-attendance, member activity and revenue; coaches see attendance. Front desk and
+attendance, member activity and revenue; coaches see attendance. Staff assigned
+both coach and front desk roles also see member activity (`reports.read` plus
+`billing.read`); revenue requires `reports.revenue`. Front desk alone and
 member-only sessions cannot open the page. The server enforces access on each
 report route independently. The page requests only the selected report, with
 gym, user, range and granularity in its query key and cancellation on navigation.
+Queries stay fresh for one minute, so switching tabs reuses recent answers. The
+attendance program and granularity survive tab switches; applying a range or
+changing granularity resets the program filter to All programs.
 
 The default range is twelve inclusive months through the gym's current month.
 Apply a range of at most 24 months. Attendance supports month or week and a
 program filter. Zero-activity periods stay in filtered tables; unique members
 must not be added across program rows. Boundary periods retain the
-API's partial marker for completed periods. Current periods show In progress and
+API's partial marker, including alongside In progress or Upcoming. Current periods
+show In progress from the server clock's `inProgress` snapshot, and
 future weeks within the requested current month show Upcoming, using the gym's
 timezone even when the API supplies a full calendar-period boundary.
 
@@ -21,10 +27,13 @@ on phones. Revenue has one section per currency, with separate tax rows and a
 total including tax; it never adds currencies together. Amounts use
 `@plaingym/shared/money` and appear as plain decimals alongside currency codes.
 
-`data.ts` builds each table once. `DataTable` renders those columns and rows and
+`views.tsx` memoizes tables, program choices and chart series by report data and
+program selection. `DataTable` renders those columns and rows and
 passes the same object to `csv.ts` for browser downloads. CSV includes a UTF-8
 BOM, quoted fields, CRLF records, ISO dates and formula-prefix neutralization
-(including negative numeric cells). Filenames contain report, month range and,
+except for plain numbers matching `^-?\d+(\.\d+)?$`, which stay numeric, including
+negative discounts, refunds and nets. Every other cell starting with `-`, `=`,
+`+`, `@`, tab or carriage return gets a leading apostrophe. Filenames contain report, month range and,
 where applicable, currency or attendance granularity. No CSV or chart dependency
 or additional API route is used.
 

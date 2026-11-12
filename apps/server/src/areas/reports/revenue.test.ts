@@ -303,7 +303,7 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     for (const secret of [b.plan.id, b.tax.id, b.charge.id, paid.id, 'FOREIGN SECRET']) expect(JSON.stringify(body)).not.toContain(secret);
     expect((await service.get(b, query)).data.currencies[0]!.buckets[2]!.totals.refunds).toBe(99);
   });
-  it.each(staffRoles)('enforces both permissions for %s before query validation and disables caching', async role => {
+  it.each(staffRoles)('enforces reports.revenue for %s before query validation and disables caching', async role => {
     const f = await fixture(), response = await app(f, [role]).request(url());
     const allowed = role === 'owner' || role === 'admin';
     expect(response.status).toBe(allowed ? 200 : 403);
@@ -320,7 +320,7 @@ describe('revenue report with real PostgreSQL and RLS', () => {
       { kind: 'kiosk', gymId: f.gymId, deviceId: uuidv7() }, { kind: 'staff', gymId: uuidv7(), userId, roles: ['owner'] }];
     for (const principal of principals) expect((await app(f, [], principal).request(url())).status).toBe(principal.kind === 'anonymous' ? 401 : 403);
   });
-  it('requires a manager role even when coach and front desk together grant both capabilities', async () => {
+  it('does not grant reports.revenue by combining coach and front desk roles', async () => {
     const f = await fixture();
     expect((await app(f, ['coach', 'front_desk']).request(url())).status).toBe(403);
     expect((await app(f, ['coach', 'front_desk']).request('/api/reports/revenue?from=invalid')).status).toBe(403);

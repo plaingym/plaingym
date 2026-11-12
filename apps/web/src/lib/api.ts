@@ -11,6 +11,11 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+/** Require a successful typed-client response before validating its data. */
+export function checked<T>(result: { response: Response; data?: T }): T {
+  if (!result.response.ok || result.data === undefined) throw new ApiError(result.response.status, 'request_failed');
+  return result.data;
+}
 /** Read structured reason codes without consuming the response or exposing server messages. */
 export async function apiErrorReasons(response: Response): Promise<readonly string[]> {
   const body: unknown = await response.clone().json().catch(() => undefined);

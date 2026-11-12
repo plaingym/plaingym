@@ -14,8 +14,10 @@ export function defaultRange(timezone: string, now = new Date()): ReportRangeQue
 /** A churn ratio as a percentage with two decimals; the same text on screen and in the CSV file. */
 const churnPercent = new Intl.NumberFormat('en-US', { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const periodColumns = () => [text('start'), text('end'), text('periodStatus')];
-const period = (bucket: ReportBucket, today: string) => [bucket.startDate, bucket.endDate,
-  text(bucket.startDate > today ? 'upcoming' : bucket.endDate > today ? 'inProgress' : bucket.partial ? 'partial' : 'complete')];
+const period = (bucket: ReportBucket, today: string) => {
+  const status = bucket.inProgress ? 'inProgress' : bucket.startDate > today ? 'upcoming' : bucket.partial ? 'partial' : 'complete';
+  return [bucket.startDate, bucket.endDate, text(bucket.partial && (status === 'inProgress' || status === 'upcoming') ? status + 'Partial' : status)];
+};
 export function membersTable(data: MembersReportResponse['data'], now = new Date()): ReportTable {
   const today = localDate(now, data.timezone);
   return { columns: [...periodColumns(), ...['activeAtStart', 'new', 'imported', 'cancelled', 'netChange', 'activeAtEnd', 'frozenAtEnd', 'churn'].map(key => text(key))],

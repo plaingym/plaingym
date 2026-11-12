@@ -5,8 +5,8 @@ import type { AttendanceReportResponse, MembersReportResponse, RevenueReportResp
 export const fixtureId = '01900000-0000-7000-8000-000000000001';
 const range = { from: '2026-10', to: '2026-11', timezone: 'America/Los_Angeles' };
 const buckets = [
-  { startDate: '2026-10-01', endDate: '2026-11-01', startsAt: '2026-10-01T07:00:00Z', endsAt: '2026-11-01T07:00:00Z', partial: false },
-  { startDate: '2026-11-01', endDate: '2026-11-10', startsAt: '2026-11-01T07:00:00Z', endsAt: '2026-11-10T08:00:00Z', partial: true },
+  { startDate: '2026-10-01', endDate: '2026-11-01', startsAt: '2026-10-01T07:00:00Z', endsAt: '2026-11-01T07:00:00Z', partial: false, inProgress: false },
+  { startDate: '2026-11-01', endDate: '2026-12-01', startsAt: '2026-11-01T07:00:00Z', endsAt: '2026-12-01T08:00:00Z', partial: false, inProgress: true },
 ];
 export const attendanceFixture: AttendanceReportResponse['data'] = { ...range, granularity: 'month', buckets: buckets.map((bucket, index) => ({ ...bucket,
   programs: index === 0 ? [{ programId: fixtureId, programName: '=Program, "adults"\nMonday', checkIns: 7, uniqueMembers: 3 },

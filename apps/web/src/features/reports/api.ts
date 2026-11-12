@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { reportsContracts, type AttendanceReportQuery, type ReportRangeQuery } from '@plaingym/shared/contracts';
-import { api, ApiError } from '../../lib/api.js';
+import { api, checked } from '../../lib/api.js';
 import { parseResponse } from '../../lib/response.js';
 
-function checked<T>(result: { response: Response; data?: T }): T {
-  if (!result.response.ok || result.data === undefined) throw new ApiError(result.response.status, 'request_failed');
-  return result.data;
-}
 export const reportClient = {
   async attendance(input: AttendanceReportQuery, signal?: AbortSignal) {
     const query = reportsContracts.attendance.query.parse(input);

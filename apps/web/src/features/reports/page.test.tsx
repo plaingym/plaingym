@@ -19,7 +19,7 @@ function client(): ReportClient {
   return { attendance: vi.fn(async () => attendanceFixture), members: vi.fn(async () => membersFixture), revenue: vi.fn(async () => revenueFixture) };
 }
 function provider(content: React.ReactNode) {
-  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>{content}</QueryClientProvider>);
+  return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{content}</QueryClientProvider>);
 }
 function mount(service = client(), roles: readonly StaffRole[] = ['owner']) {
   return provider(<ReportsWorkspace gymId={fixtureId} userId={fixtureId} timezone="America/Los_Angeles" roles={roles} client={service} />);
@@ -51,7 +51,7 @@ describe('report tables and CSV downloads', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Download CSV: ' + title }));
       const download = downloads.at(-1)!;
       const rendered = renderedCells(table);
-      expect(csvCells(download.value, rendered[0]!.length)).toEqual(rendered.map(row => row.map(cell => /^[=+\-@\t\r]/.test(cell) ? "'" + cell : cell)));
+      expect(csvCells(download.value, rendered[0]!.length)).toEqual(rendered.map(row => row.map(cell => /^[=+\-@\t\r]/.test(cell) && !/^-?\d+(\.\d+)?$/.test(cell) ? "'" + cell : cell)));
       expect(download.filename).toMatch(new RegExp('^' + name + '-\\d{4}-\\d{2}-\\d{4}-\\d{2}.*\\.csv$'));
     }
     if (name === 'attendance') {
@@ -62,7 +62,7 @@ describe('report tables and CSV downloads', () => {
       const rows = renderedCells(tables[0]!);
       expect(rows[1]!.slice(-8)).toEqual(['10', '2', '1', '3', '0', '10', '2', '30.00%']);
       expect(rows[2]!.at(-1)).toBe('N/A');
-      expect(rows[2]![2]).toBe('Partial');
+      expect(rows[2]![2]).toBe('In progress');
     } else {
       expect(tables).toHaveLength(3);
       const usd = renderedCells(tables[0]!);
@@ -84,6 +84,25 @@ describe('report tables and CSV downloads', () => {
     await waitFor(() => expect(service.attendance).toHaveBeenLastCalledWith(expect.objectContaining({ granularity: 'week' }), expect.any(AbortSignal)));
     expect((screen.getByLabelText('Program', { exact: true }) as HTMLSelectElement).value).toBe('all');
     expect(service.members).not.toHaveBeenCalled(); expect(service.revenue).not.toHaveBeenCalled();
+  });
+  it('retains the program filter and fresh queries across every tab switch', async () => {
+    const service = client(); mount(service);
+    await screen.findByRole('table');
+    await userEvent.selectOptions(screen.getByLabelText('Program', { exact: true }), fixtureId);
+    await choose('members'); await choose('revenue'); await choose('attendance');
+    expect(screen.getByLabelText('Program', { exact: true })).toHaveProperty('value', fixtureId);
+    expect(renderedCells(screen.getByRole('table'))).toHaveLength(3);
+    await choose('members'); await choose('revenue');
+    expect(service.attendance).toHaveBeenCalledTimes(1);
+    expect(service.members).toHaveBeenCalledTimes(1);
+    expect(service.revenue).toHaveBeenCalledTimes(1);
+  });
+  it('shows members to combined coach and front desk roles while keeping revenue hidden', async () => {
+    const service = client(); mount(service, ['coach', 'front_desk']);
+    await screen.findByRole('table');
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Attendance', 'Members']);
+    await choose('members'); expect(service.members).toHaveBeenCalledTimes(1);
+    expect(service.revenue).not.toHaveBeenCalled();
   });
   it('applies a valid inclusive 24-month range and rejects reversed or longer ranges without a request', async () => {
     const service = client(); mount(service); await screen.findByRole('table');

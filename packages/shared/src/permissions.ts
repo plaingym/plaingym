@@ -26,6 +26,7 @@ export const staffPermissions = {
   'announcements.send': managers,
   'leads.manage': desk,
   'reports.read': coaches,
+  'reports.revenue': managers,
   'payments.record': desk,
   'payments.custom': managers,
   'billing.read': desk,
