@@ -230,7 +230,7 @@ export function SetupWizard({ client = setupClient, registries = createRegistrie
             const result = await client.call('google', { revision, clientId: text(data, 'clientId').trim(), clientSecret: text(data, 'clientSecret').trim() });
             setGoogleSaved(true); setHeld({ kind: 'google', check: result.check }); await queries.invalidateQueries({ queryKey: bootstrapKey }); await refresh();
           }}><p>{t('setup/google-step:intro')}</p><GoogleRedirect /><p className="text-sm text-muted-foreground">{t('auth/google:setupHelp')}</p>
-            <GoogleClientFields idPrefix="setup-google" rejected={error === 'googleRejected'} /></Form>)}
+            <GoogleClientFields idPrefix="setup-google" rejected={error === 'googleRejected'} onEdit={() => { if (error === 'googleRejected') setError(null); }} /></Form>)}
         {step === 6 && !googlePage && (Stripe ? <Stripe />
           : <><p>{t('setup/setup:stripeHint')}</p><SetupActions><Button disabled={busy} onClick={() => void run(async () => { await client.call('stripe', { choice: 'skip', revision }); await refresh(); })}>{t('setup/setup:continue')}</Button></SetupActions></>)}
         {step === 7 && <><p>{t('setup/setup:backupHint')}</p><p>{t('setup/setup:retention')}</p>

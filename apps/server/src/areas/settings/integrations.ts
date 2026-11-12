@@ -27,6 +27,11 @@ import { createGoogleClientResolver, encryptGoogleConfig, readGoogleConfig, requ
 import { readStoredSecret } from './unreadable-secret.js';
 import { requireBackupDestination, type CheckBackupDestination } from './backup-destination.js';
 
+/** Validates the integration policy before runtime opens the database. */
+export function checkIntegrationsEnvironment(mode: AuthConfig['tenancy'], env: NodeJS.ProcessEnv): void {
+  gymIntegrationsEditable(mode, env);
+}
+
 type Gym = typeof gyms.$inferSelect;
 /** A new destination and key waiting for the owner to prove they saved the private key. Kept in the gym's opaque settings. */
 // Read from the gym's settings: a newer release may store more keys, which this one ignores after a rollback.
@@ -109,7 +114,7 @@ export function createIntegrationsService(options: IntegrationsOptions) {
   async function email(gym: Gym, userId: string): Promise<EmailIntegration> {
     const { source, host, port, security, from } = emailAudit(gym);
     // A sandbox signs in through the demo outbox, whatever is stored.
-    const now = signIn(sandbox || source !== 'none');
+    const now = signIn(sandbox || gymSmtp(gym) !== null || installSmtp);
     const afterRemove = source === 'gym' && !sandbox ? signIn(installSmtp) : null;
     // Removing the gym's email leaves the install's, the owner's password and the gym's Google client (the install's or a stored one).
     const removeBlocked = afterRemove !== null && !afterRemove.magicLink && !(afterRemove.password && await options.hasPassword(userId))
@@ -362,10 +367,10 @@ export function createIntegrationsService(options: IntegrationsOptions) {
     const stored = editable ? readGoogleConfig(options.key, gym.googleConfig, gym.id) : null;
     const source = google.install ? 'install' : stored ? 'gym' : 'none';
     // Removing the stored client leaves email links (the gym's SMTP or the install's) and the owner's own password.
-    const after = signIn(Boolean(gym.smtpConfig) || installSmtp);
+    const after = signIn(gymSmtp(gym) !== null || installSmtp);
     const removeBlocked = source === 'gym' && !after.magicLink && !(after.password && await options.hasPassword(userId));
     return { source, editable, unreadable: editable && Boolean(gym.googleConfig) && !stored, clientId: stored?.clientId ?? null,
-      clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision, ...(google.problem && !sandbox ? { installProblem: google.problem } : {}) };
+      clientSecretSet: source === 'gym', removeBlocked, revision: gym.revision, ...(google.problem && single && !sandbox ? { installProblem: google.problem } : {}) };
   }
   /** Fails fast on a stale revision before any network call; the save checks it again. */
   async function assertCurrent(gymId: string, revision: number): Promise<Gym> {
@@ -466,7 +471,11 @@ export function createIntegrationsService(options: IntegrationsOptions) {
         throw new AppError('invalid_request', 'Use an SMTP port: ' + smtpPorts.join(', '), { port: ['port_not_allowed'] });
       await assertCurrent(context.gymId, input.revision);
       const stored = storedSmtpFromRequest(input);
-      if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest, !single))
+      const sent = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest, !single);
+      await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: userId,
+        action: 'integrations.email_tested', targetType: 'gym', targetId: context.gymId,
+        after: { test: sent ? 'sent' : 'failed' }, occurredAt: clock.now() }));
+      if (!sent)
         return { test: 'failed', integrations: await present(context.gymId, userId) };
       await save(context, input.revision, async (gym) => ({ set: { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) },
         action: 'integrations.email_saved', before: emailAudit(gym), after: emailAudit }));

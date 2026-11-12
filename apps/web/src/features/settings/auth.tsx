@@ -48,12 +48,12 @@ export function GoogleRedirect() {
  * The client ID and secret fields, shared by this section and the setup wizard's Google page. Each checks its format as
  * the owner leaves it; `rejected` marks both when Google's token endpoint refused the pair.
  */
-export function GoogleClientFields({ idPrefix, rejected = false }: { idPrefix: string; rejected?: boolean }) {
+export function GoogleClientFields({ idPrefix, rejected = false, onEdit }: { idPrefix: string; rejected?: boolean; onEdit?: () => void }) {
   const refusal = rejected ? idPrefix + '-rejected' : undefined;
   return <>
-    <Field name="clientId" id={idPrefix + '-client-id'} label={label('clientId')} maxLength={512} invalid={rejected} describedBy={refusal}/>
+    <Field name="clientId" id={idPrefix + '-client-id'} label={label('clientId')} maxLength={512} invalid={rejected} describedBy={refusal} onEdit={onEdit}/>
     <Field name="clientSecret" type="password" id={idPrefix + '-client-secret'} label={label('clientSecret')} maxLength={512} hint={label('secretHint')}
-      invalid={rejected} describedBy={refusal}/>
+      invalid={rejected} describedBy={refusal} onEdit={onEdit}/>
     {refusal && <p id={refusal} className="text-sm font-medium text-destructive">{label('rejected')}</p>}
   </>;
 }
@@ -123,7 +123,7 @@ export function GoogleLoginSettings() {
       <p className="[overflow-wrap:anywhere]">{label('clientIdShown', { clientId: google.clientId ?? '' })}</p>
       <p>{label('secretSet')}</p>
     </div>}
-    {google.installProblem && <Alert variant="error" role="note">{label('installProblem.' + google.installProblem.reason, { variable: google.installProblem.variable })}</Alert>}
+    {google.installProblem && <Alert variant={google.source === 'gym' ? 'info' : 'error'} role="note">{label('installProblem.' + google.installProblem.reason, { variable: google.installProblem.variable })}</Alert>}
     {google.unreadable && <p role="alert" className="text-sm">{label('unreadable')}</p>}
     <FormMessage message={message}/>
     <GoogleRedirect/>
@@ -137,7 +137,7 @@ export function GoogleLoginSettings() {
     {formOpen && <form onSubmit={(event) => void save(event)} aria-label={label(google.source === 'gym' ? 'replace' : 'setUp')}>
       <fieldset disabled={busy !== null} className="grid min-w-0 gap-4">
         <p className="text-sm text-muted-foreground">{label('setupHelp')}</p>
-        <GoogleClientFields idPrefix="settings-google" rejected={rejected}/>
+        <GoogleClientFields idPrefix="settings-google" rejected={rejected} onEdit={() => { if (rejected) { setRejected(false); setMessage(null); } }}/>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Button type="submit">{label(busy === 'save' ? 'saving' : 'save')}</Button>
           {google.source === 'gym' && <Button type="button" variant="outline" onClick={() => setOpen(false)}>{label('cancel')}</Button>}

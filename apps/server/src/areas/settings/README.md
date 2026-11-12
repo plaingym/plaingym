@@ -1,5 +1,21 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
+Malformed install Google variables are returned as `installProblem` only in single
+mode. A stored gym client remains in use and Health warns about the ignored
+variables. Multi mode keeps the startup log only.
+
+SMTP resolution also treats unreadable stored credentials as unconfigured, with
+the same redacted logging; login and Google removal then use install SMTP if
+available. Email removal still counts Google for the gym rather than checking the
+owner's linked identity. The Email section states this and asks the owner to try
+Google first. Each submitted Settings test writes `integrations.email_tested` with
+`test: 'sent' | 'failed'`, without credentials or recipients, even when it fails
+and the saved settings stay unchanged. Operator-managed refusals reload the
+integrations and show the operator notice in place of the editable forms.
+
+`checkIntegrationsEnvironment(mode, env)` exports the policy validation for early
+boot, before any database connection is opened.
+
 Unreadable Google clients are reported as `source: 'none'` and `unreadable: true`, with no stored ID or secret flag and both removal and replacement available. They do not count as a way in when removing email settings. Google reads and settings SMTP reads share `unreadable-secret.ts`: it remembers the last failed ciphertext per secret class, gym and encryption-key object, logging one redacted error until the stored value changes; no decrypted value is cached. Google audit source values still describe the stored configuration.
 
 Both setup and Settings check a backup destination before generating a key using `backup-destination.ts`: list an unused snapshot prefix, then write, read back and delete a unique probe blob (`blobs/probe-<uuid>`), so credentials limited to the `snapshots/` and `blobs/` prefixes snapshots use pass and ones that can't write there don't; a probe whose cleanup failed is an unreferenced blob, which pruning removes without stopping. A refusal returns `destination: ['unreachable']` without saving anything. Backup status uses only complete snapshots at the current destination whose authenticated references name the current recipient; legacy reference lists without a recipient cannot establish that match.

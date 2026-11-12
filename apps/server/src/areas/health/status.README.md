@@ -40,12 +40,19 @@ No bucket names, filesystem paths, job errors, or SMTP credentials enter respons
 
 The SMTP check validates configuration rather than attempting a send. It uses
 `SmtpResolver.source(gymId)` to report gym versus install configuration.
-`lastTestAt` is when the gym's own SMTP settings last passed a test email, read from the
-gym's audit rows (`lastEmailTest`): Settings → Email saves its settings only after the
-test is accepted (`integrations.email_saved`), and so does the setup wizard's email step
-(`setup.step_completed` for step 5 while the gym has settings of its own). Removing the
-settings (`integrations.email_removed`) leaves it null, as do the install's own `SMTP_*`
-settings, which the gym never tests. A failed test saves nothing, so it isn't shown.
+`lastTestAt` is the latest submitted SMTP test, sent or failed, read from the gym's
+`integrations.email_tested` and `setup.email_tested` audit rows, counted only while the
+gym's own SMTP settings are in use. A failed test leaves saved settings unchanged and
+gives the tile a warning that names the failed test. Legacy email saves and step 5 rows
+without a test field count the same way; explicit wizard skips do not count. Removing
+settings clears earlier tests. The install's own `SMTP_*` settings are never tested
+here, so a gym using them shows no test, even after a failed test of settings it never
+saved.
+
+Malformed install Google variables are reported to single-gym owners only. With a
+working stored client the Google tile reports that client in use and warns about
+the ignored variables; without one it reports an error. Multi-gym owners see only
+their effective Google configuration; the malformed variables stay in startup logs.
 
 TODO: add an oldest failure timestamp to `JobStatsQuery`; the response uses null rather
 than the pending-job timestamp. Disk details hold the volume with least free space; the

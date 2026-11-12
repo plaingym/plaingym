@@ -23,7 +23,7 @@ function CheckMark() {
  */
 export function Field({ name, type = 'text', value, required = true, maxLength, minLength, hint, onEdit, check: given, label, id, invalid, describedBy }: {
   name: string; type?: string; value?: string | undefined; required?: boolean; maxLength?: number | undefined; minLength?: number | undefined; hint?: string | undefined;
-  onEdit?: () => void;
+  onEdit?: (() => void) | undefined;
   /** The format check; by default the one `fieldChecks` has for this name, `null` for none. */
   check?: FieldCheck | null | undefined; label?: string | undefined; id?: string | undefined;
   /** Set by the form when the server refused this value; shown like a failed check. */
@@ -37,7 +37,7 @@ export function Field({ name, type = 'text', value, required = true, maxLength, 
     const current = input.value;
     setResult(!current.trim() ? required ? 'check.required' : 'empty' : check?.(current, input.form) ?? 'ok');
   };
-  const visible = Boolean(check) && result !== null && result !== 'empty';
+  const visible = !invalid && Boolean(check) && result !== null && result !== 'empty';
   const problem = visible && result !== 'ok' ? result : null, bad = invalid || problem !== null;
   const describe = [hint ? hintId : null, visible ? checkId : null, describedBy ?? null].filter(Boolean).join(' ') || undefined;
   return <div className="min-w-0 space-y-2"><Label htmlFor={fieldId}>{label ?? t('setup/setup:' + name)}</Label>

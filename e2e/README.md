@@ -297,3 +297,8 @@ bundled into the app image.
 
 The suite runs locally against the production image. CI can invoke the same
 commands on a Linux Docker runner and retain `e2e/coverage/` as its artifact.
+
+`settings-sign-in.spec.ts` uses API fixtures with the production web bundle at
+360 px and 1280 px. It checks Google refusals clear on credential edits in Settings
+and setup, the Email removal rule stays visible, and an operator-managed payment
+refusal reloads the integrations and hides the form. It retains layout screenshots.

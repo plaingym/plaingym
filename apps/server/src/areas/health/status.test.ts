@@ -86,14 +86,27 @@ describe('built-in providers', () => {
     await audit('setup.step_completed', '2026-10-20T09:00:00Z', { step: 5, revision: 6 });
     await audit('setup.step_completed', '2026-10-20T09:05:00Z', { step: 6, revision: 7 });
     expect(await tile('smtp', id)).toMatchObject({ details: { lastTestAt: '2026-10-20T09:00:00.000Z' } });
+    await audit('setup.step_completed', '2026-10-20T11:00:00Z', { step: 5, test: 'not_sent' });
+    expect(await tile('smtp', id)).toMatchObject({ details: { lastTestAt: '2026-10-20T09:00:00.000Z' } });
     await audit('integrations.email_saved', '2026-10-21T10:00:00Z');
     expect(await tile('smtp', id)).toMatchObject({ details: { lastTestAt: '2026-10-21T10:00:00.000Z' } });
+    await audit('integrations.email_tested', '2026-10-21T11:00:00Z', { test: 'failed' });
+    expect(await tile('smtp', id)).toMatchObject({ status: 'warning', details: { configured: true, lastTestAt: '2026-10-21T11:00:00.000Z' },
+      message: expect.stringContaining('latest test of submitted email settings failed') });
+    await audit('setup.email_tested', '2026-10-21T12:00:00Z', { test: 'sent' });
+    expect(await tile('smtp', id)).toMatchObject({ status: 'healthy', details: { lastTestAt: '2026-10-21T12:00:00.000Z' } });
     // Another gym's test says nothing about this one.
     expect(await tile('smtp', gymA)).toMatchObject({ details: { lastTestAt: null } });
     expect(lastEmailTest([{ action: 'integrations.email_removed', after: null, occurredAt: new Date('2026-10-22T10:00:00Z') },
       { action: 'integrations.email_saved', after: null, occurredAt: new Date('2026-10-21T10:00:00Z') }], true)).toBeNull();
     // The install's own SMTP settings are never tested by the gym.
     expect(lastEmailTest([{ action: 'setup.step_completed', after: { step: 5 }, occurredAt: new Date('2026-10-20T09:00:00Z') }], false)).toBeNull();
+    // A failed test of settings that were never saved says nothing about the install's settings in use.
+    const bare = uuidv7(); await factory('gyms', bare);
+    await database.forGym(bare, (tx) => writeAudit(tx, { gymId: bare, actorKind: 'system', action: 'integrations.email_tested', targetType: 'gym', targetId: bare,
+      after: { test: 'failed' }, occurredAt: new Date('2026-10-21T11:00:00Z') }));
+    expect(await tile('smtp', bare, { env: { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test' } }))
+      .toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null }, message: expect.stringContaining("install's") });
   });
   it('reports Google sign-in: the install’s client, the gym’s own, none, and a malformed variable by name and reason', async () => {
     const single = { ...env, TENANCY: 'single' };
@@ -109,14 +122,17 @@ describe('built-in providers', () => {
       [{ GOOGLE_CLIENT_ID: 'id', GOOGLE_CLIENT_SECRET: 'x'.repeat(513) }, 'GOOGLE_CLIENT_SECRET is longer than 512 characters'],
       [{ GOOGLE_CLIENT_ID: 'only-the-id' }, 'GOOGLE_CLIENT_SECRET is not set']] as const) {
       const result = await tile('google_login', own, { env: { ...single, ...bad } });
-      expect(result).toMatchObject({ status: 'error', details: null, message: expect.stringContaining(text) });
+      expect(result).toMatchObject({ status: 'warning', details: { configured: true }, message: expect.stringContaining(text) });
+      expect(result.message).toContain("this gym's own client");
+      expect(await tile('google_login', gymB, { env: { ...single, ...bad } })).toMatchObject({ status: 'error', details: null });
+      expect(await tile('google_login', own, { env: { ...env, ...bad } })).toMatchObject({ status: 'not_configured', message: 'Google sign-in is off.' });
       expect(JSON.stringify(result)).not.toMatch(/has space|private|xxxx|only-the-id|gym-client-id/);
     }
   });
-  it('surfaces corrupt encrypted SMTP as unavailable without leaking its contents', async () => {
+  it('counts corrupt encrypted SMTP as unconfigured without leaking its contents', async () => {
     const id = uuidv7(); await factory('gyms', id, { smtpConfig: 'sensitive-invalid-ciphertext' });
     const result = await createHealthService(providers()).get(context(id));
-    expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'unavailable', details: null });
+    expect(result.data.tiles.find((t) => t.id === 'smtp')).toMatchObject({ status: 'not_configured', details: { configured: false } });
     expect(JSON.stringify(result)).not.toContain('sensitive-invalid');
   });
   it('checks free space in both directories, including a low staging disk and a full uploads disk', async () => {

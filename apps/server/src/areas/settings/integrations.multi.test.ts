@@ -29,11 +29,11 @@ const gymA = uuidv7(), gymB = uuidv7(), gymC = uuidv7();
 const stored = { host: 'smtp.gym.invalid', port: 587, security: 'starttls', from: 'desk@gym.invalid', username: 'gym-user', password: 'gym-password' } as const;
 let ownerA: string, ownerB: string;
 /** Stands in for a server on the public internet: only this loopback address passes the check. */
-const publicHere = '127.0.0.2';
+const publicHere = '::1';
 let reachable: Awaited<ReturnType<typeof captureSmtp>>, internal: Awaited<ReturnType<typeof captureSmtp>>;
 let answers: string[];
 const lookup = vi.fn(async (_host: string) => answers);
-const hostCheck = { lookup, isPublic: (address: string) => address === publicHere };
+const hostCheck = { lookup, isPublic: vi.fn((address: string) => address === publicHere) };
 /** Real delivery through the config the service hands over; only the port and plain capture differ from production. */
 const seenConfigs: SmtpConfig[] = [];
 const sendTest = async (config: SmtpConfig, message: EmailMessage) => {
@@ -82,6 +82,7 @@ beforeAll(async () => {
 afterAll(async () => { await reachable?.close(); await internal?.close(); });
 beforeEach(async () => {
   answers = [publicHere]; lookup.mockClear(); seenConfigs.length = 0;
+  hostCheck.isPublic.mockImplementation((address: string) => address === publicHere);
   await database.forGym(gymA, (tx) => tx.update(gyms).set({ smtpConfig: null, stripeConfig: null }).where(eq(gyms.id, gymA)));
 });
 
@@ -165,6 +166,7 @@ describe('multi-gym mode, with gym-managed settings allowed', () => {
   it.each([['private', '10.0.0.5'], ['private', '192.168.1.1'], ['loopback', '127.0.0.1'], ['loopback', '::1'], ['link-local', '169.254.169.254'], ['link-local', 'fe80::1'],
     ['IPv4-mapped IPv6', '::ffff:127.0.0.1'], ['IPv4-mapped IPv6', '::ffff:10.0.0.5']])('refuses a host resolving to a %s address (%s) and saves nothing', async (_kind, address) => {
     answers = [address];
+    hostCheck.isPublic.mockReturnValue(false);
     const before = await row(), connections = internal.connections + reachable.connections;
     expect(await saveEmail(app())).toEqual({ status: 200, test: 'failed' });
     expect(internal.connections + reachable.connections).toBe(connections);

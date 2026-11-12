@@ -6,7 +6,7 @@ import { SmtpEmail } from './index.js';
 import { captureSmtp } from './test-smtp.js';
 
 const message = { to: 'member@example.test', subject: 'Receipt', html: '<p>Receipt</p>', text: 'Receipt' };
-const checked = '127.0.0.2', rebound = '127.0.0.1', host = 'mail.gym.example';
+const checked = '::1', rebound = '127.0.0.1', host = 'mail.gym.example';
 let good: Awaited<ReturnType<typeof captureSmtp>>, bad: Awaited<ReturnType<typeof captureSmtp>>;
 /** Each answer has its own capture server, so the one that sees a connection shows which address was used. */
 const lookup = vi.fn<(name: string) => Promise<string[]>>();
@@ -83,10 +83,37 @@ describe('SmtpEmail with publicHostOnly', () => {
       expect(connect.mock.calls[0]?.[0]).not.toHaveProperty('servername');
     } finally { connect.mockRestore(); }
   });
+  it('keeps the original TLS server name and certificate verification on a STARTTLS upgrade', async () => {
+    lookup.mockResolvedValue([checked]);
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket); socket.on('close', () => sockets.delete(socket)); socket.on('error', () => {});
+      socket.write('220 capture ESMTP\r\n');
+      socket.on('data', (data) => {
+        if (data.toString().startsWith('EHLO')) socket.write('250-capture\r\n250 STARTTLS\r\n');
+        else if (data.toString().startsWith('STARTTLS')) socket.write('220 Ready for TLS\r\n');
+        else socket.destroy(); // End after the ClientHello: the test inspects the real upgrade options.
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, checked, resolve); });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing STARTTLS test address');
+    const connect = vi.spyOn(tls, 'connect');
+    try {
+      await using(new SmtpEmail({ ...config(), port: address.port, security: 'starttls' }, { hostCheck }), async (email) => {
+        await expect(email.verifyConnection()).rejects.toMatchObject({ acceptance: 'not_accepted' });
+      });
+      expect(connect).toHaveBeenCalledOnce();
+      expect(connect.mock.calls[0]?.[0]).toMatchObject({ socket: expect.any(net.Socket), servername: host, rejectUnauthorized: true });
+    } finally {
+      connect.mockRestore(); for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
   describe('a host with several addresses', () => {
     // Nothing listens on these loopback addresses, so a connection to either is refused at once.
     const dead = '127.0.0.3', alsoDead = '127.0.0.4', v6 = '2001:db8::25';
-    const several = { lookup, isPublic: (address: string) => [checked, dead, alsoDead, v6].includes(address), families: () => new Set([4] as const) };
+    const several = { lookup, isPublic: (address: string) => [checked, dead, alsoDead, v6].includes(address), families: () => new Set([4, 6] as const) };
     const connected = (connect: { mock: { calls: unknown[][] } }) => connect.mock.calls.map((call) => (call[0] as { host?: string }).host);
     it('connects to the next checked address when one refuses, within one lookup', async () => {
       lookup.mockResolvedValue([dead, checked]);
@@ -109,11 +136,12 @@ describe('SmtpEmail with publicHostOnly', () => {
       } finally { connect.mockRestore(); }
     });
     it('skips a family the machine has no interface for', async () => {
-      lookup.mockResolvedValue([v6, checked]);
+      lookup.mockResolvedValue([v6, rebound]);
       const connect = vi.spyOn(net, 'connect');
       try {
-        await using(new SmtpEmail(config(), { hostCheck: several }), async (email) => expect(await email.sendEmail(message)).toMatchObject({ status: 'sent' }));
-        expect(connected(connect)).toEqual([checked]);
+        await using(new SmtpEmail({ ...config(), port: bad.port }, { hostCheck: { ...several,
+          isPublic: () => true, families: () => new Set([4] as const) } }), async (email) => expect(await email.sendEmail(message)).toMatchObject({ status: 'sent' }));
+        expect(connected(connect)).toEqual([rebound]);
       } finally { connect.mockRestore(); }
     });
     it('never moves on once the envelope is under way, so a message can\'t go out twice', async () => {

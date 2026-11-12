@@ -149,9 +149,10 @@ Google sign-in is optional. Its OAuth client comes from one of two places:
   When the pair is malformed (only one of the two set, a space or line break in a
   value, or a value longer than 512 characters), the app still starts, without that
   client: it logs `auth.google_environment_invalid` once, naming the variable and the
-  reason but never the value, and the **Google sign-in** tile on the Health page and
-  **Settings → Google sign-in** say the same until you correct `.env` and restart.
-  A client the owner entered in the app is used meanwhile.
+  reason but never the value. On a single-gym install the **Google sign-in** tile
+  and Settings report the problem until you correct `.env` and restart. A stored
+  gym client is used meanwhile, and Health reports it in use with a warning.
+  On a multi-gym install only the startup log reports malformed variables.
 
 Before saving a client entered in the app, the wizard and Settings ask Google's token
 endpoint about it with a made-up authorization code. If Google says it doesn't know

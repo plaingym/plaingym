@@ -66,6 +66,7 @@ export function EmailIntegrationSection({ email, editable, state }: { email: Ema
       ? text('email.sourceGym', { host: email.host ?? '', port: email.port ?? '', security: label('security_' + (email.security ?? 'starttls')), from: email.from ?? '' })
       : label(email.source === 'install' ? 'sourceInstall' : 'sourceNone')}</p>
     <p className="text-sm text-muted-foreground">{text('email.signIn', { methods: methods(email.signIn) })}</p>
+    {editable && email.source === 'gym' && <p className="text-sm text-muted-foreground">{label('googleRemovalRule')}</p>}
     <FormMessage message={message}/>
     {editable && <>
       {email.source === 'gym' && <div className="grid min-w-0 gap-2">

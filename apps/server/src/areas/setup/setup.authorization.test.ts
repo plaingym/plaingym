@@ -108,6 +108,8 @@ describe('setup owner authorization and tenant isolation', () => {
       sendTest: async (config) => { assertNoTransaction('setup test email'); expect(config.security).toBe('tls'); } });
     const context = { gymId: gymB, actor: { kind: 'user', userId: userB } } as const;
     expect(await instance.smtp(context, { choice: 'skip', revision: 1 })).toMatchObject({ configured: true, test: 'not_sent', revision: 2 });
+    const [audit] = await database.forGym(gymB, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'setup.step_completed')));
+    expect(audit).toMatchObject({ after: { step: 5, test: 'not_sent' } });
     const resolver = createSmtpResolver({ key, env, scope: database.forGym });
     expect(await resolver.config(gymB)).toMatchObject({ host: env.SMTP_HOST });
     expect(await instance.smtp(context, { choice: 'configure', revision: 2, host: 'smtp.gym.example', port: 465, secure: true,

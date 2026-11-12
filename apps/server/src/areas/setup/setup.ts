@@ -78,7 +78,8 @@ export function createSetupService(options: {
     });
   }
   async function save(context: MutationContext, revision: number, step: number,
-    changes: Partial<Gym> = {}, extra: Partial<Progress> = {}, effect?: (tx: Transaction) => Promise<void>, previousStep = step - 1) {
+    changes: Partial<Gym> = {}, extra: Partial<Progress> = {}, effect?: (tx: Transaction) => Promise<void>, previousStep = step - 1,
+    audit: { action?: string; completeStep?: boolean; before?: (gym: Gym) => Record<string, unknown>; after?: Record<string, unknown> } = {}) {
     return scope(context.gymId, async (tx) => {
       const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
       if (!before) throw missing();
@@ -94,13 +95,15 @@ export function createSetupService(options: {
       }
       assertRevised(before.revision === revision ? [before] : []);
       await effect?.(tx);
-      const next = { ...state, ...extra, completedSteps: extra.completedSteps ?? [...new Set([...state.completedSteps, step])].sort((a, b) => a - b) };
+      const next = { ...state, ...extra, completedSteps: extra.completedSteps ?? (audit.completeStep === false ? state.completedSteps
+        : [...new Set([...state.completedSteps, step])].sort((a, b) => a - b)) };
       const after = assertRevised(await tx.update(gyms).set({ ...changes,
         settings: { ...before.settings as object, setup: next }, revision: guard.next, updatedAt: clock.now(),
       }).where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
       await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: context.actor.userId,
-        action: 'setup.step_completed', targetType: 'gym', targetId: context.gymId,
-        after: { step, revision: after.revision }, occurredAt: clock.now() });
+        action: audit.action ?? 'setup.step_completed', targetType: 'gym', targetId: context.gymId,
+        ...(audit.before ? { before: audit.before(before) } : {}),
+        after: { ...(audit.after ?? { step }), revision: after.revision }, occurredAt: clock.now() });
       return after;
     });
   }
@@ -207,13 +210,19 @@ export function createSetupService(options: {
     async smtp(context: MutationContext, input: SetupSmtpRequest) {
       await current(context, input.revision, 5);
       if (input.choice === 'skip') {
-        const gym = await save(context, input.revision, 5);
+        const gym = await save(context, input.revision, 5, {}, {}, undefined, 4, { after: { step: 5, test: 'not_sent' } });
         return { configured: await createSmtpResolver({ key: options.key, env, scope }).configured(context.gymId), test: 'not_sent' as const, revision: gym.revision };
       }
       const stored = storedSmtpFromRequest(input);
-      if (!await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest))
+      const sent = await sendSmtpTest(stored, setupTestMessage(input.testTo), options.sendTest);
+      await scope(context.gymId, (tx) => writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
+        actorUserId: context.actor.kind === 'user' ? context.actor.userId : undefined,
+        action: 'setup.email_tested', targetType: 'gym', targetId: context.gymId,
+        after: { test: sent ? 'sent' : 'failed' }, occurredAt: clock.now() }));
+      if (!sent)
         return { configured: false, test: 'failed' as const, revision: input.revision };
-      const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) });
+      const gym = await save(context, input.revision, 5, { smtpConfig: encryptSmtpConfig(options.key, context.gymId, stored) }, {}, undefined, 4,
+        { after: { step: 5, test: 'sent' } });
       return { configured: true, test: 'sent' as const, revision: gym.revision };
     },
     /**
@@ -228,21 +237,8 @@ export function createSetupService(options: {
       const credentials = { clientId: input.clientId, clientSecret: input.clientSecret };
       const check = await requireGoogleClient(credentials, options.origin, options.checkGoogle);
       const value = encryptGoogleConfig(options.key, context.gymId, credentials);
-      const gym = await scope(context.gymId, async (tx) => {
-        const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
-        if (!before) throw missing();
-        const state = progress(before);
-        if (context.actor.kind !== 'user' || state.ownerId !== context.actor.userId) throw missing();
-        if (!state.completedSteps.includes(5)) throw new AppError('conflict', 'Complete the preceding setup step');
-        assertRevised(before.revision === input.revision ? [before] : []);
-        const guard = revisionGuard(gyms.revision, input.revision);
-        const after = assertRevised(await tx.update(gyms).set({ googleConfig: value, revision: guard.next, updatedAt: clock.now() })
-          .where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
-        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: context.actor.userId, action: 'setup.google_saved',
-          targetType: 'gym', targetId: context.gymId, before: { source: before.googleConfig ? 'gym' : 'none' },
-          after: { source: 'gym', revision: after.revision }, occurredAt: clock.now() });
-        return after;
-      });
+      const gym = await save(context, input.revision, 6, { googleConfig: value }, {}, undefined, 5,
+        { action: 'setup.google_saved', completeStep: false, before: (before) => ({ source: before.googleConfig ? 'gym' : 'none' }), after: { source: 'gym' } });
       return { configured: true as const, check, revision: gym.revision };
     },
     /**
@@ -252,20 +248,8 @@ export function createSetupService(options: {
     async decide(context: MutationContext, input: SetupDecisionRequest) {
       const change = input.decision === 'skip_google' ? { googleSkipped: true } : { backupsLater: input.decision === 'backups_later' };
       const needs = input.decision === 'skip_google' ? 5 : 6;
-      return present(await scope(context.gymId, async (tx) => {
-        const [before] = await tx.select().from(gyms).where(eq(gyms.id, context.gymId)).for('update');
-        if (!before) throw missing();
-        const state = progress(before);
-        if (context.actor.kind !== 'user' || state.ownerId !== context.actor.userId) throw missing();
-        if (!state.completedSteps.includes(needs)) throw new AppError('conflict', 'Complete the preceding setup step');
-        assertRevised(before.revision === input.revision ? [before] : []);
-        const guard = revisionGuard(gyms.revision, input.revision);
-        const after = assertRevised(await tx.update(gyms).set({ settings: { ...before.settings as object, setup: { ...state, ...change } },
-          revision: guard.next, updatedAt: clock.now() }).where(and(eq(gyms.id, context.gymId), guard.matches)).returning());
-        await writeAudit(tx, { gymId: context.gymId, actorKind: 'user', actorUserId: context.actor.userId, action: 'setup.decision_recorded',
-          targetType: 'gym', targetId: context.gymId, after: { decision: input.decision, revision: after.revision }, occurredAt: clock.now() });
-        return after;
-      }));
+      return present(await save(context, input.revision, needs + 1, {}, change, undefined, needs,
+        { action: 'setup.decision_recorded', completeStep: false, after: { decision: input.decision } }));
     },
     /** Step 6 validates the restricted key and registers the webhook outside any transaction. */
     stripe(context: MutationContext, input: SetupStripeRequest) { return stripeStep.configure(context, input); },

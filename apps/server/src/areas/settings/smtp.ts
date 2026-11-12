@@ -5,6 +5,7 @@ import { forGym, gyms } from '@plaingym/db';
 import { SmtpEmail, type EmailMessage, type SmtpConfig } from '../../infra/email/index.js';
 import { decryptSecret, encryptSecret } from '../../core/secrets.js';
 import { tenancyMode } from '../../core/tenancy.js';
+import { readStoredSecret } from './unreadable-secret.js';
 
 /** The gym's own sending service, stored encrypted in `gyms.smtp_config_encrypted`. */
 export const storedSmtpSchema = z.strictObject({
@@ -62,11 +63,15 @@ export function createSmtpResolver(options: { key: Buffer; env?: NodeJS.ProcessE
   // On a multi-gym install a gym's own server is a tenant's choice; the install's own never is.
   const tenantHosts = tenancyMode((options.env ?? process.env).TENANCY) === 'multi';
   const storedConfig = (gymId: string) => scope(gymId, async (tx) => (await tx.select({ smtp: gyms.smtpConfig }).from(gyms).where(eq(gyms.id, gymId)))[0]?.smtp);
-  async function config(gymId: string): Promise<SmtpConfig | null> {
+  async function ownConfig(gymId: string) {
     const stored = await storedConfig(gymId);
-    if (!stored) return fallback;
-    return fromStored(readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored))), tenantHosts);
+    return readStoredSecret(options.key, 'smtp_config', gymId, stored ?? null, () =>
+      readSmtpSchema.parse(JSON.parse(decryptSecret(options.key, { secretClass: 'smtp_config', owner: gymId }, stored!))));
+  }
+  async function config(gymId: string): Promise<SmtpConfig | null> {
+    const own = await ownConfig(gymId);
+    return own ? fromStored(own, tenantHosts) : fallback;
   }
   return { config, async configured(gymId) { return (await config(gymId)) !== null; },
-    async source(gymId) { return await storedConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };
+    async source(gymId) { return await ownConfig(gymId) ? 'gym' : fallback ? 'install' : null; } };
 }

@@ -37,9 +37,14 @@ describe('per-gym SMTP with an install-wide fallback', () => {
     expect(await smtp.configured(gymB)).toBe(false);
     expect(await smtp.configured(gymA)).toBe(true);
   });
-  it('rejects stored settings encrypted with another key', async () => {
+  it('treats unreadable stored settings as unconfigured and uses only the install fallback', async () => {
     const smtp = createSmtpResolver({ key: parseEncryptionKey('cd'.repeat(32)), env, scope: database.forGym });
-    await expect(smtp.config(gymA)).rejects.toThrow();
+    expect(await smtp.source(gymA)).toBe('install');
+    expect(await smtp.config(gymA)).toMatchObject({ host: env.SMTP_HOST });
+    const absent = createSmtpResolver({ key: parseEncryptionKey('cd'.repeat(32)), env: {}, scope: database.forGym });
+    expect(await absent.configured(gymA)).toBe(false);
+    expect(await absent.config(gymA)).toBeNull();
+    expect(await absent.source(gymA)).toBeNull();
   });
   it('reads a stored value a newer release added a key to, and still refuses an unknown key on a save', async () => {
     const gymId = uuidv7();

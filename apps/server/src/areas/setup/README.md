@@ -13,6 +13,11 @@ across app processes. Failed backup verification removes only its own reservatio
 Pack application and progress share one short transaction. SMTP sends its test
 outside a transaction and saves encrypted settings only after successful delivery.
 Skipping SMTP keeps the existing gym and install configuration.
+Each submitted test records `setup.email_tested` with `test: 'sent' | 'failed'`,
+without credentials or the recipient. Step 5 completion records `test: 'sent'`
+or `'not_sent'`, so skipping cannot replace the Health tile's last test time.
+Step saves, Google saves and decisions share the locked owner, preceding-step
+and revision checks; Google saves and decisions do not complete a step.
 
 The optional Google page after the email step (`PUT /api/setup/google`, contract step 5)
 stores the gym's own OAuth client with `encryptGoogleConfig` (`settings/google-login.ts`)

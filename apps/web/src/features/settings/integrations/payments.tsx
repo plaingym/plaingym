@@ -22,7 +22,7 @@ type Message = { kind: 'status' | 'alert'; text: string };
 function refusal(reply: ChangeResult<unknown>, mode: PaymentsIntegration['mode']): Message {
   const reason = reply.reason === 'mode_locked' && mode === 'live' ? 'modeLockedLive' : reply.reason ? refusals[reply.reason] : undefined;
   return { kind: 'alert', text: reason ? label(reason)
-    : reply.status === 409 ? refusedText(reply) : reply.status === 400 ? label('invalid') : label('failed') };
+    : reply.reason === 'operator_managed' || reply.status === 409 ? refusedText(reply) : reply.status === 400 ? label('invalid') : label('failed') };
 }
 
 /**

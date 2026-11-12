@@ -78,6 +78,10 @@ describe('Settings → Google sign-in', () => {
     expect(alert.dataset.variant).toBe('error');
     await waitFor(() => expect(document.activeElement).toBe(alert));
     for (const name of ['Client ID', 'Client secret']) expect(screen.getByLabelText(name).getAttribute('aria-invalid')).toBe('true');
+    await userEvent.type(screen.getByLabelText('Client ID'), 'x');
+    for (const name of ['Client ID', 'Client secret']) expect(screen.getByLabelText(name).getAttribute('aria-invalid')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/doesn't recognise this client ID and secret/)).toBeNull();
     const saved: GoogleLogin = { ...off, source: 'gym', clientId: 'unchecked-client', clientSecretSet: true, revision: 4 };
     server.PUT.mockImplementation(async () => { google = saved; return reply(200, { data: { ...saved, check: 'unknown' } }); });
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));

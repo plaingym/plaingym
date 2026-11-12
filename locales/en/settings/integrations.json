@@ -46,6 +46,7 @@
   "email.removing": "Removing…",
   "email.removed": "The gym’s own email settings are removed.",
   "email.onlySignIn": "Email links are your only way to sign in, since your account has no password. Removing email would lock you out.",
+  "email.googleRemovalRule": "The removal check counts Google when it is configured for this gym. It does not check whether your account can use it. Before removing email, sign out and confirm you can sign in with Google, or set a password while password sign-in is enabled.",
   "email.notConfigured": "The gym has no email settings of its own.",
   "payments.title": "Payments",
   "payments.configured": "Stripe is connected in {mode} mode.",

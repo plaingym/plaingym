@@ -122,7 +122,8 @@ it.each([
   const start = await request('/api/auth/sign-in/social', { method: 'POST', body: JSON.stringify({ provider: 'google' }) });
   expect(new URL((await start.json() as { url: string }).url).searchParams.get('client_id')).toBe('stored-client');
   const tile = (await (await request('/api/health', { cookie })).json()).data.tiles.find((candidate: { id: string }) => candidate.id === 'google_login');
-  expect(tile).toMatchObject({ status: 'error', details: null, message: expect.stringContaining(problem.variable) });
+  expect(tile).toMatchObject({ status: 'warning', details: { configured: true }, message: expect.stringContaining(problem.variable) });
+  expect(tile.message).toContain("this gym's own client");
   const settings = (await (await request('/api/settings/integrations/google', { cookie })).json()).data;
   expect(settings).toMatchObject({ source: 'gym', editable: true, installProblem: problem });
   expect(JSON.stringify([lines, tile, settings])).not.toMatch(/client id|client-secret|ssss/);

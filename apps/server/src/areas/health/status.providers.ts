@@ -20,22 +20,25 @@ export interface StatusOptions {
   jobs?: JobStatsQuery;
   disk?: (path: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
 }
-/** Audit rows that tell when the gym's own SMTP settings last passed a test email. */
-const emailTestActions = ['integrations.email_saved', 'integrations.email_removed', 'setup.step_completed'];
+/** Audit rows for submitted SMTP tests, plus legacy saves and removal. */
+const emailTestActions = ['integrations.email_saved', 'integrations.email_removed', 'setup.step_completed', 'integrations.email_tested', 'setup.email_tested'];
 /**
- * When the gym's own SMTP settings last passed a test email, or null. Settings → Email and the setup wizard's email step
- * each send a test and save the settings only once it is accepted (`integrations.email_saved`, or the wizard's step 5
- * while the gym has settings of its own); removing them (`integrations.email_removed`) leaves no tested settings.
- * A failed test saves nothing, and the install's own `SMTP_*` settings are never tested here.
+ * The latest submitted SMTP test and its outcome, while the gym's own settings are in use (legacy saves too);
+ * an explicit skip never counts. Removing the settings clears earlier tests, and install SMTP isn't tested here.
  */
-export function lastEmailTest(rows: readonly { action: string; after: unknown; occurredAt: Date }[], ownSettings: boolean): string | null {
+function latestEmailTest(rows: readonly { action: string; after: unknown; occurredAt: Date }[], ownSettings: boolean): { at: string; failed: boolean } | null {
   for (const row of rows) {
+    const after = row.after as { step?: unknown; test?: unknown } | null;
+    if ((row.action === 'integrations.email_tested' || row.action === 'setup.email_tested') && (after?.test === 'sent' || after?.test === 'failed'))
+      return ownSettings ? { at: row.occurredAt.toISOString(), failed: after.test === 'failed' } : null;
     if (row.action === 'integrations.email_removed') return null;
-    if (row.action === 'integrations.email_saved') return ownSettings ? row.occurredAt.toISOString() : null;
-    const step = (row.after as { step?: unknown } | null)?.step;
-    if (row.action === 'setup.step_completed' && step === 5) return ownSettings ? row.occurredAt.toISOString() : null;
+    if (row.action === 'integrations.email_saved' || (row.action === 'setup.step_completed' && after?.step === 5 && after.test !== 'not_sent'))
+      return ownSettings ? { at: row.occurredAt.toISOString(), failed: false } : null;
   }
   return null;
+}
+export function lastEmailTest(rows: readonly { action: string; after: unknown; occurredAt: Date }[], ownSettings: boolean): string | null {
+  return latestEmailTest(rows, ownSettings)?.at ?? null;
 }
 export function createStatusProviders(options: StatusOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym;
@@ -55,17 +58,20 @@ export function createStatusProviders(options: StatusOptions = {}) {
       // The wizard writes a handful of step rows; the latest email row is among the newest of these few actions.
       const rows = await scope(context.gymId, (tx) => tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
         .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50));
-      return { id: 'smtp', status: configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
-        details: { configured, lastTestAt: lastEmailTest(rows, source === 'gym') }, message: statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
+      const test = latestEmailTest(rows, source === 'gym');
+      const message = statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing');
+      return { id: 'smtp', status: test?.failed ? 'warning' : configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
+        details: { configured, lastTestAt: test?.at ?? null }, message: test?.failed ? message + ' ' + statusMessage('smtpTestFailed') : message };
     }),
     // A malformed GOOGLE_* variable no longer stops the app: this tile says which one and why, until it is fixed.
     healthProvider('google_login', async (context) => {
       const tenancy = (env.TENANCY ?? 'single') === 'multi' ? 'multi' : 'single';
       const resolver = createGoogleClientResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, tenancy, scope });
       const checkedAt = context.clock.now().toISOString();
-      if (resolver.problem) return { id: 'google_login', status: 'error', checkedAt, details: null,
-        message: statusMessage('googleProblem.' + resolver.problem.reason, { variable: resolver.problem.variable }) };
       const configured = await resolver.credentials(context.gymId) !== null;
+      if (resolver.problem && tenancy === 'single') return { id: 'google_login', status: configured ? 'warning' : 'error', checkedAt,
+        details: configured ? { configured } : null, message: (configured ? statusMessage('googleGym') + ' ' : '')
+          + statusMessage('googleProblem.' + resolver.problem.reason, { variable: resolver.problem.variable }) };
       return { id: 'google_login', status: configured ? 'healthy' : 'not_configured', checkedAt, details: { configured },
         message: statusMessage(configured ? resolver.install ? 'googleInstall' : 'googleGym' : 'googleMissing') };
     }),

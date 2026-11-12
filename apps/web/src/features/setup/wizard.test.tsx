@@ -429,6 +429,10 @@ describe('setup wizard confirmations', () => {
     }
     expect(actionBar().getByText('See the message at the top of this step.')).toBeDefined();
     expect(screen.queryByLabelText('Restricted Stripe key')).toBeNull();
+    await userEvent.type(screen.getByLabelText('Client ID'), 'x');
+    for (const name of ['Client ID', 'Client secret']) expect(screen.getByLabelText(name).getAttribute('aria-invalid')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/doesn't recognise this client/)).toBeNull();
   });
   it('shows the backup key labelled, then confirms it and stays with a word that backups are on', async () => {
     start(7);

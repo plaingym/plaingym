@@ -20,8 +20,8 @@ async function fetchIntegrations(): Promise<Integrations> {
  */
 export interface ChangeResult<T> { status: number; reason: string | null; result: T | null; moved: boolean }
 /** The text for a refusal no section names in its own words: a conflict says whether the latest settings are shown. */
-export const refusedText = (reply: { status: number; moved: boolean }) =>
-  text(reply.status === 409 ? (reply.moved ? 'conflict' : 'conflictKept') : 'error');
+export const refusedText = (reply: { status: number; moved: boolean; reason?: string | null }) =>
+  text(reply.reason === 'operator_managed' ? 'operatorManaged' : reply.status === 409 ? (reply.moved ? 'conflict' : 'conflictKept') : 'error');
 /** The text for a change that threw: one that timed out may still have gone through. */
 export const failedText = (error: unknown) => text(error instanceof SaveTimeoutError ? 'timeout' : 'error');
 const reasonOf = (body: unknown) => {
@@ -46,8 +46,9 @@ export function useIntegrations() {
       cache.setQueryData(integrationsKey, picked.integrations);
       return { status: saved.status, reason: null, result: picked.result, moved: false };
     }
-    if (saved.status === 409) await query.refetch();
-    return { status: saved.status, reason: reasonOf(saved.error), result: null, moved: saved.moved };
+    const reason = reasonOf(saved.error);
+    if (saved.status === 409 || reason === 'operator_managed') await query.refetch();
+    return { status: saved.status, reason, result: null, moved: saved.moved };
   }
   return { integrations: query.data, gymId: gym.settings?.id, ready: Boolean(query.data && gym.settings), failed: query.isError || gym.failed, reload, change };
 }

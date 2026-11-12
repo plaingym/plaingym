@@ -69,11 +69,22 @@ describe('Settings → Email', () => {
     await user.click(within(form).getByRole('button', { name: 'Send test email and save' }));
     expect((await screen.findByRole('alert')).textContent).toBe('Use an SMTP port: 25, 465, 587 or 2525.');
   });
+  it('reloads a refusal after the operator takes over email and hides the form', async () => {
+    const user = userEvent.setup(); renderSection();
+    const form = await fill(user);
+    await user.click(within(form).getByRole('checkbox', { name: /I understand/ }));
+    client.PUT.mockImplementation(async () => { current = { ...integrations, integrationsEditable: false };
+      return refusal(403, 'integrations', 'operator_managed'); });
+    await user.click(within(form).getByRole('button', { name: 'Send test email and save' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Whoever runs this install manages email and payments/);
+    expect(screen.queryByRole('form', { name: 'Use your own SMTP service' })).toBeNull();
+  });
   it('removes the gym’s settings after saying how sign-in changes', async () => {
     current = gymEmail;
     client.DELETE.mockResolvedValue(reply(200, { data: { ...integrations, revision: 5, email: { ...integrations.email, source: 'none' } } }));
     const user = userEvent.setup(); renderSection();
     expect(await screen.findByText('Removing changes sign-in to: passwords.')).toBeDefined();
+    expect(screen.getByText(/It does not check whether your account can use it/)).toBeDefined();
     await user.click(screen.getByRole('button', { name: 'Remove (the gym will have no email)' }));
     expect(client.DELETE).toHaveBeenCalledWith('/api/settings/integrations/email', { signal: expect.any(AbortSignal), body: { revision: 3 } });
     expect((await screen.findByRole('status')).textContent).toContain('removed');

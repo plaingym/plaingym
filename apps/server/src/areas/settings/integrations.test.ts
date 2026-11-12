@@ -119,6 +119,8 @@ describe('Settings → Email', () => {
     expect(failed.status).toBe(200);
     expect(saveEmailIntegrationResponseSchema.parse(failed.json).data).toMatchObject({ test: 'failed', integrations: { revision: before.revision, email: { source: 'none' } } });
     expect((await row()).smtpConfig).toBeNull();
+    expect(await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_tested'))))
+      .toEqual([expect.objectContaining({ actorUserId: owner, after: { test: 'failed' } })]);
 
     const saved = saveEmailIntegrationResponseSchema.parse((await call(server(), 'PUT', '/email', email(before.revision))).json).data;
     expect(sendTest).toHaveBeenLastCalledWith(expect.objectContaining({ host: 'smtp.gym.invalid', port: 465, security: 'tls' }),
@@ -128,6 +130,8 @@ describe('Settings → Email', () => {
     expect(JSON.parse(decryptSecret(key, { secretClass: 'smtp_config', owner: gymA }, (await row()).smtpConfig!))).toMatchObject({ username: 'gym-user', password: smtpPassword });
     const [audit] = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_saved')));
     expect(audit).toMatchObject({ actorUserId: owner, before: { source: 'none' }, after: { source: 'gym', host: 'smtp.gym.invalid', revision: before.revision + 1 } });
+    const tests = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.action, 'integrations.email_tested')));
+    expect(tests.map((test) => test.after)).toEqual(expect.arrayContaining([{ test: 'sent' }, { test: 'failed' }]));
   });
   it('refuses a stale revision before sending anything', async () => {
     const { revision } = await read();

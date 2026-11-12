@@ -132,6 +132,17 @@ describe('Settings → Google sign-in', () => {
     expect(replaced).toMatchObject({ clientId: 'second-client', clientSecretSet: true, revision: current.revision + 1 });
     expect(JSON.parse(decryptSecret(key, { secretClass: 'google_config', owner: gymA }, (await row()).googleConfig!))).toEqual({ clientId: 'second-client', clientSecret: 'second-secret-never-shown' });
   });
+  it('does not count corrupt SMTP as a way in when removing Google, and login agrees', async () => {
+    await database.forGym(gymA, (tx) => tx.update(gyms).set({ smtpConfig: 'unreadable-smtp' }).where(eq(gyms.id, gymA)));
+    try {
+      const current = await read();
+      expect(current.removeBlocked).toBe(true);
+      expect((await call(server(), 'DELETE', { revision: current.revision })).json?.error?.details).toEqual({ google: ['only_sign_in'] });
+      expect((await service.get(gymA, owner)).email.signIn).toEqual({ magicLink: false, password: true });
+    } finally {
+      await database.forGym(gymA, (tx) => tx.update(gyms).set({ smtpConfig: null }).where(eq(gyms.id, gymA)));
+    }
+  });
   it('refuses to remove the client while Google is the owner’s only way to sign in, then removes it', async () => {
     // No email anywhere and password login off: the owner signs in only with Google.
     const offEnv = { ...env, AUTH_PASSWORD_LOGIN: 'off' };
@@ -176,6 +187,8 @@ describe('Settings → Google sign-in', () => {
     const app = server({ gymId: gymB, routesService: multi });
     const status = await read(app);
     expect(status).toMatchObject({ source: 'none', editable: false, clientId: null, clientSecretSet: false });
+    const malformed = createIntegrationsService({ ...base, env: { ...multiEnv, GOOGLE_CLIENT_ID: 'only-id' }, config: authConfig(multiEnv, true) });
+    expect(await malformed.getGoogle(gymB, ownerB)).not.toHaveProperty('installProblem');
     expect((await save(app, status.revision)).status).toBe(404);
     expect((await call(app, 'DELETE', { revision: status.revision })).status).toBe(404);
     expect(await createGoogleClientResolver({ key, env: multiEnv, tenancy: 'multi', scope: database.forGym }).credentials(gymB)).toBeNull();

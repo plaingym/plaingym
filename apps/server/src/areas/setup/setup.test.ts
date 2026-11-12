@@ -219,6 +219,10 @@ describe('first-boot setup', () => {
     await database.forSystem((tx) => tx.update(gyms).set({ backupDestination: row!.backupDestination }));
     expect(decryptSecret(key, { secretClass: 's3_config', owner: gymId }, row!.s3Config!)).toContain('private-storage-key');
     const audits = await database.forGym(gymId, (tx) => tx.select().from(auditEvents));
+    expect(audits.filter((audit) => audit.action === 'setup.email_tested').map((audit) => audit.after))
+      .toEqual(expect.arrayContaining([{ test: 'failed' }, { test: 'sent' }]));
+    expect(audits.find((audit) => audit.action === 'setup.step_completed' && (audit.after as { step?: number }).step === 5))
+      .toMatchObject({ after: { step: 5, test: 'sent' } });
     expect(JSON.stringify([row, audits], (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value)).not.toContain(keys.privateKey);
     expect(JSON.stringify(audits)).not.toMatch(/private-smtp-password|private-storage-key|owner-password|PrivateSetupKey|whsec_|private-google-secret|setup-client/);
     expect(audits.find((audit) => audit.action === 'setup.google_saved')).toMatchObject({ before: { source: 'none' }, after: { source: 'gym' } });

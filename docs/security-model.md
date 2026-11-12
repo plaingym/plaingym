@@ -197,6 +197,13 @@ covers **Settings → Updates**, the switch for automatic patch updates, and
 **Settings → Google sign-in** (with the wizard's Google page), whose client
 secret is never returned, logged or audited.
 
+Removing gym SMTP settings counts a configured Google client for the gym as a
+remaining sign-in method; it does not check whether the owner's identity can use
+Google. The Email section explains this rule and asks the owner to confirm Google
+sign-in first. Unreadable stored SMTP credentials count as unconfigured for login
+and Google removal; email then uses install SMTP if available. The unreadable
+value is logged without its contents and stays stored until replaced or removed.
+
 On a multi-gym install the email and payments parts are the operator's by default
 (`GYM_INTEGRATIONS=operator`): the sections are read-only and their write routes
 answer 403 even for an owner. With `GYM_INTEGRATIONS=gym` owners can name their own
