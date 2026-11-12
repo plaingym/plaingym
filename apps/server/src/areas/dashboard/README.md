@@ -4,8 +4,8 @@
 `createDashboardService({ members, ranks, attendance, notSeen })` requires an
 explicit scoped `notSeen` read from `createNotSeenRead(scope)`. This read also
 supplies `lastSeen(context, memberIds)` for promotion details. Providers have no
-global database fallback. `configureDashboard` composes the production read when
-one is not supplied; tests inject their isolated scope. The static route is
+global database fallback. The runtime passes `createNotSeenRead()`; tests inject
+their isolated scope. The static route is
 included in the area barrel and OpenAPI generation; it returns 503 until configured.
 The request supplies the gym, staff roles, clock, and enabled modules. Responses
 are not cached by HTTP, and the web query cache includes the gym and roles.

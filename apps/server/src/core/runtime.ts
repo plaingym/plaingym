@@ -37,6 +37,7 @@ import { createMembersService } from '../areas/members/members.js';
 import { configureStaffProfiles } from '../areas/staff/profiles.routes.js';
 import { createStaffInvitationService, smtpMailer } from '../areas/staff/profiles.invitations.js';
 import { configureDashboard } from '../areas/dashboard/dashboard.routes.js';
+import { createNotSeenRead } from '../areas/dashboard/not-seen.js';
 import { configureBillingDashboard } from '../areas/dashboard/billing.routes.js';
 import { createSkippedCollectionsProvider } from '../areas/dashboard/billing.js';
 import { createFollowUpsDueProvider } from '../areas/dashboard/leads.js';
@@ -384,7 +385,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
   configureBillingDashboard({ settings, memberships, payments });
   // The dashboard reads the same services as portal progress, with the ranks criteria registry and clock; its
   // skipped-collections entry needs the payment service, so it is configured here.
-  configureDashboard({ members: createMembersService({ clock }), ranks, attendance }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
+  configureDashboard({ members: createMembersService({ clock }), ranks, attendance, notSeen: createNotSeenRead() }, [createDisputeAlertProvider(), createPinLimitWidgetProvider(),
     createPortalConfirmationWidgetProvider(), createSkippedCollectionsProvider({ settings, payments }),
     createFollowUpsDueProvider({ settings })]);
   configurePaymentDelivery({ notifications: billing.notifications, detachCard });
