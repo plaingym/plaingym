@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { requestWithLength } from '../../../test/request.js';
+import { jsonInit, requestWithLength } from '../../../test/request.js';
 import { describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
@@ -112,8 +112,11 @@ async function fixture(mode: 'email' | 'password' = 'email', start = '2026-10-29
     session: async (ctx, next) => { ctx.set('context', { ...ctx.get('context'), principal: { kind: 'anonymous' } }); await next(); } });
   const server = app();
   const get = (path: string, cookie = '', target = server) => target.request(origin + path, { headers: cookie ? { cookie } : {} });
-  const post = (path: string, body: unknown, cookie = '', target = server) => target.request(origin + path, { method: 'POST',
-    headers: { origin, ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(JSON.stringify(body))) }), ...(cookie ? { cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const post = (path: string, body: unknown, cookie = '', target = server) => {
+    const init = body === undefined ? { headers: {} } : jsonInit(body);
+    return target.request(origin + path, { method: 'POST', ...init,
+      headers: { ...init.headers, origin, ...(cookie ? { cookie } : {}) } });
+  };
   const signer = (person: Person) => person.dateOfBirth > '2008-10-29' ? { kind: 'guardian' as const, name: 'Pat Payer', relationship: 'Parent' }
     : { kind: 'self' as const, name: person.firstName + ' ' + person.lastName };
   async function admit(people: Person[], email: string, planId: string) {

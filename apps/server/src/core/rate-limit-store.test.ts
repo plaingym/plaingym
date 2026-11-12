@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { requestWithLength } from '../../test/request.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -99,10 +100,12 @@ it('public route factories use the registered shared store before their validato
   expect(limited.filter(r => r.definition.path === documentPath)).toHaveLength(1);
   const app = f.make(false, allRoutes);
   for (const route of intake) {
-    const response = await app.request(route.definition.path.replace(/\{[^}]+\}/g, 'invalid'), {
+    const path = 'http://localhost' + route.definition.path.replace(/\{[^}]+\}/g, 'invalid');
+    const init = {
       method: route.definition.method.toUpperCase(),
-      ...(route.definition.method === 'get' ? {} : { headers: { 'content-type': 'application/json', 'content-length': '13' }, body: '{invalid json' }),
-    });
+      ...(route.definition.method === 'get' ? {} : { headers: { 'content-type': 'application/json' }, body: '{invalid json' }),
+    };
+    const response = await app.request(route.definition.method === 'get' ? new Request(path, init) : await requestWithLength(path, init));
     expect(response.status, route.id).toBe(429);
   }
   // Document reads have their own budget for a shared address. An exhausted intake
@@ -225,16 +228,16 @@ it('demo creation, demo login and the onboarding claim use the shared store thro
   const links = { resolve: async () => ({ status: 'active', principal: { kind: 'signed_link', gymId: f.gymId, linkId: uuidv7(), purpose: 'onboarding' } }) };
   const app = f.make(false, [...createDemoRoutes(service, { installOrigin: 'http://localhost', enabled: true, tenancy: 'multi' }),
     ...createLinkRoutes({ links } as unknown as Parameters<typeof createLinkRoutes>[0])]);
-  const malformed = { 'content-type': 'application/json', 'content-length': '13' }, body = '{invalid json';
+  const malformed = { 'content-type': 'application/json' }, body = '{invalid json';
   // Creation is mounted before gym resolution, so its budget is the install's, keyed by the socket address.
   for (let i = 0; i < 3; i++) await store.consume({ gymId: null, routeKey: 'demo.create', clientKey: 'unknown', now: now(), limit: 3, windowMs: 3_600_000 });
-  expect((await app.request('http://localhost' + demoContracts.create.path, { method: 'POST', headers: { ...malformed, origin: 'http://localhost' }, body })).status).toBe(429);
+  expect((await app.request(await requestWithLength('http://localhost' + demoContracts.create.path, { method: 'POST', headers: { ...malformed, origin: 'http://localhost' }, body }))).status).toBe(429);
   const { max, window } = demoLoginRateLimit;
   for (let i = 0; i < max; i++) await store.consume({ gymId: f.gymId, routeKey: 'demo.login', clientKey: '192.0.2.1', now: now(), limit: max, windowMs: window * 1000 });
-  expect((await app.request(demoContracts.login.path, { method: 'POST', headers: malformed, body })).status).toBe(429);
+  expect((await app.request(await requestWithLength('http://localhost' + demoContracts.login.path, { method: 'POST', headers: malformed, body }))).status).toBe(429);
   for (let i = 0; i < 10; i++) await store.consume({ gymId: f.gymId, routeKey: 'links.claim', clientKey: '192.0.2.1', now: now(), limit: 10, windowMs: 60_000 });
-  expect((await app.request(portalAccessContracts.claimOnboarding.path, { method: 'POST',
-    headers: { ...malformed, authorization: 'Bearer ' + 'a'.repeat(43) }, body })).status).toBe(429);
+  expect((await app.request(await requestWithLength('http://localhost' + portalAccessContracts.claimOnboarding.path, { method: 'POST',
+    headers: { ...malformed, authorization: 'Bearer ' + 'a'.repeat(43) }, body }))).status).toBe(429);
 });
 
 it('registers shared counting and one hourly sweep for the install, retaining live windows', async () => {

@@ -17,16 +17,25 @@ test('phone-first fresh wizard completes with disabled discovery, reachable acti
   expect(restore.status, restore.text).toBe(400);
   expect(restore.body).toMatchObject({ error: { code: 'invalid_request', message: 'Invalid snapshot prefix' } });
   const probes: string[] = [];
+  const requests: string[] = [];
+  // Paths and error messages only: setup tokens and request/response bodies are credentials.
   page.on('request', (request) => {
     const path = new URL(request.url()).pathname;
+    requests.push(`request ${request.method()} ${path}`);
     if (path === '/api/demo' || path === '/api/demo/status') probes.push(path);
   });
+  page.on('requestfailed', request => requests.push(`failed ${new URL(request.url()).pathname} ${request.failure()?.errorText}`));
+  page.on('response', response => requests.push(`response ${response.status()} ${new URL(response.url()).pathname}`));
   for (const { width, height } of sizes) {
     await page.goto('about:blank');
     await page.setViewportSize({ width, height });
-    const discovery = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/demo');
-    await page.goto(gymOrigin + '/setup#token=' + process.env.E2E_SETUP_TOKEN);
-    const response = await discovery;
+    const [response] = await Promise.all([
+      page.waitForResponse((response) => new URL(response.url()).pathname === '/api/demo'),
+      page.goto(gymOrigin + '/setup#token=' + process.env.E2E_SETUP_TOKEN),
+    ]).catch(async error => {
+      await info.attach('setup-discovery-requests', { body: requests.join('\n'), contentType: 'text/plain' });
+      throw error;
+    });
     expect(response.status()).toBe(200);
     expect(await response.json()).toEqual({ data: { mode: 'disabled' } });
     await expect(page.getByRole('heading', { name: 'Start fresh or restore a backup', exact: true })).toBeVisible();

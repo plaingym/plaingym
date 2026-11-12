@@ -3,7 +3,7 @@
 // changes since it left main affect. Vitest follows imports to find them; `forceRerunTriggers` in
 // vitest.config.ts lists the changes that run every test. Whole-app tests (those that compose every
 // area) are related to almost any change, so they run here only when their own folder changed; CI runs
-// the full suite on code pushes and gates landing. Docs tests always run, including for Markdown-only
+// the full suite on code pushes and gates landing. Source-scanning tests always run, including for Markdown-only
 // changes, because they read files outside the import graph. `--full` runs every test; `--list` prints the
 // selected test files without running anything.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -15,6 +15,22 @@ const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['
 const root = git('rev-parse', '--show-toplevel');
 const slash = (path) => path.split('\\').join('/');
 const isDocsTest = (file) => /\.docs\.test\.ts$/.test(file);
+// These tests inspect source/configuration files outside Vitest's import graph (sync and async reads).
+const sourceScanningTests = [
+  'apps/web/src/features/portal/household/keys.test.ts',
+  'apps/server/src/areas/imports/export.catalog.test.ts',
+  'apps/server/src/areas/settings/go-live.inventory.test.ts',
+  'apps/server/src/areas/waivers/pdf.test.ts',
+  'apps/server/src/core/cloudflare.test.ts',
+  'apps/server/src/core/registry.test.ts',
+  'apps/server/src/infra/pdf/coverage.test.ts',
+  'apps/server/src/public/links/styles.build.test.ts',
+  'apps/server/test/contracts.test.ts',
+  'apps/server/test/packs.test.ts',
+  'packages/db/src/budget.test.ts',
+  'packages/shared/src/contracts/imports.test.ts',
+  'packages/shared/src/money.sweep.test.ts',
+];
 const full = process.argv.includes('--full'), listOnly = process.argv.includes('--list');
 
 /** Where the branch left main, or null when neither main nor origin/main exists. */
@@ -56,9 +72,14 @@ async function selectTests(since) {
     const selected = new Set((await vitest.getRelevantTestSpecifications()).map((spec) => spec.moduleId));
     if (selected.size === all.size) return null; // A rerun trigger changed.
     const changedDirs = new Set(changed.map((file) => slash(dirname(file))));
-    for (const file of all) if (isDocsTest(file)) selected.add(file);
+    for (const file of sourceScanningTests) {
+      const absolute = slash(resolve(root, file));
+      if (![...all].some(test => slash(test) === absolute)) throw new Error(`Source-scanning test not found: ${file}`);
+      selected.add(absolute);
+    }
     return [...selected]
-      .filter((file) => isDocsTest(file) || changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
+      .filter((file) => !isDocsTest(file))
+      .filter((file) => sourceScanningTests.includes(slash(relative(root, file))) || changed.includes(slash(file)) || changedDirs.has(slash(dirname(file))) || !isWholeApp(file))
       .map((file) => slash(relative(root, file)))
       .sort();
   } finally { await vitest.close(); }
@@ -72,11 +93,6 @@ function pnpm(script, env = process.env) {
 }
 
 const since = full ? null : base();
-if (!listOnly) {
-  // Fail fast on drift, before the slower code checks, even when no imports changed.
-  pnpm('exec vitest run --project unit .docs.test.ts');
-  pnpm('check-types'); pnpm('lint');
-}
 let tests = null;
 if (since) {
   if (!existsSync(join(root, 'packages/shared/dist/locales.gen.ts'))) pnpm('generate');
@@ -85,9 +101,15 @@ if (since) {
     ? `\nChanges since ${since.slice(0, 12)} touch shared test inputs: running every test.`
     : `\n${tests.length} test files affected by changes since ${since.slice(0, 12)} (whole-app tests run in CI).`);
 }
-if (listOnly) { for (const file of tests ?? ['(every test file)']) console.log(file); process.exit(0); }
-// The docs tests already passed above; keep them in --list but don't repeat them in a selected run.
-if (tests) tests = tests.filter((file) => !isDocsTest(file));
+if (listOnly) {
+  const { globSync } = await import('node:fs');
+  const docs = globSync(['apps/**/*.docs.test.ts', 'packages/**/*.docs.test.ts'], { cwd: root, exclude: ['**/node_modules/**'] }).map(slash);
+  for (const file of tests ? [...tests, ...docs].sort() : ['(every test file)']) console.log(file);
+  process.exit(0);
+}
+// A full run already includes docs tests. Selected runs use the same generated, unit-only check as CI.
+if (tests !== null) pnpm('test:docs');
+pnpm('check-types'); pnpm('lint');
 if (tests === null) pnpm('test');
 else if (tests.length) {
   const directory = mkdtempSync(join(tmpdir(), 'plaingym-verify-'));

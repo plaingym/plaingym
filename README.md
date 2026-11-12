@@ -180,10 +180,14 @@ module reloads remain available.
 
 `pnpm verify` is the check to run before handing off a branch: types, lint,
 compliance, the documentation tests (`*.docs.test.ts`, which read files outside the
-import graph), and the tests affected by the branch's changes since it left `main`.
+import graph), source-scanning tests listed in `scripts/verify.mjs`, and the tests
+affected by the branch's changes since it left `main`.
 Vitest finds those by following imports. Whole-app tests (those importing the area
 registry, the runtime, or the demo seed composition) relate to almost every change,
-so they run locally only when their own folder changed. Changes that tests read
+so they run locally only when their own folder changed. The listed source-scanning
+tests run every time, even for Markdown-only changes; one of them is a whole-app
+test and one uses the test database, so `pnpm verify` always needs Docker (or
+`TEST_DATABASE_URL`). Changes that tests read
 without importing them (migrations, test setup, the lockfile; `forceRerunTriggers`
 in `vitest.config.ts`) run every test, and `pnpm generate` validates locale files.
 `pnpm verify --list` prints the selection, and `pnpm verify --full` and `pnpm test`
@@ -191,7 +195,10 @@ run the full suite. The disposable test database skips durable writes
 (`compose.test.yaml`). CI runs the full suite, split across four jobs, on every push and pull
 request that changes more than Markdown files, and gates landing; the **Repo compliance**
 workflow runs the documentation tests on every push and pull request, Markdown-only ones
-included. End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
+included. `pnpm test:docs` generates shared inputs and runs every docs test, failing
+if one belongs to the integration project. Selected verification runs use this command;
+full runs include docs tests once in the full suite.
+End-to-end skips Markdown-only pushes too, and still runs nightly, as does the **Memory** workflow, which measures the whole
 stack against its memory budget (`deploy/test/memory/README.md`). On a push to `main`, CI reuses a passing run of the same
 commit (from its integration branch) instead of repeating it.
 Dependency lifecycle scripts are allowlisted for esbuild only.

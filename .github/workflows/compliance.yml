@@ -83,5 +83,5 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       # These tests read Markdown and deployment sources outside Vitest's import graph.
       # Run every docs test here so Markdown-only changes are checked on both platforms.
-      - run: pnpm exec vitest run --project unit .docs.test.ts
+      - run: pnpm test:docs
       - run: pnpm compliance

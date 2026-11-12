@@ -36,24 +36,44 @@ function scanVariables(sources: Map<string, string>): Set<string> {
     const names = type.types.map(literalNames);
     return names.every((part) => part !== undefined) ? names.flat() : undefined;
   }
+  function unresolved(node: ts.Node): never {
+    const file = node.getSourceFile(), { line } = file.getLineAndCharacterOfPosition(node.getStart());
+    throw new Error(`Unresolved environment variable at ${file.fileName}:${line + 1}: ${node.getText()}`);
+  }
+  // With noResolve, only direct local calls can supply a helper's complete argument set.
+  function assertLocalCalls(fn: ts.SignatureDeclaration) {
+    const declaration = ts.isFunctionDeclaration(fn) ? fn : ts.isVariableDeclaration(fn.parent) ? fn.parent : undefined;
+    if (!declaration?.name || !ts.isIdentifier(declaration.name)) unresolved(fn);
+    const symbol = checker.getSymbolAtLocation(declaration.name);
+    if (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Export) unresolved(declaration);
+    for (const file of files) visit(file, node => {
+      if (ts.isExportSpecifier(node) && checker.getExportSpecifierLocalTargetSymbol(node) === symbol) unresolved(node);
+      if (!ts.isIdentifier(node) || node === declaration.name || checker.getSymbolAtLocation(node) !== symbol) return;
+      if (!ts.isCallExpression(node.parent) || node.parent.expression !== node) unresolved(node);
+    });
+  }
   function namesAt(expression: ts.Expression, visiting = new Set<ts.Node>()): string[] {
     const names = literalNames(checker.getTypeAtLocation(expression));
     if (names) return names;
     const parameter = checker.getSymbolAtLocation(expression)?.valueDeclaration;
     if (parameter && ts.isParameter(parameter) && !visiting.has(parameter)) {
       const fn = parameter.parent;
+      assertLocalCalls(fn);
       const index = fn.parameters.indexOf(parameter);
       const arguments_ = (calls.get(fn) ?? []).map((call) => call.arguments[index]);
       if (arguments_.length && arguments_.every((argument) => argument !== undefined)) {
         return arguments_.flatMap((argument) => namesAt(argument, new Set([...visiting, parameter])));
       }
     }
-    const file = expression.getSourceFile();
-    const { line } = file.getLineAndCharacterOfPosition(expression.getStart());
-    throw new Error(`Unresolved environment variable at ${file.fileName}:${line + 1}: ${expression.getText()}`);
+    return unresolved(expression);
   }
   const names = new Set<string>();
   for (const file of files) visit(file, (node) => {
+    // Reject destructuring and aliases instead of silently losing their subsequent reads.
+    if (ts.isVariableDeclaration(node) && node.initializer && /(?:^|\.)env$/.test(node.initializer.getText().replaceAll(/\s/g, ''))
+      && (!ts.isIdentifier(node.name) || node.name.text !== 'env')) unresolved(node);
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && /(?:^|\.)env$/.test(node.right.getText().replaceAll(/\s/g, ''))) unresolved(node);
     if (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) return;
     if (!/(?:^|\.)env$/.test(node.expression.getText().replaceAll(/\s/g, ''))) return;
     const found = ts.isPropertyAccessExpression(node) ? [node.name.text] : namesAt(node.argumentExpression);
@@ -111,6 +131,27 @@ describe('docs/configuration.md', () => {
     expect(() => scanVariables(new Map([[resolve(root, 'scan-fixture.ts'),
       'declare const env: Record<string, string>, name: string; env[name];']])))
       .toThrow('Unresolved environment variable');
+  });
+  it('allows env as the canonical name, including an injected environment fallback', () => {
+    expect([...scanVariables(new Map([[resolve(root, 'scan-fixture.ts'),
+      'declare const options: { env?: Record<string, string> }; const env = options.env ?? process.env; env.CANONICAL;']]))])
+      .toEqual(['CANONICAL']);
+  });
+  it.each([
+    'const { X } = process.env;',
+    'const source = process.env; source.X;',
+    'let source; source = process.env; source.X;',
+    "export function required(name: string) { return process.env[name]; } required('LOCAL');",
+    "function read(name: string) { return process.env[name]; } read('LOCAL'); ['CALLBACK'].map(read);",
+    "function read(name: string) { return process.env[name]; } read('LOCAL'); export { read };",
+  ])('rejects incomplete environment scans: %s', source => {
+    expect(() => scanVariables(new Map([[resolve(root, 'scan-fixture.ts'), source]]))).toThrow('Unresolved environment variable');
+  });
+  it('rejects an exported helper even when another source calls it', () => {
+    expect(() => scanVariables(new Map([
+      [resolve(root, 'scan-helper.ts'), "export function required(name: string) { return process.env[name]; } required('LOCAL');"],
+      [resolve(root, 'scan-caller.ts'), "import { required } from './scan-helper'; required('IMPORTED');"],
+    ]))).toThrow('Unresolved environment variable');
   });
   it('lists every variable the server reads', () => {
     const documented = documentedVariables();

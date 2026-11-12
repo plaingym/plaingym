@@ -16,6 +16,7 @@
     "lint": "eslint . --max-warnings 0",
     "test": "pnpm generate && vitest run",
     "test:unit": "pnpm generate && vitest run --project unit",
+    "test:docs": "pnpm generate && node scripts/test-docs.mjs",
     "test:integration": "pnpm generate && vitest run --project integration",
     "build": "pnpm generate && pnpm --filter @plaingym/web build && node apps/server/src/public/links/styles.build.mjs apps/web/dist && pnpm --filter @plaingym/server build",
     "dev": "pnpm generate && pnpm db:migrate && node apps/server/src/public/links/styles.build.mjs apps/server/public && pnpm --parallel --filter @plaingym/server --filter @plaingym/web dev",

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { jsonInit } from '../../test/request.js';
 import { createHmac } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -38,10 +39,11 @@ export function useDemoRuntime(options: { sandbox?: boolean } = {}) {
   const batchJobs = new Set<string>();
   let runtime: Runtime, directory: string, storage: Awaited<ReturnType<typeof s3Server>>, sandbox: Sandbox;
   const env = () => demoEnv(database.appUrl, storage.endpoint, join(directory, 'staging'));
-  const post = (path: string, body: unknown, base = origin, extra: Record<string, string> = {}) => runtime.app.request(base + path, {
-    method: 'POST', headers: { host: new URL(base).host, origin: base, 'content-type': 'application/json',
-      'content-length': String(Buffer.byteLength(JSON.stringify(body))), ...extra }, body: JSON.stringify(body),
-  });
+  const post = (path: string, body: unknown, base = origin, extra: Record<string, string> = {}) => {
+    const init = jsonInit(body);
+    return runtime.app.request(base + path, { method: 'POST', ...init,
+      headers: { ...init.headers, host: new URL(base).host, origin: base, ...extra } });
+  };
   const cookieOf = (response: Response) => response.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
   beforeAll(async () => {
     // Keep production registrations and database jobs; drive their handlers explicitly without polling races.

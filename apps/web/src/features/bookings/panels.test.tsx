@@ -70,7 +70,7 @@ describe('staff booking panels', () => {
     expect((screen.getByLabelText('Member name') as HTMLInputElement).disabled).toBe(false);
     await act(async () => { reject(new Error('offline')); });
     expect(screen.getByText('River Lee')).toBeDefined();
-    expect(publish).toHaveBeenLastCalledWith({ ...counts, stale: true });
+    await waitFor(() => expect(publish).toHaveBeenLastCalledWith({ ...counts, stale: true }));
     expect((screen.getByRole('button', { name: 'Previous page' }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole('button', { name: 'Next page' }) as HTMLButtonElement).disabled).toBe(true);
     client.roster.mockResolvedValue({ data: [{ displayName: 'First page', booking, attendance: null }], pagination: { total: 50 }, counts: { ...counts, booked: 50 } });

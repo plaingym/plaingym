@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import type { Browser, Locator, Page, TestInfo } from '@playwright/test';
-import { test, expect, Client, demoClient, showWeek, type Person, type Program, type RecordId } from '../support.js';
+import { test, expect, Client, demoClient, localDate, showWeek, wall, type Person, type Program, type RecordId } from '../support.js';
 import { accessibleLayout } from '../responsive.js';
 import { deliverStripeEvent, fakeStripe, outboxIds, outboxLink, stripeOrigin } from '../portal.js';
 
@@ -49,6 +49,29 @@ function newVisitor(): Visitor {
 }
 const joined = async (owner: Client, visitor: Visitor) =>
   (await owner.json<{ data: (Person & { status: string })[] }>('/api/members?search=' + visitor.lastName)).data;
+
+/** Use a real gym timezone near midnight when one is available now; never change either clock. */
+async function midnightGym(owner: Client, info: TestInfo) {
+  const now = Date.now();
+  const zone = Intl.supportedValuesOf('timeZone').find(timeZone => {
+    const { time } = wall(now, timeZone);
+    return time >= '23:30' && time <= '23:55';
+  });
+  if (!zone) {
+    info.annotations.push({ type: 'midnight-window', description: `No IANA zone in 23:30–23:55 at ${new Date(now).toISOString()}` });
+    return { zone: undefined, restore: async () => {} };
+  }
+  const settings = (await owner.json<{ data: { revision: number; timezone: string } }>('/api/settings')).data;
+  await owner.json('/api/settings', 'PATCH', { revision: settings.revision, timezone: zone });
+  const local = wall(now, zone);
+  const evidence = `${zone}: ${local.date} ${local.time} (${new Date(now).toISOString()})`;
+  info.annotations.push({ type: 'midnight-window', description: evidence });
+  await info.attach('midnight-window', { body: evidence, contentType: 'text/plain' });
+  return { zone, restore: async () => {
+    const latest = (await owner.json<{ data: { revision: number } }>('/api/settings')).data;
+    await owner.json('/api/settings', 'PATCH', { revision: latest.revision, timezone: settings.timezone });
+  } };
+}
 
 /** Chooses the first plan on /join, signs every current document as the adult joining, and submits. */
 async function join(page: Page, info: TestInfo, origin: string, visitor: Visitor) {
@@ -168,67 +191,79 @@ test('a joined visitor books, is promoted from the waitlist, checks in by QR cod
   await expect.poll(async () => (await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
 
   // Two classes: one starting soon to book and check in to, and a full one tomorrow to wait for.
-  const bootstrap = await owner.json<{ data: { gym: { timezone: string } } }>('/api/auth/bootstrap');
-  const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
-  const minute = 60_000, start = Math.ceil(Date.now() / (5 * minute)) * 5 * minute + 30 * minute;
-  const create = async (name: string, startsAt: number, capacity: number) => (await owner.json<{ data: Session }>('/api/schedule/sessions', 'POST', {
-    name, startsAt: new Date(startsAt).toISOString(), endsAt: new Date(startsAt + 60 * minute).toISOString(), coachId: null, capacity,
-    notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
-  const tag = randomBytes(2).toString('hex'), soon = await create(`Join check-in ${tag}`, start, 10);
-  const full = await create(`Join waitlist ${tag}`, start + 26 * 60 * minute, 1);
-  const holderHome = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'Waitlist holder ' + tag })).data;
-  const holder = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: holderHome.id, firstName: 'Holder', lastName: tag })).data;
-  const held = (await owner.json<{ data: RecordId & { status: string } }>('/api/bookings', 'POST', { memberId: holder.id, sessionId: full.id, allowWaitlist: false })).data;
-  expect(held.status).toBe('booked');
-
-  // Book the class starting soon, then join the full class's waitlist.
-  await page.goto(sandbox.origin + '/portal/schedule');
-  await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
-  await (await portalClass(page, `Book ${soon.name} for ${visitor.fullName}`)).click();
-  // The class starts within the cancellation cutoff, so the place shows as booked without a cancel action.
-  const booked = page.getByRole('listitem').filter({ has: page.getByText(soon.name, { exact: true }) });
-  await expect(booked.getByRole('list', { name: 'Household places', exact: true })).toHaveText(new RegExp(`^${visitor.fullName}\\s*Booked$`));
-  await page.goto(sandbox.origin + '/portal/schedule');
-  await (await portalClass(page, `Join the waitlist: ${full.name} for ${visitor.fullName}`)).click();
-  await expect(page.getByRole('button', { name: `Leave the waitlist: ${full.name} for ${visitor.fullName}`, exact: true })).toBeVisible();
-  await expect(page.getByText('Waitlist — position 1', { exact: true })).toBeVisible();
-  await bothWidths(page, info, 'portal-schedule');
-
-  // Staff cancel the held place; the waitlist promotes the visitor.
-  await owner.json(`/api/bookings/${held.id}/cancel`, 'POST', {});
-  await expect.poll(async () => {
-    await page.goto(sandbox.origin + '/portal/schedule');
-    return (await portalClass(page, `Cancel booking: ${full.name} for ${visitor.fullName}`).catch(() => undefined)) !== undefined;
-  }, { timeout: 60_000, message: 'The waitlist promotes the visitor' }).toBe(true);
-
-  // The portal shows a QR check-in code; the sandbox kiosk scans it from its camera.
-  await page.goto(sandbox.origin + '/portal/checkin');
-  await expect(page.getByRole('heading', { name: 'Check-in code', exact: true })).toBeVisible();
-  const image = page.getByRole('img', { name: `QR check-in code for ${visitor.fullName}`, exact: true });
-  const createCode = page.getByRole('button', { name: 'Create a code', exact: true });
-  await expect(image.or(createCode)).toBeVisible();
-  if (await createCode.isVisible()) await createCode.click();
-  await expect(image).toBeVisible();
-  await bothWidths(page, info, 'portal-checkin');
-  await checkInAtKiosk(browser, sandbox.origin, sandbox.kioskToken, (await image.getAttribute('src'))!, `${visitor.firstName} ${visitor.lastName[0]}.`);
-
-  // The coach's roster for the class shows the visitor checked in.
-  const coach = await demoClient(sandbox, 'coach');
-  const roster = await coach.json<{ data: { booking: { memberId: string } | null; attendance: { memberId: string } | null }[] }>(
-    `/api/bookings/sessions/${soon.id}/roster?limit=100`);
-  expect(roster.data.find(entry => entry.booking?.memberId === member!.id)?.attendance?.memberId).toBe(member!.id);
-  const coachContext = await browser.newContext({ viewport: phone, timezoneId: bootstrap.data.gym.timezone });
+  const midnight = await midnightGym(owner, info);
   try {
-    await coach.browser(coachContext);
-    const coachPage = await coachContext.newPage();
-    await coachPage.goto(sandbox.origin + '/admin/schedule');
-    await showWeek(coachPage, bootstrap.data.gym.timezone, start);
-    await coachPage.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${soon.name}`) }).first().click();
-    const bookings = coachPage.getByRole('region', { name: 'Bookings and check-ins', exact: true });
-    await expect(bookings.getByText(visitor.fullName)).toBeVisible();
-    await expect(bookings.getByText('Checked in', { exact: true }).first()).toBeVisible();
-    await bothWidths(coachPage, info, 'coach-roster');
-  } finally { await coachContext.close(); }
+    const bootstrap = await owner.json<{ data: { gym: { timezone: string } } }>('/api/auth/bootstrap');
+    if (midnight.zone) expect(bootstrap.data.gym.timezone).toBe(midnight.zone);
+    const program = (await owner.json<{ data: Program[] }>('/api/programs?limit=100')).data[0]!;
+    const minute = 60_000, start = Math.ceil(Date.now() / (5 * minute)) * 5 * minute + 30 * minute;
+    const create = async (name: string, startsAt: number, capacity: number) => (await owner.json<{ data: Session }>('/api/schedule/sessions', 'POST', {
+      name, startsAt: new Date(startsAt).toISOString(), endsAt: new Date(startsAt + 60 * minute).toISOString(), coachId: null, capacity,
+      notes: null, kind: 'class', programIds: [program.id], tagIds: [] })).data;
+    const tag = randomBytes(2).toString('hex'), soon = await create(`Join check-in ${tag}`, start, 10);
+    if (midnight.zone) {
+      expect(localDate(start, midnight.zone), 'The class starting soon crosses the gym’s local midnight').not.toBe(localDate(Date.now(), midnight.zone));
+    }
+    const full = await create(`Join waitlist ${tag}`, start + 26 * 60 * minute, 1);
+    const holderHome = (await owner.json<{ data: RecordId }>('/api/households', 'POST', { name: 'Waitlist holder ' + tag })).data;
+    const holder = (await owner.json<{ data: Person }>('/api/members', 'POST', { householdId: holderHome.id, firstName: 'Holder', lastName: tag })).data;
+    const held = (await owner.json<{ data: RecordId & { status: string } }>('/api/bookings', 'POST', { memberId: holder.id, sessionId: full.id, allowWaitlist: false })).data;
+    expect(held.status).toBe('booked');
+
+    // Book the class starting soon, then join the full class's waitlist.
+    await page.goto(sandbox.origin + '/portal/schedule');
+    await expect(page.getByRole('heading', { name: 'Class schedule', exact: true })).toBeVisible();
+    await (await portalClass(page, `Book ${soon.name} for ${visitor.fullName}`)).click();
+    // The class starts within the cancellation cutoff, so the place shows as booked without a cancel action.
+    const booked = page.getByRole('listitem').filter({ has: page.getByText(soon.name, { exact: true }) });
+    await expect(booked.getByRole('list', { name: 'Household places', exact: true })).toHaveText(new RegExp(`^${visitor.fullName}\\s*Booked$`));
+    await page.goto(sandbox.origin + '/portal/schedule');
+    await (await portalClass(page, `Join the waitlist: ${full.name} for ${visitor.fullName}`)).click();
+    await expect(page.getByRole('button', { name: `Leave the waitlist: ${full.name} for ${visitor.fullName}`, exact: true })).toBeVisible();
+    await expect(page.getByText('Waitlist — position 1', { exact: true })).toBeVisible();
+    await bothWidths(page, info, 'portal-schedule');
+
+    // Staff cancel the held place; the waitlist promotes the visitor.
+    await owner.json(`/api/bookings/${held.id}/cancel`, 'POST', {});
+    await expect.poll(async () => {
+      await page.goto(sandbox.origin + '/portal/schedule');
+      return (await portalClass(page, `Cancel booking: ${full.name} for ${visitor.fullName}`).catch(() => undefined)) !== undefined;
+    }, { timeout: 60_000, message: 'The waitlist promotes the visitor' }).toBe(true);
+
+    // The portal shows a QR check-in code; the sandbox kiosk scans it from its camera.
+    await page.goto(sandbox.origin + '/portal/checkin');
+    await expect(page.getByRole('heading', { name: 'Check-in code', exact: true })).toBeVisible();
+    const image = page.getByRole('img', { name: `QR check-in code for ${visitor.fullName}`, exact: true });
+    const createCode = page.getByRole('button', { name: 'Create a code', exact: true });
+    await expect(image.or(createCode)).toBeVisible();
+    if (await createCode.isVisible()) await createCode.click();
+    await expect(image).toBeVisible();
+    await bothWidths(page, info, 'portal-checkin');
+    await checkInAtKiosk(browser, sandbox.origin, sandbox.kioskToken, (await image.getAttribute('src'))!, `${visitor.firstName} ${visitor.lastName[0]}.`);
+
+    // The coach's roster for the class shows the visitor checked in.
+    const coach = await demoClient(sandbox, 'coach');
+    const roster = await coach.json<{ data: { booking: { memberId: string } | null; attendance: { memberId: string } | null }[] }>(
+      `/api/bookings/sessions/${soon.id}/roster?limit=100`);
+    expect(roster.data.find(entry => entry.booking?.memberId === member!.id)?.attendance?.memberId).toBe(member!.id);
+    const coachContext = await browser.newContext({ viewport: phone, timezoneId: bootstrap.data.gym.timezone });
+    try {
+      await coach.browser(coachContext);
+      const coachPage = await coachContext.newPage();
+      await coachPage.goto(sandbox.origin + '/admin/schedule');
+      await showWeek(coachPage, bootstrap.data.gym.timezone, start);
+      await coachPage.getByRole('button', { name: new RegExp(`^\\d{2}:\\d{2}–\\d{2}:\\d{2} ${soon.name}`) }).first().click();
+      const bookings = coachPage.getByRole('region', { name: 'Bookings and check-ins', exact: true });
+      await expect(bookings.getByText(visitor.fullName)).toBeVisible();
+      await expect(bookings.getByText('Checked in', { exact: true }).first()).toBeVisible();
+      await bothWidths(coachPage, info, 'coach-roster');
+    } finally { await coachContext.close(); }
+  } catch (error) {
+    // Keep the flow's own failure as the reported one; note a failed restore beside it.
+    await midnight.restore().catch(restoreError => info.annotations.push({ type: 'midnight-restore', description: String(restoreError) }));
+    throw error;
+  }
+  await midnight.restore();
 });
 
 test("the portal schedule's booking actions keep their visible text in their accessible names (WCAG 2.5.3)", async ({ page, sandboxes }) => {

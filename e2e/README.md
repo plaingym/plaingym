@@ -122,7 +122,11 @@ The checks cover:
   installs (manifest, service worker, no installability errors), books a class, waits
   on a full class and is promoted when staff free the place, shows a QR code that the
   kiosk reads from its camera (frames drawn from the portal's own image), and the
-  coach's roster shows the check-in.
+  coach's roster shows the check-in. When an IANA timezone is currently between
+  23:30 and 23:55, this flow temporarily uses it for the gym, asserts that the class
+  starting soon falls on the next local day, and attaches the timezone and time as
+  `midnight-window` evidence. The original timezone is restored even on failure;
+  runs without a suitable zone record that fact in a test annotation.
 * The public website in a seeded sandbox (`website.spec.ts`): turned on and customized
   through the API (a photo, text, colors), every page at 360 px and desktop with no
   sideways scrolling, 44 px targets and axe A/AA under its own nonce policy, the
@@ -172,7 +176,8 @@ gym's signed webhook, a signed link and a campaign, a schedule template, a class
 (a dry run of an uploaded CSV), pending invitations, and the household's portal login. Each successful write
 is saved before the next operation in its build step. Composite steps preserve these checkpoints, so a worker
 resuming after a failure reuses the accepted invitation, program, payment, or other record. The harness spec
-deliberately interrupts the coach and ranks steps and checks that resuming creates no duplicate coach or program.
+deliberately interrupts the coach and ranks steps and checks that resuming creates no duplicate coach or program,
+then repeats both interruptions against the same saved writes in a second test.
 Before each attempt it clears those two composite checkpoints, retaining their individual writes, so retries
 and `--repeat-each=2` exercise the same interruptions. JSON writes use a checkpointing `write` helper that
 checks the response through `Client.json()` before saving it.

@@ -156,9 +156,7 @@ export async function cached<T>(name: string, create: () => Promise<T>): Promise
   if (name in values) return values[name] as T;
   const value = await create();
   // Read again: a composite fixture saves its own writes while create() runs. The rename means a worker that dies mid-save can't truncate the file.
-  const temporary = new URL(`./coverage/fixtures-${randomUUID()}.tmp`, import.meta.url);
-  await writeFile(temporary, JSON.stringify({ ...await readFixtures(), [name]: value }), { mode: 0o600 });
-  await rename(temporary, fixturesFile);
+  await writeFixtures({ ...await readFixtures(), [name]: value });
   return value;
 }
 const fixturesFile = new URL('./coverage/fixtures.json', import.meta.url);
@@ -166,6 +164,9 @@ const fixturesFile = new URL('./coverage/fixtures.json', import.meta.url);
 export async function clearCheckpoints(names: string[]) {
   const values = await readFixtures();
   for (const name of names) delete values[name];
+  await writeFixtures(values);
+}
+async function writeFixtures(values: Record<string, unknown>) {
   const temporary = new URL(`./coverage/fixtures-${randomUUID()}.tmp`, import.meta.url);
   await writeFile(temporary, JSON.stringify(values), { mode: 0o600 });
   await rename(temporary, fixturesFile);

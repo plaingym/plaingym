@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { Client, cached, createClass, expect, missingId, type ClassSession, type Person, type Program, type RecordId } from '../support.js';
+import { Client, cached, clearCheckpoints, createClass, expect, missingId, type ClassSession, type Person, type Program, type RecordId } from '../support.js';
 import { claimPortal, signaturePng, stripeOrigin, deliverStripeEvent } from '../portal.js';
 import { waiverPdf } from '../../deploy/test/memory/waiver-pdf.mjs';
 
@@ -105,10 +105,12 @@ export function multipart(field: string, filename: string, type: string, content
   return { body: Buffer.concat([head, content, Buffer.from(`\r\n--${boundary}--\r\n`)]), headers: { 'content-type': 'multipart/form-data; boundary=' + boundary } };
 }
 
+const gymStepKey = (gym: (typeof gyms)[number], name: string) => `multi:${gym.slug}:${name}`;
+export const clearGymSteps = (gym: (typeof gyms)[number], names: string[]) => clearCheckpoints(names.map(name => gymStepKey(gym, name)));
 /** The gym's fixture is built in named steps, each saved with its writes as they succeed, so a run that fails halfway resumes where it stopped:
  * the next worker neither creates the gym again (and fails on "Account is already staff") nor hides the first failure. */
 export async function createGym(gym: (typeof gyms)[number], afterWrite: (step: 'coach' | 'ranks') => void = () => {}): Promise<GymFixture> {
-  const step = <T>(name: string, create: () => Promise<T>) => cached(`multi:${gym.slug}:${name}`, create);
+  const step = <T>(name: string, create: () => Promise<T>) => cached(gymStepKey(gym, name), create);
   const write = <T>(client: Client, key: string, path: string, method: string, body?: unknown, extra?: Record<string, string>) =>
     step(`write:${key}`, () => client.json<T>(path, method, body, extra));
   const stripeKey = stripeKeyOf(gym.slug);

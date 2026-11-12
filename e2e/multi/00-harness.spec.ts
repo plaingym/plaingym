@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { test, expect, addressAllocator, clearCheckpoints, type Program } from '../support.js';
+import { test, expect, addressAllocator, type Program } from '../support.js';
 import { fakeStripe, stripeSecret } from '../portal.js';
-import { contextOf, createGym, gyms, stripeAs, stripeKeyOf } from './support.js';
+import { clearGymSteps, contextOf, createGym, gyms, stripeAs, stripeKeyOf } from './support.js';
 
 test('client address blocks are disjoint and never wrap', () => {
   const main = addressAllocator(), worker = addressAllocator('0');
@@ -29,9 +29,9 @@ test('the fake Stripe rejects unissued keys without creating an account', async 
   }
 });
 
-test('fixture resumes after coach acceptance and program creation without duplicate writes', async () => {
+for (const pass of [1, 2]) test(`fixture resumes after coach acceptance and program creation without duplicate writes (pass ${pass})`, async () => {
   test.setTimeout(180_000);
-  await clearCheckpoints(['multi:alpha:coach', 'multi:alpha:ranks']);
+  await clearGymSteps(gyms[0], ['coach', 'ranks']);
   for (const failAt of ['coach', 'ranks'] as const) {
     await expect(createGym(gyms[0], step => {
       if (step === failAt) throw new Error('Injected failure after ' + step);

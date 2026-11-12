@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { requestWithLength } from '../../../test/request.js';
+import { jsonInit, requestWithLength } from '../../../test/request.js';
 // Install the OpenAPI schema extension before constructing shared contracts, as app startup does.
 import '@hono/zod-openapi';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -47,9 +47,10 @@ function server(principal: Principal = { kind: 'staff', gymId, userId, roles: ['
   });
   return { app, jobs };
 }
-const post = (app: ReturnType<typeof server>['app'], path: string, body: unknown) => app.request(origin + path, {
-  method: 'POST', headers: { origin, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(JSON.stringify(body))) }, body: JSON.stringify(body),
-});
+const post = (app: ReturnType<typeof server>['app'], path: string, body: unknown) => {
+  const init = jsonInit(body);
+  return app.request(origin + path, { method: 'POST', ...init, headers: { ...init.headers, origin } });
+};
 
 it('imports, restarts its API, exports, and follows the archive link through the app composition', async () => {
   const { app, jobs } = server(), form = new FormData();

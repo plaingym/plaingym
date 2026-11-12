@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { jsonInit } from '../../../test/request.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -73,11 +74,10 @@ export function useSandboxRuntime(db: TestDatabase, count: number) {
     throw new Error('Job drain exceeded its bound');
   }
   function send(base: string, path: string, init: { method?: string; body?: unknown; cookie?: string; headers?: Record<string, string> } = {}) {
-    return runtime.app.request(base + path, { method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
-      headers: { host: new URL(base).host, origin: base, ...(init.body === undefined ? {} : { 'content-type': 'application/json',
-        'content-length': String(Buffer.byteLength(JSON.stringify(init.body))) }),
-        ...(init.cookie ? { cookie: init.cookie } : {}), ...init.headers },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
+    const json = init.body === undefined ? { headers: {} } : jsonInit(init.body);
+    return runtime.app.request(base + path, { method: init.method ?? (init.body === undefined ? 'GET' : 'POST'), ...json,
+      headers: { ...json.headers, host: new URL(base).host, origin: base,
+        ...(init.cookie ? { cookie: init.cookie } : {}), ...init.headers } });
   }
   /** The kiosk picks the one booked current class, or offers a choice; the visitor then taps open mat. */
   async function checkIn(target: Sandbox, code: string) {
