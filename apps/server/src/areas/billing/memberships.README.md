@@ -150,6 +150,8 @@ erased.
 
 A membership copies its plan's price when assigned and keeps it when the plan's price changes. Staff can give one member a custom price from the member's Memberships tab: it sends the `price` override (amount and the membership's currency) on `PATCH /api/billing/memberships/{membershipId}`, which also takes a new `nextDueOn`. The tab's edit form has no plan select: a plan changes through a plan switch.
 
+The same tab (owners and admins) has a **Change plan** dialog on each live membership. It lists the active plans in the membership's currency other than its current plan, with "on the next billing date" preselected and "now" disabled (with the reason) for a membership that isn't active or a plan with another interval. It shows the server's preview before confirming, asks for a reason only when the preview says the commitment blocks the switch, and generates one request ID per distinct submission while it is open, so a retry replays. A stale revision reloads the membership and says it changed. A scheduled switch or price change shows on the card ("Changes to <plan> on <date>" or "New price <price> from <date>") with a confirmed **Cancel change**, and the price form warns that the scheduled change sets the price on its date.
+
 When the membership amount differs from the plan's current amount, the card
 shows "Plan price now" with that amount and billing interval. This covers both
 a price entered by staff and a price retained after a plan change. The comparison

@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { canStaff } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
-import type { Membership, Plan } from '@plaingym/shared/contracts';
+import type { Membership, MembershipSwitchResult, Plan } from '@plaingym/shared/contracts';
 import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
 import { t } from '../../../lib/i18n.js';
@@ -14,9 +14,10 @@ import { Label } from '../../../components/ui/label.js';
 import { billingClient, type BillingClient } from '../catalog/api.js';
 import { minorUnitsToInput, money, parseMinorUnits, saveError, selectClass } from '../catalog/format.js';
 import { householdBillingDate } from './calendar.js';
+import { ChangePlanDialog } from './change-plan.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
-type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership';
+type Action = 'activateMembership' | 'freezeMembership' | 'resumeMembership' | 'cancelMembership' | 'updateMembership' | 'cancelMembershipSwitch';
 export function MembershipPanel({ gymId, memberId, manage, client = billingClient, now }: {
   gymId: string; memberId: string; manage: boolean; client?: BillingClient; now?: Date;
 }) {
@@ -40,6 +41,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     } catch (error) { setMessage(saveError(error)); return false; }
     finally { setBusy(false); }
   }
+  const reload = () => cache.invalidateQueries({ queryKey: key });
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2>
     {message && <Alert role="status">{message}</Alert>}
@@ -47,7 +49,8 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     {rows.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}
     {plans.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
-    <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} manage={manage} busy={busy} mutate={mutate}/>)}</ul>
+    <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} plansReady={plans.isSuccess} manage={manage} busy={busy} mutate={mutate}
+      client={client} reload={reload} changed={result => { setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
     {manage && <>
       {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
       {bootstrap.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}
@@ -90,16 +93,20 @@ function AssignmentForm({ plans, memberId, householdId, today, billingDate, busy
     </fieldset>}
   </form>;
 }
-function MembershipCard({ row, plans, manage, busy, mutate }: {
-  row: Membership; plans: Plan[]; manage: boolean; busy: boolean;
+function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, reload, changed }: {
+  row: Membership; plans: Plan[]; plansReady: boolean; manage: boolean; busy: boolean;
   mutate: (operation: Action, input: unknown, membershipId: string) => Promise<boolean>;
+  client: BillingClient; reload: () => Promise<void>; changed: (result: MembershipSwitchResult) => void;
 }) {
   const [confirm, setConfirm] = useState(false), [action, setAction] = useState<'freeze' | 'resume' | 'edit' | null>(null);
+  const [changing, setChanging] = useState(false), [confirmUndo, setConfirmUndo] = useState(false);
   const [formError, setFormError] = useState('');
   // The edit compares against, and sends the revision of, the membership as it was when the form opened,
   // so a change made elsewhere meanwhile is a conflict rather than silently undone.
   const [base, setBase] = useState(row);
   const plan = plans.find(item => item.id === row.planId);
+  const scheduled = row.scheduledPlanId && row.scheduledAmountCents !== null && row.scheduledInterval && row.scheduledOn
+    ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: row.scheduledOn } : null;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -121,6 +128,14 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
   return <li className="min-w-0 space-y-3 rounded-lg border p-4">
     <div><h3 className="font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
       {differentPlanPrice && <p className="text-sm text-muted-foreground">{text('planPriceNow', { price: money(plan.amountCents, plan.currency), interval: text(plan.interval) })}</p>}</div>
+    {scheduled && <div className="min-w-0 space-y-2 rounded-md bg-muted p-3 text-sm">
+      <p>{row.scheduledPlanId === row.planId ? text('scheduledPrice', { price: scheduled.price, interval: scheduled.interval, date: scheduled.on })
+        : text('scheduledChange', { plan: scheduled.plan?.name ?? text('anotherPlan'), price: scheduled.price, interval: scheduled.interval, date: scheduled.on })}</p>
+      {manage && !confirmUndo && <Button variant="outline" disabled={busy} onClick={() => setConfirmUndo(true)}>{text('cancelChange')}</Button>}
+      {manage && confirmUndo && <div className="space-y-2"><p>{text('confirmCancelChange')}</p><div className="flex flex-col gap-2 sm:flex-row">
+        <Button disabled={busy} onClick={async () => { if (await mutate('cancelMembershipSwitch', { revision: row.revision }, row.id)) setConfirmUndo(false); }}>{text('confirmCancelChangeButton')}</Button>
+        <Button variant="outline" onClick={() => setConfirmUndo(false)}>{text('back')}</Button></div></div>}
+    </div>}
     <dl className="grid min-w-0 grid-cols-1 gap-2 text-sm sm:grid-cols-2">
       <div><dt className="text-muted-foreground">{text('nextDueOn')}</dt><dd>{row.nextDueOn}</dd></div>
       {row.commitmentEndsOn && <div><dt className="text-muted-foreground">{text('commitmentEndsOn')}</dt><dd>{row.commitmentEndsOn}</dd></div>}
@@ -130,6 +145,8 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
     {manage && row.status !== 'cancelled' && <fieldset disabled={busy} className="min-w-0 space-y-3">
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {row.status === 'pending' && <Button onClick={() => void mutate('activateMembership', { revision: row.revision }, row.id)}>{text('activate')}</Button>}
+        {/* Offered once the plans are loaded, so the dialog never reads a missing list as "no other plan". */}
+        {plansReady && <Button variant="outline" onClick={() => { setChanging(true); setConfirmUndo(false); }}>{text('changePlan')}</Button>}
         <Button variant="outline" onClick={() => { setAction('edit'); setConfirm(false); setFormError(''); setBase(row); }}>{text('editPrice')}</Button>
         {['active', 'trial'].includes(row.status) && <Button variant="outline" onClick={() => { setAction('freeze'); setConfirm(false); }}>{text('freeze')}</Button>}
         {row.status === 'frozen' && <Button variant="outline" onClick={() => { setAction('resume'); setConfirm(false); }}>{text('resume')}</Button>}
@@ -141,6 +158,7 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
         {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}
         <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={minorUnitsToInput(base.amountCents, base.currency)}/></Label>
         <p className="text-sm text-muted-foreground">{text('priceHelp')}</p>
+        {scheduled && <Alert role="status">{text('priceScheduledNote', { date: scheduled.on })}</Alert>}
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
       {(action === 'freeze' || action === 'resume') && <form onSubmit={event => void submit(event)} className="space-y-3">
@@ -149,6 +167,8 @@ function MembershipCard({ row, plans, manage, busy, mutate }: {
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
     </fieldset>}
+    {changing && <ChangePlanDialog row={row} plans={plans} client={client} close={() => setChanging(false)} reload={reload}
+      changed={result => { setChanging(false); changed(result); }}/>}
   </li>;
 }
 export function MembershipTab({ memberId }: ExtensionViewProps) {
