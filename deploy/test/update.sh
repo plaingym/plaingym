@@ -14,6 +14,8 @@ cat > "$temporary/bin/docker" <<'MOCK'
 set -eu
 printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
 case "$*" in
+  # The requested release is another image; its digest names the running one.
+  'image inspect example:v1.0.1 --format {{.Id}}') echo sha256:next; exit 0 ;;
   'image inspect '*) echo sha256:previous; exit 0 ;;
   *' ps --status running --services') [ "${APP_STATE:-running}" != running ] || echo app ;;
   *' pull app') [ "${FAIL_AT:-}" != pull ] ;;
@@ -41,6 +43,18 @@ grep -qx APP_IMAGE=example:v1.0.1 "$case_dir/.env"
 [ "$(grep -n ' stop app' "$CALLS" | cut -d: -f1)" -lt "$(grep -n ' snapshot pre-upgrade' "$CALLS" | cut -d: -f1)" ]
 [ "$(grep -n ' snapshot pre-upgrade' "$CALLS" | cut -d: -f1)" -lt "$(grep -n ' up -d ' "$CALLS" | cut -d: -f1)" ]
 if grep -q 'up -d .* IMAGE=sha256:previous' "$CALLS"; then exit 1; fi
+# The running image asked for again, by its own pin or by another name for it (here its digest): resolved, then left alone.
+repeat=0
+for request in example:v1.0.0 "example@sha256:$(printf 'a%.0s' $(seq 64))"; do
+  repeat=$((repeat + 1))
+  make_install "repeat-$repeat"
+  before=$(sha256sum "$case_dir/.env")
+  sh "$case_dir/update.sh" "$request" > "$temporary/output" 2>&1
+  grep -qx 'Already on the requested image.' "$temporary/output"
+  [ "$before" = "$(sha256sum "$case_dir/.env")" ]
+  if grep -q ' stop app\| snapshot \|up -d' "$CALLS"; then echo "Changed something for a repeated request: $request" >&2; exit 1; fi
+  [ ! -e "$case_dir/version-history.tsv" ]
+done
 for stage in pull snapshot startup health; do
   make_install "$stage"
   if FAIL_AT="$stage" sh "$case_dir/update.sh" example:v1.0.1 > "$temporary/output" 2>&1; then

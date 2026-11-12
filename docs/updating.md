@@ -18,13 +18,26 @@ there is one, it checks the release's signature, takes a backup, installs it, ch
 that the app stays healthy, and goes back to the previous version if not. Owners turn
 this off, or on again, in **Settings → Updates**; it is on by default. An install set
 up by hand with Docker Compose has no timer until you add it
-([install.md](install.md#route-3-docker-compose-by-hand)).
+([install.md](install.md#route-3-docker-compose-by-hand)). The timer asks the app for
+the gym's timezone every hour, so after you change it the next night in the new
+timezone counts.
+
+A release that fails (it is rolled back, or the update and its rollback fail) is tried
+once more the next night. If it fails again, automatic updates wait for a newer patch
+release instead of trying it every night; the tile and the owner notice say so. To try
+it again yourself, run `sudo /opt/plaingym/update.sh --patch --now`.
 
 The Health page's **Automatic updates** tile shows the last night's result: up to
-date, updated, rolled back, or skipped and why. A stale error keeps its cause and
-adds the time of the last check in the gym's timezone. With SMTP configured, each
+date, updated, rolled back, or skipped and why. After a later check it still names the
+last update (or the last attempt that was rolled back or failed), with its date. A
+stale error keeps its cause and adds the time of the last check in the gym's timezone.
+After a [restore](restoring.md) it shows only this server's checks, not those of the
+server the backup came from. With SMTP configured, each
 owner receives one notice per rolled-back or failed attempt; replaying a report
-does not send the same notice again. To run the check at once, for
+does not send the same notice again. While the app is down no email can go out: if an
+update and its rollback both fail, you hear about it once the app runs again, in a
+notice that says when the site went down and when the hourly check started the previous
+version again. To run the check at once, for
 example after setting up backups:
 
 ```sh
@@ -39,6 +52,8 @@ sudo /opt/plaingym/update.sh --patch --now
 | The signature didn't verify, the image doesn't match the manifest, or the patch changes the database | Nothing was installed, on purpose. Update by hand once a fixed release is out. |
 | Version X was rolled back | The new version didn't start or failed its health check, and the previous one runs again. Read `sudo docker compose logs app` in `/opt/plaingym`. |
 | The update failed and starting the previous version failed too | Check the containers with `sudo docker compose ps`. The updater tries to start the previous version again each hour until it runs. |
+| The update and its rollback failed, so the site was down from … until … | The hourly check started the previous version again. Read `sudo docker compose logs app` for why the new version and the restart failed. |
+| Version X failed twice, so automatic updates will wait for a newer patch release | Automatic updates skip that release from now on. Read `sudo docker compose logs app`; to try it again, run `sudo /opt/plaingym/update.sh --patch --now`. A newer patch installs by itself. |
 | No nightly update check since … | Check the timer: `systemctl status plaingym-update.timer`. The updater's log is `journalctl -u plaingym-update`. |
 
 A newer patch release raises no banner while the nightly update is expected to install
@@ -58,11 +73,11 @@ on a hand-installed Compose deployment. An invalid `RELEASE_REPOSITORY` also
 raises a warning: patches cannot install until it is a valid `owner/name` and
 the app is restarted. Neither path segment may consist only of dots.
 
-After a successful automatic update, the updater removes older images from its
-own pull record only when they are older than the previous version and no longer
-in the rollback history's active stack. It keeps the current and previous images
-and every image that `--rollback` can still reach. It never runs a global image
-prune; images pulled by other tools are left alone.
+After a successful automatic update, the updater keeps the current image and the two
+before it, so `--rollback` can go back up to two versions. It removes the images of
+older versions (the installer's included, once it is three updates back) and the images
+it pulled for releases that were rolled back. It never forces a removal or runs a global
+image prune; images pulled by other tools are left alone.
 
 ## Minor and major releases: by hand
 
@@ -119,10 +134,11 @@ architecture. `latest` is refused. The script:
 2. stops the app and takes a pre-upgrade backup, encrypted to your backup key;
 3. starts the new image, which applies its database migrations before it reports
    healthy;
-4. records the new image in `.env` only once the new version is healthy.
+4. records the new image in `.env` only once the new version is healthy, as
+   `IMAGE:vX.Y.Z@DIGEST` from the signed release manifest.
 
-It prints "Already on the requested image." and does nothing when you ask for the
-version you run.
+It prints "Already on the requested image." and does nothing else when you ask for the
+image you run, by its tag or its digest.
 
 ### If it stops
 
@@ -143,14 +159,17 @@ version you run.
 From the installation directory, run `sudo ./update.sh --rollback`. The updater
 selects the previous successful version from `version-history.tsv`, checks it
 against every rollback floor recorded since installation, takes another snapshot,
-and starts the previous image by its immutable digest. Keep that image locally.
+and starts the previous image by its immutable digest. It pins that image in `.env`
+as `IMAGE:vX.Y.Z@DIGEST`, the name and digest it was pulled with, so the next start
+can pull it again if the image was removed. Keep that image locally.
 This also works when the app is stopped or restarting: its snapshot runs in a
 separate container, and the same floor check applies before anything changes.
 The history records the attempt and outcome; the health page records a successful
 rollback as a version change with its source and destination versions.
 
 Running it again goes back one more version, as far as the floor allows, and never
-forward to the version you just left. To go forward again, update to that release.
+forward to the version you just left. After an automatic update it goes back at most
+two versions, since older images are removed. To go forward again, update to that release.
 
 After a rollback the nightly update skips the release you left, and any older patch
 of that minor, and the health page says why. A newer patch still installs by itself.

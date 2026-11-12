@@ -27,15 +27,17 @@ export interface AutoUpdateCommandOptions {
   hasGym?: () => Promise<boolean>;
   notify?: (gymId: string, attempt: AutoUpdateAttempt) => Promise<void>;
 }
-const usage = 'Usage: gym-app auto-update check | gym-app auto-update record --at INSTANT --result RESULT [--reason REASON] [--from VERSION] [--to VERSION]';
-const flags = { '--at': 'attemptedAt', '--result': 'result', '--reason': 'reason', '--from': 'fromVersion', '--to': 'toVersion' } as const;
+const usage = 'Usage: gym-app auto-update check | gym-app auto-update record --at INSTANT --result RESULT [--reason REASON] [--from VERSION] [--to VERSION] [--failures COUNT] [--down-at INSTANT]';
+const flags = { '--at': 'attemptedAt', '--result': 'result', '--reason': 'reason', '--from': 'fromVersion', '--to': 'toVersion',
+  '--failures': 'failures', '--down-at': 'downAt' } as const;
 /**
  * `gym-app auto-update`: the bridge between the host's nightly `update.sh --patch` and the app, which never holds the
  * Docker socket. The updater runs it in the app container (`docker compose exec`):
  *
  * * `check` prints `restore=…`, then (unless a restore holds the install) `setup=false` before the setup wizard has
  *   created the gym, or `enabled=…`, `backups=…` and the gym's `timezone=…`, one `key=value` per line.
- * * `record` stores one attempt's result for the `automatic_updates` health tile.
+ * * `record` stores one attempt's result for the `automatic_updates` health tile. `--failures` is how many automatic
+ *   attempts at the target release have failed so far, and `--down-at` when a recovered failed rollback's site went down.
  *
  * Single-gym installs only: an install serving several gyms has no updater timer.
  */
@@ -59,12 +61,13 @@ export function createAutoUpdateCommand(options: AutoUpdateCommandOptions = {}):
         return 0;
       }
       if (args[0] === 'record' && args.length % 2 === 1) {
-        const input: Record<string, string | null> = { reason: null, fromVersion: null, toVersion: null }, seen = new Set<string>();
+        const input: Record<string, string | number | null> = { reason: null, fromVersion: null, toVersion: null }, seen = new Set<string>();
         for (let index = 1; index < args.length; index += 2) {
-          const key = flags[args[index] as keyof typeof flags];
+          const key = flags[args[index] as keyof typeof flags], value = args[index + 1]!;
           if (!key || seen.has(key)) { io.stderr(usage); return 2; }
           seen.add(key);
-          input[key] = args[index + 1]!;
+          // The count is a number in the attempt; anything but plain digits stays text, which the schema refuses.
+          input[key] = key === 'failures' && /^[0-9]{1,3}$/.test(value) ? Number(value) : value;
         }
         const attempt = autoUpdateAttemptSchema.safeParse(input);
         if (!attempt.success) { io.stderr('Invalid attempt: ' + attempt.error.issues.map((issue) => issue.path.join('.') || issue.message).join(', ')); return 2; }

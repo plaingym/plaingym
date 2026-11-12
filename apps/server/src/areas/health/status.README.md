@@ -22,7 +22,12 @@ No bucket names, filesystem paths, job errors, or SMTP credentials enter respons
 
 The SMTP check validates configuration rather than attempting a send. It uses
 `SmtpResolver.source(gymId)` to report gym versus install configuration.
-Last test time remains unknown because the resolver does not provide it.
+`lastTestAt` is when the gym's own SMTP settings last passed a test email, read from the
+gym's audit rows (`lastEmailTest`): Settings → Email saves its settings only after the
+test is accepted (`integrations.email_saved`), and so does the setup wizard's email step
+(`setup.step_completed` for step 5 while the gym has settings of its own). Removing the
+settings (`integrations.email_removed`) leaves it null, as do the install's own `SMTP_*`
+settings, which the gym never tests. A failed test saves nothing, so it isn't shown.
 
 TODO: add an oldest failure timestamp to `JobStatsQuery`; the response uses null rather
 than the pending-job timestamp. Disk details hold the volume with least free space; the

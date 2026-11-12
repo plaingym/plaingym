@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gt } from 'drizzle-orm';
 import { z } from 'zod';
 import { auditEvents, forGym, uuidv7, writeAudit, type Transaction } from '@plaingym/db';
 import { createTranslator, type Clock } from '@plaingym/shared';
@@ -15,12 +15,22 @@ export const autoUpdateMessage = (key: string, values?: Record<string, string>) 
 const message = autoUpdateMessage;
 /** Each attempt the host's nightly updater reports is one audit row of the gym, newest last. */
 export const autoUpdateAttemptAction = 'health.auto_update.attempted';
-/** Why an attempt installed nothing (`skipped`), went back to the previous version (`rolled_back`) or left a problem (`failed`). */
+/**
+ * An attempt that changed the running version or tried to (`updated`, `rolled_back` or `failed`) also gets a row under this
+ * action, so the tile finds the last update however many nightly checks came after it.
+ */
+export const autoUpdateChangeAction = 'health.auto_update.changed';
+const changeResults: readonly string[] = ['updated', 'rolled_back', 'failed'];
+/**
+ * Why an attempt installed nothing (`skipped`), went back to the previous version (`rolled_back`) or left a problem (`failed`).
+ * `rolled_back` with `rollback_failed` is the recovery from a failed rollback: a later run started the previous version again.
+ * `repeated_failure` skips a release that failed twice, until a newer patch is out or the owner retries it.
+ */
 export const autoUpdateReasons = {
   skipped: ['disabled', 'check_failed', 'backups_not_configured', 'restore_in_progress', 'no_signing_key', 'version_unknown',
     'release_list_unavailable', 'manifest_unavailable', 'manifest_invalid', 'signature_invalid', 'pull_failed', 'digest_mismatch',
-    'image_check_failed', 'migration_in_patch', 'snapshot_failed', 'rolled_back_version'],
-  rolled_back: ['startup_failed', 'health_check_failed', 'interrupted'],
+    'image_check_failed', 'migration_in_patch', 'snapshot_failed', 'rolled_back_version', 'repeated_failure'],
+  rolled_back: ['startup_failed', 'health_check_failed', 'interrupted', 'rollback_failed'],
   failed: ['rollback_failed'],
 } as const;
 type Reason = (typeof autoUpdateReasons)[keyof typeof autoUpdateReasons][number];
@@ -34,6 +44,13 @@ export const autoUpdateAttemptSchema = z.strictObject({
   reason: z.enum(allReasons).nullable(),
   fromVersion: autoUpdateVersionSchema.nullable(),
   toVersion: autoUpdateVersionSchema.nullable(),
+  /**
+   * How many automatic attempts at `toVersion` have failed so far, this one included (`rolled_back` and `failed`), or held
+   * it back (`skipped` with `repeated_failure`). After the second the nightly run waits for a newer patch.
+   */
+  failures: z.int().min(1).max(999).optional(),
+  /** For a recovery from a failed rollback: when the update stopped the app, so the site was down from then. */
+  downAt: instantSchema.optional(),
 }).superRefine((value, context) => {
   const reasons: readonly string[] = value.result in autoUpdateReasons ? autoUpdateReasons[value.result as keyof typeof autoUpdateReasons] : [];
   if (reasons.length ? !value.reason || !reasons.includes(value.reason) : value.reason !== null)
@@ -43,19 +60,26 @@ export const autoUpdateAttemptSchema = z.strictObject({
     context.addIssue({ code: 'custom', path: ['fromVersion'], message: 'The running version is required' });
   if (needsBoth ? !value.toVersion : value.result === 'up_to_date' && value.toVersion !== null)
     context.addIssue({ code: 'custom', path: ['toVersion'], message: 'The target version does not fit the result' });
+  const held = value.reason === 'repeated_failure';
+  if (held ? !value.toVersion || (value.failures ?? 0) < 2 : value.failures !== undefined && value.result !== 'rolled_back' && value.result !== 'failed')
+    context.addIssue({ code: 'custom', path: ['failures'], message: 'The failure count does not fit the result' });
+  if (value.downAt !== undefined && (value.result !== 'rolled_back' || value.reason !== 'rollback_failed' || Date.parse(value.downAt) > Date.parse(value.attemptedAt)))
+    context.addIssue({ code: 'custom', path: ['downAt'], message: 'The outage start does not fit the result' });
 });
 export type AutoUpdateAttempt = z.infer<typeof autoUpdateAttemptSchema>;
 
 export interface AutoUpdateOptions { scope?: typeof forGym; settings?: AutoUpdateSettings; tenancy?: TenancyMode;
   state?: (context: StaffProviderContext) => Promise<AutoUpdateState> }
 /** Records and reads the host updater's attempts; the switch itself lives with the gym's settings. */
+/** What the tile reads: the latest attempts (newest first), the last change, and when a restore last replaced the database. */
+export interface AutoUpdateHistory { attempts: AutoUpdateAttempt[]; lastChange: AutoUpdateAttempt | null; restoredAt: string | null }
 export function createAutoUpdateAttempts(options: Pick<AutoUpdateOptions, 'scope'> & { clock: Clock }) {
   const scope = options.scope ?? forGym;
-  const latestRows = (tx: Transaction) => tx.select({ after: auditEvents.after }).from(auditEvents)
-    .where(and(eq(auditEvents.action, autoUpdateAttemptAction), eq(auditEvents.targetType, 'auto_update')))
-    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.targetId)).limit(5);
-  async function recent(gymId: string): Promise<AutoUpdateAttempt[]> {
-    const rows = await scope(gymId, latestRows);
+  const latestRows = (tx: Transaction, action = autoUpdateAttemptAction, limit = 5, since: Date | null = null) =>
+    tx.select({ after: auditEvents.after }).from(auditEvents)
+      .where(and(eq(auditEvents.action, action), eq(auditEvents.targetType, 'auto_update'), since ? gt(auditEvents.occurredAt, since) : undefined))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.targetId)).limit(limit);
+  const parse = (rows: { after: unknown }[]) => {
     const seen = new Set<string>();
     return rows.flatMap(row => {
       const parsed = autoUpdateAttemptSchema.safeParse(row.after);
@@ -63,9 +87,27 @@ export function createAutoUpdateAttempts(options: Pick<AutoUpdateOptions, 'scope
       seen.add(parsed.data.attemptedAt);
       return [parsed.data];
     });
+  };
+  /**
+   * Attempts recorded before the latest restore came from the server the backup was taken on: its updater, its images and
+   * its version history are not this install's, so they are left out.
+   */
+  async function history(gymId: string): Promise<AutoUpdateHistory> {
+    return scope(gymId, async (tx) => {
+      const [restore] = await tx.select({ at: auditEvents.occurredAt }).from(auditEvents)
+        .where(eq(auditEvents.action, 'restore.completed')).orderBy(desc(auditEvents.occurredAt)).limit(1);
+      const since = restore?.at ?? null;
+      const attempts = parse(await latestRows(tx, autoUpdateAttemptAction, 5, since));
+      const [lastChange] = parse(await latestRows(tx, autoUpdateChangeAction, 1, since));
+      return { attempts, lastChange: lastChange ?? null, restoredAt: since?.toISOString() ?? null };
+    });
+  }
+  async function recent(gymId: string): Promise<AutoUpdateAttempt[]> {
+    return (await history(gymId)).attempts;
   }
   return {
     recent,
+    history,
     /**
      * The host sends a report again until the command succeeds (an owner notice that wasn't accepted fails it), so a
      * replay of a recent attempt (same instant) records nothing new. The host's update lock runs one report at a time.
@@ -74,8 +116,10 @@ export function createAutoUpdateAttempts(options: Pick<AutoUpdateOptions, 'scope
       const attempt = autoUpdateAttemptSchema.parse(input), now = options.clock.now();
       await scope(gymId, async (tx) => {
         const replay = (await latestRows(tx)).some(row => autoUpdateAttemptSchema.safeParse(row.after).data?.attemptedAt === attempt.attemptedAt);
-        if (!replay) await writeAudit(tx, { gymId, actorKind: 'system', action: autoUpdateAttemptAction,
-          targetType: 'auto_update', targetId: uuidv7(now.getTime()), after: attempt, occurredAt: now });
+        if (replay) return;
+        const row = { gymId, actorKind: 'system', targetType: 'auto_update', after: attempt, occurredAt: now } as const;
+        await writeAudit(tx, { ...row, action: autoUpdateAttemptAction, targetId: uuidv7(now.getTime()) });
+        if (changeResults.includes(attempt.result)) await writeAudit(tx, { ...row, action: autoUpdateChangeAction, targetId: uuidv7(now.getTime()) });
       });
       return attempt;
     },
@@ -90,9 +134,12 @@ export const staleAfterHours = 50;
 /** Releases the updater refuses on purpose: installing one by hand would skip the checks that refused it. */
 const refusedReasons: readonly string[] = ['signature_invalid', 'digest_mismatch', 'manifest_invalid', 'migration_in_patch'];
 type Tile = Extract<HealthTile, { id: 'automatic_updates' }>;
-/** The owner's switch and the host updater's latest reported attempt: what decides whether a newer patch installs by itself. */
+/**
+ * The owner's switch and the host updater's latest reported attempt: what decides whether a newer patch installs by itself.
+ * `lastChange` is the latest attempt that updated, rolled back or failed, which the tile names beside a later check.
+ */
 export interface AutoUpdateState { enabled: boolean; attempt: AutoUpdateAttempt | null;
-  previousAttempt?: AutoUpdateAttempt | null; firstSeen?: string; timezone?: string }
+  previousAttempt?: AutoUpdateAttempt | null; lastChange?: AutoUpdateAttempt | null; firstSeen?: string; timezone?: string }
 const transientReasons: readonly string[] = ['release_list_unavailable', 'manifest_unavailable', 'pull_failed', 'snapshot_failed', 'check_failed'];
 const transient = (attempt: AutoUpdateAttempt | null | undefined) => attempt?.result === 'skipped' && transientReasons.includes(attempt.reason ?? '');
 export function formatAutoUpdateTime(instant: string, timezone = 'UTC'): string {
@@ -100,6 +147,25 @@ export function formatAutoUpdateTime(instant: string, timezone = 'UTC'): string 
 }
 function staleMessage(state: AutoUpdateState) {
   return state.attempt ? message('tile.stale', { time: formatAutoUpdateTime(state.attempt.attemptedAt, state.timezone) }) : message('tile.neverRunStale');
+}
+/** The attempt's reason as a sentence; a release held after repeated failures says how many. */
+function reasonText(attempt: AutoUpdateAttempt) {
+  return attempt.reason ? message('reason.' + attempt.reason, { count: String(attempt.failures ?? 2) }) : '';
+}
+/** Two messages as one; the first may end in a command rather than a full stop. */
+const join = (first: string, second: string) => !second ? first : first + (first.endsWith('.') ? ' ' : '. ') + second;
+/** After a failed automatic attempt: whether the next night tries the release again, or waits for a newer patch. */
+function failureNote(attempt: AutoUpdateAttempt) {
+  if (!attempt.failures || !attempt.toVersion || attempt.result === 'skipped') return '';
+  if (attempt.failures === 1) return message('retry.once');
+  return message(attempt.failures === 2 ? 'held.twice' : 'held.times', { to: attempt.toVersion, count: String(attempt.failures) });
+}
+/** The last update beside a later check, so an update stays visible after the next night's "up to date". */
+function lastChangeText(state: AutoUpdateState) {
+  const change = state.lastChange;
+  if (!change || change.attemptedAt === state.attempt?.attemptedAt) return '';
+  const values = { from: change.fromVersion ?? '', to: change.toVersion ?? '', time: formatAutoUpdateTime(change.attemptedAt, state.timezone) };
+  return message(change.result === 'updated' ? 'tile.lastUpdated' : change.result === 'failed' ? 'tile.lastFailed' : 'tile.lastRolledBack', values);
 }
 /**
  * Where the nightly update stands, as one verdict that both the Automatic updates tile and the update banner read:
@@ -123,18 +189,22 @@ export function describeAttempt(enabled: boolean, attempt: AutoUpdateAttempt | n
     const error = attempt?.result === 'failed' || (attempt?.result === 'skipped' && refusedReasons.includes(attempt.reason ?? ''));
     if (error && attempt) {
       const last = describeAttempt(enabled, attempt, new Date(attempt.attemptedAt), metadata);
-      return { status: 'error', message: last.message + (last.message.endsWith('.') ? ' ' : '. ') + staleMessage(state) };
+      return { status: 'error', message: join(last.message, staleMessage(state)) };
     }
     return { status: 'warning', message: staleMessage(state) };
   }
   if (!attempt) return { status: 'not_configured', message: message('tile.neverRun') };
   const versions = { from: attempt.fromVersion ?? '', to: attempt.toVersion ?? '' };
-  const reason = attempt.reason ? message('reason.' + attempt.reason) : '';
+  const reason = reasonText(attempt), time = (instant: string) => formatAutoUpdateTime(instant, metadata.timezone);
   switch (attempt.result) {
     case 'up_to_date': return { status: 'healthy', message: message('tile.upToDate', { version: versions.from }) };
     case 'updated': return { status: 'healthy', message: message('tile.updated', versions) };
-    case 'rolled_back': return { status: 'warning', message: message('tile.rolledBack', { ...versions, reason }) };
-    case 'failed': return { status: 'error', message: message('tile.failed', { ...versions, reason }) };
+    case 'rolled_back':
+      // The update and its rollback failed, and a later run started the previous version again: say how long the site was down.
+      if (attempt.reason === 'rollback_failed') return { status: 'warning', message: join(message(attempt.downAt ? 'tile.recovered' : 'tile.recoveredUntil',
+        { ...versions, up: time(attempt.attemptedAt), ...attempt.downAt ? { down: time(attempt.downAt) } : {} }), failureNote(attempt)) };
+      return { status: 'warning', message: join(message('tile.rolledBack', { ...versions, reason }), failureNote(attempt)) };
+    case 'failed': return { status: 'error', message: join(message('tile.failed', { ...versions, reason }), failureNote(attempt)) };
     case 'skipped':
       // Turned back on after a night it was off: nothing is wrong, the next check simply hasn't run.
       if (verdict === 'resumed') return { status: 'not_configured', message: message('tile.resumed') };
@@ -147,8 +217,11 @@ export function createAutoUpdateStateReader(options: Pick<AutoUpdateOptions, 'sc
   const scope = options.scope ?? forGym;
   return async (gymId: string, clock: Clock): Promise<AutoUpdateState> => {
     const settings = options.settings ?? createAutoUpdateSettings({ scope, clock });
-    const [setting, attempts, firstSeen] = await Promise.all([settings.get(gymId), createAutoUpdateAttempts({ scope, clock }).recent(gymId), settings.firstSeen(gymId)]);
-    return { enabled: setting.enabled, timezone: setting.timezone, firstSeen, attempt: attempts[0] ?? null, previousAttempt: attempts[1] ?? null };
+    const [setting, history, recorded] = await Promise.all([settings.get(gymId), createAutoUpdateAttempts({ scope, clock }).history(gymId), settings.firstSeen(gymId)]);
+    const { attempts, lastChange, restoredAt } = history;
+    // A restore brings the old server's first observation along: the grace for this install's first check starts at the restore.
+    const firstSeen = restoredAt && Date.parse(restoredAt) > Date.parse(recorded) ? restoredAt : recorded;
+    return { enabled: setting.enabled, timezone: setting.timezone, firstSeen, attempt: attempts[0] ?? null, previousAttempt: attempts[1] ?? null, lastChange };
   };
 }
 /** The health service passes the same context to both tiles; a new request gets a fresh read. */
@@ -173,11 +246,13 @@ export function patchHoldReason(state: AutoUpdateState, now: Date, isOlder: (ver
   if (verdict === 'off') return message('tile.off') + ' ' + message('hold.byHand');
   if (verdict === 'stale') {
     const refused = attempt?.result === 'skipped' && refusedReasons.includes(attempt.reason ?? '') && (!attempt.toVersion || !isOlder(attempt.toVersion));
-    return staleMessage(state) + ' ' + (refused ? message('reason.' + attempt.reason) + ' ' + message('hold.wait') : message('hold.byHand'));
+    return staleMessage(state) + ' ' + (refused ? reasonText(attempt) + ' ' + message('hold.wait') : message('hold.byHand'));
   }
   if (verdict !== 'problem' || !attempt?.reason || (attempt.toVersion && isOlder(attempt.toVersion))) return null;
   if (transient(attempt) && !transient(state.previousAttempt)) return null;
-  return message('reason.' + attempt.reason) + (refusedReasons.includes(attempt.reason) ? ' ' + message('hold.wait') : '');
+  // A recovery from a failed rollback says what happened; the release itself is held like any other rollback.
+  const reason = attempt.result === 'rolled_back' && attempt.reason === 'rollback_failed' ? message('reason.recovered') : reasonText(attempt);
+  return join(reason + (refusedReasons.includes(attempt.reason) ? ' ' + message('hold.wait') : ''), failureNote(attempt));
 }
 /** The `automatic_updates` health tile: the owner's switch and the host updater's latest reported attempt. */
 export function createAutoUpdateHealthProvider(options: AutoUpdateOptions = {}) {
@@ -190,6 +265,7 @@ export function createAutoUpdateHealthProvider(options: AutoUpdateOptions = {}) 
     const details: AutomaticUpdatesHealthDetails = automaticUpdatesHealthDetailsSchema.parse({ enabled,
       lastAttemptAt: attempt?.attemptedAt ?? null, result: attempt?.result ?? 'never_run',
       fromVersion: attempt?.fromVersion ?? null, toVersion: attempt?.toVersion ?? null });
-    return { id: 'automatic_updates', checkedAt, details, ...describeAttempt(enabled, attempt, context.clock.now(), state) };
+    const described = describeAttempt(enabled, attempt, context.clock.now(), state);
+    return { id: 'automatic_updates', checkedAt, details, ...described, message: join(described.message, lastChangeText(state)) };
   });
 }

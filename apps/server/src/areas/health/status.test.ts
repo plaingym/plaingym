@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { uuidv7 } from '@plaingym/db';
+import { uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { healthResponseSchema, healthTileIds, healthTileSchema, type HealthTile } from '@plaingym/shared/contracts';
@@ -14,7 +14,7 @@ import { createServerRegistry } from '../../core/registry.js';
 import { authorize } from '../staff/auth.permissions.js';
 import { encryptSmtpConfig } from '../settings/smtp.js';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
-import { createStatusProviders } from './status.providers.js';
+import { createStatusProviders, lastEmailTest } from './status.providers.js';
 import { createHealthService, healthProvider } from './status.js';
 import { createStatusRoutes } from './status.routes.js';
 
@@ -74,6 +74,25 @@ describe('built-in providers', () => {
     const fallback = { ...env, SMTP_HOST: 'fallback.private', SMTP_FROM: 'install@example.test', SMTP_USER: 'fallback-user', SMTP_PASS: 'fallback-secret' };
     expect(await tile('smtp', gymB, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining("install's") });
     expect(await tile('smtp', gymA, { env: fallback })).toMatchObject({ status: 'healthy', message: expect.stringContaining('own SMTP') });
+  });
+  it('shows when the gym\'s own SMTP settings last passed a test email', async () => {
+    const id = uuidv7(), smtp = { host: 'tested.host', port: 587, security: 'starttls', from: 'owner@example.test', username: 'u', password: 'p' } as const;
+    await factory('gyms', id, { smtpConfig: encryptSmtpConfig(key, id, smtp) });
+    const audit = (action: string, occurredAt: string, after: unknown = null) => database.forGym(id, (tx) =>
+      writeAudit(tx, { gymId: id, actorKind: 'system', action, targetType: 'gym', targetId: id, after, occurredAt: new Date(occurredAt) }));
+    expect(await tile('smtp', id)).toMatchObject({ status: 'healthy', details: { configured: true, lastTestAt: null } });
+    // The wizard's email step sends its test before it saves; other steps say nothing about email.
+    await audit('setup.step_completed', '2026-10-20T09:00:00Z', { step: 5, revision: 6 });
+    await audit('setup.step_completed', '2026-10-20T09:05:00Z', { step: 6, revision: 7 });
+    expect(await tile('smtp', id)).toMatchObject({ details: { lastTestAt: '2026-10-20T09:00:00.000Z' } });
+    await audit('integrations.email_saved', '2026-10-21T10:00:00Z');
+    expect(await tile('smtp', id)).toMatchObject({ details: { lastTestAt: '2026-10-21T10:00:00.000Z' } });
+    // Another gym's test says nothing about this one.
+    expect(await tile('smtp', gymA)).toMatchObject({ details: { lastTestAt: null } });
+    expect(lastEmailTest([{ action: 'integrations.email_removed', after: null, occurredAt: new Date('2026-10-22T10:00:00Z') },
+      { action: 'integrations.email_saved', after: null, occurredAt: new Date('2026-10-21T10:00:00Z') }], true)).toBeNull();
+    // The install's own SMTP settings are never tested by the gym.
+    expect(lastEmailTest([{ action: 'setup.step_completed', after: { step: 5 }, occurredAt: new Date('2026-10-20T09:00:00Z') }], false)).toBeNull();
   });
   it('surfaces corrupt encrypted SMTP as unavailable without leaking its contents', async () => {
     const id = uuidv7(); await factory('gyms', id, { smtpConfig: 'sensitive-invalid-ciphertext' });

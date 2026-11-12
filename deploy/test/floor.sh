@@ -156,7 +156,7 @@ outcomes 'install starting abandoned rollback '
 [ "$(floor)" = v1.9.0 ]
 # The next attempt crosses for real and leaves the guard, with its own snapshot.
 update 0
-pinned "ghcr.io/example/app@$digest"
+pinned "ghcr.io/example/app:$TARGET@$digest"
 grep -q "SCHEMA_ROLLBACK_FLOOR: 'v2.0.0'" "$case_dir/schema-compatibility.yaml"
 grep -qx 'COMPOSE_FILE=compose.yaml:schema-compatibility.yaml' "$case_dir/.env"
 [ ! -e "$case_dir/.schema-attempt" ] && [ ! -e "$case_dir/schema-compatibility.yaml.before" ]
@@ -195,7 +195,7 @@ for app_state in stopped restarting; do
   if grep -q "up -d .* IMAGE=$PREVIOUS_ID" "$CALLS"; then echo 'Started incompatible code during recovery.' >&2; exit 1; fi
   grep -q -- "--entrypoint node app /app/maintenance.mjs snapshot manual IMAGE=$digest" "$CALLS"
   update 0 APP_STATE="$app_state"
-  pinned "ghcr.io/example/app@$digest"
+  pinned "ghcr.io/example/app:$TARGET@$digest"
   cmp "$case_dir/schema-compatibility.yaml" "$temporary/recovery_guard"
   [ ! -e "$case_dir/.schema-recovery" ] && [ ! -e "$case_dir/.schema-attempt" ]
   outcomes 'install starting failed starting abandoned starting update '
@@ -251,7 +251,7 @@ for app_state in stopped restarting; do
   said "Restore pre-upgrade snapshot $snapshot;"
   if grep -q "up -d .* IMAGE=$PREVIOUS_ID" "$CALLS"; then echo 'Restarted incompatible code after another migration.' >&2; exit 1; fi
   update 0 APP_STATE="$app_state" MIGRATED_STATE='22|3000'
-  pinned "ghcr.io/example/app@$newer_id"
+  pinned "ghcr.io/example/app:$TARGET@$newer_id"
   grep -q -- "--entrypoint node app /app/maintenance.mjs snapshot manual IMAGE=$digest" "$CALLS"
   grep -q "SCHEMA_ROLLBACK_FLOOR: 'v1.11.0'" "$case_dir/schema-compatibility.yaml"
   grep -q "SCHEMA_SNAPSHOT: '$snapshot'" "$case_dir/schema-compatibility.yaml"
@@ -376,7 +376,7 @@ no_guard
 outcomes 'install starting abandoned rollback '
 [ "$(floor)" = v1.9.0 ]
 update 0
-pinned "ghcr.io/example/app@$digest"
+pinned "ghcr.io/example/app:$TARGET@$digest"
 # --rollback after a killed update only finishes that update, and doesn't call it a rollback.
 make_install killed_then_rollback v1.10.0 v1.9.0
 update 137 FAIL_AT=killed

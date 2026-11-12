@@ -17,19 +17,34 @@ The app never holds the Docker socket. This area reports update status and sends
   where no updater runs, and `PUT` answers 409 there.
 * **The host's command.** `gym-app auto-update check` prints `restore=…` and, unless a restore holds the install,
   `setup=false` before the setup wizard has created the gym, or `setup=true`, `enabled=…`, `backups=…` and
-  `timezone=…`. `gym-app auto-update record --at --result [--reason] [--from] [--to]`
-  stores one attempt as an audit row (`health.auto_update.attempted`, target type `auto_update`), refused during a
-  restore. A replayed report (an instant already among the latest attempts) stores nothing new.
+  `timezone=…`; the host asks every hour. `gym-app auto-update record --at --result [--reason] [--from] [--to]
+  [--failures] [--down-at]` stores one attempt as an audit row (`health.auto_update.attempted`, target type
+  `auto_update`), refused during a restore; an attempt that updated, rolled back or failed gets a second row
+  under `health.auto_update.changed`, so the last change is found however many checks follow it. A replayed
+  report (an instant already among the latest attempts) stores nothing new. Exit 2 means the input is invalid,
+  which the host drops rather than retries.
   `autoUpdateAttemptSchema` accepts each result only with the facts it can know: `up_to_date` the running
   version, `updated`, `rolled_back` and `failed` both versions and (for the last two) a reason, `skipped` a reason.
+  `failures` (rolled back, failed, or a `repeated_failure` skip, which needs at least 2) is how many automatic
+  attempts at the target release have failed; `downAt` belongs only to `rolled_back` with `rollback_failed`, the
+  recovery from a failed rollback, and is when the update stopped the app.
   Single-gym installs only. It is registered in `cli/index.ts`.
 * **Owner notices.** After recording a rolled-back or failed attempt, the command resolves the gym's SMTP
   configuration through `createSmtpResolver` and sends each owner a separate notice outside transactions.
   Durable per-attempt, per-recipient delivery keys prevent accepted or uncertain sends from repeating;
   definite non-sends leave the host report pending for retry. These staff notices are exempt from
-  `memberEmailsEnabled`, as classified in the go-live inventory. No SMTP means no email.
-* **The tile.** `createAutoUpdateHealthProvider` reads the switch and the latest attempt. Off, or no attempt yet:
+  `memberEmailsEnabled`, as classified in the go-live inventory. No SMTP means no email. Times in a notice,
+  including a recovery's outage, use the gym's timezone.
+* **The tile.** `createAutoUpdateHealthProvider` reads the switch, the latest attempt and the last change. Off, or no attempt yet:
   not set up. Up to date or updated: healthy. Rolled back: warning. Failed (the rollback failed too): error.
+  A recovery from a failed rollback (warning) says the site was down from `downAt` until the attempt's time. A
+  rolled-back or failed attempt with `failures` 1 says the next night tries the release again; from 2, that
+  automatic updates wait for a newer patch (`--patch --now` retries it), and the later `repeated_failure` skips
+  say the same. When the last change isn't the latest attempt, the message adds it: "Last update: v1.2.3 → v1.2.4
+  on …", or the last attempt that was rolled back or failed. Attempts recorded before the latest `restore.completed`
+  are ignored (they came from the server the backup was taken on), and the grace for a first check starts at the
+  restore. The web tile labels the versions for the result (running, previous and updated, or tried version) and
+  hides a version the attempt has none of.
   Skipped: a warning, or an error when the release itself was refused (bad signature, digest or manifest, or a
   patch that changes migrations); a night skipped while the switch was off reads as not set up once it is back on.
   After 50 hours without a check, a warning names the timer; an existing error retains its status and cause

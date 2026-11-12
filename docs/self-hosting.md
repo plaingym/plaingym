@@ -273,9 +273,14 @@ It:
    healthy for a minute;
 4. goes back to the previous version if the new one doesn't start or isn't healthy.
 
+A release that fails is tried once more the next night; after a second failure
+automatic updates wait for a newer patch release. After an update the server keeps
+the current image and the two before it, and removes older ones.
+
 The **Health** page's **Automatic updates** tile shows the last night's result:
 up to date, updated, rolled back, or skipped and why (for example, backups that
-aren't set up yet: without a backup it changes nothing). Owners turn automatic
+aren't set up yet: without a backup it changes nothing), and the last update after
+later checks. Owners turn automatic
 patch updates off, or on again, in **Settings → Updates**; they are on by default.
 To run tonight's check at once, for example after setting up backups:
 

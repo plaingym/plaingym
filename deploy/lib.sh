@@ -82,12 +82,17 @@ floor_snapshot() { # FLOOR: the snapshot from before the first attempt that kept
     END { print found }' "$ROOT/version-history.tsv"
 }
 # The history as a stack of installed versions: a rollback unstacks down to the version it went back to, so the next one
-# walks further back. `left` holds the versions a rollback left, until one is installed again.
+# walks further back. `left` holds the versions a rollback left, until one is installed again. A `trimmed` row takes an
+# old entry off the stack once its image is no longer kept (update.sh, prune_images).
 # shellcheck disable=SC2016
 history_stack='
   $4 ~ /^(install|update)$/ { n++; line[n]=$0; image[n]=$3; version[n]=$2; delete left[$2]; next }
   $4 == "rollback" { for (i=n;i>0;i--) if (image[i]==$3) break; if (i>0) while (n>i) { left[version[n]]=1; n-- } }
+  $4 == "trimmed" { k=0; for (i=1;i<=n;i++) if (image[i]!=$3) { k++; line[k]=line[i]; image[k]=image[i]; version[k]=version[i] } n=k }
 '
+# How many stack entries keep their images after a patch update: the current image and the two before it.
+# shellcheck disable=SC2034
+rollback_depth=3
 previous_version() { # CURRENT_IMAGE_ID: the history row a rollback goes back to
   [ -f "$ROOT/version-history.tsv" ] || return 0
   awk -F '\t' -v current="$1" "$history_stack"'END { while (n>0 && image[n]==current) n--; if (n>0) print line[n] }' "$ROOT/version-history.tsv"

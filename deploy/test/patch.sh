@@ -23,24 +23,40 @@ export DIGEST="$digest"
 PREVIOUS_ID="sha256:$(printf 'a%.0s' $(seq 64))"
 export PREVIOUS_ID
 
-# Docker: logs each call with the image it targets, and fails where FAIL_AT says.
+# Docker: logs each call with the image it targets, and fails where FAIL_AT says. A start that fails leaves the app
+# down (the file `down`) until a start succeeds. DISTINCT_IDS gives each release's image its own ID and label.
 cat > "$temporary/bin/docker" <<'MOCK'
 #!/bin/sh
 set -eu
 printf '%s IMAGE=%s\n' "$*" "${APP_IMAGE:-configured}" >> "$CALLS"
-image_of() { for argument in "$@"; do last=$argument; done; printf '%s' "$last"; }
+version_in() { tag=${1#*:v}; printf 'v%s\n' "${tag%%@*}"; }
+id_in() { tag=${1##*.}; printf 'sha256:%064d\n' "${tag%%@*}"; }
 case "$*" in
-  *' ps --status running --services') [ "${FAIL_AT:-}" = app_down ] || echo app ;;
+  *' ps --status running --services') [ "${FAIL_AT:-}" = app_down ] || [ -e "$FIXTURES/down" ] || echo app ;;
   *' ps -q app') echo container-1 ;;
   'inspect container-1 '*) if [ "${FAIL_AT:-}" = settle ]; then echo 'healthy 1'; else echo 'healthy 0'; fi ;;
   *' exec -T app gym-app auto-update check') cat "$FIXTURES/check" ;;
   *' exec -T app gym-app auto-update record '*)
     [ "${FAIL_AT:-}" != record ] || exit 1
+    case "$*" in *' --reason refused'*) exit 2 ;; esac
     printf '%s\n' "$*" | sed 's/.* auto-update record //' >> "$RECORDS" ;;
-  "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1; case "$3" in *:v1.2.1@*) echo "sha256:$(printf 'b%.0s' $(seq 64))" ;; *:v1.2.2@*) echo "sha256:$(printf 'e%.0s' $(seq 64))" ;; *@sha256:*) echo "$DIGEST" ;; *) echo "$PREVIOUS_ID" ;; esac ;;
+  "image inspect "*" --format {{.Id}}") [ "${FAIL_AT:-}" != previous ] || exit 1
+    case "$3" in
+      sha256:*) echo "$3" ;;
+      *:v1.2.1@*) echo "sha256:$(printf 'b%.0s' $(seq 64))" ;;
+      *:v1.2.2@*) echo "sha256:$(printf 'e%.0s' $(seq 64))" ;;
+      *@sha256:*) if [ -n "${DISTINCT_IDS:-}" ]; then id_in "$3"; else echo "$DIGEST"; fi ;;
+      *) echo "$PREVIOUS_ID" ;;
+    esac ;;
   'image inspect '*'org.opencontainers.image.version'*)
-    case "$3" in *@sha256:*) echo "${TARGET_LABEL:-v1.2.5}" ;; *) echo "${CURRENT_LABEL:-v1.2.3}" ;; esac ;;
+    case "$3" in
+      *@sha256:*) if [ -n "${DISTINCT_IDS:-}" ]; then version_in "$3"; else echo "${TARGET_LABEL:-v1.2.5}"; fi ;;
+      *) echo "${CURRENT_LABEL:-v1.2.3}" ;;
+    esac ;;
   'image inspect '*RepoDigests*) echo "${REPO_DIGEST:-ghcr.io/example/app@$DIGEST}"; echo 'ghcr.io/example/app@sha256:0000000000000000000000000000000000000000000000000000000000000000' ;;
+  # An image is there until it is removed.
+  'image inspect '*) [ ! -e "$FIXTURES/removed" ] || ! grep -qxF "$3" "$FIXTURES/removed" ;;
+  'image rm '*) printf '%s\n' "$3" >> "$FIXTURES/removed" ;;
   'run --rm --network none '*)
     case "$*" in *@sha256:*' -c '*) [ "${FAIL_AT:-}" != migration ] || { echo "$(printf 'f%.0s' $(seq 64))  -"; exit 0; } ;; esac
     echo "$(printf 'c%.0s' $(seq 64))  -" ;;
@@ -50,9 +66,11 @@ case "$*" in
     [ "${FAIL_AT:-}" != snapshot_signal ] || { kill -TERM "$PPID"; exit 143; }
     [ "${FAIL_AT:-}" != snapshot ] || { echo 'S3 refused the upload' >&2; exit 1; } ;;
   *'up -d '*)
-    if [ "${APP_IMAGE:-}" = "$PREVIOUS_ID" ]; then [ "${FAIL_AT:-}" != rollback ]
-    elif [ -n "${APP_IMAGE:-}" ]; then [ "${FAIL_AT:-}" != startup ]
-    else [ "${FAIL_AT:-}" != pinned ]; fi ;;
+    started=true
+    if [ "${APP_IMAGE:-}" = "$PREVIOUS_ID" ]; then [ "${FAIL_AT:-}" != rollback ] || started=false
+    elif [ -n "${APP_IMAGE:-}" ]; then [ "${FAIL_AT:-}" != startup ] || started=false
+    else [ "${FAIL_AT:-}" != pinned ] || started=false; fi
+    if [ "$started" = true ]; then rm -f "$FIXTURES/down"; else : > "$FIXTURES/down"; exit 1; fi ;;
   *' node /app/deploy/healthcheck.mjs') case "${FAIL_AT:-}" in health|rollback) exit 1 ;; esac ;;
 esac
 MOCK
@@ -96,6 +114,7 @@ make_install() {
   : > "$case_dir/compose.yaml"
   printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=example/app\nFAKE_SECRET=private-test-value\n' > "$case_dir/.env"
   : > "$CALLS"; : > "$RECORDS"
+  rm -f "$FIXTURES/down" "$FIXTURES/removed"
   write_manifest v1.2.5
   checks
 }
@@ -137,7 +156,7 @@ grep -qx timezone=America/Denver "$case_dir/auto-update.state"
 grep -qx night=2026-11-03 "$case_dir/auto-update.state"
 no_secret
 
-# Only earlier images actually pulled by this install may be pruned. Rollback history wins over age.
+# Only images this install's updater pulled, or that the rollback stack held, may be pruned; the stack's top three stay.
 make_install pruning
 old_id="sha256:$(printf 'b%.0s' $(seq 64))"
 retained_id="sha256:$(printf 'e%.0s' $(seq 64))"
@@ -146,12 +165,44 @@ printf 'ghcr.io/example/app:v1.2.2@%s\t%s\tv1.2.2\n' "$retained_id" "$retained_i
 printf '2026-11-01T00:00:00Z\tv1.2.2\t%s\tinstall\tv1.2.0\t-\n' "$retained_id" > "$case_dir/version-history.tsv"
 printf '2026-11-02T00:00:00Z\tv1.2.3\t%s\tupdate\tv1.2.0\t-\n' "$PREVIOUS_ID" >> "$case_dir/version-history.tsv"
 expect_status 0 --patch --now
-called "image rm ghcr.io/example/app:v1.2.1@$old_id"
+called "image rm $old_id"
 [ "$(grep -c 'image rm ' "$CALLS")" -eq 1 ]
-never "image rm ghcr.io/example/app:v1.2.2"
+never "image rm $retained_id"
 never 'image prune'
 never 'image rm other/'
+# Each pulled image is listed once, and a removed one leaves the list.
+[ "$(cut -f3 "$case_dir/auto-update-images.tsv" | tr '\n' ' ')" = 'v1.2.2 v1.2.5 ' ]
 grep -q "ghcr.io/example/app:v1.2.5@$digest" "$case_dir/auto-update-images.tsv"
+
+# Five patch updates leave the current image and the two before it, and nothing older: the installer's image goes
+# too once it falls off. --rollback then walks back only through the kept images.
+make_install five
+image_id() { printf 'sha256:%064d' "$1"; }
+for patch_number in 4 5 6 7 8; do
+  printf '[{"tag_name": "v1.2.%s"}, {"tag_name": "v1.3.0"}]\n' "$patch_number" > "$FIXTURES/releases.json"
+  write_manifest "v1.2.$patch_number"
+  expect_status 0 DISTINCT_IDS=true --patch --now
+  recorded "--result updated --from v1.2.$((patch_number - 1)) --to v1.2.$patch_number"
+done
+pinned "ghcr.io/example/app:v1.2.8@$digest"
+for removed in "$PREVIOUS_ID" "$(image_id 4)" "$(image_id 5)"; do called "image rm $removed"; done
+for retained in 6 7 8; do never "image rm $(image_id "$retained")"; done
+[ "$(grep -c 'image rm ' "$CALLS")" -eq 3 ]
+[ "$(cut -f3 "$case_dir/auto-update-images.tsv" | tr '\n' ' ')" = 'v1.2.6 v1.2.7 v1.2.8 ' ]
+[ "$(grep -c "$(printf '\ttrimmed\t')" "$case_dir/version-history.tsv")" -eq 3 ]
+(
+  ROOT=$case_dir
+  # shellcheck source=deploy/lib.sh
+  . "$case_dir/lib.sh"
+  [ "$(previous_version "$(image_id 8)" | cut -f2)" = v1.2.7 ]
+  history_record v1.2.7 "$(image_id 7)" rollback v1.2.0 -
+  [ "$(previous_version "$(image_id 7)" | cut -f2)" = v1.2.6 ]
+  history_record v1.2.6 "$(image_id 6)" rollback v1.2.0 -
+  [ -z "$(previous_version "$(image_id 6)")" ]
+  # The trimmed rows change no rollback floor: the installer's v1.2.3 stays the highest.
+  [ "$(schema_floor)" = v1.2.3 ]
+)
+printf '[{"tag_name": "v2.0.0"}, {"tag_name":"v1.3.0"},\n {"tag_name": "v1.2.5"}, {"tag_name": "v1.2.4"}, {"tag_name": "v1.2.3"}]\n' > "$FIXTURES/releases.json"
 
 make_install dot-repository
 printf 'APP_IMAGE=ghcr.io/example/app:v1.2.3\nRELEASE_REPOSITORY=../..\n' > "$case_dir/.env"
@@ -272,27 +323,64 @@ for stage in startup health settle; do
   make_install "$stage"
   expect_status 1 FAIL_AT=$stage --patch --now
   reason=health_check_failed; [ "$stage" != startup ] || reason=startup_failed
-  recorded "--result rolled_back --reason $reason --from v1.2.3 --to v1.2.5"
+  recorded "--result rolled_back --reason $reason --from v1.2.3 --to v1.2.5 --failures 1"
+  grep -q "^Automatic patch update: rolled_back, $reason (running v1.2.3, newest v1.2.5).$" "$temporary/output"
   pinned ghcr.io/example/app:v1.2.3
   grep 'up -d ' "$CALLS" | tail -n 1 | grep -q "IMAGE=$PREVIOUS_ID"
   [ ! -e "$case_dir/.auto-update.inflight" ]
   no_secret
 done
+# The update and its rollback both fail: the site is down, so the result waits. A retry with the app still down
+# reports nothing new; once the pinned image runs, the failure and then the recovery are recorded, in order.
 make_install rollback
 expect_status 1 FAIL_AT=rollback --patch --now
-recorded "--result failed --reason rollback_failed --from v1.2.3 --to v1.2.5"
+grep -q '^Automatic patch update: failed, rollback_failed (from v1.2.3 to v1.2.5).$' "$temporary/output"
+[ ! -s "$RECORDS" ]
 pinned ghcr.io/example/app:v1.2.3
 # The previous image may not be running: the marker stays, and every later run starts the pinned image until it runs.
-[ -e "$case_dir/.auto-update.inflight" ]
+grep -Eq '^v1\.2\.3 v1\.2\.5 [0-9T:Z-]+ rollback_failed$' "$case_dir/.auto-update.inflight"
 : > "$CALLS"
 expect_status 1 FAIL_AT=pinned FAKE_HOUR=14 --patch
-recorded "--result failed --reason rollback_failed --from v1.2.3 --to v1.2.5"
+grep -q 'still does not start' "$temporary/output"
 grep -q ' up -d --no-deps --wait --wait-timeout 90 app IMAGE=configured' "$CALLS"
 never 'auto-update check'
+[ ! -s "$RECORDS" ]
+[ "$(wc -l < "$case_dir/auto-update.result")" -eq 1 ]
 [ -e "$case_dir/.auto-update.inflight" ]
 expect_status 1 FAKE_HOUR=14 --patch
-recorded "--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5"
-[ ! -e "$case_dir/.auto-update.inflight" ]
+[ "$(wc -l < "$RECORDS")" -eq 2 ]
+head -n 1 "$RECORDS" | grep -Eq '^--at [0-9T:Z-]+ --result failed --reason rollback_failed --from v1\.2\.3 --to v1\.2\.5 --failures 1$'
+recorded '--result rolled_back --reason rollback_failed --from v1.2.3 --to v1.2.5 --failures 1 --down-at [0-9T:Z-]+'
+grep -q '^Automatic patch update: rolled_back, rollback_failed (running v1.2.3, newest v1.2.5).$' "$temporary/output"
+[ ! -e "$case_dir/.auto-update.inflight" ] && [ ! -e "$case_dir/auto-update.result" ]
+# The site went down when the update stopped the app, before the recovery's own report.
+down_at=$(tail -n 1 "$RECORDS" | sed 's/.* --down-at //')
+[ "$(/bin/date -u -d "$down_at" +%s)" -le "$(/bin/date -u -d "$(tail -n 1 "$RECORDS" | cut -d' ' -f2)" +%s)" ]
+grep -qx 'failures.v1.2.5=1' "$case_dir/auto-update.state"
+
+# A patch that failed is tried once more the next night. After a second failure it waits for a newer patch, or for the
+# owner's run with --now; a success clears the count. Each pulled image is listed once, however often it is tried.
+make_install retries
+expect_status 1 FAIL_AT=health --patch --now
+recorded '--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 1'
+expect_status 1 FAIL_AT=health FAKE_DAY=2026-11-04 --patch
+recorded '--result rolled_back --reason health_check_failed --from v1.2.3 --to v1.2.5 --failures 2'
+: > "$CALLS"
+expect_status 0 FAKE_DAY=2026-11-05 --patch
+recorded '--result skipped --reason repeated_failure --from v1.2.3 --to v1.2.5 --failures 2'
+never ' pull app'; never ' stop app'
+[ "$(wc -l < "$case_dir/auto-update-images.tsv")" -eq 1 ]
+expect_status 0 --patch --now
+recorded '--result updated --from v1.2.3 --to v1.2.5'
+if grep -q '^failures\.' "$case_dir/auto-update.state"; then echo 'Kept a failure count after a successful update.' >&2; exit 1; fi
+# A newer patch than the held one is tried at once.
+make_install held-newer
+printf 'failures.v1.2.5=2\n' > "$case_dir/auto-update.state"
+printf '[{"tag_name": "v1.2.6"}, {"tag_name": "v1.2.5"}]\n' > "$FIXTURES/releases.json"
+write_manifest v1.2.6
+expect_status 0 TARGET_LABEL=v1.2.6 FAKE_HOUR=02 --patch
+recorded '--result updated --from v1.2.3 --to v1.2.6'
+printf '[{"tag_name": "v2.0.0"}, {"tag_name":"v1.3.0"},\n {"tag_name": "v1.2.5"}, {"tag_name": "v1.2.4"}, {"tag_name": "v1.2.3"}]\n' > "$FIXTURES/releases.json"
 
 # Situations that change nothing.
 make_install not-set-up
@@ -325,14 +413,14 @@ recorded "--result skipped --reason manifest_unavailable --from v1.2.3 --to v1.2
 make_install app-down
 expect_status 1 FAIL_AT=app_down --patch --now
 never 'auto-update check'
-grep -Eq '^[0-9T:Z-]+ skipped check_failed - -$' "$case_dir/auto-update.result"
+grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.result"
 
 # A result the app can't take yet (restoring, or down) waits and is recorded first on the next run.
 make_install restore
 checks true
 expect_status 0 FAIL_AT=record --patch --now
 [ ! -s "$RECORDS" ]
-grep -Eq '^[0-9T:Z-]+ skipped restore_in_progress - -$' "$case_dir/auto-update.result"
+grep -Eq '^[0-9T:Z-]+ skipped restore_in_progress - - - -$' "$case_dir/auto-update.result"
 never ' pull app'
 checks
 expect_status 0 --patch --now
@@ -342,14 +430,42 @@ recorded "--result updated --from v1.2.3 --to v1.2.5"
 
 # A run killed between stopping the app and pinning an image: the next run starts the pinned image first.
 make_install interrupted
-printf 'v1.2.3 v1.2.5\n' > "$case_dir/.auto-update.inflight"
+printf 'v1.2.3 v1.2.5 2026-11-03T09:02:00Z -\n' > "$case_dir/.auto-update.inflight"
 expect_status 1 --patch
-recorded "--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5"
+recorded "--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5 --failures 1"
 grep -q ' up -d --no-deps --wait --wait-timeout 90 app IMAGE=configured' "$CALLS"
 never 'auto-update check'
 [ ! -e "$case_dir/.auto-update.inflight" ]
+# A marker from before it held more than the versions reads the same way.
+make_install interrupted-older
+printf 'v1.2.3 v1.2.5\n' > "$case_dir/.auto-update.inflight"
+expect_status 1 --patch
+recorded "--result rolled_back --reason interrupted --from v1.2.3 --to v1.2.5 --failures 1"
+# Killed outright, and the pinned image doesn't start either: that is reported once as a failed rollback, and the
+# recovery names when the app stopped.
+make_install interrupted-down
+printf 'v1.2.3 v1.2.5 2026-11-03T09:02:00Z -\n' > "$case_dir/.auto-update.inflight"
+expect_status 1 FAIL_AT=pinned --patch
+[ ! -s "$RECORDS" ] && [ "$(wc -l < "$case_dir/auto-update.result")" -eq 1 ]
+expect_status 1 FAIL_AT=pinned --patch
+[ ! -s "$RECORDS" ] && [ "$(wc -l < "$case_dir/auto-update.result")" -eq 1 ]
+expect_status 1 --patch
+head -n 1 "$RECORDS" | grep -Eq '^--at [0-9T:Z-]+ --result failed --reason rollback_failed --from v1\.2\.3 --to v1\.2\.5 --failures 1$'
+recorded "--result rolled_back --reason rollback_failed --from v1.2.3 --to v1.2.5 --failures 1 --down-at 2026-11-03T09:02:00Z"
+[ "$(wc -l < "$RECORDS")" -eq 2 ]
 
-# The timer fires hourly: only the first run inside 02:00-05:00 of the gym's night acts.
+# Results wait in order, and one the app refuses as invalid is dropped instead of holding back the rest.
+make_install pending-order
+printf '2026-11-02T09:00:00Z skipped refused v1.2.3 - - -\n2026-11-02T10:00:00Z skipped pull_failed v1.2.3 v1.2.5 - -\n' > "$case_dir/auto-update.result"
+expect_status 0 --patch --now
+grep -q 'refused the recorded result "skipped refused"' "$temporary/output"
+[ "$(wc -l < "$RECORDS")" -eq 2 ]
+head -n 1 "$RECORDS" | grep -qx -- '--at 2026-11-02T10:00:00Z --result skipped --reason pull_failed --from v1.2.3 --to v1.2.5'
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+[ ! -e "$case_dir/auto-update.result" ]
+
+# The timer fires hourly: each run asks the app for the gym's timezone, and only the first run inside 02:00-05:00 of
+# the gym's night acts.
 make_install window
 expect_status 0 FAKE_HOUR=14 --patch
 called 'auto-update check'
@@ -357,14 +473,41 @@ called 'auto-update check'
 grep -qx timezone=America/Denver "$case_dir/auto-update.state"
 : > "$CALLS"
 expect_status 0 FAKE_HOUR=15 --patch
-[ ! -s "$CALLS" ]
+called 'auto-update check'
+[ ! -s "$RECORDS" ]; never 'curl '
 expect_status 0 FAKE_HOUR=02 --patch
 recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -q '^Automatic patch update: updated from v1.2.3 to v1.2.5.$' "$temporary/output"
 : > "$CALLS"
 expect_status 0 FAKE_HOUR=03 --patch
-[ ! -s "$CALLS" ]
+never 'curl '; [ "$(wc -l < "$RECORDS")" -eq 1 ]
 expect_status 0 FAKE_HOUR=02 FAKE_DAY=2026-11-04 --patch
-called 'auto-update check'
+recorded "--result up_to_date --from v1.2.5"
+grep -q '^Automatic patch update: up to date (v1.2.5; no newer patch).$' "$temporary/output"
+
+# A changed timezone counts from the new zone's next night, even when the old zone's night is already done.
+make_install timezone-change
+printf 'timezone=America/Denver\nnight=2026-11-03\nnight_zone=America/Denver\nnight_at=1\n' > "$case_dir/auto-update.state"
+sed -i 's|^timezone=.*|timezone=Asia/Riyadh|' "$FIXTURES/check"
+expect_status 0 FAKE_HOUR=02 --patch
+recorded "--result updated --from v1.2.3 --to v1.2.5"
+grep -qx timezone=Asia/Riyadh "$case_dir/auto-update.state"
+grep -qx night_zone=Asia/Riyadh "$case_dir/auto-update.state"
+# Still once a night: a change of zone just after a night's run waits for the next night.
+make_install timezone-same-night
+printf 'timezone=America/Denver\nnight=2026-11-03\nnight_zone=America/Denver\nnight_at=%s\n' "$(/bin/date -u +%s)" > "$case_dir/auto-update.state"
+sed -i 's|^timezone=.*|timezone=Asia/Riyadh|' "$FIXTURES/check"
+expect_status 0 FAKE_HOUR=02 --patch
+[ ! -s "$RECORDS" ]; never 'curl '
+grep -qx timezone=Asia/Riyadh "$case_dir/auto-update.state"
+# The app can't answer: the zone it last gave decides, and outside that zone's night nothing is reported.
+make_install timezone-fallback
+printf 'timezone=America/Denver\n' > "$case_dir/auto-update.state"
+expect_status 0 FAIL_AT=app_down FAKE_HOUR=14 --patch
+[ ! -s "$RECORDS" ] && [ ! -e "$case_dir/auto-update.result" ]
+never 'auto-update check'
+expect_status 1 FAIL_AT=app_down FAKE_HOUR=02 --patch
+grep -Eq '^[0-9T:Z-]+ skipped check_failed - - - -$' "$case_dir/auto-update.result"
 
 # Another update holds the lock: this run does nothing.
 make_install locked

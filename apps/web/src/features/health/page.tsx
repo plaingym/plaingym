@@ -21,6 +21,17 @@ function detailValue(key: string, value: unknown) {
   if (key.endsWith('Url') && typeof value === 'string') return <a href={value} className="underline" target="_blank" rel="noreferrer">{label('field.' + key)}</a>;
   return String(value);
 }
+/**
+ * The detail rows a tile shows. The Automatic updates tile labels its versions for what the attempt did (an up-to-date
+ * check names only the running version, a rollback the version it tried) and leaves out a version the attempt has none of.
+ */
+function detailRows(tile: HealthTile): [key: string, label: string, value: unknown][] {
+  if (!tile.details) return [];
+  const versions = tile.id === 'automatic_updates' ? tile.details : null;
+  return Object.entries(tile.details).filter(([key, value]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey'
+    && !(versions && (key === 'fromVersion' || key === 'toVersion') && value === null))
+    .map(([key, value]) => [key, label(versions && (key === 'fromVersion' || key === 'toVersion') ? `field.${key}.${versions.result}` : 'field.' + key), value]);
+}
 /** Every tile uses the same presentation, including tiles supplied by other providers. */
 export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile[]; extras?: Partial<Record<HealthTile['id'], ReactNode>> }) {
   const byId = new Map(tiles.map((tile) => [tile.id, tile]));
@@ -31,8 +42,8 @@ export function HealthTiles({ tiles, extras = {} }: { tiles: readonly HealthTile
       <h2 id={'health-' + id} className="text-lg font-semibold">{label('tile.' + id)}</h2>
       <p className="mt-2 font-medium">{label('status.' + tile.status)}</p>
       <p className="mt-2 text-sm">{tile.message}</p>
-      {tile.details && <dl className="mt-4 space-y-2 text-sm">{Object.entries(tile.details).filter(([key]) => key !== 'keyReminder' && key !== 'noneUnderCurrentKey').map(([key, value]) =>
-        <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{label('field.' + key)}</dt><dd className="break-all">{detailValue(key, value)}</dd></div>)}</dl>}
+      {tile.details && <dl className="mt-4 space-y-2 text-sm">{detailRows(tile).map(([key, name, value]) =>
+        <div key={key} className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">{name}</dt><dd className="break-all">{detailValue(key, value)}</dd></div>)}</dl>}
       {tile.details && 'keyReminder' in tile.details && tile.details.keyReminder && <p className="mt-4 text-sm font-medium">{label('keyReminder')}</p>}
       {extras[id]}
       {tile.checkedAt && <p className="mt-4 text-xs text-muted-foreground">{label('checkedAt')}: <time dateTime={tile.checkedAt}>{new Date(tile.checkedAt).toLocaleString()}</time></p>}

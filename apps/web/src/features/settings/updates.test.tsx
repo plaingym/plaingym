@@ -80,6 +80,26 @@ describe('Settings → Updates', () => {
     expect(screen.getByText(/The backup before the update failed/)).toBeDefined();
     expect(screen.getByText('Skipped')).toBeDefined();
     expect(screen.getByText('v1.2.4')).toBeDefined();
+    expect(screen.getByText('Version not installed')).toBeDefined();
+    expect(screen.getByText('Running version')).toBeDefined();
+  });
+  it('labels the versions for what the attempt did and leaves out a version it has none of', () => {
+    const tile = (result: 'up_to_date' | 'updated' | 'rolled_back', toVersion: string | null) => healthTileSchema.parse({ id: 'automatic_updates',
+      status: 'healthy', checkedAt: '2026-11-04T16:30:00Z', message: 'Version v1.2.4 is the newest patch release.',
+      details: { enabled: true, lastAttemptAt: '2026-11-04T16:05:00Z', result, fromVersion: 'v1.2.4', toVersion } });
+    render(<HealthTiles tiles={[tile('up_to_date', null)]}/>);
+    expect(screen.getByText('Running version')).toBeDefined();
+    expect(screen.getByText('Last check')).toBeDefined();
+    expect(screen.queryByText('Updated version')).toBeNull();
+    expect(screen.queryByText('Unknown')).toBeNull();
+    cleanup();
+    render(<HealthTiles tiles={[tile('updated', 'v1.2.5')]}/>);
+    expect(screen.getByText('Previous version')).toBeDefined();
+    expect(screen.getByText('Updated version')).toBeDefined();
+    cleanup();
+    render(<HealthTiles tiles={[{ ...tile('rolled_back', 'v1.2.5'), status: 'warning' }]}/>);
+    expect(screen.getByText('Tried version')).toBeDefined();
+    expect(screen.queryByText('Updated version')).toBeNull();
   });
   it('disables the switch where no timer reads it, and offers a retry when loading fails', async () => {
     stored = { ...stored, available: false };

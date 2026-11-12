@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, uuidv7 } from '@plaingym/db';
+import { auditEvents, uuidv7, writeAudit } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { healthTileSchema } from '@plaingym/shared/contracts';
@@ -49,6 +49,17 @@ describe('automatic update attempts', () => {
       { fromVersion: 'latest' }, { fromVersion: 'v1.2.3; rm -rf /' }, { attemptedAt: 'yesterday' }];
     for (const fields of invalid) expect(autoUpdateAttemptSchema.safeParse(attempt(fields)).success, JSON.stringify(fields)).toBe(false);
     expect(autoUpdateAttemptSchema.safeParse({ ...attempt({}), extra: true }).success).toBe(false);
+  });
+  it('takes a failure count and an outage start only where they fit', () => {
+    const recovery = { result: 'rolled_back', reason: 'rollback_failed', toVersion: 'v1.2.4', downAt: at('2026-11-03T15:02:00Z') } as const;
+    const valid: Partial<AutoUpdateAttempt>[] = [recovery, { ...recovery, failures: 1 }, { result: 'failed', reason: 'rollback_failed', toVersion: 'v1.2.4', failures: 1 },
+      { result: 'rolled_back', reason: 'health_check_failed', toVersion: 'v1.2.4', failures: 3 }, { result: 'skipped', reason: 'repeated_failure', toVersion: 'v1.2.4', failures: 2 }];
+    for (const fields of valid) expect(autoUpdateAttemptSchema.safeParse(attempt(fields)).success, JSON.stringify(fields)).toBe(true);
+    const invalid: Partial<AutoUpdateAttempt>[] = [{ failures: 1 }, { result: 'updated', toVersion: 'v1.2.4', failures: 1 },
+      { result: 'skipped', reason: 'repeated_failure', toVersion: 'v1.2.4', failures: 1 }, { result: 'skipped', reason: 'repeated_failure', failures: 2 },
+      { result: 'rolled_back', reason: 'health_check_failed', toVersion: 'v1.2.4', downAt: at('2026-11-03T15:02:00Z') },
+      { ...recovery, downAt: at('2026-11-03T17:00:00Z') }, { ...recovery, failures: 0 }, { result: 'skipped', reason: 'snapshot_failed', failures: 1 }];
+    for (const fields of invalid) expect(autoUpdateAttemptSchema.safeParse(attempt(fields)).success, JSON.stringify(fields)).toBe(false);
   });
   it('words every reason the updater can report', () => {
     for (const reason of Object.values(autoUpdateReasons).flat()) expect(messages, reason).toHaveProperty(['reason.' + reason]);
@@ -186,6 +197,61 @@ describe('automatic updates tile', () => {
     expect(tile).toMatchObject({ status, details: { enabled: true, lastAttemptAt: '2026-11-03T16:05:00.000Z', result: recorded.result } });
     expect(tile.message).toContain(text);
   });
+  it('keeps the last update beside later checks, however many came after it', async () => {
+    const f = await fixture();
+    await f.attempts.record(f.gymId, attempt({ result: 'updated', toVersion: 'v1.2.4' }));
+    expect((await f.tile()).message).toBe('Updated from v1.2.3 to v1.2.4.');
+    for (let night = 1; night <= 7; night++) {
+      f.clock.advance(86_400_000);
+      await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString(), fromVersion: 'v1.2.4' }));
+    }
+    expect(await f.tile()).toMatchObject({ status: 'healthy', details: { result: 'up_to_date', fromVersion: 'v1.2.4', toVersion: null },
+      message: 'Version v1.2.4 is the newest patch release. Last update: v1.2.3 → v1.2.4 on Nov 4, 2026, 3:05 AM.' });
+    f.clock.advance(3_600_000);
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString(), result: 'rolled_back', reason: 'startup_failed', fromVersion: 'v1.2.4', toVersion: 'v1.2.5', failures: 1 }));
+    f.clock.advance(3_600_000);
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString(), result: 'skipped', reason: 'disabled', fromVersion: 'v1.2.4' }));
+    await f.turn(false);
+    expect((await f.tile()).message).toBe('Automatic patch updates are off. Turn them on in Settings → Updates. Last update attempt: v1.2.5 was rolled back on Nov 11, 2026, 4:30 AM.');
+  });
+  it('says how long the site was down after a failed rollback, and when a release stops being retried', async () => {
+    const f = await fixture();
+    const failed = attempt({ attemptedAt: at('2026-11-03T15:05:00Z'), result: 'failed', reason: 'rollback_failed', toVersion: 'v1.2.4', failures: 1 });
+    await f.attempts.record(f.gymId, failed);
+    expect(await f.tile()).toMatchObject({ status: 'error', message: expect.stringContaining('The next nightly check tries it once more') });
+    // The host records the recovery in a later command: rows written in the same millisecond have no defined order.
+    f.clock.advance(60_000);
+    await f.attempts.record(f.gymId, attempt({ result: 'rolled_back', reason: 'rollback_failed', toVersion: 'v1.2.4', failures: 1, downAt: at('2026-11-03T15:02:00Z') }));
+    expect(await f.tile()).toMatchObject({ status: 'warning', details: { result: 'rolled_back', fromVersion: 'v1.2.3', toVersion: 'v1.2.4' },
+      message: 'The update to v1.2.4 and its rollback failed, so the site was down from Nov 4, 2026, 2:02 AM until Nov 4, 2026, 3:05 AM, when the hourly check started v1.2.3 again.'
+        + ' The next nightly check tries it once more, unless a newer patch release is out by then.' });
+    const read = createAutoUpdateStateReader({ scope: db.forGym });
+    expect(patchHoldReason(await read(f.gymId, f.clock), f.clock.now(), () => false)).toContain('the site was down until the hourly check started the previous version again');
+    f.clock.advance(86_400_000);
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString(), result: 'rolled_back', reason: 'health_check_failed', toVersion: 'v1.2.4', failures: 2 }));
+    expect((await f.tile()).message).toContain('Version v1.2.4 failed twice, so automatic updates will wait for a newer patch release. To try it again, run sudo ./update.sh --patch --now');
+    f.clock.advance(86_400_000);
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString(), result: 'skipped', reason: 'repeated_failure', toVersion: 'v1.2.4', failures: 2 }));
+    expect(await f.tile()).toMatchObject({ status: 'warning', message: expect.stringContaining('Version v1.2.4 was not installed. It failed each of the 2 times it was tried') });
+    expect(patchHoldReason(await read(f.gymId, f.clock), f.clock.now(), () => false)).toContain('wait for a newer patch release');
+    expect(patchHoldReason(await read(f.gymId, f.clock), f.clock.now(), () => true)).toBeNull();
+  });
+  it('ignores the attempts of the server a restored backup came from', async () => {
+    const f = await fixture();
+    await f.tile();
+    await f.attempts.record(f.gymId, attempt({ result: 'skipped', reason: 'rolled_back_version', fromVersion: 'v1.2.3', toVersion: 'v1.2.4' }));
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: at('2026-11-03T15:00:00Z'), result: 'updated', fromVersion: 'v1.2.2', toVersion: 'v1.2.3' }));
+    f.clock.advance(60 * 3_600_000);
+    await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', action: 'restore.completed', targetType: 'gym', targetId: f.gymId, occurredAt: f.clock.now() }));
+    // The restored first observation is older than the grace period: the grace starts again at the restore.
+    expect(await f.tile()).toMatchObject({ status: 'not_configured', details: { result: 'never_run' }, message: expect.stringContaining('No nightly update check has run yet') });
+    expect((await f.tile()).message).not.toContain('Last update');
+    f.clock.advance(3_600_000);
+    await f.attempts.record(f.gymId, attempt({ attemptedAt: f.clock.now().toISOString(), fromVersion: 'v1.2.4' }));
+    expect(await f.tile()).toMatchObject({ status: 'healthy', message: 'Version v1.2.4 is the newest patch release.' });
+    f.clock.advance(51 * 3_600_000);
+    expect((await f.tile()).status).toBe('warning');
+  });
   it('warns when no nightly check has been reported for two days', async () => {
     const f = await fixture();
     await f.attempts.record(f.gymId, attempt({}));
@@ -250,6 +316,18 @@ describe('gym-app auto-update', () => {
     expect(await f.attempts.latest(f.gymId)).toEqual({ attemptedAt: '2026-11-03T16:05:00Z', result: 'rolled_back', reason: 'startup_failed',
       fromVersion: 'v1.2.3', toVersion: 'v1.2.4' });
     expect(await f.tile()).toMatchObject({ status: 'warning', details: { result: 'rolled_back' } });
+  });
+  it('records the failure count and the outage start the host reports', async () => {
+    const f = await fixture(), out = f.io();
+    expect(await f.command().run(['record', '--at', '2026-11-03T16:05:00Z', '--result', 'rolled_back', '--reason', 'rollback_failed',
+      '--from', 'v1.2.3', '--to', 'v1.2.4', '--failures', '1', '--down-at', '2026-11-03T15:02:00Z'], out.io)).toBe(0);
+    expect(await f.attempts.latest(f.gymId)).toEqual({ attemptedAt: '2026-11-03T16:05:00Z', result: 'rolled_back', reason: 'rollback_failed',
+      fromVersion: 'v1.2.3', toVersion: 'v1.2.4', failures: 1, downAt: '2026-11-03T15:02:00Z' });
+    for (const extra of [['--failures', 'two'], ['--failures', '1.5'], ['--failures', '0'], ['--down-at', 'yesterday']]) {
+      const refused = f.io();
+      expect(await f.command().run(['record', '--at', '2026-11-04T16:05:00Z', '--result', 'rolled_back', '--reason', 'rollback_failed',
+        '--from', 'v1.2.3', '--to', 'v1.2.4', ...extra], refused.io), JSON.stringify(extra)).toBe(2);
+    }
   });
   it('records a replayed report once while its owner notice is retried', async () => {
     const f = await fixture(), notices: string[] = [];

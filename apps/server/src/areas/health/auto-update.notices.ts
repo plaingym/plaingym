@@ -30,7 +30,7 @@ export function createAutoUpdateNotices(options: AutoUpdateNoticeOptions = {}) {
     const [recipients, gym] = await Promise.all([owners(gymId), createSettingsService({ scope, clock }).get(gymId)]);
     const rendered = await renderAutoUpdateNotice({ gymName: gym.name, timezone: gym.timezone,
       time: formatAutoUpdateTime(attempt.attemptedAt, gym.timezone),
-      message: describeAttempt(true, attempt, new Date(attempt.attemptedAt)).message });
+      message: describeAttempt(true, attempt, new Date(attempt.attemptedAt), { timezone: gym.timezone }).message });
     const deliveries = createEmailDeliveries({ scope, clock }), email = options.transport?.(config) ?? new SmtpEmail(config);
     try {
       // Owners get separate messages; neither their addresses nor SMTP credentials reach an audit row.

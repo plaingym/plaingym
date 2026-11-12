@@ -48,6 +48,15 @@ it('emails each owner once per attempt through the gym SMTP, including after a n
   expect(f.email.messages).toHaveLength(4);
   expect(f.email.messages[2]!.text).toContain('docker compose ps');
 });
+it('tells owners how long the site was down after a failed rollback, and when a release stops being retried', async () => {
+  const f = await fixture(), send = f.build();
+  await send(f.gymId, { ...attempt, attemptedAt: '2026-11-03T15:05:00Z', result: 'failed', reason: 'rollback_failed', failures: 2 });
+  await send(f.gymId, { ...attempt, reason: 'rollback_failed', failures: 2, downAt: '2026-11-03T15:02:00Z' });
+  expect(f.email.messages).toHaveLength(4);
+  expect(f.email.messages[0]!.text).toContain('Version v1.2.4 failed twice, so automatic updates will wait for a newer patch release.');
+  // The recovery's times read in the gym's timezone, like the attempt time below them.
+  expect(f.email.messages[2]!.text).toContain('The update to v1.2.4 and its rollback failed, so the site was down from Nov 4, 2026, 2:02 AM until Nov 4, 2026, 3:30 AM, when the hourly check started v1.2.3 again.');
+});
 it('does not send without SMTP, for successful or skipped updates, or in multi mode', async () => {
   const missing = await fixture(false), f = await fixture();
   await missing.build()(missing.gymId, attempt);

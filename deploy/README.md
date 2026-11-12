@@ -349,7 +349,9 @@ concurrent updates, and ordinarily requires the app to be running. A requested
 `--rollback` also accepts a stopped or restarting app, with the same floor check.
 After a recorded update migrated across a floor and failed, a manual update to
 that same release or a newer compatible signed release also accepts a stopped or
-restarting app. It pulls the target image, verifies a release image against its signed
+restarting app. It pulls the target image and compares it with the running one: the
+same image, by any tag or digest, prints "Already on the requested image." and changes
+nothing. It verifies a release image against its signed
 manifest and digest, then stops any running app and runs
 `node /app/maintenance.mjs snapshot pre-upgrade` in a one-off app container: a
 coordinated, encrypted install snapshot to the gym's backup destination, ordinarily kept
@@ -363,7 +365,12 @@ payments and backups, then run the update again", and the updater says nothing w
 the current image. Any other snapshot failure prints a generic line (its cause goes
 to the log without its message), with the same outcome. It then starts the target image, which applies its migrations before
 reporting healthy, runs the health check, and changes the persisted image pin
-in `.env` only on success. A failed image start or check restarts the exact
+in `.env` only on success. Every release path pins the same form, `IMAGE:vX.Y.Z@DIGEST`: a
+release update the signed manifest's name, tag and digest, and `--rollback` the name and
+digest the previous image was pulled with, so a removed image can be pulled back (a
+locally built image with no registry digest keeps its image ID). A manual update to an
+image without a release version label has no signed manifest, so it pins the reference
+as given. A failed image start or check restarts the exact
 previous local image (by image ID) when the schema allows it, so keep those images available. If an update
 migrated across a floor, retry its release or update to a newer compatible signed
 release; the failure message names that option beside the snapshot to restore.
@@ -384,8 +391,11 @@ The installer writes `plaingym-update.service` and `plaingym-update.timer`
 (`systemd/`, with the install directory filled in) to `/etc/systemd/system` and
 enables the timer. It fires every hour at a random minute and runs
 `update.sh --patch`, which acts once a night: on the first run between 02:00 and
-05:00 in the gym's timezone (which the app reports; UTC until it has). The other
-runs stop at once. `update.sh --patch --now` runs the check at any time.
+05:00 in the gym's timezone (which the app reports; UTC until it has). Every run
+asks the app for the timezone first, so a changed timezone counts from the new
+zone's next night; while the app can't answer, the zone it last gave decides. The
+other runs stop there. A change of zone just after a night's run doesn't start a
+second run within six hours. `update.sh --patch --now` runs the check at any time.
 
 The app never holds the Docker socket. The updater asks the app, through
 `docker compose exec -T app gym-app auto-update check`, whether a restore is in
@@ -393,13 +403,18 @@ progress, whether automatic updates are on (the owner's switch in **Settings →
 Updates**, on by default), whether backups are set up, and the gym's timezone;
 until the setup wizard has created the gym, it stops there without a result. It
 reports each night's result back through `gym-app auto-update record`, which
-the **Automatic updates** tile on the Health page shows. A result the app can't
-take yet (it is down or restoring) waits in `auto-update.result` and is sent
-first on the next run; `auto-update.state` holds the timezone and the night of
-the last check.
+the **Automatic updates** tile on the Health page shows. Results the app can't
+take yet (it is down or restoring) wait in `auto-update.result`, one line each in
+order, and are sent first on the next run; a later result never replaces an
+unsent one, and a result the app refuses as invalid is dropped with a line in the
+journal. `auto-update.state` holds the timezone, the night of the last check (its
+date, zone and time), and the failed attempts per release.
 
 When SMTP is configured, `record` sends each owner one notice for a rolled-back
 or failed attempt, through the gym's SMTP settings (or the install fallback).
+While the app is down no email can go out, so an update whose rollback also
+failed is reported only once the app runs again: first the failure, then the
+recovery, which says when the site went down and when it came back.
 Durable delivery reservations prevent a repeated report from resending an
 accepted or uncertain email. A definite non-send may be retried with the pending
 report. The health tile keeps stale errors visible and formats the last check in
@@ -421,30 +436,44 @@ Each night, in order, the updater:
 2. reads the tag names of the repository's GitHub releases (`RELEASE_REPOSITORY`,
    default `plaingym/plaingym`) and picks the newest `vX.Y.Z` with the running
    X.Y and a higher Z; none means up to date, and a release the owner rolled back
-   from, or an older patch than that, is skipped and reported;
+   from, or an older patch than that, is skipped and reported. So is a release
+   whose automatic attempts failed twice (rolled back, failed, or interrupted):
+   it waits for a newer patch, and `--now` tries it again;
 3. downloads that release's `release-manifest.txt` and its signature, checks the
    signature with `release-signing.pem` and the manifest's fields (**Releases**,
    below);
 4. pulls `IMAGE:vX.Y.Z@DIGEST` from the manifest while the app runs, and checks
    that the pulled image has that digest and version label, and that its
    migrations (`/app/migrations`) are byte for byte those of the running image;
-5. writes `.auto-update.inflight`, stops the app, takes the pre-upgrade snapshot
+5. writes `.auto-update.inflight` (the versions and the time the app stops), stops the app, takes the pre-upgrade snapshot
    (a failure, or a stop during it, restarts the running image and skips),
    starts the new image, runs the health check, waits a minute, and checks again
    that the same container is healthy and never restarted;
 6. pins the new image in `.env`, or on any failure starts the previous image by
-   image ID and reports the rollback;
-7. after success, prunes images in `auto-update-images.tsv` that this install's
-   updater pulled and that are older than the previous version. The current and
-   previous images and every image still reachable through the version-history
-   rollback stack stay. No global image prune runs, and other images are untouched.
+   image ID and reports the rollback, counting the failed attempt;
+7. after success, keeps the current image and the two before it on the rollback
+   stack. Older stack entries have their images removed, the installer's too
+   once it falls off, and then get a `trimmed` row in `version-history.tsv`, so
+   `--rollback` no longer offers them; so are images in `auto-update-images.tsv`
+   (each pulled image listed once) that are no longer on the stack, such as a
+   release that was rolled back. Removal is by image ID and never forced: Docker
+   keeps an image a container uses or that other names refer to, and an entry
+   whose image stays (or whose removal times out) stays on the stack until a later
+   update removes it. No global image prune runs, and images the updater didn't
+   record are untouched.
+
+The journal line for each result names what happened: "updated from v1.2.3 to
+v1.2.4", "up to date (v1.2.4; no newer patch)", "failed, rollback_failed (from
+v1.2.3 to v1.2.4)", or the result and reason with the running and newest versions
+for a skip or a rollback.
 
 A run that is stopped (the unit's 90-minute limit, a shutdown) restarts the
 previous image before it exits. One killed outright leaves `.auto-update.inflight`,
 and the next run starts the pinned image first and reports the interruption. A
-rollback that fails keeps the marker too, so each hourly run tries to start the
-pinned image again until it runs. Its log is in the journal:
-`journalctl -u plaingym-update`.
+rollback that fails keeps the marker too, marked `rollback_failed`, so each hourly
+run tries to start the pinned image again until it runs. The failure is reported
+once; once the pinned image runs, the recovery is reported with the time the app
+stopped. Its log is in the journal: `journalctl -u plaingym-update`.
 
 ### Rotating the encryption key
 
@@ -513,19 +542,25 @@ links (`/l/*`), sessions, PINs and check-in codes don't depend on it.
 The host updater test drives `update.sh` with a Docker command fixture and
 checks the order (pull, stop, snapshot, start) and that a failure at each stage
 (pull, snapshot, startup, health) keeps the previous image pinned and, once the
-app has stopped, restarts it. The patch update test adds curl and clock fixtures
+app has stopped, restarts it, and that a repeated request for the running image,
+by its pin or its digest, changes nothing. The patch update test adds curl and clock fixtures
 and real Ed25519 signatures: patch selection, a changed manifest, another key's
 signature, a wrong digest or version label, a patch that changes migrations, the
 switch off, no backups, a failed snapshot, rollback after a failed start, health
-check or second check, a failed rollback, the nightly window, results kept until
-the app can record them, and an interrupted run. The floor test adds a fixture that
+check or second check, a failed rollback with retries while the app is still down
+and once it runs (the failure and one recovery recorded, in order), the nightly
+window and a change of timezone, a release held after two failures, five updates
+that leave only the kept images, results kept in order until the app can record
+them, and an interrupted run. The floor test adds a fixture that
 refuses the previous image under a guard above it, as the app does: a failed update
 across a floor before and after migrating, an earlier guard put back, a skipped
 minor, a killed run, unchanged attempts within the floor, and same-release or newer-release
 recovery with the app stopped or restarting. Numbered snapshots check that repeated
 recovery attempts retain and name the original restore point. The rollback test swaps real
 local images, walks back two versions from stopped and restarting apps, and checks
-that neither state permits a rollback below the floor. The key rotation test drives
+that neither state permits a rollback below the floor; with images from a throwaway
+local registry, it checks that `--rollback` pins `IMAGE:vX.Y.Z@DIGEST` and that the
+app starts again after that image is removed. The key rotation test drives
 `rotate-key.sh` with the same kind of fixture: the order (stop, rotate, `.env`,
 CONNECT grant, start, health check), `.env` changing only after the rotation,
 a restart with the current key after repeated clean preflight refusals, the exact
@@ -558,7 +593,10 @@ time, version, immutable local image digest, outcome, rollback floor and snapsho
 identifier. `starting` and `failed` attempts matter because migrations may already
 have run; `abandoned` closes an attempt that left the database as it was, so its floor
 doesn't count. `update.sh --rollback` checks all recorded floors before changing
-anything, and reads the rows as a stack, so each run goes one version further back.
+anything, and reads the rows as a stack, so each run goes one version further back;
+`trimmed` takes an older entry off that stack once a patch update removed its image
+(**Automatic patch updates**, above), so `--rollback` goes back at most two versions
+from a patch update.
 `schema-compatibility.yaml` passes the checked floor, schema release and snapshot to
 the app. Keep it with the database. It goes up before a new image starts. Before
 each manual release update, `.schema-attempt` keeps the database's migration state

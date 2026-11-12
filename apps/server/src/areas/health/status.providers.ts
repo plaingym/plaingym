@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { statfs } from 'node:fs/promises';
+import { desc, inArray } from 'drizzle-orm';
 import { runningVersion } from './version.js';
-import { forGym } from '@plaingym/db';
+import { auditEvents, forGym } from '@plaingym/db';
 import { PostgresJobStatsQuery } from '../../infra/jobs/postgres.js';
 import type { JobStatsQuery } from '../../core/interfaces/job-stats.js';
 import { sourceUrl } from '../../core/source-link.js';
@@ -18,6 +19,23 @@ export interface StatusOptions {
   jobs?: JobStatsQuery;
   disk?: (path: string) => Promise<{ blocks: number; bsize: number; bavail: number }>;
 }
+/** Audit rows that tell when the gym's own SMTP settings last passed a test email. */
+const emailTestActions = ['integrations.email_saved', 'integrations.email_removed', 'setup.step_completed'];
+/**
+ * When the gym's own SMTP settings last passed a test email, or null. Settings → Email and the setup wizard's email step
+ * each send a test and save the settings only once it is accepted (`integrations.email_saved`, or the wizard's step 5
+ * while the gym has settings of its own); removing them (`integrations.email_removed`) leaves no tested settings.
+ * A failed test saves nothing, and the install's own `SMTP_*` settings are never tested here.
+ */
+export function lastEmailTest(rows: readonly { action: string; after: unknown; occurredAt: Date }[], ownSettings: boolean): string | null {
+  for (const row of rows) {
+    if (row.action === 'integrations.email_removed') return null;
+    if (row.action === 'integrations.email_saved') return ownSettings ? row.occurredAt.toISOString() : null;
+    const step = (row.after as { step?: unknown } | null)?.step;
+    if (row.action === 'setup.step_completed' && step === 5) return ownSettings ? row.occurredAt.toISOString() : null;
+  }
+  return null;
+}
 export function createStatusProviders(options: StatusOptions = {}) {
   const env = options.env ?? process.env, scope = options.scope ?? forGym;
   const jobs = options.jobs ?? new PostgresJobStatsQuery(), disk = options.disk ?? statfs;
@@ -33,8 +51,11 @@ export function createStatusProviders(options: StatusOptions = {}) {
       const resolver = createSmtpResolver({ key: parseEncryptionKey(env.APP_ENCRYPTION_KEY ?? ''), env, scope });
       const configured = await resolver.configured(context.gymId);
       const source = await resolver.source(context.gymId);
+      // The wizard writes a handful of step rows; the latest email row is among the newest of these few actions.
+      const rows = await scope(context.gymId, (tx) => tx.select({ action: auditEvents.action, after: auditEvents.after, occurredAt: auditEvents.occurredAt })
+        .from(auditEvents).where(inArray(auditEvents.action, emailTestActions)).orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(50));
       return { id: 'smtp', status: configured ? 'healthy' : 'not_configured', checkedAt: context.clock.now().toISOString(),
-        details: { configured, lastTestAt: null }, message: statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
+        details: { configured, lastTestAt: lastEmailTest(rows, source === 'gym') }, message: statusMessage(configured ? source === 'gym' ? 'smtpGym' : 'smtpInstall' : 'smtpMissing') };
     }),
     healthProvider('disk', async (context) => {
       // Multi-gym apps hold no restore staging (even if the variable is set by hand), so there the uploads volume alone is checked.

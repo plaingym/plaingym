@@ -116,6 +116,8 @@ cleanup() {
       [ "$requested_rollback" = false ] || history_outcome=rollback
       history_record "$to_version" "$target_id" "$history_outcome" "$target_floor" "$snapshot"
       if [ "$requested_rollback" = true ]; then report updated -; fi
+      # After the update's own row, so its image tops the rollback stack.
+      if [ "$patch" = true ]; then prune_images || true; fi
     else
       history_record "$to_version" "$target_id" "$attempt_end" "$target_floor" "$snapshot"
       if [ "$outcome" = rolled_back ] || [ "$outcome" = restarted ]; then
@@ -144,8 +146,9 @@ swap_image() { # TARGET
     APP_IMAGE="$1" compose pull app
   fi
   stage=snapshot
-  # From here on a run killed outright leaves the marker, and the next run starts the pinned image first.
-  [ "$patch" = false ] || printf '%s %s\n' "$from_version" "$to_version" > "$INFLIGHT"
+  # From here on a run killed outright leaves the marker, and the next run starts the pinned image first. It holds the
+  # versions, when the app stopped, and why it was left (- while the swap runs; see inflight_mark).
+  [ "$patch" = false ] || printf '%s %s %s -\n' "$from_version" "$to_version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$INFLIGHT"
   stopped=true
   compose stop app
   # One coordinated install snapshot: stored age recipient, encrypted recovery bundle,
@@ -216,10 +219,13 @@ settle() { # TARGET
 
 # --- Automatic patch updates (--patch) ---------------------------------------------------------------------
 # The app never holds the Docker socket: the owner's setting and each result cross through `gym-app auto-update`
-# in the app container. A result the app can't take yet (it is down or restoring) waits in auto-update.result
-# and is sent first on the next run.
+# in the app container. Results the app can't take yet (it is down or restoring) wait in auto-update.result, in
+# order, and are sent first on the next run.
 from_version=-
 to_version=-
+# Sent with a report: how many automatic attempts at to_version failed, and when a recovered site went down.
+report_failures=-
+report_down_at=-
 value_of() { # FILE KEY; nothing when the file doesn't exist yet
   [ -f "$1" ] || return 0
   read_env "$2" "$1"
@@ -229,23 +235,43 @@ state_set() { # KEY VALUE
   mv "$STATE.next" "$STATE"
 }
 app_running() { compose ps --status running --services 2>/dev/null | grep -qx app; }
-send_pending() {
+send_pending() { # Oldest first; each result leaves the file once the app took it, and a later one never replaces it.
   [ -f "$PENDING" ] || return 0
-  # Written by report below from checked values only: an instant, fixed words and release versions.
-  read -r pending_at pending_result pending_reason pending_from pending_to < "$PENDING" || return 1
-  set -- record --at "$pending_at" --result "$pending_result"
-  [ "$pending_reason" = - ] || set -- "$@" --reason "$pending_reason"
-  [ "$pending_from" = - ] || set -- "$@" --from "$pending_from"
-  [ "$pending_to" = - ] || set -- "$@" --to "$pending_to"
-  app_running && compose exec -T app gym-app auto-update "$@" >/dev/null && rm -f "$PENDING"
+  while [ -s "$PENDING" ]; do
+    # Written by report below from checked values only: instants, fixed words, release versions and a count.
+    read -r pending_at pending_result pending_reason pending_from pending_to pending_failures pending_down < "$PENDING" || return 1
+    set -- record --at "$pending_at" --result "$pending_result"
+    [ "$pending_reason" = - ] || set -- "$@" --reason "$pending_reason"
+    [ "$pending_from" = - ] || set -- "$@" --from "$pending_from"
+    [ "$pending_to" = - ] || set -- "$@" --to "$pending_to"
+    [ "${pending_failures:--}" = - ] || set -- "$@" --failures "$pending_failures"
+    [ "${pending_down:--}" = - ] || set -- "$@" --down-at "$pending_down"
+    app_running || return 1
+    record_status=0
+    compose exec -T app gym-app auto-update "$@" >/dev/null || record_status=$?
+    # Exit 2 is the app refusing the result itself, which no retry changes: say so, and go on with the next.
+    if [ "$record_status" -eq 2 ]; then echo "The app refused the recorded result \"$pending_result $pending_reason\" from $pending_at; it was dropped." >&2
+    elif [ "$record_status" -ne 0 ]; then return 1; fi
+    tail -n +2 "$PENDING" > "$PENDING.next"
+    mv "$PENDING.next" "$PENDING"
+  done
+  rm -f "$PENDING"
 }
-report() { # RESULT REASON: keep the result, say it on the journal, and give it to the app.
-  printf '%s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$from_version" "$to_version" > "$PENDING.next"
-  mv "$PENDING.next" "$PENDING"
+summary() { # RESULT REASON: the journal's words for one result
+  case "$1:$2" in
+    updated:*) printf 'updated from %s to %s' "$from_version" "$to_version" ;;
+    up_to_date:*) printf 'up to date (%s; no newer patch)' "$from_version" ;;
+    failed:*) printf 'failed, %s (from %s to %s)' "$2" "$from_version" "$to_version" ;;
+    *:-) printf '%s (running %s, newest %s)' "$1" "$from_version" "$to_version" ;;
+    *) printf '%s, %s (running %s, newest %s)' "$1" "$2" "$from_version" "$to_version" ;;
+  esac
+}
+report() { # RESULT REASON: keep the result after any still unsent, say it on the journal, and give them all to the app.
+  printf '%s %s %s %s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$from_version" "$to_version" "$report_failures" "$report_down_at" >> "$PENDING"
   if [ "$requested_rollback" = true ]; then
     printf 'Rollback: %s%s (from %s to %s).\n' "$1" "$([ "$2" = - ] || printf ', %s' "$2")" "$from_version" "$to_version"
   else
-    printf 'Automatic patch update: %s%s (running %s, newest %s).\n' "$1" "$([ "$2" = - ] || printf ', %s' "$2")" "$from_version" "$to_version"
+    printf 'Automatic patch update: %s.\n' "$(summary "$1" "$2")"
   fi
   send_pending || echo 'The app could not record this result yet; the next run sends it.' >&2
 }
@@ -253,44 +279,92 @@ finish() { # RESULT REASON [STATUS]: report and stop. Expected situations exit 0
   report "$1" "$2"
   exit "${3:-0}"
 }
+# A release whose automatic attempts failed twice (rolled back or failed, an interrupted run too) waits for a newer patch
+# or the owner's retry (--now). auto-update.state keeps the count per release until a patch update succeeds.
+failure_count() { # VERSION: the failed attempts so far, or 0
+  count=$(value_of "$STATE" "failures.$1")
+  case "$count" in ''|*[!0-9]*|0*) echo 0 ;; ????*) echo 999 ;; *) echo "$count" ;; esac
+}
+count_failure() { # to_version failed once more: count it, and send the count with the report.
+  valid_version "$to_version" || return 0
+  report_failures=$(($(failure_count "$to_version") + 1))
+  [ "$report_failures" -le 999 ] || report_failures=999
+  state_set "failures.$to_version" "$report_failures"
+}
+clear_failures() {
+  [ -f "$STATE" ] || return 0
+  awk 'index($0, "failures.") != 1' "$STATE" > "$STATE.next"
+  mv "$STATE.next" "$STATE"
+}
+inflight_mark() { # REASON: why the marker stays. After rollback_failed the next run reports a recovery, not an interruption.
+  [ -f "$INFLIGHT" ] || return 0
+  read -r mark_from mark_to mark_down _ < "$INFLIGHT" || true
+  printf '%s %s %s %s\n' "${mark_from:--}" "${mark_to:--}" "${mark_down:--}" "$1" > "$INFLIGHT.next"
+  mv "$INFLIGHT.next" "$INFLIGHT"
+}
 patch_finish() { # From the exit handler, once a swap started.
   # The pinned image may not be running after a failed rollback: keep the marker, so the next run starts it again.
   [ "$outcome" = rollback_failed ] || rm -f "$INFLIGHT"
   case "$stage:$outcome:$interrupted" in
-    finished:*) prune_patch_images || true; report updated - ;;
-    *:rollback_failed:*) report failed rollback_failed ;;
+    finished:*) clear_failures; report updated - ;;
+    *:rollback_failed:*) count_failure; inflight_mark rollback_failed; report failed rollback_failed ;;
     # Stopped before the new version started, even by a signal: nothing was installed.
     snapshot:*) report skipped snapshot_failed ;;
-    *:true) report rolled_back interrupted ;;
-    startup:rolled_back:*) report rolled_back startup_failed ;;
-    *:rolled_back:*) report rolled_back health_check_failed ;;
-    *) report failed rollback_failed ;;
+    *:true) count_failure; report rolled_back interrupted ;;
+    startup:rolled_back:*) count_failure; report rolled_back startup_failed ;;
+    *:rolled_back:*) count_failure; report rolled_back health_check_failed ;;
+    *) count_failure; report failed rollback_failed ;;
   esac
 }
 image_version() { installed_version "$1" || true; }
-remember_patch_image() { # Only images this updater actually pulled can be removed later.
+registry_pin() { # IMAGE_ID TAG: NAME:TAG@DIGEST from the image's registry digests (the running image's name first), or nothing
+  pin_name=${current%@sha256:*}
+  case "${pin_name##*/}" in *:*) pin_name=${pin_name%:*} ;; esac
+  pin=$(docker image inspect "$1" --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null | awk -v name="$pin_name" -v tag="$2" '
+    /^[^@]+@sha256:[a-f0-9]{64}$/ { split($0, part, "@"); ref = part[1] ":" tag "@" part[2]; if (part[1] == name) { found = ref; exit } if (first == "") first = ref }
+    END { print (found != "" ? found : first) }') || return 0
+  # Only a pin that names this very image.
+  valid_image "$pin" && [ "$(docker image inspect "$pin" --format '{{.Id}}' 2>/dev/null)" = "$1" ] && printf '%s\n' "$pin"
+  return 0
+}
+remember_patch_image() { # Only images this updater actually pulled can be removed later; each is listed once.
   pulled_id=$(docker image inspect "$target" --format '{{.Id}}') || return 0
   printf '%s\n' "$pulled_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 0
+  if [ -f "$ROOT/auto-update-images.tsv" ] && cut -f2 "$ROOT/auto-update-images.tsv" | grep -qxF "$pulled_id"; then return 0; fi
   printf '%s\t%s\t%s\n' "$image:$tag@$digest" "$pulled_id" "$tag" >> "$ROOT/auto-update-images.tsv" \
     || echo 'Could not record the pulled image for later cleanup.' >&2
 }
-prune_patch_images() {
-  [ -f "$ROOT/auto-update-images.tsv" ] && [ -f "$ROOT/version-history.tsv" ] || return 0
-  # Every entry still on the rollback stack stays, even beyond the immediately previous image.
-  protected=$(awk -F '\t' "$history_stack"'END { for(i=1;i<=n;i++) print image[i] }' "$ROOT/version-history.tsv") || return 0
-  while read -r prune_ref prune_id prune_version; do
-    valid_image "$prune_ref" || continue
-    valid_version "$prune_version" || continue
-    printf '%s\n' "$prune_id" | grep -Eq '^sha256:[a-f0-9]{64}$' || continue
-    version_at_least "$from_version" "$prune_version" || continue
-    [ "$prune_version" != "$from_version" ] || continue
-    printf '%s\n' "$protected" | grep -qxF "$prune_id" && continue
-    [ "$prune_id" != "$previous_id" ] || continue
-    [ "$prune_id" != "$target_id" ] || continue
-    [ "$(docker image inspect "$prune_ref" --format '{{.Id}}' 2>/dev/null)" = "$prune_id" ] || continue
-    # Never force deletion of images in use; bound removal so maintenance cannot hold the update lock forever.
-    timeout -k 5 30 docker image rm "$prune_ref" >/dev/null 2>&1 || true
+remove_image() { # IMAGE_ID: never forced, and bounded, so maintenance can't hold the update lock forever.
+  printf '%s\n' "$1" | grep -Eq '^sha256:[a-f0-9]{64}$' || return 1
+  docker image inspect "$1" >/dev/null 2>&1 || return 0
+  # Docker refuses an image a container uses or that names in other repositories refer to; that refusal stands.
+  timeout -k 5 30 docker image rm "$1" >/dev/null 2>&1
+}
+# After a successful patch update, keep the current image and the two before it (the rollback stack's top
+# `rollback_depth` entries, lib.sh). Older entries' images go, the installer's too, and each removed one leaves what
+# --rollback offers (a `trimmed` history row); so do images this updater pulled that are off the stack (a rolled-back release).
+# No global prune runs, and images nothing here recorded are left alone.
+prune_images() {
+  [ -f "$ROOT/version-history.tsv" ] || return 0
+  kept=$(awk -F '\t' -v depth="$rollback_depth" "$history_stack"'END { for (i = n; i > 0 && i > n - depth; i--) print image[i] }' "$ROOT/version-history.tsv") || return 0
+  # The new image tops the stack after an update. Anything else means the history can't be relied on: nothing goes.
+  [ "$(printf '%s\n' "$kept" | head -n 1)" = "$target_id" ] || return 0
+  kept=$(printf '%s\n%s\n%s\n' "$kept" "$target_id" "$previous_id"; [ ! -f "$RECOVERY" ] || cut -f4 "$RECOVERY")
+  awk -F '\t' -v depth="$rollback_depth" "$history_stack"'END { for (i = 1; i <= n - depth; i++) print version[i] "\t" image[i] }' \
+    "$ROOT/version-history.tsv" > "$work/trimmed" || return 0
+  while IFS="$(printf '\t')" read -r trim_version trim_id; do
+    printf '%s\n' "$kept" | grep -qxF "$trim_id" && continue
+    # Only a removed image leaves the stack: one Docker refused or timed out on stays there, so the next prune tries again.
+    remove_image "$trim_id" || continue
+    history_record "$trim_version" "$trim_id" trimmed - -
+  done < "$work/trimmed"
+  [ -f "$ROOT/auto-update-images.tsv" ] || return 0
+  : > "$ROOT/auto-update-images.tsv.next"
+  while IFS="$(printf '\t')" read -r pulled_ref pulled_id pulled_version; do
+    if ! printf '%s\n' "$kept" | grep -qxF "$pulled_id" && remove_image "$pulled_id"; then continue; fi
+    printf '%s\t%s\t%s\n' "$pulled_ref" "$pulled_id" "$pulled_version" >> "$ROOT/auto-update-images.tsv.next"
   done < "$ROOT/auto-update-images.tsv"
+  mv "$ROOT/auto-update-images.tsv.next" "$ROOT/auto-update-images.tsv"
 }
 migrations_of() { # IMAGE: a digest of the migrations the image applies when it starts
   docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "$1" \
@@ -298,7 +372,6 @@ migrations_of() { # IMAGE: a digest of the migrations the image applies when it 
 }
 valid_timezone() { printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$' && [ -f "/usr/share/zoneinfo/$1" ]; }
 in_window() { hour=$(TZ="$1" date +%H); hour=${hour#0}; [ "$hour" -ge 2 ] && [ "$hour" -lt 5 ]; }
-tonight_done() { [ "$(value_of "$STATE" night)" = "$(TZ="$1" date +%F)" ]; }
 download() { # URL FILE [MAX_BYTES]
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 60 \
     --max-filesize "${3:-65536}" -H 'User-Agent: plaingym-update' "$1" -o "$2"
@@ -352,7 +425,10 @@ if [ "$requested_rollback" = true ]; then
     fail 'The previous image identity does not match the history.'
   fi
   from_version=$(image_version "$current")
-  swap_image "$target"
+  # Pin it by name, tag and digest like an update, so the image can be pulled again if it is ever removed. An image
+  # with no registry digest (a local build) has nowhere to come back from, so it keeps its image ID.
+  pin=$(registry_pin "$target_id" "$to_version")
+  swap_image "${pin:-$target}"
   printf 'Rolled back to %s by digest. Pre-upgrade snapshot: %s.\n' "$to_version" "$snapshot"
   exit 0
 fi
@@ -362,10 +438,16 @@ if [ "$patch" = false ]; then
   if [ -z "$recovery_version" ]; then
     [ "$target" != "$current" ] || { echo 'Already on the requested image.'; exit 0; }
   fi
-  history_install
-  from_version=$(image_version "$current")
+  # Pull while the app runs, then compare what the request names with the running image: a tag of the running
+  # release, or its digest, is the same image however the pin spells it.
   APP_IMAGE="$target" compose pull app
   target_id=$(docker image inspect "$target" --format '{{.Id}}')
+  if [ -z "$recovery_version" ] && [ "$target_id" = "$(docker image inspect "$current" --format '{{.Id}}' 2>/dev/null || true)" ]; then
+    echo 'Already on the requested image.'
+    exit 0
+  fi
+  history_install
+  from_version=$(image_version "$current")
   to_version=$(image_version "$target")
   if valid_version "$to_version"; then
     work=$(mktemp -d)
@@ -377,7 +459,8 @@ if [ "$patch" = false ]; then
     if ! manifest_verify "$ROOT/release-signing.pem" "$work/manifest" "$work/manifest.sig" || ! manifest_check "$work/manifest" "$to_version"; then fail 'Invalid signed release manifest.'; fi
     manifest_image=$(manifest_value "$work/manifest" image); manifest_digest=$(manifest_value "$work/manifest" digest)
     docker image inspect "$target" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -qxF "$manifest_image@$manifest_digest" || fail 'The requested image does not match its signed release digest.'
-    target="$manifest_image@$manifest_digest"
+    # One pin form on every path: the signed name, the release tag and the signed digest.
+    target="$manifest_image:$to_version@$manifest_digest"
     target_floor=$(manifest_value "$work/manifest" rollback_floor)
     [ -n "$target_floor" ] || target_floor=$to_version
     previous_floor=$(schema_floor)
@@ -401,35 +484,75 @@ fi
 work=$(mktemp -d)
 send_pending || true
 
-# An earlier run stopped between stopping the app and pinning an image (power loss, a kill): start the pinned image.
+# An earlier run stopped between stopping the app and pinning an image: start the pinned image. Either the run was
+# killed outright (power loss, a kill), or its update and rollback both failed (the marker says rollback_failed).
 if [ -f "$INFLIGHT" ]; then
-  read -r from_version to_version < "$INFLIGHT" || true
+  read -r from_version to_version down_at left_by < "$INFLIGHT" || true
   valid_version "$from_version" || from_version=-
   valid_version "$to_version" || to_version=-
-  echo 'The previous automatic update was interrupted; starting the pinned image again.' >&2
-  # Still failing: keep the marker and try again on the next run.
-  if ! compose up -d --no-deps --wait --wait-timeout 90 app; then finish failed rollback_failed 1; fi
+  printf '%s\n' "${down_at:-}" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || down_at=-
+  [ "${left_by:-}" = rollback_failed ] || left_by=-
+  if [ "$left_by" = rollback_failed ]; then echo 'The previous automatic update and its rollback failed; starting the pinned image again.' >&2
+  else echo 'The previous automatic update was interrupted; starting the pinned image again.' >&2; fi
+  if ! compose up -d --no-deps --wait --wait-timeout 90 app; then
+    # Still down: the failure is reported once, each later run tries again, and the recovery is reported once it runs.
+    [ "$left_by" = - ] || fail 'The pinned image still does not start; the next run tries again.'
+    inflight_mark rollback_failed
+    if [ "$from_version" = - ] || [ "$to_version" = - ]; then exit 1; fi
+    count_failure
+    finish failed rollback_failed 1
+  fi
   rm -f "$INFLIGHT"
   if [ "$from_version" = - ] || [ "$to_version" = - ]; then exit 1; fi
-  if [ "$(image_version "$current")" = "$to_version" ]; then finish updated -; fi
+  if [ "$(image_version "$current")" = "$to_version" ]; then clear_failures; finish updated -; fi
+  if [ "$left_by" = rollback_failed ]; then
+    # The same attempt as the failed report before it, so it isn't counted again.
+    report_failures=$(failure_count "$to_version"); [ "$report_failures" -gt 0 ] || report_failures=-
+    report_down_at=$down_at
+    finish rolled_back rollback_failed 1
+  fi
+  count_failure
   finish rolled_back interrupted 1
 fi
 
 # Once a night, between 02:00 and 05:00 where the gym is. The timer fires every hour; the other runs stop here.
+# Each run asks the app for the gym's timezone, so a changed zone counts from its next night. The zone it last gave
+# is the fallback while the app can't answer (or a restore holds it); with that, a run outside the window stops
+# without a result, and with no zone known yet a failed check is reported.
 due() { in_window "$1" && ! tonight_done "$1"; }
-timezone=$(value_of "$STATE" timezone)
-if [ "$now" = false ] && valid_timezone "$timezone" && ! due "$timezone"; then exit 0; fi
-app_running || { echo 'The app is not running.' >&2; finish skipped check_failed 1; }
-compose exec -T app gym-app auto-update check > "$work/check" || finish skipped check_failed 1
+# Once a night: tonight's date is done in this zone, or, after a change of zone, a run less than six hours ago counts.
+tonight_done() {
+  night_zone=$(value_of "$STATE" night_zone)
+  if [ -z "$night_zone" ] || [ "$night_zone" = "$1" ]; then [ "$(value_of "$STATE" night)" = "$(TZ="$1" date +%F)" ]; return; fi
+  night_at=$(value_of "$STATE" night_at)
+  case "$night_at" in ''|*[!0-9]*) return 1 ;; esac
+  [ $(($(date -u +%s) - night_at)) -lt 21600 ]
+}
+cached=$(value_of "$STATE" timezone)
+valid_timezone "$cached" || cached=
+answered=false
+app_up=false
+if app_running; then
+  app_up=true
+  if compose exec -T app gym-app auto-update check > "$work/check"; then answered=true; fi
+fi
+timezone=$cached
+if [ "$answered" = true ] && [ "$(value_of "$work/check" restore)" != true ]; then
+  # Before the setup wizard creates the gym there is nothing to update, and nowhere to record a result.
+  if [ "$(value_of "$work/check" setup)" = false ]; then echo 'The gym is not set up yet; nothing to update.'; exit 0; fi
+  timezone=$(value_of "$work/check" timezone)
+  valid_timezone "$timezone" || timezone=UTC
+  [ "$timezone" = "$cached" ] || state_set timezone "$timezone"
+fi
+if [ "$now" = false ] && [ -n "$timezone" ] && ! due "$timezone"; then exit 0; fi
+if [ "$answered" = false ]; then
+  [ "$app_up" = true ] || echo 'The app is not running.' >&2
+  finish skipped check_failed 1
+fi
 [ "$(value_of "$work/check" restore)" != true ] || finish skipped restore_in_progress
-# Before the setup wizard creates the gym there is nothing to update, and nowhere to record a result.
-if [ "$(value_of "$work/check" setup)" = false ]; then echo 'The gym is not set up yet; nothing to update.'; exit 0; fi
-timezone=$(value_of "$work/check" timezone)
-valid_timezone "$timezone" || timezone=UTC
-state_set timezone "$timezone"
-# The first run learns the timezone; it acts only inside the window too.
-if [ "$now" = false ] && ! due "$timezone"; then exit 0; fi
 state_set night "$(TZ="$timezone" date +%F)"
+state_set night_zone "$timezone"
+state_set night_at "$(date -u +%s)"
 
 version=$(image_version "$current")
 if valid_version "$version"; then from_version=$version; fi
@@ -451,6 +574,9 @@ tag=$(newest_patch "$from_version" "$tags")
 to_version=$tag
 # The owner went back from this release or a newer patch: only a newer one installs by itself.
 if declined_patch "$tag"; then finish skipped rolled_back_version; fi
+# A release that failed twice waits for a newer patch; the owner's run with --now tries it again.
+failures=$(failure_count "$tag")
+if [ "$now" = false ] && [ "$failures" -ge 2 ]; then report_failures=$failures; finish skipped repeated_failure; fi
 { download "https://github.com/$repository/releases/download/$tag/release-manifest.txt" "$work/manifest" \
   && download "https://github.com/$repository/releases/download/$tag/release-manifest.txt.sig" "$work/manifest.sig"; } \
   || finish skipped manifest_unavailable 1

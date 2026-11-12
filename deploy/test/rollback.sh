@@ -11,13 +11,20 @@ ROOT="$temporary/install"
 export ROOT
 # shellcheck source=deploy/lib.sh
 . "$source_dir/lib.sh"
+registry_name=''
+oldest_id='' old_id='' new_id=''
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ] && [ -f "$temporary/output" ]; then cat "$temporary/output" >&2; fi
   if [ -f "$ROOT/.env" ]; then
     timeout 120 docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/compose.yaml" down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
-  timeout -k 5 120 docker image rm "$run_id:oldest" "$run_id:old" "$run_id:new" >/dev/null 2>&1 || echo "WARNING: could not remove images for $run_id" >&2
+  [ -z "$registry_name" ] || timeout -k 5 120 docker rm -f -v "$registry_name" >/dev/null 2>&1 || echo "WARNING: could not remove $registry_name" >&2
+  # By ID, with every name this run gave them (its tags, and the test registry's).
+  for built in "$oldest_id" "$old_id" "$new_id"; do
+    [ -n "$built" ] || continue
+    timeout -k 5 120 docker image rm -f "$built" >/dev/null 2>&1 || echo "WARNING: could not remove image $built for $run_id" >&2
+  done
   rm -rf -- "$temporary"
 }
 trap cleanup EXIT
@@ -121,4 +128,37 @@ for app_state in stopped restarting; do
   [ "$before" = "$(cat "$ROOT/.env" "$ROOT/version-history.tsv" | sha256sum)" ]
 done
 
-echo 'PASS: rollback from stopped and restarting apps serves the previous digest, walks back, records history and still refuses below the floor.'
+# Images from a registry: --rollback pins NAME:TAG@DIGEST like an update, so after the image is removed (a prune, a
+# disk cleanup) the app starts again by pulling it. A throwaway registry on the daemon's loopback, on this run's port.
+compose down --volumes --remove-orphans > "$temporary/output" 2>&1
+registry_name="$run_id-registry"
+port=$((20000 + $$ % 20000))
+registry="localhost:$port"
+docker run -d --name "$registry_name" --network host -e "REGISTRY_HTTP_ADDR=127.0.0.1:$port" \
+  registry:3@sha256:b3419cf99f8ec65bbda73e8a950fd26861012689beaf7b6577ee938995aa7d3f > /dev/null
+for _ in $(seq 30); do curl --silent --fail "http://$registry/v2/" > /dev/null 2>&1 && break; sleep 1; done
+curl --silent --fail "http://$registry/v2/" > /dev/null || { echo "The registry on $registry did not start." >&2; docker logs "$registry_name" >&2; exit 1; }
+name="$registry/$run_id/app"
+for tagged in old:v1.2.0 new:v1.3.0; do
+  docker tag "$run_id:${tagged%%:*}" "$name:${tagged#*:}"
+  docker push -q "$name:${tagged#*:}" > /dev/null
+done
+new_digest=$(docker image inspect "$new_id" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -F "$name@" | head -n 1)
+old_digest=$(docker image inspect "$old_id" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -F "$name@" | head -n 1)
+[ -n "$new_digest" ] && [ -n "$old_digest" ]
+rm -f "$ROOT/version-history.tsv" "$ROOT/schema-compatibility.yaml"
+printf 'COMPOSE_PROJECT_NAME=%s\nAPP_IMAGE=%s\n' "$run_id" "$name:v1.3.0@${new_digest#*@}" > "$ROOT/.env"
+history_record v1.2.0 "$old_id" install v1.2.0 -
+history_record v1.3.0 "$new_id" update v1.2.0 00000000-0000-4000-8000-000000000004
+compose up -d --wait --wait-timeout 30 > "$temporary/output" 2>&1
+sh "$ROOT/update.sh" --rollback > "$temporary/output" 2>&1
+[ "$(read_env APP_IMAGE)" = "$name:v1.2.0@${old_digest#*@}" ]
+# The image goes, every name of it included; the next start pulls it back by the pin and serves the same version.
+compose down --volumes --remove-orphans > "$temporary/output" 2>&1
+docker image rm -f "$old_id" > /dev/null
+if docker image inspect "$old_id" > /dev/null 2>&1; then echo 'The rolled-back image is still on disk.' >&2; exit 1; fi
+compose up -d --wait --wait-timeout 60 > "$temporary/output" 2>&1
+port=$(compose port app 3000 | sed 's/.*://')
+[ "$(curl --fail --silent "http://$TEST_LOOPBACK:$port/")" = 1.2.0 ]
+
+echo 'PASS: rollback from stopped and restarting apps serves the previous digest, walks back, records history, still refuses below the floor, and pins a registry image by name, tag and digest so it starts again after a prune.'
