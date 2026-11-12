@@ -131,6 +131,19 @@ switch in the membership lifecycle sets them
 the plan a `membership` or `signup_fee` line was billed under and must be null on
 every other kind. Existing lines keep a null plan; no backfill is performed.
 
+Migration `0031_discount_catalog.sql` adds three empty gym-owned tables:
+`discounts` (named price and signup-fee terms, optional code and eligibility),
+`discount_plans` (eligible plans; no links means all), and `membership_discounts`
+(application snapshots and ended history). Prices are a percentage or a positive
+fixed amount in the gym currency, optionally with a signup-fee waiver, or a waiver
+alone. Checks tie duration and cycle counts to price terms, bound uses by their
+optional maximum, and pair end timestamps with reasons. Names and optional codes
+are unique per gym without regard to case. Composite foreign keys keep plan,
+discount, membership and household references in the same gym. A partial unique
+index permits only one live discount per membership. All three use forced RLS
+and are exported; existing rows in every other table are unchanged. This
+migration does not apply discounts or change invoices.
+
 Keep the SQL file name, journal tag, index and snapshot name aligned.
 
 `databaseCode(error)` returns a database error's SQLSTATE code, also when Drizzle wraps the driver

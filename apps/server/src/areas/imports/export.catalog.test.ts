@@ -11,6 +11,20 @@ import { exportCatalog } from './export.catalog.js';
 const root = new URL('../../../../../', import.meta.url);
 const database = useTestDatabase(), factory = createFactories(database);
 describe('export schema coverage and secret exclusions', () => {
+  it('exports all discount catalog, plan and snapshot fields only for the requested gym and cutoff', async () => {
+    const gymA = uuidv7(), gymB = uuidv7();
+    await factory('gyms', gymA); await factory('gyms', gymB);
+    for (const [table, name] of [['discounts', 'discounts'], ['discountPlans', 'discount_plans'],
+      ['membershipDiscounts', 'membership_discounts']] as const) {
+      const own = await factory(table, gymA), foreign = await factory(table, gymB);
+      expect(exportDatasets).toContain(name);
+      const rows = await exportCatalog[name].page(database.forGym, gymA, new Date('2099-01-01T00:00:00Z'));
+      expect(rows).toContainEqual(expect.objectContaining({ id: own.id, gym_id: gymA }));
+      expect(rows.some(row => row.id === foreign.id || row.gym_id !== gymA)).toBe(false);
+      expect(Object.keys(exportCatalog[name].columns).sort()).toEqual(Object.values(getTableColumns(exportCatalog[name].table)).map(c => c.name).sort());
+      expect(await exportCatalog[name].page(database.forGym, gymA, new Date(0))).toEqual([]);
+    }
+  });
   it('exports lead details and contact history only from the requested gym and cutoff', async () => {
     const gymA = uuidv7(), gymB = uuidv7(), now = new Date('2026-11-10T12:00:00Z');
     await factory('gyms', gymA); await factory('gyms', gymB);

@@ -52,6 +52,11 @@ numeric; a null program ID and name means an unassigned visit.
 
 ## Registration
 
+`discountContracts` exports the four discount catalog management endpoints,
+all guarded by `plans.manage`. Their schemas are in `contracts/billing/catalog.ts`.
+The `discounts`, `discount_plans` and `membership_discounts` selectors are included
+in `exportDatasets` for gym exports.
+
 The [server registry](../../apps/server/src/core/registry.ts) exports
 `route(definition, handler)`, which requires a permission and retains the
 OpenAPI request and response types. Its mount operation requires authorization

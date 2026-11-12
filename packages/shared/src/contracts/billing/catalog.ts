@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { z } from 'zod';
+import type { EndpointContract } from '../definition.js';
 import { minorUnitStep, onMinorUnitStep } from '../../money.js';
 import { billingIntervalSchema } from '../states.js';
 import {
-  amountCentsSchema, currencySchema, idSchema, instantSchema, listResponseSchema,
+  amountCentsSchema, currencySchema, dateSchema, idSchema, instantSchema, listResponseSchema,
   moneySchema, paginationSchema, revisionSchema, taxRateMillionthsSchema,
 } from '../common.js';
 
@@ -175,3 +176,56 @@ export const classPackListResponseSchema = listResponseSchema(classPackSchema);
 export type ClassPack = z.infer<typeof classPackSchema>;
 export type CreateClassPackRequest = z.input<typeof createClassPackRequestSchema>;
 export type UpdateClassPackRequest = z.input<typeof updateClassPackRequestSchema>;
+
+const discountFieldsSchema = z.strictObject({
+  name: z.string().trim().min(1).max(100),
+  code: z.string().regex(/^[A-Za-z0-9-]{3,40}$/).nullable(),
+  percentBasisPoints: z.int32().min(1).max(10_000).nullable(),
+  amountCents: amountCentsSchema.positive().nullable(), currency: currencySchema,
+  waivesSignupFee: z.boolean(), duration: z.enum(['once', 'cycles', 'forever']).nullable(),
+  cycles: z.int32().positive().nullable(), endsOn: dateSchema.nullable(), maxUses: z.int32().positive().nullable(),
+  active: z.boolean(), planIds: z.array(idSchema).refine(ids => new Set(ids).size === ids.length, 'Plans must be distinct.'),
+});
+function discountTerms(value: z.infer<typeof discountFieldsSchema>, ctx: z.RefinementCtx) {
+  const price = value.percentBasisPoints !== null || value.amountCents !== null;
+  if (value.percentBasisPoints !== null && value.amountCents !== null)
+    ctx.addIssue({ code: 'custom', path: ['amountCents'], message: 'Choose a percentage or an amount.' });
+  if (!price && !value.waivesSignupFee)
+    ctx.addIssue({ code: 'custom', path: ['waivesSignupFee'], message: 'Supply a price discount or waive the signup fee.' });
+  if (price === (value.duration === null))
+    ctx.addIssue({ code: 'custom', path: ['duration'], message: 'A duration is required only for a price discount.' });
+  if (value.duration === 'cycles' ? value.cycles === null : value.cycles !== null)
+    ctx.addIssue({ code: 'custom', path: ['cycles'], message: 'Supply a cycle count only for a cycles duration.' });
+}
+export const createDiscountRequestSchema = discountFieldsSchema.extend({
+  code: discountFieldsSchema.shape.code.default(null), percentBasisPoints: discountFieldsSchema.shape.percentBasisPoints.default(null),
+  amountCents: discountFieldsSchema.shape.amountCents.default(null), waivesSignupFee: z.boolean().default(false),
+  duration: discountFieldsSchema.shape.duration.default(null), cycles: discountFieldsSchema.shape.cycles.default(null),
+  endsOn: discountFieldsSchema.shape.endsOn.default(null), maxUses: discountFieldsSchema.shape.maxUses.default(null),
+  active: z.boolean().default(true), planIds: discountFieldsSchema.shape.planIds.default([]),
+}).superRefine(discountTerms).superRefine(chargePrices);
+// Partial edits are merged with the stored terms and revalidated by the service under the row lock.
+export const updateDiscountRequestSchema = discountFieldsSchema.partial().extend({ revision: revisionSchema })
+  .refine(value => Object.keys(value).some(key => key !== 'revision'), 'Supply a change.').superRefine(chargePrices);
+export const discountSchema = discountFieldsSchema.extend({
+  id: idSchema, createdAt: instantSchema, uses: z.int32().nonnegative(), revision: revisionSchema,
+}).superRefine(discountTerms).refine(value => value.maxUses === null || value.uses <= value.maxUses, 'Uses exceed the limit.');
+export const discountResponseSchema = z.strictObject({ data: discountSchema });
+export const discountListResponseSchema = listResponseSchema(discountSchema);
+export const discountListQuerySchema = billingTaxRateListQuerySchema;
+export type Discount = z.infer<typeof discountSchema>;
+export type CreateDiscountRequest = z.input<typeof createDiscountRequestSchema>;
+export type UpdateDiscountRequest = z.input<typeof updateDiscountRequestSchema>;
+
+const discountParamsSchema = z.strictObject({ discountId: idSchema });
+const manageDiscounts = { kind: 'staff', capability: 'plans.manage' } as const;
+export const discountContracts = {
+  listDiscounts: { method: 'get', path: '/api/billing/discounts', permission: manageDiscounts,
+    query: discountListQuerySchema, response: discountListResponseSchema, successStatus: 200 },
+  getDiscount: { method: 'get', path: '/api/billing/discounts/{discountId}', permission: manageDiscounts,
+    params: discountParamsSchema, response: discountResponseSchema, successStatus: 200 },
+  createDiscount: { method: 'post', path: '/api/billing/discounts', permission: manageDiscounts,
+    body: createDiscountRequestSchema, response: discountResponseSchema, successStatus: 201 },
+  updateDiscount: { method: 'patch', path: '/api/billing/discounts/{discountId}', permission: manageDiscounts,
+    params: discountParamsSchema, body: updateDiscountRequestSchema, response: discountResponseSchema, successStatus: 200 },
+} as const satisfies Record<string, EndpointContract>;

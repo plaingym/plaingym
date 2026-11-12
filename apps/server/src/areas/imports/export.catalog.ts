@@ -4,6 +4,7 @@ import type { AnyPgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { forGym, staffRoles, staffProfiles, households, members, householdUsers, memberTags, memberTagLinks, installedPacks, rankSystems, programs, ranks, memberRanks, classTags, classTemplates, classTemplatePrograms, classTemplateTags, classSessions, classSessionPrograms, classSessionTags, attendances, classBookings, taxRates, plans, planTaxRates, chargeTypes, chargeTypeTaxRates, memberships, invoices, invoiceSequences, invoiceLineItems, paymentMethods, paymentAttempts, payments, refunds, waiverTemplates, waiverSignatures, kioskDevices, linkCampaigns, signedLinks, auditEvents, emailOutbox, announcements, announcementOptOuts, leads, leadContacts } from '@plaingym/db';
 import type { ExportDataset } from '@plaingym/shared/contracts';
 import { classPacks, classPackTaxRates, classPackSales, classCreditEntries } from '@plaingym/db';
+import { discounts, discountPlans, membershipDiscounts } from '@plaingym/db';
 type ExportTable = PgTable & { id: AnyPgColumn; gymId: AnyPgColumn; createdAt: AnyPgColumn };
 function dataset(table: ExportTable, columns: Record<string, AnyPgColumn>) {
   return { table, columns, async page(scope: typeof forGym, gymId: string, cutoff: Date, after?: string) {
@@ -12,6 +13,18 @@ function dataset(table: ExportTable, columns: Record<string, AnyPgColumn>) {
 }
 /** Explicit safe projections: new schema columns require review before they can leave the server. */
 export const exportCatalog = {
+  discounts: dataset(discounts, { id: discounts.id, gym_id: discounts.gymId, created_at: discounts.createdAt, name: discounts.name, code: discounts.code,
+    percent_basis_points: discounts.percentBasisPoints, amount_cents: discounts.amountCents, currency: discounts.currency,
+    waives_signup_fee: discounts.waivesSignupFee, duration: discounts.duration, cycles: discounts.cycles, ends_on: discounts.endsOn,
+    max_uses: discounts.maxUses, uses: discounts.uses, active: discounts.active, revision: discounts.revision }),
+  discount_plans: dataset(discountPlans, { id: discountPlans.id, gym_id: discountPlans.gymId, created_at: discountPlans.createdAt,
+    discount_id: discountPlans.discountId, plan_id: discountPlans.planId }),
+  membership_discounts: dataset(membershipDiscounts, { id: membershipDiscounts.id, gym_id: membershipDiscounts.gymId, created_at: membershipDiscounts.createdAt,
+    household_id: membershipDiscounts.householdId, membership_id: membershipDiscounts.membershipId, discount_id: membershipDiscounts.discountId,
+    name: membershipDiscounts.name, percent_basis_points: membershipDiscounts.percentBasisPoints, amount_cents: membershipDiscounts.amountCents,
+    currency: membershipDiscounts.currency, waives_signup_fee: membershipDiscounts.waivesSignupFee, duration: membershipDiscounts.duration,
+    cycles_left: membershipDiscounts.cyclesLeft, plan_ids: membershipDiscounts.planIds, applied_at: membershipDiscounts.appliedAt,
+    ended_at: membershipDiscounts.endedAt, end_reason: membershipDiscounts.endReason, revision: membershipDiscounts.revision }),
   leads: dataset(leads, { id: leads.id, gym_id: leads.gymId, created_at: leads.createdAt, member_id: leads.memberId, source: leads.source, stage: leads.stage, lost_reason: leads.lostReason, next_follow_up_on: leads.nextFollowUpOn, last_contacted_at: leads.lastContactedAt, trial_attended_at: leads.trialAttendedAt, won_at: leads.wonAt, lost_at: leads.lostAt, revision: leads.revision }),
   lead_contacts: dataset(leadContacts, { id: leadContacts.id, gym_id: leadContacts.gymId, created_at: leadContacts.createdAt, lead_id: leadContacts.leadId, occurred_at: leadContacts.occurredAt, channel: leadContacts.channel, note: leadContacts.note, created_by: leadContacts.createdBy }),
   class_packs: dataset(classPacks, { id: classPacks.id, gym_id: classPacks.gymId, created_at: classPacks.createdAt, name: classPacks.name, amount_cents: classPacks.amountCents, currency: classPacks.currency, credits: classPacks.credits, expiry_days: classPacks.expiryDays, active: classPacks.active, revision: classPacks.revision }),

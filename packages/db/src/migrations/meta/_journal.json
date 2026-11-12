@@ -211,6 +211,13 @@
       "when": 1794475092989,
       "tag": "0030_member_address_index",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794508943622,
+      "tag": "0031_discount_catalog",
+      "breakpoints": true
     }
   ]
 }

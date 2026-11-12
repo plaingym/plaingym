@@ -90,6 +90,8 @@ class Sweep {
     const signer = { kind: 'guardian', name: 'Cross gym', relationship: 'Parent' };
     const signed = (image: SignatureImage) => ({ memberId: ids.memberId, templateId: ids.templateId, templateVersion: 1, signer, ...image, consent: true });
     const table: Record<string, unknown> = {
+      // A valid waiver-only discount reaches plan ownership validation instead of failing benefit validation first.
+      'POST /api/billing/discounts': { name: 'Cross gym discount', currency: 'USD', waivesSignupFee: true, planIds: [ids.planId] },
       // The caller's own name and PIN, or the target's check-in code, with the target's member: see `refusedWith200`.
       'POST /api/kiosk/checkin': { name: from.student.fullName, pin: from.pin, checkins: [{ memberId: ids.memberId, sessionId: null }] },
       'POST /api/kiosk/checkin/qr': { code: target.checkinCode, sessionId: null },

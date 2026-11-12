@@ -68,6 +68,71 @@ export const memberships = pgTable('memberships', {
       and ${t.scheduledInterval} in ('monthly', 'annual') and ${t.scheduledOn} is not null)`),
   check('memberships_switch_override_reason_check', sql`${t.switchOverrideReason} is null or char_length(${t.switchOverrideReason}) between 1 and 500`),
   revisionCheck('memberships_revision_check', t.revision)]).enableRLS();
+
+/** Named catalog terms; application history keeps its own snapshot. */
+export const discounts = pgTable('discounts', {
+  ...base(), name: text('name').notNull(), code: text('code'),
+  percentBasisPoints: integer('percent_basis_points'), amountCents: integer('amount_cents'), currency: text('currency').notNull(),
+  waivesSignupFee: boolean('waives_signup_fee').notNull().default(false), duration: text('duration'), cycles: integer('cycles'),
+  endsOn: date('ends_on'), maxUses: integer('max_uses'), uses: integer('uses').notNull().default(0),
+  active: boolean('active').notNull().default(true), ...revision(),
+}, (t) => [...scoped('discounts', t), gymCurrency('discounts_currency_fk', t),
+  uniqueIndex('discounts_name_key').on(t.gymId, sql`lower(${t.name})`),
+  uniqueIndex('discounts_code_key').on(t.gymId, sql`lower(${t.code})`).where(sql`${t.code} is not null`),
+  check('discounts_name_check', sql`char_length(btrim(${t.name})) between 1 and 100 and ${t.name} = btrim(${t.name})`),
+  check('discounts_code_check', sql`${t.code} is null or ${t.code} ~ '^[A-Za-z0-9-]{3,40}$'`),
+  currencyCheck('discounts_currency_check', t.currency),
+  check('discounts_price_check', sql`(${t.percentBasisPoints} is null or ${t.percentBasisPoints} between 1 and 10000)
+    and (${t.amountCents} is null or ${t.amountCents} > 0)
+    and (${t.percentBasisPoints} is null or ${t.amountCents} is null)
+    and (${t.percentBasisPoints} is not null or ${t.amountCents} is not null or ${t.waivesSignupFee})`),
+  check('discounts_duration_check', sql`(${t.percentBasisPoints} is null and ${t.amountCents} is null and ${t.duration} is null and ${t.cycles} is null)
+    or ((${t.percentBasisPoints} is not null or ${t.amountCents} is not null) and ${t.duration} is not null
+      and ((${t.duration} in ('once', 'forever') and ${t.cycles} is null)
+        or (${t.duration} = 'cycles' and ${t.cycles} is not null and ${t.cycles} >= 1)))`),
+  check('discounts_uses_check', sql`${t.uses} >= 0 and (${t.maxUses} is null or (${t.maxUses} > 0 and ${t.uses} <= ${t.maxUses}))`),
+  revisionCheck('discounts_revision_check', t.revision),
+]).enableRLS();
+
+export const discountPlans = pgTable('discount_plans', {
+  ...base(), discountId: uuid('discount_id').notNull(), planId: uuid('plan_id').notNull(),
+}, (t) => [...scoped('discount_plans', t), ref('discount_plans_discount_fk', t.gymId, t.discountId, discounts),
+  ref('discount_plans_plan_fk', t.gymId, t.planId, plans),
+  unique('discount_plans_pair_key').on(t.gymId, t.discountId, t.planId),
+  index('discount_plans_plan_idx').on(t.gymId, t.planId),
+]).enableRLS();
+
+/** Snapshot of the terms at application time, including the then-eligible plan list (empty means all). */
+export const membershipDiscounts = pgTable('membership_discounts', {
+  ...base(), householdId: uuid('household_id').notNull(), membershipId: uuid('membership_id').notNull(),
+  discountId: uuid('discount_id').notNull(), name: text('name').notNull(), percentBasisPoints: integer('percent_basis_points'),
+  amountCents: integer('amount_cents'), currency: text('currency').notNull(), waivesSignupFee: boolean('waives_signup_fee').notNull(),
+  duration: text('duration'), cyclesLeft: integer('cycles_left'), planIds: uuid('plan_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  appliedAt: instant('applied_at').notNull(), endedAt: instant('ended_at'), endReason: text('end_reason'), ...revision(),
+}, (t) => [...scoped('membership_discounts', t),
+  foreignKey({ name: 'membership_discounts_membership_fk', columns: [t.gymId, t.householdId, t.membershipId],
+    foreignColumns: [memberships.gymId, memberships.householdId, memberships.id] }),
+  ref('membership_discounts_discount_fk', t.gymId, t.discountId, discounts),
+  gymCurrency('membership_discounts_currency_fk', t),
+  uniqueIndex('membership_discounts_live_key').on(t.gymId, t.membershipId).where(sql`${t.endedAt} is null`),
+  index('membership_discounts_discount_idx').on(t.gymId, t.discountId),
+  check('membership_discounts_name_check', sql`char_length(btrim(${t.name})) between 1 and 100`),
+  currencyCheck('membership_discounts_currency_check', t.currency),
+  check('membership_discounts_price_check', sql`(${t.percentBasisPoints} is null or ${t.percentBasisPoints} between 1 and 10000)
+    and (${t.amountCents} is null or ${t.amountCents} > 0)
+    and (${t.percentBasisPoints} is null or ${t.amountCents} is null)
+    and (${t.percentBasisPoints} is not null or ${t.amountCents} is not null or ${t.waivesSignupFee})`),
+  check('membership_discounts_duration_check', sql`(${t.percentBasisPoints} is null and ${t.amountCents} is null and ${t.duration} is null and ${t.cyclesLeft} is null)
+    or ((${t.percentBasisPoints} is not null or ${t.amountCents} is not null) and ${t.duration} is not null
+      and ((${t.duration} = 'forever' and ${t.cyclesLeft} is null)
+        or (${t.duration} in ('once', 'cycles') and ${t.cyclesLeft} is not null and ${t.cyclesLeft} >= 0
+          and (${t.duration} <> 'once' or ${t.cyclesLeft} <= 1))))`),
+  check('membership_discounts_end_check', sql`(${t.endedAt} is null and ${t.endReason} is null)
+    or (${t.endedAt} is not null and ${t.endedAt} >= ${t.appliedAt} and ${t.endReason} is not null
+      and ${t.endReason} in ('replaced', 'removed', 'switch', 'completed', 'released'))`),
+  check('membership_discounts_plans_check', sql`array_position(${t.planIds}, null) is null`),
+  revisionCheck('membership_discounts_revision_check', t.revision),
+]).enableRLS();
 /** number is the per-gym display number, allocated by allocateInvoiceNumber when the invoice is issued; drafts have none. */
 export const invoices = pgTable('invoices', {
   ...base(), householdId: uuid('household_id').notNull(), kind: text('kind').notNull(),

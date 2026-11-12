@@ -33,6 +33,9 @@ export interface Target { ids: Record<string, string>; secrets: string[]; checki
 
 export async function targetOf(gym: Context): Promise<Target> {
   const { owner } = gym;
+  const discount = (await owner.json<{ data: RecordId }>('/api/billing/discounts', 'POST', {
+    name: gym.name + ' discount', currency: 'USD', waivesSignupFee: true, planIds: [gym.planId],
+  })).data;
   const roles = (await owner.json<{ data: (RecordId & { userId: string })[] }>('/api/staff/roles?limit=100')).data;
   const profiles = (await owner.json<{ data: RecordId[] }>('/api/staff/profiles?limit=100')).data;
   const householdUsers = (await owner.json<{ data: RecordId[] }>(`/api/households/${gym.householdId}/users?limit=100`)).data;
@@ -48,7 +51,7 @@ export async function targetOf(gym: Context): Promise<Target> {
     invoiceId: gym.invoiceId, signatureId: gym.signatureId, deviceId: gym.deviceId, tagId: gym.tagId, programId: gym.program.id, rankSystemId: gym.rankSystemId,
     rankId: gym.rankId, staffRoleId: roles.at(-1)?.id ?? missingId, userId: roles.at(-1)?.userId ?? missingId, staffProfileId: profiles[0]?.id ?? missingId,
     templateId: gym.templateId, planId: gym.planId, householdUserId: householdUsers[0]?.id ?? missingId, invitationId: invitations[0]?.id ?? missingId,
-    chargeTypeId: gym.chargeTypeId, packId: gym.classPackId, taxRateId: gym.taxRateId, membershipId: gym.membershipId, paymentId: gym.paymentId, refundId: gym.refundId,
+    chargeTypeId: gym.chargeTypeId, packId: gym.classPackId, discountId: discount.id, taxRateId: gym.taxRateId, membershipId: gym.membershipId, paymentId: gym.paymentId, refundId: gym.refundId,
     paymentMethodId: gym.paymentMethodId, linkId: gym.linkId, campaignId: gym.campaignId, announcementId: gym.announcementId, attendanceId: gym.attendanceId, scheduleTemplateId: gym.scheduleTemplateId, classTagId: gym.classTagId,
     exportId: gym.exportId, importId: gym.importId, uploadId: gym.uploadId, paidInvoiceId: gym.paidInvoiceId };
   // Every kind of record exists in the gym's fixtures: an ID nothing holds would make a refusal prove nothing.
@@ -172,7 +175,7 @@ export function queryOf(route: Route, aim: Aim) {
 
 /** Records a gym's lists hold, as ID and (for records staff edit) revision: what a request aimed at the gym must leave as it was. */
 export async function snapshot(gym: Context, target: Target, routes: Route[]) {
-  const stable = /^\/api\/(members|households|programs|ranks|rank-systems|schedule|member-tags|staff|kiosk\/devices|waivers\/templates|billing\/(plans|tax-rates|charge-types|class-packs))(\/|$)/;
+  const stable = /^\/api\/(members|households|programs|ranks|rank-systems|schedule|member-tags|staff|kiosk\/devices|waivers\/templates|billing\/(plans|tax-rates|charge-types|class-packs|discounts))(\/|$)/;
   const own: Aim = { target, optionalIds: false };
   const lists = routes.filter((route) => route.method === 'GET' && route.kind === 'staff' && !route.path.includes('{') && !/^\/api\/(dashboard|health)/.test(route.path));
   const rows: Record<string, unknown> = {};

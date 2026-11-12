@@ -187,6 +187,10 @@ source of truth; Stripe is the processor. In outline:
   visit and returning any spent credit to its original lot in one audited
   transaction. The kiosk refuses an exhausted pack holder with a neutral
   front-desk message; staff may still record the visit without a credit.
+  The [discount catalog](../apps/server/src/areas/billing/discounts/README.md)
+  lets owners and admins manage named percentage, fixed-amount and signup-fee
+  waiver terms, with plan eligibility and optional codes. These catalog routes
+  do not apply discounts or change invoice calculations.
 * **Invoicing** (`areas/billing/invoicing/`): pure calculation of invoice lines and tax.
 * **Charge runner** (`areas/billing/runner/`): the daily run charges saved cards in
   two steps (create, then confirm) with idempotency keys, retries on the gym's

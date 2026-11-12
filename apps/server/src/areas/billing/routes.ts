@@ -11,6 +11,7 @@ import { routes as part7 } from './payments.routes.js';
 import { routes as part8 } from './alerts/alerts.routes.js';
 import { routes as part9 } from './kiosk-standing.routes.js';
 import { routes as part10 } from './packs/catalog.routes.js';
+import { routes as part11 } from './discounts/catalog.routes.js';
 
 export const routes: readonly RouteRegistration[] = [
   ...part0,
@@ -24,4 +25,5 @@ export const routes: readonly RouteRegistration[] = [
   ...part8,
   ...part9,
   ...part10,
+  ...part11,
 ];

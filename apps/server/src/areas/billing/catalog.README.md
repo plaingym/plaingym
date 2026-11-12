@@ -1,4 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+The [discount catalog](discounts/README.md) adds manager-only list, read, create
+and revision-checked update routes at `/api/billing/discounts`. Catalog edits do
+not apply discounts to memberships or invoices.
+
 Catalog and membership services use the existing frozen billing contracts and
 the existing schema. Catalog prices and tax links are revision checked. Retirement
 sets active=false; it never deletes a referenced plan or tax. New assignments and

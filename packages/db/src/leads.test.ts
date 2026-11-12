@@ -13,7 +13,7 @@ beforeAll(async () => { await factory('gyms', gymA); await factory('gyms', gymB)
 
 describe('lead storage boundaries', () => {
   it('passes the live forced-RLS and composite-reference catalog check', async () => {
-    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 66, tenantTableCount: 54 });
+    expect(await assertCatalog(database.app.sql)).toEqual({ tableCount: 69, tenantTableCount: 57 });
   });
 
   it.each([['leads', leads], ['leadContacts', leadContacts]] as const)('isolates reads and writes for %s', async (name, table) => {

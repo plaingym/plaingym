@@ -1,0 +1,8 @@
+{
+  "notFound": "Discount not found.",
+  "planNotFound": "A selected plan was not found.",
+  "currencyMismatch": "The discount currency must match the gym currency.",
+  "duplicate": "A discount with this name or code already exists.",
+  "maxUses": "The maximum uses cannot be lower than the uses already taken.",
+  "termsUsed": "This discount has been used. Create another discount to change its terms."
+}

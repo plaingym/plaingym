@@ -30,6 +30,7 @@ const inScope = (path: string) => /^\/api\/(bookings(?:\/|$)|portal\/(?:bookings
   || path === '/api/announcements' || path.startsWith('/api/announcements/')
   || path === '/api/health/auto-update'
   || path.startsWith('/api/reports/')
+  || path === '/api/billing/discounts' || path.startsWith('/api/billing/discounts/')
   || path === '/api/billing/class-packs' || path.startsWith('/api/billing/class-packs/')
   || path.startsWith('/api/billing/packs/')
   || /^\/api\/billing\/memberships\/\{membershipId\}\/switch(?:\/|$)/.test(path)
@@ -111,6 +112,38 @@ test('every route enforces all staff roles, anonymous access and device boundari
     else expect(response.status, detail).toBe(role === 'anonymous' ? 401 : 403);
   }
   await info.attach('authorization-results', { body: JSON.stringify(results, null, 2), contentType: 'application/json' });
+});
+
+test('discount catalog is mounted for managers and isolates gyms through production routes', async ({ install, sandboxes }) => {
+  const path = '/api/billing/discounts';
+  for (const role of ['owner', 'admin'] as const) {
+    const client = install.clients[role];
+    const created = await client.json<{ data: { id: string; revision: number; uses: number; planIds: string[] } }>(path, 'POST', {
+      name: 'Catalog ' + role, code: 'CATALOG-' + role, currency: 'USD', percentBasisPoints: 1500, duration: 'cycles', cycles: 3,
+    });
+    expect(created.data).toMatchObject({ revision: 1, uses: 0, planIds: [] });
+    const item = path + '/' + created.data.id;
+    expect((await client.request(item)).status).toBe(200);
+    expect((await client.request(item, 'PATCH', { revision: 1, active: false })).status).toBe(200);
+    expect((await client.request(item, 'PATCH', { revision: 1, active: true })).status).toBe(409);
+    expect((await client.request(path, 'POST', { name: 'catalog ' + role, currency: 'USD', waivesSignupFee: true })).status).toBe(409);
+    for (const denied of ['coach', 'front_desk'] as const) {
+      expect((await install.clients[denied].request(item)).status).toBe(403);
+      expect((await install.clients[denied].request(item, 'PATCH', { revision: 2, name: 'Denied' })).status).toBe(403);
+    }
+  }
+  const own = await demoClient(sandboxes[0], 'owner'), other = await demoClient(sandboxes[1], 'owner');
+  const foreign = (await other.json<{ data: { id: string } }>(path, 'POST', {
+    name: 'Other gym discount', currency: 'USD', waivesSignupFee: true,
+  })).data;
+  expect((await own.request(path + '/' + foreign.id)).status).toBe(404);
+  expect((await own.request(path + '/' + foreign.id, 'PATCH', { revision: 1, active: false })).status).toBe(404);
+  const list = await own.json<{ data: { id: string }[] }>(path);
+  expect(list.data.some(row => row.id === foreign.id)).toBe(false);
+  const plan = (await other.json<{ data: { id: string } }>('/api/billing/plans', 'POST', {
+    name: 'Other gym discount plan', currency: 'USD', amountCents: 1000, interval: 'monthly',
+  })).data;
+  expect((await own.request(path, 'POST', { name: 'Foreign plan attempt', currency: 'USD', waivesSignupFee: true, planIds: [plan.id] })).status).toBe(404);
 });
 
 test('lead funnel allows owners, admins and front desk, and denies coaches', async ({ install }) => {

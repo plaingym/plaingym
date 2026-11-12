@@ -26,7 +26,7 @@ it('preserves populated members and adds empty lead tables without a backfill', 
     await migrateDatabase(database.maintenanceUrl);
     expect((await read()).map(row => Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'email_address')))).toEqual([...before]);
     for (const table of [leads, leadContacts]) expect(await database.forGym(gymId, tx => tx.select().from(table))).toEqual([]);
-    expect(await assertCatalog(maintenance.sql)).toEqual({ tableCount: 66, tenantTableCount: 54 });
+    expect(await assertCatalog(maintenance.sql)).toEqual({ tableCount: 69, tenantTableCount: 57 });
     await expect(factory('leadContacts', gymId)).resolves.toMatchObject({ channel: 'call' });
   } finally { await maintenance.close(); }
 });

@@ -62,6 +62,7 @@ export const exportDatasets = [
   'class_template_programs', 'class_template_tags', 'class_sessions', 'class_session_programs', 'class_session_tags',
   'attendances', 'class_bookings', 'tax_rates', 'plans', 'plan_tax_rates', 'charge_types', 'charge_type_tax_rates',
   'class_packs', 'class_pack_tax_rates', 'class_pack_sales', 'class_credit_entries',
+  'discounts', 'discount_plans', 'membership_discounts',
   'memberships', 'invoices', 'invoice_sequences', 'invoice_line_items', 'payment_methods', 'payment_attempts',
   'payments', 'refunds', 'waiver_templates', 'waiver_signatures', 'kiosk_devices', 'link_campaigns', 'signed_links',
   'audit_events', 'email_outbox', 'announcements', 'announcement_opt_outs',
