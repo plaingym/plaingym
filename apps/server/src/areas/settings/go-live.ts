@@ -12,6 +12,7 @@ import type { WebhookHealthQuery } from '../../core/interfaces/webhook-health.js
 import { createWebhookHealthQuery } from '../billing/webhooks/inbox.js';
 import { signedLinkWaiversComplete } from '../waivers/waivers.js';
 import { rerunRestoreReconciliation } from '../billing/runner/runner.jobs.js';
+import { readRestoreCheck } from './go-live.restore.js';
 
 const t = createTranslator(locales.en ?? {});
 type WireChecklist = ReturnType<typeof goLiveChecklistResponseSchema.parse>['data'];
@@ -47,23 +48,12 @@ async function pastDue(tx: Transaction, today: string, lock = false) {
 async function reconciliation(tx: Transaction, stripe: boolean) {
   const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.status, 'pending')).limit(1);
   const [pendingRefund] = await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1);
-  const [restore] = await tx.select({ id: auditEvents.id }).from(auditEvents)
-    .where(eq(auditEvents.action, 'restore.completed'))
-    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1);
-  const latest = async (action: string, targetId: string, afterId?: string) => (await tx.select().from(auditEvents)
-    .where(and(eq(auditEvents.action, action), eq(auditEvents.targetId, targetId), afterId
-      ? gt(auditEvents.createdAt, tx.select({ at: auditEvents.createdAt }).from(auditEvents).where(eq(auditEvents.id, afterId))) : undefined))
-    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id)).limit(1))[0];
-  const request = restore ? await latest('billing.runner.restore_requested', restore.id) : undefined;
-  const rerun = restore ? await latest('settings.go_live.reconciliation_requested', restore.id) : undefined;
-  const started = restore ? await latest('billing.runner.restore_check_started', restore.id, rerun?.id) : undefined;
-  const checked = started ? await latest('billing.runner.restore_checked', started.id) : undefined;
-  const report = checked?.after as { inspected: number; unresolved: number; stripeConfigured?: boolean } | undefined;
+  const { restore, request, checked, report } = await readRestoreCheck(tx);
   const snapshotAt = (request?.after as { snapshotAt?: string } | undefined)?.snapshotAt ?? null;
   const clear = report?.unresolved === 0 && (report.stripeConfigured !== false || !stripe);
   return { applicable: !!restore || !!pending || !!pendingRefund, restored: !!restore,
     detail: restore ? { restoreId: restore.id, snapshotAt, checkedAt: checked?.occurredAt.toISOString() ?? null,
-      inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null } : null,
+      inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null, stripeConfigured: report?.stripeConfigured ?? null } : null,
     ready: !pending && !pendingRefund && (!restore || clear),
     // Nothing was left to reconcile: no pending work, and any restore's check found no payment objects at all.
     empty: !pending && !pendingRefund && (!restore || (clear && report.inspected === 0)) };
@@ -188,7 +178,9 @@ export function createGoLiveService(options: {
         if (before.revision !== revision) assertRevised([]);
         let confirmed: ReturnType<typeof dates> | undefined;
         if (!before.billingEnabled && changes.billingEnabled) {
-          const recovery = await reconciliation(tx, payments ?? Boolean(before.stripeConfigured));
+          // `payments` was read before the lock: settings stored since then also count, so a Stripe save that commits
+          // between the two can't clear a check that ran without Stripe.
+          const recovery = await reconciliation(tx, Boolean(payments) || Boolean(before.stripeConfigured));
           if (recovery.restored && !recovery.ready)
             throw new AppError('conflict', t('settings/go-live:check.reconciliation_complete.needs_attention'));
           const overdue = await pastDue(tx, localDate(clock.now(), before.timezone), true);

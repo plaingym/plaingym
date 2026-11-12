@@ -9,6 +9,7 @@ import { encryptSecret, decryptSecret } from '../../core/secrets.js';
 import { logError, logInfo } from '../../core/log.js';
 import { StripePayments, stripeTransport } from '../../infra/payments/stripe.js';
 import { stripeProvisioner } from '../../infra/payments/setup.js';
+import { pauseRestoredBillingForStripe } from '../settings/go-live.restore.js';
 
 export interface StripeConfig { apiKey: string; endpointId: string; webhookSecret: string; mode: 'test' | 'live' }
 export type StripeProvisioner = ReturnType<typeof stripeProvisioner>;
@@ -103,7 +104,9 @@ export function createStripeStep(options: { key: Buffer; origin: string; clock?:
           throw new AppError('not_found', 'Setup not found');
         const guard = revisionGuard(gyms.revision, input.revision);
         assertRevised(gym.revision === input.revision ? [gym] : []);
+        const paused = config && await pauseRestoredBillingForStripe(tx, context, gym.billingEnabled, clock.now());
         const updated = assertRevised(await tx.update(gyms).set({
+          ...(paused ? { billingEnabled: false } : {}),
           stripeConfig: config ? encryptSecret(options.key, { secretClass: 'stripe_config', owner: context.gymId }, JSON.stringify(config)) : null,
           settings: { ...gym.settings as object, setup: { ...state.setup,
             completedSteps: [...new Set([...(state.setup.completedSteps ?? []), 6])].sort((a, b) => a - b) } },

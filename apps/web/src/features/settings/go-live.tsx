@@ -142,9 +142,11 @@ export function GoLiveSettings() {
         <h3 className="font-semibold">{label('reconcileTitle')}</h3>
         <p className="text-sm text-muted-foreground">{label('reconcileHelp')}</p>
         <p role="status" className="break-words text-sm">{checklist.restoreReconciliation.checkedAt
-          ? label('reconcileResult', { at: checklist.restoreReconciliation.checkedAt,
+          ? label(checklist.restoreReconciliation.stripeConfigured === false ? 'reconcileStoredResult' : 'reconcileResult', { at: checklist.restoreReconciliation.checkedAt,
             inspected: String(checklist.restoreReconciliation.inspected), unresolved: String(checklist.restoreReconciliation.unresolved) })
           : label('reconcilePending')}</p>
+        {checklist.restoreReconciliation.stripeConfigured === false && <p className="break-words text-sm">
+          {label(checklist.items.find(item => item.id === 'stripe_ready')?.status === 'ready' ? 'reconcileStripeConnected' : 'reconcileWithoutStripe')}</p>}
         {checkError && <Alert>{label(checkError)}</Alert>}
         {checklist.billingEnabled && <p className="text-sm text-muted-foreground">{label('reconcilePause')}</p>}
         <Button variant="outline" disabled={locked || checklist.billingEnabled || !checklist.restoreReconciliation.snapshotAt}

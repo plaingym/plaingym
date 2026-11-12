@@ -19,6 +19,7 @@ import { StripePermissionError } from '../../infra/payments/setup.js';
 import type { PaymentTransport } from '../../infra/payments/transport.js';
 import { setupTestMessage } from '../../emails/setup/setup.js';
 import { createStripeConnection, readStripeConfig, restrictedKeyMode, type StripeConfig, type StripeProvisioner } from '../setup/stripe-step.js';
+import { pauseRestoredBillingForStripe } from './go-live.restore.js';
 import { backupColumns, backupKeyPair, newBlobKey, recipientOf } from '../setup/backup-key.js';
 import { customerUnlinkedAction, stripeTestClearedAction as testClearedAction } from '../billing/customers.js';
 import { encryptSmtpConfig, readSmtpSchema, sendSmtpTest, smtpFromEnvironment, storedSmtpFromRequest, type SendSmtpTest } from './smtp.js';
@@ -531,7 +532,9 @@ export function createIntegrationsService(options: IntegrationsOptions) {
           throw new AppError('conflict', 'Stripe customers were recorded while the key was checked; try again');
         if (switching) retire = await clearTestData(tx, gymId, userId);
         const was = readStripeConfig(options.key, before.stripeConfig, gymId);
-        return { set: { stripeConfig: encryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)) }, action: 'integrations.stripe_saved',
+        const paused = await pauseRestoredBillingForStripe(tx, context, before.billingEnabled, clock.now());
+        return { set: { stripeConfig: encryptSecret(options.key, { secretClass: 'stripe_config', owner: gymId }, JSON.stringify(config)),
+          ...(paused ? { billingEnabled: false } : {}) }, action: 'integrations.stripe_saved',
           before: { mode: was?.mode ?? null, endpointId: was?.endpointId ?? null },
           after: () => ({ mode: config.mode, endpointId: config.endpointId, endpointReused: reused, testDataCleared: switching }) };
       });

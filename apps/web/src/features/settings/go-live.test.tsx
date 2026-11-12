@@ -101,6 +101,18 @@ describe('go-live settings', () => {
     expect(screen.getByRole('button', { name: 'Turn on: Billing' })).toBeDefined();
     expect(client.PATCH).not.toHaveBeenCalled();
   });
+  it.each([false, true])('labels the no-Stripe check as stored references and explains the next step (connected: %s)', async connected => {
+    const response = restored(0);
+    live.mockResolvedValue(reply(200, { data: { ...response.data,
+      items: response.data.items.map(item => item.id === 'stripe_ready' ? { ...item, status: connected ? 'ready' : 'needs_attention' } : item),
+      restoreReconciliation: { ...response.data.restoreReconciliation, stripeConfigured: false },
+    } }));
+    start();
+    expect(await screen.findByText(/Stored references: 4. Unresolved: 0/)).toBeDefined();
+    expect(screen.queryByText(/Objects checked:/)).toBeNull();
+    expect(screen.getByText(connected ? /last restore check ran without Stripe/ : /last check ran without Stripe and only read restored records/).textContent)
+      .toContain('Check restored payments again');
+  });
   it('allows a rerun when the first check has no result yet', async () => {
     live.mockResolvedValue(reply(200, restored(null))); client.POST.mockResolvedValue(reply(200, restored(0)));
     const user = userEvent.setup(); start();

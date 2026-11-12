@@ -50,6 +50,12 @@ Only *Payment reconciliation* after a restore blocks billing, and past billing d
 must be confirmed when you turn billing on; the others advise you. Treat them all as
 required for a real launch.
 
+After a restore, Go live says whether the last payment check ran without Stripe;
+its count then means stored references, not objects read from Stripe. Connecting
+Stripe after that check pauses billing, even if you already turned it on. In
+**Go live**, choose **Check restored payments again**, resolve any issues, and turn
+billing back on once the check is clear. The Payments section also explains this pause.
+
 Then:
 
 1. **Switch to the live Stripe key.** Paste the live key (`rk_live_…`). The page lists what

@@ -91,6 +91,7 @@ export const goLiveChecklistResponseSchema = z.strictObject({ data: z.strictObje
   restoreReconciliation: z.strictObject({
     restoreId: idSchema, snapshotAt: instantSchema.nullable(), checkedAt: instantSchema.nullable(),
     inspected: z.int32().nonnegative().nullable(), unresolved: z.int32().nonnegative().nullable(),
+    stripeConfigured: z.boolean().nullable().optional(),
   }).nullable().optional(),
 }) });
 export const rerunGoLiveReconciliationRequestSchema = z.strictObject({ revision: revisionSchema, restoreId: idSchema });

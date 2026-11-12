@@ -329,7 +329,7 @@ export function createChargeRunner(options: RunnerOptions) {
       else if (latest && abandonedAttempt(latest)) await retryNextDay(invoiceId, context, owner);
     }
   }
-  return { daily, charge, collectAssigned, retry, reconcile: reconciliation.pending, postRestore: reconciliation.postRestore,
+  return { daily, charge, collectAssigned, retry, reconcile: (gymId: string) => reconciliation.pending(gymId), postRestore: reconciliation.postRestore,
     onAssigned: assignmentInvoices(clock), reportFailures,
     /** Stopped runs' failure reports, with only the invoices that still need staff. */
     chargeFailures: (gymId: string) => scope(gymId, tx => openChargeFailures(tx, clock.now())),

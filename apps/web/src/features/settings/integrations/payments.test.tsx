@@ -24,6 +24,21 @@ async function submit(user: ReturnType<typeof userEvent.setup>, key: string) {
 }
 
 describe('Settings → Payments', () => {
+  it('explains the billing pause after connecting Stripe when the restore check ran without it', async () => {
+    const get = client.GET.getMockImplementation()!;
+    client.GET.mockImplementation((path: string) => path === '/api/settings/go-live' ? Promise.resolve(reply(200, { data: {
+      revision: 4, billingEnabled: false, memberEmailsEnabled: false, items: [], restoreReconciliation: {
+        restoreId: '00000000-0000-7000-8000-000000000003', snapshotAt: '2026-11-01T12:00:00Z',
+        checkedAt: '2026-11-02T12:00:00Z', inspected: 0, unresolved: 0, stripeConfigured: false,
+      },
+    } })) : get(path));
+    client.PUT.mockResolvedValue(reply(200, { data: connected }));
+    const user = userEvent.setup(); renderSection();
+    await submit(user, 'rk_test_abc123');
+    expect((await screen.findByRole('note')).textContent).toContain('Billing is paused.');
+    expect(screen.getByRole('note').textContent).toContain('Check restored payments again');
+    expect(screen.getByRole('note').textContent).toContain('turn billing back on');
+  });
   it('connects a key with the shared revision and shows the mode and webhook status, never the key', async () => {
     client.PUT.mockResolvedValue(reply(200, { data: connected }));
     const user = userEvent.setup(); renderSection();

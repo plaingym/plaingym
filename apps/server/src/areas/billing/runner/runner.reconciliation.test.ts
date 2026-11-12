@@ -29,6 +29,25 @@ describe('charge crashes and reconciliation races', () => {
     expect(payments).toHaveBeenCalledWith(f.gymId);
     expect((await f.read()).attempts[0]!.status).toBe('pending');
   });
+  it('lists stale intents without Stripe and completes the hourly job, but still fails for a real provider error', async () => {
+    const f = await fixture();
+    f.provider.loseNextResponse('confirmCharge'); await f.runner.daily(f.gymId); f.clock.advance(16 * 60_000);
+    const payments = vi.fn(async () => { throw new AppError('unavailable', 'Stripe is not configured'); });
+    const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments });
+    const job = createRunnerJobs(() => runner).find(job => job.id === 'billing.runner.reconcile')!;
+    const attempt = (await f.read()).attempts[0]!;
+    expect(await runner.reconcile(f.gymId)).toEqual({ inspected: 1, issues: [
+      { kind: 'charge', id: attempt.paymentIntentId, reason: 'stripe_not_configured' },
+    ] });
+    await expect(job.handler({}, f.context)).resolves.toBeUndefined();
+    expect((await f.read()).attempts[0]).toMatchObject({ status: 'pending', resolvedAt: null });
+    const broken = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments: async () => f.provider });
+    vi.spyOn(f.provider, 'findCharge').mockRejectedValue(new Error('Stripe is unreachable'));
+    expect((await broken.reconcile(f.gymId)).issues).toMatchObject([{ reason: 'provider_or_transition_error' }]);
+    await expect(createRunnerJobs(() => broken).find(job => job.id === 'billing.runner.reconcile')!.handler({}, f.context))
+      .rejects.toThrow('remain unresolved');
+    expect((await f.read()).attempts[0]!.status).toBe('pending');
+  });
   it('abandons a stale no-ID reservation without requiring a provider', async () => {
     const f = await fixture();
     f.provider.loseNextResponse('createCharge'); await f.runner.daily(f.gymId);

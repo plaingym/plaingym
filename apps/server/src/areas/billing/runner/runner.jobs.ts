@@ -5,6 +5,7 @@ import { dateSchema, instantSchema, idSchema } from '@plaingym/shared/contracts'
 import { chargeFailuresJob, dailyRunJob, retryJob, type ChargeRunner } from './index.js';
 import { gymSettingsAccessor } from '../../settings/settings.js';
 import type { GymSettingsAccessor } from '../../../core/interfaces/gym-settings.js';
+import { notConfigured } from './reconciliation.js';
 
 let configured: ChargeRunner | undefined;
 export function configureChargeRunner(runner: ChargeRunner) { configured = runner; }
@@ -35,7 +36,7 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
     } },
     { id: 'billing.runner.reconcile', cron: '17 * * * *', async handler(_payload, context) {
       const result = await (await scheduled(context.gymId))?.reconcile(context.gymId);
-      if (result?.issues.length) throw new Error('Payment attempts remain unresolved');
+      if (result?.issues.some(issue => issue.reason !== notConfigured)) throw new Error('Payment attempts remain unresolved');
     } },
     // Queued by the previous release for a stopped run's other failures: it records them as that run's report.
     { id: chargeFailuresJob, async handler(payload, context) {

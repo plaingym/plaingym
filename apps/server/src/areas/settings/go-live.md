@@ -52,7 +52,15 @@ gym revision and `restoreId`. It rejects a different gym's restore, stale revisi
 and enabled billing. The page's **Check restored payments again** button calls
 the same configured runner as the worker, outside any transaction. It displays
 progress, safe errors, the last result time and inspected/unresolved counts from
-`restoreReconciliation`. A requested or interrupted check invalidates the prior
+`restoreReconciliation`, including `stripeConfigured` (null when no report records
+it). A check without Stripe labels `inspected` as stored references and tells the
+owner to connect Stripe and check again. Both the Payments settings save and the
+setup Stripe save lock the gym and, if billing is enabled and the latest restore
+check recorded `stripeConfigured: false`, pause billing and write
+`settings.go_live.billing_paused_for_stripe` in the same transaction as the saved
+credentials. The two pages explain the pause and the need to check again before
+explicitly turning billing back on. A gym without a restore is unaffected.
+A requested or interrupted check invalidates the prior
 success until the new check completes. A rerun is refused (409, `details`
 `{ restoreId: ["check_running"] }`) while a check of the same restore is running: one
 started without a result, or a rerun asked for whose check has neither started nor

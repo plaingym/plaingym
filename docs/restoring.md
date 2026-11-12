@@ -83,8 +83,11 @@ same way. The wizard is skipped, because the restored gym is already set up.
    check reads only the restored records: with no card payments in progress it is
    clear and the item reads *not applicable*. If the records still refer to Stripe
    payments, connect Stripe and check again. Once Stripe is connected, a check made
-   without it no longer counts, so run **Check restored payments again** before
-   turning billing on.
+   without it no longer counts. Saving the Stripe settings pauses billing in the
+   same transaction, even if you already turned it on after the earlier check.
+   Go live labels that check's count as *Stored references* and says it ran without
+   Stripe. The Payments section also explains the pause. Run **Check restored
+   payments again** to compare with Stripe, then turn billing back on once it is clear.
 3. **Stripe webhooks.** Open **Settings → Email, payments and backups** and check that
    **Payments** shows the webhook endpoint as registered. If the hostname changed, the
    endpoint Stripe knows still points at the old address: paste the Stripe key

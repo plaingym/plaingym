@@ -92,6 +92,8 @@ The checks cover:
   exact start), a coach's roster check-in, and stacked dashboard widgets. Session moves use New York
   and Tokyo gym time with a Honolulu browser, verify stored instants and local display, and reject
   the New York spring daylight-saving gap. A coach's direct Settings URL has an explanatory empty state.
+* Restored-payment notices before and after connecting Stripe at 360 px and 1280 px
+  (`restore-payments.spec.ts`), with fixture reports, screenshots and layout checks.
 * Every portal and signed-link route in the inventory, both ways between two
   households of one sandbox (the student, and a seeded family that claims a portal
   login from its outbox invitation): each route with a path parameter, aimed at the

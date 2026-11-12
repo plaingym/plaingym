@@ -128,7 +128,7 @@ export function createReconciliation(options: Options) {
     const attempts = await scope(gymId, tx => tx.select().from(paymentAttempts).where(and(
       eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before))));
     if (!attempts.length) return { inspected: 0, issues: [] };
-    let provider = resolved ?? undefined;
+    let provider = resolved;
     const issues: ReconciliationIssue[] = [];
     for (const attempt of attempts) {
       if (!attempt.paymentIntentId) {
@@ -141,9 +141,9 @@ export function createReconciliation(options: Options) {
         });
         continue;
       }
-      if (resolved === null) { issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: notConfigured }); continue; }
       try {
-        provider ??= await options.payments(gymId);
+        if (provider === undefined) provider = await configuredProvider(gymId);
+        if (!provider) { issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: notConfigured }); continue; }
         const outcome = await provider.findCharge({ kind: 'charge', id: attempt.paymentIntentId }, { includeSuccessTime: true });
         if (!await object(gymId, { kind: 'charge', object: outcome }, provider))
           issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: 'unresolved' });

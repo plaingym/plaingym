@@ -304,7 +304,11 @@ queue that registers it without the lane makes them wait for the run.
    connecting Stripe and checking again. Such a report never fails the
    `billing.runner.restore` job, since a retry would find the same references, and
    records `stripeConfigured: false`, which go-live stops counting once Stripe is
-   connected. Managers can rerun via go-live
+   connected. Saving Stripe after such a check pauses billing with an audit in
+   the same transaction. The hourly reconcile also lists unread stored intents
+   as `stripe_not_configured` without failing the job; a real provider error or
+   another unresolved issue still fails it. The public `reconcile(gymId)` method
+   always resolves the gym's provider itself. Managers can rerun via go-live
    while billing is paused, using `rerunRestoreReconciliation`, which resolves the
    same configured runner as the worker. Rerunning never enables billing.
 

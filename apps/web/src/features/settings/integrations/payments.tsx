@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { restrictedKeyPattern } from '@plaingym/shared/contracts';
+import { goLiveChecklistResponseSchema, restrictedKeyPattern } from '@plaingym/shared/contracts';
+import { useQuery } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import type { PaymentsIntegration } from '@plaingym/shared/contracts';
 import { api } from '../../../lib/api.js';
+import { parseResponse } from '../../../lib/response.js';
+import { t } from '../../../lib/i18n.js';
+import { useGymSettings } from '../gym-settings.js';
 import { Button } from '../../../components/ui/button.js';
 import { FormMessage } from '../../../components/ui/alert.js';
 import { Input } from '../../../components/ui/input.js';
@@ -32,6 +36,14 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
 }) {
   const [key, setKey] = useState(''), [busy, setBusy] = useState(false), [switchKey, setSwitchKey] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
+  const gym = useGymSettings();
+  const restore = useQuery({ queryKey: ['settings', 'payments-restore-check', gym.settings?.revision],
+    enabled: editable && payments.configured, retry: false,
+    queryFn: async () => {
+      const result = await api.GET('/api/settings/go-live');
+      if (!result.response.ok) throw new Error('The restore check request failed');
+      return parseResponse(goLiveChecklistResponseSchema, result.data).data.restoreReconciliation;
+    } });
   const send = (restrictedKey: string, clearTestData: boolean) => state.change((revision, signal) => api.PUT('/api/settings/integrations/stripe',
     { signal, body: { revision, restrictedKey, ...(clearTestData ? { clearTestData } : {}) } }), integrationsOf);
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -66,6 +78,8 @@ export function PaymentsIntegrationSection({ payments, editable, lastEventAt, st
       {lastEventAt ? text('payments.lastEvent', { time: new Date(lastEventAt).toLocaleString() }) : label('noEvent')}</p>}
     {editable && payments.accountLocked && <p className="text-sm text-muted-foreground">{label(payments.mode === 'test' ? 'lockedTest' : 'locked')}</p>}
     {editable && payments.importedCustomersOnly && <p className="text-sm text-muted-foreground">{label('importedOnly')}</p>}
+    {restore.data?.stripeConfigured === false && <p className="break-words text-sm" role="note">
+      {t('settings/go-live:reconcileStripeConnected')}</p>}
     <FormMessage message={message}/>
     {!editable ? null : switchKey ? <form onSubmit={(event) => void confirmSwitch(event)} aria-label={label('switchTitle')}>
       <fieldset disabled={busy} className="grid min-w-0 gap-4 rounded-md border border-border p-3">
