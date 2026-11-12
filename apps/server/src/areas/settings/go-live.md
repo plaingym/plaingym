@@ -32,7 +32,11 @@ hours, the checklist directs an owner or admin to check Stripe and reconciliatio
 Each check belongs to a specific restore receipt; each result belongs to that check.
 An earlier restore's successful check cannot clear a newer restore, even when the
 injected clock has the same instant for both. A delayed earlier check cannot replace
-the newest check's result. Restored gyms
+the newest check's result. A check that ran without a payments provider
+(`stripeConfigured: false` in its report) read only the database, so it stops
+counting once Stripe is connected: the item needs attention again until a check
+with Stripe is clear. Without Stripe, the item is not applicable when nothing is
+pending and the restore's check found no payment objects. Restored gyms
 cannot enable billing until that check is clear; turning it on is the manager's
 explicit confirmation after reconciliation. The remaining readiness checks advise
 the manager. Viewing the checklist does not require a live Stripe request.
@@ -115,3 +119,7 @@ and confirmed PATCH through `createApp` and the real registrations.
 encrypted restore, durable publication, the production worker and go-live rerun routes
 against PostgreSQL, including unresolved/resolved payments, provider failure and a
 newer restore; `health/restore.resume.test.ts` covers interrupted publication.
+`go-live.restore.test.ts` covers a restored gym without Stripe: a clear check with
+no payment records, stored Stripe references listed without failing the job, a
+check without Stripe that stops counting once Stripe is connected, a provider error
+that still fails, and the rerun route's permissions and cross-gym refusals.

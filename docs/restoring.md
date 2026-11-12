@@ -72,6 +72,12 @@ same way. The wizard is skipped, because the restored gym is already set up.
    **Settings → Go live**; the checklist's *Payment reconciliation* item must be
    clear. If it shows unresolved items, correct them and use **Check restored
    payments again**. Then turn billing back on ([going-live.md](going-live.md)).
+   If the gym has no Stripe key (it takes only cash or other manual payments), the
+   check reads only the restored records: with no card payments in progress it is
+   clear and the item reads *not applicable*. If the records still refer to Stripe
+   payments, connect Stripe and check again. Once Stripe is connected, a check made
+   without it no longer counts, so run **Check restored payments again** before
+   turning billing on.
 3. **Stripe webhooks.** Open **Settings → Email, payments and backups** and check that
    **Payments** shows the webhook endpoint as registered. If the hostname changed, the
    endpoint Stripe knows still points at the old address: paste the Stripe key

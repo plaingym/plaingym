@@ -51,7 +51,10 @@ export function createRunnerJobs(read: () => ChargeRunner | undefined = () => co
       const result = await required().postRestore(context.gymId,
         new Date(instantSchema.parse((payload as { snapshotAt?: unknown } | null)?.snapshotAt)),
         idSchema.optional().parse((payload as { restoreId?: unknown } | null)?.restoreId));
-      if (!result.readyForOwnerReview) throw new Error('Restore reconciliation requires manual resolution');
+      // Without Stripe a retry would find the same stored references; the report lists them for the owner, who connects
+      // Stripe and checks again. A check that ran with Stripe and left issues retries.
+      if (!result.readyForOwnerReview && result.stripeConfigured !== false)
+        throw new Error('Restore reconciliation requires manual resolution');
     } },
   ];
 }

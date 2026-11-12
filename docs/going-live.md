@@ -42,7 +42,7 @@ Work down the **Readiness checklist** on **Settings → Go live**. Each line say
 | Email delivery | Email is set up and a test message arrived. |
 | Backups | Backups are set up and the key is stored safely. |
 | Payment notifications | At least one Stripe notification was processed, and none are waiting or failed. |
-| Payment reconciliation | No unresolved payment attempts; after a [restore](restoring.md), the restored payments have been checked. |
+| Payment reconciliation | No unresolved payment attempts; after a [restore](restoring.md), the restored payments have been checked. Without a Stripe key it is not applicable when there is nothing to check; a check made before Stripe was connected must be run again once it is. |
 | Past billing dates | No active membership has a next billing date before today. The memberships that do are listed below the checklist. |
 
 Only *Payment reconciliation* after a restore blocks billing, and past billing dates

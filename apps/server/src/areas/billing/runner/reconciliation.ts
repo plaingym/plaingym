@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, desc, eq, exists, inArray, isNull, lte, ne, notExists, or } from 'drizzle-orm';
 import { stripeTestPaymentReference } from '@plaingym/shared/contracts';
+import { AppError } from '@plaingym/shared';
 import { auditEvents, households, invoices, paymentAttempts, payments, refunds, uuidv7, writeAudit } from '@plaingym/db';
 import type { ChargeOutcome, PaymentObject, PaymentObjectReference, Payments } from '../../../infra/payments/index.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
@@ -11,12 +12,25 @@ import type { RunnerOptions } from './index.js';
 import type { MutationContext } from '../../../core/interfaces/common.js';
 
 export interface ReconciliationIssue { kind: string; id: string; reason: string; }
+/** `stripeConfigured` is absent when the check didn't run (a delayed job for an earlier restore). */
+export interface RestoreCheck { inspected: number; readyForOwnerReview: boolean; issues: ReconciliationIssue[]; stripeConfigured?: boolean; }
+/** A stored Stripe reference on a gym with no payments provider: connecting Stripe and checking again resolves it. */
+export const notConfigured = 'stripe_not_configured';
 type Options = Omit<RunnerOptions, 'jobs'> & Required<Pick<RunnerOptions, 'scope' | 'clock'>>;
 export function createReconciliation(options: Options) {
   const { scope, clock } = options;
   const staleAfterMs = options.staleAfterMs ?? 15 * 60_000;
   if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error('Invalid reconciliation threshold');
   const writer = createDisputeRefundWriter({ ...options, scope, clock });
+  /**
+   * The gym's provider, or null when the gym has no payments provider: the runtime's resolver throws `unavailable` only
+   * when no Stripe settings are stored (it reads them from the database and makes no Stripe call). Any other failure,
+   * such as unreadable settings, stays an error.
+   */
+  async function configuredProvider(gymId: string): Promise<Payments | null> {
+    try { return await options.payments(gymId) as Payments | null; }
+    catch (error) { if (error instanceof AppError && error.code === 'unavailable') return null; throw error; }
+  }
   /** Returns false for unknown, unmatched, or still-processing objects. Never guesses from search. */
   async function apply(gymId: string, outcome: ChargeOutcome, context: MutationContext = system(gymId)): Promise<boolean> {
     if (context.gymId !== gymId) throw new Error('Payment outcome actor gym mismatch');
@@ -108,12 +122,13 @@ export function createReconciliation(options: Options) {
     if (value.kind === 'refund') return await writer.refund(gymId, payment, value.object) && value.object.status !== 'pending';
     return await writer.dispute(gymId, payment, value.object) !== 'conflict';
   }
-  async function pending(gymId: string) {
+  /** `resolved` is a provider already resolved by the caller; null means the gym has none, so stored intents are listed unread. */
+  async function pending(gymId: string, resolved?: Payments | null) {
     const before = new Date(clock.now().getTime() - staleAfterMs);
     const attempts = await scope(gymId, tx => tx.select().from(paymentAttempts).where(and(
       eq(paymentAttempts.status, 'pending'), lte(paymentAttempts.createdAt, before))));
     if (!attempts.length) return { inspected: 0, issues: [] };
-    let provider: Payments | undefined;
+    let provider = resolved ?? undefined;
     const issues: ReconciliationIssue[] = [];
     for (const attempt of attempts) {
       if (!attempt.paymentIntentId) {
@@ -126,6 +141,7 @@ export function createReconciliation(options: Options) {
         });
         continue;
       }
+      if (resolved === null) { issues.push({ kind: 'charge', id: attempt.paymentIntentId, reason: notConfigured }); continue; }
       try {
         provider ??= await options.payments(gymId);
         const outcome = await provider.findCharge({ kind: 'charge', id: attempt.paymentIntentId }, { includeSuccessTime: true });
@@ -135,8 +151,12 @@ export function createReconciliation(options: Options) {
     }
     return { inspected: attempts.length, issues };
   }
-  /** Never enables billing. The owner must review the report and explicitly resume it. */
-  async function postRestore(gymId: string, snapshotAt: Date, restoreId?: string) {
+  /**
+   * Never enables billing. The owner must review the report and explicitly resume it. A gym with no payments provider
+   * is checked against what the database holds: with no Stripe references the check is clear; each reference it holds
+   * is an issue (`stripe_not_configured`) the owner resolves by connecting Stripe and checking again.
+   */
+  async function postRestore(gymId: string, snapshotAt: Date, restoreId?: string): Promise<RestoreCheck> {
     if (!Number.isFinite(snapshotAt.getTime()) || snapshotAt > clock.now()) throw new Error('Invalid snapshot time');
     if ((await options.settings.get(gymId)).billingEnabled) throw new Error('Pause billing before restore reconciliation');
     const latestRestore = await scope(gymId, async tx => (await tx.select({ id: auditEvents.id }).from(auditEvents)
@@ -148,7 +168,7 @@ export function createReconciliation(options: Options) {
       action: 'billing.runner.restore_check_started', targetType: restoreId ? 'restore' : 'gym', targetId: restoreId ?? gymId,
       after: { snapshotAt: snapshotAt.toISOString() }, occurredAt: clock.now() }));
     try {
-      const provider = await options.payments(gymId);
+      const provider = await configuredProvider(gymId);
       const issues: ReconciliationIssue[] = [];
       const references = await scope(gymId, async tx => {
         const attempts = await tx.select({ paymentIntentId: paymentAttempts.paymentIntentId }).from(paymentAttempts)
@@ -171,6 +191,7 @@ export function createReconciliation(options: Options) {
         ];
       });
       async function refresh(ref: PaymentObjectReference) {
+        if (!provider) { issues.push({ ...ref, reason: notConfigured }); return; }
         try {
           if (ref.kind === 'charge') {
             const outcome = await provider.findCharge({ kind: 'charge', id: ref.id }, { includeSuccessTime: true });
@@ -190,7 +211,9 @@ export function createReconciliation(options: Options) {
       let cursor: string | undefined;
       const cursors = new Set<string>();
       let inspected = references.length;
-      do {
+      // A restore keeps the gym's Stripe settings, so a gym without them had none at the snapshot and there are no
+      // changes this install can list. Connecting Stripe later and checking again reads them.
+      if (provider) do {
         const page = await provider.listChangesSince(since, cursor ? { cursor } : {});
         for (const change of page.changes) {
           const id = change.kind === 'charge' && change.object.status === 'unknown' ? change.object.reference.id : 'id' in change.object ? change.object.id : '';
@@ -201,7 +224,7 @@ export function createReconciliation(options: Options) {
         if (cursor && cursors.has(cursor)) throw new Error('Repeated reconciliation cursor');
         if (cursor) cursors.add(cursor);
       } while (cursor);
-      const pendingResult = await pending(gymId);
+      const pendingResult = await pending(gymId, provider);
       issues.push(...pendingResult.issues);
       const remaining = await scope(gymId, tx => tx.select({ id: paymentAttempts.id }).from(paymentAttempts)
         .where(eq(paymentAttempts.status, 'pending')));
@@ -211,8 +234,9 @@ export function createReconciliation(options: Options) {
       const unique = [...new Map(issues.map(issue => [`${issue.kind}:${issue.id}`, issue])).values()];
       await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
         targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),
-        after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique } }));
-      return { inspected, readyForOwnerReview: unique.length === 0, issues: unique };
+        after: { snapshotAt: snapshotAt.toISOString(), inspected, unresolved: unique.length, issues: unique,
+          stripeConfigured: !!provider } }));
+      return { inspected, readyForOwnerReview: unique.length === 0, issues: unique, stripeConfigured: !!provider };
     } catch (error) {
       await scope(gymId, tx => writeAudit(tx, { gymId, actorKind: 'system', action: 'billing.runner.restore_checked',
         targetType: 'restore_check', targetId: check.id, occurredAt: clock.now(),

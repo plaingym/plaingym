@@ -3,6 +3,8 @@ import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { allocateInvoiceNumber, invoices, paymentAttempts, uuidv7 } from '@plaingym/db';
+import { AppError } from '@plaingym/shared';
+import type { FakePayments } from '../../../infra/payments/index.js';
 import { createChargeRunner } from './index.js';
 import { createRunnerJobs } from './runner.jobs.js';
 import { useRunnerFixture, gate } from './runner.fixture.test-helper.js';
@@ -209,6 +211,24 @@ describe('post-restore reconciliation', () => {
     f.clock.advance(16 * 60_000); await f.enable(false);
     expect((await f.runner.postRestore(f.gymId, new Date('2028-03-01T17:00:00Z'))).readyForOwnerReview).toBe(true);
     expect((await f.read()).invoices[0]!.status).toBe('paid'); expect((await f.read()).payments).toHaveLength(1);
+  });
+  it('lists stored intents on a gym without Stripe instead of failing, but fails when settings cannot be read', async () => {
+    const f = await fixture(); f.provider.loseNextResponse('confirmCharge'); await f.runner.daily(f.gymId);
+    const intent = (await f.read()).attempts[0]!.paymentIntentId!;
+    f.clock.advance(16 * 60_000); await f.enable(false);
+    const payments = vi.fn(async (): Promise<FakePayments> => { throw new AppError('unavailable', 'Stripe is not configured for this gym'); });
+    const runner = createChargeRunner({ ...f.serviceOptions, transitions: f.transitions, payments });
+    const job = createRunnerJobs(() => runner, f.settings).find(job => job.id === 'billing.runner.restore')!;
+    const list = vi.spyOn(f.provider, 'listChangesSince');
+    expect(await runner.postRestore(f.gymId, new Date('2028-03-01T17:00:00Z'))).toMatchObject({ inspected: 1,
+      readyForOwnerReview: false, stripeConfigured: false, issues: expect.arrayContaining([
+        { kind: 'charge', id: intent, reason: 'stripe_not_configured' }]) });
+    await expect(job.handler({ snapshotAt: '2028-03-01T17:00:00Z' }, f.context)).resolves.toBeUndefined();
+    expect(list).not.toHaveBeenCalled();
+    // The attempt stays pending for a check with Stripe: nothing is guessed from the database alone.
+    expect((await f.read()).attempts[0]!.status).toBe('pending');
+    payments.mockRejectedValueOnce(new Error('Invalid Stripe configuration'));
+    await expect(job.handler({ snapshotAt: '2028-03-01T17:00:00Z' }, f.context)).rejects.toThrow('Invalid Stripe configuration');
   });
   it('keeps unmatched payments paused for manual resolution and rejects a pass while billing is enabled', async () => {
     const f = await fixture();

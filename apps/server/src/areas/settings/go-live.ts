@@ -40,7 +40,11 @@ async function pastDue(tx: Transaction, today: string, lock = false) {
   return rows.map(({ memberName, lastName, ...row }) => ({ ...row, memberName: `${memberName} ${lastName}`.trim() }));
 }
 
-async function reconciliation(tx: Transaction) {
+/**
+ * `stripe` is whether the gym has a payments provider now. A restore check that ran without one read only the database,
+ * so once Stripe is connected it no longer clears the restore: a check with Stripe must read what Stripe holds.
+ */
+async function reconciliation(tx: Transaction, stripe: boolean) {
   const [pending] = await tx.select({ id: paymentAttempts.id }).from(paymentAttempts).where(eq(paymentAttempts.status, 'pending')).limit(1);
   const [pendingRefund] = await tx.select({ id: refunds.id }).from(refunds).where(eq(refunds.status, 'pending')).limit(1);
   const [restore] = await tx.select({ id: auditEvents.id }).from(auditEvents)
@@ -54,12 +58,15 @@ async function reconciliation(tx: Transaction) {
   const rerun = restore ? await latest('settings.go_live.reconciliation_requested', restore.id) : undefined;
   const started = restore ? await latest('billing.runner.restore_check_started', restore.id, rerun?.id) : undefined;
   const checked = started ? await latest('billing.runner.restore_checked', started.id) : undefined;
-  const report = checked?.after as { inspected: number; unresolved: number } | undefined;
+  const report = checked?.after as { inspected: number; unresolved: number; stripeConfigured?: boolean } | undefined;
   const snapshotAt = (request?.after as { snapshotAt?: string } | undefined)?.snapshotAt ?? null;
+  const clear = report?.unresolved === 0 && (report.stripeConfigured !== false || !stripe);
   return { applicable: !!restore || !!pending || !!pendingRefund, restored: !!restore,
     detail: restore ? { restoreId: restore.id, snapshotAt, checkedAt: checked?.occurredAt.toISOString() ?? null,
       inspected: report?.inspected ?? null, unresolved: report?.unresolved ?? null } : null,
-    ready: !pending && !pendingRefund && (!restore || report?.unresolved === 0) };
+    ready: !pending && !pendingRefund && (!restore || clear),
+    // Nothing was left to reconcile: no pending work, and any restore's check found no payment objects at all.
+    empty: !pending && !pendingRefund && (!restore || (clear && report.inspected === 0)) };
 }
 
 /**
@@ -113,11 +120,11 @@ export function createGoLiveService(options: {
         .where(and(eq(paymentMethods.isDefault, true), isNull(paymentMethods.revokedAt)));
       const currentWaivers = await tx.selectDistinctOn([waiverTemplates.name]).from(waiverTemplates)
         .orderBy(waiverTemplates.name, desc(waiverTemplates.version));
-      const recovery = await reconciliation(tx);
+      const stripe = payments ?? Boolean(gym.stripeConfigured);
+      const recovery = await reconciliation(tx, stripe);
       const today = localDate(clock.now(), gym.timezone), thisMonth = today.slice(0, 7);
       const pastDueMemberships = await pastDue(tx, today);
       const setup = (gym.settings as { setup?: { completed?: boolean } }).setup;
-      const stripe = payments ?? Boolean(gym.stripeConfigured);
       const result = goLiveChecklistResponseSchema.shape.data.parse({ revision: gym.revision, ...switches(gym), pastDueMemberships,
         restoreReconciliation: recovery.detail, items: [
         item('gym_details', ready(!setup || setup.completed)),
@@ -133,7 +140,7 @@ export function createGoLiveService(options: {
         item('backup_ready', ready(gym.backupPublicKey && gym.backupDestination)),
         item('webhook_ready', !stripe ? 'not_applicable'
           : ready(webhook.lastProcessedAt && !webhook.pendingCount && !webhook.failedCount)),
-        item('reconciliation_complete', !stripe && !recovery.applicable ? 'not_applicable' : ready(recovery.ready)),
+        item('reconciliation_complete', !stripe && recovery.empty ? 'not_applicable' : ready(recovery.ready)),
         item('past_due_dates', ready(!pastDueMemberships.length)),
       ] });
       return { ...result, pastDueMemberships };
@@ -146,7 +153,8 @@ export function createGoLiveService(options: {
         const [gym] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!gym) throw new AppError('not_found', t('settings/go-live:notFound'));
         if (gym.revision !== input.revision) assertRevised([]);
-        const recovery = await reconciliation(tx);
+        // Only the restore and its snapshot are read here; the check itself resolves the provider.
+        const recovery = await reconciliation(tx, Boolean(gym.stripeConfigured));
         if (recovery.detail?.restoreId !== input.restoreId) throw new AppError('not_found', t('settings/go-live:notFound'));
         if (gym.billingEnabled || !recovery.detail.snapshotAt) throw new AppError('conflict', t('settings/go-live:reconcilePause'));
         // Two checks of one restore at once would apply the same payment changes side by side, and the one that started
@@ -170,6 +178,8 @@ export function createGoLiveService(options: {
     },
     async update(context: MutationContext, input: UpdateGoLiveRequest): Promise<Checklist> {
       const { revision, confirmedPastDueDates, ...changes } = updateGoLiveRequestSchema.parse(input);
+      // Opens its own transaction, so resolve it first; only turning billing on reads it.
+      const payments = changes.billingEnabled ? await options.paymentsConfigured?.(context.gymId) : undefined;
       await scope(context.gymId, async (tx) => {
         const [before] = await tx.select(projection).from(gyms).where(eq(gyms.id, context.gymId)).for('update');
         if (!before) throw new AppError('not_found', t('settings/go-live:notFound'));
@@ -178,7 +188,7 @@ export function createGoLiveService(options: {
         if (before.revision !== revision) assertRevised([]);
         let confirmed: ReturnType<typeof dates> | undefined;
         if (!before.billingEnabled && changes.billingEnabled) {
-          const recovery = await reconciliation(tx);
+          const recovery = await reconciliation(tx, payments ?? Boolean(before.stripeConfigured));
           if (recovery.restored && !recovery.ready)
             throw new AppError('conflict', t('settings/go-live:check.reconciliation_complete.needs_attention'));
           const overdue = await pastDue(tx, localDate(clock.now(), before.timezone), true);

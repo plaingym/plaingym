@@ -12,7 +12,7 @@ exposes the same controllable entry points used by the jobs and PostgreSQL scena
 | `collectAssigned(gymId, householdId)` | Immediately collect that household's open, unattempted assignment one-offs after the assignment transaction commits. Returns collection counts and errors; never call it from `onAssigned`. |
 | `retry(invoiceId, jobContext)` | Transition-effects callback. Recheck the original first-failure date and the invoice's saved retry windows at 09:00 gym time, then expire/reconcile Checkout before reserving another attempt. |
 | `reconcile(gymId)` | Reconcile stale pending attempts by ID. Returns unresolved references. Works while billing is disabled. |
-| `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview` and unresolved references; record the report in an immutable audit event. Never enable billing. |
+| `postRestore(gymId, snapshotAt)` | Require billing disabled; refresh unresolved IDs and enumerate provider changes with a five-minute overlap. Return `readyForOwnerReview`, unresolved references and `stripeConfigured`; record the report in an immutable audit event. Never enable billing. A gym with no payments provider is checked against the database only (below). |
 | `chargeFailures(gymId)` | The last 90 days' stopped-run failure reports, oldest first, each with only the invoices that still need staff. |
 | `dismissChargeFailures(context, runIds)` | Staff (a user actor) dismiss what the named reports still list, with an audit per report; a report written after the caller read the list is not named, so it stays open. The gym's dismissals run one at a time (a transaction-level advisory lock), so two at once write one audit per report; the lock is the gym's `chargeFailures` entry in `gymAdvisoryLocks` (`packages/db/src/locks.ts`), and the dismissal reads only the named runs under it. Another gym's, an unknown, or a report older than the 90 days listed is `not_found`, and nothing is dismissed. |
 | `onAssigned` | Inject into `createMembershipService`: issue calculated first-period proration and sign-up-fee invoices in the assignment transaction. Never call the provider there. |
@@ -295,7 +295,16 @@ queue that registers it without the lane makes them wait for the run.
    owner confirmation to resume billing is a separate operation. Each started
    restore check targets its restore audit; its result targets that check's audit.
    Only the newest check for the newest restore can clear the go-live gate.
-   Provider failures persist an unresolved report. Managers can rerun via go-live
+   Provider failures persist an unresolved report and fail the job. A gym with no
+   payments provider (the resolver throws `AppError` `unavailable`, which the
+   runtime's resolver does only when no Stripe settings are stored; any other
+   resolver error is a provider failure) reads only the database: with no stored
+   Stripe references the report is clear (`inspected: 0, unresolved: 0`); each
+   stored reference is an issue with reason `stripe_not_configured`, resolved by
+   connecting Stripe and checking again. Such a report never fails the
+   `billing.runner.restore` job, since a retry would find the same references, and
+   records `stripeConfigured: false`, which go-live stops counting once Stripe is
+   connected. Managers can rerun via go-live
    while billing is paused, using `rerunRestoreReconciliation`, which resolves the
    same configured runner as the worker. Rerunning never enables billing.
 
@@ -306,7 +315,7 @@ dates, leap-day anniversaries, cross-gym isolation), `runner.assignment.test.ts`
 (assignment invoices and review holds), `runner.review.test.ts` (eligibility
 changes mid-charge, Checkout identity, staff charges, job configuration),
 `runner.reconciliation.test.ts` (lost responses, both cancel/confirm race winners,
-delayed creation, restore refunds/disputes), `runner.retry.test.ts` (retry windows,
+delayed creation, restore refunds/disputes, a restore check without Stripe), `runner.retry.test.ts` (retry windows,
 Checkout exclusion and transition job composition) and `runner.breaker.test.ts` (the
 outage stop and its continuation, a stopped run's failure reports, and a webhook dispatch
 running while the daily run holds the batch lane). `concurrency.test.ts` holds the daily
