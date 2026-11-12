@@ -6,7 +6,10 @@ set -eu
 snapshot=$1
 config=$2
 key=$3
-[ -r "$config" ] && [ -r "$key" ] || { echo 'The config and key must be readable files.' >&2; exit 1; }
+if [ ! -r "$config" ] || [ ! -r "$key" ]; then
+  echo 'The config and key must be readable files.' >&2
+  exit 1
+fi
 config=$(realpath "$config")
 key=$(realpath "$key")
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
