@@ -53,7 +53,7 @@ function server(f: Awaited<ReturnType<typeof fixture>>, roles: readonly StaffRol
   return app;
 }
 describe('dashboard routes with PostgreSQL RLS and real area services', () => {
-  it('evaluates each member only once when the entire roster has the same next rank', async () => {
+  it('batches class criteria without per-member attendance or history calls', async () => {
     const gymId = uuidv7(); await factory('gyms', gymId);
     const household = await factory('households', gymId), system = await factory('rankSystems', gymId);
     await factory('programs', gymId, { rankSystemId: system.id, active: true });
@@ -74,7 +74,7 @@ describe('dashboard routes with PostgreSQL RLS and real area services', () => {
     const { data } = await dashboard.get({ gymId, clock, roles: ['owner'] });
     expect(data.widgets.find((widget) => widget.id === 'active_members')).toHaveProperty('count', 500);
     expect(data.widgets.find((widget) => widget.id === 'promotion_ready')).toHaveProperty('count', 0);
-    expect(counts).toBe(500);
+    expect(counts).toBe(0);
     expect(histories).toBe(0);
   });
   for (const role of staffRoles) it(`allows ${role}, with promotion readiness restricted to promotion staff`, async () => {

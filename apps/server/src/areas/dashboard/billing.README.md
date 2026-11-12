@@ -10,8 +10,9 @@ all matches in SQL with a capped row query, excludes zero and review-required in
 is disabled, and sends no email.
 
 `configureBillingDashboard({ settings, memberships, payments })` supplies the
-settings accessor and the billing services' read methods. The runtime configures
-it with the same membership and payment services used by staff billing routes.
+settings accessor and the billing services. Metrics use an aggregate read through
+`forGym`; tests can supply `scope` for their isolated database. The runtime configures
+it with the same settings accessor used by staff billing routes.
 The area barrel registers `/api/dashboard/billing`, and the dashboard page mounts
 `BillingDashboardPanel`. HTTP responses are never
 cached; browser queries are separated by gym and staff roles. The route and panel
@@ -39,18 +40,22 @@ Definitions, also explained on each widget:
   disputed amount. This widget and the independent `billing.disputes` alert are
   omitted when there are no open disputes.
 
-The service paginates filtered billing queries in short transactions: active
-memberships for MRR, memberships due on or before the upcoming window's end,
-past-due invoices, open invoices due before today, invoices in the upcoming window,
-and `dispute=open` invoices. At most two of these reads run concurrently per
-request, leaving room in the eight-connection app pool for other work. It does
-not page through unrelated paid history.
+After reading settings, the service calculates all four metrics in one SQL
+statement inside a short gym-scoped transaction. Membership estimates are grouped
+by household and due date in SQL; issued cycles suppress those estimates before
+open invoices are added. Annual normalization sums twelfths using PostgreSQL
+numeric arithmetic and rounds only once. No memberships or invoice histories are
+paged into Node. Each endpoint holds at most one connection at a time, so loading
+the mat and billing endpoints together holds at most two of the eight app pool
+connections. Unrelated paid history does not contribute.
 The shared `terminalDisputeStatuses` constant defines terminal disputes for the
 SQL filter, dashboard and existing alert provider. No new index is needed.
 
-Rows are deduplicated by ID across pages. These are point-in-time reads across
-several short transactions, not one database snapshot: totals may lag a charge
-run in progress. All metrics use the gym currency; invalid data fails closed
+All four metrics share one statement's snapshot. Settings are read in a separate
+short transaction, so a concurrent settings change may appear on the next refresh.
+All metrics use the gym currency. A membership that is active or due by the
+window's end, or an invoice that is past due, open and overdue, due in the
+window or openly disputed, in another currency fails closed
 instead of displaying false zeroes. The panel refreshes every five minutes,
 on focus, and through Refresh billing. Calendar dates are formatted in UTC to
 keep their calendar day unchanged in every browser timezone.

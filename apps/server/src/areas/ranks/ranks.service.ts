@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
+// eslint-disable-next-line database/system-tables -- Isolated parameterized batch of attendance criteria under forGym.
+import { sql } from 'drizzle-orm';
 import {
   forGym, programs, rankSystems, ranks, memberRanks, members, staffProfiles,
   databaseCode, uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError,
@@ -16,10 +18,11 @@ import {
 } from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { notFound, conflict } from '../../core/interfaces/common.js';
-import type { PromotionCriteria } from './criteria.js';
+import { PromotionCriteria } from './criteria.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { AttendanceScope } from '../../core/interfaces/attendance.js';
+import type { CriterionContext } from '../../core/interfaces/extensions.js';
 import { canReceive, nextPromotion, nextSubRank, promotionOrder } from './progression.js';
 
 type PromotionRow = typeof memberRanks.$inferSelect;
@@ -99,6 +102,79 @@ export function createRanksService(options: { scope?: typeof forGym; clock: Cloc
     return result;
   }
   return {
+    /** Batch the dashboard's next-step criteria without paginating or re-reading each member's history. */
+    async dashboardEligibility(gymId: string, enabledModules: ReadonlySet<string> = new Set()) {
+      const now = clock.now(), gym = await settings.get(gymId);
+      const snapshot = await scope(gymId, async tx => {
+        const programRows = await tx.select().from(programs).where(and(eq(programs.active, true), isNotNull(programs.rankSystemId)))
+          .orderBy(asc(programs.name), asc(programs.id));
+        const rankRows = await tx.select().from(ranks).where(inArray(ranks.rankSystemId, programRows.map(program => program.rankSystemId!)))
+          .orderBy(asc(ranks.position), asc(ranks.id));
+        const roster = await tx.select({ id: members.id, firstName: members.firstName, lastName: members.lastName,
+          createdAt: members.createdAt, dateOfBirth: members.dateOfBirth }).from(members)
+          .where(and(eq(members.status, 'active'), isNull(members.anonymizedAt)));
+        // Match promotionOrder in SQL; only the current step of each active member/program comes back.
+        const history = await tx.selectDistinctOn([memberRanks.programId, memberRanks.memberId], { promotion: memberRanks, position: ranks.position }).from(memberRanks)
+          .innerJoin(ranks, eq(memberRanks.rankId, ranks.id)).where(and(lte(memberRanks.promotedAt, now),
+            inArray(memberRanks.programId, programRows.map(program => program.id)), inArray(memberRanks.memberId, roster.map(member => member.id))))
+          .orderBy(asc(memberRanks.programId), asc(memberRanks.memberId), desc(memberRanks.promotedAt), desc(ranks.position),
+            desc(memberRanks.subRank), desc(memberRanks.createdAt), desc(memberRanks.id));
+        return { programRows, rankRows: rankRows.map(row => rankSchema.parse(present(row))), roster,
+          history: history.map(row => ({ ...ranked(row), programId: row.promotion.programId })).sort(promotionOrder) };
+      });
+      const latest = new Map<string, (typeof snapshot.history)[number]>();
+      for (const entry of snapshot.history) {
+        const key = entry.programId + ':' + entry.memberId;
+        if (!latest.has(key)) latest.set(key, entry);
+      }
+      const candidates = snapshot.programRows.flatMap(program => {
+        const ordered = snapshot.rankRows.filter(rank => rank.rankSystemId === program.rankSystemId);
+        return snapshot.roster.flatMap(member => {
+          const previous = latest.get(program.id + ':' + member.id), rank = ordered.find(rank => canReceive(previous, rank));
+          if (!rank) return [];
+          const context: CriterionContext = { attendanceScope: { kind: 'gym', gymId }, gymId, memberId: member.id,
+            programId: program.id, rankId: rank.id, promotedAt: (previous?.promotedAt ?? member.createdAt).toISOString(),
+            dateOfBirth: member.dateOfBirth, timezone: gym.timezone, clock: { now: () => new Date(now) } };
+          return [{ member, rank, context }];
+        });
+      });
+      // Validate every next step, including unavailable module criteria, before reading counts.
+      for (const candidate of candidates) criteria.validate(candidate.rank.criteria, enabledModules);
+      const counted = candidates.filter(candidate => candidate.rank.criteria.some(item => item.providerId === 'classes-since-promotion'));
+      // eslint-disable-next-line database/system-tables -- Reviewed batch counts only this gym's attendance, with bound candidate IDs and dates.
+      const counts = counted.length ? await scope(gymId, async tx => tx.execute<{ member_id: string; program_id: string; total: number }>(sql`
+        select c.member_id, c.program_id, count(a.id)::integer as total
+        from jsonb_to_recordset(${JSON.stringify(counted.map(({ context }) => ({
+          member_id: context.memberId, program_id: context.programId, since: context.promotedAt,
+        })))}::jsonb) as c(member_id uuid, program_id uuid, since timestamptz)
+        left join attendances a on a.gym_id = ${gymId} and a.member_id = c.member_id
+          and a.occurred_at >= c.since and a.occurred_at < ${now.toISOString()}::timestamptz
+          and (${gym.openMatCountsAsClass} or a.kind = 'class')
+          and (a.program_id = c.program_id or exists (
+            select 1 from class_session_programs p where p.gym_id = ${gymId}
+              and p.session_id = a.session_id and p.program_id = c.program_id
+          ))
+        group by c.member_id, c.program_id
+      `)) : [];
+      const totals = new Map(counts.map(row => [row.program_id + ':' + row.member_id, row.total]));
+      const batch = new PromotionCriteria();
+      for (const provider of criteria.all()) batch.register(provider.id === 'classes-since-promotion' ? {
+        ...provider, async evaluate(context, value) {
+          const { target } = provider.configSchema.parse(value) as { target: number };
+          const current = totals.get(context.programId + ':' + context.memberId) ?? 0;
+          return { current, target, met: current >= target };
+        },
+      } : provider);
+      const ready = new Map<string, { memberId: string; firstName: string; lastName: string; programId: string; rankId: string }>();
+      for (const { member, rank, context } of candidates) {
+        const evaluated = await batch.evaluate(context, rank.criteria, enabledModules);
+        if (evaluated.every(item => item.met) && !ready.has(member.id)) ready.set(member.id, {
+          memberId: member.id, firstName: member.firstName, lastName: member.lastName, programId: context.programId, rankId: rank.id,
+        });
+      }
+      return [...ready.values()].sort((a, b) => a.lastName.localeCompare(b.lastName)
+        || a.firstName.localeCompare(b.firstName) || a.memberId.localeCompare(b.memberId));
+    },
     async listPrograms(gymId: string, input: unknown = {}) {
       const query = programListQuerySchema.parse(input);
       return scope(gymId, async (tx) => {

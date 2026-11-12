@@ -131,62 +131,35 @@ describe('billing dashboard through production route composition and real billin
     expect(data.widgets.find(w => w.id === 'past_due')).toMatchObject({ invoiceCount: 3, money: { amountCents: 3500 } });
     expect(data.widgets.find(w => w.id === 'disputes')).toMatchObject({ count: 1, money: { amountCents: 900 } });
   });
-  it('reads every page of invoices and memberships', async () => {
+  it('counts invoices and memberships beyond the former page size', async () => {
     const f = await fixture();
     for (let i = 0; i < 101; i++) { await f.membership({ amountCents: 1 }); await f.invoice({ status: 'past_due', amountCents: 1, dueOn: '2026-10-30' }); }
     const data = await read(f);
     expect(data.widgets.find(w => w.id === 'mrr')).toMatchObject({ money: { amountCents: 101 } });
     expect(data.widgets.find(w => w.id === 'past_due')).toMatchObject({ invoiceCount: 101, money: { amountCents: 101 } });
   });
-  it('filters every service read and never reads unrelated paid history outside the upcoming window', async () => {
+  it('uses an aggregate instead of service pagination and ignores unrelated paid history', async () => {
     const f = await fixture(); await f.membership();
-    const history = await f.invoice({ status: 'paid', dueOn: '2020-01-01' });
-    const original = services.payments.listInvoices.bind(services.payments);
-    const paymentReads = vi.spyOn(services.payments, 'listInvoices').mockImplementation(async (gymId, query) => {
-      expect(query).toEqual(expect.objectContaining({ limit: 100, offset: expect.any(Number) }));
-      const q = query as Record<string, unknown>;
-      expect(q.dispute === 'open' || q.status === 'past_due' || q.status === 'open' && q.dueThrough === '2026-10-30'
-        || q.dueFrom === '2026-10-31' && q.dueThrough === '2026-11-06').toBe(true);
-      const page = await original(gymId, query);
-      expect(page.data.map(row => row.id)).not.toContain(history.id);
-      return page;
-    });
+    await f.invoice({ status: 'paid', dueOn: '2020-01-01', amountCents: 99999 });
+    const paymentReads = vi.spyOn(services.payments, 'listInvoices');
     const membershipReads = vi.spyOn(services.memberships, 'list');
     try {
-      await read(f);
-      expect(paymentReads.mock.calls).toHaveLength(4);
-      expect(membershipReads.mock.calls.map(([, query]) => query)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ status: 'active' }), expect.objectContaining({ dueOnOrBefore: '2026-11-06' }),
-      ]));
-      expect(membershipReads.mock.calls).toHaveLength(2);
+      const data = await read(f);
+      expect(data.widgets.find(w => w.id === 'mrr')).toMatchObject({ money: { amountCents: 10000 } });
+      expect(paymentReads).not.toHaveBeenCalled();
+      expect(membershipReads).not.toHaveBeenCalled();
     } finally { paymentReads.mockRestore(); membershipReads.mockRestore(); }
   });
-  it('deduplicates invoices and memberships shifted into a later page by a concurrent insert', async () => {
-    const f = await fixture();
-    for (let i = 0; i < 101; i++) { await f.membership({ amountCents: 1 }); await f.invoice({ status: 'past_due', amountCents: 1, dueOn: '2026-10-30' }); }
-    const listInvoices = services.payments.listInvoices.bind(services.payments), listMemberships = services.memberships.list.bind(services.memberships);
-    let insertedInvoice = false, insertedMembership = false;
-    const paymentReads = vi.spyOn(services.payments, 'listInvoices').mockImplementation(async (gymId, input) => {
-      const query = input as { status?: string; offset: number };
-      if (query.status === 'past_due' && query.offset === 100 && !insertedInvoice) {
-        insertedInvoice = true;
-        await f.invoice({ status: 'past_due', amountCents: 1, dueOn: '2026-10-30', createdAt: new Date('2099-01-01T00:00:00Z') });
-      }
-      return listInvoices(gymId, input);
-    });
-    const membershipReads = vi.spyOn(services.memberships, 'list').mockImplementation(async (gymId, input) => {
-      const query = input as { status?: string; offset: number };
-      if (query.status === 'active' && query.offset === 100 && !insertedMembership) {
-        insertedMembership = true; await f.membership({ amountCents: 1, nextDueOn: '2020-01-01' });
-      }
-      return listMemberships(gymId, input);
-    });
-    try {
-      const data = await read(f);
-      expect(insertedInvoice && insertedMembership).toBe(true);
-      expect(data.widgets.find(w => w.id === 'past_due')).toMatchObject({ invoiceCount: 101, money: { amountCents: 101 } });
-      expect(data.widgets.find(w => w.id === 'mrr')).toMatchObject({ money: { amountCents: 101 } });
-    } finally { paymentReads.mockRestore(); membershipReads.mockRestore(); }
+  it('fails closed on a relevant currency mismatch but does not inspect unrelated settled history', async () => {
+    const f = await fixture('CAD');
+    // Model settings changing between their read and the aggregate, without bypassing the currency FK.
+    const staleSettings = { async get(gymId: string) { return { ...await settings.get(gymId), currency: 'USD' }; } };
+    const dashboard = createBillingDashboardService({ ...services, settings: staleSettings });
+    const context = { gymId: f.gymId, clock, roles: ['owner'] as const };
+    await f.invoice({ status: 'paid', dueOn: '2020-01-01' });
+    expect((await dashboard.get(context)).data.widgets.find(widget => widget.id === 'mrr')).toHaveProperty('money.amountCents', 0);
+    await f.membership();
+    await expect(dashboard.get(context)).rejects.toMatchObject({ code: 'unavailable' });
   });
   for (const role of staffRoles) it(`enforces billing.read for ${role}`, async () => {
     const f = await fixture();

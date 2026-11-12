@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { memberSchema, programSchema, rankSchema, type ListResponse } from '@plaingym/shared/contracts';
-import { FakeAttendanceQueries, type AttendanceFixture } from '../../core/interfaces/attendance.js';
+import { memberSchema, type ListResponse, type MatDashboardWidget } from '@plaingym/shared/contracts';
+import { FakeAttendanceQueries } from '../../core/interfaces/attendance.js';
 import { TestClock } from '../../core/clock.js';
 import { createDashboardService } from './dashboard.js';
 import type { MatWidgetServices } from './mat.js';
@@ -16,45 +16,23 @@ function page<T>(rows: T[], input: { limit?: number | string; offset?: number | 
   const limit = Number(input.limit ?? 50), offset = Number(input.offset ?? 0);
   return { data: rows.slice(offset, offset + limit), pagination: { limit, offset, total: rows.length } };
 }
-function fixtures(roster = [member(10)], entries: AttendanceFixture[] = []) {
+function fixtures(roster = [member(10)]) {
+  const widget: Extract<MatDashboardWidget, { id: 'not_seen' }> = {
+    id: 'not_seen', titleKey: 'dashboard/dashboard:widget.not_seen', status: 'ready', days: 14, count: 105,
+    members: Array.from({ length: 100 }, (_, index) => ({ memberId: id(index + 10), firstName: 'Member', lastName: 'Test', lastSeenAt: null })),
+  };
   const services: MatWidgetServices = {
-    // Unit fake for the grouped database read; its parity is covered against PostgreSQL.
-    notSeen: async (context) => {
-      const unseen = [];
-      for (const member of roster) {
-        const result = await services.attendance.history({ kind: 'gym', gymId: context.gymId },
-          { memberId: member.id, until: new Date(context.clock.now().getTime() + 1).toISOString() }, { limit: 1, offset: 0 });
-        const lastSeenAt = result.data[0]?.occurredAt ?? null;
-        if (Date.parse(lastSeenAt ?? member.createdAt) <= context.clock.now().getTime() - 14 * 86400000)
-          unseen.push({ memberId: member.id, firstName: member.firstName, lastName: member.lastName, lastSeenAt });
-      }
-      return { id: 'not_seen', titleKey: 'dashboard/dashboard:widget.not_seen', status: 'ready', days: 14,
-        count: unseen.length, members: unseen.slice(0, 100) };
-    },
+    // Canned dependency; visit boundaries are tested against the real PostgreSQL read.
+    notSeen: Object.assign(vi.fn(async () => widget), { lastSeen: vi.fn(async () => new Map<string, string | null>()) }),
     members: { listMembers: vi.fn(async (_gymId, input) => page(roster, input)) },
-    attendance: new FakeAttendanceQueries(entries),
-    ranks: { listPrograms: vi.fn(async () => page([], {})), listRanks: vi.fn(async () => page([], {})),
-      eligibility: vi.fn(async () => page([], {})) },
+    attendance: new FakeAttendanceQueries(),
+    ranks: { dashboardEligibility: vi.fn(async () => []) },
   };
   return services;
 }
 const context = { gymId, roles: ['owner'] as const, clock };
-function visit(memberId: string, occurredAt: string, owner = gymId, kind: 'class' | 'open_mat' = 'class'): AttendanceFixture {
-  return { gymId: owner, entry: { id: id(700 + Number(memberId.slice(-3))), memberId, sessionId: null, programId: null,
-    occurredAt, source: 'coach', kind }, sessionProgramIds: [], sessionTagIds: [] };
-}
 describe('mat widget service logic', () => {
-  it('uses any visit, includes the exact fourteen-day boundary, ignores future and foreign visits, and gives new members a grace period', async () => {
-    const roster = [member(10), member(11), member(12), member(13, '2026-10-21T12:00:00Z'), member(14), member(15)];
-    const services = fixtures(roster, [visit(id(10), '2026-10-08T12:00:00Z'), visit(id(11), '2026-10-08T12:00:00.001Z'),
-      visit(id(12), '2026-10-21T12:00:00Z', gymId, 'open_mat'), visit(id(14), '2026-10-23T12:00:00Z'),
-      visit(id(15), '2026-10-21T12:00:00Z', id(2))]);
-    const response = await createDashboardService(services).get(context);
-    const widget = response.data.widgets.find((item) => item.id === 'not_seen');
-    expect(widget).toMatchObject({ count: 3, members: [{ memberId: id(10) }, { memberId: id(14), lastSeenAt: null }, { memberId: id(15), lastSeenAt: null }] });
-    expect(response.data.generatedAt).toBe(clock.now().toISOString());
-  });
-  it('uses the grouped read result and caps member payloads at 100', async () => {
+  it('forwards the capped read result and skips promotion reads without permission', async () => {
     const services = fixtures(Array.from({ length: 105 }, (_, index) => member(index + 10)));
     const { data } = await createDashboardService(services).get({ ...context, roles: ['front_desk'] });
     expect(data.widgets.find((widget) => widget.id === 'active_members')).toHaveProperty('count', 105);
@@ -62,25 +40,20 @@ describe('mat widget service logic', () => {
     expect(unseen).toHaveProperty('count', 105);
     expect(unseen && 'members' in unseen ? unseen.members : []).toHaveLength(100);
     expect(data.widgets.map((widget) => widget.id)).not.toContain('promotion_ready');
-    expect(services.ranks.listPrograms).not.toHaveBeenCalled();
+    expect(services.ranks.dashboardEligibility).not.toHaveBeenCalled();
     expect(services.members.listMembers).toHaveBeenCalledTimes(1);
   });
-  it('uses eligibility for the next step, forwards modules, and deduplicates ready members across programs', async () => {
+  it('forwards modules to batch eligibility and reads displayed last visits once', async () => {
     const services = fixtures([member(10), member(11)]);
-    const programs = [30, 31].map((n) => programSchema.parse({ id: id(n), gymId, name: 'Program', rankSystemId: id(20), active: true, revision: 1, createdAt: clock.now().toISOString() }));
-    const ranks = [40, 41].map((n, position) => rankSchema.parse({ id: id(n), gymId, name: 'Rank', rankSystemId: id(20), position, color: null, subRanks: [], criteria: [], revision: 1, createdAt: clock.now().toISOString() }));
-    services.ranks.listPrograms = vi.fn(async () => page(programs, {}));
-    services.ranks.listRanks = vi.fn(async () => page(ranks, {}));
-    services.ranks.eligibility = vi.fn(async (_gymId, input) => {
-      const query = input as { rankId: string; programId: string };
-      return page([10, 11].map((n) => ({ memberId: id(n), rankSystemId: id(20), program: { id: query.programId, rankSystemId: id(20) },
-        rank: { id: query.rankId, rankSystemId: id(20) }, subRank: 0, eligible: n === 11 || query.rankId === id(41), criteria: [] })), {});
-    });
+    services.ranks.dashboardEligibility = vi.fn(async () => [{ memberId: id(11), firstName: 'Member', lastName: '011', programId: id(30), rankId: id(40) }]);
+    services.notSeen.lastSeen = vi.fn(async () => new Map([[id(11), '2026-10-01T12:00:00.000Z']]));
     const enabledModules = new Set(['custom']);
     const response = await createDashboardService(services).get({ ...context, enabledModules });
     expect(response.data.widgets.find((item) => item.id === 'promotion_ready')).toMatchObject({ count: 1,
       members: [{ memberId: id(11), rankId: id(40), programId: id(30) }] });
-    expect(services.ranks.eligibility).toHaveBeenCalledWith(gymId, expect.anything(), enabledModules);
+    expect(services.ranks.dashboardEligibility).toHaveBeenCalledWith(gymId, enabledModules);
+    expect(services.notSeen.lastSeen).toHaveBeenCalledWith(expect.objectContaining({ gymId }), [id(11)]);
+    expect(response.data.widgets.find(item => item.id === 'promotion_ready')).toMatchObject({ members: [{ lastSeenAt: '2026-10-01T12:00:00.000Z' }] });
   });
   it('denies an empty role set before reading services', async () => {
     const services = fixtures();

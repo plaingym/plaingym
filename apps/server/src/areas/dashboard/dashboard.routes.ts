@@ -3,12 +3,17 @@ import { AppError } from '@plaingym/shared';
 import { dashboardContracts } from '@plaingym/shared/contracts';
 import { route } from '../../core/registry.js';
 import { createDashboardService } from './dashboard.js';
+import { createNotSeenRead } from './not-seen.js';
+import type { MatWidgetServices } from './mat.js';
 
 type DashboardService = ReturnType<typeof createDashboardService>;
 let configured: DashboardService | undefined;
 /** Runtime supplies area services; unconfigured requests fail closed. */
-export function configureDashboard(...options: Parameters<typeof createDashboardService>) {
-  configured = createDashboardService(...options);
+export function configureDashboard(services: Omit<MatWidgetServices, 'notSeen'> & Partial<Pick<MatWidgetServices, 'notSeen'>>,
+  providers: Parameters<typeof createDashboardService>[1] = []) {
+  // TODO(CCR): remove this composition default after the integration owner injects notSeen in core/runtime.ts.
+  // The service and providers already require the scoped dependency.
+  configured = createDashboardService({ ...services, notSeen: services.notSeen ?? createNotSeenRead() }, providers);
   return configured;
 }
 function runtimeService(): DashboardService {
