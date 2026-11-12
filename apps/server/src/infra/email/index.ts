@@ -72,6 +72,6 @@ export class FakeEmail implements Email {
 export { SmtpEmail, smtpOptions } from './smtp.js';
 export type { SmtpConfig } from './smtp.js';
 export { MemberEmail } from './member.js';
-export { commandDigest, createEmailDeliveries, recipientDigest } from './deliveries.js';
+export { commandDigest, createEmailDeliveries, createEmailDeliveryJobs, createKeyedCommandDigest, emailDeliveryUpkeepJob, loginLinkKeyPrefix, normalizeAddress, portalInvitationKeyPrefix, recipientDigest } from './deliveries.js';
 export type { EmailDeliveries, EmailDeliveryState, EmailReservation, RecordedEmailResult } from './deliveries.js';
 export type { MemberEmailOptions, EmailSuppression, SuppressionReason } from './member.js';

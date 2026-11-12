@@ -30,7 +30,7 @@ Migration `0008_audit_action_target.sql` adds `audit_events_gym_action_target_id
 on `(gym_id, action, target_id)` for transition/outbox lookups; no data is rewritten.
 Migration `0011_email_deliveries.sql` adds the gym-owned `email_deliveries` table: durable
 send state (`sending`, `accepted`, `unknown`, `not_accepted`) per caller idempotency key, unique on
-`(gym_id, key)`. It starts empty and its rows are never pruned (`infra/email/README.md`).
+`(gym_id, key)`. It starts empty, and only expired login-link rows are pruned (`infra/email/README.md`).
 Migration `0022_email_delivery_commands.sql` adds its nullable `command_digest` and `command_result`
 columns, set only on a send command's row; existing rows keep them null.
 Migration `0012_job_schedule_cursors.sql` adds `job_schedule_cursors`, a system table with gym

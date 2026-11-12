@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { jsx } from 'hono/jsx';
 import { z } from 'zod';
@@ -9,7 +8,7 @@ import { idSchema } from '@plaingym/shared/contracts';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import type { AccountService } from '../../infra/auth/accounts.js';
-import { createEmailDeliveries, type Email } from '../../infra/email/index.js';
+import { createEmailDeliveries, normalizeAddress, recipientDigest, type Email } from '../../infra/email/index.js';
 import type { JobContext, Jobs } from '../../infra/jobs/index.js';
 import { createGymSettingsAccessor } from '../../areas/settings/settings.js';
 import messages from '../../../../../locales/en/public/pages.json' with { type: 'json' };
@@ -70,11 +69,11 @@ export function createPublicStaffNotices(options: PublicStaffNoticesOptions) {
       contact: intake.contact, email: intake.email ?? '', phone: intake.phone });
     // Deduplicated and keyed case-insensitively, but sent to each address as stored.
     const recipients = new Map((await options.accounts.staffEmails(gymId, ['owner', 'admin']))
-      .map(email => [email.trim().toLowerCase(), email.trim()] as const));
+      .map(email => [normalizeAddress(email), email.trim()] as const));
     let failure: unknown;
     // One send-state key per recipient: a retry resends only to staff the message provably did not reach.
     for (const [address, to] of recipients) {
-      const key = noticeKey(notice) + ':' + createHash('sha256').update(address).digest('hex');
+      const key = noticeKey(notice) + ':' + recipientDigest(address);
       try { await deliveries.send(gymId, key, prepared.email, { to, ...message }); }
       catch (error) { failure ??= error; }
     }

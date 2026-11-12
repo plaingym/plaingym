@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { invoices, signedLinks, uuidv7 } from '@plaingym/db';
+import { emailDeliveries, households, invoices, signedLinks, uuidv7 } from '@plaingym/db';
 import { eq } from 'drizzle-orm';
 import { useTestDatabase } from '../../../../../../packages/db/src/testing/database.js';
 import { createFactories } from '../../../../../../packages/db/src/testing/factories.js';
 import { TestClock } from '../../../core/clock.js';
-import { DeliveryError, FakeEmail, type Email, type EmailMessage } from '../../../infra/email/index.js';
+import { DeliveryError, FakeEmail, recipientDigest, type Email, type EmailMessage } from '../../../infra/email/index.js';
 import { createGymSettingsAccessor } from '../../settings/settings.js';
 import { createPaymentJobs } from '../payments.jobs.js';
 import { snapshot } from './store.js';
@@ -97,6 +97,40 @@ describe('keyed billing notices', () => {
     refuse = false;
     await f.notifications.staffNotice(notice);
     expect(sent.map(message => message.to)).toEqual(['first@example.invalid', 'second@example.invalid']);
+  });
+  it('a staff notice reaches the good recipient after a refused one, and its retry only the refused one', async () => {
+    const f = await fixture(['bad@example.invalid', 'good@example.invalid']), notice = await f.notice(uuidv7());
+    const sent: string[] = [];
+    let refuse = true;
+    f.holder.email = { async sendEmail(message) {
+      if (refuse && message.to === 'bad@example.invalid') throw new DeliveryError('not_accepted', 'Refused');
+      sent.push(message.to);
+      return { status: 'sent', messageId: 'mail_' + sent.length };
+    } };
+    await expect(f.notifications.staffNotice({ ...notice, reason: 'refund_failed', refund })).rejects.toThrow('Refused');
+    expect(sent).toEqual(['good@example.invalid']);
+    refuse = false;
+    await f.notifications.staffNotice({ ...notice, reason: 'refund_failed', refund });
+    expect(sent).toEqual(['good@example.invalid', 'bad@example.invalid']);
+  });
+  it('a member notice is keyed without its address, so an address changed between retries gets no second notice', async () => {
+    const f = await fixture(), notice = await f.notice(uuidv7());
+    f.fake.respondNext(new DeliveryError('unknown', 'Reply lost'));
+    await expect(f.notifications.receipt(notice)).rejects.toThrow('Reply lost');
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'new@example.invalid' }).where(eq(households.id, f.household.id)));
+    await f.notifications.receipt(notice);
+    expect(f.fake.messages.filter(message => message.to === 'new@example.invalid')).toEqual([]);
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(emailDeliveries));
+    expect(rows.map(row => row.key)).toEqual([`billing.receipt:${f.invoice.id}:${notice.generation}`]);
+    expect(rows.some(row => row.key.includes(recipientDigest('payer@example.invalid')) || row.commandDigest)).toBe(false);
+  });
+  it('a retry after an upgrade finds the per-recipient row an earlier release wrote, and takes it over', async () => {
+    const f = await fixture(), notice = await f.notice(uuidv7()), key = `billing.dunning:${f.invoice.id}:${notice.generation}`;
+    const earlier = await factory('emailDeliveries', f.gymId, { key: `${key}:${recipientDigest('payer@example.invalid')}`, state: 'accepted' });
+    await f.notifications.dunning({ ...notice, actionRequired: false });
+    expect(f.fake.messages).toEqual([]);
+    expect(await f.links()).toEqual([]);
+    expect(await db.forGym(f.gymId, tx => tx.select({ id: emailDeliveries.id, key: emailDeliveries.key }).from(emailDeliveries))).toEqual([{ id: earlier.id, key }]);
   });
   it('waits for an attempt still in flight instead of sending or minting', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());

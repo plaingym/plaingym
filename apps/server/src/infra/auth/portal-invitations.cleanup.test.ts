@@ -183,7 +183,7 @@ describe('the install sweep', () => {
     const three = [await gym(), await gym(), await gym()], tick = new TestClock('2026-11-02T12:00:00Z'), expiring: string[] = [];
     let sweeps = 0;
     const queue = new PostgresJobs({ database: db, clock: tick, listGyms: async () => three.map(g => ({ gymId: g.gymId, timezone: 'UTC' })) });
-    for (const job of createPortalInvitationExpiryJobs({ async expire(gymId) { expiring.push(gymId); return { expired: 0, removed: 0 }; } }))
+    for (const job of createPortalInvitationExpiryJobs({ async expire(gymId) { expiring.push(gymId); return { expired: 0, removed: 0 }; } }).filter(job => job.id === portalInvitationExpiryJob))
       queue.schedule(job.id, job.cron!, job.handler);
     const sweep = registerVerificationSweep(queue, tick, { async sweepExpired() { sweeps++; return 0; } });
     // Two processes check every ten minutes from 12:00 to 14:00: three hours for the install sweep, two minute-53s for each gym.

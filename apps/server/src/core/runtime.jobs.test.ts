@@ -84,6 +84,11 @@ it('registers the hourly per-gym portal invitation sweep, which leaves the insta
     expect(left.map(row => row.id).sort()).toEqual([stale.id, live.id].sort());
   } finally { await database.forSystem(tx => tx.delete(authVerification).where(inArray(authVerification.id, [stale.id, live.id]))); }
 });
+it('registers the hourly per-gym email delivery upkeep', async () => {
+  const handler = app.handlers.get('email.deliveries.upkeep');
+  expect(handler).toBeDefined();
+  await expect(handler!({}, { gymId: app.sandbox.gymId, timezone: 'UTC', clock, jobId: uuidv7(), attempt: 1 })).resolves.toBeUndefined();
+});
 it('registers the install\'s verification sweep, which leaves portal invitations and onboarding claim holds alone', async () => {
   const handler = app.systemHandlers.get('auth.verifications.sweep');
   expect(handler).toBeDefined();

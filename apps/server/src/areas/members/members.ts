@@ -5,6 +5,7 @@ import { forGym, members, memberRanks, memberships, households, householdUsers, 
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import type { MutationContext } from '../../core/interfaces/common.js';
+import { forgetErasedAddressDigests } from '../announcements/erasure.js';
 import { clock as defaultClock } from '../../core/clock.js';
 import { hashHouseholdPin, type HouseholdPinSecret } from './pin.js';
 import { withJobTransaction, type Jobs } from '../../infra/jobs/index.js';
@@ -152,6 +153,8 @@ export function createMembersService(options: MembersOptions = {}) {
         const waivers = await tx.delete(waiverSignatures).where(eq(waiverSignatures.memberId, id)).returning({ key: waiverSignatures.signatureImageKey });
         await tx.delete(householdUsers).where(eq(householdUsers.memberId, id));
         await tx.update(signedLinks).set({ revokedAt: now }).where(and(eq(signedLinks.memberId, id), isNull(signedLinks.revokedAt)));
+        // No delivery record keeps a value derived from the member's address (`infra/email/README.md`).
+        await forgetErasedAddressDigests(tx, context.gymId, id);
         const remaining = await tx.select({ id: members.id }).from(members).where(and(eq(members.householdId, home.id), isNull(members.anonymizedAt))).limit(1);
         const last = remaining.length === 0;
         // The provider's copy of the payer is redacted after commit (erasure keeps the customer for the books).

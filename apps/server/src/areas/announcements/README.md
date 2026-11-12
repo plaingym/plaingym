@@ -51,7 +51,11 @@ serializes reservations across workers. Each reservation has an identifier-only
 `email_deliveries` key and a request digest of announcement ID plus normalized
 destination. Comparing these durable digests prevents duplicates when addresses
 converge, including after an earlier recipient changes their address. The digest
-is not a readable address. Reservation and `issueUnsubscribeLink` commit together.
+is not a readable address. A member's erasure clears the digests of their
+announcement and cancellation notice rows in the same transaction
+(`forgetErasedAddressDigests`, `erasure.ts`), so another member still at that
+address could get a copy of an announcement that is still being sent.
+Reservation and `issueUnsubscribeLink` commit together.
 The worker renders before reserving, using a fresh random unsubscribe token that
 only becomes usable when the reservation commits. It reads eligibility once per
 recipient, after rendering, including all members at the exact normalized address

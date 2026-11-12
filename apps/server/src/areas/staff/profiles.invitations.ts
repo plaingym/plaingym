@@ -8,7 +8,7 @@ import { acceptStaffInvitationRequestSchema, staffRoleSchema, type AcceptStaffIn
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { createInvitationStore } from '../../infra/auth/invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
-import { commandDigest, createEmailDeliveries, recipientDigest, SmtpEmail, type Email, type EmailMessage, type EmailReservation } from '../../infra/email/index.js';
+import { commandDigest, createEmailDeliveries, recipientDigest, SmtpEmail, type Email, type EmailReservation } from '../../infra/email/index.js';
 import type { SmtpResolver } from '../settings/smtp.js';
 import { renderStaffInvitation } from '../../emails/staff/profiles.js';
 import { assertStaffManager, staffAudit, staffRoleRecord, type StaffActor } from './profiles.js';
@@ -77,15 +77,7 @@ export function createStaffInvitationService(options: StaffInvitationOptions) {
       // Fragments keep the bearer token out of request URLs, access logs and referrers.
       url.hash = result.token;
       if (input.delivery === 'print') return { data: { delivery: 'print', staffRole: result.staffRole, invitationUrl: url.toString() } };
-      const reservation = result.reservation!;
-      let message: EmailMessage;
-      try {
-        message = { to: email, ...renderStaffInvitation(url.toString(), t) };
-      } catch (error) {
-        await deliveries.release(reservation);
-        throw error;
-      }
-      const sent = await deliveries.attempt(reservation, mailer!, message);
+      const sent = await deliveries.attempt(result.reservation!, mailer!, () => ({ to: email, ...renderStaffInvitation(url.toString(), t) }));
       if (sent.status !== 'sent') throw new AppError('unavailable', 'Staff invitation was not delivered');
       return { data: { delivery: 'email', staffRole: result.staffRole } };
     },

@@ -8,7 +8,7 @@ import type { z } from 'zod';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { createPortalClaimCodes, createPortalInvitationStore, type PortalInvitationBinding, type PortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
-import { commandDigest, createEmailDeliveries, type Email, type EmailMessage, type EmailReservation } from '../../infra/email/index.js';
+import { createEmailDeliveries, createEmailDeliveryJobs, createKeyedCommandDigest, normalizeAddress, portalInvitationKeyPrefix, type Email, type EmailReservation } from '../../infra/email/index.js';
 import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -50,6 +50,8 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
   const accounts = createAccountService(options.config, options.database), store = createPortalInvitationStore(options.database);
   const codes = createPortalClaimCodes(options.config.secret), scope = options.scope ?? forGym;
   const deliveries = createEmailDeliveries({ scope });
+  // The request names the invitee's address, so its digest is keyed: the table and its backups can't confirm an address.
+  const commandDigest = createKeyedCommandDigest(options.config.secret);
   const householdScope = options.householdScope ?? forHousehold;
   const t = createTranslator(locales.en ?? {});
   const passwordRequired = async (gymId: string) => options.config.tenancy === 'single' && passwordLogin(options.config, await options.smtpConfigured(gymId));
@@ -78,9 +80,9 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
         const roles = await tx.select({ role: staffRoles.role }).from(staffRoles).where(eq(staffRoles.userId, actor.userId));
         if (!canStaff(roles.map(row => row.role as StaffRole), 'portal_access.manage')) notFound();
       };
-      const address = input.email.trim().toLowerCase();
+      const address = normalizeAddress(input.email);
       // The generation is the attempt: a retry finds the first attempt, and a deliberate resend has a new generation.
-      const command = input.delivery === 'email' ? { key: `portal.invitation:${householdId.toLowerCase()}:${input.sendGeneration.toLowerCase()}`,
+      const command = input.delivery === 'email' ? { key: `${portalInvitationKeyPrefix}${householdId.toLowerCase()}:${input.sendGeneration.toLowerCase()}`,
         digest: commandDigest([address, input.scope, input.memberId?.toLowerCase() ?? null]) } : null;
       if (command) {
         // Before anything below can refuse an accepted invitation, provision its user again or replace its emailed link.
@@ -112,17 +114,11 @@ export function createPortalInvitationService(options: PortalInvitationOptions) 
       url.hash = result.token;
       const { invitation } = result;
       if (input.delivery === 'print') return { data: { delivery: 'print' as const, invitation, invitationUrl: url.toString() } };
-      const reservation = result.reservation!;
-      let message: EmailMessage;
-      try {
+      const sent = await deliveries.attempt(result.reservation!, mailer!, () => {
         const text = t('portal/access:invitationEmail') + '\n' + url.toString();
         const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-        message = { to: address, subject: t('portal/access:title'), text, html: '<p>' + escaped + '</p>' };
-      } catch (error) {
-        await deliveries.release(reservation);
-        throw error;
-      }
-      const sent = await deliveries.attempt(reservation, mailer!, message);
+        return { to: address, subject: t('portal/access:title'), text, html: '<p>' + escaped + '</p>' };
+      });
       if (sent.status !== 'sent') throw new AppError('unavailable', 'Invitation was not delivered');
       return { data: { delivery: 'email' as const, invitation } };
     },
@@ -238,12 +234,13 @@ export type PortalInvitationService = ReturnType<typeof createPortalInvitationSe
 
 export const portalInvitationExpiryJob = 'members.portal-invitations.expire';
 /** Each gym's expired portal invitations and onboarding claim holds are deleted hourly, with any invitee identity left holding
- * nothing (no account, link, role, history or other invitation), so it can no longer sign in to a session without access. The
- * runtime registers it. */
+ * nothing (no account, link, role, history or other invitation), so it can no longer sign in to a session without access.
+ * The hourly email delivery upkeep comes with it: it sweeps the expired login links these claims ride on and the unkeyed
+ * invitation digests an earlier release stored (`infra/email/deliveries.ts`). The runtime registers both. */
 export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire'> = createPortalInvitationStore()): readonly JobRegistration[] {
   return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) {
     await store.expire(context.gymId, context.clock);
-  } }];
+  } }, ...createEmailDeliveryJobs()];
 }
 
 export const verificationSweepJob = 'auth.verifications.sweep';

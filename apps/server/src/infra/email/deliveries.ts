@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
+import { and, asc, eq, gt, inArray, isNotNull, like, lte, ne, notLike, or } from 'drizzle-orm';
 import { emailDeliveries, forGym, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { clock as systemClock } from '../../core/clock.js';
+import type { JobRegistration } from '../../core/registry.js';
 import { DeliveryError, deliveryAcceptance, type Email, type EmailMessage, type EmailResult } from './index.js';
 
 /** `sending` is an attempt in flight; once older than the in-flight window it reads as `unknown`. */
@@ -20,10 +21,37 @@ function validKey(key: string): void {
   if (key.length < 1 || key.length > 300 || /[\r\n\0]/.test(key)) throw new Error('Invalid email delivery key');
 }
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
-/** Identifies one address in a key, which never holds readable personal data. */
-export const recipientDigest = (address: string) => sha256(address.trim().toLowerCase());
-/** Identifies a send command's request, so one generation can't be reused for a different one. */
+/** The form an address is compared and digested in. */
+export const normalizeAddress = (address: string) => address.trim().toLowerCase();
+/**
+ * Identifies one staff address in a key, which never holds readable personal data. Only for staff recipients: anyone
+ * holding the table can test a known address against it, so a member's address never goes into a key.
+ */
+export const recipientDigest = (address: string) => sha256(normalizeAddress(address));
+/** Identifies a send command's request, so one generation can't be reused for a different one. A plain digest of a
+ * member's address must not outlive the member's erasure: use `createKeyedCommandDigest`, or clear it on erasure as
+ * announcements and cancellation notices do (`areas/announcements/erasure.ts`). */
 export const commandDigest = (request: readonly unknown[]) => sha256(JSON.stringify(request));
+/** Marks a keyed command digest, so the upkeep job can tell it from an unkeyed one written by an earlier release. */
+export const keyedDigestPrefix = 'k1:';
+/**
+ * `commandDigest` keyed with a secret the install already holds (`AUTH_SECRET`), for a request that names a member's
+ * address: without the secret, a stored digest can't be tested against a guessed address, in the database or a backup.
+ */
+export function createKeyedCommandDigest(secret: string) {
+  const key = Buffer.from(hkdfSync('sha256', secret, new Uint8Array(0), 'plaingym email command digest v1', 32));
+  return (request: readonly unknown[]) => keyedDigestPrefix + createHmac('sha256', key).update(JSON.stringify(request)).digest('base64url');
+}
+/** A key an earlier release wrote for one member recipient: the notice's key followed by `:` and a `recipientDigest`. */
+const legacyRecipientKey = /^(.+):[0-9a-f]{64}$/;
+/** The member notices whose keys an earlier release wrote per recipient (billing receipts and dunning notices). */
+const memberNoticeKeyPrefixes = ['billing.receipt:', 'billing.dunning:'];
+/** Each login link's key (`infra/auth/delivery.ts`); the upkeep sweeps them once the link has expired. */
+export const loginLinkKeyPrefix = 'auth.login_link:';
+/** Emailed portal invitations (`areas/members/household-users.invitations.ts`), whose digest names the invitee's address. */
+export const portalInvitationKeyPrefix = 'portal.invitation:';
+const escapeLike = (text: string) => text.replace(/[\\%_]/g, '\\$&');
+const legacyLike = (key: string) => escapeLike(key) + ':' + '_'.repeat(64);
 const stillSending = () => new AppError('conflict', 'This email is still being sent');
 const otherRequest = () => new AppError('conflict', 'This send generation belongs to another request');
 
@@ -77,12 +105,21 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
     scope(reservation.gymId, tx => tx.update(emailDeliveries).set({ state: next, updatedAt: clock.now() })
       .where(and(eq(emailDeliveries.id, reservation.id), eq(emailDeliveries.attempts, reservation.attempts),
         eq(emailDeliveries.state, 'sending')))).catch(() => undefined);
-  /** Calls the transport for a committed reservation and records the outcome. */
-  async function attempt(reservation: EmailReservation, email: Email, message: EmailMessage): Promise<EmailResult> {
+  /** Calls the transport for a committed reservation and records the outcome. A message builder that throws releases the
+   * reservation, since nothing reached the transport. */
+  async function attempt(reservation: EmailReservation, email: Email,
+    message: EmailMessage | (() => EmailMessage | Promise<EmailMessage>)): Promise<EmailResult> {
     assertNoTransaction('email.deliveries.send');
+    let built: EmailMessage;
+    try {
+      built = typeof message === 'function' ? await message() : message;
+    } catch (error) {
+      await release(reservation);
+      throw error;
+    }
     let result: EmailResult;
     try {
-      result = await email.sendEmail(message);
+      result = await email.sendEmail(built);
     } catch (error) {
       await record(reservation, deliveryAcceptance(error) === 'not_accepted' ? 'not_accepted' : 'unknown');
       throw error;
@@ -131,6 +168,68 @@ export function createEmailDeliveries(options: { scope?: typeof forGym; clock?: 
   async function release(reservation: EmailReservation): Promise<void> {
     await record(reservation, 'not_accepted');
   }
-  return { state, send, replay, reserve, remember, attempt, release };
+  const rank = (row: { state: string; updatedAt: Date }) => {
+    const current = settled(row);
+    return current === 'accepted' ? 3 : current === 'not_accepted' ? 1 : 2;
+  };
+  /**
+   * Moves a notice's per-recipient rows from an earlier release (`<key>:<recipientDigest>`) under `key`, in the caller's
+   * transaction. It keeps the row that decides the most (accepted, then possibly sent or still in flight, then not accepted)
+   * and deletes the others, so a retry of the notice still finds what was sent and no digest of the address stays behind.
+   */
+  async function adopt(tx: Transaction, gymId: string, key: string): Promise<void> {
+    validKey(key);
+    const rows = await tx.select().from(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId),
+      or(eq(emailDeliveries.key, key), like(emailDeliveries.key, legacyLike(key))))).orderBy(asc(emailDeliveries.id)).for('update');
+    const legacy = rows.filter(row => row.key !== key && legacyRecipientKey.exec(row.key)?.[1] === key);
+    if (!legacy.length) return;
+    const best = legacy.reduce((kept, row) => rank(row) > rank(kept) ? row : kept);
+    const current = rows.find(row => row.key === key);
+    // The current row decides, unless an earlier row decides more (it was sent, or may have been while the current wasn't).
+    const keep = current && rank(current) >= rank(best) ? current : best;
+    const drop = [...(current ? [current] : []), ...legacy].filter(row => row.id !== keep.id).map(row => row.id);
+    if (drop.length) await tx.delete(emailDeliveries).where(inArray(emailDeliveries.id, drop));
+    if (keep.key !== key) await tx.update(emailDeliveries).set({ key }).where(eq(emailDeliveries.id, keep.id));
+  }
+  /**
+   * The hourly upkeep (`createEmailDeliveryJobs`), in short transactions. It deletes login-link rows once their link has
+   * expired, clears the unkeyed portal invitation digests an earlier release stored, and adopts the per-recipient member
+   * notice keys an earlier release wrote. Every other row stays. Returns the counts, for tests.
+   */
+  async function upkeep(gymId: string, batch = 500) {
+    const settledBefore = new Date(clock.now().getTime() - emailInFlightMs);
+    // A login link lives five minutes, so once no attempt can still be in flight its key guards nothing.
+    const swept = await scope(gymId, tx => tx.delete(emailDeliveries).where(and(eq(emailDeliveries.gymId, gymId),
+      like(emailDeliveries.key, escapeLike(loginLinkKeyPrefix) + '%'), lte(emailDeliveries.updatedAt, settledBefore)))
+      .returning({ id: emailDeliveries.id }));
+    // A replay of such an invitation's generation is refused as another request; a deliberate resend has a new one.
+    const cleared = await scope(gymId, tx => tx.update(emailDeliveries).set({ commandDigest: null }).where(and(
+      eq(emailDeliveries.gymId, gymId), like(emailDeliveries.key, escapeLike(portalInvitationKeyPrefix) + '%'),
+      isNotNull(emailDeliveries.commandDigest), notLike(emailDeliveries.commandDigest, escapeLike(keyedDigestPrefix) + '%'),
+      or(ne(emailDeliveries.state, 'sending'), lte(emailDeliveries.updatedAt, settledBefore)))).returning({ id: emailDeliveries.id }));
+    let adopted = 0;
+    for (let cursor: string | undefined; ;) {
+      const after = cursor;
+      const rows = await scope(gymId, tx => tx.select({ id: emailDeliveries.id, key: emailDeliveries.key }).from(emailDeliveries)
+        .where(and(eq(emailDeliveries.gymId, gymId), or(...memberNoticeKeyPrefixes.map(prefix =>
+          like(emailDeliveries.key, escapeLike(prefix) + '%:%:' + '_'.repeat(64)))), after ? gt(emailDeliveries.id, after) : undefined))
+        .orderBy(asc(emailDeliveries.id)).limit(batch));
+      const targets = new Set(rows.flatMap(row => legacyRecipientKey.exec(row.key)?.[1] ?? []));
+      for (const target of targets) await scope(gymId, tx => adopt(tx, gymId, target));
+      adopted += targets.size;
+      if (rows.length < batch) break;
+      cursor = rows.at(-1)!.id;
+    }
+    return { swept: swept.length, cleared: cleared.length, adopted };
+  }
+  return { state, send, replay, reserve, remember, attempt, release, adopt, upkeep };
 }
 export type EmailDeliveries = ReturnType<typeof createEmailDeliveries>;
+
+export const emailDeliveryUpkeepJob = 'email.deliveries.upkeep';
+/** Each gym's delivery records get the upkeep once an hour (`upkeep`, above). The runtime registers it. */
+export function createEmailDeliveryJobs(deliveries?: Pick<EmailDeliveries, 'upkeep'>): readonly JobRegistration[] {
+  return [{ id: emailDeliveryUpkeepJob, cron: '17 * * * *', async handler(_payload, context) {
+    await (deliveries ?? createEmailDeliveries({ clock: context.clock })).upkeep(context.gymId);
+  } }];
+}

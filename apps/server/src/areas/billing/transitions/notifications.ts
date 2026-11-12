@@ -60,8 +60,12 @@ export function createTransitionNotifications(options: {
       if (staff) throw new Error('No staff recipient configured for billing staff notices');
       return;
     }
-    // One key per recipient: a retry reaches only those the message provably did not reach.
-    const keyFor = (to: string) => `billing.${subject.purpose}:${subject.id}:${notice.generation}:${recipientDigest(to)}`;
+    const base = `billing.${subject.purpose}:${subject.id}:${notice.generation}`;
+    // Staff notices have one key per recipient, so a retry reaches only those the message provably did not reach. A member
+    // notice has one recipient and no address in its key: an erased member's address leaves nothing behind, and an address
+    // changed between retries gets no second notice. Rows an earlier release keyed per recipient are adopted first.
+    const keyFor = (to: string) => staff ? `${base}:${recipientDigest(to)}` : base;
+    if (!staff) await scope(gymId, tx => deliveries.adopt(tx, gymId, base));
     // An accepted or possibly accepted notice is never sent again, so no second link is minted for it.
     const pending: string[] = [];
     for (const to of new Set(recipients)) {
@@ -100,24 +104,33 @@ export function createTransitionNotifications(options: {
       // A failed refund of a class pack also names the credits the refund took back, which staff restore if owed.
       const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
       const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
+      let failure: unknown;
       for (const to of pending) {
-        if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
-        if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
-          await revokeMinted();
-          return;
-        }
-        let sent: RecordedEmailResult;
         try {
-          sent = await deliveries.send(gymId, keyFor(to), prepared.email, { to, subject: title, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
+          if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
+          if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
+            await revokeMinted();
+            return;
+          }
+          let sent: RecordedEmailResult;
+          try {
+            sent = await deliveries.send(gymId, keyFor(to), prepared.email, { to, subject: title, text, html: `<p>${escape(text).replaceAll('\n', '<br>')}</p>` });
+          } catch (error) {
+            uncertain = deliveryAcceptance(error) !== 'not_accepted';
+            throw error;
+          }
+          // Another attempt holds the key, so this attempt's links were never sent.
+          if (sent.status === 'skipped') await revokeMinted();
+          if (sent.status === 'suppressed' && staff) throw new Error('Staff notice was suppressed');
+          if (sent.status === 'suppressed' && minted.length) throw new Error('Dunning email was suppressed');
         } catch (error) {
-          uncertain = deliveryAcceptance(error) !== 'not_accepted';
-          throw error;
+          // One refused staff address doesn't hold up the others: the notice fails once every recipient was tried, and its
+          // retry reaches only those it provably missed. A member notice has one recipient (and its links), so it fails at once.
+          if (!staff) throw error;
+          failure ??= error;
         }
-        // Another attempt holds the key, so this attempt's links were never sent.
-        if (sent.status === 'skipped') await revokeMinted();
-        if (sent.status === 'suppressed' && staff) throw new Error('Staff notice was suppressed');
-        if (sent.status === 'suppressed' && minted.length) throw new Error('Dunning email was suppressed');
       }
+      if (failure !== undefined) throw failure;
     } catch (error) {
       // A possibly delivered link stays usable, because it is never sent again.
       if (!uncertain) await revokeMinted();

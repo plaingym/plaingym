@@ -6,11 +6,16 @@ without minting pay or card-update links. Receipts and staff notices keep their 
 behavior.
 
 Every notice sends through `createEmailDeliveries`, under the key
-`billing.<purpose>:<object>:<generation>:<recipient hash>`. The purpose is `receipt`, `dunning`,
-`duplicate_payment` or `refund_failure`, and the object is the invoice, payment or refund it is about.
-The generation is the persisted work that asked for it: the effect, or the receipt job for a requested
-resend. So a repeated job sends nothing more, each new failure or resend has its own key, and a retry
-reaches only the staff the notice provably did not reach. A notice already accepted, or possibly
+`billing.<purpose>:<object>:<generation>`, and a staff notice under one key per recipient,
+`billing.<purpose>:<object>:<generation>:<recipient hash>`. The purpose is `receipt` or `dunning` (member
+notices), or `duplicate_payment`, `duplicate_released`, `refund_failure` or `credits_not_granted` (staff
+notices), and the object is the invoice, payment or refund it is about. The generation is the persisted
+work that asked for it: the effect, or the receipt job for a requested resend. So a repeated job sends
+nothing more, each new failure or resend has its own key, and a member's address changed between retries
+gets no second notice. A member notice's key holds no address, so an erased member's address leaves
+nothing in delivery records; a row an earlier release keyed per recipient is adopted first
+(`infra/email/README.md`). A staff notice tries every recipient before it fails, so one refused address
+doesn't hold up the others, and its retry reaches only the staff it provably did not reach. A notice already accepted, or possibly
 accepted, mints no links. Dunning links are revoked when nothing was sent (a refusal, a suppression,
 or another attempt holding the key); a link that may have been delivered stays usable and is never
 sent again.

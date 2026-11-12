@@ -436,6 +436,17 @@ Old versions and documents referenced by signatures remain retained after retire
   Customers erased before this was complete
   are redacted once from the erasure audits
   (`apps/server/src/areas/members/README.md`).
+* **Delivery records.** `email_deliveries`, the record that keeps each email from
+  being sent twice, holds no plain hash of a member's address once the member is
+  erased, so nobody holding the database or a backup, without the install's
+  `AUTH_SECRET`, can test a guessed address against it. A member notice (receipts, dunning) is keyed by IDs only. An emailed
+  portal invitation's request digest is an HMAC under a key derived from
+  `AUTH_SECRET`. Announcements and cancellation notices keep a plain digest of the
+  address they went to, so an address gets each message once, and an erasure
+  clears the erased member's in its own transaction. Only staff recipients' keys
+  carry a hash of their address. An hourly job per gym deletes login-link rows once
+  their five-minute link has expired, and rewrites the rows an earlier release
+  wrote with a member's address hash (`apps/server/src/infra/email/README.md`).
 * **Medical notes** are readable only by owners, admins and coaches, and are never
   returned to signed links or the portal's household view.
 * **Audit.** State-changing actions write an `audit_events` row (the app role can

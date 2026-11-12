@@ -26,7 +26,9 @@ export interface CancellationNoticeOptions {
   demoMode?: boolean;
   demoEmailFor?(gymId: string): Email;
 }
-const noticeKey = (sessionId: string, memberId: string) => `schedule-cancel-notice:${sessionId}:${memberId}`;
+/** One session's cancellation notice to one address group is keyed `<prefix><session ID>:<first member's ID>`. */
+export const cancellationNoticeKeyPrefix = 'schedule-cancel-notice:';
+const noticeKey = (sessionId: string, memberId: string) => `${cancellationNoticeKeyPrefix}${sessionId}:${memberId}`;
 
 export function createCancellationNotice(options: CancellationNoticeOptions) {
   const scope = options.scope ?? forGym, clock = options.clock ?? systemClock;

@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { authRateLimit, uuidv7 } from '@plaingym/db';
 import type { Database } from '@plaingym/db/client';
+import { normalizeAddress } from '../email/deliveries.js';
 
 /** A fixed window: at most `max` attempts in each `window` seconds. */
 export interface SignInRule { readonly window: number; readonly max: number }
@@ -28,7 +29,7 @@ export const accountLimitedPaths: readonly string[] = ['/sign-in/email', '/sign-
  * open one. One upsert decides, so concurrent attempts and several app processes share the count exactly.
  */
 export async function consumeAccountAttempt(database: Database, path: string, email: string, rule: SignInRule, now: number): Promise<number | null> {
-  const digest = createHash('sha256').update(email.trim().toLowerCase()).digest('base64url');
+  const digest = createHash('sha256').update(normalizeAddress(email)).digest('base64url');
   const key = `account|${path}|${digest}`, resetAt = now + rule.window * 1000;
   const ended = sql`${authRateLimit.lastRequest} <= ${now}`;
   const [row] = await database.insert(authRateLimit).values({ id: uuidv7(), key, count: 1, lastRequest: resetAt })
