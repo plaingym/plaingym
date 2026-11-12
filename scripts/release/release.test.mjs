@@ -239,3 +239,23 @@ test('preflight refusals leave the repository unchanged', () => {
     unchanged(() => release({ ...f.options, version: '1.0.1' }), /at least 1.1.0/);
   } finally { f.close(); }
 });
+
+test('a tag that comes back unsigned is deleted with its release commit', () => {
+  const f = fixture();
+  try {
+    const before = f.run('rev-parse', 'HEAD');
+    // What Git does when the signer can't ask for a passphrase: exit 0 with an unsigned annotated tag.
+    const unsigned = (tag, cwd) => git(['tag', '-a', tag, '-m', tag], cwd);
+    assert.throws(() => release({ ...f.options, version: '1.0.0', tag: unsigned }), /v1\.0\.0 came back unsigned/);
+    assert.equal(f.run('tag', '--list'), '');
+    assert.equal(f.run('rev-parse', 'HEAD'), before);
+    assert.equal(f.run('status', '--porcelain'), '');
+    // A signer that fails outright leaves the same state.
+    assert.throws(() => release({ ...f.options, version: '1.0.0', tag: () => { throw new Error('signer failed'); } }), /signer failed/);
+    assert.equal(f.run('tag', '--list'), '');
+    assert.equal(f.run('rev-parse', 'HEAD'), before);
+    // The default signer, with the terminal attached, signs.
+    assert.equal(release({ ...f.options, version: '1.0.0' }).version, '1.0.0');
+    f.run('verify-tag', 'v1.0.0');
+  } finally { f.close(); }
+});

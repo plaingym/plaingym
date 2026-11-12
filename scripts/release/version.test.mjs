@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildInfo, git } from './version.mjs';
+import { buildInfo, dryRunVersion, git } from './version.mjs';
 
 test('source archives have an unknown development identity', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'r163-archive-'));
@@ -39,8 +39,13 @@ test('build identity before a tag, on a tag, after a tag and with local changes'
     assert.deepEqual(buildInfo(cwd), { version: `1.2.0+0.g${commit.slice(0, 7)}`, commit });
     const cli = fileURLToPath(new URL('./version-cli.mjs', import.meta.url));
     assert.deepEqual(JSON.parse(execFileSync(process.execPath, [cli, '--json'], { cwd, encoding: 'utf8' })), buildInfo(cwd));
+    assert.equal(execFileSync(process.execPath, [cli, '--dry-run'], { cwd, encoding: 'utf8' }).trim(), `1.2.0+0.g${commit.slice(0, 7)}`);
     run('tag', '-a', 'v1.2.0', '-m', 'v1.2.0');
     assert.equal(buildInfo(cwd).version, '1.2.0');
+    // A dry run on the tagged commit (the release commit pushed to main) still gets build metadata.
+    assert.equal(dryRunVersion(buildInfo(cwd)), `1.2.0+0.g${commit.slice(0, 7)}`);
+    assert.equal(execFileSync(process.execPath, [cli, '--dry-run'], { cwd, encoding: 'utf8' }).trim(), `1.2.0+0.g${commit.slice(0, 7)}`);
+    assert.equal(execFileSync(process.execPath, [cli], { cwd, encoding: 'utf8' }).trim(), '1.2.0');
     writeFileSync(join(cwd, 'change'), 'fix\n');
     assert.equal(buildInfo(cwd).version, `1.2.0+0.g${commit.slice(0, 7)}.dirty`);
     run('add', '.'); run('commit', '-m', 'fix: next');

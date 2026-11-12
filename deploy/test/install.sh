@@ -1,7 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Exercises installer and bootstrap control flow with a command fixture: input
-# and DNS checks before any host change, convergent re-runs, and bundle checks.
+# and DNS checks before any host change, convergent re-runs, bundle checks, and
+# release bootstraps that verify a signed local release before installing it.
 set -eu
 umask 077
 source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -33,7 +34,9 @@ printf '104.16.1.1 proxied.invalid\n2606:4700::1111 proxied.invalid\n' >> "$HOST
 stub swapon 'echo /swapfile partition 1G 0B -2'
 # The installer's HTTPS retries wait in between; the fixture answers at once.
 stub sleep ':'
-stub openssl 'echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+# The release bootstrap's checks need the real OpenSSL, so only random values are stubbed.
+real_openssl=$(command -v openssl)
+stub openssl "case \"\$1\" in genpkey|pkey|pkeyutl) exec '$real_openssl' \"\$@\" ;; esac; echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 # shellcheck disable=SC2016
 stub ip 'echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: eth0    inet 203.0.113.5/24 brd 203.0.113.255 scope global eth0"; echo "2: eth0    inet6 fe80::5/64 scope link"; echo "2: eth0    inet6 fd00::5/64 scope global eth0"; echo "2: eth0    inet6 20::5/64 scope global eth0"; if [ "${GLOBAL6:-false}" = true ]; then echo "2: eth0    inet6 2001:db8::5/64 scope global eth0"; fi'
 # The stub's own variables expand when it runs, not here.
@@ -43,6 +46,12 @@ cat > "$temporary/bin/curl" <<'MOCK'
 #!/bin/sh
 for argument in "$@"; do last=$argument; done
 case "$last" in
+  # A release's assets, from the local release directory; -o names the file to write.
+  https://github.com/release-test/plaingym/releases/download/*)
+    previous=; for argument in "$@"; do [ "$previous" != -o ] || out=$argument; previous=$argument; done
+    file="$RELEASES/${last#https://github.com/release-test/plaingym/releases/download/}"
+    [ -f "$file" ] || exit 22
+    cp "$file" "$out" ;;
   https://api.ipify.org) echo 'public lookup 4' >> "$CALLS"; printf '%s' "${PUBLIC4-203.0.113.6}"; exit "${PUBLIC4_STATUS:-0}" ;;
   https://api6.ipify.org) echo 'public lookup 6' >> "$CALLS"; printf '%s' "${PUBLIC6-2001:db8::6}"; exit "${PUBLIC6_STATUS:-0}" ;;
   */api/setup) printf '%s' "${SETUP_STATUS:-200}" ;;
@@ -306,4 +315,80 @@ tar -cf "$temporary/foreign.tar" -C "$bundle" deploy
 if sh "$source_dir/bootstrap.sh" --bundle-file "$temporary/foreign.tar" --sha256 "$(sha256sum "$temporary/foreign.tar" | cut -d' ' -f1)" -- --hostname gym.localhost --email owner@example.org --directory "$temporary/foreign" > "$temporary/output" 2>&1; then exit 1; fi
 [ ! -s "$CALLS" ] && [ ! -e "$temporary/foreign" ]
 if sh "$source_dir/bootstrap.sh" --bundle-url http://example.org/bundle.tar --sha256 "$sum" > /dev/null 2>&1; then exit 1; fi
-echo 'PASS: input and DNS checks before host changes, convergent re-runs, refused mismatches, Cloudflare proxy detection and the origin check, verified bundles.'
+
+# A release's bootstrap.sh installs from the release on GitHub, served here by the curl fixture from a local release
+# built from this commit with a throwaway key: the deploy archive and bootstrap from deploy-assets.sh, and a manifest
+# that lists the archive's SHA-256, signed as publish.sh signs it.
+export RELEASES="$temporary/releases"
+release="$RELEASES/v1.2.3"
+mkdir -p "$release"
+repository_dir=$(CDPATH='' cd -- "$source_dir/.." && pwd)
+revision=$(git -c safe.directory="$repository_dir" -C "$repository_dir" rev-parse HEAD)
+"$real_openssl" genpkey -algorithm ed25519 -out "$temporary/release-key.pem" 2>/dev/null
+"$real_openssl" pkey -in "$temporary/release-key.pem" -pubout -out "$temporary/release-public.pem"
+"$real_openssl" genpkey -algorithm ed25519 -out "$temporary/other-key.pem" 2>/dev/null
+"$real_openssl" pkey -in "$temporary/other-key.pem" -pubout -out "$temporary/other-public.pem"
+assets() { sh "$source_dir/release/deploy-assets.sh" --revision "$revision" --version v1.2.3 --repository release-test/plaingym --public-key "$1" --out "$2"; }
+assets "$temporary/release-public.pem" "$release"
+# The same assets with another key: its bootstrap.sh holds the wrong key, and its archive carries it.
+assets "$temporary/other-public.pem" "$temporary/other-assets"
+archive="$release/plaingym-deploy-v1.2.3.tar.gz"
+digest=sha256:$(printf '%064d' 1)
+sign_release() { # ARCHIVE_SHA256 [KEY]: write and sign the release's manifest
+  {
+    printf 'format=plaingym-release-manifest/2\nversion=v1.2.3\nimage=ghcr.io/release-test/app\ndigest=%s\nrollback_floor=v1.1.0\n' "$digest"
+    printf 'digest.linux/amd64=sha256:%064d\ndigest.linux/arm64=sha256:%064d\n' 2 3
+    printf 'deploy_archive=plaingym-deploy-v1.2.3.tar.gz\ndeploy_archive_sha256=sha256:%s\n' "$1"
+    printf 'revision=%s\nmigrations=sha256:%064d\nreleased=2026-11-12T00:00:00Z\n' "$revision" 4
+  } > "$release/release-manifest.txt"
+  "$real_openssl" pkeyutl -sign -inkey "${2:-$temporary/release-key.pem}" -rawin -in "$release/release-manifest.txt" -out "$release/release-manifest.txt.sig"
+}
+archive_sum=$(sha256sum "$archive" | cut -d' ' -f1)
+sign_release "$archive_sum"
+# update.sh's own checks (lib.sh) accept the manifest a bootstrap installs from.
+# shellcheck source=deploy/lib.sh
+(. "$source_dir/lib.sh"; manifest_verify "$temporary/release-public.pem" "$release/release-manifest.txt" "$release/release-manifest.txt.sig" && manifest_check "$release/release-manifest.txt" v1.2.3)
+# bootstrap_release BOOTSTRAP DIRECTORY [ARGS]: the one command an owner runs, with this fixture's install directory.
+bootstrap_release() { script=$1; directory=$2; shift 2; sh "$script" --hostname gym.localhost --email owner@example.org --directory "$directory" "$@" > "$temporary/output" 2>&1; }
+expect_bootstrap_refusal() { # MESSAGE BOOTSTRAP [ARGS]
+  message=$1; script=$2; shift 2
+  : > "$CALLS"
+  if bootstrap_release "$script" "$temporary/refused" "$@"; then echo "Bootstrap accepted, expected: $message" >&2; exit 1; fi
+  grep -qF "$message" "$temporary/output" || { echo "Expected \"$message\"" >&2; exit 1; }
+  grep -qF 'Nothing was changed' "$temporary/output"
+  if [ -e "$temporary/refused" ] || grep -Eq '^(apt-get|ufw|systemctl|docker)' "$CALLS"; then echo "Host changed before refusing: $message" >&2; exit 1; fi
+}
+# A copy that isn't a release's has no key to check with; a release's copy refuses an image of the owner's choosing.
+expect_bootstrap_refusal 'is not a release' "$source_dir/bootstrap.sh"
+expect_bootstrap_refusal 'leave out --image' "$release/bootstrap.sh" --image plaingym:v0.0.0-local
+# Another key than the one that signed the release.
+expect_bootstrap_refusal 'does not verify' "$temporary/other-assets/bootstrap.sh"
+# A tampered manifest.
+cp "$release/release-manifest.txt" "$temporary/manifest.good"
+sed 's#^image=.*#image=ghcr.io/attacker/app#' "$temporary/manifest.good" > "$release/release-manifest.txt"
+expect_bootstrap_refusal 'does not verify' "$release/bootstrap.sh"
+cp "$temporary/manifest.good" "$release/release-manifest.txt"
+# A tampered archive.
+cp "$archive" "$temporary/archive.good"
+printf 'x' >> "$archive"
+expect_bootstrap_refusal 'does not match the SHA-256' "$release/bootstrap.sh"
+cp "$temporary/archive.good" "$archive"
+# A signed manifest whose archive carries another key than the one checking it.
+cp "$temporary/other-assets/plaingym-deploy-v1.2.3.tar.gz" "$archive"
+sign_release "$(sha256sum "$archive" | cut -d' ' -f1)"
+expect_bootstrap_refusal 'carries another release signing key' "$release/bootstrap.sh"
+cp "$temporary/archive.good" "$archive"
+sign_release "$archive_sum"
+# A missing asset.
+mv "$release/release-manifest.txt.sig" "$temporary/signature.good"
+expect_bootstrap_refusal 'Could not download' "$release/bootstrap.sh"
+mv "$temporary/signature.good" "$release/release-manifest.txt.sig"
+# The verified release installs the manifest's image by digest, with the archive's key beside update.sh, and prints the
+# setup link. It runs piped into sh, as the guide runs it, and a second run converges on the same install.
+for _ in 1 2; do
+  sh -s -- --hostname gym.localhost --email owner@example.org --directory "$temporary/released" < "$release/bootstrap.sh" > "$temporary/output" 2>&1
+  grep -qx "APP_IMAGE=ghcr.io/release-test/app:v1.2.3@$digest" "$temporary/released/.env"
+  grep -q 'setup#token=fixture' "$temporary/output"
+done
+cmp -s "$temporary/release-public.pem" "$temporary/released/release-signing.pem"
+echo 'PASS: input and DNS checks before host changes, convergent re-runs, refused mismatches, Cloudflare proxy detection and the origin check, verified bundles, and verified releases.'

@@ -4,7 +4,9 @@
 # tag formats, the branch rules, and a patch release that changes a migration. publish.sh then runs a dry
 # release against a throwaway registry on this machine: two small single-file images (amd64 and arm64, no
 # emulation needed), a multi-arch index, and a manifest signed with a throwaway key, which update.sh's own
-# checks then accept. Needs git, OpenSSL 3 and Docker; it removes the registry, keys and images it made.
+# checks then accept, listing the deploy archive (built from this repository's HEAD) with its SHA-256; then a
+# dry run with the build-metadata version a tagged commit gets. Needs git, Node.js, GNU tar, OpenSSL 3 and
+# Docker; it removes the registry, keys and images it made.
 set -eu
 umask 077
 source_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -51,6 +53,10 @@ printf '{"entries":[0]}\n' > packages/db/src/migrations/meta/_journal.json
 printf 'one\n' > app.txt
 git add -A; git commit -q -m 'feat: first'
 git tag -a v1.2.0 -m v1.2.0
+# The Release dry run's version on a commit that already carries its tag (a release commit pushed to main) still has
+# build metadata, which publish.sh needs for a dry run; the publish dry run below uses it.
+dry_version=$(node "$source_dir/../scripts/release/version-cli.mjs" --dry-run)
+[ "$dry_version" = "1.2.0+0.g$(git rev-parse --short=7 HEAD)" ] || { echo "Unexpected dry run version: $dry_version" >&2; exit 1; }
 git branch release/1.2
 git checkout -q release/1.2
 printf 'fixed\n' > app.txt
@@ -109,7 +115,8 @@ docker run -d --name "$registry_name" --network host -e "REGISTRY_HTTP_ADDR=127.
   registry:3@sha256:b3419cf99f8ec65bbda73e8a950fd26861012689beaf7b6577ee938995aa7d3f > /dev/null
 for _ in $(seq 30); do curl --silent --fail "http://$registry/v2/" > /dev/null 2>&1 && break; sleep 1; done
 curl --silent --fail "http://$registry/v2/" > /dev/null || { echo "The registry on $registry did not start." >&2; docker logs "$registry_name" >&2; exit 1; }
-revision=$(printf '1%.0s' $(seq 40))
+# The deploy archive is built from this repository's commit, so the images claim to come from it too.
+revision=$(git -C "$source_dir/.." rev-parse HEAD)
 mkdir "$temporary/rootfs"
 printf 'release test\n' > "$temporary/rootfs/marker"
 tar -C "$temporary/rootfs" -cf "$temporary/rootfs.tar" marker
@@ -124,13 +131,13 @@ openssl genpkey -algorithm ed25519 -out "$temporary/other.pem" 2>/dev/null
 openssl pkey -in "$temporary/other.pem" -pubout -out "$temporary/other-public.pem"
 publish() { sh "$source_dir/release/publish.sh" --registry "$registry" --name release-test/app --insecure --version v1.2.3 \
   --revision "$revision" --migrations "$source_dir/../packages/db/src/migrations" --archive "amd64=$temporary/amd64.tar" \
-  --archive "arm64=$temporary/arm64.tar" --key "$temporary/key.pem" "$@" > "$temporary/output" 2>&1; }
+  --archive "arm64=$temporary/arm64.tar" --key "$temporary/key.pem" --repository release-test/plaingym "$@" > "$temporary/output" 2>&1; }
 # The wrong public key stops it before the manifest is published; a mislabelled image stops it before any push.
 if publish --public-key "$temporary/other-public.pem" --out "$temporary/wrong"; then echo 'Published with a mismatched key.' >&2; exit 1; fi
 grep -q 'does not verify' "$temporary/output"
 if sh "$source_dir/release/publish.sh" --registry "$registry" --name release-test/app --insecure --version v1.2.4 --revision "$revision" \
   --migrations "$source_dir/../packages/db/src/migrations" --archive "amd64=$temporary/amd64.tar" --key "$temporary/key.pem" \
-  --public-key "$temporary/public.pem" --out "$temporary/mislabelled" > "$temporary/output" 2>&1; then echo 'Published a mislabelled image.' >&2; exit 1; fi
+  --public-key "$temporary/public.pem" --repository release-test/plaingym --out "$temporary/mislabelled" > "$temporary/output" 2>&1; then echo 'Published a mislabelled image.' >&2; exit 1; fi
 grep -q 'is not labelled v1.2.4' "$temporary/output"
 publish --public-key "$temporary/public.pem" --out "$temporary/release"
 manifest="$temporary/release/release-manifest.txt"
@@ -155,4 +162,39 @@ curl --silent --fail -H 'Accept: application/vnd.docker.distribution.manifest.li
 sed 's/^version=.*/version=v1.2.9/' "$manifest" > "$temporary/changed.txt"
 if manifest_verify "$temporary/public.pem" "$temporary/changed.txt" "$manifest.sig"; then echo 'A changed manifest verified.' >&2; exit 1; fi
 if manifest_verify "$temporary/other-public.pem" "$manifest" "$manifest.sig"; then echo 'Another key verified the manifest.' >&2; exit 1; fi
-echo 'PASS: check-tag.sh, and a dry release to a local registry that update.sh accepts.'
+
+# The deploy archive is in the signed manifest with its SHA-256: this commit's deploy/ folder, carrying the public key
+# that verifies the manifest, and built the same way twice gives the same bytes.
+archive="$temporary/release/plaingym-deploy-v1.2.3.tar.gz"
+[ "$(manifest_value "$manifest" deploy_archive)" = plaingym-deploy-v1.2.3.tar.gz ]
+[ "$(manifest_value "$manifest" deploy_archive_sha256)" = "sha256:$(sha256sum "$archive" | cut -d' ' -f1)" ]
+mkdir "$temporary/archive"
+tar -xzf "$archive" -C "$temporary/archive"
+for file in install.sh lib.sh update.sh bootstrap.sh compose.yaml Caddyfile; do
+  git -C "$source_dir/.." show "$revision:deploy/$file" | cmp -s - "$temporary/archive/deploy/$file" || { echo "The archive's $file is not the commit's." >&2; exit 1; }
+done
+cmp -s "$temporary/public.pem" "$temporary/archive/deploy/release-signing.pem" || { echo 'The archive carries another public key.' >&2; exit 1; }
+if tar -tzvf "$archive" | grep -v ' 0/0 '; then echo 'The archive has entries not owned by root.' >&2; exit 1; fi
+sh "$source_dir/release/deploy-assets.sh" --revision "$revision" --version v1.2.3 --repository release-test/plaingym \
+  --public-key "$temporary/public.pem" --out "$temporary/again"
+cmp -s "$archive" "$temporary/again/plaingym-deploy-v1.2.3.tar.gz" || { echo 'The deploy archive is not reproducible.' >&2; exit 1; }
+# The release's bootstrap.sh carries its version, repository and key, and is otherwise the commit's.
+bootstrap="$temporary/release/bootstrap.sh"
+grep -qx 'release_version=v1.2.3' "$bootstrap"
+grep -qx 'release_repository=release-test/plaingym' "$bootstrap"
+grep -qx "release_key=$(sed '/^-----/d' "$temporary/public.pem" | tr -d '\n')" "$bootstrap"
+[ "$(diff "$temporary/archive/deploy/bootstrap.sh" "$bootstrap" | grep -c '^>')" = 3 ]
+
+# A dry run on a commit that already carries its tag publishes with the build-metadata version from above.
+for arch in amd64 arm64; do
+  docker import --platform "linux/$arch" --change "LABEL org.opencontainers.image.version=$dry_version" \
+    --change "LABEL org.opencontainers.image.revision=$revision" "$temporary/rootfs.tar" "$run_id:dry-$arch" > /dev/null
+  docker save "$run_id:dry-$arch" -o "$temporary/dry-$arch.tar"
+done
+sh "$source_dir/release/publish.sh" --registry "$registry" --name release-test/app --insecure --version "$dry_version" \
+  --revision "$revision" --migrations "$source_dir/../packages/db/src/migrations" --archive "amd64=$temporary/dry-amd64.tar" \
+  --archive "arm64=$temporary/dry-arm64.tar" --key "$temporary/key.pem" --public-key "$temporary/public.pem" \
+  --repository release-test/plaingym --out "$temporary/dry" > "$temporary/output" 2>&1
+[ "$(manifest_value "$temporary/dry/release-manifest.txt" version)" = "$dry_version" ]
+[ -f "$temporary/dry/plaingym-deploy-$dry_version.tar.gz" ]
+echo 'PASS: check-tag.sh, the dry run version on a tagged commit, and dry releases to a local registry that update.sh accepts, with the deploy archive in the signed manifest.'

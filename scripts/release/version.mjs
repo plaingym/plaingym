@@ -44,3 +44,11 @@ export function buildInfo(cwd = root, env = process.env) {
   if (dirty) version += '.dirty';
   return { version, commit };
 }
+
+/** A Release dry run's version always has build metadata, also on a commit that already carries its tag, so the
+ * dry run never looks like the release it rehearses.
+ * @param {{ version: string, commit: string }} info
+ */
+export function dryRunVersion(info) {
+  return info.version.includes('+') ? info.version : `${info.version}+0.g${info.commit.slice(0, 7)}`;
+}

@@ -126,7 +126,11 @@ leaves that section empty. Notes become a dated section of `CHANGELOG.md` under
 **Unreleased**, ordered by version.
 
 The command bumps all five manifests in `chore(release): vX.Y.Z`, creates a signed
-annotated tag with `git tag -s`, and never pushes. A patch also adds the same section
+annotated tag with `git tag -s`, and never pushes. The signer runs with the terminal
+attached, so it can ask for the signing key's passphrase. The command then reads the
+tag back: when it carries no SSH or PGP signature (Git can exit successfully with an
+unsigned tag when the signer couldn't run), it deletes the tag and the release commit
+and stops, so fix the signing setup and run it again. A patch also adds the same section
 to `main` in `docs: changelog for vX.Y.Z`, without changing `main`'s package versions.
 Its main checkout must be clean and level with origin too. Review both branches and
 the tag, then push the refs printed by the command. The Release workflow takes its

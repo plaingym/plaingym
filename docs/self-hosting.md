@@ -21,9 +21,10 @@ For building images and the installer's internals, see
   ([install guide](install.md#behind-cloudflares-proxy-recommended)); otherwise use a
   DNS-only record. Other proxies fail the installer's DNS check.
 * **Open ports**: TCP 80 and 443, and your SSH port.
-* **A PlainGym image** for the server's CPU architecture, as a version tag or
-  digest, or a bundle file built with `deploy/test/prepare-bundle.ps1`. The server
-  never builds the image.
+* **A PlainGym release** to install, from the
+  [releases page](https://github.com/plaingym/plaingym/releases). Each release has a
+  signed manifest, the deployment files, a one-command `bootstrap.sh`, and an image
+  for amd64 and arm64. The server never builds the image.
 * **An email sending service** (Postmark, Brevo, Amazon SES or similar), for sign-in
   links, receipts and reminders. Optional: without email, staff sign in with
   passwords and the app sends nothing.
@@ -36,17 +37,22 @@ For building images and the installer's internals, see
 
 ## Install
 
-Copy the deployment bundle to the server and, from its directory, run:
+On the server, run the release's `bootstrap.sh`, with the version you install in
+place of `vX.Y.Z`:
 
 ```sh
-sudo sh install.sh --hostname gym.example.org --email owner@example.org \
-  --image ghcr.io/plaingym/app:vX.Y.Z
+curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+  | sudo sh -s -- --hostname gym.example.org --email owner@example.org
 ```
 
 `--email` is where the certificate authority sends notices about your certificate.
-A bundle with the image inside installs the same way with `--image-archive`
-instead of `--image`, and `deploy/bootstrap.sh` can fetch and check a bundle by
-URL first (`deploy/README.md`, "One command from a bundle").
+The bootstrap checks the release's signed manifest with the release signing key it
+carries, downloads the release's deployment files (`plaingym-deploy-vX.Y.Z.tar.gz`)
+and checks their SHA-256 against that manifest, then runs their `install.sh` with
+the manifest's image. A failed check changes nothing. Trust starts with the HTTPS
+download of `bootstrap.sh` from GitHub; the
+[install guide](install.md#route-1-one-command) says how to check it first, and gives
+the other routes (cloud-init, or Compose by hand).
 
 The installer first checks that the hostname resolves only to this server; if a
 check fails, it stops before changing anything. Then it:

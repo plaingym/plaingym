@@ -7,9 +7,11 @@ certificate, and a private setup link. The requirements (server, hostname, ports
 email, Stripe, backup bucket) are listed in [self-hosting.md](self-hosting.md#what-you-need);
 read them first. Every setting is in [configuration.md](configuration.md).
 
-You need an app image for your server's CPU (amd64 or arm64), named by version tag
-(`ghcr.io/plaingym/app:vX.Y.Z`) or digest. The server never builds it. Where this
-guide writes `vX.Y.Z`, put the version you are installing.
+Each release is a version, `vX.Y.Z`; where this guide writes `vX.Y.Z`, put the
+version you are installing. Route 1 takes the app image from the release itself.
+The other routes need the image named by version tag
+(`ghcr.io/plaingym/app:vX.Y.Z`) or digest; it covers amd64 and arm64. The server
+never builds it.
 
 ## Before you start
 
@@ -22,6 +24,11 @@ guide writes `vX.Y.Z`, put the version you are installing.
    front of the server.
 3. Decide which email address the certificate authority may contact. It is not your
    sign-in address.
+4. If the gym will send email, check that the server can reach your email
+   service. Many providers (DigitalOcean among them) block outbound SMTP on ports
+   25, 465 and 587. Use an alternative port your email service offers (Mailgun's
+   2525, for example), or ask the provider to unblock the account. The setup
+   wizard's test email shows whether it gets through.
 
 The installer checks the hostname before it changes anything. If the name does
 not resolve yet, check that its record points here. If you recently added or
@@ -101,19 +108,47 @@ pinned lists.
 
 ## Route 1: one command
 
-Use this when you have the deployment bundle (the `deploy/` folder of the release).
-Copy it to the server, and from inside it run:
+Pick the release to install on the
+[releases page](https://github.com/plaingym/plaingym/releases), then run this on
+the server, with that version in the address (both places it says `vX.Y.Z`) and
+your hostname and email:
+
+```sh
+curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+  | sudo sh -s -- --hostname gym.example.org --email owner@example.org
+```
+
+Each release publishes its own `bootstrap.sh`, holding that release's version and
+the project's release signing public key (`deploy/release-signing.pem`). Before it
+installs anything, it:
+
+1. downloads the release's manifest (`release-manifest.txt`) and its signature, and
+   checks the signature with that key;
+2. downloads the deployment files (`plaingym-deploy-vX.Y.Z.tar.gz`, the release's
+   `deploy/` folder) and checks them against the SHA-256 the signed manifest lists;
+3. checks that the archive carries the same signing key, and that the release has
+   an image for this server's CPU;
+4. runs the archive's `install.sh` with the image digest from the signed manifest.
+
+If any check fails it stops with "Nothing was changed", and it leaves no downloaded
+files behind either way. The files must come from the release you install: the
+installer copies their `release-signing.pem` into `/opt/plaingym`, and the nightly
+updater checks every later release with it.
+
+Trust starts with the HTTPS download of `bootstrap.sh` from `github.com`: whoever
+can change that file can change what it checks. To read it before running it,
+download it first (`curl -fsSLO …/vX.Y.Z/bootstrap.sh`), check that its
+`release_key=` line matches the body of `deploy/release-signing.pem` in the
+repository, then run `sudo sh bootstrap.sh --hostname … --email …`.
+
+If you already have the deployment files of a release on the server (its
+`plaingym-deploy-vX.Y.Z.tar.gz`, unpacked), you can run the installer from that
+`deploy/` folder yourself, with the same release's image:
 
 ```sh
 sudo sh install.sh --hostname gym.example.org --email owner@example.org \
   --image ghcr.io/plaingym/app:vX.Y.Z
 ```
-
-If your bundle carries the image as a file, use `--image-archive FILE` in place of
-`--image` (the image name is still required; the installer loads the archive).
-To fetch and verify a bundle by URL first, `deploy/bootstrap.sh` does that and then
-runs the installer; see "One command from a bundle" in
-[`deploy/README.md`](../deploy/README.md#one-command-from-a-bundle).
 
 The installer, in order:
 

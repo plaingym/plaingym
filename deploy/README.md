@@ -149,16 +149,38 @@ are checked separately by the **Dependency advisories** workflow (`pnpm audit`).
 
 ## Install
 
-Extract the reviewed deployment bundle onto the server. From that directory:
+A release installs with its own `bootstrap.sh` (`docs/install.md`, Route 1):
+
+```sh
+curl -fsSL https://github.com/plaingym/plaingym/releases/download/vX.Y.Z/bootstrap.sh \
+  | sudo sh -s -- --hostname gym.example.org --email owner@example.org
+```
+
+The release workflow fills in the copy it publishes with the release's version,
+repository and the public key of `release-signing.pem` (**Releases**, below). It
+downloads `release-manifest.txt` and its signature from that release and verifies
+them with that key, as `update.sh` does; downloads `plaingym-deploy-vX.Y.Z.tar.gz`
+and checks it against the manifest's `deploy_archive_sha256`; checks that the
+archive's `release-signing.pem` is the same key and that the manifest has an image
+for the server's architecture; and then runs the archive's `install.sh` with
+`--image IMAGE:vX.Y.Z@DIGEST` from the manifest. Apart from the bundle mode's
+options (`--bundle-url` or `--bundle-file` with `--sha256`, below), it takes no
+options of its own: every other argument goes to `install.sh`, except
+`--image`, `--image-archive` and `--local-image`, which it refuses. Every refusal comes before `install.sh` runs, and
+the downloads live in a temporary directory that is removed either way. The script
+runs from a function called on its last line, so a download cut short runs nothing.
+The copy in this folder has no key filled in and refuses release mode.
+
+From an unpacked deployment archive (or any reviewed copy of this folder), the
+installer also runs directly:
 
 ```sh
 sudo sh install.sh --hostname gym.example.org --email owner@example.org \
   --image ghcr.io/plaingym/app:vX.Y.Z
 ```
 
-Substitute an existing image tag or digest. No released image is assumed to
-exist. The image is never built on the server; use the matching CPU
-architecture.
+Substitute an existing image tag or digest. The image is never built on the
+server; use the matching CPU architecture.
 
 Before changing anything, the installer checks its inputs: the hostname must
 resolve (A, and AAAA if present) only to this server or to Cloudflare's proxy
@@ -202,9 +224,12 @@ command it prints on the server:
 curl --fail --silent --show-error --location --proto '=https' 'BOOTSTRAP_URL'   | sudo sh -s -- --bundle-url 'BUNDLE_URL' --sha256 SHA256   -- --hostname gym.example.org --email owner@example.org
 ```
 
-`bootstrap.sh` verifies the SHA256 before extracting anything, refuses a bundle
-for another CPU architecture, and runs `install.sh --image-archive`. A bundle
-already on the server can be passed with `--bundle-file PATH` instead.
+This is `bootstrap.sh`'s bundle mode, chosen by `--bundle-url` or `--bundle-file`;
+the same script's release mode is the owner's install (**Install**, above), and the
+bundle mode needs no filled-in key. It verifies the SHA256 before extracting
+anything, refuses a bundle for another CPU architecture, and runs
+`install.sh --image-archive`. A bundle already on the server can be passed with
+`--bundle-file PATH` instead.
 
 The installer configures Docker, firewall rules, unattended OS security
 updates, swap, and the automatic patch update timer (**Automatic patch
@@ -562,14 +587,25 @@ pushes `ghcr.io/OWNER/app:vX.Y.Z-amd64` and `-arm64`, then the multi-arch
 `ghcr.io/OWNER/app:vX.Y.Z` over exactly those two. It signs the release manifest
 with the `RELEASE_SIGNING_KEY` secret of the `release` environment, after
 checking it against `release-signing.pem`, and creates the GitHub release with
-both files. The public key is `deploy/release-signing.pem`, and the installer
-copies it into the install directory. No release has been published yet.
+four assets: `release-manifest.txt`, `release-manifest.txt.sig`,
+`plaingym-deploy-vX.Y.Z.tar.gz` and `bootstrap.sh`. Before any push,
+`release/deploy-assets.sh` builds the last two from the tagged commit: the archive
+is its `deploy/` folder, read from Git with sorted names, the commit's time, root
+ownership and plain modes, so rebuilding it from the tag gives the same bytes, and
+`bootstrap.sh` is its `bootstrap.sh` with the version, repository and public key
+filled in. The manifest lists the archive's SHA-256. The public key is
+`deploy/release-signing.pem`, and the installer copies it into the install
+directory. No release has been published yet.
 
-Every other run (a push that changes the workflow or `release/`, or a manual
-run) is a dry run with its Git build-metadata version: the images go to a registry on
-the runner, and a throwaway key signs the manifest. It publishes nothing.
-`deploy/test/release.sh` tests both scripts, with a scratch Git repository and a
-dry release of two small images to a local registry:
+Every other run (a push that changes the workflow, `release/` or `bootstrap.sh`, or
+a manual run) is a dry run with a Git build-metadata version, also on a commit that
+already carries its tag (`version-cli.mjs --dry-run`): the images go to a registry
+on the runner, and a throwaway key signs the manifest and goes into the archive. It
+publishes nothing. `deploy/test/release.sh` tests both scripts, with a scratch Git
+repository and dry releases of two small images to a local registry, and checks the
+archive against the manifest; `deploy/test/install.sh` installs from a local
+release with a release `bootstrap.sh`, and checks that it refuses a tampered
+archive, a tampered manifest and another key:
 
 ```sh
 sh deploy/test/release.sh
@@ -588,6 +624,8 @@ image=ghcr.io/plaingym/app
 digest=sha256:<64 hex digits>
 digest.linux/amd64=sha256:<64 hex digits>
 digest.linux/arm64=sha256:<64 hex digits>
+deploy_archive=plaingym-deploy-v1.2.3.tar.gz
+deploy_archive_sha256=sha256:<64 hex digits>
 revision=<40 hex digits>
 migrations=sha256:<64 hex digits>
 released=2026-11-03T12:00:00Z
@@ -595,6 +633,9 @@ released=2026-11-03T12:00:00Z
 
 * `digest` is the multi-arch index; installs pull `IMAGE:VERSION@DIGEST`. The
   `digest.linux/*` lines are its per-architecture images.
+* `deploy_archive` names the release's deployment files and `deploy_archive_sha256`
+  is their SHA-256, which the release `bootstrap.sh` checks. `update.sh` doesn't read
+  them, and manifests from before them stay valid.
 * `revision` is the tagged commit.
 * `migrations` is the digest of the migrations directory, computed as
   `update.sh` does (`find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum`

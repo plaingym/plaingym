@@ -90,8 +90,14 @@ function assertWorkflowsPassed({ cwd, repo, head, gh, limit }) {
   }
 }
 
+/** Signs the tag with the terminal attached, so ssh-keygen or gpg can ask for the key's passphrase. */
+function signTag(tag, cwd) {
+  const result = spawnSync('git', ['tag', '-s', tag, '-m', tag], { cwd, stdio: 'inherit' });
+  if (result.error || result.status !== 0) throw new Error(`git tag -s ${tag} failed`);
+}
+
 /** Maintainer entry point. Tests supply only gh's answer; all repository operations and signatures are real. */
-export function release({ cwd = process.cwd(), version: explicit, notesFile, rollbackFloor, gh = defaultGh, edit = editNotes, log = console.log } = {}) {
+export function release({ cwd = process.cwd(), version: explicit, notesFile, rollbackFloor, gh = defaultGh, edit = editNotes, log = console.log, tag = signTag } = {}) {
   cwd = resolve(cwd);
   const run = (...args) => git(args, cwd);
   if (run('status', '--porcelain')) throw new Error('A release requires a clean working tree');
@@ -190,8 +196,21 @@ export function release({ cwd = process.cwd(), version: explicit, notesFile, rol
   mkdirSync(join(cwd, 'deploy/release'), { recursive: true });
   writeFileSync(join(cwd, 'deploy/release/rollback-floor.txt'), floor + '\n');
   run('add', '--', ...manifests, 'CHANGELOG.md', 'deploy/release/rollback-floor.txt');
+  const before = run('rev-parse', 'HEAD');
   run('commit', '-m', `chore(release): v${version}`);
-  run('tag', '-s', `v${version}`, '-m', `v${version}`);
+  // Git can exit 0 with an unsigned annotated tag when the signer couldn't run (a passphrase it couldn't ask for), so
+  // read the tag back. On any failure, the tag and the release commit go: the tree was clean, so nothing else is lost.
+  let signed = false;
+  try {
+    tag(`v${version}`, cwd);
+    signed = /^-----BEGIN (?:SSH|PGP) SIGNATURE-----$/m.test(run('cat-file', '-p', `v${version}`));
+  } finally {
+    if (!signed) {
+      if (run('tag', '--list', `v${version}`)) run('tag', '-d', `v${version}`);
+      run('reset', '--hard', before);
+    }
+  }
+  if (!signed) throw new Error(`v${version} came back unsigned, so it and the release commit were removed. Check user.signingkey and that its key's passphrase can be entered, then run the release again.`);
   let createdWorktree = false;
   try {
     if (isPatch) {

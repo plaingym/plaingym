@@ -5,10 +5,12 @@
 # GHCR for a tag, and against a registry on the runner with a throwaway key for a dry run.
 #
 #   publish.sh --registry HOST[:PORT] --name OWNER/app --version vX.Y.Z --revision COMMIT --migrations DIR
-#              --archive amd64=FILE [--archive arm64=FILE] --key PRIVATE.pem --public-key PUBLIC.pem --out DIR [--insecure]
+#              --archive amd64=FILE [--archive arm64=FILE] --key PRIVATE.pem --public-key PUBLIC.pem --repository OWNER/REPO
+#              --out DIR [--insecure]
 #
 # Each archive is a `docker save` of an image labelled with the version and revision. The output directory gets
-# release-manifest.txt and release-manifest.txt.sig, the two assets of the GitHub release.
+# the four assets of the GitHub release: release-manifest.txt, release-manifest.txt.sig, and from deploy-assets.sh the
+# deploy archive the manifest lists with its SHA-256 (plaingym-deploy-VERSION.tar.gz) and the release's bootstrap.sh.
 set -eu
 umask 077
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -25,16 +27,18 @@ out=
 insecure=
 archives=
 rollback_floor=
+repository=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --insecure) insecure=--insecure; shift ;;
-    --registry|--name|--version|--revision|--migrations|--archive|--key|--public-key|--out|--rollback-floor)
+    --registry|--name|--version|--revision|--migrations|--archive|--key|--public-key|--out|--rollback-floor|--repository)
       [ "$#" -ge 2 ] || fail "Missing value for $1"
       case "$1" in
         --registry) registry=$2 ;; --name) name=$2 ;; --version) version=$2 ;; --revision) revision=$2 ;;
         --migrations) migrations=$2 ;; --key) key=$2 ;; --public-key) public=$2 ;; --out) out=$2 ;;
         --archive) archives="$archives $2" ;;
         --rollback-floor) rollback_floor="v${2#v}" ;;
+        --repository) repository=$2 ;;
       esac
       shift 2 ;;
     *) fail "Unknown argument: $1" ;;
@@ -53,7 +57,12 @@ for path in "$migrations" "$key" "$public"; do [ -e "$path" ] || fail "Missing -
 if [ -z "$out" ] || [ -z "$archives" ]; then fail 'Give --out and at least one --archive.'; fi
 image="$registry/$name"
 valid_image_name "$image" || fail "Invalid image name: $image"
+valid_repository "$repository" || fail "Use --repository OWNER/REPO, the repository whose release gets the assets."
 mkdir -p "$out"
+# The install assets come first, so a revision they can't be built from stops the release before any push.
+sh "$ROOT/release/deploy-assets.sh" --revision "$revision" --version "$version" --repository "$repository" --public-key "$public" --out "$out"
+deploy_archive="plaingym-deploy-$version.tar.gz"
+deploy_sha256=$(sha256sum "$out/$deploy_archive" | cut -d' ' -f1)
 label() { docker image inspect "$1" --format "{{index .Config.Labels \"org.opencontainers.image.$2\"}}"; }
 
 refs=
@@ -90,10 +99,12 @@ manifest="$out/release-manifest.txt"
 {
   printf 'format=plaingym-release-manifest/2\nversion=%s\nimage=%s\ndigest=%s\nrollback_floor=%s\n' "$version" "$image" "$index" "$rollback_floor"
   printf '%s' "$platforms"
+  printf 'deploy_archive=%s\ndeploy_archive_sha256=sha256:%s\n' "$deploy_archive" "$deploy_sha256"
   printf 'revision=%s\nmigrations=sha256:%s\nreleased=%s\n' "$revision" "$migrations_hash" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$manifest"
 openssl pkeyutl -sign -inkey "$key" -rawin -in "$manifest" -out "$manifest.sig"
 manifest_verify "$public" "$manifest" "$manifest.sig" || fail 'The signed manifest does not verify with the public key.'
 manifest_check "$manifest" "$version" || fail 'The manifest is malformed.'
+[ "$(manifest_value "$manifest" deploy_archive_sha256)" = "sha256:$(sha256sum "$out/$deploy_archive" | cut -d' ' -f1)" ] || fail 'The manifest does not list the deploy archive it was written for.'
 chmod 0644 "$manifest" "$manifest.sig"
 cat "$manifest"

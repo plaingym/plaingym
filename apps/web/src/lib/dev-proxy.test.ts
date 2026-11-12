@@ -25,8 +25,9 @@ it('proxies signed pages, assets, returns and POSTs with sandbox authority, cook
   const backendPort = await listen(backend);
   // Its own dependency cache: the shared one belongs to any running dev server, which would lose its bundles.
   const cacheDir = await mkdtemp(join(tmpdir(), 'plaingym-dev-proxy-'));
-  cleanups.push(() => rm(cacheDir, { recursive: true, force: true }));
-  const vite = await createServer({ configFile: false, appType: 'custom', cacheDir, server: { middlewareMode: true, proxy: developmentProxy(backendPort) } });
+  cleanups.push(() => rm(cacheDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  // No dependency discovery: the optimizer could still be writing a deps_temp_* folder there when the removal runs.
+  const vite = await createServer({ configFile: false, appType: 'custom', cacheDir, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, proxy: developmentProxy(backendPort) } });
   cleanups.push(() => vite.close());
   const frontend = httpServer((req, res) => vite.middlewares(req, res, () => { res.statusCode = 418; res.end('SPA'); }));
   const port = await listen(frontend);
