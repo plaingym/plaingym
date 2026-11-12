@@ -36,6 +36,9 @@ it.each(maintenanceVariables)('refuses %s in production multi mode before openin
   expect(error?.message).toContain(`${name} must not be set when TENANCY=multi`);
   expect(error?.message).not.toContain('private-password');
 });
+it('refuses an unknown GYM_INTEGRATIONS value before trying to open a database', async () => {
+  await expect(startRuntime({ ...demoEnv('invalid', 'http://127.0.0.1:9', '/staging'), TENANCY: 'multi', GYM_INTEGRATIONS: 'sometimes' })).rejects.toThrow('Invalid GYM_INTEGRATIONS');
+});
 it('refuses live keys before trying to open a database', async () => {
   await expect(startRuntime({ ...demoEnv('invalid', 'http://127.0.0.1:9', '/staging'), STRIPE_KEY: 'sk_live_forbidden' })).rejects.toThrow(/live/);
 });

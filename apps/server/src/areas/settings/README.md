@@ -14,7 +14,8 @@ and the saved settings stay unchanged. Operator-managed refusals reload the
 integrations and show the operator notice in place of the editable forms.
 
 `checkIntegrationsEnvironment(mode, env)` exports the policy validation for early
-boot, before any database connection is opened.
+boot: the runtime calls it in `prepare()` before any database connection is opened,
+so an unknown `GYM_INTEGRATIONS` value stops the start there.
 
 Unreadable Google clients are reported as `source: 'none'` and `unreadable: true`, with no stored ID or secret flag and both removal and replacement available. They do not count as a way in when removing email settings. Google reads and settings SMTP reads share `unreadable-secret.ts`: it remembers the last failed ciphertext per secret class, gym and encryption-key object, logging one redacted error until the stored value changes; no decrypted value is cached. Google audit source values still describe the stored configuration.
 

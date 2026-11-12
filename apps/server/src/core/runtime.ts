@@ -44,7 +44,7 @@ import { createFollowUpsDueProvider } from '../areas/dashboard/leads.js';
 import { configureImportStep } from '../areas/setup/import-step.js';
 import { createSetupRoutes } from '../areas/setup/setup.routes.js';
 import { configureGoLive } from '../areas/settings/go-live.js';
-import { configureIntegrations } from '../areas/settings/integrations.js';
+import { checkIntegrationsEnvironment, configureIntegrations } from '../areas/settings/integrations.js';
 import { createRanksService } from '../areas/ranks/ranks.service.js';
 import { configureCheckinCodes } from '../areas/members/checkin-code.routes.js';
 import { createCheckinCodeService } from '../areas/members/checkin-code.js';
@@ -172,6 +172,8 @@ async function prepare(env: NodeJS.ProcessEnv) {
   // Both Google variables or neither: a malformed pair does not stop boot. The app starts without the install's client and
   // logs the variable and the reason once, and Health and Settings show it. Demo mode ignores them.
   googleFromEnvironment(env);
+  // An unknown GYM_INTEGRATIONS value stops boot here, before the database opens.
+  checkIntegrationsEnvironment(mode, env);
   await initializeDatabase(required(env, 'DATABASE_URL'), poolSize(env));
   const smtp = demo.enabled ? undefined : createSmtpResolver({ key, env });
   configureAuthCli({ resolveGymId: () => singleGymId(), smtpConfigured: (gymId) => smtp ? smtp.configured(gymId) : Promise.resolve(true) });
