@@ -23,7 +23,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
 }) {
   const bootstrap = useBootstrap();
   const cache = useQueryClient(), key = ['billing', gymId, 'memberships'];
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [reminder, setReminder] = useState(false);
   const rows = useQuery({ queryKey: [...key, memberId], queryFn: () => client.memberships({ memberId }) });
   const plans = useQuery({ queryKey: ['billing', gymId, 'plans'], queryFn: () => client.plans(),
     enabled: !!bootstrap.data?.session && canStaff(bootstrap.data.session.roles, 'billing.read') });
@@ -33,7 +33,7 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
     return { member, household, billingDay: billing.billingDay };
   } });
   async function mutate(operation: Action | 'assignMembership', input: unknown, membershipId?: string) {
-    setBusy(true); setMessage('');
+    setBusy(true); setMessage(''); setReminder(false);
     try {
       await client.call(operation, input, membershipId ? { membershipId } : {});
       await cache.invalidateQueries({ queryKey: key });
@@ -44,13 +44,13 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
   const reload = () => cache.invalidateQueries({ queryKey: key });
   return <section className="min-w-0 space-y-4" aria-label={text('title')}>
     <h2 className="text-lg font-semibold">{text('title')}</h2>
-    {message && <Alert role="status">{message}</Alert>}
+    {message && <Alert role="status">{message}{reminder && <span className="mt-1 block">{text('agreementReminder')}</span>}</Alert>}
     {rows.isPending && <p role="status">{text('loading')}</p>}
     {rows.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void rows.refetch()}>{text('retry')}</Button></Alert>}
     {rows.data?.length === 0 && <p className="rounded-lg border p-4 text-muted-foreground">{text('empty')}</p>}
     {plans.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void plans.refetch()}>{text('retry')}</Button></Alert>}
     <ul className="space-y-3">{rows.data?.map(row => <MembershipCard key={row.id} row={row} plans={plans.data ?? []} plansReady={plans.isSuccess} manage={manage} busy={busy} mutate={mutate}
-      client={client} reload={reload} changed={result => { setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
+      client={client} reload={reload} changed={result => { setReminder(true); setMessage(text(result.invoiceId ? 'planChangedInvoice' : 'planChanged')); void reload(); }}/>)}</ul>
     {manage && <>
       {(setup.isPending || plans.isPending || bootstrap.isPending) && <p role="status">{text('loading')}</p>}
       {bootstrap.isError && <Alert role="alert">{text('error')} <Button variant="outline" onClick={() => void bootstrap.refetch()}>{text('retry')}</Button></Alert>}

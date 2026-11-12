@@ -73,6 +73,7 @@
   "commitmentBlocks": "The commitment runs until {date}. To switch to a cheaper plan before then, enter a reason.",
   "overrideReason": "Reason for switching before the commitment ends",
   "planChanged": "Plan changed.",
+  "agreementReminder": "If the new plan needs a new agreement, open the member's Waivers and agreements tab and collect the signature.",
   "planChangedInvoice": "Plan changed. An invoice for the difference was issued.",
   "scheduledChange": "Changes to {plan} on {date} ({price} / {interval}).",
   "scheduledPrice": "New price {price} / {interval} from {date}.",

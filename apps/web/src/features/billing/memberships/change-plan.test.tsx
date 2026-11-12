@@ -113,6 +113,32 @@ it('sends no reason and no field for it when the commitment does not block', asy
   expect(await screen.findByText('Plan changed.')).toBeDefined();
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 });
+
+const reminder = /needs a new agreement.*Waivers and agreements tab/;
+it('reminds staff about the agreement after a scheduled switch', async () => {
+  start();
+  const dialog = await openDialog();
+  await dialog.findByText(/starts on 2026-11-01/);
+  fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
+  expect(await screen.findByText(reminder)).toBeDefined();
+});
+it('reminds staff about the agreement after a switch now', async () => {
+  start({ preview: query => ({ ...upgrade, timing: query.timing as 'now', priceStartsOn: '2026-10-26' }) });
+  const dialog = await openDialog();
+  await dialog.findByText(/starts on/);
+  fireEvent.click(dialog.getByRole('radio', { name: 'Now' }));
+  await dialog.findByText(/starts today|No charge|charged/i);
+  fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
+  expect(await screen.findByText(reminder)).toBeDefined();
+});
+it('shows no agreement reminder after a failed switch', async () => {
+  start({ switchPlan: async () => { throw new ApiError(500, 'request_failed'); } });
+  const dialog = await openDialog();
+  await dialog.findByText(/starts on/);
+  fireEvent.click(dialog.getByRole('button', { name: 'Change plan' }));
+  expect(await dialog.findByText('Could not change the plan. Please try again.')).toBeDefined();
+  expect(screen.queryByText(reminder)).toBeNull();
+});
 it('mentions the invoice when an upgrade now issued one', async () => {
   start({ switchPlan: async () => ({ data: { membership, invoiceId: id(20) } }) });
   const dialog = await openDialog();
