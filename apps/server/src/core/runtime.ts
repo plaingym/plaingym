@@ -21,7 +21,7 @@ import { createAuthService } from '../infra/auth/service.js';
 import { createGoogleAuthExtension, googleFromEnvironment } from '../infra/auth/google.js';
 import { createAuthEmailSender } from '../infra/auth/delivery.js';
 import { sessionMiddleware } from '../infra/auth/middleware.js';
-import { SmtpEmail } from '../infra/email/index.js';
+import { createEmailDeliveryJobs, SmtpEmail } from '../infra/email/index.js';
 import { PostgresJobs, startJobsWorker } from '../infra/jobs/postgres.js';
 import { createPortalAuthorization } from '../areas/portal/auth.permissions.js';
 import { configurePortalAccess } from '../areas/portal/access.routes.js';
@@ -407,7 +407,7 @@ export async function startRuntime(env: NodeJS.ProcessEnv = process.env, composi
       ...createPipelineRoutes(importPipeline), ...createExportRoutes(exportService),
       createUploadDownloadRoute({ uploadsFor: uploads.forGym, origin: originFor })],
     jobs: [...areaContributions.jobs ?? [], ...createPipelineJobs(importPipeline), ...createExportJobs(exportService), ...createMemberPhotoJobs(uploads.forGym),
-      ...createPortalInvitationExpiryJobs(),
+      ...createPortalInvitationExpiryJobs(), ...createEmailDeliveryJobs(),
       // Default lane: the per-gym cap of 1 keeps this sweep apart from the duplicate-refund workers.
       ...createLapsedRefundJobs({ clock, transitions: billing.transitions, payments: requirePayments }),
       ...createImportRetentionJobs(createImportRetention({ uploadsFor: uploads.forGym, clock })),

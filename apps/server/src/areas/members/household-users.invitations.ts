@@ -8,7 +8,7 @@ import type { z } from 'zod';
 import { createAccountService } from '../../infra/auth/accounts.js';
 import { createPortalClaimCodes, createPortalInvitationStore, type PortalInvitationBinding, type PortalInvitationStore } from '../../infra/auth/portal-invitations.js';
 import { passwordLogin, type AuthConfig } from '../../infra/auth/config.js';
-import { createEmailDeliveries, createEmailDeliveryJobs, createKeyedCommandDigest, normalizeAddress, portalInvitationKeyPrefix, type Email, type EmailReservation } from '../../infra/email/index.js';
+import { createEmailDeliveries, createKeyedCommandDigest, normalizeAddress, portalInvitationKeyPrefix, type Email, type EmailReservation } from '../../infra/email/index.js';
 import { notFound } from '../../core/interfaces/common.js';
 import type { JobRegistration } from '../../core/registry.js';
 import type { PostgresJobs } from '../../infra/jobs/postgres.js';
@@ -235,11 +235,11 @@ export type PortalInvitationService = ReturnType<typeof createPortalInvitationSe
 export const portalInvitationExpiryJob = 'members.portal-invitations.expire';
 /** Each gym's expired portal invitations and onboarding claim holds are deleted hourly, with any invitee identity left holding
  * nothing (no account, link, role, history or other invitation), so it can no longer sign in to a session without access.
- * The hourly email delivery upkeep also sweeps expired login links (`infra/email/deliveries.ts`). The runtime registers both. */
+ * The hourly email delivery upkeep, which also sweeps expired login links, is registered separately by the runtime (`infra/email/deliveries.ts`). */
 export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire'> = createPortalInvitationStore()): readonly JobRegistration[] {
   return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) {
     await store.expire(context.gymId, context.clock);
-  } }, ...createEmailDeliveryJobs()];
+  } }];
 }
 
 export const verificationSweepJob = 'auth.verifications.sweep';
