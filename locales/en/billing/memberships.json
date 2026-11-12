@@ -81,7 +81,8 @@
   "cancelChange": "Cancel change",
   "confirmCancelChange": "Cancel the scheduled change? The membership keeps its current plan and price.",
   "confirmCancelChangeButton": "Confirm: cancel change",
-  "priceScheduledNote": "A change is scheduled for {date}. It sets the price on that date and replaces a price entered here. Cancel the change first to keep a custom price.",
+  "priceReplacesScheduled": "A new price is scheduled for {date}. A price entered here replaces it.",
+  "priceBlockedBySwitch": "A plan change is scheduled for {date}. It sets the price on that date, so cancel the change before changing the price.",
   "switchFailed": "Could not change the plan. Please try again.",
   "switchStale": "This membership changed. It has been reloaded; review it and try again.",
   "reason_plan_inactive": "That plan is no longer active.",
@@ -92,5 +93,7 @@
   "reason_commitment": "The commitment hasn't ended. Enter a reason to switch anyway.",
   "reason_not_active": "Only an active membership can change plan now.",
   "reason_interval_change": "A plan with another billing interval starts on a billing date.",
-  "reason_period_not_billed": "The current period hasn't been billed, so it can't change plan now. Use the next billing date."
+  "reason_period_not_billed": "The current period wasn't billed at the current price, so it can't change plan now. Use the next billing date.",
+  "reason_tax_change": "The two plans carry different taxes, so an upgrade starts on the next billing date.",
+  "reason_switch_scheduled": "A plan change is scheduled. Cancel it before changing the price."
 }

@@ -345,6 +345,25 @@ describe('join admission cleanup', () => {
     expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(0);
     expect((await f.get('/join/return', submitted.cookie)).status).toBe(200);
   });
+  it('keeps an abandoned admission whose prospect has a lead row, and still removes one without', async () => {
+    const f = await fixture(), kept = await f.admit([adult()], 'lead@example.invalid', f.plan.id);
+    const removed = await f.admit([adult()], 'gone@example.invalid', f.plan.id);
+    const home = (await f.rows()).homes.find(h => h.email === 'lead@example.invalid')!;
+    const prospect = (await f.rows()).members.find(m => m.householdId === home.id)!;
+    // Staff logged a contact on the Leads screen: the lead row exists, and the member's revision is unchanged.
+    await factory('leads', f.gymId, { memberId: prospect.id });
+    f.clock.set('2026-10-31T07:00:00Z');
+    const job = joinJobs.find(j => j.id === 'public.join.cleanup')!;
+    await job.handler({}, { gymId: f.gymId, timezone, clock: f.clock, jobId: uuidv7(), attempt: 1 });
+    const rows = await f.rows();
+    expect(rows.homes.some(h => h.email === 'lead@example.invalid')).toBe(true);
+    expect(rows.members.some(m => m.id === prospect.id)).toBe(true);
+    expect(rows.leads.map(lead => lead.memberId)).toContain(prospect.id);
+    expect((await f.uploads.head(kept[0]![0]!.signatureImageKey))!.deletedAt).toBeUndefined();
+    expect(rows.homes.some(h => h.email === 'gone@example.invalid')).toBe(false);
+    expect((await f.uploads.head(removed[0]![0]!.signatureImageKey))!.deletedAt).toEqual(f.clock.now());
+    expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(0);
+  });
   it('keeps the durable cleanup claim after a storage failure and rejects a racing submission', async () => {
     const f = await fixture(), people = [adult()], email = 'retry@example.invalid', images = await f.admit(people, email, f.plan.id);
     f.clock.set('2026-10-31T07:00:00Z');

@@ -7,6 +7,7 @@ import type { Membership, MembershipSwitchResult, Plan } from '@plaingym/shared/
 import { useBootstrap } from '../../../app/context.js';
 import type { ExtensionViewProps } from '../../../lib/registries.js';
 import { t } from '../../../lib/i18n.js';
+import { ApiError } from '../../../lib/api.js';
 import { Alert } from '../../../components/ui/alert.js';
 import { Button } from '../../../components/ui/button.js';
 import { Input } from '../../../components/ui/input.js';
@@ -38,7 +39,10 @@ export function MembershipPanel({ gymId, memberId, manage, client = billingClien
       await client.call(operation, input, membershipId ? { membershipId } : {});
       await cache.invalidateQueries({ queryKey: key });
       setMessage(text('saved')); return true;
-    } catch (error) { setMessage(saveError(error)); return false; }
+    } catch (error) {
+      setMessage(error instanceof ApiError && error.reason.includes('switch_scheduled') ? text('reason_switch_scheduled') : saveError(error));
+      return false;
+    }
     finally { setBusy(false); }
   }
   const reload = () => cache.invalidateQueries({ queryKey: key });
@@ -107,6 +111,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
   const plan = plans.find(item => item.id === row.planId);
   const scheduled = row.scheduledPlanId && row.scheduledAmountCents !== null && row.scheduledInterval && row.scheduledOn
     ? { plan: plans.find(item => item.id === row.scheduledPlanId), price: money(row.scheduledAmountCents, row.currency), interval: text(row.scheduledInterval), on: row.scheduledOn } : null;
+  const priceOnly = !!scheduled && row.scheduledPlanId === row.planId;
   const differentPlanPrice = !!plan && plan.currency === row.currency && plan.interval === row.interval && plan.amountCents !== row.amountCents;
   async function edit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const form = new FormData(event.currentTarget);
@@ -129,10 +134,11 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
     <div><h3 className="font-semibold">{plan?.name ?? text('membership')}</h3><p>{text(row.status)} · {money(row.amountCents, row.currency)} / {text(row.interval)}</p>
       {differentPlanPrice && <p className="text-sm text-muted-foreground">{text('planPriceNow', { price: money(plan.amountCents, plan.currency), interval: text(plan.interval) })}</p>}</div>
     {scheduled && <div className="min-w-0 space-y-2 rounded-md bg-muted p-3 text-sm">
-      <p>{row.scheduledPlanId === row.planId ? text('scheduledPrice', { price: scheduled.price, interval: scheduled.interval, date: scheduled.on })
+      <p>{priceOnly ? text('scheduledPrice', { price: scheduled.price, interval: scheduled.interval, date: scheduled.on })
         : text('scheduledChange', { plan: scheduled.plan?.name ?? text('anotherPlan'), price: scheduled.price, interval: scheduled.interval, date: scheduled.on })}</p>
-      {manage && !confirmUndo && <Button variant="outline" disabled={busy} onClick={() => setConfirmUndo(true)}>{text('cancelChange')}</Button>}
-      {manage && confirmUndo && <div className="space-y-2"><p>{text('confirmCancelChange')}</p><div className="flex flex-col gap-2 sm:flex-row">
+      {/* A price change a downgrade now left isn't cancelled (that would keep the new plan at the old price): Edit price replaces it. */}
+      {manage && !priceOnly && !confirmUndo && <Button variant="outline" disabled={busy} onClick={() => setConfirmUndo(true)}>{text('cancelChange')}</Button>}
+      {manage && !priceOnly && confirmUndo && <div className="space-y-2"><p>{text('confirmCancelChange')}</p><div className="flex flex-col gap-2 sm:flex-row">
         <Button disabled={busy} onClick={async () => { if (await mutate('cancelMembershipSwitch', { revision: row.revision }, row.id)) setConfirmUndo(false); }}>{text('confirmCancelChangeButton')}</Button>
         <Button variant="outline" onClick={() => setConfirmUndo(false)}>{text('back')}</Button></div></div>}
     </div>}
@@ -158,7 +164,7 @@ function MembershipCard({ row, plans, plansReady, manage, busy, mutate, client, 
         {/* A text field, so an entry the browser can't parse as a number is refused rather than read as blank. */}
         <Label className="block min-w-0">{text('price')} ({base.currency})<Input name="price" inputMode="decimal" autoComplete="off" placeholder={minorUnitsToInput(base.amountCents, base.currency)}/></Label>
         <p className="text-sm text-muted-foreground">{text('priceHelp')}</p>
-        {scheduled && <Alert role="status">{text('priceScheduledNote', { date: scheduled.on })}</Alert>}
+        {scheduled && <Alert role="status">{text(priceOnly ? 'priceReplacesScheduled' : 'priceBlockedBySwitch', { date: scheduled.on })}</Alert>}
         <div className="flex flex-col gap-2 sm:flex-row"><Button type="submit">{text('save')}</Button><Button variant="outline" onClick={() => setAction(null)}>{text('back')}</Button></div>
       </form>}
       {(action === 'freeze' || action === 'resume') && <form onSubmit={event => void submit(event)} className="space-y-3">

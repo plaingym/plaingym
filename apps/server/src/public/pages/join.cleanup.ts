@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gt, inArray, lt, notInArray } from 'drizzle-orm';
-import { auditEvents, forGym, households, householdUsers, invoiceLineItems, invoices, members, memberships,
+import { auditEvents, forGym, households, householdUsers, invoiceLineItems, invoices, leads, members, memberships,
   paymentMethods, signedLinks, waiverSignatures, writeAudit, type Transaction } from '@plaingym/db';
 import { z } from 'zod';
 import type { Clock } from '@plaingym/shared';
@@ -41,6 +41,9 @@ export function createJoinCleanup(options: JoinCleanupOptions) {
       // Staff may have adopted an abandoned prospect or attached records. Keep that work.
       if (people.some(p => !parsed.memberIds.includes(p.id) || p.status !== 'prospect' || p.anonymizedAt || p.revision !== 1)) return null;
       if ((await tx.select({ id: waiverSignatures.id }).from(waiverSignatures).where(inArray(waiverSignatures.memberId, parsed.memberIds)).limit(1)).length) return null;
+      // A lead row (a staff edit or logged contact on the Leads screen, or a check-in) is staff work on the prospect too,
+      // and its foreign key would refuse the member's deletion. The member locks above hold off a new one.
+      if ((await tx.select({ id: leads.id }).from(leads).where(inArray(leads.memberId, parsed.memberIds)).limit(1)).length) return null;
       const subscriptions = await tx.select().from(memberships).where(eq(memberships.householdId, householdId)).for('update');
       if (subscriptions.some(m => m.status !== 'pending' || !parsed.memberIds.includes(m.memberId))) return null;
       if ((await tx.select({ id: householdUsers.id }).from(householdUsers).where(eq(householdUsers.householdId, householdId)).limit(1)).length

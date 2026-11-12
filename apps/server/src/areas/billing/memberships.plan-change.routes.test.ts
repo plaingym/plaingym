@@ -2,7 +2,7 @@
 import '@hono/zod-openapi';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { households, memberships, uuidv7 } from '@plaingym/db';
+import { households, invoices, memberships, uuidv7 } from '@plaingym/db';
 import type { StaffRole } from '@plaingym/shared';
 import { createApp } from '../../app.js';
 import { FakeJobs } from '../../infra/jobs/index.js';
@@ -257,10 +257,40 @@ describe('switch now refusals', () => {
     expect((await f.row()).switchOverrideReason).toBe(reason);
     expect(JSON.stringify((await f.read()).audits)).not.toContain('hardship');
     expect((await f.read()).audits.filter(audit => audit.action === planSwitchedAction)).toMatchObject([{ after: { request: { override: true }, overrideUsed: true, kind: 'downgrade' } }]);
-    // Cancelling the price change keeps the reason of the switch that applied.
-    const cancelled = await f.call('POST', f.path() + '/switch/cancel', { revision: (await f.row()).revision });
-    expect(cancelled.body.data).toMatchObject({ planId: basic.id, amountCents: 10_000, scheduledPlanId: null });
+    // The price change it leaves isn't cancelled (that would keep Basic at the old price); a price edit replaces it and
+    // keeps the reason of the switch that applied.
+    refused(await f.call('POST', f.path() + '/switch/cancel', { revision: (await f.row()).revision }), 'price_change');
+    const repriced = await f.call('PATCH', f.path(), { revision: (await f.row()).revision, price: { amountCents: 9_000, currency: 'CAD' } });
+    expect(repriced.body.data).toMatchObject({ planId: basic.id, amountCents: 9_000, scheduledPlanId: null });
     expect((await f.row()).switchOverrideReason).toBe(reason);
+  });
+  it('refuses an upgrade now after a mid-period price edit or a full refund of the period', async () => {
+    const premium = (f: Setup) => f.newPlan({ amountCents: 13_000 });
+    // Billed 100 for March, then edited to 50: the days left were paid at 100, not 50.
+    const edited = await setup();
+    const plan = await premium(edited);
+    expect((await edited.call('PATCH', edited.path(), { revision: (await edited.row()).revision, price: { amountCents: 5_000, currency: 'CAD' } })).status).toBe(200);
+    refused(await edited.preview(plan.id), 'period_not_billed');
+    refused(await edited.switchNow(plan.id), 'period_not_billed');
+    // On the next billing date it still works.
+    expect((await edited.switchNow(plan.id, { timing: 'next_billing_date' })).status).toBe(200);
+    // March's cycle refunded in full: nothing paid for the days left.
+    const refunded = await setup(), refundedPlan = await premium(refunded);
+    const march = (await refunded.read()).invoices.find(invoice => invoice.kind === 'cycle' && invoice.dueOn === '2028-03-01')!;
+    await db.forGym(refunded.gymId, tx => tx.update(invoices).set({ status: 'refunded' }).where(eq(invoices.id, march.id)));
+    refused(await refunded.switchNow(refundedPlan.id), 'period_not_billed');
+    for (const f of [edited, refunded]) expect(await f.switchInvoices()).toEqual([]);
+  });
+  it('refuses an upgrade now between plans that carry different tax rates, and allows it on the next billing date', async () => {
+    const f = await setup(), tax = await factory('taxRates', f.gymId), taxed = await f.newPlan({ amountCents: 13_000 });
+    await factory('planTaxRates', f.gymId, { planId: taxed.id, taxRateId: tax.id });
+    refused(await f.preview(taxed.id), 'tax_change');
+    refused(await f.switchNow(taxed.id), 'tax_change');
+    expect((await f.preview(taxed.id, 'next_billing_date')).status).toBe(200);
+    // The same rates on both plans upgrade now as before.
+    await factory('planTaxRates', f.gymId, { planId: f.plan.id, taxRateId: tax.id });
+    expect((await f.switchNow(taxed.id)).status).toBe(200);
+    expect(await f.switchInvoices()).toHaveLength(1);
   });
 });
 

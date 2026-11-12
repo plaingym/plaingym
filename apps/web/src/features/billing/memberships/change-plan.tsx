@@ -13,7 +13,7 @@ import type { BillingClient } from '../catalog/api.js';
 import { money, selectClass } from '../catalog/format.js';
 
 const text = (key: string, values?: Record<string, string | number>) => t('billing/memberships:' + key, values);
-const knownReasons = new Set(['plan_inactive', 'currency', 'same_plan', 'cancelled', 'erased', 'commitment', 'not_active', 'interval_change', 'period_not_billed']);
+const knownReasons = new Set(['plan_inactive', 'currency', 'same_plan', 'cancelled', 'erased', 'commitment', 'not_active', 'interval_change', 'period_not_billed', 'tax_change']);
 /** What the server refused, in words; a conflict with no reason code is a stale revision. */
 function refusal(error: unknown) {
   if (!(error instanceof ApiError)) return text('switchFailed');

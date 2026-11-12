@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gte, lt, notInArray } from 'drizzle-orm';
-import { households, invoiceLineItems, invoices, memberships, planTaxRates, plans, taxRates, type Transaction } from '@plaingym/db';
+import { and, asc, eq, gt, gte, lt, min, notInArray } from 'drizzle-orm';
+import { auditEvents, households, invoiceLineItems, invoices, memberships, planTaxRates, plans, taxRates, type Transaction } from '@plaingym/db';
 import type * as c from '@plaingym/shared/contracts';
 import { calculatePlanChange, type CalculatedInvoice, type PlanChangeResult } from './invoicing/index.js';
 import { pricing } from './runner/store.js';
@@ -25,18 +25,25 @@ export function checkNow(row: Row, plan: Plan, today: string) {
   if (row.nextDueOn < today) refuse('period_not_billed', 'The membership\'s current period hasn\'t been billed yet');
 }
 const notBilled = () => refuse('period_not_billed', 'The current period wasn\'t billed at the membership\'s price');
+type PriceSnapshot = { amountCents?: unknown } | null;
 /**
  * The upgrade's proration for the days left in the current period, or null when none are left (the switch falls on the
- * due date). The current period must have been billed to the membership: a membership line for it on an invoice due
- * within the period that isn't void (its cycle, its first period or an earlier switch). Otherwise (a freeze resumed
- * early, a trial activated early, a first period left to the next billing date, an imported membership) the days left
- * cost nothing at the current price, and the switch is refused rather than charging a difference against them.
+ * due date). The current period must have been billed to the membership at its current price: a membership line for
+ * it on an invoice due within the period that isn't void or fully refunded (its cycle, its first period or an earlier
+ * switch), with no staff price edit since that invoice was issued. Otherwise (a freeze resumed early, a trial
+ * activated early, a first period left to the next billing date, an imported membership, a refunded period, a price
+ * edited mid-period) the days left weren't paid at the current price, and the switch is refused rather than charging
+ * a difference against them. The proration adds the new plan's taxes to the difference, which is exact only when both
+ * plans carry the same tax rates, so an upgrade between plans taxed differently is refused too (`tax_change`).
  */
 export async function prorateNow(tx: Transaction, row: Row, membership: c.Membership, plan: Plan, today: string): Promise<PlanChangeResult | null> {
   if (row.nextDueOn <= today) return null;
+  const [currentTaxes, newTaxes] = [await planTaxes(tx, row.planId), await planTaxes(tx, plan.id)];
+  if (currentTaxes.length !== newTaxes.length || currentTaxes.some((rate, index) => rate.id !== newTaxes[index]!.id))
+    refuse('tax_change', 'The plans carry different tax rates, so the upgrade starts on the next billing date');
   const home = (await tx.select().from(households).where(eq(households.id, row.householdId)))[0]!;
   const newPlan = { id: plan.id, amountCents: plan.amountCents, currency: plan.currency, interval: plan.interval as c.BillingInterval,
-    description: plan.name, taxRates: await planTaxes(tx, plan.id) };
+    description: plan.name, taxRates: newTaxes };
   const quote = () => {
     try {
       return calculatePlanChange({ ...pricing(home, row.currency), membership, newPlan, changeOn: today,
@@ -48,11 +55,15 @@ export async function prorateNow(tx: Transaction, row: Row, membership: c.Member
     }
   };
   const result = quote();
-  const billed = await tx.select({ id: invoices.id }).from(invoiceLineItems)
+  const [billed] = await tx.select({ issuedAt: min(invoices.createdAt) }).from(invoiceLineItems)
     .innerJoin(invoices, and(eq(invoices.gymId, invoiceLineItems.gymId), eq(invoices.id, invoiceLineItems.invoiceId)))
-    .where(and(eq(invoiceLineItems.membershipId, row.id), eq(invoiceLineItems.kind, 'membership'), notInArray(invoices.status, ['draft', 'void']),
-      gte(invoices.dueOn, result.periodStartsOn), lt(invoices.dueOn, result.periodEndsOn))).limit(1);
-  if (!billed.length) notBilled();
+    .where(and(eq(invoiceLineItems.membershipId, row.id), eq(invoiceLineItems.kind, 'membership'),
+      notInArray(invoices.status, ['draft', 'void', 'refunded']), gte(invoices.dueOn, result.periodStartsOn), lt(invoices.dueOn, result.periodEndsOn)));
+  if (!billed?.issuedAt) notBilled();
+  // A staff price edit after the period was billed means the days left were paid at another price than the current one.
+  const edits = await tx.select({ before: auditEvents.before, after: auditEvents.after }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'billing.membership.updated'), eq(auditEvents.targetId, row.id), gt(auditEvents.occurredAt, billed!.issuedAt!)));
+  if (edits.some(edit => (edit.before as PriceSnapshot)?.amountCents !== (edit.after as PriceSnapshot)?.amountCents)) notBilled();
   return result;
 }
 /**
@@ -65,7 +76,7 @@ export function issuable(result: PlanChangeResult | null): CalculatedInvoice | n
 /** What a switch would do, with the switch's refusals except the commitment, which it reports. */
 export async function switchPreview(tx: Transaction, row: Row, membership: c.Membership, member: { anonymizedAt: Date | null },
   plan: Plan, timing: c.PlanSwitchTiming, today: string): Promise<c.MembershipSwitchPreview> {
-  const { kind, commitmentBlocks } = switchTerms(row, member, plan, today);
+  const { kind, commitmentBlocks } = switchTerms(row, member, plan, timing, today);
   const upgradeNow = timing === 'now' && kind === 'upgrade';
   if (timing === 'now') checkNow(row, plan, today);
   const result = upgradeNow ? await prorateNow(tx, row, membership, plan, today) : null;

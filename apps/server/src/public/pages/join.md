@@ -51,7 +51,9 @@ they are more than 24 hours old and their submission window has ended in the gym
 timezone. The full following calendar day is protected, including across daylight
 saving changes. Submission writes `public.join.submitting` under the household lock
 before signing or assigning anything; that marker, a received/completed join, a
-signed waiver, staff edits, a linked login or a saved card protect the admission.
+signed waiver, staff edits, a lead row for a prospect (a staff edit or logged
+contact on the Leads screen, or a check-in), a linked login or a saved card protect
+the admission.
 Cleanup locks the same household and its resources. Its join-specific billing
 transition can void an associated open unpaid invoice only for an unsubmitted
 admission. The current join flow issues invoices after submission has begun, so

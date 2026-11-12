@@ -31,32 +31,40 @@ export function switchKind(current: { amountCents: number; interval: string }, n
   const from = perYear(current.amountCents, current.interval), to = perYear(next.amountCents, next.interval);
   return to < from ? 'downgrade' : to > from ? 'upgrade' : 'equal';
 }
-/** A downgrade before the commitment ends needs an override; on or after its last day it doesn't. */
-export function commitmentBlocks(kind: SwitchKind, commitmentEndsOn: string | null, today: string): boolean {
-  return kind === 'downgrade' && commitmentEndsOn !== null && commitmentEndsOn > today;
+/**
+ * A downgrade that takes effect before the commitment ends needs an override; one that takes effect on or after its
+ * last day doesn't.
+ */
+export function commitmentBlocks(kind: SwitchKind, commitmentEndsOn: string | null, effectiveOn: string): boolean {
+  return kind === 'downgrade' && commitmentEndsOn !== null && commitmentEndsOn > effectiveOn;
+}
+/** The day a switch takes effect: today for one made now, otherwise the next due date, when the cycle build applies it. */
+export function switchEffectiveOn(row: Row, timing: c.PlanSwitchTiming, today: string): string {
+  return timing === 'now' ? today : row.nextDueOn;
 }
 
 export function refuse(reason: string, message: string): never { throw new AppError('conflict', message, { reason: [reason] }); }
 /**
  * The switch rules for a membership and its member that no override lifts, and whether the commitment blocks the
- * switch. The preview reports the block; the switch refuses it without an override (`checkSwitch`).
+ * switch on the day it takes effect. The preview reports the block; the switch refuses it without an override
+ * (`checkSwitch`).
  */
-export function switchTerms(row: Row, member: { anonymizedAt: Date | null }, plan: Plan, today: string) {
+export function switchTerms(row: Row, member: { anonymizedAt: Date | null }, plan: Plan, timing: c.PlanSwitchTiming, today: string) {
   if (row.status === 'cancelled') refuse('cancelled', 'A cancelled membership cannot switch plans');
   if (member.anonymizedAt) refuse('erased', 'An erased member cannot switch plans');
   if (!plan.active) refuse('plan_inactive', 'Plan is inactive');
   if (plan.currency !== row.currency) refuse('currency', 'Currency does not match');
   if (plan.id === row.planId) refuse('same_plan', 'The membership is already on this plan');
   const kind = switchKind(row, plan);
-  return { kind, commitmentBlocks: commitmentBlocks(kind, row.commitmentEndsOn, today) };
+  return { kind, commitmentBlocks: commitmentBlocks(kind, row.commitmentEndsOn, switchEffectiveOn(row, timing, today)) };
 }
 /**
  * The switch rules, checked after the locks, replay and revision. `overrideUsed` is true only when the commitment
  * blocked the switch and the request's override let it through.
  */
 export function checkSwitch(row: Row, member: { anonymizedAt: Date | null }, plan: Plan,
-  request: { override?: { reason: string } | undefined }, today: string): { kind: SwitchKind; overrideUsed: boolean } {
-  const { kind, commitmentBlocks: blocked } = switchTerms(row, member, plan, today);
+  request: { timing: c.PlanSwitchTiming; override?: { reason: string } | undefined }, today: string): { kind: SwitchKind; overrideUsed: boolean } {
+  const { kind, commitmentBlocks: blocked } = switchTerms(row, member, plan, request.timing, today);
   if (blocked && !request.override) refuse('commitment', 'A downgrade before the commitment ends needs an override reason');
   return { kind, overrideUsed: blocked };
 }
@@ -65,7 +73,8 @@ export function scheduledSwitch(row: Row, plan: Plan, overrideReason: string | n
   return { scheduledPlanId: plan.id, scheduledAmountCents: plan.amountCents, scheduledInterval: plan.interval,
     scheduledOn: row.nextDueOn, switchOverrideReason: overrideReason };
 }
-const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null };
+/** The four scheduled columns, cleared. Erasure's cancel and a price edit that replaces a price change use them too. */
+export const unscheduled = { scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null } as const;
 /**
  * Clears a switch that hasn't applied yet, with its override reason. A reason left with no switch scheduled records
  * the last applied switch and stays until the next switch is scheduled (or the member is erased). A price change left
@@ -105,7 +114,8 @@ export function sameSwitchRequest(recorded: RecordedSwitchRequest, request: Reco
  * Applies an active membership's scheduled switch when its date is on or before the membership's next due date. Call
  * it inside the cycle build's transaction with the membership row locked, and price the row it returns. A frozen,
  * pending or trial membership keeps its switch until it is billed as active. A scheduled change to the current plan
- * changes only the price.
+ * changes only the price. A switch to a plan archived after it was scheduled still applies, at its quoted price, as an
+ * archived plan keeps the members already on it.
  */
 export async function applyScheduledSwitch(tx: Transaction, row: Row, clock: Clock): Promise<Row> {
   if (row.status !== 'active' || row.scheduledPlanId === null || row.scheduledAmountCents === null ||

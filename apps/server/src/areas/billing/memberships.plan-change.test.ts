@@ -84,16 +84,16 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
     expect(await f.audits(planSwitchedAction)).toHaveLength(1);
     expect(await f.row()).toMatchObject({ planId: next.id, scheduledPlanId: null, nextDueOn: '2028-04-01' });
   });
-  it('after missed days, bills the cycle before the switch date on the old plan and every cycle from it on the new one', async () => {
+  it('after missed days, applies the switch at the first cycle on or after its date and bills every cycle from it on the new plan', async () => {
     const f = await setup({ now: '2028-03-15T17:00:00Z', dueOn: '2028-04-01' }), next = await f.newPlan({ amountCents: 12_000 });
     await f.switchTo(next.id);
-    // Staff move the due date back a cycle; the switch keeps its date.
+    // Staff move the due date back a cycle; the switch moves with it, so it still applies at the next billing.
     const moved = await f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, nextDueOn: '2028-03-01' });
-    expect(moved).toMatchObject({ nextDueOn: '2028-03-01', scheduledPlanId: next.id, scheduledOn: '2028-04-01' });
+    expect(moved).toMatchObject({ nextDueOn: '2028-03-01', scheduledPlanId: next.id, scheduledOn: '2028-03-01' });
     await f.dailyOn('2028-05-03');
     expect((await f.billed()).map(line => [line.dueOn, line.planId, line.amountCents])).toEqual([
-      ['2028-03-01', f.plan.id, 10_000], ['2028-04-01', next.id, 12_000], ['2028-05-01', next.id, 12_000]]);
-    expect(await f.audits(planSwitchedAction)).toMatchObject([{ after: { dueOn: '2028-04-01' } }]);
+      ['2028-03-01', next.id, 12_000], ['2028-04-01', next.id, 12_000], ['2028-05-01', next.id, 12_000]]);
+    expect(await f.audits(planSwitchedAction)).toMatchObject([{ after: { dueOn: '2028-03-01' } }]);
   });
   it('leaves a frozen membership\'s skipped cycle on the old plan and applies at the first cycle after the resume', async () => {
     const f = await setup({ now: '2028-02-20T17:00:00Z' }), next = await f.newPlan({ amountCents: 12_000 });
@@ -179,11 +179,20 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
     const events = await f.audits(switchScheduledAction);
     expect(events.at(-1)).toMatchObject({ actorKind: 'user', actorUserId: f.user.id, after: { request: { planId: cheaper.id, override: true }, overrideUsed: true } });
     expect(JSON.stringify((await f.read()).audits)).not.toContain('approved by the owner');
-    // On the commitment's last day (and after) a downgrade needs no override; a switch without one drops the earlier reason.
-    f.clock.set('2028-06-01T17:00:00Z');
+    // The check uses the day the switch takes effect (the next due date, 1 March), not today. A commitment that ends
+    // on that day, or between today and it, doesn't block; a switch without an override drops the earlier reason.
     const lower = await f.newPlan({ amountCents: 7_000 });
-    expect(await f.switchTo(lower.id)).toMatchObject({ scheduledPlanId: lower.id });
-    expect((await f.row()).switchOverrideReason).toBeNull();
+    for (const endsOn of ['2028-03-01', '2028-02-25']) {
+      await db.forGym(f.gymId, tx => tx.update(memberships).set({ commitmentEndsOn: endsOn }).where(eq(memberships.id, f.membership.id)));
+      expect(await f.switchTo(lower.id)).toMatchObject({ scheduledPlanId: lower.id });
+      expect((await f.row()).switchOverrideReason).toBeNull();
+    }
+    const lowerAudits = (await f.audits(switchScheduledAction))
+      .filter(event => (event.after as { request: { planId: string } }).request.planId === lower.id);
+    expect(lowerAudits).toMatchObject([{ after: { overrideUsed: false } }, { after: { overrideUsed: false } }]);
+    // A commitment that ends the day after the switch takes effect still blocks it.
+    await db.forGym(f.gymId, tx => tx.update(memberships).set({ commitmentEndsOn: '2028-03-02' }).where(eq(memberships.id, f.membership.id)));
+    await expect(f.switchTo(cheaper.id)).rejects.toMatchObject(conflictReason('commitment'));
   });
   it('keeps an applied override\'s reason on the membership and clears a scheduled one\'s when it is cancelled', async () => {
     const f = await setup({ now: '2028-02-20T17:00:00Z' });
@@ -236,15 +245,41 @@ describe('scheduled plan switch against PostgreSQL and the charge runner', () =>
     expect(await f.service.changePlan(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, planId: other.id }))
       .toMatchObject({ planId: f.plan.id, scheduledPlanId: other.id, scheduledAmountCents: 9_000, scheduledOn: '2028-03-01' });
     await f.switchTo(next.id);
-    const repriced = await f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision,
-      price: { amountCents: 8_500, currency: 'CAD' } });
-    expect(repriced).toMatchObject({ amountCents: 8_500, scheduledPlanId: next.id });
+    // A price edit while a plan switch is scheduled would be overwritten by the switch's quoted price, so it is refused.
+    await expect(f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision,
+      price: { amountCents: 8_500, currency: 'CAD' } })).rejects.toMatchObject(conflictReason('switch_scheduled'));
+    expect(await f.row()).toMatchObject({ amountCents: 10_000, scheduledPlanId: next.id });
     await f.dailyOn('2028-03-01');
     expect(await f.billed()).toMatchObject([{ planId: next.id, amountCents: 12_000 }]);
     await f.switchTo(other.id);
     const ended = await f.service.cancel(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision });
     expect(ended).toMatchObject({ status: 'cancelled', scheduledPlanId: null, scheduledOn: null });
     await expect(f.switchTo(next.id)).rejects.toMatchObject(conflictReason('cancelled'));
+  });
+  it('moves a scheduled switch with a due date moved earlier, and leaves it when the due date moves later', async () => {
+    const f = await setup({ now: '2028-02-20T17:00:00Z' }), next = await f.newPlan({ amountCents: 12_000 });
+    await f.switchTo(next.id);
+    const update = async (nextDueOn: string) => f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision, nextDueOn });
+    expect(await update('2028-02-25')).toMatchObject({ nextDueOn: '2028-02-25', scheduledPlanId: next.id, scheduledOn: '2028-02-25' });
+    // A later due date keeps the switch's date: it applies at the first billing on or after it.
+    expect(await update('2028-02-27')).toMatchObject({ nextDueOn: '2028-02-27', scheduledPlanId: next.id, scheduledOn: '2028-02-25' });
+    await f.dailyOn('2028-02-27');
+    expect(await f.billed()).toMatchObject([{ dueOn: '2028-02-27', planId: next.id }]);
+    expect(await f.row()).toMatchObject({ planId: next.id, amountCents: 12_000, scheduledPlanId: null });
+  });
+  it('replaces a scheduled price change with a price edit, keeping the applied switch\'s reason, and never cancels one', async () => {
+    const f = await setup({ now: '2028-02-20T17:00:00Z' });
+    // The price change a downgrade now leaves: scheduled on the membership's current plan.
+    await db.forGym(f.gymId, tx => tx.update(memberships).set({ scheduledPlanId: f.plan.id, scheduledAmountCents: 8_000,
+      scheduledInterval: 'monthly', scheduledOn: '2028-03-01', switchOverrideReason: 'Approved' }).where(eq(memberships.id, f.membership.id)));
+    await expect(f.service.cancelScheduledSwitch(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision }))
+      .rejects.toMatchObject(conflictReason('price_change'));
+    const repriced = await f.service.update(f.staff, { membershipId: f.membership.id, revision: (await f.row()).revision,
+      price: { amountCents: 9_000, currency: 'CAD' } });
+    expect(repriced).toMatchObject({ amountCents: 9_000, scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null });
+    expect((await f.row()).switchOverrideReason).toBe('Approved');
+    await f.dailyOn('2028-03-01');
+    expect(await f.billed()).toMatchObject([{ dueOn: '2028-03-01', planId: f.plan.id, amountCents: 9_000 }]);
   });
   it('refuses an inactive plan, the current plan and an erased member', async () => {
     const f = await setup({ now: '2028-02-20T17:00:00Z' });

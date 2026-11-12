@@ -48,7 +48,7 @@ owners and admins (`plans.manage`), cover switching:
 | Route | What it does |
 | :--- | :--- |
 | `POST …/{membershipId}/switch` | `{ revision, requestId, planId, timing?, override? }`: switches on the next billing date (`timing` omitted or `next_billing_date`) or `now`. Returns `{ membership, invoiceId }`; `invoiceId` is the upgrade's proration invoice, or null. |
-| `POST …/{membershipId}/switch/cancel` | `{ revision }`: cancels a scheduled switch or price change that hasn't applied yet. Returns the membership. |
+| `POST …/{membershipId}/switch/cancel` | `{ revision }`: cancels a scheduled plan switch that hasn't applied yet. Returns the membership. A price change left by a downgrade now isn't cancelled (`price_change`); a price edit replaces it. |
 | `GET …/{membershipId}/switch/preview?planId&timing` | What the switch would do, without writing: the kind (`upgrade`, `downgrade`, `equal`), the date the new price starts, whether the commitment blocks it, and for an upgrade now the period, the days charged, the period's days and the invoice total (0 when none would be issued). It refuses what the switch refuses, except the commitment, which it reports. |
 
 `switchPlan(context, { membershipId, revision, requestId, planId, timing, override? })`
@@ -66,14 +66,16 @@ and the preview in `memberships.plan-change.now.ts`.
 - The plan must be active, in the membership's currency and not its current plan;
   the membership must not be cancelled and its member must not be erased. Conflicts
   carry a `reason` (`plan_inactive`, `currency`, `same_plan`, `cancelled`,
-  `erased`, `commitment`, and for "now" `not_active`, `interval_change` and
-  `period_not_billed`). Another gym's membership or plan is not found.
+  `erased`, `commitment`, and for "now" `not_active`, `interval_change`,
+  `period_not_billed` and `tax_change`). Another gym's membership or plan is not
+  found.
 - A switch is a downgrade when the new plan's price per year (a monthly price × 12)
   is below the membership's current price per year, an upgrade when above, and
-  equal otherwise. A downgrade while `commitment_ends_on` is after the gym's local
-  today is a `commitment` conflict unless the request has an override reason
-  (1–500 characters). On or after that day no override is needed, and an upgrade
-  is never blocked.
+  equal otherwise. A downgrade that takes effect before `commitment_ends_on` (on the
+  next due date for a scheduled switch, the gym's local today for "now") is a
+  `commitment` conflict unless the request has an override reason (1–500
+  characters). One that takes effect on or after that day needs no override, and an
+  upgrade is never blocked.
 - On the next billing date, it stores the plan, the plan's current price and
   interval, and the membership's next due date in the four `scheduled_*` columns,
   which `Membership` returns read-only, and moves no money. A new switch replaces
@@ -93,12 +95,16 @@ conflict: `not_active` for a pending, trial or frozen membership, `interval_chan
 or `period_not_billed`. The period counts as billed when the cycle due on an earlier
 date has run (the next due date is not before the gym's local today) and, for an
 upgrade with days left, when a membership line for this membership sits on an
-invoice that isn't void and is due within the current period (its cycle, its first
-period, or an earlier switch). A freeze resumed early, a trial activated early, a
-first period left to the next billing date or an imported membership has no such
-invoice, so the days left cost nothing at the current price: an upgrade now is
-refused rather than charged a difference against them, and the next billing date
-still works.
+invoice that isn't void or fully refunded and is due within the current period (its
+cycle, its first period, or an earlier switch), and no staff price edit has changed
+the membership's price since the first such invoice was issued. A freeze resumed
+early, a trial activated early, a first period left to the next billing date, an
+imported membership, a refunded period or a price edited mid-period leaves the days
+left unpaid at the current price: an upgrade now is refused rather than charged a
+difference against them, and the next billing date still works. An upgrade now
+between plans that carry different tax rates is refused too (`tax_change`): the
+proration adds the new plan's taxes to the price difference, which is exact only
+when both plans carry the same rates.
 
 - **Upgrade:** in the one transaction, the membership takes the new plan and its
   price, any scheduled switch is cleared, and the runner's `issue` writes the
@@ -121,9 +127,10 @@ still works.
   invoice, refund or credit. An equal switch has no price to change and schedules
   nothing.
 - Either audits `billing.membership.plan_switched` with the request, whether the
-  override was used, the kind and the invoice ID (or null). Cancelling the
-  scheduled price change leaves the membership on the new plan at its current
-  price, and keeps the override reason of the switch that applied.
+  override was used, the kind and the invoice ID (or null). The price change a
+  downgrade leaves can't be cancelled (`price_change`), since that would keep the
+  new plan at the old price; a price edit replaces it and keeps the override reason
+  of the switch that applied.
 
 The charge runner's cycle build calls `applyScheduledSwitch(tx, row, clock)` for
 each membership due in the cycle, before pricing it (`runner/README.md`). It applies
@@ -134,23 +141,29 @@ to monthly clears it. The scheduled columns are cleared, the revision is bumped 
 `billing.membership.plan_switched` is audited with the system actor. A scheduled
 change whose plan is the current plan changes only the price. Pending, trial and
 frozen memberships keep their switch until a cycle bills them as active. A frozen
-membership's skipped cycles don't apply it.
+membership's skipped cycles don't apply it. A switch to a plan archived after it was
+scheduled still applies at its quoted price, as an archived plan keeps the members
+already on it.
 
 `cancelScheduledSwitch(context, { membershipId, revision })`, behind the cancel
-route, clears a switch that hasn't applied yet and audits
+route, clears a plan switch that hasn't applied yet and audits
 `billing.membership.switch_cancelled`. A membership with no switch scheduled is a
-`none_scheduled` conflict. Cancelling the membership, member erasure and a new
-switch also drop a scheduled switch; a `PATCH` (price or due date only) keeps it.
-Clearing a scheduled switch also clears its override reason, except a price change
-left by a switch made now, whose switch has applied. After a switch applies, its
-reason stays on the membership until the next switch is scheduled or the member is
-erased.
+`none_scheduled` conflict, and a price change left by a downgrade now is a
+`price_change` conflict. Cancelling the membership, member erasure and a new
+switch also drop a scheduled switch. A `PATCH` with a price replaces a scheduled
+price change and is a `switch_scheduled` conflict while a plan switch is scheduled
+(its quoted price would overwrite the edit on the due date). A `PATCH` that moves
+the due date before a scheduled change's date moves that date with it, so the change
+still applies at the next billing; a later due date keeps it. Clearing a scheduled
+switch also clears its override reason, except a price change left by a switch made
+now, whose switch has applied. After a switch applies, its reason stays on the
+membership until the next switch is scheduled or the member is erased.
 
 ## Custom prices
 
 A membership copies its plan's price when assigned and keeps it when the plan's price changes. Staff can give one member a custom price from the member's Memberships tab: it sends the `price` override (amount and the membership's currency) on `PATCH /api/billing/memberships/{membershipId}`, which also takes a new `nextDueOn`. The tab's edit form has no plan select: a plan changes through a plan switch.
 
-The same tab (owners and admins) has a **Change plan** dialog on each live membership. It lists the active plans in the membership's currency other than its current plan, with "on the next billing date" preselected and "now" disabled (with the reason) for a membership that isn't active or a plan with another interval. It shows the server's preview before confirming, asks for a reason only when the preview says the commitment blocks the switch, and generates one request ID per distinct submission while it is open, so a retry replays. A stale revision reloads the membership and says it changed. A scheduled switch or price change shows on the card ("Changes to <plan> on <date>" or "New price <price> from <date>") with a confirmed **Cancel change**, and the price form warns that the scheduled change sets the price on its date.
+The same tab (owners and admins) has a **Change plan** dialog on each live membership. It lists the active plans in the membership's currency other than its current plan, with "on the next billing date" preselected and "now" disabled (with the reason) for a membership that isn't active or a plan with another interval. It shows the server's preview before confirming, asks for a reason only when the preview says the commitment blocks the switch, and generates one request ID per distinct submission while it is open, so a retry replays. A stale revision reloads the membership and says it changed. A scheduled switch or price change shows on the card ("Changes to <plan> on <date>" or "New price <price> from <date>"). A scheduled plan switch has a confirmed **Cancel change**, and the price form says to cancel it before changing the price; a scheduled price change has no Cancel change, and the price form says a price entered there replaces it.
 
 When the membership amount differs from the plan's current amount, the card
 shows "Plan price now" with that amount and billing interval. This covers both

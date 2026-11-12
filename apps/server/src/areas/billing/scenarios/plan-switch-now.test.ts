@@ -18,6 +18,8 @@ describe('plan switch now through the membership routes, the composed runner and
     const unlimited = await f.factory('plans', f.gymId, { name: 'Unlimited', amountCents: 15_000, currency: 'USD' });
     await f.factory('planTaxRates', f.gymId, { planId: unlimited.id, taxRateId: tax.id });
     await f.runJob(dailyRunJob);
+    // An upgrade now needs both plans to carry the same tax rates; the current plan takes the tax after March was billed.
+    await f.factory('planTaxRates', f.gymId, { planId: (await f.read()).memberships[0]!.planId, taxRateId: tax.id });
     const app = createApp({ clock: f.clock, authorize, skipSetup: true,
       contributions: { routes: createMembershipRoutes(f.lifecycle, { assigned: f.runner.collectAssigned }) },
       resolveGym: async (c, next) => { c.set('context', { ...c.get('context'), gym: { gymId: f.gymId, timezone: f.timezone, enabledModules: new Set() } }); await next(); },

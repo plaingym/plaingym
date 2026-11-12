@@ -13,8 +13,8 @@ import { gymSettingsAccessor } from '../settings/settings.js';
 import { markLeadWon } from '../leads/stages.js';
 import { catalogAudit, catalogMissing } from './catalog.js';
 import { addCalendarMonths, advanceDue, householdNextDate, trialEnd } from './memberships.calendar.js';
-import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, sameSwitchRequest,
-  scheduledSwitch, switchCancelledAction, switchedNow, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
+import { cancelScheduledSwitchRequestSchema, checkSwitch, clearedSwitch, planSwitchedAction, recordedSwitch, refuse, sameSwitchRequest,
+  scheduledSwitch, switchCancelledAction, switchedNow, unscheduled, switchPlanRequestSchema, switchScheduledAction, type CancelScheduledSwitchRequest,
   type PlanSwitchedNowAudit, type RecordedSwitchRequest, type SwitchPlanRequest, type SwitchScheduledAudit } from './memberships.plan-change.js';
 import { checkNow, issuable, planTaxes, prorateNow, switchPreview } from './memberships.plan-change.now.js';
 import { issue } from './runner/store.js';
@@ -282,7 +282,11 @@ export function createMembershipService(options: MembershipOptions = {}) {
         return switchPreview(tx, row, present(row), member, plan, query.timing, localDate(clock.now(), gym.timezone));
       });
     },
-    /** Cancels a switch that hasn't applied yet, with its override reason. */
+    /**
+     * Cancels a plan switch that hasn't applied yet, with its override reason. The price change a downgrade now leaves
+     * (scheduled on the current plan) isn't cancelled here: that would keep the new plan at the old price. A price edit
+     * replaces it instead.
+     */
     async cancelScheduledSwitch(context: MutationContext, input: CancelScheduledSwitchRequest): Promise<c.Membership> {
       const parsed = cancelScheduledSwitchRequestSchema.safeParse(input);
       if (!parsed.success) throw new AppError('invalid_request', 'Invalid request');
@@ -291,12 +295,19 @@ export function createMembershipService(options: MembershipOptions = {}) {
         const before = await lockForSwitch(tx, request.membershipId);
         if (before.revision !== request.revision) conflict('The record changed; reload before saving');
         if (before.scheduledPlanId === null) throw new AppError('conflict', 'No plan switch is scheduled', { reason: ['none_scheduled'] });
+        if (before.scheduledPlanId === before.planId)
+          refuse('price_change', 'A price change left by a switch made now isn\'t cancelled; change the price instead');
         const after = present(await saveSwitch(tx, before, clearedSwitch(before)));
         await catalogAudit(tx, context, clock, switchCancelledAction, 'membership', before.id, present(before), after);
         return after;
       });
     },
-    /** Changes the price or the next due date. A plan or interval changes only through `switchPlan`, so its rules hold. */
+    /**
+     * Changes the price or the next due date. A plan or interval changes only through `switchPlan`, so its rules hold.
+     * A price edit replaces a scheduled price change (keeping the reason of the switch that left it) and is refused while
+     * a plan switch is scheduled, whose quoted price would overwrite it (`switch_scheduled`). A due date moved before a
+     * scheduled change's date takes the change with it, so it still applies at the next billing.
+     */
     async update(context: MutationContext, request: UpdateMembership): Promise<c.Membership> {
       const { membershipId, planId, interval, ...input } = request;
       if (planId !== undefined || interval !== undefined)
@@ -306,7 +317,13 @@ export function createMembershipService(options: MembershipOptions = {}) {
         if (before.status === 'cancelled') conflict('Cancelled membership cannot be edited');
         if (changes.price && changes.price.currency !== before.currency) conflict('Currency does not match');
         if (changes.nextDueOn && changes.nextDueOn < before.startsOn) conflict('Billing cannot start before membership starts');
+        const priceOnly = before.scheduledPlanId !== null && before.scheduledPlanId === before.planId;
+        if (changes.price && before.scheduledPlanId !== null && !priceOnly)
+          refuse('switch_scheduled', 'A plan switch is scheduled; cancel it before changing the price');
+        const replaced = changes.price && priceOnly;
+        const follows = !replaced && changes.nextDueOn && before.scheduledOn !== null && changes.nextDueOn < before.scheduledOn;
         return { ...(changes.price ?? {}), ...(changes.nextDueOn ? { nextDueOn: changes.nextDueOn } : {}),
+          ...(replaced ? unscheduled : {}), ...(follows ? { scheduledOn: changes.nextDueOn } : {}),
           anniversaryOn: editedAnniversary(before, changes.nextDueOn) };
       });
     },

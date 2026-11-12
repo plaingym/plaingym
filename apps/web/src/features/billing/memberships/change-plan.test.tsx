@@ -19,13 +19,14 @@ const membership: Membership = { id: id(3), createdAt, memberId: id(4), househol
   scheduledPlanId: null, scheduledAmountCents: null, scheduledInterval: null, scheduledOn: null, revision: 3 };
 const upgrade: MembershipSwitchPreview = { planId: premium.id, timing: 'next_billing_date', kind: 'upgrade', currency: 'CAD', priceStartsOn: '2026-11-01', commitmentBlocks: false, proration: null };
 type Handler = (input: unknown, params: Record<string, string>, query: Record<string, string | number | undefined>) => Promise<unknown>;
-function start(options: { plans?: Plan[]; row?: Membership; preview?: (query: Record<string, string | number | undefined>) => MembershipSwitchPreview; switchPlan?: Handler; cancel?: Handler } = {}) {
+function start(options: { plans?: Plan[]; row?: Membership; preview?: (query: Record<string, string | number | undefined>) => MembershipSwitchPreview; switchPlan?: Handler; cancel?: Handler; update?: Handler } = {}) {
   const data: ShellBootstrap = { gym: { id: id(1), name: 'Academy', timezone: 'America/Vancouver', currency: 'CAD', enabledModules: [] }, session: { userId: id(6), displayName: 'Test User', roles: ['admin'], member: false }, login: { password: true, magicLink: false } };
   const row = options.row ?? membership;
   const call = vi.fn(async (name: string, input: unknown, params: Record<string, string>, query: Record<string, string | number | undefined>) => {
     if (name === 'previewMembershipSwitch') return { data: (options.preview ?? (() => upgrade))(query) };
     if (name === 'switchMembershipPlan') return options.switchPlan ? options.switchPlan(input, params, query) : { data: { membership: row, invoiceId: null } };
     if (name === 'cancelMembershipSwitch') return options.cancel ? options.cancel(input, params, query) : { data: row };
+    if (name === 'updateMembership') return options.update ? options.update(input, params, query) : { data: row };
     throw new Error('Unexpected call ' + name);
   });
   const client = { plans: vi.fn(async () => options.plans ?? [plan, premium]), memberships: vi.fn(async () => [row]), call,
@@ -179,7 +180,7 @@ it('offers no submit when the preview is refused', async () => {
   const { call } = start();
   call.mockImplementation(async (name: string) => { if (name === 'previewMembershipSwitch') throw new ApiError(409, 'conflict', ['period_not_billed']); return { data: membership }; });
   const dialog = await openDialog();
-  expect(await dialog.findByText(/hasn't been billed/)).toBeDefined();
+  expect(await dialog.findByText(/wasn't billed at the current price/)).toBeDefined();
   expect((dialog.getByRole('button', { name: 'Change plan' }) as HTMLButtonElement).disabled).toBe(true);
 });
 it('drops "now" for a plan that blocks it and does not bring it back with the next plan', async () => {
@@ -212,12 +213,23 @@ it('shows a scheduled plan change on the card and cancels it after a confirmatio
   await waitFor(() => expect(calls(call, 'cancelMembershipSwitch')).toHaveLength(1));
   expect(calls(call, 'cancelMembershipSwitch')[0]!.slice(1, 3)).toEqual([{ revision: 3 }, { membershipId: membership.id }]);
 });
-it('shows a scheduled price change beside the price form', async () => {
+it('shows a scheduled price change beside the price form, with no cancel action', async () => {
   const row = { ...membership, scheduledPlanId: plan.id, scheduledAmountCents: 8000, scheduledInterval: 'monthly' as const, scheduledOn: '2026-11-01' };
   start({ row });
   expect(await screen.findByText(/^New price .*80\.00 \/ Monthly from 2026-11-01\.$/)).toBeDefined();
+  // Cancelling it would keep the new plan at the old price; a price edit replaces it instead.
+  expect(screen.queryByRole('button', { name: 'Cancel change' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
-  expect(await screen.findByText(/A change is scheduled for 2026-11-01/)).toBeDefined();
+  expect(await screen.findByText('A new price is scheduled for 2026-11-01. A price entered here replaces it.')).toBeDefined();
+});
+it('says a scheduled plan change blocks a price edit, and shows the server\'s refusal', async () => {
+  const row = { ...membership, scheduledPlanId: premium.id, scheduledAmountCents: 15000, scheduledInterval: 'monthly' as const, scheduledOn: '2026-11-01' };
+  start({ row, update: async () => { throw new ApiError(409, 'conflict', ['switch_scheduled']); } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Change price' }));
+  expect(await screen.findByText(/^A plan change is scheduled for 2026-11-01\./)).toBeDefined();
+  fireEvent.change(screen.getByLabelText(/^Price/), { target: { value: '90' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect(await screen.findByText('A plan change is scheduled. Cancel it before changing the price.')).toBeDefined();
 });
 it('shows no scheduled change and no cancel action for a membership without one', async () => {
   start();

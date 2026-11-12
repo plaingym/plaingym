@@ -119,7 +119,9 @@ export const billingContracts = {
   assignMembership: { method: 'post', path: '/api/billing/memberships', permission: catalog,
     body: assignMembershipRequestSchema, response: membershipResponseSchema, successStatus: 201 },
   updateMembership: { method: 'patch', path: '/api/billing/memberships/{membershipId}', permission: catalog,
-    description: 'Changes a membership\'s price or next due date. A plan or billing interval changes only through the plan switch.',
+    description: 'Changes a membership\'s price or next due date. A plan or billing interval changes only through the plan switch. '
+      + 'A price replaces a scheduled price change and is refused while a plan switch is scheduled (`switch_scheduled`); a due '
+      + 'date moved before a scheduled change\'s date moves that date with it.',
     params: billingMembershipParamsSchema, body: updateMembershipRequestSchema, response: membershipResponseSchema, successStatus: 200 },
   switchMembershipPlan: { method: 'post', path: '/api/billing/memberships/{membershipId}/switch', permission: catalog,
     description: 'Switches a membership to another plan, on the next billing date (default) or `now`. Now is for active memberships '
@@ -128,7 +130,8 @@ export const billingContracts = {
       + 'A retry with the same `requestId` replays the result. Conflicts carry a `reason`.',
     params: billingMembershipParamsSchema, body: switchMembershipPlanRequestSchema, response: membershipSwitchResponseSchema, successStatus: 200 },
   cancelMembershipSwitch: { method: 'post', path: '/api/billing/memberships/{membershipId}/switch/cancel', permission: catalog,
-    description: 'Cancels a scheduled plan switch or price change that hasn\'t applied yet.',
+    description: 'Cancels a scheduled plan switch that hasn\'t applied yet. The price change a downgrade now leaves isn\'t '
+      + 'cancelled (`price_change`); a price edit replaces it.',
     params: billingMembershipParamsSchema, body: cancelMembershipSwitchRequestSchema, response: membershipResponseSchema, successStatus: 200 },
   previewMembershipSwitch: { method: 'get', path: '/api/billing/memberships/{membershipId}/switch/preview', permission: catalog,
     description: 'Shows what a plan switch would do, with the same conflicts as the switch except the commitment, which it reports.',
