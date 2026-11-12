@@ -63,7 +63,7 @@ export function createTransitionNotifications(options: {
     const base = `billing.${subject.purpose}:${subject.id}:${notice.generation}`;
     // Staff notices have one key per recipient, so a retry reaches only those the message provably did not reach. A member
     // notice has one recipient and no address in its key: an erased member's address leaves nothing behind, and an address
-    // changed between retries gets no second notice. Rows an earlier release keyed per recipient are adopted first.
+    // changed between retries gets no second notice.
     const keyFor = (to: string) => staff ? `${base}:${recipientDigest(to)}` : base;
     const prepared = await options.prepare(gymId);
     const t: Translator = (key, values) => {
@@ -82,7 +82,6 @@ export function createTransitionNotifications(options: {
         if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) return;
         const key = keyFor(to);
         const pending = await scope(gymId, async tx => {
-          if (!staff) await deliveries.adopt(tx, gymId, base);
           const reservation = await deliveries.reserve(tx, gymId, key);
           if (!reservation) return;
           const linkFields = { householdId: invoice.householdId, expiresAt: new Date(clock.now().getTime() + 21 * 86400_000).toISOString() };

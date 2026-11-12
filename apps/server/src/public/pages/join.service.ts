@@ -96,7 +96,7 @@ export function createJoinService(options: JoinOptions) {
   const settings = (gymId: string) => scope(gymId, tx => readGymSettings(tx, gymId));
   // No assignment callback: the join issues one first invoice with every first period and sign-up fee.
   const lifecycle = options.memberships ?? createMembershipService({ scope, clock, settings: createGymSettingsAccessor({ scope, clock }) });
-  const links = options.links ?? createSignedLinksService({ scope, clock });
+  const links = options.links ?? createSignedLinksService({ scope, clock, allowZeroInvoices: true });
   const store = options.invitationStore ?? createPortalInvitationStore();
   const transitions = createInvoiceTransitions({ scope, clock });
   const cleanup = createJoinCleanup({ scope, clock, uploadsFor: gymId => {

@@ -2,7 +2,7 @@
 import { and, count, eq, gt, inArray, isNotNull, isNull, lte, max, ne, or } from 'drizzle-orm';
 import { linkCampaignSchema, signedLinkSchema, type CampaignRecipient, type CampaignRecipientState, type LinkCampaignDetail,
   type LinkCampaignProgress } from '@plaingym/shared/contracts';
-import { signedLinks, type linkCampaigns, type Transaction } from '@plaingym/db';
+import { signedLinks, linkCampaigns, writeAudit, type Transaction } from '@plaingym/db';
 
 export function campaignRecipient(row: typeof signedLinks.$inferSelect, now: Date): CampaignRecipient {
   return {
@@ -50,4 +50,16 @@ export function campaignDetail(row: typeof linkCampaigns.$inferSelect, tally: Ca
   const completedAt = progress.total > 0 && progress.completed === progress.total ? tally!.lastUsedAt!.toISOString() : null;
   return { campaign: linkCampaignSchema.parse({ id: row.id, name: row.name, purpose: row.purpose,
     createdBy: row.createdBy, reminderSchedule: row.reminderSchedule, createdAt: row.createdAt.toISOString(), completedAt }), progress };
+}
+
+/** Serialize the last recipients' completions, so a concurrent final completion sees the preceding commit. */
+export async function completeCampaignIn(tx: Transaction, gymId: string, campaignId: string | null, now: Date) {
+  if (!campaignId) return;
+  const [campaign] = await tx.select().from(linkCampaigns).where(and(eq(linkCampaigns.gymId, gymId), eq(linkCampaigns.id, campaignId))).for('update');
+  if (!campaign || campaign.completedAt) return;
+  const tally = (await campaignTallies(tx, gymId, [campaignId], now)).get(campaignId);
+  if (!tally || tally.progress.total === 0 || tally.progress.completed !== tally.progress.total) return;
+  await tx.update(linkCampaigns).set({ completedAt: tally.lastUsedAt }).where(eq(linkCampaigns.id, campaignId));
+  await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.completed', targetType: 'link_campaign',
+    targetId: campaignId, after: { completedAt: tally.lastUsedAt!.toISOString() }, occurredAt: now });
 }

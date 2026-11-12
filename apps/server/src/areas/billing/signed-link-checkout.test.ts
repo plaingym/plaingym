@@ -29,6 +29,24 @@ import { createSignedLinkCheckout } from './signed-link-checkout.js';
 import { customerUnlinkedAction } from './customers.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
+it('replays the invoice reservation by its exact expiry when another link has a same-time audit', async () => {
+  const f = await fixture('pay_invoice');
+  const other = await f.links.create(f.context, { purpose: 'pay_invoice', householdId: f.household.id,
+    invoiceId: f.invoice.id, expiresAt: f.created.link.expiresAt });
+  const create = f.fake.createCheckout.bind(f.fake);
+  let lost: CheckoutSession | undefined;
+  const spy = vi.spyOn(f.fake, 'createCheckout').mockImplementationOnce(async request => {
+    lost = await create(request); throw new Error('Reply lost');
+  });
+  await expect(f.checkout.start(f.gymId, f.linkId)).rejects.toThrow('Reply lost');
+  // This newer audit at the same instant belongs to a different reservation, not the invoice's current expiry.
+  await db.forGym(f.gymId, tx => writeAudit(tx, { gymId: f.gymId, actorKind: 'system', targetType: 'signed_link',
+    targetId: other.link.id, action: 'billing.checkout.reserved', occurredAt: f.clock.now(),
+    after: { expiresAt: new Date(f.clock.now().getTime() + 22 * 3600000).toISOString() } }));
+  const replay = await f.checkout.start(f.gymId, f.linkId);
+  expect(replay.session.id).toBe(lost!.id);
+  expect(spy.mock.calls.map(([request]) => request.linkId)).toEqual([f.linkId, f.linkId]);
+});
 it('replays short card setup with a persisted expiry after a lost response, and renews expired setup', async () => {
   const f = await fixture('update_card'), flow = { successPath: '/join/return', cancelPath: '/join/cancelled', lifetimeMs: 3_600_000 };
   const create = f.provider.createCheckout.bind(f.provider);

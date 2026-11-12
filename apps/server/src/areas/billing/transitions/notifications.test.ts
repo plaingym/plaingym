@@ -124,14 +124,6 @@ describe('keyed billing notices', () => {
     expect(rows.map(row => row.key)).toEqual([`billing.receipt:${f.invoice.id}:${notice.generation}`]);
     expect(rows.some(row => row.key.includes(recipientDigest('payer@example.invalid')) || row.commandDigest)).toBe(false);
   });
-  it('a retry after an upgrade finds the per-recipient row an earlier release wrote, and takes it over', async () => {
-    const f = await fixture(), notice = await f.notice(uuidv7()), key = `billing.dunning:${f.invoice.id}:${notice.generation}`;
-    const earlier = await factory('emailDeliveries', f.gymId, { key: `${key}:${recipientDigest('payer@example.invalid')}`, state: 'accepted' });
-    await f.notifications.dunning({ ...notice, actionRequired: false });
-    expect(f.fake.messages).toEqual([]);
-    expect(await f.links()).toEqual([]);
-    expect(await db.forGym(f.gymId, tx => tx.select({ id: emailDeliveries.id, key: emailDeliveries.key }).from(emailDeliveries))).toEqual([{ id: earlier.id, key }]);
-  });
   it('waits for an attempt still in flight instead of sending or minting', async () => {
     const f = await fixture(), notice = await f.notice(uuidv7());
     let finish!: () => void, entered!: () => void;

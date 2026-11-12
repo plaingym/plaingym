@@ -68,7 +68,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
         setUncertain(unknown);
         if (sendGeneration && !unknown) linkSend.current.sent();
         if ('token' in result.data) { setUrl(new URL('/l/' + result.data.token, location.origin).href); }
-        else setMessage(text(unknown ? 'sendUncertain' : 'linkSent'));
+        else setMessage(text(unknown ? 'sendUncertain' : result.data.revokedAt ? 'manualNoticeSent' : 'linkSent'));
       }
       await cache.invalidateQueries({ queryKey: ['billing', gymId] });
       markSaved(); setDraft(false);
@@ -95,7 +95,7 @@ export function InvoiceDetails({ gymId, invoiceId, access, client = invoiceClien
       <div className="flex flex-col flex-wrap gap-2 sm:flex-row">
         {collectible && access.record && <><Button onClick={() => open({ kind: 'cash' })}>{text('recordCash')}</Button><Button variant="outline" disabled={invoice.needsReview || allCards.data !== true} onClick={() => open({ kind: 'charge' })}>{text('chargeCard')}</Button></>}
         {collectible && invoice.needsReview && access.refund && <Button variant="outline" onClick={() => open({ kind: 'releaseHold' })}>{text('releaseHold')}</Button>}
-        {collectible && access.links && <Button variant="outline" onClick={() => open({ kind: 'link' })}>{text('payLink')}</Button>}
+        {collectible && invoice.amountCents > 0 && access.links && <Button variant="outline" onClick={() => open({ kind: 'link' })}>{text('payLink')}</Button>}
         {invoice.paidAt && <Button variant="outline" onClick={() => open({ kind: 'viewReceipt' })}>{text('viewReceipt')}</Button>}
         {invoice.paidAt && access.record && <Button variant="outline" onClick={() => open({ kind: 'receipt' })}>{text('resendReceipt')}</Button>}
       </div>

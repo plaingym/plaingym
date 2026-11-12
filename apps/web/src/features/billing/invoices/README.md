@@ -30,7 +30,9 @@ successful refunds, and uses that amount as its initial input.
 
 Receipt view reads the stored invoice lines, payments and refunds. Pay links use
 the signed-link contracts directly, and are bound to one invoice and household.
-No Stripe Checkout response is fabricated for a signed link.
+A sent record with `revokedAt` displays confirmation that manual-payment instructions
+were sent. A zero invoice offers no send/share pay-link action. No Stripe Checkout
+response is fabricated for a signed link.
 
 `page.test.tsx` covers contract transport, household filtering, pagination, exact
 cents, front-desk controls, admin refunds, error recovery, and signed-link sends.

@@ -18,6 +18,7 @@ import type { Principal } from '../../core/context.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { commandDigest, createEmailDeliveries, deliveryAcceptance, type Email } from '../../infra/email/index.js';
 import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery } from './service.delivery.js';
+import { completeCampaignIn } from './campaigns.model.js';
 
 type LinkRow = typeof signedLinks.$inferSelect;
 export type SignedLinkPrincipal = Extract<Principal, { kind: 'signed_link' }>;
@@ -88,14 +89,14 @@ function lowercaseIds(request: CreateSignedLinkRequest): CreateSignedLinkRequest
  * the first failing request with the error a one-by-one check would raise. Requests after the first expired one are
  * never looked up, and waiver members are locked in ID order.
  */
-async function checkResources(tx: Transaction, gymId: string, all: CreateSignedLinkRequest[], now: Date) {
+async function checkResources(tx: Transaction, gymId: string, all: CreateSignedLinkRequest[], now: Date, allowZeroInvoices: boolean) {
   const expired = all.findIndex(request => new Date(request.expiresAt) <= now);
   const requests = expired < 0 ? all : all.slice(0, expired);
   const householdIds = new Set((await lookup(requests.map(r => r.householdId), ids => tx.select({ id: households.id })
     .from(households).where(and(eq(households.gymId, gymId), inArray(households.id, ids))))).map(row => row.id));
   const invoiceHouseholds = new Map((await lookup(requests.flatMap(r => r.purpose === 'pay_invoice' ? [r.invoiceId] : []),
-    ids => tx.select({ id: invoices.id, householdId: invoices.householdId }).from(invoices)
-      .where(and(eq(invoices.gymId, gymId), inArray(invoices.id, ids))))).map(row => [row.id, row.householdId]));
+    ids => tx.select({ id: invoices.id, householdId: invoices.householdId, amountCents: invoices.amountCents }).from(invoices)
+      .where(and(eq(invoices.gymId, gymId), inArray(invoices.id, ids))))).map(row => [row.id, row]));
   const waiverMembers = new Map((await lookup(requests.flatMap(r => r.purpose === 'sign_waiver' ? [r.memberId] : []),
     ids => tx.select({ id: members.id, householdId: members.householdId, anonymizedAt: members.anonymizedAt }).from(members)
       .where(and(eq(members.gymId, gymId), inArray(members.id, ids))).orderBy(asc(members.id)).for('update'))).map(row => [row.id, row]));
@@ -105,7 +106,10 @@ async function checkResources(tx: Transaction, gymId: string, all: CreateSignedL
   for (const request of requests) {
     if (!householdIds.has(request.householdId)) missing();
     if (request.purpose === 'pay_invoice') {
-      if (invoiceHouseholds.get(request.invoiceId) !== request.householdId) missing();
+      const invoice = invoiceHouseholds.get(request.invoiceId);
+      if (invoice?.householdId !== request.householdId) missing();
+      if (invoice.amountCents === 0 && !allowZeroInvoices)
+        throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
     } else if (request.purpose === 'sign_waiver') {
       const member = waiverMembers.get(request.memberId);
       if (member?.householdId !== request.householdId) missing();
@@ -124,7 +128,8 @@ async function checkResources(tx: Transaction, gymId: string, all: CreateSignedL
  * chunk. Each returned token is shown once; only its digest is stored. IDs ascend in request order, as when each
  * link was created after the one before it.
  */
-export async function createSignedLinksIn(tx: Transaction, context: MutationContext, inputs: CreateSignedLinkRequest[], now: Date) {
+export async function createSignedLinksIn(tx: Transaction, context: MutationContext, inputs: CreateSignedLinkRequest[], now: Date,
+  { allowZeroInvoices = false }: { allowZeroInvoices?: boolean } = {}) {
   const requests = inputs.map(input => lowercaseIds(createSignedLinkRequestSchema.parse(input)));
   const seen = new Set<string>();
   for (const request of requests) {
@@ -134,7 +139,7 @@ export async function createSignedLinksIn(tx: Transaction, context: MutationCont
     if (seen.has(key)) throw new AppError('invalid_request', `${kind === 'invoice' ? 'An' : 'A'} ${kind} may appear only once`);
     seen.add(key);
   }
-  await checkResources(tx, context.gymId, requests, now);
+  await checkResources(tx, context.gymId, requests, now, allowZeroInvoices);
   const ids = requests.map(() => uuidv7()).sort(), auditIds = requests.map(() => uuidv7()).sort();
   const created: { link: SignedLinkRecord; token: string }[] = [];
   for (const [index, chunk] of chunks(requests).entries()) {
@@ -153,19 +158,38 @@ export async function createSignedLinksIn(tx: Transaction, context: MutationCont
       ...auditEvent(context, 'signed_link.created', link, now), id: auditIds[offset + i]! })));
     created.push(...links.map((link, i) => ({ link, token: tokens[i]! })));
   }
+  const campaignIds = [...new Set(requests.flatMap(request => request.campaignId ?? []))].sort();
+  for (const ids of chunks(campaignIds))
+    await tx.update(linkCampaigns).set({ completedAt: null }).where(and(eq(linkCampaigns.gymId, context.gymId), inArray(linkCampaigns.id, ids)));
   return created;
+}
+
+/** The caller's transaction owns the row lock, update and audit for every revocation path. */
+export async function revokeSignedLinkIn(tx: Transaction, context: MutationContext, linkId: string, now: Date) {
+  const [before] = await tx.select().from(signedLinks).where(and(
+    eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
+  )).for('update');
+  if (!before || before.purpose === 'unsubscribe') missing();
+  if (before.revokedAt !== null) return metadata(before);
+  const [row] = await tx.update(signedLinks).set({ revokedAt: now }).where(and(
+    eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
+  )).returning();
+  await audit(tx, context, 'signed_link.revoked', row!, now, before);
+  return metadata(row!);
 }
 
 export function createSignedLinksService(options: {
   scope?: typeof forGym;
   clock?: Clock;
   delivery?: SignedLinkDelivery;
+  /** Internal settlement flows may need an undisclosed zero-invoice association; staff sharing always refuses it. */
+  allowZeroInvoices?: boolean;
 } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const deliveries = createEmailDeliveries({ scope, clock });
   /** Creates every link or none, in one transaction (`createSignedLinksIn`). */
   async function createMany(context: MutationContext, inputs: CreateSignedLinkRequest[]) {
-    return scope(context.gymId, tx => createSignedLinksIn(tx, context, inputs, clock.now()));
+    return scope(context.gymId, tx => createSignedLinksIn(tx, context, inputs, clock.now(), { allowZeroInvoices: options.allowZeroInvoices ?? false }));
   }
   async function create(context: MutationContext, input: CreateSignedLinkRequest) {
     return (await createMany(context, [input]))[0]!;
@@ -178,19 +202,7 @@ export function createSignedLinksService(options: {
     });
   }
   async function revoke(context: MutationContext, linkId: string) {
-    return scope(context.gymId, async (tx) => {
-      const [before] = await tx.select().from(signedLinks).where(and(
-        eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
-      )).for('update');
-      if (!before || before.purpose === 'unsubscribe') missing();
-      if (before.revokedAt !== null) return metadata(before);
-      const now = clock.now();
-      const [row] = await tx.update(signedLinks).set({ revokedAt: now }).where(and(
-        eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, linkId),
-      )).returning();
-      await audit(tx, context, 'signed_link.revoked', row!, now, before);
-      return metadata(row!);
-    });
+    return scope(context.gymId, tx => revokeSignedLinkIn(tx, context, linkId, clock.now()));
   }
   return {
     create, createMany, get, revoke,
@@ -235,6 +247,7 @@ export function createSignedLinksService(options: {
           eq(signedLinks.gymId, context.gymId), eq(signedLinks.id, context.linkId),
         )).returning();
         await audit(tx, { gymId: context.gymId, actor: { kind: 'system' } }, 'signed_link.used', row!, now, before);
+        await completeCampaignIn(tx, context.gymId, before.campaignId, now);
         return metadata(row!);
       });
     },
@@ -267,16 +280,13 @@ export function createSignedLinksService(options: {
           const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.gymId, context.gymId),
             eq(invoices.id, request.invoiceId), eq(invoices.householdId, request.householdId))).for('update');
           if (!invoice) missing();
-          if (invoice.amountCents === 0) throw new AppError('conflict', 'This invoice settles on its due date', { reason: ['zero_invoice'] });
+          if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid');
+          if (invoice.amountCents === 0) throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
           manualPayment = !!cardChargeIssue(invoice.amountCents, invoice.currency);
         }
         const created = (await createSignedLinksIn(tx, context, [request], clock.now()))[0]!;
         if (manualPayment) {
-          const now = clock.now();
-          const [before] = await tx.select().from(signedLinks).where(eq(signedLinks.id, created.link.id));
-          const [row] = await tx.update(signedLinks).set({ revokedAt: now }).where(eq(signedLinks.id, created.link.id)).returning();
-          await audit(tx, context, 'signed_link.revoked', row!, now, before);
-          created.link = metadata(row!);
+          created.link = await revokeSignedLinkIn(tx, context, created.link.id, clock.now());
         }
         await deliveries.remember(tx, reservation, { linkId: created.link.id });
         return { created, reservation };

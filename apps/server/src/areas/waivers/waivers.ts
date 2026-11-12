@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { completeCampaignIn } from '../links/campaigns.model.js';
 import { and, asc, desc, eq, count, inArray, isNull } from 'drizzle-orm';
 import { databaseCode, forGym, members, signedLinks, waiverTemplates, waiverSignatures, uuidv7, writeAudit } from '@plaingym/db';
 import type { Transaction } from '@plaingym/db';
@@ -286,6 +287,7 @@ export function createWaiversService(options: WaiverOptions) {
         && (Object.is(result, completedOnOpen) || 'snapshotHash' in result || ('kind' in result && result.kind === 'existing'))
         && await signedLinkWaiversComplete(tx, [memberId])) {
         await tx.update(signedLinks).set({ usedAt: clock.now() }).where(eq(signedLinks.id, linkId));
+        await completeCampaignIn(tx, gymId, link.campaignId, clock.now());
         await writeAudit(tx, { gymId, actorKind: 'system', action: 'signed_link.used', targetType: 'signed_link', targetId: linkId,
           before: null, after: null, occurredAt: clock.now() });
         if (Object.is(result, completedOnOpen)) completedOnOpen.completed = true;

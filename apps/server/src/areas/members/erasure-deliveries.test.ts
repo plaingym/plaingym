@@ -6,7 +6,7 @@ import { emailDeliveries, invoices, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '../../../../../packages/db/src/testing/database.js';
 import { createFactories } from '../../../../../packages/db/src/testing/factories.js';
 import { TestClock } from '../../core/clock.js';
-import { commandDigest, createEmailDeliveries, FakeEmail, recipientDigest } from '../../infra/email/index.js';
+import { commandDigest, FakeEmail, recipientDigest } from '../../infra/email/index.js';
 import { announcementDeliveryKey } from '../announcements/send.delivery.js';
 import { snapshot } from '../billing/transitions/store.js';
 import { createTransitionNotifications } from '../billing/transitions/notifications.js';
@@ -31,8 +31,6 @@ describe('erasure and delivery records', () => {
     const [row] = await db.forGym(gymId, tx => tx.select().from(invoices).where(eq(invoices.id, invoice.id)));
     await notifications.receipt({ gymId, generation: uuidv7(), invoice: snapshot(row!) });
     await notifications.dunning({ gymId, generation: uuidv7(), invoice: snapshot(row!), actionRequired: false });
-    // A receipt an earlier release keyed by the address.
-    await factory('emailDeliveries', gymId, { key: `billing.receipt:${invoice.id}:${uuidv7()}:${recipientDigest(address)}` });
     // An announcement to each member and a cancellation notice, which keep a digest of the address they went to.
     const announcement = await factory('announcements', gymId);
     const digests: Record<string, string> = {};
@@ -45,7 +43,6 @@ describe('erasure and delivery records', () => {
     await factory('emailDeliveries', gymId, { key: `schedule-cancel-notice:${sessionId}:${person.id}`, commandDigest: commandDigest([sessionId, address]) });
 
     await createMembersService({ scope: db.forGym, clock }).eraseMember({ gymId, actor: { kind: 'system' } }, person.id as string, { revision: 1 }, queue);
-    await createEmailDeliveries({ scope: db.forGym, clock }).upkeep(gymId);
 
     const rows = await db.forGym(gymId, tx => tx.select().from(emailDeliveries));
     const derived = [recipientDigest(address), createHash('sha256').update(address).digest('base64url'), digests[person.id]!,
@@ -56,7 +53,7 @@ describe('erasure and delivery records', () => {
         expect(delivery.commandDigest ?? '').not.toContain(value);
       }
     // Every record stays, keyed by IDs: only the other member's own digest is left.
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(5);
     expect(rows.flatMap(delivery => delivery.commandDigest ?? [])).toEqual([digests[other.id]]);
   });
 });

@@ -1,5 +1,5 @@
 {
-  "zeroInvoice": "This invoice settles on its due date. No payment is needed.",
+  "zeroInvoice": "No payment is needed for this invoice.",
   "$comment": "SPDX-License-Identifier: AGPL-3.0-only",
   "manualPayment": "This invoice cannot be paid by card. Contact the gym to arrange a manual payment.",
   "title": "Billing",

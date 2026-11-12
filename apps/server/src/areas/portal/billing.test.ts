@@ -154,7 +154,7 @@ describe('portal billing routes', () => {
     const path = `/api/portal/invoices/${f.open.id}/checkout`;
     const response = await send(f.app(payerPrincipal(f)), 'POST', path);
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: { message: 'This invoice settles on its due date' } });
+    expect(await response.json()).toMatchObject({ error: { message: 'No payment is needed' } });
     expect(create).not.toHaveBeenCalled();
     expect(await portalLinks(f)).toHaveLength(0);
     expect((await send(f.app(otherPayerPrincipal(f)), 'POST', path)).status).toBe(404);

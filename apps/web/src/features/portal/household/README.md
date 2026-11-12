@@ -4,8 +4,8 @@
 Invoices below the card minimum or off the currency step show manual-payment
 instructions instead of a Pay now action. The server repeats the shared money check
 before creating a pay link or Checkout; amounts are never silently rounded.
-An open zero invoice shows a settlement note without a payment action or manual
-instructions; it settles on its due date and Checkout is refused before minting a link.
+An open zero invoice shows a note that no payment is needed, without a payment action
+or manual instructions, and Checkout is refused before minting a link.
 
 `/portal/billing` shows read-only class credit balances for members with usable
 credits. Payers see each member of their household; an adult non-payer sees only

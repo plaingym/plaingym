@@ -8,6 +8,7 @@ import { createGymSettingsAccessor } from '../settings/settings.js';
 import { checkoutInProgress, deliveryBlocked, deliveryHistory } from './campaigns.attempts.js';
 import { campaignRecipient } from './campaigns.model.js';
 import { deliverSignedLink, validateSignedLinkDelivery, type SignedLinkDelivery } from './service.delivery.js';
+import { revokeSignedLinkIn } from './service.js';
 
 /** Reissue the existing recipient credential; reminders never add recipients or extend their expiry. */
 export async function deliverCampaignLink(options: { scope: typeof forGym; clock: Clock; delivery: SignedLinkDelivery },
@@ -31,7 +32,7 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
   const token = 'campaign_' + randomBytes(32).toString('base64url');
   const tokenHash = createHash('sha256').update(token).digest('hex');
   const reservationId = uuidv7(clock.now().getTime());
-  const reserve = (mode: 'link' | 'manual') => scope(gymId, async tx => {
+  const reserve = (mode: 'link' | 'manual' | 'skip') => scope(gymId, async tx => {
     const [row] = await tx.select().from(signedLinks).where(and(eq(signedLinks.id, linkId), eq(signedLinks.campaignId, campaignId))).for('update');
     if (!row || row.purpose === 'unsubscribe' || campaignRecipient(row, clock.now()).state !== 'pending') return;
     const history = await deliveryHistory(tx, gymId, [linkId]);
@@ -41,10 +42,22 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
       return;
     }
     if (deliveryBlocked(history, linkId, occurrence, clock.now(), gym.timezone)) return;
+    let revokeUndisclosed = false;
     if (mode === 'link') await tx.update(signedLinks).set({ tokenHash }).where(eq(signedLinks.id, linkId));
+    else {
+      // An unreleased link reservation may have reached SMTP before a crash. Preserve that credential, too.
+      const released = new Set(history.filter(event => event.action === 'link_campaign.delivery_released')
+        .map(event => (event.after as { reservation?: string } | null)?.reservation));
+      const disclosed = history.some(event => event.action === 'link_campaign.delivery_sent' || event.action === 'link_campaign.delivery_uncertain'
+        || (event.action === 'link_campaign.delivery_reserved'
+          && !released.has((event.after as { reservation?: string } | null)?.reservation)
+          && !['manual', 'skip'].includes((event.after as { mode?: string } | null)?.mode ?? 'link')));
+      if (!disclosed && mode === 'skip') await revokeSignedLinkIn(tx, { gymId, actor: { kind: 'system' } }, linkId, clock.now());
+      revokeUndisclosed = !disclosed && mode === 'manual';
+    }
     await writeAudit(tx, { gymId, actorKind: 'system', action: 'link_campaign.delivery_reserved',
-      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reservation: reservationId }, occurredAt: clock.now() });
-    return { previousHash: row.tokenHash };
+      targetType: 'signed_link', targetId: linkId, after: { campaignId, occurrence, reservation: reservationId, mode }, occurredAt: clock.now() });
+    return { previousHash: row.tokenHash, mode, revokeUndisclosed };
   });
   let reservation: Awaited<ReturnType<typeof reserve>>;
   let outcome = 'sent', transportEntered = false, transportSuppressed = false, failure: unknown;
@@ -63,9 +76,10 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     // A completion or revoke committed during preparation stops the queued send before anything is reserved.
     const [current] = await scope(gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, linkId)));
     if (current && current.purpose !== 'unsubscribe' && current.campaignId === campaignId && campaignRecipient(current, clock.now()).state === 'pending') {
-      await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: campaignRecipient(current, clock.now()).link, token,
+      const disclosed = await deliverSignedLink({ scope, context: { gymId, actor: { kind: 'system' } }, link: campaignRecipient(current, clock.now()).link, token,
         prepareSelected: async mode => { reservation = await reserve(mode); return !!reservation; },
         delivery: { ...prepared, email: observed }, noticeKey: 'links/campaigns:replacementNotice' });
+      if (reservation && !disclosed) outcome = reservation.mode === 'skip' ? 'skipped' : 'manual';
     }
   } catch (error) {
     if (!reservation) throw error;
@@ -75,8 +89,11 @@ export async function deliverCampaignLink(options: { scope: typeof forGym; clock
     else outcome = 'uncertain';
   }
   if (!reservation) return;
-  const previousHash = reservation.previousHash;
+  const { previousHash, revokeUndisclosed } = reservation;
   await scope(gymId, async tx => {
+    // Only a notice that reached SMTP closes the credential; a suppressed one stays pending for the next reminder.
+    if (revokeUndisclosed && (outcome === 'manual' || outcome === 'uncertain'))
+      await revokeSignedLinkIn(tx, { gymId, actor: { kind: 'system' } }, linkId, clock.now());
     if (outcome !== 'sent' && outcome !== 'uncertain') {
       // A definite non-send must preserve the earlier email. Never overwrite a newer attempt.
       await tx.update(signedLinks).set({ tokenHash: previousHash })

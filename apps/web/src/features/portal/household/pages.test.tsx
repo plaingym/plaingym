@@ -142,7 +142,7 @@ describe('portal billing page', () => {
     mount(<PortalBillingPage navigate={vi.fn()} />, path => path.startsWith('/api/portal/invoices?') ? page([
       { id: ids.invoice, number: 7, kind: 'one_off', status: 'open', dueOn: '2026-10-20', amountCents: 0, currency, paidAt: null },
     ]) : path === '/api/portal/payment-methods' ? { data: [] } : undefined);
-    expect(await screen.findByText('This invoice settles on its due date. No payment is needed.')).toBeDefined();
+    expect(await screen.findByText('No payment is needed for this invoice.')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Pay now' })).toBeNull();
     expect(screen.queryByText(/arrange a manual payment/)).toBeNull();
   });

@@ -116,7 +116,7 @@ export function createCampaignsService(options: CampaignsOptions) {
           createdBy: context.actor.kind === 'user' ? context.actor.userId : null }).returning();
         // The signed-link checks and audits, batched in this transaction instead of a round trip per recipient.
         await createSignedLinksIn(tx, context, request.recipients.map(recipient => ({ purpose: request.purpose,
-          expiresAt: request.expiresAt, campaignId: row!.id, ...recipient }) as CreateSignedLinkRequest), clock.now());
+          expiresAt: request.expiresAt, campaignId: row!.id, ...recipient }) as CreateSignedLinkRequest), clock.now(), { allowZeroInvoices: true });
         await writeAudit(tx, { gymId: context.gymId, actorKind: context.actor.kind,
           ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
           action: 'link_campaign.created', targetType: 'link_campaign', targetId: row!.id,

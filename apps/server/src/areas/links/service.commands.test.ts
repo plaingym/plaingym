@@ -17,7 +17,7 @@ async function fixture(amountCents?: number, currency?: string) {
   await factory('gyms', gymId, { memberEmailsEnabled: true, ...(currency ? { currency } : {}) });
   const household = await factory('households', gymId, { email: 'payer@example.test' });
   const member = await factory('members', gymId, { householdId: household.id, email: 'payer@example.test' });
-  const invoice = await factory('invoices', gymId, { householdId: household.id, ...(amountCents ? { amountCents } : {}), ...(currency ? { currency } : {}) });
+  const invoice = await factory('invoices', gymId, { householdId: household.id, status: 'open', number: 1, ...(amountCents ? { amountCents } : {}), ...(currency ? { currency } : {}) });
   const other = await factory('invoices', gymId, { householdId: household.id });
   const holder: { email: Email } = { email: fake };
   const links = createSignedLinksService({ scope: db.forGym, clock, delivery: { prepare: async () => ({ gymId, gymName: 'Gym',

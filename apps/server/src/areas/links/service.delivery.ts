@@ -41,19 +41,25 @@ export async function deliverSignedLink(input: {
   /** A send's preflight already refused the card amount and revoked its credential. */
   manualPayment?: boolean;
   /** Runs outside a transaction after selecting the mode; false cancels delivery. */
-  prepareSelected?(mode: 'link' | 'manual'): Promise<boolean>;
+  prepareSelected?(mode: 'link' | 'manual' | 'skip'): Promise<boolean>;
 }): Promise<boolean> {
   assertNoTransaction('links.send');
   const { scope, context, link, token, delivery } = input;
   if (link.purpose === 'unsubscribe') throw new AppError('not_found', 'Signed link not found');
   validateSignedLinkDelivery(delivery, context.gymId);
-  const manualPayment = link.purpose === 'pay_invoice' && await scope(context.gymId, async tx => {
-    const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency }).from(invoices)
+  const mode = link.purpose === 'pay_invoice' ? await scope(context.gymId, async tx => {
+    const [invoice] = await tx.select({ amountCents: invoices.amountCents, currency: invoices.currency, status: invoices.status }).from(invoices)
       .where(and(eq(invoices.id, link.invoiceId!), eq(invoices.householdId, link.householdId)));
     if (!invoice) throw new AppError('not_found', 'Invoice not found');
-    return input.manualPayment || !!cardChargeIssue(invoice.amountCents, invoice.currency);
-  });
-  if (await input.prepareSelected?.(manualPayment ? 'manual' : 'link') === false) return false;
+    if (!['open', 'past_due'].includes(invoice.status) || invoice.amountCents === 0) {
+      if (input.prepareSelected) return 'skip';
+      if (!['open', 'past_due'].includes(invoice.status)) throw new AppError('conflict', 'Invoice cannot be paid');
+      throw new AppError('conflict', 'No payment is needed', { reason: ['zero_invoice'] });
+    }
+    return input.manualPayment || !!cardChargeIssue(invoice.amountCents, invoice.currency) ? 'manual' : 'link';
+  }) : 'link';
+  if (await input.prepareSelected?.(mode) === false || mode === 'skip') return false;
+  const manualPayment = mode === 'manual';
   const recipient = await scope(context.gymId, async (tx) => {
     // A waiver link also goes nowhere if its signer can't receive email.
     const found = await householdRecipient(tx, context.gymId, link.householdId,

@@ -53,8 +53,8 @@ beforeAll(async () => {
   siblingA = (await factory('members', gymA, { householdId: householdA })).id;
   memberOther = (await factory('members', gymA, { householdId: householdOther })).id;
   memberB = (await factory('members', gymB, { householdId: householdB })).id;
-  invoiceA = (await factory('invoices', gymA, { householdId: householdA })).id;
-  invoiceSibling = (await factory('invoices', gymA, { householdId: householdA })).id;
+  invoiceA = (await factory('invoices', gymA, { householdId: householdA, status: 'open', number: 1 })).id;
+  invoiceSibling = (await factory('invoices', gymA, { householdId: householdA, status: 'open', number: 2 })).id;
   invoiceOther = (await factory('invoices', gymA, { householdId: householdOther })).id;
   invoiceB = (await factory('invoices', gymB, { householdId: householdB })).id;
   await factory('paymentMethods', gymA, { householdId: householdA, processorId: 'pm_private_processor_identifier' });
@@ -337,6 +337,26 @@ describe('signed link HTTP contracts and permissions', () => {
 });
 
 describe('email failure and suppression', () => {
+  it.each(['paid', 'void', 'draft', 'refunded', 'partially_refunded'])('refuses sends for %s invoices before checking their amount', async status => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { memberEmailsEnabled: true });
+    const home = await factory('households', gymId, { email: 'payer@example.test' });
+    const before = email.messages.length;
+    for (const amountCents of [0, 30, 1000]) {
+      const invoice = await factory('invoices', gymId, { householdId: home.id, status, amountCents, number: status === 'draft' ? null : amountCents + 1 });
+      await expect(sending.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id,
+        invoiceId: invoice.id, expiresAt: request().expiresAt })).rejects.toMatchObject({ code: 'conflict', message: 'Invoice cannot be paid' });
+    }
+    expect((await service.list(gymId)).pagination.total).toBe(0);
+    expect(email.messages).toHaveLength(before);
+  });
+  it.each(['USD', 'KWD'])('refuses a shared zero %s invoice link without minting a credential', async currency => {
+    const gymId = uuidv7(); await factory('gyms', gymId, { currency });
+    const home = await factory('households', gymId);
+    const invoice = await factory('invoices', gymId, { householdId: home.id, amountCents: 0, status: 'open', number: 1 });
+    await expect(service.create({ ...mutation, gymId }, { purpose: 'pay_invoice', householdId: home.id,
+      invoiceId: invoice.id, expiresAt: request().expiresAt })).rejects.toMatchObject({ code: 'conflict', details: { reason: ['zero_invoice'] } });
+    expect((await service.list(gymId)).pagination.total).toBe(0);
+  });
   it.each([[32, 'CAD'], [1255, 'KWD']] as const)('emails manual payment instructions for %s %s without a card link', async (amountCents, currency) => {
     const gymId = uuidv7(); await factory('gyms', gymId, { currency, memberEmailsEnabled: true });
     const home = await factory('households', gymId, { email: 'payer@example.test' });
@@ -367,7 +387,7 @@ describe('email failure and suppression', () => {
     const before = email.messages.length;
     await expect(sending.send({ ...mutation, gymId }, { sendGeneration: uuidv7(), purpose: 'pay_invoice', householdId: home.id,
       invoiceId: invoice.id, expiresAt: request().expiresAt })).rejects.toMatchObject({ code: 'conflict',
-      message: 'This invoice settles on its due date', details: { reason: ['zero_invoice'] } });
+      message: 'No payment is needed', details: { reason: ['zero_invoice'] } });
     expect((await service.list(gymId)).pagination.total).toBe(0);
     expect(email.messages).toHaveLength(before);
   });

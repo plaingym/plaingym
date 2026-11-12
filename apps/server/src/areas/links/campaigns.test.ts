@@ -194,6 +194,108 @@ describe('campaign contract, authorization and isolation', () => {
 });
 
 describe('campaign sends and reminders', () => {
+  it.each(['USD', 'KWD'])('skips zero %s invoices without emailing or leaving a usable credential', async currency => {
+    const f = await fixture(currency);
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 0, currency });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice', recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    const [before] = await db.forGym(f.gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.campaignId, c.campaign.id)));
+    await f.drain();
+    const [after] = await db.forGym(f.gymId, tx => tx.select().from(signedLinks).where(eq(signedLinks.id, before!.id)));
+    expect(after).toMatchObject({ tokenHash: before!.tokenHash, revokedAt: f.clock.now() });
+    expect(f.email.messages).toEqual([]);
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, before!.id)));
+    expect(audits.map(row => row.action)).toContain('link_campaign.delivery_skipped');
+    expect(audits.map(row => row.action)).not.toContain('link_campaign.delivery_sent');
+    f.clock.advance(86400000); expect(await f.service.remindCampaign(f.context, c.campaign.id)).toEqual({ queued: 0 });
+  });
+  it.each(['paid', 'void'])('skips an invoice made %s after campaign creation', async status => {
+    const f = await fixture();
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 30 });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice', recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ status }).where(eq(invoices.id, invoice.id)));
+    await f.drain();
+    expect(f.email.messages).toEqual([]);
+    expect((await f.service.get(f.gymId, c.campaign.id)).progress).toMatchObject({ pending: 0, revoked: 1 });
+  });
+  it('persists completion when the final two recipients finish concurrently, isolated to their campaign and gym', async () => {
+    const f = await fixture(), other = await factory('households', f.gymId);
+    const c = await f.service.create(f.context, { ...f.input(), recipients: [{ householdId: f.household.id }, { householdId: other.id }] });
+    const recipients = (await f.service.recipients(f.gymId, c.campaign.id)).data;
+    const foreign = await fixture(), elsewhere = await foreign.campaign();
+    await Promise.all(recipients.map(row => f.links.markUsed({ gymId: f.gymId, linkId: row.link.id })));
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(linkCampaigns).where(eq(linkCampaigns.id, c.campaign.id)));
+    expect(rows[0]!.completedAt).toEqual(f.clock.now());
+    expect((await foreign.service.get(foreign.gymId, elsewhere.campaign.id)).campaign.completedAt).toBeNull();
+    const audits = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(and(eq(auditEvents.targetId, c.campaign.id), eq(auditEvents.action, 'link_campaign.completed'))));
+    expect(audits).toHaveLength(1);
+  });
+  it('persists waiver completion and clears it when a recipient is added', async () => {
+    const f = await fixture();
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'sign_waiver',
+      recipients: [{ householdId: f.household.id, memberId: f.member.id }] });
+    const link = (await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.link;
+    const waivers = createWaiversService({ scope: db.forGym, clock: f.clock, uploadsFor: async () => new FakeUploads(f.gymId, f.clock) });
+    // No current waiver is outstanding, so first-open completion uses the same path as a persisted final signature.
+    expect(await waivers.completeSignedLink(f.gymId, link.id, f.member.id)).toBe(true);
+    const saved = async () => (await db.forGym(f.gymId, tx => tx.select().from(linkCampaigns).where(eq(linkCampaigns.id, c.campaign.id))))[0]!.completedAt;
+    expect(await saved()).toEqual(f.clock.now());
+    const member = await factory('members', f.gymId, { householdId: f.household.id });
+    await f.links.create(f.context, { purpose: 'sign_waiver', campaignId: c.campaign.id, householdId: f.household.id,
+      memberId: member.id, expiresAt: f.input().expiresAt });
+    expect(await saved()).toBeNull();
+    expect((await f.service.get(f.gymId, c.campaign.id)).campaign.completedAt).toBeNull();
+  });
+  it('retries a definitely refused manual notice and closes its undisclosed credential after delivery', async () => {
+    const f = await fixture('CAD');
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 32, currency: 'CAD' });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice', recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    const link = (await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.link;
+    f.email.respondNext(new DeliveryError('not_accepted', 'Refused'));
+    const payload = { campaignId: c.campaign.id, linkId: link.id, occurrence: 'initial' };
+    await expect(f.service.send(payload, f.gymId)).rejects.toThrow('Refused');
+    expect((await f.links.get(f.gymId, link.id)).revokedAt).toBeNull();
+    await f.service.send(payload, f.gymId);
+    expect((await f.links.get(f.gymId, link.id)).revokedAt).toBe(f.clock.now().toISOString());
+    expect(f.email.messages).toHaveLength(1);
+    expect(f.email.messages[0]!.text).not.toContain('/l/');
+  });
+  it('keeps a suppressed manual notice pending, so a later reminder still reaches the household', async () => {
+    const f = await fixture('CAD');
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 32, currency: 'CAD' });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice', recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    const link = (await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.link;
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: null }).where(eq(households.id, f.household.id)));
+    await f.drain();
+    expect(f.email.messages).toEqual([]);
+    expect((await f.links.get(f.gymId, link.id)).revokedAt).toBeNull();
+    expect((await f.service.get(f.gymId, c.campaign.id)).progress).toMatchObject({ pending: 1, revoked: 0 });
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'payer@example.test' }).where(eq(households.id, f.household.id)));
+    f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
+    expect(f.email.messages).toHaveLength(1);
+    expect(f.email.messages[0]!.text).not.toContain('/l/');
+    expect((await f.links.get(f.gymId, link.id)).revokedAt).toBe(f.clock.now().toISOString());
+  });
+  it.each(['zero', 'manual'] as const)('preserves a possibly emailed credential when a reminder becomes %s', async mode => {
+    const f = await fixture('CAD');
+    const invoice = await factory('invoices', f.gymId, { householdId: f.household.id, status: 'open', number: 1, amountCents: 1000, currency: 'CAD' });
+    const c = await f.service.create(f.context, { ...f.input(), purpose: 'pay_invoice', recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
+    let token = '';
+    vi.spyOn(f.email, 'sendEmail').mockImplementationOnce(async message => {
+      token = message.text.match(/\/l\/([A-Za-z0-9_-]+)/)![1]!;
+      throw new DeliveryError('unknown', 'Reply lost');
+    });
+    await f.drain();
+    expect((await f.links.resolve(f.gymId, token)).status).toBe('active');
+    await db.forGym(f.gymId, tx => tx.update(invoices).set({ amountCents: mode === 'zero' ? 0 : 32 }).where(eq(invoices.id, invoice.id)));
+    f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
+    expect((await f.links.resolve(f.gymId, token)).status).toBe('active');
+    expect(f.email.messages).toHaveLength(mode === 'zero' ? 0 : 1);
+    if (mode === 'manual') {
+      expect(f.email.messages[0]!.text).not.toContain('/l/');
+      f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
+      expect(f.email.messages).toHaveLength(2);
+    }
+  });
   it('repairs a publication interrupted midway through an audit batch without duplicate sends', async () => {
     const f = await fixture();
     const people = await db.forGym(f.gymId, tx => tx.insert(households).values(Array.from({ length: 12 }, (_, i) => ({
@@ -629,7 +731,7 @@ describe('campaign matching after a customer creation reservation', () => {
     const lookup = vi.spyOn(f.provider, 'findCustomerByEmail');
     await f.match();
     await f.match();
-    expect(lookup).not.toHaveBeenCalled();
+    expect(lookup).toHaveBeenCalledTimes(2);
     const holds = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.action, 'link_campaign.customer_match_held')));
     expect(holds).toHaveLength(1);
     expect(Object.keys(holds[0]!.after!)).toEqual(['reservation']);
@@ -652,6 +754,15 @@ describe('campaign matching after a customer creation reservation', () => {
     expect(await held(waiver.campaign.id)).toBe(false);
     await db.forGym(f.gymId, tx => tx.update(signedLinks).set({ usedAt: f.clock.now() }).where(eq(signedLinks.campaignId, c.campaign.id)));
     expect(await held(c.campaign.id)).toBe(false);
+  });
+  it('links a customer explicitly naming the household at its new email despite an expired creation hold', async () => {
+    const f = await reserved('failed');
+    await db.forGym(f.gymId, tx => tx.update(households).set({ email: 'changed@example.test' }).where(eq(households.id, f.household.id)));
+    f.provider.seedCustomer({ id: 'cus_email_only', email: 'changed@example.test' });
+    f.provider.seedCustomer({ id: 'cus_household_proven', email: 'changed@example.test', householdId: f.household.id });
+    f.clock.advance(minutes(16)); await f.match();
+    expect((await f.read()).customer).toBe('cus_household_proven');
+    expect((await f.read()).audits).not.toContain('billing.customer.creation_released');
   });
   it('rechecks the reservation hash under the lock when the household name changes during lookup', async () => {
     const f = await reserved('failed');
@@ -744,7 +855,12 @@ describe('campaign completion and production registrations', () => {
       recipients: [{ householdId: f.household.id, invoiceId: invoice.id }] });
     await f.drain();
     f.clock.advance(86400000); await f.service.remindCampaign(f.context, c.campaign.id); await f.drain();
-    expect(f.email.messages).toHaveLength(2);
+    expect(f.email.messages).toHaveLength(1);
+    expect((await f.service.get(f.gymId, c.campaign.id)).progress).toMatchObject({ pending: 0, revoked: 1 });
+    const link = (await f.service.recipients(f.gymId, c.campaign.id)).data[0]!.link;
+    const records = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, link.id)));
+    expect(records.map(row => row.action)).toContain('link_campaign.delivery_manual');
+    expect(records.map(row => row.action)).not.toContain('link_campaign.delivery_sent');
     for (const message of f.email.messages) for (const format of [message.text, message.html]) {
       expect(format).toContain('Contact the gym to arrange a manual payment');
       expect(format).not.toContain('/l/');
@@ -859,6 +975,7 @@ describe('campaign completion and production registrations', () => {
     const detail = await f.service.get(f.gymId, c.campaign.id);
     expect(detail.progress).toMatchObject({ completed: 1, pending: 0 });
     expect(detail.campaign.completedAt).toBe(f.clock.now().toISOString());
+    expect((await db.forGym(f.gymId, tx => tx.select().from(linkCampaigns).where(eq(linkCampaigns.id, c.campaign.id))))[0]!.completedAt).toEqual(f.clock.now());
     expect((await f.links.resolve(f.gymId, token)).status).toBe('used');
     f.clock.advance(7 * 86400000); await f.service.scan(f.gymId); await f.drain();
     expect(await f.service.remindCampaign(f.context, c.campaign.id)).toEqual({ queued: 0 });

@@ -491,8 +491,7 @@ Old versions and documents referenced by signatures remain retained after retire
   address they went to, so an address gets each message once, and an erasure
   clears the erased member's in its own transaction. Only staff recipients' keys
   carry a hash of their address. An hourly job per gym deletes login-link rows once
-  their five-minute link has expired, and rewrites the rows an earlier release
-  wrote with a member's address hash (`apps/server/src/infra/email/README.md`).
+  their five-minute link has expired (`apps/server/src/infra/email/README.md`).
 * **Medical notes** are readable only by owners, admins and coaches, and are never
   returned to signed links or the portal's household view.
 * **Audit.** State-changing actions write an `audit_events` row (the app role can

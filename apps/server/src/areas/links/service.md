@@ -71,6 +71,10 @@ The email transport runs outside transactions.
 For a positive invoice below the card minimum or off the currency step, send checks
 the amount before minting and commits the new metadata record already revoked,
 with creation and revocation audits. It emails manual-payment instructions without
-a URL. Zero invoices refuse a send before creating a credential: they settle on
-their due date. Delivery still checks the invoice amount; if it omits a URL after
-a concurrent amount change, send revokes that credential too.
+a URL. Send refuses invoices other than open or past due before checking their amount.
+Zero invoices refuse both sending and sharing before creating a credential: no payment is needed. Delivery still checks the invoice amount; if it omits a URL after
+a concurrent amount change, send revokes that credential too. The manual preflight and
+explicit revocation share `revokeSignedLinkIn`, including its row lock and audit.
+Campaign creation can explicitly allow zero invoice records for delivery to skip and close.
+The join service uses `allowZeroInvoices: true` only for an undisclosed association needed
+to settle a free signup; staff create/share and send requests cannot opt into it.

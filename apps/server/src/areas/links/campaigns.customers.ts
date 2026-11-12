@@ -74,7 +74,8 @@ async function recordMatchHold(tx: Transaction, household: typeof households.$in
  *
  * A customer creation in progress holds off matching for its lease. After the lease, the lookup above is the check for the
  * customer the creation may have made: if its request still matches and none names the household, the reservation is released (audited) and matching
- * goes on with the other candidates; a later creation still replays the reservation's own key.
+ * goes on with the other candidates; a later creation still replays the reservation's own key. While a changed-details
+ * hold is in force the lookup still runs, but only a single customer naming this household is linked; email-only matches wait.
  */
 export async function matchCampaignCustomer(options: {
   scope: typeof forGym; clock: Clock; paymentsFor(gymId: string): Promise<Payments>;
@@ -84,7 +85,7 @@ export async function matchCampaignCustomer(options: {
     const [household] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
     if (!household || household.stripeCustomerId) return undefined;
     const lease = await campaignCreationLease(tx, household, clock.now());
-    if (await recordMatchHold(tx, household, lease, clock.now())) return undefined;
+    await recordMatchHold(tx, household, lease, clock.now());
     if (!household.email?.trim()) return undefined;
     return { email: household.email, lease };
   });
@@ -102,8 +103,10 @@ export async function matchCampaignCustomer(options: {
       if (!current || current.stripeCustomerId) return;
       // Customer creation reserves and retries under this same household lock. Never race a creation that may still create.
       const lease = await campaignCreationLease(tx, current, clock.now());
-      if (await recordMatchHold(tx, current, lease, clock.now())) return;
+      const held = await recordMatchHold(tx, current, lease, clock.now());
       if (current.email !== before.email || lease.state === 'active') return;
+      // A hold forbids email-only attribution. An exact gym-tagged customer naming this household is stronger evidence.
+      if (held && (!match || match.householdId !== householdId)) return;
       if (lease.state === 'expired' && !own.length) await writeAudit(tx, { gymId, actorKind: 'system', action: creationReleasedAction,
         targetType: 'household', targetId: householdId, after: { reservation: lease.reservation, attempt: lease.attempt }, occurredAt: clock.now() });
       if (!match) return;

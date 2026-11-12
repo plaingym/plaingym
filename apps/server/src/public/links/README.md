@@ -14,7 +14,7 @@ and currency-step check as the saved-card runner. An invoice below the minimum o
 off the step shows manual-payment instructions and no Checkout action. The server
 checks again before reserving Checkout or contacting the payment provider. Pay-link
 emails also give manual-payment instructions without a card link for these amounts.
-An open zero invoice shows only a note that it settles on its due date, with no
+An open zero invoice shows only a note that no payment is needed, with no
 payment action or manual-payment instructions.
 
 `/l/<token>` renders invoice payment, card update, member waiver signing,

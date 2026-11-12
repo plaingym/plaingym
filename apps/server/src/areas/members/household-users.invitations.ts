@@ -235,8 +235,7 @@ export type PortalInvitationService = ReturnType<typeof createPortalInvitationSe
 export const portalInvitationExpiryJob = 'members.portal-invitations.expire';
 /** Each gym's expired portal invitations and onboarding claim holds are deleted hourly, with any invitee identity left holding
  * nothing (no account, link, role, history or other invitation), so it can no longer sign in to a session without access.
- * The hourly email delivery upkeep comes with it: it sweeps the expired login links these claims ride on and the unkeyed
- * invitation digests an earlier release stored (`infra/email/deliveries.ts`). The runtime registers both. */
+ * The hourly email delivery upkeep also sweeps expired login links (`infra/email/deliveries.ts`). The runtime registers both. */
 export function createPortalInvitationExpiryJobs(store: Pick<PortalInvitationStore, 'expire'> = createPortalInvitationStore()): readonly JobRegistration[] {
   return [{ id: portalInvitationExpiryJob, cron: '53 * * * *', async handler(_payload, context) {
     await store.expire(context.gymId, context.clock);

@@ -12,6 +12,7 @@ import { createCustomersService, customerUnlinkedAction, CustomerUnavailable } f
 import { isAssignmentInvoice } from './assignment-invoices.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createCardHandlers } from './webhooks/handlers/methods.js';
+import { completeCampaignIn } from '../links/campaigns.model.js';
 
 function missing(): never { throw new AppError('not_found', 'Signed link or resource not found'); }
 function unavailable(): never { throw new AppError('unavailable', 'Checkout is not available'); }
@@ -206,14 +207,16 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
         const replacing = !!invoice.checkoutExpiresAt;
         invoice.checkoutExpiresAt = new Date(clock.now().getTime() + windowMs);
         await tx.update(invoices).set({ checkoutExpiresAt: invoice.checkoutExpiresAt }).where(eq(invoices.id, invoice.id));
-        await audit(tx, gymId, replacing ? 'billing.checkout.reservation_renewed' : 'billing.checkout.reserved', linkId);
+        await audit(tx, gymId, replacing ? 'billing.checkout.reservation_renewed' : 'billing.checkout.reserved', linkId,
+          { expiresAt: invoice.checkoutExpiresAt.toISOString() });
       }
       const [reservation] = !invoice.checkoutSessionId ? await tx.select({ linkId: auditEvents.targetId }).from(auditEvents)
         .innerJoin(signedLinks, eq(signedLinks.id, auditEvents.targetId)).where(and(
           eq(auditEvents.targetType, 'signed_link'), eq(signedLinks.invoiceId, invoice.id),
           eq(signedLinks.householdId, link.householdId),
+          eq(auditEvents.after, { expiresAt: invoice.checkoutExpiresAt!.toISOString() }),
           inArray(auditEvents.action, ['billing.checkout.reserved', 'billing.checkout.reservation_renewed'])))
-        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1) : [];
+        .limit(1) : [];
       return { link, customerId: household.stripeCustomerId, invoice, savesCard, reservationLinkId: reservation?.linkId, replaying };
     });
     await checkBilling(gymId, !!prepared.invoice);
@@ -256,11 +259,12 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
           const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, prepared.invoice!.id), eq(invoices.householdId, link.householdId))).for('update');
           if (!invoice || invoice.checkoutSessionId !== session.id) throw new AppError('conflict', 'Invoice changed');
           await payable(tx, invoice);
+          const checkoutExpiresAt = new Date(Math.max(clock.now().getTime() + windowMs, (invoice.checkoutExpiresAt?.getTime() ?? 0) + 1));
           await tx.update(invoices).set({ checkoutSessionId: null,
-            checkoutExpiresAt: new Date(Math.max(clock.now().getTime() + windowMs, (invoice.checkoutExpiresAt?.getTime() ?? 0) + 1)),
+            checkoutExpiresAt,
           }).where(eq(invoices.id, invoice.id));
           await audit(tx, gymId, 'billing.checkout.expired', linkId);
-          await audit(tx, gymId, 'billing.checkout.reservation_renewed', linkId);
+          await audit(tx, gymId, 'billing.checkout.reservation_renewed', linkId, { expiresAt: checkoutExpiresAt.toISOString() });
         });
         return start(gymId, linkId, true, flow);
       }
@@ -351,6 +355,7 @@ export function createSignedLinkCheckout(options: SignedCheckoutOptions) {
       }
       await tx.update(signedLinks).set({ usedAt: clock.now() }).where(eq(signedLinks.id, linkId));
       await audit(tx, gymId, 'signed_link.used', linkId);
+      await completeCampaignIn(tx, gymId, link.campaignId, clock.now());
       return true;
     });
   }

@@ -24,7 +24,7 @@ describe('signed-link presentation and return receipts', () => {
     const page = linkPage({ now, timezone: 'UTC', t, data: { purpose: 'pay_invoice', invoice: { lines: [], invoice: {
       id: 'invoice', number: 1, kind: 'one_off', status: 'open', dueOn: '2026-10-25', amountCents: 0, currency, paidAt: null,
     } } } });
-    expect(page).toContain('This invoice settles on its due date');
+    expect(page).toContain('No payment is needed');
     expect(page).not.toContain('manual payment');
     expect(page).not.toContain('data-checkout');
   });

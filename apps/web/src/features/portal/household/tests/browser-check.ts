@@ -87,7 +87,7 @@ try {
     }
     for (const currency of ['USD', 'KWD']) {
       manualInvoice = { amountCents: 0, currency };
-      await page.reload(); await expect(page.getByText('This invoice settles on its due date. No payment is needed.')).toBeVisible();
+      await page.reload(); await expect(page.getByText('No payment is needed for this invoice.')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Pay now' })).toHaveCount(0);
       await expect(page.getByText('Contact the gym to arrange a manual payment.', { exact: false })).toHaveCount(0);
       await check('billing-zero-' + currency);
