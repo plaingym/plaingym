@@ -155,7 +155,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
     change: (tx: Transaction, before: Row) => Promise<Partial<typeof memberships.$inferInsert>>) {
     c.idSchema.parse(request.membershipId); c.revisionSchema.parse(request.revision);
     return scope(context.gymId, async tx => {
-      const before = await getRow(tx, request.membershipId);
+      // Serialize sibling activations and assignments before checking the member's remaining trials.
+      const before = await lockForSwitch(tx, request.membershipId);
       if (before.revision !== request.revision) conflict('The record changed; reload before saving');
       const changes = await change(tx, before), guard = revisionGuard(memberships.revision, request.revision);
       const after = assertRevised(await tx.update(memberships).set({ ...changes, revision: guard.next })
@@ -187,6 +188,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
       const gym = await settings.get(context.gymId);
       return edit(context, request, 'activated', async (tx, before) => {
         if (!['pending', 'trial', 'frozen'].includes(before.status)) conflict('Membership cannot be activated');
+        // Take the member lock before lead work, matching attendance's member/lead lock order.
+        const [member] = await tx.select().from(members).where(eq(members.id, before.memberId)).for('update');
         let due = request.nextDueOn ?? before.nextDueOn;
         c.dateSchema.parse(due);
         if (due < before.startsOn) conflict('Billing cannot start before membership starts');
@@ -202,6 +205,15 @@ export function createMembershipService(options: MembershipOptions = {}) {
         }
         if (before.status === 'pending' || before.status === 'trial' || await frozenBeforeActive(tx, before))
           await markLeadWon(tx, { ...context, memberId: before.memberId, now: clock.now() });
+        if (before.status === 'trial' && member?.status === 'trial' && !member.anonymizedAt
+          && !(await tx.select({ id: memberships.id }).from(memberships).where(and(
+            eq(memberships.memberId, member.id), eq(memberships.status, 'trial'), ne(memberships.id, before.id))).limit(1)).length) {
+          const guard = revisionGuard(members.revision, member.revision);
+          assertRevised(await tx.update(members).set({ status: 'active', revision: guard.next })
+            .where(and(eq(members.id, member.id), guard.matches)).returning({ id: members.id }));
+          await catalogAudit(tx, context, clock, 'billing.member.activated', 'member', member.id,
+            { status: member.status, revision: member.revision }, { status: 'active', revision: member.revision + 1 });
+        }
         return { status: 'active', nextDueOn: due, anniversaryOn, frozenAt: null, resumesOn: null };
       });
     },

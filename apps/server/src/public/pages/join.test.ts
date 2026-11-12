@@ -44,6 +44,7 @@ import { demoSignaturePng } from '../../demo/seed/waivers-image.js';
 import { configureJoin } from './join.routes.js';
 import { joinBodyBytes } from './join.service.js';
 import { joinCookie } from './join.continuation.js';
+import { createJoinCleanup } from './join.cleanup.js';
 import { jobs as joinJobs } from './join.jobs.js';
 
 const db = useTestDatabase(), factory = createFactories(db), png = demoSignaturePng(), pngBase64 = png.toString('base64');
@@ -227,6 +228,9 @@ describe('trial and zero-value joining', () => {
     f.clock.set('2026-11-05T18:00:00Z');
     expect(await f.lifecycle.processDates(f.gymId, timezone)).toBe(2);
     expect((await f.rows()).memberships.filter(m => m.householdId === home!.id).map(m => m.status)).toEqual(['active', 'active']);
+    const promoted = await f.rows();
+    expect(promoted.members.filter(m => m.householdId === home!.id).map(m => [m.status, m.revision])).toEqual([['active', 3], ['active', 3]]);
+    expect(promoted.audits.filter(a => a.action === 'billing.member.activated')).toHaveLength(2);
     expect((await runner.daily(f.gymId)).errors).toEqual([]);
     const cycle = (await f.rows()).invoices.filter(i => i.householdId === home!.id && i.id !== bill.id);
     expect(cycle).toMatchObject([{ status: 'paid', amountCents: 2 * f.trial.amountCents, periodStartsOn: '2026-11-05', periodEndsOn: '2026-12-05' }]);
@@ -278,6 +282,80 @@ describe('trial and zero-value joining', () => {
     expect(create).not.toHaveBeenCalled();
   });
 });
+describe('plan edits while joining', () => {
+  it.each([[0, 7], [7, 0], [7, 14]])('uses assigned trial dates when the plan changes from %i to %i days after admission', async (before, after) => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: before, amountCents: 10000 });
+    const people = [adult()], email = 'changed-trial@example.invalid', images = await f.admit(people, email, plan.id);
+    await db.forGym(f.gymId, tx => tx.update(plans).set({ trialDays: after }).where(eq(plans.id, plan.id)));
+    const body = f.body(people, images, email, plan.id), response = await f.post('/api/public/join', body);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const [home] = await f.joined(), state = await f.rows();
+    const trialEndsOn = after === 0 ? null : after === 7 ? '2026-11-05' : '2026-11-12';
+    expect(state.homes.find(h => h.id === home!.id)?.billingDay).toBe(after === 0 ? 29 : after === 7 ? 5 : 12);
+    expect(state.memberships.find(m => m.householdId === home!.id)).toMatchObject({ trialEndsOn, nextDueOn: trialEndsOn ?? '2026-11-29' });
+    expect(state.invoices.find(i => i.householdId === home!.id)).toMatchObject({ amountCents: after === 0 ? 10000 : 0,
+      periodEndsOn: trialEndsOn ?? '2026-11-29' });
+    expect((await f.post('/api/public/join', body)).status).toBe(200);
+    expect((await f.rows()).invoices.filter(i => i.householdId === home!.id)).toHaveLength(1);
+  });
+  it.each([['another household field', 200], ['the billing day', 409]] as const)(
+    'aligns a trial join after staff change %s since admission only when the billing day is unchanged', async (edit, status) => {
+      const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: 7, amountCents: 10000 });
+      const people = [adult()], email = 'household-edit@example.invalid', images = await f.admit(people, email, plan.id);
+      const [home] = await f.joined();
+      await db.forGym(f.gymId, tx => tx.update(households).set({ revision: 2, ...(status === 409 ? { billingDay: 15 } : {}) })
+        .where(eq(households.id, home!.id)));
+      const response = await f.post('/api/public/join', f.body(people, images, email, plan.id));
+      expect(response.status, `${edit}: ${await response.clone().text()}`).toBe(status);
+      const state = await f.rows();
+      expect(state.homes.find(h => h.id === home!.id)?.billingDay).toBe(status === 200 ? 5 : 15);
+      expect(state.invoices.filter(i => i.householdId === home!.id)).toHaveLength(status === 200 ? 1 : 0);
+    });
+  it.each([[0, 7], [7, 0]])('keeps the assigned trial when its plan changes from %i to %i days before invoicing', async (before, after) => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: before, amountCents: 10000 });
+    const assign = f.lifecycle.assign.bind(f.lifecycle);
+    vi.spyOn(f.lifecycle, 'assign').mockImplementation(async (...args) => {
+      const membership = await assign(...args);
+      await db.forGym(f.gymId, tx => tx.update(plans).set({ trialDays: after }).where(eq(plans.id, plan.id)));
+      return membership;
+    });
+    const { response } = await f.submit([adult()], 'assigned-trial@example.invalid', plan.id);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const [home] = await f.joined(), state = await f.rows();
+    expect(state.invoices.find(i => i.householdId === home!.id)).toMatchObject({ amountCents: before === 0 ? 10000 : 0,
+      periodEndsOn: before === 0 ? '2026-11-29' : '2026-11-05' });
+    expect(state.memberships.find(m => m.householdId === home!.id)?.trialEndsOn).toBe(before === 0 ? null : '2026-11-05');
+  });
+  it.each([[0, 10000], [10000, 0]])('takes the assigned price after a change from %i to %i between admission and submission', async (before, after) => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: 7, amountCents: before });
+    const people = [adult()], email = 'changed-price@example.invalid', images = await f.admit(people, email, plan.id);
+    await db.forGym(f.gymId, tx => tx.update(plans).set({ amountCents: after }).where(eq(plans.id, plan.id)));
+    const response = await f.post('/api/public/join', f.body(people, images, email, plan.id));
+    expect(response.status, await response.clone().text()).toBe(200);
+    const [home] = await f.joined(), state = await f.rows();
+    expect(state.memberships.find(m => m.householdId === home!.id)?.amountCents).toBe(after);
+    expect(state.links.find(l => l.householdId === home!.id)?.purpose).toBe(after > 0 ? 'update_card' : 'pay_invoice');
+    expect(state.invoices.find(i => i.householdId === home!.id)?.status).toBe(after > 0 ? 'open' : 'paid');
+  });
+  it.each([[0, 10000], [10000, 0]])('keeps card setup based on assigned price %i when the plan becomes %i before linking', async (before, after) => {
+    const f = await fixture(), plan = await factory('plans', f.gymId, { trialDays: 7, amountCents: before });
+    const assign = f.lifecycle.assign.bind(f.lifecycle);
+    vi.spyOn(f.lifecycle, 'assign').mockImplementation(async (...args) => {
+      const membership = await assign(...args);
+      await db.forGym(f.gymId, tx => tx.update(plans).set({ amountCents: after }).where(eq(plans.id, plan.id)));
+      return membership;
+    });
+    const { response, cookie } = await f.submit([adult()], 'assigned-price@example.invalid', plan.id);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const [home] = await f.joined(), state = await f.rows();
+    expect(state.memberships.find(m => m.householdId === home!.id)?.amountCents).toBe(before);
+    expect(state.links.find(l => l.householdId === home!.id)?.purpose).toBe(before > 0 ? 'update_card' : 'pay_invoice');
+    expect(state.invoices.find(i => i.householdId === home!.id)?.status).toBe(before > 0 ? 'open' : 'paid');
+    if (before > 0) await f.pay(cookie);
+    expect((await f.rows()).members.find(m => m.householdId === home!.id)?.status).toBe('trial');
+  });
+});
+
 describe('join admission cleanup', () => {
   it.each([
     ['ordinary day', '2026-10-29T04:05:00Z', '2026-10-31T03:59:59.999Z', '2026-10-31T04:00:00Z'],
@@ -364,6 +442,43 @@ describe('join admission cleanup', () => {
     expect((await f.uploads.head(removed[0]![0]!.signatureImageKey))!.deletedAt).toEqual(f.clock.now());
     expect(await f.join.cleanup.run(f.gymId, timezone)).toBe(0);
   });
+  it.each(['household edit', 'member edit', 'signed waiver', 'saved card', 'linked login', 'lead', 'active membership'])(
+    'retains an admission protected by %s once and excludes it from later cleanup selection', async protection => {
+      const f = await fixture(), people = [adult()], email = 'retained@example.invalid', images = await f.admit(people, email, f.plan.id);
+      const [home] = await f.joined(), person = (await f.rows()).members.find(m => m.householdId === home!.id)!;
+      if (protection === 'household edit')
+        await db.forGym(f.gymId, tx => tx.update(households).set({ revision: 2 }).where(eq(households.id, home!.id)));
+      else if (protection === 'member edit')
+        await db.forGym(f.gymId, tx => tx.update(members).set({ revision: 2 }).where(eq(members.id, person.id)));
+      else if (protection === 'signed waiver')
+        await f.waivers.sign({ gymId: f.gymId, actor: { kind: 'system' } }, { ...images[0]![0]!, memberId: person.id, consent: true,
+          signer: { kind: 'self', name: 'Avery Joiner' } }, { timezone, ipAddress: '127.0.0.1' });
+      else if (protection === 'saved card') await factory('paymentMethods', f.gymId, { householdId: home!.id });
+      else if (protection === 'linked login') {
+        const user = await factory('authUser', f.gymId);
+        await factory('householdUsers', f.gymId, { householdId: home!.id, userId: user.id, memberId: person.id, scope: 'payer' });
+      }
+      else if (protection === 'lead') await factory('leads', f.gymId, { memberId: person.id });
+      else await factory('memberships', f.gymId, { householdId: home!.id, memberId: person.id, planId: f.plan.id, status: 'active' });
+      f.clock.set('2026-10-31T07:00:00Z');
+      const uploadsFor = vi.fn(f.uploadsFor), cleanup = createJoinCleanup({ scope: db.forGym, clock: f.clock, uploadsFor });
+      expect(await cleanup.run(f.gymId, timezone)).toBe(0);
+      expect(uploadsFor).toHaveBeenCalledTimes(1);
+      const kept = await f.rows();
+      expect(kept.audits.filter(a => a.action === 'public.join.retained')).toMatchObject([
+        { targetType: 'household', targetId: home!.id, actorKind: 'system', occurredAt: f.clock.now() },
+      ]);
+      uploadsFor.mockClear();
+      f.clock.advance(86_400_000);
+      expect(await cleanup.run(f.gymId, timezone)).toBe(0);
+      expect(uploadsFor).not.toHaveBeenCalled();
+      // Direct compensation checks the same durable marker, so it cannot later delete an adopted admission either.
+      expect(await cleanup.remove(f.gymId, home!.id)).toBe(false);
+      const retried = await f.rows();
+      expect(retried.homes).toEqual(kept.homes); expect(retried.members).toEqual(kept.members);
+      expect(retried.audits.filter(a => a.action === 'public.join.retained')).toEqual(kept.audits.filter(a => a.action === 'public.join.retained'));
+      expect((await f.uploads.head(images[0]![0]!.signatureImageKey))!.deletedAt).toBeUndefined();
+    });
   it('keeps the durable cleanup claim after a storage failure and rejects a racing submission', async () => {
     const f = await fixture(), people = [adult()], email = 'retry@example.invalid', images = await f.admit(people, email, f.plan.id);
     f.clock.set('2026-10-31T07:00:00Z');

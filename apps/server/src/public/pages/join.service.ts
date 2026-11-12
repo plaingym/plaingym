@@ -6,7 +6,7 @@ import { forGym, auditEvents, households, householdUsers, invoices, members, mem
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
 import { locales } from '@plaingym/shared/locales';
 import * as c from '@plaingym/shared/contracts';
-import { addDays, localDate } from '@plaingym/shared/time';
+import { localDate } from '@plaingym/shared/time';
 import { z } from 'zod';
 import { clock as defaultClock } from '../../core/clock.js';
 import { logError } from '../../core/log.js';
@@ -172,25 +172,32 @@ export function createJoinService(options: JoinOptions) {
     });
   }
   /** The first period of every membership and the sign-up fees, as the new household's first cycle. */
-  async function invoice(gymId: string, householdId: string, planId: string, membershipIds: readonly string[], today: string) {
+  async function invoice(gymId: string, householdId: string, row: typeof plans.$inferSelect, membershipIds: readonly string[], today: string) {
     return scope(gymId, async tx => {
       const [home] = await tx.select().from(households).where(eq(households.id, householdId)).for('update');
       if (!home) missing();
       const previous = await recorded(tx, 'public.join.invoiced', householdId, invoiced);
       if (previous) return previous;
       const rows = await tx.select().from(memberships).where(inArray(memberships.id, [...membershipIds])).for('update');
-      // The admission set the new household's billing day to its join date.
-      const billingDay = Number(today.slice(8));
       if (rows.length !== membershipIds.length
         || rows.some(r => r.householdId !== home.id || r.status !== 'pending' || r.startsOn !== today || r.nextDueOn !== (r.trialEndsOn ?? today))) changed();
-      const [row] = await tx.select().from(plans).where(eq(plans.id, planId));
-      if (!row) missing();
-      if (home.billingDay !== Number((rows[0]!.trialEndsOn ?? today).slice(8))) changed();
+      // Assignment fixes the trial dates, even if the plan changed since admission or changes again now.
+      const trialEndsOn = rows[0]!.trialEndsOn, billingDay = Number((trialEndsOn ?? today).slice(8));
+      if (rows.some(r => r.trialEndsOn !== trialEndsOn)) changed();
+      if (home.billingDay !== billingDay) {
+        // Admission set the join day; another day means staff chose one. Unrelated household edits don't block the join.
+        if (home.billingDay !== Number(today.slice(8))) changed();
+        const guard = revisionGuard(households.revision, home.revision);
+        assertRevised(await tx.update(households).set({ billingDay, revision: guard.next })
+          .where(and(eq(households.id, home.id), guard.matches)).returning({ id: households.id }));
+        await audit(tx, gymId, 'billing.household.anchor_set', 'household', home.id,
+          { billingDay, revision: home.revision + 1 }, { billingDay: home.billingDay, revision: home.revision });
+      }
       const currency = c.currencySchema.parse(row.currency);
       const taxes = await tx.select({ id: taxRates.id, name: taxRates.name, rateMillionths: taxRates.rateMillionths, inclusive: taxRates.inclusive })
-        .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, planId)).orderBy(asc(taxRates.id));
+        .from(planTaxRates).innerJoin(taxRates, eq(taxRates.id, planTaxRates.taxRateId)).where(eq(planTaxRates.planId, row.id)).orderBy(asc(taxRates.id));
       // Priced as the runner prices an active membership on its due date; the memberships stay pending until it is paid.
-      const cycle = row.trialDays > 0 ? null : calculateCycleInvoice({ householdId: home.id, currency, billingDay, familyDiscountBasisPoints: home.familyDiscountBasisPoints,
+      const cycle = trialEndsOn !== null ? null : calculateCycleInvoice({ householdId: home.id, currency, billingDay, familyDiscountBasisPoints: home.familyDiscountBasisPoints,
         discountDescription: t('billing/runner:familyDiscount'), dueOn: today, memberships: rows.map(r => ({ membership: { ...snapshot(r), status: 'active' as const },
           description: row.name, taxRates: taxes, ...(r.anniversaryOn === null ? {} : { annualAnchorOn: r.anniversaryOn }) })) });
       if (cycle && !cycle.invoice) changed();
@@ -200,11 +207,11 @@ export function createJoinService(options: JoinOptions) {
       // A trial owes only its sign-up fee now; its first full period is due when the trial ends.
       // Trial invoices have no membership lines: the generic paid-invoice effect would activate trials early.
       const base = cycle?.invoice ?? { householdId: home.id, currency, kind: 'cycle' as const, dueOn: today,
-        periodStartsOn: today, periodEndsOn: rows[0]!.trialEndsOn!, amountCents: 0,
+        periodStartsOn: today, periodEndsOn: trialEndsOn!, amountCents: 0,
         lineItems: [] };
       const invoiceId = await issue(tx, system(gymId), clock, { ...base,
         amountCents: base.amountCents + (fees?.amountCents ?? 0), lineItems: [...base.lineItems, ...(fees?.lineItems ?? [])] });
-      const result = invoiced.parse({ invoiceId, next: row.trialDays > 0 ? [] : cycle!.nextDueDates.map(d => ({ membershipId: d.membershipId, nextDueOn: d.nextDueOn })) });
+      const result = invoiced.parse({ invoiceId, next: trialEndsOn !== null ? [] : cycle!.nextDueDates.map(d => ({ membershipId: d.membershipId, nextDueOn: d.nextDueOn })) });
       await audit(tx, gymId, 'public.join.invoiced', 'household', home.id, result);
       return result;
     });
@@ -324,7 +331,7 @@ export function createJoinService(options: JoinOptions) {
       const input = c.joinAdmissionSchema.parse(body);
       applicants(input.contact, input.members.map(m => m.member), timezone);
       signers(input.members, timezone);
-      const selected = await joinableRow(gymId, input.planId);
+      await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.signatures));
       const images = input.members.map(m => m.signatures.map(s => Buffer.from(s.pngBase64, 'base64')));
@@ -333,7 +340,7 @@ export function createJoinService(options: JoinOptions) {
       const memberIds = await scope(gymId, async tx => {
         const now = clock.now(), householdId = uuidv7(now.getTime()), ids = input.members.map(() => uuidv7(now.getTime()));
         await tx.insert(households).values({ id: householdId, gymId, name: input.contact.name, email: input.contact.email,
-          phone: input.contact.phone ?? null, address: input.contact.address ?? {}, billingDay: Number(addDays(today, selected.trialDays).slice(8)), createdAt: now });
+          phone: input.contact.phone ?? null, address: input.contact.address ?? {}, billingDay: Number(today.slice(8)), createdAt: now });
         await tx.insert(members).values(input.members.map((m, i) => ({ id: ids[i]!, gymId, householdId, ...m.member,
           email: input.contact.email, status: 'prospect', createdAt: now })));
         await audit(tx, gymId, 'household.created', 'household', householdId);
@@ -378,7 +385,7 @@ export function createJoinService(options: JoinOptions) {
       if (input.members.length > c.maxJoinMembers) invalid('Too many members');
       applicants(input.contact, input.members.map(m => m.member), timezone);
       signers(input.members.map(m => ({ member: m.member, signatures: m.waivers })), timezone);
-      await joinableRow(gymId, input.planId);
+      const selectedPlan = await joinableRow(gymId, input.planId);
       const templates = await ready(gymId);
       input.members.forEach(m => current(templates, m.waivers));
       const found = await admission(gymId, input), today = found.joinedOn;
@@ -401,7 +408,7 @@ export function createJoinService(options: JoinOptions) {
       for (const [i, memberId] of found.memberIds.entries())
         await lifecycle.assign(system(gymId), { id: found.membershipIds[i]!, householdId: found.householdId, memberId, planId: input.planId,
           startsOn: today, nextDueOn: today, initialStatus: 'pending', firstPeriod: 'next_billing_date' });
-      const first = await invoice(gymId, found.householdId, input.planId, found.membershipIds, today);
+      const first = await invoice(gymId, found.householdId, selectedPlan, found.membershipIds, today);
       // Each membership is next due on the join-date anniversary; its annual anniversary keeps the join date (February 29 included).
       for (const change of first.next) {
         const membership = await lifecycle.get(gymId, change.membershipId);
@@ -411,9 +418,11 @@ export function createJoinService(options: JoinOptions) {
           if (!(error instanceof AppError && error.code === 'conflict') || (await lifecycle.get(gymId, change.membershipId)).nextDueOn !== change.nextDueOn) throw error;
         }
       }
-      const [bill] = await scope(gymId, tx => tx.select().from(invoices).where(eq(invoices.id, first.invoiceId)));
-      const selectedPlan = await joinableRow(gymId, input.planId);
-      const purpose = bill!.amountCents === 0 && selectedPlan.amountCents > 0 ? 'update_card' : 'pay_invoice';
+      const purpose = await scope(gymId, async tx => {
+        const [bill] = await tx.select().from(invoices).where(eq(invoices.id, first.invoiceId));
+        const assigned = await tx.select({ amountCents: memberships.amountCents }).from(memberships).where(inArray(memberships.id, found.membershipIds));
+        return bill!.amountCents === 0 && assigned.some(m => m.amountCents > 0) ? 'update_card' as const : 'pay_invoice' as const;
+      });
       const [reusable] = await scope(gymId, tx => tx.select({ id: signedLinks.id }).from(signedLinks).where(and(eq(signedLinks.householdId, found.householdId),
         eq(signedLinks.purpose, purpose), purpose === 'pay_invoice' ? eq(signedLinks.invoiceId, first.invoiceId) : undefined,
         isNull(signedLinks.revokedAt), isNull(signedLinks.usedAt))).limit(1));

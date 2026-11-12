@@ -28,7 +28,7 @@ The join is two requests, like drop-in admission. `POST /join/signatures`
 validates the honeypot, plan, availability, every person, each required signer
 (including guardian rules and bounded signer details), current document version
 and each bounded PNG before writing anything. It then creates a new household
-(billing day: the join date, or the trial's end date) with its people as prospects
+(initial billing day: the join date) with its people as prospects
 and stores the signature images. A failed upload removes its new prospects and
 household and marks any already-uploaded images deleted. It never looks
 up an address: a new, existing, enrolled or staff email gets the same response and
@@ -37,8 +37,13 @@ contract) must repeat exactly what was admitted; the private image keys name the
 admitted people, and a leaked staff image key cannot enroll an existing member.
 It signs the immutable waivers, assigns a pending membership per person, issues one
 invoice and a pay link, and answers `received`. Replays and concurrent retries
-return the same join. The admission fixes the join date, so a submission retried
-after midnight repeats the same memberships. An admission remains valid through
+return the same join. A submission retried after a plan edit uses the assigned
+memberships' trial dates and prices for invoicing and card setup. Before issuing
+the first invoice it aligns the household
+billing day to their trial end, or keeps the join day for a non-trial membership;
+if staff changed the billing day since admission, the submission is refused.
+The admission fixes the join date, so a submission retried after midnight repeats
+the same memberships. An admission remains valid through
 the next calendar day in the gym's timezone and is refused after that day ends.
 Rate limits (ten per gym and address per fifteen minutes for each request) and the
 honeypot run before anything is written. Both join requests accept 4 MiB (`joinBodyBytes`):
@@ -67,6 +72,9 @@ An invoice keeps its accounting rows and household; an admission without billing
 loses its household too. A durable cleanup claim blocks racing submissions and
 retains the image prefixes for retries after a storage failure. The job reads
 candidates in pages of 100, so protected admissions cannot starve later ones.
+When eligibility checks find protected records or staff work, cleanup writes
+`public.join.retained` under the household lock. Later runs exclude that admission
+before taking its locks, and direct cleanup attempts honor the marker too.
 
 Outside a trial, the invoice is the household's first cycle: each membership's first full period,
 priced by the invoice engine as the runner prices an active membership on its due
@@ -107,7 +115,10 @@ effect then calls `afterInvoicePaid(gymId, invoiceId)`. Trial invoices contain o
 any sign-up fee, with no membership lines that could activate a trial early. Join
 completion moves a pending trial membership and its prospective member to `trial`;
 other prospective members become `active`. The membership date job activates the
-trial at `trialEndsOn`, when the runner bills its first full period. The join
+trial at `trialEndsOn`, when the runner bills its first full period. At that
+activation a member whose status is still `trial` also becomes `active` if they
+have no other trial membership; the member update is audited in the same
+transaction. The join
 completes once, writing `public.join.completed`, and in
 passwordless mode the sign-in link goes out. The webhook's `afterCheckout(gymId, linkId)`
 does the same for any recorded Checkout of the joined household once the invoice is paid.

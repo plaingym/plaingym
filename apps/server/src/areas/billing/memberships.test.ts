@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { auditEvents, households, memberships, uuidv7 } from '@plaingym/db';
+import { auditEvents, households, members, memberships, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
+import { zonedInstant } from '@plaingym/shared/time';
 import { TestClock } from '../../core/clock.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { createMembershipService, type AssignmentBilling } from './memberships.js';
@@ -115,6 +116,77 @@ describe('membership lifecycle against PostgreSQL', () => {
     f.clock.set('2028-02-07T08:00:00Z');
     expect(await f.service.processDates(f.gymId, 'America/Vancouver', 1)).toBe(2);
     expect((await f.service.get(f.gymId, pending.id)).status).toBe('pending');
+  });
+  it('promotes a staff-set trial member at trial end with one revision-guarded audit', async () => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial', revision: 4 }).where(eq(members.id, f.member.id)));
+    const midnight = zonedInstant('2028-02-07', '00:00', 'America/Vancouver', { gap: 'shift' })!;
+    f.clock.set(new Date(midnight.getTime() - 1));
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(0);
+    f.clock.advance(1);
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(0);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'active', revision: 5 });
+    const events = await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id)));
+    expect(events).toMatchObject([{ action: 'billing.member.activated', actorKind: 'system', occurredAt: f.clock.now(),
+      before: { status: 'trial', revision: 4 }, after: { status: 'active', revision: 5 } }]);
+  });
+  it('keeps a member trial until their last trial ends, ignoring another member and gym', async () => {
+    const f = await fixture('trial'), foreign = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const second = await f.service.assign(f.context, { ...f.request, id: uuidv7(), trialEndsOn: '2028-02-10' });
+    const sibling = await factory('members', f.gymId, { householdId: f.home.id, status: 'trial' });
+    await f.service.assign(f.context, { ...f.request, id: uuidv7(), memberId: sibling.id, trialEndsOn: '2028-02-20' });
+    f.clock.set('2028-02-07T08:00:00Z');
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'trial', revision: 1 });
+    expect((await f.service.get(f.gymId, second.id)).status).toBe('trial');
+    f.clock.set('2028-02-10T08:00:00Z');
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'active', revision: 2 });
+    expect((await foreign.service.get(foreign.gymId, foreign.membership.id)).status).toBe('trial');
+  });
+  it('serializes concurrent sibling trial activations and promotes the member once', async () => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const second = await f.service.assign(f.context, { ...f.request, id: uuidv7() });
+    await Promise.all([f.membership, second].map(m => f.service.activate(f.context, { membershipId: m.id, revision: m.revision })));
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'active', revision: 2 });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id)))))
+      .toMatchObject([{ action: 'billing.member.activated' }]);
+  });
+  it.each(['prospect', 'active', 'frozen', 'cancelled', 'visitor'])('preserves a member status of %s at trial end', async status => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status }).where(eq(members.id, f.member.id)));
+    f.clock.set('2028-02-07T08:00:00Z');
+    expect(await f.service.processDates(f.gymId, 'America/Vancouver')).toBe(1);
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status, revision: 1 });
+  });
+  it('rolls back the membership, member promotion and audits together', async () => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    const service = createMembershipService({ ...f.options, scope: (gymId, fn) => db.forGym(gymId, async tx => {
+      await fn(tx); throw new Error('transaction interrupted');
+    }) });
+    await expect(service.activate(f.context, { membershipId: f.membership.id, revision: 1 })).rejects.toThrow('transaction interrupted');
+    expect(await f.service.get(f.gymId, f.membership.id)).toMatchObject({ status: 'trial', revision: 1 });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'trial', revision: 1 });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id)))).toEqual([]);
+  });
+  it('leaves the member trial when a stale membership revision refuses activation', async () => {
+    const f = await fixture('trial');
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'trial' }).where(eq(members.id, f.member.id)));
+    await f.service.update(f.context, { membershipId: f.membership.id, revision: 1, price: { amountCents: 9000, currency: 'CAD' } });
+    await expect(f.service.activate(f.context, { membershipId: f.membership.id, revision: 1 })).rejects.toMatchObject({ code: 'conflict' });
+    expect((await db.forGym(f.gymId, tx => tx.select().from(members).where(eq(members.id, f.member.id))))[0])
+      .toMatchObject({ status: 'trial', revision: 1 });
+    expect(await db.forGym(f.gymId, tx => tx.select().from(auditEvents).where(eq(auditEvents.targetId, f.member.id)))).toEqual([]);
   });
   it('uses plan trial defaults and never bills before the trial ends', async () => {
     const f = await fixture();

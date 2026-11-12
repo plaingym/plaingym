@@ -3,6 +3,13 @@
 
 ## Lead conversion
 
+When a trial membership activates, its member also becomes `active` if their
+status is still `trial`, they have not been erased, and they have no other trial
+membership. This applies to online joins and staff-set trials. The member update
+uses a revision guard and writes `billing.member.activated` in the membership's
+transaction. Other member statuses stay as set by staff. Household locks serialize
+sibling activations and assignments, so concurrent trial endings promote once.
+
 Activating a pending or trial membership marks its member's lead `won` in the
 same transaction, including activations from a paid invoice's effect. An
 assignment that starts active does the same. This includes previously lost
