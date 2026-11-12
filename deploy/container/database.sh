@@ -4,6 +4,8 @@ set -eu
 export PGHOST="${PGHOST:-postgres}" PGPORT="${PGPORT:-5432}" PGDATABASE="${POSTGRES_DB:-plaingym}" PGCONNECT_TIMEOUT=5
 # Every command except `wait` connects as the maintenance role (BYPASSRLS).
 maintenance() { export PGUSER=maintenance PGPASSWORD="${MAINTENANCE_PASSWORD:?required}"; }
+# PLAINGYM_NODE_FLAGS (deploy/Dockerfile) is a space-separated option list, so `migrate` leaves it unquoted.
+# shellcheck disable=SC2086
 case "${1:-}" in
   wait)
     # Postgres may still be starting, or restarting alongside the app. The readiness probe never
@@ -35,7 +37,6 @@ END $check$;
 SQL
     PGUSER=app PGPASSWORD="${APP_PASSWORD:?required}" psql -X -v ON_ERROR_STOP=1 -q -c 'SELECT 1' >/dev/null
     ;;
-  # shellcheck disable=SC2086 # PLAINGYM_NODE_FLAGS is a space-separated option list (deploy/Dockerfile)
   migrate) maintenance; exec node ${PLAINGYM_NODE_FLAGS:-} /app/maintenance.mjs migrate ;;
   # Multi-gym mode's one-shot step: the app container never holds the maintenance role there, so this
   # runs the same checks and migrations to completion before the app starts (deploy/README.md).
