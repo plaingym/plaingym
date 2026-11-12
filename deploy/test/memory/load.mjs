@@ -36,7 +36,7 @@ class Client {
           const bytes = Buffer.concat(chunks), text = bytes.toString('utf8');
           let json = null;
           try { json = JSON.parse(text); } catch { /* not JSON */ }
-          resolve({ status: res.statusCode, json, text, bytes, cookies: res.headers['set-cookie'] ?? [] });
+          resolve({ status: res.statusCode, json, text, bytes, headers: res.headers, cookies: res.headers['set-cookie'] ?? [] });
         });
       });
       req.on('error', reject);
@@ -151,15 +151,24 @@ async function load() {
       timings.push(Date.now() - began);
     }
   };
-  // Six merged PDFs at once, twice, while the API traffic and the backup run.
+  // The PDF queue holds one active render and two waiting per gym, and answers 429 with Retry-After beyond that, so a
+  // client asks again after the wait it names.
+  const requestPdf = async (path) => {
+    for (let attempt = 0; ; attempt++) {
+      const response = await owner.request(path);
+      if (response.status !== 429 || attempt >= 60) return response;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(5, Number(response.headers['retry-after']) || 1) * 1000));
+    }
+  };
+  // Six merged PDFs requested at once, twice, while the API traffic and the backup run.
   const renderPdfs = async () => {
     await Promise.all(state.signatures.map(async (id) => {
       try {
-        const response = await owner.request(`/api/waivers/signatures/${id}/pdf`);
+        const response = await requestPdf(`/api/waivers/signatures/${id}/pdf`);
         if (response.status !== 200 || !response.json?.data?.url) throw new Error('Missing signed copy');
         const url = new URL(response.json.data.url);
         if (url.origin !== 'https://' + gymHost) throw new Error('Unexpected signed-copy origin');
-        const copy = await owner.request(url.pathname + url.search);
+        const copy = await requestPdf(url.pathname + url.search);
         if (copy.status !== 200 || copy.bytes.length < state.document.bytes * 0.99 || copy.bytes.subarray(0, 5).toString() !== '%PDF-')
           throw new Error('Merged copy did not retain the document');
         pdfs.ok++;
