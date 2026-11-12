@@ -24,8 +24,9 @@ async function advance(tx: Transaction, input: StageInput, stage: 'trial_attende
   }
   if (!before || before.stage === stage) return;
   if (stage === 'trial_attended' && !['new', 'contacted', 'trial_booked'].includes(before.stage)) return;
+  // A lost lead that wins drops its lost reason and time, as reopening does.
   const changes = stage === 'trial_attended'
-    ? { trialAttendedAt: before.trialAttendedAt ?? now } : { wonAt: before.wonAt ?? now };
+    ? { trialAttendedAt: before.trialAttendedAt ?? now } : { wonAt: before.wonAt ?? now, lostReason: null, lostAt: null };
   await tx.update(leads).set({ stage, ...changes, revision: before.revision + 1 }).where(where);
   await writeAudit(tx, { gymId, actorKind: actor.kind,
     ...(actor.kind === 'user' ? { actorUserId: actor.userId } : {}),

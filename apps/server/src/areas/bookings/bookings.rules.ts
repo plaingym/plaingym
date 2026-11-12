@@ -7,6 +7,7 @@ import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import type { GymSettings } from '../../core/interfaces/gym-settings.js';
 import type { MutationContext } from '../../core/interfaces/common.js';
 import { readBookingRules } from '../settings/settings.js';
+import { hasActiveMembership, isPackHolder, usableLots } from '../billing/packs/index.js';
 
 export type BookingRow = typeof classBookings.$inferSelect;
 export type SessionRow = typeof classSessions.$inferSelect;
@@ -65,6 +66,11 @@ export async function reconcileSessionBookings(tx: Transaction, session: Session
     // Erasure also locks sessions. Never confirm an already-erased member's place.
     const [member] = await tx.select({ id: members.id }).from(members).where(and(eq(members.id, waiting.memberId), isNull(members.anonymizedAt)));
     if (!member) continue;
+    // A member who joined the waitlist in the portal with pack credits and no membership must still have a usable credit
+    // when a place opens, as a new portal booking would. Otherwise they keep their place in the queue and the next
+    // member is promoted.
+    if (waiting.bookedByKind === 'member' && await isPackHolder(tx, waiting.memberId) && !await hasActiveMembership(tx, waiting.memberId)
+      && !(await usableLots(tx, waiting.memberId, now)).length) continue;
     const [row] = await tx.update(classBookings).set({ status: 'booked', waitlistPosition: null })
       .where(eq(classBookings.id, waiting.id)).returning();
     await bookingAudit(tx, context, now, 'promoted', row!);

@@ -9,9 +9,9 @@ user who created the booking. An adult non-payer can only book for themself;
 a payer uses the household-member paths for other members, or when their login
 has no member profile of its own.
 
-For a new portal booking or waitlist entry, a member with any class-credit
-ledger entry needs a usable, unexpired credit or an active membership (`active`
-or `trial`). The booking transaction uses the pack ledger helpers after checking
+For a new portal booking or waitlist entry, a pack holder (`isPackHolder`: a
+member with a class-credit lot that wasn't refunded in full) needs a usable,
+unexpired credit or an active membership (`active` or `trial`). The booking transaction uses the pack ledger helpers after checking
 the portal's member access and before inserting anything. A refusal is a
 translated conflict. Members who have never held credits and staff-created
 bookings keep their existing rules. Booking does not reserve or spend a credit;
@@ -37,7 +37,11 @@ waitlist; new bookings are then unnecessary and rejected. A cancelled or started
 session never promotes. `promoteWaitlist(gymId, sessionId, options)` acquires the
 lock itself and is safe for after-commit callers, including member erasure.
 
-Promotion stops at the cancellation cutoff, so every place a member holds can
+Promotion skips a waitlist entry the member made in the portal (`booked_by_kind`
+`member`) while they hold a class pack, have no active membership and have no
+usable credit, as a new portal booking would be refused; the entry keeps its place
+in the queue and the next member is promoted. A staff-made entry is promoted as
+before. Promotion stops at the cancellation cutoff, so every place a member holds can
 still be cancelled. `reconcileSessionBookings` reads the gym's current cutoff
 under the session lock and applies the same comparison as cancellation:
 promotion at the exact cutoff is allowed, and after it the waitlist is frozen.

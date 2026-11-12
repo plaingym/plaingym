@@ -122,16 +122,32 @@ describe('automatic lead stages in real PostgreSQL transactions', () => {
     expect(rows.audits).toHaveLength(1);
     expect(rows.audits[0]).toMatchObject({ actorKind: 'user', actorUserId: f.context.actor.userId });
   });
-  it('marks an active assignment won once and leaves trial assignments and frozen resumes alone', async () => {
+  it('marks an active assignment won once, leaves a trial assignment alone, and wins a frozen trial on its resume', async () => {
     const active = await fixture(), assigned = await assign(active, 'active');
     await active.memberships.assign(active.context, assigned.request);
     expect((await active.rows()).leads[0]).toMatchObject({ stage: 'won', wonAt: clock.now() });
     expect((await active.rows()).audits).toHaveLength(1);
     const trial = await fixture(), subscription = await assign(trial, 'trial');
     expect(await trial.rows()).toEqual({ leads: [], audits: [] });
+    // A trial frozen and then resumed was never active: the resume is its first activation.
     const frozen = await trial.memberships.freeze(trial.context, { membershipId: subscription.membership.id, revision: 1 });
     await trial.memberships.activate(trial.context, { membershipId: frozen.id, revision: frozen.revision });
-    expect(await trial.rows()).toEqual({ leads: [], audits: [] });
+    expect((await trial.rows()).leads).toMatchObject([{ memberId: trial.member.id, stage: 'won', wonAt: clock.now() }]);
+    expect((await trial.rows()).audits).toHaveLength(1);
+  });
+  it('leaves the lead alone when a membership that was active is frozen and resumed', async () => {
+    const f = await fixture(), plan = await factory('plans', f.gymId);
+    const membership = await factory('memberships', f.gymId, { memberId: f.member.id, householdId: f.member.householdId, planId: plan.id,
+      status: 'active', startsOn: '2026-10-10', nextDueOn: '2026-12-10' });
+    const frozen = await f.memberships.freeze(f.context, { membershipId: membership.id, revision: membership.revision });
+    await f.memberships.activate(f.context, { membershipId: frozen.id, revision: frozen.revision });
+    expect(await f.rows()).toEqual({ leads: [], audits: [] });
+  });
+  it('clears a lost lead\'s reason and time when it is won', async () => {
+    const f = await fixture(), assigned = await assign(f);
+    await factory('leads', f.gymId, { memberId: f.member.id, stage: 'lost', lostReason: 'Too far away', lostAt: new Date('2026-10-01Z') });
+    await f.memberships.activate(f.context, { membershipId: assigned.membership.id, revision: 1 });
+    expect((await f.rows()).leads).toMatchObject([{ stage: 'won', wonAt: clock.now(), lostReason: null, lostAt: null }]);
   });
   it('keeps an already won lead unchanged across another membership activation', async () => {
     const f = await fixture(), assigned = await assign(f);

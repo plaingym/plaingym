@@ -60,8 +60,14 @@ effect grants the sale before `afterInvoicePaid`, including a zero-total sale's
 settlement effect. It locks invoice then member,
 requires paid or partially refunded state and inserts a single grant under the
 sale's partial unique index. The expiry is local midnight at the start of the day
-`expiryDays` after the local paid date, computed through shared time helpers in
-the gym's timezone; null expiry never expires. Processing delays do not extend it.
+`expiryDays` after the later of the local paid date and the grant's own local date,
+computed through shared time helpers in the gym's timezone; null expiry never
+expires. A backdated manual payment therefore never grants credits that have
+already expired. A grant marks the buyer's lead `won` (`leads/stages.ts`), as a
+membership that starts does. A sale whose member was erased before it was paid
+grants nothing: it audits `billing.credits.not_granted` once and queues a
+`credits_not_granted` staff notice naming the invoice and the credits, so staff can
+refund the payer.
 
 A transition to fully refunded records `reverse_credits` in the same transaction.
 That effect locks invoice then member and reverses the lot's remaining balance
@@ -69,7 +75,9 @@ That effect locks invoice then member and reverses the lot's remaining balance
 zero remaining writes no ledger row. Partial refunds change no credits. A failed
 full refund does not restore credits, even when it fails before the queued reversal
 runs. A grant delayed past a full refund stays suppressed, including after a failed
-refund returns the invoice to paid. Credits follow the member after a household move;
+refund returns the invoice to paid; the `refund_failed` staff notice then names the
+credits the reversal took back, which staff add back by adjustment if the payer is
+still owed the pack. Credits follow the member after a household move;
 the invoice and sale keep the original payer. Unique grant/reversal indexes and
 transactional `billing.credits.granted` / `billing.credits.reversed` audits make
 effect replays and crashes before completion safe.
@@ -95,8 +103,14 @@ transaction. They never open a nested transaction or call external services:
   The caller owns command replay detection and the audit in the same transaction.
 * `hasActiveMembership(tx, memberId)` counts `active` and `trial` memberships;
   `pending`, `frozen` and `cancelled` do not count.
-* `isPackHolder(tx, memberId)` checks for any ledger entry, including exhausted
-  or expired balances and staff adjustments.
+* `isPackHolder(tx, memberId)` checks for a lot, including exhausted or expired
+  balances and credits staff added. A pack refunded in full (a sale `reverse` row,
+  or its invoice `refunded`) doesn't count, so a sale undone that way leaves the
+  member as before it.
+* `returnCredit(tx, { gymId, memberId, attendanceId, now })` requires the member
+  lock. It returns the credit an undone visit spent to its lot (a `reverse` +1 row)
+  and answers `true`; `false` when that lot's pack was refunded in full, so the
+  credit stays spent; `null` when the visit spent no credit.
 
 `createCreditLedgerService` implements GET
 `/api/billing/members/{memberId}/credits` (`billing.read`) and POST

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, eq, gt, lte, ne, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lte, ne, or } from 'drizzle-orm';
 import { forGym, memberships, households, members, plans, auditEvents,
   revisionGuard, assertRevised, uuidv7, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
@@ -25,6 +25,18 @@ const present = ({ gymId: _gymId, anniversaryOn: _anniversaryOn, switchOverrideR
   createdAt: row.createdAt.toISOString(), frozenAt: row.frozenAt?.toISOString() ?? null,
   cancelledAt: row.cancelledAt?.toISOString() ?? null });
 const conflict = (message: string): never => { throw new AppError('conflict', message); };
+/**
+ * A frozen membership that was never active: its latest freeze froze a pending or trial membership. Resuming it is its
+ * first activation, so its lead is won then, as for a trial that ends.
+ */
+async function frozenBeforeActive(tx: Transaction, row: Row): Promise<boolean> {
+  if (row.status !== 'frozen') return false;
+  const [freeze] = await tx.select({ before: auditEvents.before }).from(auditEvents).where(and(
+    eq(auditEvents.action, 'billing.membership.frozen'), eq(auditEvents.targetId, row.id)))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
+  const status = (freeze?.before as { status?: string } | null | undefined)?.status;
+  return status === 'pending' || status === 'trial';
+}
 /** Explicit date changes set a new anniversary, except the normal short-year clamp. */
 function editedAnniversary(before: Row, nextDueOn?: string): string | null {
   if (before.interval !== 'annual') return null;
@@ -188,7 +200,8 @@ export function createMembershipService(options: MembershipOptions = {}) {
           const owedFrom = before.resumesOn !== null && before.resumesOn < today ? before.resumesOn : today;
           while (due < owedFrom) due = advanceDue(due, before.interval as c.BillingInterval, anchor, anniversaryOn);
         }
-        if (before.status === 'pending' || before.status === 'trial') await markLeadWon(tx, { ...context, memberId: before.memberId, now: clock.now() });
+        if (before.status === 'pending' || before.status === 'trial' || await frozenBeforeActive(tx, before))
+          await markLeadWon(tx, { ...context, memberId: before.memberId, now: clock.now() });
         return { status: 'active', nextDueOn: due, anniversaryOn, frozenAt: null, resumesOn: null };
       });
     },

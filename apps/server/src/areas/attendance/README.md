@@ -23,11 +23,20 @@ visit spent a credit. A kiosk pack holder with no usable credits and no active
 membership is refused atomically, with only `see_front_desk` reaching the shared
 screen. A member who has never held credits checks in as before.
 
+A live open-mat visit (no session, from the kiosk, QR or staff) counts once per
+member per gym-local day of its `occurredAt`: under the member lock, a second one
+that day returns the first visit, as a session replay does, without a new row,
+audit or credit. A second tap, a retry after a lost response, or a kiosk visit
+after a staff one therefore spends one credit. Imports are never deduplicated
+this way.
+
 POST `/api/attendance/{id}/undo` requires `attendance.manage` (all staff roles).
 It locks the member then the attendance row, deletes a live `coach` or `kiosk`
-visit, and appends a `reverse` entry returning any spent credit to its original
-lot. The lot keeps its expiry. `attendance.undone` audits the full deleted row
-in the same transaction. A repeated or cross-gym undo is 404; an import is 409
+visit, and returns any spent credit to its original lot with a `reverse` entry
+(`returnCredit` in `billing/packs/ledger.ts`), unless that lot's pack was refunded
+in full since, when the credit stays spent. The lot keeps its expiry.
+`attendance.undone` audits the full deleted row in the same transaction, with
+`after.creditReturned` when the visit had spent a credit. A repeated or cross-gym undo is 404; an import is 409
 and cannot be undone. Attendance is therefore no longer append-only for live
 visits; the credit ledger remains append-only. Undo does not rewind lead stages.
 The session roster offers a confirmed Undo action on live checked-in rows and

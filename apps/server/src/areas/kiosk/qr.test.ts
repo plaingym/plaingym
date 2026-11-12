@@ -139,13 +139,14 @@ describe('QR check-in and revocable member codes', () => {
     expect(await qr.checkin(gymA, deviceId, { code: issued.code, sessionId: uuidv7() })).toMatchObject({ status: 'select_session' });
     expect(await visits(member.id)).toHaveLength(1);
   });
-  it('records every open-mat visit even when a class is booked', async () => {
+  it('records an open-mat visit even when a class is booked, once per local day', async () => {
     const member = await person(), issued = await issue(member);
     const session = await factory('classSessions', gymA, { startsAt: clock.now(), endsAt: new Date(clock.now().getTime() + 3_600_000) });
     await factory('classBookings', gymA, { memberId: member.id, sessionId: session.id, status: 'booked' });
+    // A second scan the same day checks in again without a second visit.
     for (let i = 0; i < 2; i++) expect(await qr.checkin(gymA, deviceId, { code: issued.code, sessionId: null }))
       .toMatchObject({ status: 'checked_in' });
-    expect(await visits(member.id)).toHaveLength(2);
+    expect(await visits(member.id)).toHaveLength(1);
   });
   it('keeps inactive/erased members, waiver and billing failures neutral and private', async () => {
     const member = await person(), issued = await issue(member);

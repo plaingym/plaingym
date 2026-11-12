@@ -7,12 +7,12 @@ import { readRevenue, type RevenueData } from './revenue.query.js';
 import { reportBuckets, type ReportContext } from './range.js';
 
 type Group = Pick<RevenueGroup, 'kind' | 'id' | 'name'>;
-function groupFor({ line, planId, planName, chargeName, taxName }: RevenueData['lines'][number]): Group {
+function groupFor({ line, planId, planName, chargeName, taxName, packId, packName }: RevenueData['lines'][number]): Group {
   switch (line.kind) {
     case 'membership': return { kind: 'plan', id: planId, name: planName };
     case 'signup_fee': return { kind: 'signup_fee', id: planId, name: planName };
     case 'charge': return line.chargeTypeId ? { kind: 'charge_type', id: line.chargeTypeId, name: chargeName }
-      : { kind: 'other', id: null, name: null };
+      : packId ? { kind: 'class_pack', id: packId, name: packName } : { kind: 'other', id: null, name: null };
     case 'discount': return { kind: 'discount', id: null, name: null };
     case 'tax': return { kind: 'tax', id: line.taxRateId, name: taxName ?? line.description };
     default: throw new Error('Unknown revenue line kind');

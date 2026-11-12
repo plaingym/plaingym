@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { auditEvents, classCreditEntries, classPackSales, classPacks, invoices, members, uuidv7 } from '@plaingym/db';
+import { auditEvents, classCreditEntries, classPackSales, classPacks, invoices, leads, members, uuidv7 } from '@plaingym/db';
 import { useTestDatabase } from '@plaingym/db/testing/database';
 import { createFactories } from '@plaingym/db/testing/factories';
 import { TestClock } from '../../../core/clock.js';
@@ -14,6 +14,7 @@ import { createTransitionEffects } from '../transitions/effects.js';
 import { applyChargeOutcome } from '../transitions/outcomes.js';
 import { effectCompleted, effectCreated, type TransitionEffect } from '../transitions/store.js';
 import { createPackCredits } from './credits.js';
+import { isPackHolder, returnCredit } from './ledger.js';
 import { createPackSalesService } from './sales.js';
 
 const db = useTestDatabase(), factory = createFactories(db);
@@ -172,12 +173,76 @@ describe('class pack invoice effects', () => {
     ['2028-03-10T17:00:00Z', '2028-03-13T04:00:00.000Z'],
     ['2028-11-03T17:00:00Z', '2028-11-06T05:00:00.000Z'],
     ['2028-03-11T02:00:00Z', '2028-03-13T04:00:00.000Z'],
-  ])('expires at local midnight using paidAt, not processing time, across DST (%s)', async (paidAt, expiry) => {
+  ])('expires at local midnight after the local payment date, across DST (%s)', async (paidAt, expiry) => {
     const f = await fixture(10000, 3, paidAt);
+    await f.transitions.manualPayment(f.context, f.manual);
+    await f.run('activate_memberships');
+    expect((await f.ledger())[0]!.expiresAt?.toISOString()).toBe(expiry);
+  });
+
+  it('counts expiry from the grant\'s own date when it is later than the payment\'s, so no credit starts expired', async () => {
+    // Paid (or recorded as paid) on 10 March, granted on 20 March: three days from the grant.
+    const f = await fixture(10000, 3, '2028-03-10T17:00:00Z');
     await f.transitions.manualPayment(f.context, f.manual);
     f.clock.advance(10 * 86_400_000);
     await f.run('activate_memberships');
-    expect((await f.ledger())[0]!.expiresAt?.toISOString()).toBe(expiry);
+    expect((await f.ledger())[0]!.expiresAt?.toISOString()).toBe('2028-03-23T04:00:00.000Z');
+  });
+
+  it('grants nothing to a member erased before the pack was paid, and tells staff once', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(members).set({ anonymizedAt: f.clock.now() }).where(eq(members.id, f.member.id)));
+    await f.transitions.manualPayment(f.context, f.manual);
+    await f.run('activate_memberships');
+    await f.credits.grant(f.gymId, f.invoice.id);
+    expect(await f.ledger()).toEqual([]);
+    expect(await f.audits('billing.credits.not_granted')).toMatchObject([{ targetType: 'class_pack_sale', after: { invoiceId: f.invoice.id, credits: 10 } }]);
+    const notices = (await f.work('staff_notice')).filter(row => (row.after as TransitionEffect).notice === 'credits_not_granted');
+    expect(notices).toHaveLength(1);
+    await f.run('staff_notice');
+    expect(f.effectOptions.notifications.staffNotice).toHaveBeenCalledWith(expect.objectContaining({ reason: 'credits_not_granted', credits: 10 }));
+  });
+
+  it('names the credits a full refund reversed in the notice when that refund later fails', async () => {
+    const f = await fixture();
+    const success = { ...f.manual, paymentIntentId: 'pi_' + uuidv7(), chargeId: 'ch_' + uuidv7() };
+    await f.transitions.cardSucceeded(f.context, success);
+    await f.run('activate_memberships');
+    const refund = { ...f.refund(), processorId: 're_' + uuidv7() };
+    await f.transitions.refund(f.context, refund);
+    await f.run('reverse_credits');
+    await f.transitions.refund(f.context, { ...refund, status: 'failed' });
+    await f.run('staff_notice');
+    expect(f.effectOptions.notifications.staffNotice).toHaveBeenCalledWith(expect.objectContaining({ reason: 'refund_failed', reversedCredits: 10 }));
+  });
+
+  it('returns no credit for a visit undone after a full refund, and a refunded pack no longer makes a pack holder', async () => {
+    const f = await fixture();
+    await f.transitions.manualPayment(f.context, f.manual); await f.run('activate_memberships');
+    const [grant] = await f.ledger(), kept = uuidv7(), undone = uuidv7();
+    await db.forGym(f.gymId, tx => tx.insert(classCreditEntries).values([kept, undone].map(attendanceId => ({ id: uuidv7(), gymId: f.gymId,
+      memberId: f.member.id, kind: 'use', credits: -1, lotId: grant!.id, attendanceId }))));
+    expect(await db.forGym(f.gymId, tx => isPackHolder(tx, f.member.id))).toBe(true);
+    // Before the refund an undone visit gets its credit back.
+    expect(await db.forGym(f.gymId, tx => returnCredit(tx, { gymId: f.gymId, memberId: f.member.id, attendanceId: kept, now: f.clock.now() }))).toBe(true);
+    await f.transitions.refund(f.context, f.refund()); await f.run('reverse_credits');
+    expect((await f.ledger()).reduce((sum, row) => sum + row.credits, 0)).toBe(0);
+    expect(await db.forGym(f.gymId, tx => returnCredit(tx, { gymId: f.gymId, memberId: f.member.id, attendanceId: undone, now: f.clock.now() }))).toBe(false);
+    expect((await f.ledger()).reduce((sum, row) => sum + row.credits, 0)).toBe(0);
+    expect(await db.forGym(f.gymId, tx => returnCredit(tx, { gymId: f.gymId, memberId: f.member.id, attendanceId: uuidv7(), now: f.clock.now() }))).toBeNull();
+    expect(await db.forGym(f.gymId, tx => isPackHolder(tx, f.member.id))).toBe(false);
+    // Credits staff add by adjustment still make a pack holder.
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    expect(await db.forGym(f.gymId, tx => isPackHolder(tx, f.member.id))).toBe(true);
+  });
+
+  it('marks the buyer\'s lead won when the pack is paid', async () => {
+    const f = await fixture();
+    await db.forGym(f.gymId, tx => tx.update(members).set({ status: 'prospect' }).where(eq(members.id, f.member.id)));
+    await f.transitions.manualPayment(f.context, f.manual);
+    await f.run('activate_memberships');
+    expect(await db.forGym(f.gymId, tx => tx.select().from(leads).where(eq(leads.memberId, f.member.id))))
+      .toMatchObject([{ stage: 'won', wonAt: f.clock.now() }]);
   });
 
   it('uses sale snapshots after catalog edits, follows the member after a household move, and isolates gyms', async () => {

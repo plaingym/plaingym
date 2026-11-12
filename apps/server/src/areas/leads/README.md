@@ -47,8 +47,10 @@ paging; `pagination.total` is their sum. The list performs two query-builder
 statements in one gym scope, regardless of page size or cohort size.
 
 Staff can set `new`, `contacted`, `trial_booked` and `trial_attended`; manually
-recording attendance preserves or sets the first trial-attended time. Only
-automatic membership activation sets `won`, and only the lost route sets `lost`.
+recording attendance preserves or sets the first trial-attended time. Moving a lead
+back from `trial_attended` clears that time when the member has no recorded
+attendance, so a mistaken click stops counting in the funnel. Only automatic
+membership activation and a paid class pack set `won`, and only the lost route sets `lost`.
 A won lead cannot change stage or be marked lost. A lost lead must be reopened
 before a manual stage change. Source and follow-up remain editable on either.
 Invalid stage transitions and stale revisions return 409. A row-less lead's first
@@ -106,9 +108,12 @@ preserving the first `trial_attended_at`. Won and lost leads keep their stage.
 Staff, session and kiosk check-ins share this path.
 
 `markLeadWon` runs when a pending or trial membership activates (including a
-paid invoice's activation effect), or an assignment starts active. It advances
-any stage except `won`, including `lost`. Trial assignments and frozen resumes
-do not call it. Imports insert their rows directly and change no stage.
+paid invoice's activation effect), an assignment starts active, a frozen
+membership that was never active resumes (its latest freeze froze a pending or
+trial membership), or a class pack's credits are granted on payment. It advances
+any stage except `won`, including `lost`, and clears a lost lead's reason and
+time as reopening does. Trial assignments and the resume of a membership that was
+active do not call it. Imports insert their rows directly and change no stage.
 
 Both helpers take the caller's gym transaction, actor and clock time. A missing
 lead is created with a null source only for a prospect or trial member; other

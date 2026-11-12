@@ -14,6 +14,9 @@
   "duplicateReleasedBody": "The automatic refund of a duplicate payment for invoice {number} was stopped. {amount} of that payment isn't recorded as refunded yet, though a refund made in Stripe may still be pending. Check the payment in Stripe and in billing, and refund the payer only what they are still owed.",
   "refundFailedSubject": "Refund failed for invoice {number}",
   "refundFailedBody": "A refund of {amount} for invoice {number} failed, so the payer did not receive it. Check the payment and its refunds in billing, and refund the payer another way only if they are still owed.",
+  "creditsReversedNote": "The refund also took back {credits} unused class credits from the member's pack. If the payer is still owed the pack, add those credits back on the member's Packs tab.",
+  "creditsNotGrantedSubject": "Class pack credits not granted for invoice {number}",
+  "creditsNotGrantedBody": "Invoice {number} for a class pack ({amount}) was paid after its member's personal data was erased, so its {credits} credits weren't granted. Refund the payer from the invoice if they are owed it.",
   "refundReversedSubject": "Refund failed for invoice {number}",
   "refundReversedBody": "A refund of {amount} for invoice {number} was reported as successful but then failed, so the payer did not receive it. Check the payment in billing and refund the payer another way."
 }

@@ -6,7 +6,7 @@ import type { reportBucketSchema, reportRangeQuerySchema, ReportRangeQuery } fro
 // Discounts have negative payments and refunds. Aggregates can exceed a DB int32.
 export const revenueAmountsSchema = z.strictObject({ payments: z.int(), refunds: z.int(), net: z.int() });
 export const revenueGroupSchema = revenueAmountsSchema.extend({
-  kind: z.enum(['plan', 'signup_fee', 'charge_type', 'other', 'discount', 'tax', 'unapplied']),
+  kind: z.enum(['plan', 'signup_fee', 'charge_type', 'class_pack', 'other', 'discount', 'tax', 'unapplied']),
   id: idSchema.nullable(), name: z.string().nullable(),
 });
 /** Compose with the common report range and boundaries without a runtime import cycle. */

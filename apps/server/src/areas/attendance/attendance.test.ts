@@ -191,20 +191,21 @@ describe('attendance service with PostgreSQL', () => {
     expect(results[0]!.id).toMatch(/^[0-9a-f-]{14}7[0-9a-f]{3}-[89ab]/);
     expect(results[0]).not.toHaveProperty('sourceKey'); expect(results[0]).not.toHaveProperty('gymId');
   });
-  it('allows distinct open-mat visits and deduplicates imported visits by source key', async () => {
+  it('records one live open-mat visit per member per local day and deduplicates imported visits by source key', async () => {
     const f = await fixture();
     const input = { ...f.input, sessionId: null };
-    const first = await service.record(f.context, input), second = await service.record(f.context, input);
-    expect(first.id).not.toBe(second.id);
+    // A second tap, a retry or a kiosk visit after a staff one the same day returns the first visit.
+    const first = await service.record(f.context, input), second = await service.record(f.context, input, { source: 'kiosk' });
+    expect(second).toEqual(first);
     const imported = await Promise.all(Array.from({ length: 5 }, () => service.record(f.context,
       { ...input, occurredAt: since }, { source: 'import', sourceKey: 'legacy:visit:1' })));
     expect(new Set(imported.map((row) => row.id)).size).toBe(1);
     expect(imported[0]).toMatchObject({ source: 'import', occurredAt: since });
     await expect(service.record(f.context, { ...input, memberId: f.sibling.id }, { source: 'import', sourceKey: 'legacy:visit:1' }))
       .rejects.toMatchObject({ code: 'conflict' });
-    expect((await snapshot(f.gymId)).rows).toHaveLength(3);
+    expect((await snapshot(f.gymId)).rows).toHaveLength(2);
     const audits = (await snapshot(f.gymId)).audits;
-    expect(audits.filter(row => row.action === 'attendance.recorded')).toHaveLength(3);
+    expect(audits.filter(row => row.action === 'attendance.recorded')).toHaveLength(2);
     expect(audits.filter(row => row.action === 'lead.stage_changed')).toHaveLength(1);
   });
   it('records open mat as visits that count as classes only when the gym opts in', async () => {

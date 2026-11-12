@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, eq, gte, notInArray } from 'drizzle-orm';
-import { auditEvents, forGym, invoiceLineItems, paymentAttempts, payments, refunds } from '@plaingym/db';
+import { auditEvents, classCreditEntries, classPackSales, forGym, invoiceLineItems, paymentAttempts, payments, refunds } from '@plaingym/db';
 import type { Clock } from '@plaingym/shared';
 import { localDate } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../../core/clock.js';
@@ -87,10 +87,16 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         .orderBy(asc(paymentAttempts.attemptNumber))).filter(row => !abandonedAttempt(row)).at(-1);
       const lines = work.kind === 'activate_memberships' ? await tx.select({ membershipId: invoiceLineItems.membershipId })
         .from(invoiceLineItems).where(and(eq(invoiceLineItems.invoiceId, invoice.id), eq(invoiceLineItems.kind, 'membership'))) : [];
-      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines };
+      // A class pack sale's credits: those not granted (an erased member), or those a full refund took back before it failed.
+      const [sale] = work.notice === 'credits_not_granted' || work.notice === 'refund_failed'
+        ? await tx.select().from(classPackSales).where(eq(classPackSales.invoiceId, invoice.id)) : [];
+      const reversedCredits = sale && work.notice === 'refund_failed'
+        ? (await tx.select({ credits: classCreditEntries.credits }).from(classCreditEntries).where(and(
+          eq(classCreditEntries.saleId, sale.id), eq(classCreditEntries.kind, 'reverse')))).reduce((total, row) => total - row.credits, 0) : 0;
+      return { event, work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits };
     });
     if (!loaded) return;
-    const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines } = loaded;
+    const { work, invoice, payment, refund, refunded, reversed, attempt, latestAttempt, lines, sale, reversedCredits } = loaded;
     const data = { gymId, generation: effectId, invoice: snapshot(invoice), ...(payment ? { payment } : {}) };
     if (work.kind === 'receipt') await options.notifications.receipt(data);
     else if (work.kind === 'activate_memberships') {
@@ -117,8 +123,12 @@ export function createTransitionEffects(options: TransitionEffectOptions) {
         // Only recorded refunds count: a pending one can still be canceled, and then nothing else would say so.
         const unrefundedCents = refunded.reduce((left, row) => left - row.amountCents, payment.amountCents);
         if (unrefundedCents > 0) await options.notifications.staffNotice({ ...data, reason: 'duplicate_released', unrefundedCents });
+      } else if (work.notice === 'credits_not_granted') {
+        if (!sale) throw new Error('Credits notice has no class pack sale');
+        await options.notifications.staffNotice({ ...data, reason: 'credits_not_granted', credits: sale.credits });
       } else if (work.notice !== 'refund_failed') await options.notifications.staffNotice(data);
-      else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed });
+      else if (refund) await options.notifications.staffNotice({ ...data, reason: 'refund_failed', refund, reversed,
+        ...(reversedCredits > 0 ? { reversedCredits } : {}) });
       else throw new Error('Failed refund notice has no refund');
     }
     else if (work.kind === 'refund_duplicate') {

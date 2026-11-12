@@ -140,6 +140,15 @@ describe('revenue report with real PostgreSQL and RLS', () => {
     expect((await service.get(f, query)).data.currencies[0]!.buckets[1]!.groups)
       .toEqual([{ kind: 'plan', id: plan.id, name: 'New plan', ...amounts(100) }]);
   });
+  it('groups a class pack sale under its pack, apart from other untyped charges', async () => {
+    const f = await fixture(), pack = await factory('classPacks', f.gymId, { name: 'Ten classes', currency: 'USD', active: false });
+    const sold = await invoice(f, [{ kind: 'charge', description: 'Ten classes', amountCents: 150 }]);
+    await factory('classPackSales', f.gymId, { invoiceId: sold.id, householdId: f.member.householdId, memberId: f.member.id, packId: pack.id });
+    await payment(f, sold.id, 150, '2026-03-04T12:00:00Z');
+    await simplePayment(f, 40, '2026-03-05T12:00:00Z');
+    expect((await service.get(f, query)).data.currencies[0]!.buckets[1]!.groups).toEqual([
+      { kind: 'class_pack', id: pack.id, name: 'Ten classes', ...amounts(150) }, { kind: 'other', id: null, name: null, ...amounts(40) }]);
+  });
   it('keeps a line under the plan it recorded after the membership changes plan, beside an older line with none', async () => {
     const f = await fixture();
     const recorded = await invoice(f, [

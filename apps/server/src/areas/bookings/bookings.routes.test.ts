@@ -19,7 +19,7 @@ import { rememberPortalApp, portalTestHeaders } from '../portal/household.fixtur
 import { createPortalAuthorization } from '../portal/auth.permissions.js';
 import { createMembersService } from '../members/members.js';
 import { createMembersRoutes } from '../members/members.routes.js';
-import { createBookingService } from './bookings.js';
+import { createBookingService, promoteWaitlist } from './bookings.js';
 import { createBookingRoutes } from './bookings.routes.js';
 import { createPortalBookingService } from '../portal/bookings.js';
 import { createPortalBookingRoutes } from '../portal/bookings.routes.js';
@@ -103,6 +103,26 @@ describe('portal class-credit eligibility', () => {
     const response = await post(server, '/api/portal/bookings', input);
     expect(response.status).toBe(200);
     expect((await response.json()).data).toMatchObject({ status: 'waitlisted', queueRank: 1 });
+  });
+
+  it('skips a portal-waitlisted pack holder whose credit ran out when a place opens, keeping their place in the queue', async () => {
+    const f = await fixture(), server = app(f, memberPrincipal(f));
+    const booked = [];
+    for (let n = 0; n < 5; n++) booked.push(await book(f, (await factory('members', f.gymId)).id));
+    const lot = await factory('classCreditEntries', f.gymId, { memberId: f.member.id, credits: 1 });
+    const queued = await post(server, '/api/portal/bookings', { sessionId: f.session.id, allowWaitlist: true });
+    expect((await queued.json()).data).toMatchObject({ status: 'waitlisted', queueRank: 1 });
+    // A staff-made waitlist entry for another member, behind the portal one.
+    const next = await book(f, f.outsider.id);
+    expect(next).toMatchObject({ status: 'waitlisted' });
+    // The member's last credit is spent elsewhere before the place opens.
+    await factory('classCreditEntries', f.gymId, { memberId: f.member.id, lotId: lot.id, credits: -1 });
+    await service.cancel(f.actor, booked[0]!.id);
+    // Cancellation queues the promotion; run it as its job does.
+    await promoteWaitlist(f.gymId, f.session.id, { scope: db.forGym, clock });
+    const rows = await db.forGym(f.gymId, tx => tx.select().from(classBookings));
+    expect(rows.find(row => row.memberId === f.member.id)).toMatchObject({ status: 'waitlisted' });
+    expect(rows.find(row => row.memberId === f.outsider.id)).toMatchObject({ status: 'booked', waitlistPosition: null });
   });
 
   it.each(['active', 'trial', 'frozen', 'cancelled', 'pending'] as const)('uses %s membership eligibility for a pack holder', async status => {

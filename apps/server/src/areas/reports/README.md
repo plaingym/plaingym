@@ -118,7 +118,8 @@ with the same exact integer rule. Each refund is allocated independently.
 A plan change on the membership leaves those lines where they are. Lines written
 before migration `0029` recorded no plan, so they fall back to the membership's
 **current** plan, and a plan change still moves them. `charge_type`
-groups typed charges; `other` covers untyped charges. `discount`, each `tax`, and
+groups typed charges; `class_pack` groups a class pack sale's charge by the pack it
+sold (through `class_pack_sales`); `other` covers the remaining untyped charges. `discount`, each `tax`, and
 `unapplied` are separate groups. Archived plans, charge types and taxes retain
 their current names. Built-in groups have null IDs/names for client localization;
 tax lines without a tax ID retain their description. Tax allocations are shown

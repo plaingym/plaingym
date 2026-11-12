@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { and, asc, count, desc, eq, gte, inArray, lt, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, or } from 'drizzle-orm';
 import {
-  attendances, classCreditEntries, classSessions, classSessionPrograms, classSessionTags, classTags,
+  attendances, classSessions, classSessionPrograms, classSessionTags, classTags,
   forGym, forHousehold, HouseholdAccessError, members, programs, uuidv7, writeAudit, type HouseholdAttendanceFilter, type Transaction,
 } from '@plaingym/db';
 import { AppError, createTranslator, type Clock } from '@plaingym/shared';
@@ -11,12 +11,13 @@ import {
   type Attendance, type AttendanceListQuery, type AttendanceSource, type AttendanceTotals, type ClassKind,
   type AttendanceTotalsQuery, type Pagination, type RecordAttendanceRequest,
 } from '@plaingym/shared/contracts';
+import { addDays, localDate, zonedInstant } from '@plaingym/shared/time';
 import { clock as defaultClock } from '../../core/clock.js';
 import type { AttendanceFilter, AttendanceQueries, AttendanceScope } from '../../core/interfaces/attendance.js';
 import type { GymSettingsAccessor } from '../../core/interfaces/gym-settings.js';
 import { createGymSettingsAccessor } from '../settings/settings.js';
 import { advanceLeadOnCheckIn } from '../leads/stages.js';
-import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits } from '../billing/packs/ledger.js';
+import { drawCredits, hasActiveMembership, isPackHolder, lockMemberCredits, returnCredit } from '../billing/packs/ledger.js';
 import messages from '../../../../../locales/en/attendance/attendance.json' with { type: 'json' };
 
 const t = createTranslator({ 'attendance/attendance': messages });
@@ -165,12 +166,26 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
       if (origin.kind !== undefined) classKindSchema.parse(origin.kind);
       // The session decides the kind; a live visit without a session is open mat.
       let kind: ClassKind = origin.kind ?? (origin.source === 'import' ? 'class' : 'open_mat');
+      // A live open-mat visit counts once per member per gym-local day, so a second tap or a retry after a lost response
+      // returns the first visit instead of recording (and charging a credit for) another.
+      const openMat = !value.sessionId && origin.source !== 'import';
+      const timezone = openMat ? (await settings.get(context.gymId)).timezone : undefined;
       return scope(context.gymId, async (tx) => {
         const gymId = context.gymId, now = clock.now();
         const [member] = await tx.select({ anonymizedAt: members.anonymizedAt }).from(members)
           .where(and(eq(members.gymId, gymId), eq(members.id, value.memberId))).for('update');
         if (!member) missing();
         if (member.anonymizedAt !== null) throw new AppError('conflict', 'Member personal data has been erased');
+        if (timezone) {
+          // The member lock above serializes check-ins for this member, so the check and the insert can't race.
+          const day = localDate(value.occurredAt ? new Date(value.occurredAt) : now, timezone);
+          const [existing] = await tx.select().from(attendances).where(and(eq(attendances.gymId, gymId),
+            eq(attendances.memberId, value.memberId), isNull(attendances.sessionId), eq(attendances.kind, 'open_mat'),
+            inArray(attendances.source, ['kiosk', 'coach']),
+            gte(attendances.occurredAt, zonedInstant(day, '00:00', timezone, { gap: 'shift' })!),
+            lt(attendances.occurredAt, zonedInstant(addDays(day, 1), '00:00', timezone, { gap: 'shift' })!))).limit(1);
+          if (existing) return present(existing);
+        }
         await requireReferences(tx, gymId, { ...(value.programId ? { programId: value.programId } : {}) });
         if (value.sessionId) {
           // Serialize with cancellation/deletion. Uniqueness, not elapsed time, deduplicates check-ins.
@@ -232,14 +247,13 @@ export function createAttendanceService(options: AttendanceOptions = {}) {
         if (!row) missing();
         if (row.source === 'import') throw new AppError('conflict', t('attendance/attendance:importUndoBlocked'));
         await tx.delete(attendances).where(where);
-        const [use] = await tx.select().from(classCreditEntries).where(and(
-          eq(classCreditEntries.gymId, gymId), eq(classCreditEntries.attendanceId, id), eq(classCreditEntries.kind, 'use')));
-        if (use) await tx.insert(classCreditEntries).values({ id: uuidv7(now.getTime()), gymId,
-          memberId: row.memberId, kind: 'reverse', credits: 1, lotId: use.lotId, attendanceId: id, createdAt: now });
+        // A credit the visit spent goes back to its lot, unless the pack was refunded in full since.
+        const creditReturned = await returnCredit(tx, { gymId, memberId: row.memberId, attendanceId: id, now });
         await writeAudit(tx, { gymId, createdAt: now, occurredAt: now, actorKind: context.actor.kind,
           ...(context.actor.kind === 'user' ? { actorUserId: context.actor.userId } : {}),
           ...(context.actor.kind === 'device' ? { actorDeviceId: context.actor.deviceId } : {}),
-          action: 'attendance.undone', targetType: 'attendance', targetId: id, before: row });
+          action: 'attendance.undone', targetType: 'attendance', targetId: id, before: row,
+          ...(creditReturned === null ? {} : { after: { creditReturned } }) });
         return present(row);
       });
     },

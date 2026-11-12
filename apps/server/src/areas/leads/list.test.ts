@@ -133,6 +133,19 @@ describe('leads list and edits against PostgreSQL and forced RLS', () => {
     expect((await request(server, won.id, 'POST', '/reopen', { revision: 1 })).status).toBe(409);
     expect((await request(server, won.id, 'PATCH', '', { revision: 1, source: 'referral', nextFollowUpOn: '2026-03-20' })).status).toBe(200);
   });
+  it('clears a hand-set trial attendance when the stage moves back, unless the member has a recorded visit', async () => {
+    const f = await fixture(), mistaken = await person(f), visited = await person(f);
+    const row = async (memberId: string) => (await db.forGym(f.gymId, tx => tx.select().from(leads).where(eq(leads.memberId, memberId))))[0]!;
+    for (const member of [mistaken, visited]) {
+      await f.service.edit(f.context, member.id, { revision: 0, stage: 'trial_attended' });
+      expect((await row(member.id)).trialAttendedAt).toEqual(f.clock.now());
+    }
+    await factory('attendances', f.gymId, { memberId: visited.id, occurredAt: f.clock.now(), source: 'coach' });
+    for (const member of [mistaken, visited]) await f.service.edit(f.context, member.id, { revision: 1, stage: 'contacted' });
+    // The mistaken click no longer counts as a trial attendance; a real visit keeps its timestamp.
+    expect(await row(mistaken.id)).toMatchObject({ stage: 'contacted', trialAttendedAt: null });
+    expect(await row(visited.id)).toMatchObject({ stage: 'contacted', trialAttendedAt: f.clock.now() });
+  });
   it('returns conflicts for stale revisions and racing first edits; only one write and audit wins', async () => {
     const f = await fixture(), member = await person(f), server = app(f);
     const attempts = await Promise.all([0, 1].map(() => request(server, member.id, 'PATCH', '', { revision: 0, source: 'phone' })));

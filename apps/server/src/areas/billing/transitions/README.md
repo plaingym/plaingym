@@ -167,7 +167,12 @@ Every processor refund that ends `failed` (recorded failed from the start, moved
 from `pending`, or reversed after success) queues one `staff_notice` effect with
 `notice: 'refund_failed'` in the same transaction, which tells the gym's staff
 recipients (owners and admins at runtime) that the payer was not refunded; a
-reversal's email says the refund had been reported successful. Because a failed
+reversal's email says the refund had been reported successful. For a class pack
+sale whose full refund had already reversed unused credits, the email also names
+those credits, which staff add back by adjustment if the payer is still owed the
+pack. A class pack paid after its member was erased grants no credits and queues a
+`notice: 'credits_not_granted'` staff notice (once per sale) so staff can refund
+the payer. Because a failed
 refund never moves again, a replayed webhook or rerun reconciliation queues no
 second notice. A refund cancelled at the processor (usually by staff in its
 dashboard; the Stripe adapter reports it as `canceled`) is recorded as `canceled`

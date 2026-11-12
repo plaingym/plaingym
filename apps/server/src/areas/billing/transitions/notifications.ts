@@ -24,8 +24,11 @@ export interface TransitionNotice {
  * failed after it was reported successful), or a duplicate payment's reservation released with no processor refund,
  * with what isn't recorded as refunded. A canceled refund was cancelled on purpose and has no notice. */
 export type StaffNotice = TransitionNotice & ({ reason?: 'duplicate_payment' }
-  | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect; reversed?: boolean }
-  | { reason: 'duplicate_released'; unrefundedCents: number });
+  /** `reversedCredits`: class pack credits the full refund took back, which staff restore by adjustment if owed. */
+  | { reason: 'refund_failed'; refund: typeof refunds.$inferSelect; reversed?: boolean; reversedCredits?: number }
+  | { reason: 'duplicate_released'; unrefundedCents: number }
+  /** A class pack paid for a member erased before it was paid: its credits weren't granted. */
+  | { reason: 'credits_not_granted'; credits: number });
 export interface TransitionNotifications {
   receipt(notice: TransitionNotice): Promise<void>;
   dunning(notice: TransitionNotice & { actionRequired: boolean }): Promise<void>;
@@ -46,11 +49,12 @@ export function createTransitionNotifications(options: {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   const links = createSignedLinksService({ scope, clock });
   const deliveries = createEmailDeliveries({ scope, clock });
-  async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'duplicateReleased' | 'refundFailed' | 'refundReversed',
-    subject: { purpose: string; id: string }, amountCents?: number) {
+  async function deliver(notice: TransitionNotice, kind: 'receipt' | 'failed' | 'action' | 'duplicate' | 'duplicateReleased' | 'refundFailed'
+    | 'refundReversed' | 'creditsNotGranted', subject: { purpose: string; id: string }, amountCents?: number, credits?: number) {
     assertNoTransaction('invoice notification');
     const { gymId, invoice } = notice;
-    const staff = kind === 'duplicate' || kind === 'duplicateReleased' || kind === 'refundFailed' || kind === 'refundReversed';
+    const staff = kind === 'duplicate' || kind === 'duplicateReleased' || kind === 'refundFailed' || kind === 'refundReversed'
+      || kind === 'creditsNotGranted';
     const recipients = staff ? await options.staffRecipients(gymId) : await memberRecipients(gymId, invoice.householdId);
     if (!recipients.length) {
       if (staff) throw new Error('No staff recipient configured for billing staff notices');
@@ -89,9 +93,13 @@ export function createTransitionNotifications(options: {
         payUrl = new URL(`/l/${pay.token}`, origin).href;
         updateUrl = new URL(`/l/${update.token}`, origin).href;
       }
-      const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency), payUrl, updateUrl };
+      const values = { number: invoice.number, amount: formatMoney(amountCents ?? notice.payment?.amountCents ?? invoice.amountCents, invoice.currency), payUrl, updateUrl,
+        credits: credits ?? 0 };
       const message = manualPayment ? 'manual' : kind;
-      const title = t(`billing/transitions:${message}Subject`, values), text = t(`billing/transitions:${message}Body`, values);
+      const title = t(`billing/transitions:${message}Subject`, values);
+      // A failed refund of a class pack also names the credits the refund took back, which staff restore if owed.
+      const creditsNote = credits && (kind === 'refundFailed' || kind === 'refundReversed') ? '\n\n' + t('billing/transitions:creditsReversedNote', values) : '';
+      const text = t(`billing/transitions:${message}Body`, values) + creditsNote;
       for (const to of pending) {
         if (!to || /[\r\n\0]/.test(to)) throw new Error('Invalid billing email recipient');
         if (!staff && !(await options.settings.get(gymId)).memberEmailsEnabled) {
@@ -129,7 +137,10 @@ export function createTransitionNotifications(options: {
     async dunning(notice) { await deliver(notice, notice.actionRequired ? 'action' : 'failed', { purpose: 'dunning', id: notice.invoice.id }); },
     async staffNotice(notice) {
       if (notice.reason === 'refund_failed')
-        await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', { purpose: 'refund_failure', id: notice.refund.id }, notice.refund.amountCents);
+        await deliver(notice, notice.reversed ? 'refundReversed' : 'refundFailed', { purpose: 'refund_failure', id: notice.refund.id }, notice.refund.amountCents,
+          notice.reversedCredits);
+      else if (notice.reason === 'credits_not_granted')
+        await deliver(notice, 'creditsNotGranted', { purpose: 'credits_not_granted', id: notice.invoice.id }, undefined, notice.credits);
       else if (notice.reason === 'duplicate_released')
         await deliver(notice, 'duplicateReleased', { purpose: 'duplicate_released', id: notice.payment?.id ?? notice.invoice.id }, notice.unrefundedCents);
       else await deliver(notice, 'duplicate', { purpose: 'duplicate_payment', id: notice.payment?.id ?? notice.invoice.id });

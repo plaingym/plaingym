@@ -160,14 +160,16 @@ describe('kiosk name and PIN check-in', () => {
     const narrowed = await service.lookup(gymA, { name: 'Imani ' + surname, pin: '2000' });
     expect(narrowed.status === 'select_member' && narrowed.members.map((member) => member.firstName)).toEqual(['Dana', 'Imani', 'Kai']);
   });
-  it('checks in a family for open mat, keeping every tap, and audits the device', async () => {
+  it('checks in a family for open mat, once per member per day however often they tap, and audits the device', async () => {
     const home = await family();
     const request = { name: home.name, pin: home.pin, checkins: [{ memberId: home.parent.id, sessionId: null }, { memberId: home.child.id, sessionId: null }] };
     const results = kioskFamilyCheckinResponseSchema.parse({ data: await service.checkin(gymA, deviceA, request) }).data;
     expect(results.map((result) => result.status)).toEqual(['checked_in', 'checked_in']);
-    await service.checkin(gymA, deviceA, request);
+    // A second tap the same day checks in again without a second visit.
+    expect((await service.checkin(gymA, deviceA, request)).map((result) => result.status)).toEqual(['checked_in', 'checked_in']);
     const rows = await visits(gymA, home.parent.id);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
+    expect(await visits(gymA, home.child.id)).toHaveLength(1);
     expect(rows.every((row) => row.source === 'kiosk' && row.kind === 'open_mat' && row.sessionId === null)).toBe(true);
     const audits = await database.forGym(gymA, (tx) => tx.select().from(auditEvents).where(eq(auditEvents.targetId, rows[0]!.id)));
     expect(audits[0]).toMatchObject({ actorKind: 'device', actorDeviceId: deviceA, actorUserId: null });

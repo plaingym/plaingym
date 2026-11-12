@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { and, asc, count, eq, ilike, inArray, isNotNull, isNull, lte, or } from 'drizzle-orm';
-import { forGym, leads, members, uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError, type Transaction } from '@plaingym/db';
+import { attendances, forGym, leads, members, uuidv7, writeAudit, revisionGuard, assertRevised, RevisionConflictError, type Transaction } from '@plaingym/db';
 import { AppError, type Clock } from '@plaingym/shared';
 import * as c from '@plaingym/shared/contracts';
 import { localDate } from '@plaingym/shared/time';
@@ -25,7 +25,7 @@ function conflict(): never { throw new AppError('conflict', 'This lead stage can
 export function createLeadsService(options: { scope?: typeof forGym; clock?: Clock } = {}) {
   const scope = options.scope ?? forGym, clock = options.clock ?? defaultClock;
   async function mutate(context: MutationContext, memberId: string, revision: number,
-    action: string, changes: (before: Lead | undefined, now: Date) => Partial<Lead>) {
+    action: string, changes: (before: Lead | undefined, now: Date, tx: Transaction) => Partial<Lead> | Promise<Partial<Lead>>) {
     return scope(context.gymId, async tx => {
       // Block erasure until this edit commits. Lock the member before a lead key,
       // matching erasure and the automatic-stage path's first insert.
@@ -35,7 +35,7 @@ export function createLeadsService(options: { scope?: typeof forGym; clock?: Clo
       const [before] = await tx.select().from(leads).where(eq(leads.memberId, memberId)).for('update');
       if (!before && !['prospect', 'trial'].includes(person.status)) missing();
       if ((before?.revision ?? 0) !== revision) throw new RevisionConflictError();
-      const now = clock.now(), patch = changes(before, now);
+      const now = clock.now(), patch = await changes(before, now, tx);
       let row: Lead;
       if (before) {
         const guard = revisionGuard(leads.revision, revision);
@@ -82,12 +82,18 @@ export function createLeadsService(options: { scope?: typeof forGym; clock?: Clo
     },
     async edit(context: MutationContext, memberId: string, input: c.UpdateLeadRequest) {
       const { revision, ...patch } = c.updateLeadRequestSchema.parse(input);
-      return mutate(context, memberId, revision, 'lead.updated', (before, now) => {
+      return mutate(context, memberId, revision, 'lead.updated', async (before, now, tx) => {
         if (patch.stage && (patch.stage === 'won' || patch.stage === 'lost' || before?.stage === 'won' || before?.stage === 'lost')) conflict();
+        // Moving a lead back from `trial_attended` undoes a mistaken manual stage: with no recorded attendance, the funnel
+        // stops counting a trial attendance that never happened.
+        const undone = before?.stage === 'trial_attended' && patch.stage !== undefined && patch.stage !== 'trial_attended'
+          && before.trialAttendedAt !== null
+          && !(await tx.select({ id: attendances.id }).from(attendances).where(eq(attendances.memberId, memberId)).limit(1)).length;
         return { ...(patch.source !== undefined ? { source: patch.source } : {}),
           ...(patch.stage !== undefined ? { stage: patch.stage } : {}),
           ...(patch.nextFollowUpOn !== undefined ? { nextFollowUpOn: patch.nextFollowUpOn } : {}),
-          ...(patch.stage === 'trial_attended' ? { trialAttendedAt: before?.trialAttendedAt ?? now } : {}) };
+          ...(patch.stage === 'trial_attended' ? { trialAttendedAt: before?.trialAttendedAt ?? now } : {}),
+          ...(undone ? { trialAttendedAt: null } : {}) };
       });
     },
     async lost(context: MutationContext, memberId: string, input: c.LoseLeadRequest) {
