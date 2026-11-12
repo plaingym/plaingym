@@ -29,5 +29,6 @@
   "signatureRequired": "Draw your signature or use your typed name.",
   "changed": "This document changed or was already signed. Close it and review the current version.",
   "retry": "The server is busy. Your signature has not been saved. Wait a moment, then try again.",
+  "limited": "Too many signing attempts for now. Your signature has not been saved. Try again later, or contact the gym.",
   "signFailed": "We couldn't save your signature. Check the details and try again."
 }

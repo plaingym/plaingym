@@ -83,8 +83,11 @@ pages.
   excluded from staff link lists, resends and revocation. Preference writes lock
   and recheck the link and member, with their audit in the same transaction.
   The one-click POST has a separate 10,000/minute per gym/client budget and is
-  exempt from the general flood limit. Junk from other client addresses cannot
-  spend a provider's budget. The page button/API keeps 30/minute per gym/client
+  exempt from the general flood limit. A token that doesn't resolve (or that the
+  route's parameter check refuses) is also charged to a fixed 300/minute per
+  gym/client budget, the flood limit's default, which refuses that address before
+  any token lookup or counter write once spent.
+  Junk from other client addresses cannot spend a provider's budget. The page button/API keeps 30/minute per gym/client
   and the app's general flood protection.
 * **Kiosk.** A kiosk authenticates with a revocable device token (256 random bits,
   stored as a SHA-256 hash, checked on every request) that reaches only the
@@ -200,8 +203,9 @@ answer 403 even for an owner. With `GYM_INTEGRATIONS=gym` owners can name their 
 SMTP server, so a gym owner's input reaches the server's network. Ports stay limited
 to 25, 465, 587 and 2525, and a gym's own server must be on the public internet: the
 app resolves the name once, refuses it if any address is private, loopback,
-link-local, reserved or IPv4-mapped, and connects to the address it checked, so a
-name that changes its answer can't reach a private one. TLS still verifies the name.
+link-local, reserved or IPv4-mapped, and connects only to the addresses it checked
+(trying the next one when a connection fails before login), so a name that changes
+its answer can't reach a private one. TLS still verifies the name.
 This holds for the test message and every real send, under either setting. A
 refused host answers like any other failed test, so an owner can't tell it from a
 name that doesn't resolve. The install's own `SMTP_*` server is the operator's and
@@ -316,8 +320,10 @@ Details: `apps/server/src/infra/auth/README.md`.
   single-gym install it runs before the gym is looked up, keyed per client for the
   whole install (the one gym's budget, whatever `Host` a request carries), so a
   refused request costs no database work; a multi-gym install checks it after
-  resolving the gym. The one-click unsubscribe `POST /l/<token>` uses its own
-  10,000/minute per gym/client budget instead. Sign-in,
+  resolving the gym. The one-click unsubscribe `POST /l/<token>` (that route alone,
+  matched from its contract where the flood limit is mounted) uses its own
+  10,000/minute per gym/client budget instead, with tokens that don't resolve held
+  to 300/minute per gym/client. Sign-in,
   kiosk PINs and CSP reports have their own limits. Behind Caddy, `TRUST_PROXY=true`
   makes the last `X-Forwarded-For` entry the client address; nothing else trusts
   forwarded headers, except that with `TRUST_CLOUDFLARE=true` (set by the installer
@@ -364,9 +370,14 @@ Details: `apps/server/src/infra/auth/README.md`.
   Rendering a signed record checks its stored document hash and resource bounds
   without reapplying upload acceptance policy. Document processing allows at most
   two waiting jobs per gym within its eight-job queue; overload returns 429 with
-  `Retry-After`. Template reads allow 300 requests per gym/client per minute so
+  `Retry-After: 1` and the `busy` reason, the only 429 the clients answer with
+  "busy, try again" (rate limits keep their own `Retry-After`; demo quotas have
+  none). Template reads allow 300 requests per gym/client per minute so
   members sharing an address can read several documents, and refused frames show
-  a retry page.
+  a retry page. A document is served as a stream: its first read checks the
+  stored bytes' digest without keeping them, and every read is checked again as
+  it streams, withholding the last chunk unless the digest matches, so concurrent
+  reads don't each hold a copy.
   Public pages, signed links and downloads send stricter policies of their own; the
   public website's pages run no script and allow only their structured-data block,
   by the response's nonce.

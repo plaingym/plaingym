@@ -115,8 +115,11 @@ other annotations, actions, forms and embedded files are refused. Signed copies
 verify the snapshot's document hash and size and retain bounded structural parsing,
 without reapplying upload policy to a legal record. Document parsing and copying
 allow one active job and eight waiting jobs, with at most two waiting per gym.
-The slot is reserved before reading the stored document; overload is a retryable
-`rate_limited` response (429 with `Retry-After: 1`), distinct from a changed waiver.
+The slot is reserved before reading the stored document, after the signing page has
+rendered; overload is a retryable `rate_limited` response (429 with the `busy` reason
+and `Retry-After: 1`), distinct from a changed waiver. The staff screens show its
+message, and the portal, signed-link, join and drop-in pages show their busy text
+only for it; any other 429 (a rate limit, or a demo quota) says the limit is reached.
 
 Staff document reads require `members.read`. Portal and signed-link reads check
 the household credential and expose only current templates; public join and
@@ -129,7 +132,10 @@ preview each template once, keeping separate consent for each member. Readers mu
 open and read the document before confirming; an unavailable preview is not consent.
 React previews retain their initial URL while the separate link refreshes, so a
 refresh or a failed background request does not reset the reader's page.
-URL issuance checks storage metadata; serving the PDF verifies its full bytes.
+URL issuance checks storage metadata; serving the PDF verifies its full bytes. It is
+streamed: the first read of a document checks its digest without keeping the bytes
+(concurrent first reads share that check), and every read is checked again as it
+streams, withholding the last chunk unless the digest still matches.
 Document URL reads and template downloads have separate 300-per-minute limits per
 client and gym, allowing families sharing a Wi-Fi address to read multiple documents.
 Refused frames and explicit opens show a plain retry page, including `Retry-After`

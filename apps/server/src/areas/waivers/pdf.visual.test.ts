@@ -7,7 +7,7 @@ import { renderWaiver } from './pdf.js';
 import { pdfFixture } from './pdf.fixture.js';
 
 it('rasterizes the embedded multilingual fonts with no system font substitution', async () => {
-  const f = pdfFixture(), bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png);
+  const f = pdfFixture(), bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test');
   const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false, disableFontFace: true });
   try {
     const pdf = await task.promise, page = await pdf.getPage(1), viewport = page.getViewport({ scale: 1.5 });

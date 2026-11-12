@@ -108,6 +108,21 @@ it('shows the renderer busy response next to signed copies', async () => {
   await userEvent.click(await screen.findByRole('button', { name: 'Prepare PDF' }));
   expect((await screen.findByRole('alert')).textContent).toBe('PDF renderer busy; retry shortly');
 });
+it('shows a full PDF queue\'s 429 as its retry message rather than a generic failure', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async url => String(url).endsWith('/pdf')
+    ? Response.json({ error: { code: 'rate_limited', message: 'PDF processing is busy; please retry shortly', details: { reason: ['busy'] } } },
+      { status: 429, headers: { 'Retry-After': '1' } })
+    : Response.json({ data: String(url).includes('/templates') ? [] : [signedCopy()], pagination: { limit: 20, offset: 0, total: 1 } }));
+  mount(<MemberWaivers gymId="gym" memberId={template.id} manage client={createWaiversClient(fetcher)} />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Prepare PDF' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('PDF processing is busy; please retry shortly');
+});
+it('shows a full PDF queue\'s 429 on a document upload', async () => {
+  const client = createWaiversClient(async () => Response.json({ error: { code: 'rate_limited', message: 'PDF processing is busy; please retry shortly',
+    details: { reason: ['busy'] } } }, { status: 429, headers: { 'Retry-After': '1' } }));
+  await expect(client.uploadDocument(new File(['%PDF-1.7'], 'waiver.pdf', { type: 'application/pdf' })))
+    .rejects.toThrow('PDF processing is busy; please retry shortly');
+});
 it.each([
   [403, 'Uploads are disabled in the demo', 'Uploads are disabled in the demo'],
   [409, 'Template changed; review the current version', 'Template changed; review the current version'],

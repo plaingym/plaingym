@@ -7,8 +7,10 @@ pages without painting or reflowing the original pages. It uses
 the signing page. Validation and copying run in process, without network requests
 or evaluation, with one active operation and at most eight waiting requests,
 including at most two waiting per gym. Excess work receives `rate_limited` (429)
-with `Retry-After: 1`. Callers pass their gym ID and lazy storage reads so a refused
-operation never loads the stored document into memory.
+with the `busy` reason and `Retry-After: 1`. Callers pass their gym ID (required) and
+lazy storage reads so a refused operation never loads the stored document into memory.
+`appendSignaturePdf` renders the signing page before it takes the document slot, so a
+full text queue never holds the slot.
 
 The upload envelope is checked before the repair-oriented parser runs: a PDF
 header, complete objects and streams, exact cross-reference offsets and a final
@@ -49,8 +51,8 @@ SHA-256 verified and parsed individually on first use, then reused. A compact
 coverage map selects faces without opening them; Latin-only and Cyrillic-only
 documents load only Noto Sans. Each document
 has its own subset and a bounded measurement cache. One render runs at a time;
-eight requests may wait, and excess requests receive `rate_limited` (429) with
-`Retry-After: 1`.
+eight requests may wait, and excess requests receive `rate_limited` (429) with the
+`busy` reason and `Retry-After: 1`.
 Documents are limited to 100 pages, 100,000 text characters and 8 MiB output.
 
 The renderer wraps at word/grapheme boundaries. It applies bidi embedding levels,

@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+/**
+ * The message key for a refused public form post, shared by the join and drop-in scripts. A 429 is worth retrying at
+ * once only for a momentarily full queue (the busy reason, `core/errors.ts`); any other is a limit for now.
+ */
+export const refusalScript = String.raw`async function refusal(response) {
+    if (response.status === 409) return 'conflict';
+    if (response.status !== 429) return 'failed';
+    const reason = (await response.json().catch(() => null))?.error?.details?.reason;
+    return Array.isArray(reason) && reason.includes('busy') ? 'retry' : 'limited';
+  }`;
 /** Plain browser JavaScript stays independent of server bundler helpers. No hydration. */
 export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0-only
 (() => {
@@ -24,9 +34,10 @@ export const publicBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3
     const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('failed')); reader.readAsDataURL(file);
   });
   let cached;
+  ${refusalScript}
   async function post(path, body) {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!response.ok) throw new Error(response.status === 409 ? 'conflict' : 'failed');
+    if (!response.ok) throw new Error(await refusal(response));
     return response.json();
   }
   form.addEventListener('submit', async event => {

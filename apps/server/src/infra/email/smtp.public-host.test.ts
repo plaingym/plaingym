@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import net from 'node:net';
 import tls from 'node:tls';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SmtpEmail } from './index.js';
@@ -81,6 +82,64 @@ describe('SmtpEmail with publicHostOnly', () => {
       expect(connect.mock.calls[0]?.[0]).toMatchObject({ host: checked });
       expect(connect.mock.calls[0]?.[0]).not.toHaveProperty('servername');
     } finally { connect.mockRestore(); }
+  });
+  describe('a host with several addresses', () => {
+    // Nothing listens on these loopback addresses, so a connection to either is refused at once.
+    const dead = '127.0.0.3', alsoDead = '127.0.0.4', v6 = '2001:db8::25';
+    const several = { lookup, isPublic: (address: string) => [checked, dead, alsoDead, v6].includes(address), families: () => new Set([4] as const) };
+    const connected = (connect: { mock: { calls: unknown[][] } }) => connect.mock.calls.map((call) => (call[0] as { host?: string }).host);
+    it('connects to the next checked address when one refuses, within one lookup', async () => {
+      lookup.mockResolvedValue([dead, checked]);
+      const connect = vi.spyOn(net, 'connect'), before = good.messages.length;
+      try {
+        await using(new SmtpEmail(config(), { hostCheck: several }), async (email) => expect(await email.sendEmail(message)).toMatchObject({ status: 'sent' }));
+        expect(connected(connect)).toEqual([dead, checked]);
+      } finally { connect.mockRestore(); }
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(good.messages).toHaveLength(before + 1);
+    });
+    it('tries each checked address once and reports not sent when none answers', async () => {
+      lookup.mockResolvedValue([dead, alsoDead]);
+      const connect = vi.spyOn(net, 'connect');
+      try {
+        await using(new SmtpEmail(config(), { hostCheck: several }), async (email) => {
+          await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted', message: 'SMTP connection failed' });
+        });
+        expect(connected(connect)).toEqual([dead, alsoDead]);
+      } finally { connect.mockRestore(); }
+    });
+    it('skips a family the machine has no interface for', async () => {
+      lookup.mockResolvedValue([v6, checked]);
+      const connect = vi.spyOn(net, 'connect');
+      try {
+        await using(new SmtpEmail(config(), { hostCheck: several }), async (email) => expect(await email.sendEmail(message)).toMatchObject({ status: 'sent' }));
+        expect(connected(connect)).toEqual([checked]);
+      } finally { connect.mockRestore(); }
+    });
+    it('never moves on once the envelope is under way, so a message can\'t go out twice', async () => {
+      lookup.mockResolvedValue([checked, dead]);
+      const connect = vi.spyOn(net, 'connect');
+      good.dropOn('MAIL');
+      try {
+        await using(new SmtpEmail(config(), { hostCheck: several }), async (email) => {
+          await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'unknown' });
+        });
+        expect(connected(connect)).toEqual([checked]);
+      } finally { good.dropOn(undefined); connect.mockRestore(); }
+    });
+    it('stops trying further addresses once close() ends the session', async () => {
+      lookup.mockResolvedValue([dead, checked]);
+      const email = new SmtpEmail(config(), { hostCheck: several, sessionLimitMs: 2000 }), connections = good.connections;
+      const connect = vi.spyOn(net, 'connect').mockImplementation(((...args: Parameters<typeof net.connect>) => {
+        email.close();
+        connect.mockRestore();
+        return net.connect(...args);
+      }) as typeof net.connect);
+      try {
+        await expect(email.sendEmail(message)).rejects.toMatchObject({ acceptance: 'not_accepted' });
+      } finally { connect.mockRestore(); email.close(); }
+      expect(good.connections).toBe(connections);
+    });
   });
   it('leaves a server without the flag alone: no lookup, and a private address is fine', async () => {
     const before = bad.messages.length;

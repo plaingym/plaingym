@@ -5,12 +5,14 @@ export class WaiverRequestError extends Error {}
 export function createWaiversClient(fetcher: typeof fetch = fetch) {
   const transport: typeof fetch = async (url, init) => {
     const response = await fetcher(url, init);
-    if (response.status === 409 || response.status === 403 || (response.status === 400 && String(url).startsWith('/api/waivers/template'))) {
+    if (response.status === 409 || response.status === 403 || response.status === 429 || (response.status === 400 && String(url).startsWith('/api/waivers/template'))) {
       const body: unknown = await response.clone().json().catch(() => null);
       const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
       if (error && typeof error === 'object' && 'code' in error && 'message' in error
         && typeof error.message === 'string' && error.message.length > 0 && error.message.length <= 2000
         && ((response.status === 400 && error.code === 'invalid_request') || (response.status === 409 && error.code === 'conflict')
+          // A full PDF queue says to retry shortly; a rate limit or demo quota says what was refused.
+          || (response.status === 429 && error.code === 'rate_limited')
           || (response.status === 403 && error.code === 'forbidden' && error.message === 'Uploads are disabled in the demo'))) {
         throw new WaiverRequestError(error.message);
       }

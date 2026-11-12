@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { TestClock } from './clock.js';
-import { clientKey, RateBuckets, rateLimit, type RateLimitOptions } from './rate-limit.js';
+import { clientKey, contractRequest, failureBudget, RateBuckets, rateLimit, type RateLimitOptions } from './rate-limit.js';
 
 // Multi-gym mode by default: the flood limit runs after gym resolution, so these tests see per-gym budgets.
 function fixture(options: RateLimitOptions = {}, tenancy: 'single' | 'multi' = 'multi') {
@@ -52,6 +52,40 @@ it.each(['multi', 'single'] as const)('exempts only one-click POSTs from the gen
   expect((await app.request('/l/' + token + '/extra', { method: 'POST' })).status).toBe(429);
   for (let i = 0; i < 3; i++) expect((await app.request('/l/' + token, { method: 'POST' })).status).toBe(200);
   expect((await app.request('/l/' + token, { method: 'POST' })).status).toBe(429);
+});
+
+it('leaves a route\'s own limiter on a POST /l/ path counting: only the flood limit\'s mount skips one-clicks', async () => {
+  const { app } = fixture({ limit: 100 });
+  app.post('/l/:token', rateLimit({ limit: 2 }), c => c.json({ ok: true }));
+  expect((await app.request('/l/abc', { method: 'POST' })).status).toBe(200);
+  expect((await app.request('/l/abc', { method: 'POST' })).status).toBe(200);
+  expect((await app.request('/l/abc', { method: 'POST' })).status).toBe(429);
+});
+
+it('matches a contract\'s method and path template only', () => {
+  const matches = contractRequest({ method: 'post', path: '/l/{token}' });
+  const request = (method: string, path: string) => ({ req: { method, path } }) as unknown as Parameters<typeof matches>[0];
+  expect(matches(request('POST', '/l/abc'))).toBe(true);
+  for (const [method, path] of [['GET', '/l/abc'], ['POST', '/l/abc/extra'], ['POST', '/l/'], ['POST', '/lx/abc'], ['POST', '/x/l/abc']] as const)
+    expect(matches(request(method, path))).toBe(false);
+});
+
+it('charges a failure budget only for failures and refuses a spent client before the route runs', async () => {
+  const { app, clock } = fixture({ limit: 100 }), budget = failureBudget({ limit: 3, windowMs: 2000 });
+  let work = 0;
+  app.post('/guess/:value', budget.check, (c) => {
+    work++;
+    if (c.req.param('value') !== 'right') { budget.charge(c); return c.json({ ok: false }, 404); }
+    return c.json({ ok: true });
+  });
+  for (let i = 0; i < 5; i++) expect((await app.request('/guess/right', { method: 'POST' })).status).toBe(200);
+  for (let i = 0; i < 3; i++) expect((await app.request('/guess/wrong', { method: 'POST' })).status).toBe(404);
+  const refused = await app.request('/guess/right', { method: 'POST' });
+  expect(refused.status).toBe(429); expect(refused.headers.get('retry-after')).toBe('2');
+  expect(work).toBe(8);
+  expect((await app.request('https://other.example/guess/right', { method: 'POST' })).status).toBe(200);
+  clock.advance(2000);
+  expect((await app.request('/guess/right', { method: 'POST' })).status).toBe(200);
 });
 
 it.each(['multi', 'single'] as const)('ignores spoofed forwarding headers when the socket peer is not trusted (%s)', async (tenancy) => {

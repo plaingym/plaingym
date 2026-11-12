@@ -135,7 +135,7 @@ it('reuses one demo PDF across concurrent downloads and service recreation, with
     }
     const download = await fetch(links[0]!.url); expect(download.status).toBe(200);
     const bytes = new Uint8Array(await download.arrayBuffer()), copy = f.gyms[0]!.signature;
-    expect(Buffer.from(await renderWaiver(copy.snapshot, copy.snapshotHash, demoSignaturePng()))).toEqual(Buffer.from(bytes));
+    expect(Buffer.from(await renderWaiver(copy.snapshot, copy.snapshotHash, demoSignaturePng(), undefined, 'gym-test'))).toEqual(Buffer.from(bytes));
     const task = getDocument({ data: bytes, useSystemFonts: false });
     try {
       const content = await (await (await task.promise).getPage(1)).getTextContent();
@@ -154,7 +154,7 @@ it('falls back to fresh tombstoned PDFs after a cached upload leaves an unreadab
     const cached = gym.signature.signatureImageKey.replace('/signatures/', '/pdf/').replace(/\.png$/, '.pdf');
     const blob = `/waivers/${gym.gymId}/.storage/blobs/${createHash('sha256').update(cached).digest('hex')}`;
     f.s3.failOnce((method, url) => method === 'PUT' && url.pathname === blob && url.searchParams.has('uploadId') && url.searchParams.has('partNumber'));
-    const expected = Buffer.from(await renderWaiver(gym.signature.snapshot, gym.signature.snapshotHash, demoSignaturePng()));
+    const expected = Buffer.from(await renderWaiver(gym.signature.snapshot, gym.signature.snapshotHash, demoSignaturePng(), undefined, 'gym-test'));
     const first = await link(await pdfRequest(f));
     expect(f.s3.state.aborted).toBe(1); expect(f.render).toHaveBeenCalledTimes(1);
     const uploads = await f.uploads.forGym(gym.gymId);

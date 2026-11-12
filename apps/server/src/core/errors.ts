@@ -27,9 +27,17 @@ export function normalizeError(error: unknown): AppError {
   return new AppError('internal', 'An unexpected error occurred.');
 }
 
+/**
+ * The reason a refusal carries (`details.reason`) when a queue is full for the moment, such as the PDF queues: asking
+ * again in a second can succeed. Clients show their "busy, try again" text only for it; any other 429 is a limit
+ * that a quick retry won't lift, such as a rate limit's window (its own `Retry-After`) or a demo quota (none).
+ */
+export const busyReason = 'busy';
+export const isBusy = (error: AppError) => error.code === 'rate_limited' && (error.details?.reason ?? []).includes(busyReason);
+
 export function respondError(context: Context<RequestEnvironment>, error: unknown): Response {
   const safe = normalizeError(error);
-  if (safe.code === 'rate_limited' && !context.res.headers.has('Retry-After')) context.header('Retry-After', '1');
+  if (isBusy(safe) && !context.res.headers.has('Retry-After')) context.header('Retry-After', '1');
   return context.json(errorResponse(safe, context.get('context').requestId), safe.status);
 }
 

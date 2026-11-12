@@ -386,7 +386,8 @@ const queue: { gymId: string; run: () => void }[] = [];
 async function bounded<T>(gymId: string, work: () => Promise<T>) {
   if (active) {
     if (queue.length >= 8 || queue.filter(entry => entry.gymId === gymId).length >= 2)
-      throw new AppError('rate_limited', 'PDF processing is busy; please retry shortly');
+      // A full queue is momentary: the busy reason gets a one-second Retry-After and clients' retry text (core/errors.ts).
+      throw new AppError('rate_limited', 'PDF processing is busy; please retry shortly', { reason: ['busy'] });
     await new Promise<void>(resolve => queue.push({ gymId, run: resolve }));
   } else active = true;
   try { return await work(); }
@@ -394,7 +395,7 @@ async function bounded<T>(gymId: string, work: () => Promise<T>) {
 }
 type PdfBytes = Uint8Array | (() => Promise<Uint8Array>);
 const readBytes = async (input: PdfBytes) => typeof input === 'function' ? input() : input;
-export function validateDocumentPdf(input: PdfBytes, gymId = 'unscoped'): Promise<{ pages: number; bytes: number }> {
+export function validateDocumentPdf(input: PdfBytes, gymId: string): Promise<{ pages: number; bytes: number }> {
   return bounded(gymId, async () => {
     // A storage or integrity failure is not a malformed upload, so it stays outside the catch below.
     const bytes = await readBytes(input);
@@ -408,10 +409,12 @@ export function validateDocumentPdf(input: PdfBytes, gymId = 'unscoped'): Promis
 }
 /** Original page contents/resources are copied, never painted, stamped or reflowed.
  * The signing sets the metadata, as on a generated copy, so a later render doesn't restate its date. */
-export function appendSignaturePdf(original: PdfBytes, signature: PdfBytes, details: { title: string; createdAt: Date }, gymId = 'unscoped'): Promise<Uint8Array> {
+export async function appendSignaturePdf(original: PdfBytes, signature: PdfBytes, details: { title: string; createdAt: Date }, gymId: string): Promise<Uint8Array> {
+  // The details page renders in its own queue before this one's slot is taken, so a full text queue never keeps every
+  // gym's uploads and signed copies waiting; a busy details renderer is refused before the stored original is read.
+  const signatureBytes = await readBytes(signature);
   return bounded(gymId, async () => {
-    // Refuse a busy details renderer before loading the stored original, too.
-    const signed = await PDFDocument.load(await readBytes(signature)), document = await load(await readBytes(original));
+    const signed = await PDFDocument.load(signatureBytes), document = await load(await readBytes(original));
     const result = await PDFDocument.create({ updateMetadata: false });
     for (const page of await result.copyPages(document, document.getPageIndices())) result.addPage(page);
     for (const page of await result.copyPages(signed, signed.getPageIndices())) result.addPage(page);

@@ -133,6 +133,48 @@ export interface RateLimitOptions extends ClientIpOptions {
   readonly limit?: number;
   readonly windowMs?: number;
   readonly maxBuckets?: number;
+  /**
+   * Requests this budget neither counts nor refuses, chosen where the limiter is mounted (the app's flood limit
+   * passes the routes that carry their own budget). Never set on a route's own limiter.
+   */
+  readonly skip?: (context: Context<RequestEnvironment>) => boolean;
+}
+
+/** Matches requests for one contract's method and path template (`/l/{token}` matches `POST /l/abc`, not `/l/abc/x`). */
+export function contractRequest(contract: { readonly method: string; readonly path: string }): (context: Context<RequestEnvironment>) => boolean {
+  const method = contract.method.toUpperCase();
+  const pattern = new RegExp('^' + contract.path.split(/\{[^/{}]+\}/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]+') + '$');
+  return (context) => context.req.method === method && pattern.test(context.req.path);
+}
+
+/**
+ * A per-client budget charged only for failures, such as a token that doesn't resolve: `check` refuses a client whose
+ * failures reached the limit before the route does any work, and the route calls `charge` once the work has failed.
+ * Successful requests cost nothing, so a route can keep a large budget for real traffic while guesses from one
+ * address stop near the flood limit. Concurrent requests may each pass `check` before they are charged.
+ */
+export function failureBudget(options: { limit?: number; windowMs?: number; maxBuckets?: number } = {}) {
+  const limit = options.limit ?? 300, windowMs = options.windowMs ?? 60_000;
+  const buckets = new RateBuckets(options.maxBuckets ?? 10_000, (bucket) => bucket.count >= limit);
+  const key = (context: Context<RequestEnvironment>) => {
+    const { gym, clientIp: resolved } = context.get('context');
+    return `${gym?.gymId ?? 'install'}:${clientKey(resolved ?? clientIp(context))}`;
+  };
+  const check: MiddlewareHandler<RequestEnvironment> = async (context, next) => {
+    const now = context.get('context').clock.now().getTime(), bucket = buckets.get(key(context), now);
+    if (bucket && bucket.count >= limit) {
+      context.header('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+      throw new AppError('rate_limited', 'Too many requests.');
+    }
+    await next();
+  };
+  return {
+    check,
+    charge(context: Context<RequestEnvironment>): void {
+      const now = context.get('context').clock.now().getTime(), id = key(context);
+      (buckets.get(id, now) ?? buckets.add(id, { count: 0, resetAt: now + windowMs }, now)).count++;
+    },
+  };
 }
 
 export interface SharedRateLimitStore {
@@ -180,9 +222,7 @@ export function rateLimit(options: RateLimitOptions = {}): MiddlewareHandler<Req
   }
   const buckets = new RateBuckets(maxBuckets, (bucket) => bucket.count >= limit);
   return async (context, next) => {
-    // RFC 8058 providers share source addresses. This POST has its own named, higher per-client budget;
-    // the ordinary flood budget must neither block it nor charge it against browser traffic.
-    if (!options.sharedKey && context.req.method === 'POST' && /^\/l\/[^/]+$/.test(context.req.path)) {
+    if (options.skip?.(context)) {
       await next();
       return;
     }

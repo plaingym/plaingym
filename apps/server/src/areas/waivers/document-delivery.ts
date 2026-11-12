@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { AppError, type Clock } from '@plaingym/shared';
 import { waiverDocumentSchema, type WaiverDocument } from '@plaingym/shared/contracts';
@@ -8,7 +8,6 @@ import { route } from '../../core/registry.js';
 import { setPolicy } from '../../core/csp.js';
 import { documentReadLimit } from './document-read.js';
 import { clock as defaultClock } from '../../core/clock.js';
-import { digest } from './snapshot.js';
 
 export const documentDownloadPath = '/api/waivers/template-document';
 const lifetimeMs = 300_000;
@@ -18,32 +17,62 @@ const byteLimit = 10 * 1024 * 1024;
 const claimSchema = z.strictObject({ gymId: z.uuid(), document: waiverDocumentSchema, expires: z.number().int().safe() });
 function notFound(): never { throw new AppError('not_found', 'Document not found'); }
 
-/** Read the immutable object through either provider, checking its complete bytes before serving it. */
+/** Check the immutable object's place and metadata through either provider before any of its bytes are read. */
 export async function headWaiverDocument(uploads: Uploads, gymId: string, document: WaiverDocument): Promise<void> {
   const prefix = `${gymId}/waivers/templates/`;
   if (!document.key.startsWith(prefix) || !/^[0-9a-f-]{36}\.pdf$/.test(document.key.slice(prefix.length))) notFound();
   const info = await uploads.head(document.key);
   if (!info || info.deletedAt || info.contentType !== 'application/pdf' || info.size !== document.bytes || info.size > byteLimit) notFound();
 }
-export async function readWaiverDocument(uploads: Uploads, gymId: string, document: WaiverDocument): Promise<Uint8Array<ArrayBuffer>> {
-  await headWaiverDocument(uploads, gymId, document);
+const integrityFailure = () => new Error('Waiver document integrity failure');
+/**
+ * Passes the object's bytes through while counting and hashing them. A byte past the recorded size fails at once
+ * (cancelling the source), and the last chunk is held back until the digest matches, so a reader never receives the
+ * complete recorded length of altered bytes. Memory is one chunk, whatever the document's size.
+ */
+function checked(document: WaiverDocument, onFailure: () => void = () => {}) {
+  const hash = createHash('sha256');
+  let size = 0, held: Uint8Array | undefined;
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      size += chunk.length;
+      if (size > document.bytes || size > byteLimit) { onFailure(); throw integrityFailure(); }
+      hash.update(chunk);
+      if (held) controller.enqueue(held);
+      held = chunk;
+    },
+    flush(controller) {
+      if (size !== document.bytes || hash.digest('hex') !== document.hash) { onFailure(); throw integrityFailure(); }
+      if (held) controller.enqueue(held);
+    },
+  });
+}
+async function checkedStream(uploads: Uploads, document: WaiverDocument, onFailure?: () => void) {
   const stream = await uploads.get(document.key);
   if (!stream) notFound();
-  const reader = stream.getReader(), chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.length;
-      if (size > document.bytes || size > byteLimit) throw new Error('Waiver document integrity failure');
-      chunks.push(next.value);
-    }
-  } finally { await reader.cancel(); }
-  const bytes = Buffer.concat(chunks);
-  if (size !== document.bytes || digest(bytes) !== document.hash) throw new Error('Waiver document integrity failure');
+  return stream.pipeThrough(checked(document, onFailure));
+}
+/** Reads the whole object once to check its digest, holding one chunk at a time. */
+async function verifyWaiverDocument(uploads: Uploads, document: WaiverDocument) {
+  const reader = (await checkedStream(uploads, document)).getReader();
+  while (!(await reader.read()).done) { /* Hashing happens as the chunks pass. */ }
+}
+/** For the PDF queue, which needs the bytes themselves: one buffer of the recorded size, filled as the checked chunks arrive. */
+export async function readWaiverDocument(uploads: Uploads, gymId: string, document: WaiverDocument): Promise<Uint8Array<ArrayBuffer>> {
+  await headWaiverDocument(uploads, gymId, document);
+  const reader = (await checkedStream(uploads, document)).getReader(), bytes = new Uint8Array(document.bytes);
+  let offset = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    bytes.set(next.value, offset);
+    offset += next.value.length;
+  }
   return bytes;
 }
+// Verified documents are remembered by key, digest and size (keys are immutable and gym-prefixed); a later read
+// streams straight from storage and is still checked on the way out.
+const verifiedLimit = 256;
 
 /** The runtime supplies a stable, purpose-derived key and the gym's canonical origin. */
 export function createWaiverDocumentDelivery(options: {
@@ -55,6 +84,26 @@ export function createWaiverDocumentDelivery(options: {
   if (options.key.length < 32) throw new Error('Waiver document signing key must have at least 32 bytes');
   const key = Uint8Array.from(options.key), clock = options.clock ?? defaultClock;
   const mac = (payload: string) => createHmac('sha256', key).update('waiver-document-v1\n').update(payload).digest();
+  const verified = new Map<string, Promise<void>>();
+  /**
+   * A document is served as a stream, never held whole: the first read of a document checks its digest without
+   * keeping its bytes (concurrent first reads share that check), then every read streams through the same check,
+   * which withholds the last chunk unless the digest still matches.
+   */
+  async function stream(uploads: Uploads, gymId: string, document: WaiverDocument) {
+    await headWaiverDocument(uploads, gymId, document);
+    const id = `${document.key}\n${document.hash}\n${document.bytes}`;
+    let verification = verified.get(id);
+    if (!verification) {
+      const pending = verifyWaiverDocument(uploads, document);
+      verification = pending;
+      verified.set(id, pending);
+      if (verified.size > verifiedLimit) verified.delete(verified.keys().next().value!);
+      pending.catch(() => { if (verified.get(id) === pending) verified.delete(id); });
+    }
+    await verification;
+    return { body: await checkedStream(uploads, document, () => verified.delete(id)), bytes: document.bytes };
+  }
   const service = {
     async issue(gymId: string, document: WaiverDocument) {
       const expires = clock.now().getTime() + lifetimeMs;
@@ -78,7 +127,7 @@ export function createWaiverDocumentDelivery(options: {
       if (!parsed.success) notFound();
       const claim = parsed.data, now = clock.now().getTime();
       if (claim.gymId !== gymId || claim.expires <= now || claim.expires > now + lifetimeMs + clockSkewMs) notFound();
-      return readWaiverDocument(await options.uploadsFor(gymId), gymId, claim.document);
+      return stream(await options.uploadsFor(gymId), gymId, claim.document);
     },
   };
   return service;
@@ -92,10 +141,10 @@ export function createWaiverDocumentDownloadRoute(delivery: () => WaiverDocument
     request: { query: z.strictObject({ token: z.string().max(2048) }) },
     responses: { 200: { description: 'Waiver template document', content: { 'application/pdf': { schema: z.string().openapi({ format: 'binary' }) } } } },
   }, async ctx => {
-    const bytes = await delivery().read(ctx.get('context').gym.gymId, ctx.req.valid('query').token);
+    const document = await delivery().read(ctx.get('context').gym.gymId, ctx.req.valid('query').token);
     setPolicy(ctx, ["default-src 'none'", 'sandbox', "frame-ancestors 'self'"]);
-    return ctx.body(bytes, 200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="waiver.pdf"',
-      'Content-Length': String(bytes.length), 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+    return ctx.body(document.body, 200, { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="waiver.pdf"',
+      'Content-Length': String(document.bytes), 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'SAMEORIGIN' });
   });
 }

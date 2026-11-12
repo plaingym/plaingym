@@ -59,6 +59,8 @@
   "tooLarge": "The signature images are too large to send together. Draw the signatures here, or choose smaller PNG files.",
   "signatureRequired": "Please draw or choose a signature image for each document.",
   "unavailable": "Online joining is not available right now. Please contact the gym to become a member.",
+  "retry": "The server is busy. Your details have not been saved yet. Wait a moment, then try again.",
+  "limited": "Too many attempts from this connection. Wait a few minutes, then try again, or contact the gym.",
   "continueTitle": "Continue to payment",
   "continueBody": "Your details and signed waivers are saved. Pay securely to start your membership. Nothing is active until payment is confirmed.",
   "pay": "Pay securely",

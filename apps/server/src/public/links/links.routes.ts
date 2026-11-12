@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import type { Context } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { AppError, createTranslator, type Translator } from '@plaingym/shared';
 import { portalSignedLinkContracts as contracts, signedLinkActionContracts as actions, signedLinkCardUnavailableSchema, portalAccessContracts, waiverDocumentReadContracts } from '@plaingym/shared/contracts';
 import type { PortalInvitationService } from '../../areas/members/household-users.invitations.js';
-import { rateLimit } from '../../core/rate-limit.js';
+import { failureBudget, rateLimit } from '../../core/rate-limit.js';
 import { documentReadLimit } from '../../areas/waivers/document-read.js';
 import { setPolicy } from '../../core/csp.js';
 import { route, type RouteRegistration } from '../../core/registry.js';
@@ -24,6 +24,8 @@ import unsubscribeMessages from '../../../../../locales/en/links/unsubscribe.jso
 const t = createTranslator({ 'public/links': messages, 'waivers/waivers': waiverMessages, 'links/unsubscribe': unsubscribeMessages });
 const settings = createSettingsService();
 export const receiptCookie = 'plaingym_link_checkout';
+/** One-click POSTs whose token doesn't resolve, per client and gym each minute: the flood limit's default. */
+export const oneClickGuessBudget = 300;
 const stylesheet = cachedLinkAsset('./public/links.css'), browserScript = cachedLinkAsset('./public/links.js');
 /** Signed-link pages load their script, styles and images (`data:` QR codes) from the app only. */
 const linkPageDirectives = ["default-src 'none'", "script-src 'self'", "style-src 'self'", "connect-src 'self'", "img-src 'self' data:", "base-uri 'none'",
@@ -57,6 +59,7 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
   }
   const empty = z.strictObject({});
   const unsubscribeLimit = rateLimit({ sharedKey: 'links.unsubscribe', limit: 30 });
+  const unknownOneClicks = failureBudget({ limit: oneClickGuessBudget });
   const json = <T extends z.ZodType>(schema: T) => ({ 200: { description: 'Signed-link result', content: { 'application/json': { schema } } } });
   function protect(entry: RouteRegistration, bearer = true): RouteRegistration {
     return { ...entry, mount(app, authorize) {
@@ -135,12 +138,27 @@ export function createLinkRoutes(supplied?: PageRoutesOptions): readonly RouteRe
       }
     })),
   ];
+  // The app's flood limit skips this POST (RFC 8058 providers share source addresses). Valid one-clicks share a large
+  // budget (repeating one is harmless); a token that doesn't resolve is also charged to a per-client budget the size
+  // of the flood limit, which refuses that client before any database work once it is spent.
   const oneClick = contracts.oneClickUnsubscribe;
-  result.push(publicRoute(route({ ...oneClick, middleware: rateLimit({ sharedKey: 'links.unsubscribe.oneClick', limit: 10_000 }),
+  // A token the contract refuses can't resolve either: charge it and answer the same 404 before the shared counter's
+  // database write, which runs ahead of the parameter check.
+  const malformedOneClick: MiddlewareHandler<RequestEnvironment> = async (c, next) => {
+    if (!oneClick.params.safeParse({ token: c.req.param('token') }).success) {
+      unknownOneClicks.charge(c);
+      throw new AppError('not_found', 'Link not found');
+    }
+    await next();
+  };
+  result.push(publicRoute(route({ ...oneClick, middleware: [unknownOneClicks.check, malformedOneClick, rateLimit({ sharedKey: 'links.unsubscribe.oneClick', limit: 10_000 })],
     request: { params: oneClick.params, query: empty }, responses: json(oneClick.response) }, async c => {
     const ctx = c.get('context'), config = options();
     const resolved = await config.links.resolve(ctx.gym.gymId, c.req.valid('param').token);
-    if (resolved.status !== 'active' || resolved.principal.link.purpose !== 'unsubscribe') throw new AppError('not_found', 'Link not found');
+    if (resolved.status !== 'active' || resolved.principal.link.purpose !== 'unsubscribe') {
+      unknownOneClicks.charge(c);
+      throw new AppError('not_found', 'Link not found');
+    }
     // RFC 8058: mail clients send the one field as multipart/form-data (SHOULD) or URL-encoded (MAY).
     const type = c.req.header('content-type') ?? '';
     const fields = /^multipart\/form-data\s*;/i.test(type) ? [...(await c.req.formData().catch(() => new FormData())).entries()] : [];

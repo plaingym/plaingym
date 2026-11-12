@@ -21,14 +21,14 @@ describe('immutable waiver rendering', () => {
       key: '01900000-0000-7000-8000-000000000003/waivers/templates/01900000-0000-7000-8000-000000000004.pdf',
       hash: digest(bytes), bytes: bytes.length, pages: 1,
     } } });
-    await expect(validateDocumentPdf(bytes)).rejects.toThrow(/active content/);
+    await expect(validateDocumentPdf(bytes, 'gym-test')).rejects.toThrow(/active content/);
     const rendered = await renderWaiver(stored.snapshot, stored.snapshotHash, f.png, async () => bytes, 'gym-stored');
     expect((await PDFDocument.load(rendered)).getPageCount()).toBe(2);
     const changed = Uint8Array.from(bytes); changed[10] = changed[10]! ^ 1;
-    await expect(renderWaiver(stored.snapshot, stored.snapshotHash, f.png, changed)).rejects.toThrow('Waiver document integrity failure');
+    await expect(renderWaiver(stored.snapshot, stored.snapshotHash, f.png, changed, 'gym-test')).rejects.toThrow('Waiver document integrity failure');
   });
   for (const script of scripts) it('independently extracts and embeds ' + script, async () => {
-    const f = pdfFixture(script, script), bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png);
+    const f = pdfFixture(script, script), bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test');
     const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false, disableFontFace: true, fontExtraProperties: true });
     const pdf = await task.promise;
     try {
@@ -55,12 +55,12 @@ describe('immutable waiver rendering', () => {
   it('rejects corrupted snapshot or image bytes without poisoning the queue', async () => {
     const f = pdfFixture();
     expect(() => readSnapshot(f.snapshot + ' ', f.snapshotHash)).toThrow('integrity');
-    await expect(renderWaiver(f.snapshot, f.snapshotHash, Uint8Array.from(f.png, (x, i) => i === 40 ? x ^ 1 : x))).rejects.toThrow();
-    await expect(renderWaiver(f.snapshot, f.snapshotHash, f.png)).resolves.toBeInstanceOf(Uint8Array);
+    await expect(renderWaiver(f.snapshot, f.snapshotHash, Uint8Array.from(f.png, (x, i) => i === 40 ? x ^ 1 : x), undefined, 'gym-test')).rejects.toThrow();
+    await expect(renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test')).resolves.toBeInstanceOf(Uint8Array);
   });
   it('replaces each missing code point in a Hebrew signer name and keeps the rest of the line', async () => {
     const f = pdfFixture('Original accepted terms', 'Before שלום After');
-    const bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png);
+    const bytes = await renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test');
     const task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false });
     try {
       const content = await (await (await task.promise).getPage(1)).getTextContent();
@@ -74,7 +74,7 @@ describe('immutable waiver rendering', () => {
     const f = pdfFixture('First page\n\f\nSecond page');
     const parsed = JSON.parse(f.snapshot), raw = JSON.stringify({ signedAt: parsed.signedAt, ...parsed }, null, 2) + '\n';
     const hash = digest(raw); expect(hash).not.toBe(f.snapshotHash);
-    const bytes = await renderWaiver(raw, hash, f.png), task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false });
+    const bytes = await renderWaiver(raw, hash, f.png, undefined, 'gym-test'), task = getDocument({ data: Uint8Array.from(bytes), useSystemFonts: false });
     try {
       const pdf = await task.promise; expect(pdf.numPages).toBe(2);
       for (let n = 1; n <= pdf.numPages; n++) {
@@ -84,11 +84,11 @@ describe('immutable waiver rendering', () => {
     } finally { await task.destroy(); }
   });
   it('bounds concurrency and queue length, then releases all slots', async () => {
-    const f = pdfFixture('Hello'), calls = Array.from({ length: 12 }, () => renderWaiver(f.snapshot, f.snapshotHash, f.png));
+    const f = pdfFixture('Hello'), calls = Array.from({ length: 12 }, () => renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test'));
     const results = await Promise.allSettled(calls);
     expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(9);
     expect(results.filter(r => r.status === 'rejected')).toHaveLength(3);
-    await expect(renderWaiver(f.snapshot, f.snapshotHash, f.png)).resolves.toBeInstanceOf(Uint8Array);
+    await expect(renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test')).resolves.toBeInstanceOf(Uint8Array);
   });
   it('refuses a full text-render queue before reading a stored PDF', async () => {
     const doc = await PDFDocument.create(); doc.addPage();
@@ -98,7 +98,7 @@ describe('immutable waiver rendering', () => {
       key: '01900000-0000-7000-8000-000000000003/waivers/templates/01900000-0000-7000-8000-000000000004.pdf',
       hash: digest(bytes), bytes: bytes.length, pages: 1,
     } } });
-    const running = Promise.allSettled(Array.from({ length: 9 }, () => renderWaiver(f.snapshot, f.snapshotHash, f.png)));
+    const running = Promise.allSettled(Array.from({ length: 9 }, () => renderWaiver(f.snapshot, f.snapshotHash, f.png, undefined, 'gym-test')));
     let reads = 0;
     try {
       await expect(renderWaiver(stored.snapshot, stored.snapshotHash, f.png, async () => { reads++; return bytes; }, 'busy-details'))

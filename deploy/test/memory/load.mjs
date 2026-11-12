@@ -44,6 +44,28 @@ class Client {
       req.end(payload);
     });
   }
+  /**
+   * A GET read as a slow reader would: after the first chunk it stops reading for `pauseMs`, then hashes the rest as it
+   * arrives without keeping it, so only the server's buffering shows in the measured memory.
+   */
+  digest(path, pauseMs) {
+    return new Promise((resolve, reject) => {
+      const req = httpsRequest({ agent, hostname: proxyHost, port: 443, servername: gymHost, path, method: 'GET', timeout: 120_000,
+        headers: { host: gymHost, ...(this.cookie ? { cookie: this.cookie } : {}), ...this.headers } }, (res) => {
+        const hash = createHash('sha256');
+        let bytes = 0, paused = false;
+        res.on('error', reject);
+        res.on('data', (chunk) => {
+          hash.update(chunk); bytes += chunk.length;
+          if (!paused) { paused = true; res.pause(); setTimeout(() => res.resume(), pauseMs); }
+        });
+        res.on('end', () => resolve({ status: res.statusCode, bytes, hash: hash.digest('hex') }));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error(`Timed out: GET ${path}`)));
+      req.end();
+    });
+  }
   async ok(path, method = 'GET', body) {
     const response = await this.request(path, method, body);
     if (response.status < 200 || response.status >= 300) throw new Error(`${method} ${path} answered ${response.status}: ${response.text.slice(0, 300)}`);
@@ -129,7 +151,7 @@ async function seed() {
     signatures.push((await owner.ok('/api/waivers/signatures', 'POST', { memberId, templateId: template.id, templateVersion: template.version,
       signer: { kind: 'self', name: 'Memory Signer' }, signatureImageKey: image.signatureImageKey, signatureImageHash: image.signatureImageHash, consent: true })).data.id);
   }
-  writeState({ members, signatures, document: { pages: document.pages, bytes: document.bytes, hash: document.hash } });
+  writeState({ members, signatures, templateId: template.id, document: { pages: document.pages, bytes: document.bytes, hash: document.hash } });
   console.log(JSON.stringify({ step: 'seed', members: members.length, signatures: signatures.length, documentPages: document.pages, documentBytes: document.bytes }));
 }
 
@@ -176,13 +198,29 @@ async function load() {
     }));
   };
   const pdfTimer = (afterMs) => new Promise((resolve) => setTimeout(() => (Date.now() < stopAt ? renderPdfs() : Promise.resolve()).then(resolve), afterMs));
+  // Forty slow readers open the 10 MiB template document at once from one address, within its per-client read budget:
+  // the app streams each one, so they must not hold forty copies (deploy/test/memory/README.md).
+  const documents = { ok: 0, failed: 0 };
+  const readDocuments = async () => {
+    const link = await owner.request(`/api/waivers/templates/${state.templateId}/document`);
+    const url = link.status === 200 && link.json?.data?.url ? new URL(link.json.data.url) : null;
+    await Promise.all(Array.from({ length: 40 }, async () => {
+      try {
+        if (!url) throw new Error('Missing document link');
+        const read = await owner.digest(url.pathname + url.search, 3_000);
+        if (read.status !== 200 || read.bytes !== state.document.bytes || read.hash !== state.document.hash) throw new Error('Document differs');
+        documents.ok++;
+      } catch { documents.failed++; }
+    }));
+  };
+  const documentTimer = new Promise((resolve) => setTimeout(() => (Date.now() < stopAt ? readDocuments() : Promise.resolve()).then(resolve), Math.min(15_000, seconds * 330)));
   console.log(JSON.stringify({ step: 'load', startedAt: started }));
-  await Promise.all([...Array.from({ length: workers }, (_, index) => worker(index)), pdfTimer(8_000), pdfTimer(Math.min(25_000, seconds * 600))]);
+  await Promise.all([...Array.from({ length: workers }, (_, index) => worker(index)), pdfTimer(8_000), pdfTimer(Math.min(25_000, seconds * 600)), documentTimer]);
   timings.sort((a, b) => a - b);
   const total = Object.values(counts).reduce((a, b) => a + b, 0), good = counts[200] ?? 0;
-  console.log(JSON.stringify({ step: 'load', done: true, requests: total, statuses: counts, byPath, pdfs, p50Ms: timings[Math.floor(timings.length / 2)], p95Ms: timings[Math.floor(timings.length * 0.95)] }));
+  console.log(JSON.stringify({ step: 'load', done: true, requests: total, statuses: counts, byPath, pdfs, documents, p50Ms: timings[Math.floor(timings.length / 2)], p95Ms: timings[Math.floor(timings.length * 0.95)] }));
   // A run whose traffic mostly failed measured nothing representative.
-  if (total < workers * 5 || good / total < 0.98 || pdfs.failed > 0 || pdfs.ok === 0) process.exitCode = 3;
+  if (total < workers * 5 || good / total < 0.98 || pdfs.failed > 0 || pdfs.ok === 0 || documents.failed > 0 || documents.ok === 0) process.exitCode = 3;
 }
 
 const command = process.argv[2];

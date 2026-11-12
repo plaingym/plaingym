@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { joinBodyBytes } from './join.service.js';
+import { refusalScript } from './browser.js';
 
 export const joinPollIntervalMs = 2000;
 export const joinPollLimit = 45;
@@ -46,9 +47,10 @@ export const joinBrowserScript = String.raw`// SPDX-License-Identifier: AGPL-3.0
     if (file.type !== 'image/png' || file.size > 256 * 1024) { reject(new Error('signatureRequired')); return; }
     const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.onerror = () => reject(new Error('failed')); reader.readAsDataURL(file);
   });
+  ${refusalScript}
   async function post(path, body) {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!response.ok) throw new Error(response.status === 409 ? 'conflict' : response.status === 503 ? 'unavailable' : 'failed');
+    if (!response.ok) throw new Error(response.status === 503 ? 'unavailable' : await refusal(response));
     return response.json();
   }
   // One admission per distinct set of details and signatures; a retry after a failed submission reuses it.

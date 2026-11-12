@@ -6,7 +6,7 @@ import SMTPConnection from 'nodemailer/lib/smtp-connection/index.js';
 import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js';
 import { assertNoTransaction } from '@plaingym/shared/transaction';
 import { DeliveryError, listUnsubscribeUrl, type Email, type EmailMessage, type EmailResult } from './index.js';
-import { publicAddress, SmtpHostRefusedError, type HostCheck } from './smtp-host.js';
+import { publicAddresses, SmtpHostRefusedError, type HostCheck } from './smtp-host.js';
 
 export interface SmtpConfig {
   readonly host: string;
@@ -87,57 +87,52 @@ interface SessionConfig {
 }
 
 /**
- * The connection options for one session. For `publicHostOnly` they name the address just checked, which Nodemailer
- * connects to without a lookup of its own; the name stays the TLS server name, so the certificate is checked against it.
+ * The connection options for one session, one per address to try. For `publicHostOnly` they name the addresses just
+ * checked, which Nodemailer connects to without a lookup of its own; the name stays the TLS server name, so the
+ * certificate is checked against it.
  */
-async function connectionOptions(config: SessionConfig): Promise<SMTPConnection.Options> {
-  if (!config.hostCheck) return config.options;
+async function connectionTargets(config: SessionConfig): Promise<readonly SMTPConnection.Options[]> {
+  if (!config.hostCheck) return [config.options];
   const host = config.options.host!;
   try {
-    const address = await publicAddress(host, config.hostCheck);
-    return { ...config.options, host: address, ...(isIP(host) ? {} : { servername: host }) };
+    const addresses = await publicAddresses(host, config.hostCheck);
+    return addresses.map((address) => ({ ...config.options, host: address, ...(isIP(host) ? {} : { servername: host }) }));
   } catch (error) {
     if (error instanceof SmtpHostRefusedError) throw new DeliveryError('not_accepted', error.message);
     throw new DeliveryError('not_accepted', 'SMTP connection failed', { cause: error });
   }
 }
 
-/** One SMTP session per call; without a message it verifies the connection and credentials only. */
-async function session(config: SessionConfig, message?: { envelope: SMTPConnection.Envelope; body: Readable }):
-  Promise<SMTPConnection.SentMessageInfo | undefined> {
-  // close() also reaches a session still resolving its host: nothing has connected, so it just never does.
-  let closed = false;
-  const resolving = { close() { closed = true; } };
-  config.open.add(resolving);
-  let options: SMTPConnection.Options;
-  try { options = await connectionOptions(config); } catch (error) { config.open.delete(resolving); throw error; }
-  // Handed over to the connection below in this same step, so no close() can fall between the two.
-  config.open.delete(resolving);
-  if (closed) throw new DeliveryError('not_accepted', 'SMTP connection failed');
+/** How one connection attempt ended; `limit` marks the session's deadline, which no further attempt may outlast. */
+class AttemptFailure extends Error {
+  constructor(readonly stage: Stage, readonly error: SMTPConnection.SMTPError, readonly limit: boolean) { super(error.message); }
+}
+
+/** One connection to one address, ending by the session's deadline. */
+function attempt(options: SMTPConnection.Options, config: SessionConfig, message: { envelope: SMTPConnection.Envelope; body: Readable } | undefined,
+  deadline: number, track: (connection: SMTPConnection) => void): Promise<SMTPConnection.SentMessageInfo | undefined> {
   return new Promise((resolve, reject) => {
     const connection = new SMTPConnection(options), auth = config.auth;
+    track(connection);
     let stage: Stage = 'connect', settled = false;
-    config.open.add(connection);
-    const deadline = setTimeout(() => fail(Object.assign(new Error('SMTP session time limit reached'), { code: 'ETIMEDOUT' })),
-      config.limitMs ?? smtpSessionLimitMs);
-    const fail = (error: SMTPConnection.SMTPError) => {
+    const timer = setTimeout(() => fail(Object.assign(new Error('SMTP session time limit reached'), { code: 'ETIMEDOUT' }), true),
+      Math.max(0, deadline - Date.now()));
+    const fail = (error: SMTPConnection.SMTPError, limit = false) => {
       if (settled) return;
       settled = true;
-      clearTimeout(deadline);
-      config.open.delete(connection);
+      clearTimeout(timer);
       connection.close();
-      reject(classify(stage, error));
+      reject(new AttemptFailure(stage, error, limit));
     };
     const finish = (info?: SMTPConnection.SentMessageInfo) => {
       if (settled) return;
       settled = true;
-      clearTimeout(deadline);
-      config.open.delete(connection);
+      clearTimeout(timer);
       connection.quit();
       resolve(info);
     };
     // Errors after the outcome (for example while quitting) are ignored rather than left unhandled.
-    connection.on('error', fail);
+    connection.on('error', (error) => fail(error));
     // Some closes end the session without an error; settle rather than wait forever.
     connection.once('end', () => fail(Object.assign(new Error('SMTP connection ended'), { code: 'ECONNECTION' })));
     connection.connect((error) => {
@@ -153,6 +148,34 @@ async function session(config: SessionConfig, message?: { envelope: SMTPConnecti
       connection.login({ credentials: { user: auth.user, pass: auth.pass } }, (error) => error ? fail(error) : deliver());
     });
   });
+}
+
+/**
+ * One SMTP session per call; without a message it verifies the connection and credentials only. A connection that
+ * fails before login, when nothing of the message has been handed over, moves on to the next checked address, all
+ * within the one session deadline. A failed login or send ends the session.
+ */
+async function session(config: SessionConfig, message?: { envelope: SMTPConnection.Envelope; body: Readable }):
+  Promise<SMTPConnection.SentMessageInfo | undefined> {
+  const deadline = Date.now() + (config.limitMs ?? smtpSessionLimitMs);
+  // close() reaches the session while it resolves its host and between attempts too: no further connection opens.
+  let closed = false, current: SMTPConnection | undefined;
+  const handle = { close() { closed = true; current?.close(); } };
+  config.open.add(handle);
+  try {
+    const targets = await connectionTargets(config);
+    for (let index = 0; ; index++) {
+      // Checked in the same step as the attempt opens its connection, so no close() can fall between the two.
+      if (closed) throw new DeliveryError('not_accepted', 'SMTP connection failed');
+      try {
+        return await attempt(targets[index]!, config, message, deadline, (connection) => { current = connection; });
+      } catch (failure) {
+        if (!(failure instanceof AttemptFailure)) throw failure;
+        const last = index + 1 >= targets.length || failure.limit || closed || Date.now() >= deadline;
+        if (failure.stage !== 'connect' || last) throw classify(failure.stage, failure.error);
+      }
+    }
+  } finally { config.open.delete(handle); }
 }
 
 /** A Nodemailer transport plugin: Nodemailer composes the message, this session delivers it. */

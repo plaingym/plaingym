@@ -5,7 +5,6 @@ import { AppError } from '@plaingym/shared';
 import type { AnnouncementAudience } from '@plaingym/shared/contracts';
 import { addressEquals } from './audience.sql.js';
 
-export { normalizeAddress } from './audience.sql.js';
 export type SkipReason = 'anonymized' | 'missing_email' | 'opt_out' | 'undeliverable' | 'ineligible';
 /** Inspect every member at an address, including members outside the requested audience. */
 export async function readAudience(tx: Transaction, audience: AnnouncementAudience, currentMemberId?: string) {

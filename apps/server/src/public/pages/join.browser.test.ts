@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinBrowserScript, joinPollIntervalMs, joinPollLimit } from './join.browser.js';
+import { publicBrowserScript, refusalScript } from './browser.js';
 
 const confirming = '<section data-join-confirming>Confirming</section>', welcome = '<section>Welcome</section>';
 class Fake {
@@ -76,5 +77,23 @@ describe('join confirming poll', () => {
     const page = load(false, () => welcome);
     await tick(10);
     expect(page.fetch).not.toHaveBeenCalled(); expect(page.reload).not.toHaveBeenCalled(); expect(page.stop).not.toHaveBeenCalled();
+  });
+});
+
+describe('join and drop-in refusals', () => {
+  const refusal = new Function(refusalScript + '\nreturn refusal;')() as (response: Response) => Promise<string>;
+  it('says to retry only a full queue\'s 429, and calls any other 429 a limit', async () => {
+    const busy = Response.json({ error: { code: 'rate_limited', details: { reason: ['busy'] } } }, { status: 429, headers: { 'Retry-After': '1' } });
+    expect(await refusal(busy)).toBe('retry');
+    expect(await refusal(Response.json({ error: { code: 'rate_limited' } }, { status: 429, headers: { 'Retry-After': '900' } }))).toBe('limited');
+    expect(await refusal(new Response('not json', { status: 429 }))).toBe('limited');
+    expect(await refusal(Response.json({ error: { code: 'conflict' } }, { status: 409 }))).toBe('conflict');
+    expect(await refusal(Response.json({ error: { code: 'internal' } }, { status: 500 }))).toBe('failed');
+  });
+  it('is what both scripts use for a refused post', () => {
+    for (const script of [joinBrowserScript, publicBrowserScript]) {
+      expect(script).toContain(refusalScript);
+      expect(script).toContain('await refusal(response)');
+    }
   });
 });

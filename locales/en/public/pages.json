@@ -36,6 +36,8 @@
   "signatureRequired": "Please draw or choose a signature image for each document.",
   "busy": "Sending your request…",
   "unavailable": "Please contact the gym to arrange your visit.",
+  "retry": "The server is busy. Your request has not been sent yet. Wait a moment, then try again.",
+  "limited": "Too many attempts from this connection. Wait a few minutes, then try again, or contact the gym.",
   "portal": "Member sign in",
   "source": "Source code",
   "staffSubject": "{gym}: {kind}",

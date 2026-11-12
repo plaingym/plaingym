@@ -54,7 +54,9 @@ about the stack under test changes.
 2. **Seed**: 100 households with 300 members, an uploaded 20-page, 10 MiB waiver PDF and six signatures; a 115 MB
    table, read into `shared_buffers` with `pg_prewarm`, so PostgreSQL is warm and larger than its buffers.
 3. **Load for 45 seconds**: 20 concurrent workers over list, health and page routes; six signed
-   copies rendered and merged at once, twice, then downloaded through their signed URLs; an encrypted `maintenance.mjs snapshot` (the app's `age`
+   copies rendered and merged at once, twice, then downloaded through their signed URLs; forty slow readers (each
+   stops for three seconds after its first chunk) opening the 10 MiB template document at once from one address,
+   which the app streams rather than holding a copy per reader; an encrypted `maintenance.mjs snapshot` (the app's `age`
    encryption and `pg_dump`) started five seconds in; the in-process job worker runs throughout.
 4. **Settle** for 12 seconds, to measure warm idle.
 

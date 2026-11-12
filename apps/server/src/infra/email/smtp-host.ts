@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
 
 /** Every address a name resolves to, IPv4 first. Throws when it resolves to none. */
 export type HostLookup = (host: string) => Promise<readonly string[]>;
 export interface HostCheck {
   readonly lookup?: HostLookup;
   readonly isPublic?: (address: string) => boolean;
+  /** The address families this machine can connect with (`machineFamilies`); tests supply their own. */
+  readonly families?: () => ReadonlySet<4 | 6>;
 }
 
 const lookupLimitMs = 10_000;
@@ -37,11 +40,29 @@ export class SmtpHostRefusedError extends Error {
 }
 
 /**
- * Resolves `host` once and returns the address to connect to, refusing the name when any answer isn't public: a name
- * with one public and one private address would otherwise reach the private one on some connections. The caller
- * connects to the returned address itself, since a second lookup could get a different answer.
+ * The address families this machine has a usable interface for, as Nodemailer decides before it connects: any
+ * interface that isn't loopback, though for IPv6 not a link-local address, which never reaches another network.
  */
-export async function publicAddress(host: string, check: HostCheck = {}): Promise<string> {
+export function machineFamilies(): ReadonlySet<4 | 6> {
+  const families = new Set<4 | 6>();
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.internal) continue;
+      if (entry.family === 'IPv4') families.add(4);
+      else if (entry.family === 'IPv6' && !/^fe[89ab]/i.test(entry.address)) families.add(6);
+    }
+  }
+  return families;
+}
+
+/**
+ * Resolves `host` once and returns the addresses to connect to, in the lookup's order (IPv4 first), refusing the name
+ * when any answer isn't public: a name with one public and one private address would otherwise reach the private one
+ * on some connections. Addresses of a family this machine has no interface for are left out, unless that leaves none.
+ * The caller connects to these addresses itself, trying the next when one fails, since a second lookup could get a
+ * different answer.
+ */
+export async function publicAddresses(host: string, check: HostCheck = {}): Promise<readonly string[]> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(Object.assign(new Error('SMTP host lookup timed out'), { code: 'ETIMEDOUT' })), lookupLimitMs);
@@ -50,6 +71,8 @@ export async function publicAddress(host: string, check: HostCheck = {}): Promis
     const addresses = await Promise.race([(check.lookup ?? systemLookup)(host), timeout]);
     const allowed = check.isPublic ?? isPublicAddress;
     if (!addresses.length || !addresses.every(allowed)) throw new SmtpHostRefusedError();
-    return addresses[0]!;
+    const families = (check.families ?? machineFamilies)();
+    const reachable = addresses.filter((address) => families.has(isIP(address) as 4 | 6));
+    return reachable.length ? reachable : addresses;
   } finally { clearTimeout(timer); }
 }

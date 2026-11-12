@@ -101,7 +101,7 @@ export function SignWaiver({ template, member, minor, endpoints, scope, close, s
       own(await scope.call(endpoints.sign, { memberId: member.id, templateId: template.id, templateVersion: template.version, consent: true, ...uploaded.current,
         signer: minor ? { kind: 'guardian', name: signer, relationship: String(data.get('relationship')).trim() } : { kind: 'self', name: signer } }));
       await saved();
-    } catch (failure) { setError(text(failure instanceof ApiError && failure.status === 429 ? 'retry' : conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }
+    } catch (failure) { setError(text(failure instanceof ApiError && failure.status === 429 ? failure.reason.includes('busy') ? 'retry' : 'limited' : conflict(failure) ? 'changed' : 'signFailed')); } finally { setBusy(false); }
   }
   const reset = () => { uploaded.current = null; };
   return <Dialog title={text('reviewSign')} closeLabel={text('close')} dismissible={!busy} unsavedChanges={changed} onClose={close} size="wide">

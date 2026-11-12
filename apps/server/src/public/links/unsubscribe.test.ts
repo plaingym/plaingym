@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { announcementOptOuts, auditEvents, members, signedLinks, uuidv7 } from '@plaingym/db';
 import { createFactories } from '@plaingym/db/testing/factories';
@@ -17,7 +17,7 @@ import { createWaiversService } from '../../areas/waivers/waivers.js';
 import { createSignedLinkCheckout } from '../../areas/billing/signed-link-checkout.js';
 import { FakePayments } from '../../infra/payments/index.js';
 import { FakeUploads } from '../../infra/storage/index.js';
-import { configureLinkPages } from './links.routes.js';
+import { configureLinkPages, oneClickGuessBudget } from './links.routes.js';
 
 const db = useTestDatabase(), factory = createFactories(db), origin = 'https://gym.example.test';
 const api = '/api/links/unsubscribe', oneClickBody = 'List-Unsubscribe=One-Click';
@@ -53,6 +53,37 @@ it('junk POSTs from 34 addresses cannot spend another provider address\'s one-cl
   expect((await f.click()).status).toBe(200);
   expect((await db.forGym(f.gymId, tx => tx.select().from(announcementOptOuts))).map(row => row.memberId)).toEqual([f.member.id]);
   expect(counters.size).toBe(35);
+});
+it.each(['single', 'multi'] as const)('junk one-click tokens from one address stop at the flood limit\'s size, before any token lookup (%s)', async tenancy => {
+  const f = await fixture(tenancy), junk = { 'test-peer': '198.51.100.7' };
+  for (let i = 0; i < oneClickGuessBudget; i++) expect((await f.click(oneClickBody, 'junk-' + i, f.server, junk)).status).toBe(404);
+  const resolve = vi.spyOn(f.links, 'resolve');
+  const refused = await f.click(oneClickBody, 'junk-last', f.server, junk);
+  expect(refused.status).toBe(429); expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(1);
+  expect((await f.click(oneClickBody, f.token, f.server, junk)).status).toBe(429);
+  expect(resolve).not.toHaveBeenCalled();
+  // Other addresses, including the provider's, keep their budgets.
+  expect((await f.click()).status).toBe(200);
+  f.clock.advance(60_000);
+  expect((await f.click(oneClickBody, f.token, f.server, junk)).status).toBe(200);
+});
+it('overlong one-click tokens are charged as guesses before any shared counter write', async () => {
+  const f = await fixture(), junk = { 'test-peer': '198.51.100.8' };
+  let writes = 0;
+  resetLimits = configureSharedRateLimits({ async consume(input) {
+    writes++;
+    return { allowed: true, resetAt: input.now + input.windowMs };
+  } });
+  for (let i = 0; i < oneClickGuessBudget; i++) expect((await f.click(oneClickBody, 'x'.repeat(129) + i, f.server, junk)).status).toBe(404);
+  expect((await f.click(oneClickBody, 'x'.repeat(129), f.server, junk)).status).toBe(429);
+  expect(writes).toBe(0);
+  expect((await f.click()).status).toBe(200);
+  expect(writes).toBe(1);
+});
+it('a POST to a signed-link path that is not the one-click route meets the general flood limit', async () => {
+  const f = await fixture();
+  for (let i = 0; i < 300; i++) expect((await f.click(oneClickBody, f.token + '/extra')).status).not.toBe(429);
+  expect((await f.click(oneClickBody, f.token + '/extra')).status).toBe(429);
 });
 async function fixture(tenancy: 'single' | 'multi' = 'multi') {
   const gymId = uuidv7(), otherGym = uuidv7(), clock = new TestClock('2026-11-09T12:00:00Z');

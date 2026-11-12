@@ -128,7 +128,8 @@ let active = false;
 const waiters: (() => void)[] = [];
 async function acquire() {
   if (!active) { active = true; return; }
-  if (waiters.length >= 8) throw new AppError('rate_limited', 'PDF renderer busy; retry shortly');
+  // A full queue is momentary: the busy reason gets a one-second Retry-After and clients' retry text (core/errors.ts).
+  if (waiters.length >= 8) throw new AppError('rate_limited', 'PDF renderer busy; retry shortly', { reason: ['busy'] });
   await new Promise<void>(resolve => waiters.push(resolve));
 }
 function release() { const next = waiters.shift(); if (next) next(); else active = false; }

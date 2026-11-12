@@ -25,8 +25,10 @@ export function linkBrowser() {
     if (response.status === 404 || response.status === 410) { location.reload(); throw new Error('unavailable'); }
     if (!response.ok || (path === '/complete' && response.status !== 200)) {
       // The customer state is explicit and contains no processor identifiers.
-      const result = await response.json().catch(() => ({})) as { cardSetupUnavailable?: boolean };
-      say(result.cardSetupUnavailable ? 'customerMissing' : response.status === 429 ? 'retry' : response.status === 409 ? 'conflict' : 'failed');
+      const result = await response.json().catch(() => ({})) as { cardSetupUnavailable?: boolean; error?: { details?: { reason?: unknown } } };
+      // Only a momentarily full queue (the busy reason) is worth retrying at once; any other 429 is a limit for now.
+      const reason = result.error?.details?.reason, busy = Array.isArray(reason) && reason.includes('busy');
+      say(result.cardSetupUnavailable ? 'customerMissing' : response.status === 429 ? busy ? 'retry' : 'limited' : response.status === 409 ? 'conflict' : 'failed');
       throw new Error('request failed');
     }
     return response.json() as Promise<{ data: Record<string, unknown> }>;

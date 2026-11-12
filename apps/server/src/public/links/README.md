@@ -30,7 +30,11 @@ optional UTF-8 charset is accepted), or `multipart/form-data` with that one fiel
 and value and nothing else. Its separate route budget is 10,000 requests per gym
 and client per minute, so junk from other addresses cannot spend a provider's
 budget. `POST /l/<token>` is exempt from the app's general flood limit, allowing a
-provider to unsubscribe more than 300 members from one address. The preference
+provider to unsubscribe more than 300 members from one address. A token that doesn't
+resolve, or that the route's parameter check refuses, is also charged to
+`oneClickGuessBudget` (a fixed 300 per gym and client per minute, the flood limit's default),
+which refuses that address before any token lookup once spent. Link scripts show
+their busy text only for a 429 with the `busy` reason and `limited` for any other. The preference
 button/API keeps its 30-request per gym/client/minute budget and general flood limit.
 It returns the same 404 for unknown, expired,
 revoked, used, wrong-purpose and other gyms' tokens. Cookie-bearing requests

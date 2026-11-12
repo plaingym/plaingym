@@ -6,7 +6,7 @@ import { RevisionConflictError } from '@plaingym/db';
 import { AppError } from '@plaingym/shared';
 import { createApp } from './app.js';
 import { sourceUrl } from './source-link.js';
-import { normalizeError } from './errors.js';
+import { busyReason, isBusy, normalizeError } from './errors.js';
 import { setLogSink } from './log.js';
 
 it.each([
@@ -25,11 +25,25 @@ it.each([
   });
   const response = await app.request('/api/fixture');
   expect(response.status).toBe(status);
-  if (status === 429) expect(response.headers.get('Retry-After')).toBe('1');
+  // Only a momentarily full queue (the busy reason) says to ask again in a second.
+  if (status === 429) expect(response.headers.get('Retry-After')).toBeNull();
   const body = await response.json();
   if (code) expect(body.error.code).toBe(code);
   expect(body.requestId).toBe(response.headers.get('x-request-id'));
   expect(JSON.stringify(body)).not.toMatch(/private SQL|credentials|private_table|password|stack/);
+});
+
+it('adds a one-second Retry-After only to a busy refusal, and keeps a limiter\'s own', async () => {
+  const respond = (error: AppError, header?: string) => createApp({ resolveGym: (context) => { if (header) context.header('Retry-After', header); throw error; },
+    session: async (_context, next) => { await next(); }, authorize: () => async (_context, next) => { await next(); } }).request('/api/fixture');
+  const busy = await respond(new AppError('rate_limited', 'PDF processing is busy; please retry shortly', { reason: [busyReason] }));
+  expect(busy.status).toBe(429); expect(busy.headers.get('Retry-After')).toBe('1');
+  expect((await busy.json()).error.details).toEqual({ reason: ['busy'] });
+  const quota = await respond(new AppError('rate_limited', 'The demo signature upload limit has been reached'));
+  expect(quota.status).toBe(429); expect(quota.headers.get('Retry-After')).toBeNull();
+  expect((await respond(new AppError('rate_limited', 'Too many requests.'), '60')).headers.get('Retry-After')).toBe('60');
+  expect(isBusy(new AppError('rate_limited', 'x', { reason: ['other'] }))).toBe(false);
+  expect(isBusy(new AppError('conflict', 'x', { reason: [busyReason] }))).toBe(false);
 });
 
 it('preserves explicitly public error details', () => {

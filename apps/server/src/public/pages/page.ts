@@ -62,7 +62,7 @@ export function intakePage(input: IntakePageInput) {
         ...(input.templates ?? []).map((template, i) => waiverForm(template, i, input.t)),
         h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
         h('button', { type: 'submit', class: button }, text('submit')),
-        ...['failed', 'conflict', 'signatureRequired', 'busy'].map(key => h('span', { hidden: true, 'data-message': key }, text(key)))));
+        ...['failed', 'conflict', 'signatureRequired', 'busy', 'retry', 'limited'].map(key => h('span', { hidden: true, 'data-message': key }, text(key)))));
   return publicLayout({ gym: input.gym, title, t: input.t, content, ...(input.locale ? { locale: input.locale } : {}), script: !input.state });
 }
 function waiverForm(template: WaiverTemplate, i: number, t: Translator) {

@@ -2,14 +2,14 @@
 import { randomUUID } from 'node:crypto';
 import { OpenAPIHono } from '@hono/zod-openapi';
 import { AppError } from '@plaingym/shared';
-import { demoContracts, ranksContracts, setupContracts } from '@plaingym/shared/contracts';
+import { demoContracts, portalSignedLinkContracts, ranksContracts, setupContracts } from '@plaingym/shared/contracts';
 import type { MiddlewareHandler } from 'hono';
 import { clock as systemClock, type Clock } from './clock.js';
 import type { RequestContext, RequestEnvironment } from './context.js';
 import { createServerRegistry, type PermissionMiddleware, type ServerContributions } from './registry.js';
 import { errorHandler, respondError } from './errors.js';
 import { csrf, type CanonicalOrigin } from './csrf.js';
-import { clientIp, rateLimit, type RateLimitOptions } from './rate-limit.js';
+import { clientIp, contractRequest, rateLimit, type RateLimitOptions } from './rate-limit.js';
 import { requestBodyLimit, type BodyLimits } from './body-limit.js';
 import { mountHealthz } from './healthz.js';
 import { mountSourceLink, sourceUrl } from './source-link.js';
@@ -142,7 +142,9 @@ export function createApp(options: AppOptions): OpenAPIHono<RequestEnvironment> 
   // serves its one gym for any hostname, so the limit runs before gym resolution under one install-wide key per
   // client (the same budget, and one no Host header can dodge): a refused request costs no database work. A
   // multi-gym install budgets each gym separately, so its limit runs after resolution.
-  const floodLimit = rateLimit(options.rateLimit);
+  // RFC 8058 providers share source addresses, so the one-click unsubscribe POST skips this budget: it has its own
+  // budget for valid tokens and, near this one, for tokens that don't resolve (public/links/links.routes.ts).
+  const floodLimit = rateLimit({ ...options.rateLimit, skip: contractRequest(portalSignedLinkContracts.oneClickUnsubscribe) });
   for (const handler of mode === 'single' ? [floodLimit, options.resolveGym] : [options.resolveGym, floodLimit]) app.use('*', handler);
   app.use('*', options.session);
   app.use('*', csrf(options.origin));

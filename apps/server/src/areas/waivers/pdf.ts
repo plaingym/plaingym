@@ -27,7 +27,7 @@ export async function validateTemplatePdf(template: { name: string; body: string
 }
 
 /** Waiver-specific content and layout. Only the persisted text determines the footer. */
-export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array, document?: Uint8Array | (() => Promise<Uint8Array>), gymId?: string): Promise<Uint8Array> {
+export async function renderWaiver(snapshotText: string, snapshotHash: string, png: Uint8Array, document: Uint8Array | (() => Promise<Uint8Array>) | undefined, gymId: string): Promise<Uint8Array> {
   if (snapshotText.length > 600_000) throw new AppError('invalid_request', 'Waiver is too large');
   const snapshot = readSnapshot(snapshotText, snapshotHash);
   validateSignatureImage(png);

@@ -85,7 +85,7 @@ export function joinFormPage(input: JoinPageInput & { plan: PublicPlan; count: n
     h('p', { id: 'feedback', role: 'status', 'aria-live': 'polite', class: 'break-words' }),
     h('button', { type: 'submit', class: button }, plan.signupFeeCents === 0 && (plan.trialDays > 0 || plan.amountCents === 0)
       ? text(plan.amountCents > 0 ? 'submitCard' : 'submitFree') : text('submit')),
-    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
+    ...['failed', 'conflict', 'signatureRequired', 'busy', 'unavailable', 'tooLarge', 'retry', 'limited'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))));
   const summary = h('section', { class: panel }, ...price(input, plan), h('p', null, text('formHelp')),
     h('p', { class: 'text-sm text-muted-foreground' }, text(plan.amountCents === 0 ? 'dueTodayFree' : plan.trialDays > 0 ? 'dueTodayTrial' : 'dueToday')));
   return layout(input, text('formTitle', { plan: plan.name }), h('div', { class: 'space-y-6' }, summary, counter, form), true);

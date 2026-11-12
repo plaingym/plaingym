@@ -123,10 +123,19 @@ also set, when that address is in Cloudflare's published ranges
 client instead, if it's a valid address. Pass the same `clientIp` helper and proxy
 options to the auth binding.
 
-`POST /l/<token>` uses the one-click unsubscribe route's named 10,000/minute
-per-gym/client budget instead of the general flood budget. GETs and the preference
-API retain general flood protection. This permits one mail provider to unsubscribe
-many members without sharing a budget with junk requests from other addresses.
+The flood limit is mounted with `skip` set to the one-click unsubscribe contract
+(`contractRequest`), so that route alone (`POST /l/<token>`) uses its named
+10,000/minute per-gym/client budget instead of the general flood budget; a route's own
+limiter never skips anything. GETs, other `/l/` paths and the preference API retain
+general flood protection. This permits one mail provider to unsubscribe many members
+without sharing a budget with junk requests from other addresses, while a token that
+doesn't resolve is charged to a 300/minute per-gym/client `failureBudget` that refuses
+the address before any lookup once spent.
+
+A 429 sets `Retry-After: 1` only for a refusal carrying the `busy` reason
+(`details.reason`, `busyReason` in `errors.ts`): a queue full for the moment, such
+as the PDF queues. Rate limits set their own `Retry-After`, and a lasting quota (the
+demo's) sends none, so clients tell "try again now" from "limited for now".
 
 `SOURCE_URL` is read when constructing the app, defaults to the public source
 repository, and is passed through Docker and Compose. Footers can use `/source`

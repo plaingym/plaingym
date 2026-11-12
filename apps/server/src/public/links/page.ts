@@ -115,5 +115,5 @@ export function linkPage({ data, state, portalClaim, tablet = false, now, timezo
         h('h1', { class: 'text-2xl font-bold' }, text('completedTitle')),
         h('p', null, text('completed_' + (data?.purpose ?? 'onboarding'))),
         h('a', { class: button, href: '/portal' }, text('portalSignIn')))) : null,
-      ...['failed', 'conflict', 'retry', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
+      ...['failed', 'conflict', 'retry', 'limited', 'customerMissing', 'busy', 'confirming', 'signatureRequired', 'incomplete', 'done', 'doneBody', 'portalReady', 'portalEmailSent'].map(key => h('span', { hidden: true, 'data-message': key }, text(key))))).toString();
 }

@@ -58,6 +58,7 @@
   "doneBody": "Thank you. Your details have been received.",
   "reload": "Reload page",
   "retry": "The server is busy. Wait a moment, then try again.",
+  "limited": "Too many attempts for now. Try again later, or contact the gym.",
   "javascript": "Please enable JavaScript to complete this page.",
   "completedTitle": "You're all set",
   "completed_onboarding": "Your card details and required documents have been saved. Thank you.",
