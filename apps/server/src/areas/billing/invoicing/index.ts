@@ -10,7 +10,7 @@ import type { AppliedTaxRate, CalculatedInvoice, HouseholdPricing, Price, Priced
 
 export { calendarDaysBetween, nextBillingDate, previousBillingDate } from './calendar.js';
 export type { BillingCalendar } from './calendar.js';
-export type { AppliedTaxRate, CalculatedInvoice, CalculatedLineItem, PricedMembership } from './pricing.js';
+export type { AppliedTaxRate, CalculatedInvoice, CalculatedLineItem, MembershipDiscount, PricedMembership } from './pricing.js';
 export { calculatePlanChange } from './plan-change.js';
 export type { PlanChangeInput, PlanChangeResult, PlanChangeTarget } from './plan-change.js';
 
@@ -84,7 +84,7 @@ export function calculateCycleInvoice(input: CycleInvoiceInput): CycleInvoiceRes
     .reduce((end, change) => change.nextDueOn > end ? change.nextDueOn : end, input.dueOn);
   return { invoice: { householdId: input.householdId, kind: 'cycle', dueOn: input.dueOn,
     periodStartsOn: input.dueOn, periodEndsOn,
-    ...calculatePrices(input.currency, active.map(({ item, amountCents }) => membershipPrice(item, amountCents)),
+    ...calculatePrices(input.currency, active.map(({ item, amountCents, period }) => membershipPrice(item, amountCents, period)),
       input.familyDiscountBasisPoints, input.discountDescription) }, nextDueDates };
 }
 
@@ -92,7 +92,9 @@ export function calculateCycleInvoice(input: CycleInvoiceInput): CycleInvoiceRes
  * A monthly membership due off the household's billing day (a trial that ended mid-cycle, or a changed
  * billing day) pays only the days up to that day, prorated like a first period, and then joins it.
  */
-function cycleTerms(input: HouseholdPricing, item: PricedMembership): { nextDueOn: IsoDate; amountCents: number } {
+function cycleTerms(input: HouseholdPricing, item: PricedMembership): {
+  nextDueOn: IsoDate; amountCents: number; period?: { billedDays: number; periodDays: number };
+} {
   const { membership } = item;
   if (membership.interval === 'monthly') {
     const householdDate = householdDateOnOrAfter(membership.nextDueOn, input.billingDay);
@@ -100,7 +102,8 @@ function cycleTerms(input: HouseholdPricing, item: PricedMembership): { nextDueO
       const periodStartsOn = previousBillingDate({ dueOn: householdDate, interval: 'monthly', billingDay: input.billingDay });
       const billedDays = calendarDaysBetween(membership.nextDueOn, householdDate);
       const periodDays = calendarDaysBetween(periodStartsOn, householdDate);
-      return { nextDueOn: householdDate, amountCents: prorate(input.currency, membership.amountCents, billedDays, periodDays) };
+      return { nextDueOn: householdDate, amountCents: prorate(input.currency, membership.amountCents, billedDays, periodDays),
+        period: { billedDays, periodDays } };
     }
   }
   return { nextDueOn: nextBillingDate(calendar(input, item)), amountCents: membership.amountCents };
@@ -126,7 +129,7 @@ export function calculateFirstPeriod(input: FirstPeriodInput): FirstPeriodResult
   const amount = prorate(input.currency, input.membership.amountCents, billedDays, periodDays);
   return { ...result, invoice: { householdId: input.householdId, kind: 'one_off', dueOn: input.membership.startsOn,
     periodStartsOn: null, periodEndsOn: null,
-    ...calculatePrices(input.currency, [membershipPrice(input, amount)], input.familyDiscountBasisPoints, input.discountDescription) } };
+    ...calculatePrices(input.currency, [membershipPrice(input, amount, result)], input.familyDiscountBasisPoints, input.discountDescription) } };
 }
 
 /** Sign-up fees and other one-off charges do not join a cycle or receive its discount. */

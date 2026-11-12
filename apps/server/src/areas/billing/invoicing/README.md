@@ -44,8 +44,8 @@ should supply the original anniversary explicitly, including on later runs.
 
 `calculateFirstPeriod` bills `[startsOn, nextDueOn)` using the actual number of
 calendar days in the monthly/annual interval immediately preceding `nextDueOn`.
-It rounds `price × remaining days / interval days` once, then applies the family
-discount and tax. DST never turns a day into a fractional day. It returns a
+It rounds `price × remaining days / interval days` once, then applies the membership
+discount, family discount and tax. DST never turns a day into a fractional day. It returns a
 separate `one_off` invoice due on `startsOn`, with period metadata beside it.
 `next_billing_date`, zero-length periods, and trial, frozen, or cancelled
 memberships produce no first-period invoice (and report zero billed days): a
@@ -58,18 +58,28 @@ their onboarding flow rather than this existing-household proration function.
 
 `calculatePlanChange` (`plan-change.ts`) quotes an upgrade that takes effect now:
 the new plan's price minus the membership's current amount (a custom price
-counts as the current price), for the days left in the current period. That
+counts as the current price), for the days left in the current period. Optional
+`currentDiscount` and `newDiscount` describe each side: pass both to keep a
+discount, or only `currentDiscount` when it ends. The current price is credited
+after its membership discount, before the new side's discount is applied. That
 period is the monthly or annual interval immediately before `nextDueOn`, as for
 a first period, except that a monthly due date off the household's billing day
 (left by a changed billing day) closes a full month on its own day. The days left
 run from the later of `changeOn` and `startsOn` to `nextDueOn`. The difference is
 quoted like a first period of the new plan: `difference × days left / period
-days`, rounded once to the currency's step, then the household discount, then the
-new plan's taxes. The result is a `one_off` invoice due on `changeOn`, with one
+days`, rounded once to the currency's step. The new discount comes off that
+quote (a percentage of the prorated **new price**, or a fixed amount prorated by
+the same days), then the household discount, then the new plan's taxes. For
+example, changing from 100 to 200 with a fixed 20 discount kept on both sides
+quotes 120 before the new 20 discount for a full period, leaving 100. No charge
+is quoted when the new effective price is no higher than the current one, even
+if the sticker price increased. Ending a discount can increase the effective
+price even when the sticker price falls. The result is a `one_off` invoice due on
+`changeOn`, with one
 `membership` line that records the membership and the **new** plan, then its
 discount and tax lines, and the period with its billed and total days beside it.
-There is no invoice (and zero billed days) when the new price isn't higher, the
-change is on or after the due date, the rounded proration is zero, or the
+There is no invoice (and zero billed days) when the new effective price isn't
+higher, the change is on or after the due date, the rounded proration is zero, or the
 membership is in a trial, frozen or cancelled. A plan with another billing
 interval is refused with a `RangeError` (an interval change is never prorated),
 as is a change dated before the current period. `changeOn` is the gym-local date
@@ -81,6 +91,27 @@ a family discount. Quantities are extended before tax rounding; output amounts
 are additive totals with quantity 1. Sign-up fees are separate from prorated and
 recurring membership invoices.
 
+## Membership discounts
+
+`PricedMembership.discount` is optional. A `MembershipDiscount` has the source's
+`name` and either `{ kind: 'percentage', basisPoints }` (0–10,000) or
+`{ kind: 'fixed', amountCents }` (nonnegative integer minor units in the invoice
+currency). It comes off the membership's actual price, including a custom price,
+before the household's family discount and before tax. Each deduction has its own
+`discount` line, named after its source and linked to the membership, with no
+`planId`. Zero deductions produce no line. A fixed amount is clamped to the price;
+100% leaves zero to tax or discount further. Discount lines are negative, while
+each membership's amount after its deductions and every invoice total stay
+nonnegative.
+
+For first periods, off-day cycle stubs and immediate plan changes, percentages
+apply to the rounded prorated price. Fixed amounts are prorated by the same
+calendar-day fraction as the price, rounded to the currency's step and clamped
+to the amount being billed. The caller resolves applicability and the name;
+these functions do not read discount records or decide dates. Omitting the
+optional discount inputs preserves existing calculations. Signup-fee waivers
+need no discount calculation: the caller leaves the fee out.
+
 ## Rounding
 
 All multiplication/division uses `bigint`; output line amounts and invoice totals
@@ -89,22 +120,23 @@ the nearest multiple of the currency's charge step (`minorUnitStep` from
 `@plaingym/shared/money`), with exact halves rounded upward: one minor unit for most
 currencies, 100 for ISK and UGX (Stripe charges them in whole units written with two
 decimals), and 10 for BHD, JOD, KWD, OMR and TND (Stripe wants a last digit of 0).
-Prorations, the family discount, the net of an inclusive quote and each exclusive
-tax round to that step, and allocations hand out whole steps, so every line and the
+Prorations, membership and family discounts, the net of an inclusive quote and
+each exclusive tax round to that step, and allocations hand out whole steps, so every line and the
 total of an invoice whose prices are on the step land on it too: 5 ISK with 11 % tax
 on top is 6 ISK, never 5.55. An invoice with a price stored off the step (from before
 prices were checked) is calculated in single minor units, as before; the charge runner
 then skips it (`off_step`) and leaves it for a manual payment.
 
-1. Round the household percentage discount **once** on the sum of the membership
-   quotes being billed. Allocate that amount proportionally to their quotes by
-   largest remainder, breaking ties by membership ID. The configured household
+1. Round and clamp each membership's discount, then round the household percentage
+   discount **once** on the sum of the remaining membership quotes. Allocate that
+   amount proportionally to those remaining quotes by largest remainder, breaking
+   ties by membership ID. The configured household
    discount applies even when only one membership is due on this date.
 2. Each quote includes only its inclusive taxes. Extract its net amount by rounding
    `quote × 1,000,000 / (1,000,000 + sum of inclusive rates)`, both before and after
-   discount. The membership line is the original net; a separate discount line
-   reduces it to the discounted net. Thus a discount on an inclusive quote reduces
-   both its pre-tax price and its included tax.
+   each discount. The membership line is the original net; separate membership
+   and family discount lines reduce it to each successive net. Thus a discount on
+   an inclusive quote reduces both its pre-tax price and its included tax.
 3. The discounted quote minus its rounded net is the exact included-tax budget.
    Allocate that budget proportionally among inclusive rates by largest remainder,
    breaking ties by tax-rate ID. This keeps every quoted cent accounted for even

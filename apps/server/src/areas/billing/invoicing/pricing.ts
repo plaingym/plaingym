@@ -14,11 +14,21 @@ export interface CalculatedInvoice extends Pick<Invoice,
   readonly lineItems: readonly CalculatedLineItem[];
 }
 export type AppliedTaxRate = Readonly<Pick<TaxRate, 'id' | 'name' | 'rateMillionths' | 'inclusive'>>;
+/** A resolved membership discount; the caller supplies the source's invoice name. */
+export type MembershipDiscount = { readonly name: string } & (
+  { readonly kind: 'percentage'; readonly basisPoints: number }
+  | { readonly kind: 'fixed'; readonly amountCents: number }
+);
+export interface Proration {
+  readonly billedDays: number;
+  readonly periodDays: number;
+}
 export interface PricedMembership {
   readonly membership: MembershipSnapshot;
   /** Already localized by the caller, snapshotted on the invoice. */
   readonly description: string;
   readonly taxRates: readonly AppliedTaxRate[];
+  readonly discount?: MembershipDiscount;
   /** Supply an imported annual anniversary when it differs from startsOn. */
   readonly annualAnchorOn?: IsoDate;
 }
@@ -41,6 +51,8 @@ export interface Price {
   /** Recorded on membership and signup-fee lines only. */
   readonly planId: Id | null;
   readonly taxRates: readonly AppliedTaxRate[];
+  /** Unrounded so the invoice's currency step also governs the discount. */
+  readonly membershipDiscount?: { readonly name: string; readonly numerator: bigint; readonly denominator: bigint };
 }
 
 export function description(value: string): void {
@@ -51,6 +63,13 @@ export function validateHousehold(input: HouseholdPricing): void {
   billingDay(input.billingDay);
   nonnegativeInteger(input.familyDiscountBasisPoints, 10_000, 'family discount');
   description(input.discountDescription);
+}
+export function validateDiscount(discount: MembershipDiscount | undefined): void {
+  if (discount === undefined) return;
+  description(discount.name);
+  if (discount.kind === 'percentage') nonnegativeInteger(discount.basisPoints, 10_000, 'membership discount');
+  else if (discount.kind === 'fixed') cents(discount.amountCents);
+  else throw new RangeError('Invalid membership discount kind');
 }
 export function validateMembership(input: HouseholdPricing, item: PricedMembership): void {
   const membership = item.membership;
@@ -63,6 +82,7 @@ export function validateMembership(input: HouseholdPricing, item: PricedMembersh
   if (!['monthly', 'annual'].includes(membership.interval)) throw new RangeError('Invalid billing interval');
   if (!Number.isInteger(membership.revision) || membership.revision < 1) throw new RangeError('Invalid membership revision');
   description(item.description);
+  validateDiscount(item.discount);
 }
 function annualAnchor(item: PricedMembership): IsoDate {
   const { startsOn, nextDueOn } = item.membership;
@@ -73,13 +93,26 @@ export function calendar(input: HouseholdPricing, item: PricedMembership) {
   return { dueOn: item.membership.nextDueOn, interval: item.membership.interval,
     billingDay: input.billingDay, annualAnchorOn: annualAnchor(item) };
 }
-export function membershipPrice(item: PricedMembership, amountCents = item.membership.amountCents): Price {
+export function membershipPrice(item: PricedMembership, amountCents = item.membership.amountCents, period?: Proration): Price {
+  const discount = item.discount;
+  const membershipDiscount = discount === undefined ? undefined : { name: discount.name,
+    numerator: discount.kind === 'percentage' ? BigInt(amountCents) * BigInt(discount.basisPoints)
+      : BigInt(discount.amountCents) * BigInt(period?.billedDays ?? 1),
+    denominator: discount.kind === 'percentage' ? 10_000n : BigInt(period?.periodDays ?? 1) };
   return { kind: 'membership', description: item.description, amountCents, currency: item.membership.currency,
-    quantity: 1, membershipId: item.membership.id, chargeTypeId: null, planId: item.membership.planId, taxRates: item.taxRates };
+    quantity: 1, membershipId: item.membership.id, chargeTypeId: null, planId: item.membership.planId, taxRates: item.taxRates,
+    ...membershipDiscount === undefined ? {} : { membershipDiscount } };
 }
 /** The currency's charge step: every amount the engine rounds lands on it, so a card charge in ISK or KWD is never refused. */
 export function step(currency: Currency): bigint { return BigInt(minorUnitStep(currency)); }
 export function compareIds(a: { id: Id }, b: { id: Id }): number { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; }
+
+export function membershipDiscountAmount(price: Price, amount: bigint, unit: bigint): bigint {
+  if (price.membershipDiscount === undefined) return 0n;
+  const { numerator, denominator } = price.membershipDiscount;
+  const discount = roundRatio(numerator, denominator, unit);
+  return discount > amount ? amount : discount;
+}
 
 export function calculatePrices(currency: Currency, prices: readonly Price[], discountBasisPoints: number, discountDescription: string) {
   let unit = step(currency);
@@ -109,18 +142,21 @@ export function calculatePrices(currency: Currency, prices: readonly Price[], di
   // A price stored off the step (from before prices were checked) can't land on it, and rounding it to whole steps
   // could take more discount or net than the line holds, so such an invoice is calculated in single minor units.
   if (gross.some((amount) => amount % unit !== 0n)) unit = 1n;
-  const grossTotal = gross.reduce((sum, amount) => sum + amount, 0n);
-  const discount = roundRatio(grossTotal * BigInt(discountBasisPoints), 10_000n, unit);
-  const discounts = allocate(discount, gross, unit);
+  const afterMembershipDiscount = prices.map((price, index) => gross[index]! - membershipDiscountAmount(price, gross[index]!, unit));
+  const discountBase = afterMembershipDiscount.reduce((sum, amount) => sum + amount, 0n);
+  const discount = roundRatio(discountBase * BigInt(discountBasisPoints), 10_000n, unit);
+  const discounts = allocate(discount, afterMembershipDiscount, unit);
   const lineItems: CalculatedLineItem[] = [];
   for (const [index, price] of prices.entries()) {
     const amount = gross[index]!;
-    const discounted = amount - discounts[index]!;
+    const afterMembership = afterMembershipDiscount[index]!;
+    const discounted = afterMembership - discounts[index]!;
     const taxes = price.taxRates.toSorted(compareIds);
     const included = taxes.filter((tax) => tax.inclusive);
     const includedRate = included.reduce((sum, tax) => sum + BigInt(tax.rateMillionths), 0n);
     const net = (value: bigint) => roundRatio(value * 1_000_000n, 1_000_000n + includedRate, unit);
     const beforeDiscount = net(amount);
+    const afterMembershipNet = net(afterMembership);
     const taxable = net(discounted);
     const fields = { currency, membershipId: price.membershipId, chargeTypeId: price.chargeTypeId, quantity: 1, planId: null };
     // Amounts are extended totals; unit-price multiplication has already happened. Only the priced line
@@ -128,8 +164,10 @@ export function calculatePrices(currency: Currency, prices: readonly Price[], di
     const priced = { ...fields, description: price.description, amountCents: checkedCents(beforeDiscount),
       taxRateId: null, taxRateMillionths: null, taxInclusive: null };
     lineItems.push(price.kind === 'charge' ? { ...priced, kind: price.kind } : { ...priced, kind: price.kind, planId: price.planId });
-    if (beforeDiscount !== taxable) lineItems.push({ ...fields, kind: 'discount', description: discountDescription,
-      amountCents: -checkedCents(beforeDiscount - taxable), taxRateId: null, taxRateMillionths: null, taxInclusive: null });
+    if (beforeDiscount !== afterMembershipNet) lineItems.push({ ...fields, kind: 'discount', description: price.membershipDiscount!.name,
+      amountCents: -checkedCents(beforeDiscount - afterMembershipNet), taxRateId: null, taxRateMillionths: null, taxInclusive: null });
+    if (afterMembershipNet !== taxable) lineItems.push({ ...fields, kind: 'discount', description: discountDescription,
+      amountCents: -checkedCents(afterMembershipNet - taxable), taxRateId: null, taxRateMillionths: null, taxInclusive: null });
     const inclusiveAmounts = allocate(discounted - taxable, included.map((tax) => BigInt(tax.rateMillionths)), unit);
     const amountsById = new Map(included.map((tax, i) => [tax.id, inclusiveAmounts[i]!]));
     for (const tax of taxes) lineItems.push({ ...fields, kind: 'tax', description: tax.name,
