@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Image tag failed.' }
 docker save $localTag -o (Join-Path $staging 'deploy/images/app.tar')
 if ($LASTEXITCODE -ne 0) { throw 'Image export failed.' }
 # Explicit inputs exclude environments, secrets, output, and test fixtures.
-foreach ($file in @('compose.yaml', 'Caddyfile', 'lib.sh', 'host.sh', 'install.sh', 'update.sh', 'rotate-key.sh', 'bootstrap.sh', 'cloudflare-ranges.txt', 'postgres/01-roles.sh', 'systemd/plaingym-update.service', 'systemd/plaingym-update.timer')) {
+foreach ($file in @('compose.yaml', 'Caddyfile', 'lib.sh', 'host.sh', 'install.sh', 'update.sh', 'rotate-key.sh', 'restore.sh', 'bootstrap.sh', 'cloudflare-ranges.txt', 'postgres/01-roles.sh', 'systemd/plaingym-update.service', 'systemd/plaingym-update.timer')) {
     Copy-Item -LiteralPath (Join-Path $deployRoot $file) -Destination (Join-Path $staging "deploy/$file")
 }
 # The release signing key, once the repository has one, lets update.sh --patch check releases.
@@ -33,7 +33,7 @@ if (Test-Path -LiteralPath (Join-Path $deployRoot 'release-signing.pem')) {
 }
 [IO.File]::WriteAllText((Join-Path $staging 'deploy/images.env'), "# SPDX-License-Identifier: AGPL-3.0-only`nAPP_IMAGE=$localTag`nBUNDLE_ARCHITECTURE=$architecture`n", [Text.UTF8Encoding]::new($false))
 $archivePath = Join-Path $outputDirectory "plaingym-$architecture.tar"
-tar -cf $archivePath -C $staging deploy/compose.yaml deploy/Caddyfile deploy/lib.sh deploy/host.sh deploy/install.sh deploy/update.sh deploy/rotate-key.sh deploy/bootstrap.sh deploy/cloudflare-ranges.txt deploy/postgres/01-roles.sh deploy/systemd/plaingym-update.service deploy/systemd/plaingym-update.timer deploy/images.env deploy/images/app.tar @optional
+tar -cf $archivePath -C $staging deploy/compose.yaml deploy/Caddyfile deploy/lib.sh deploy/host.sh deploy/install.sh deploy/update.sh deploy/rotate-key.sh deploy/restore.sh deploy/bootstrap.sh deploy/cloudflare-ranges.txt deploy/postgres/01-roles.sh deploy/systemd/plaingym-update.service deploy/systemd/plaingym-update.timer deploy/images.env deploy/images/app.tar @optional
 if ($LASTEXITCODE -ne 0) { throw 'Bundle export failed.' }
 Remove-Item -Recurse -Force $staging
 $checksum = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()

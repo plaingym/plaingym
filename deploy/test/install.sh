@@ -291,7 +291,7 @@ grep -q '^PLAINGYM_ORIGIN_NONCE=.' "$root/.env"
 # The bootstrap verifies the bundle before extracting or installing anything.
 bundle="$temporary/bundle"
 mkdir -p "$bundle/deploy/postgres" "$bundle/deploy/images" "$bundle/deploy/systemd"
-for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh rotate-key.sh cloudflare-ranges.txt postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
+for file in compose.yaml Caddyfile lib.sh host.sh install.sh update.sh rotate-key.sh restore.sh cloudflare-ranges.txt postgres/01-roles.sh systemd/plaingym-update.service systemd/plaingym-update.timer; do cp "$source_dir/$file" "$bundle/deploy/$file"; done
 # A bundle carries the release signing key; the installer puts it beside update.sh.
 printf 'fixture public key\n' > "$bundle/deploy/release-signing.pem"
 : > "$bundle/deploy/images/app.tar"
